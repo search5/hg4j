@@ -5,7 +5,8 @@ import java.util.logging.Logger;
 import org.hg4j.core.ChangegroupParser;
 import org.hg4j.core.Dirstate;
 import org.hg4j.core.HgLock;
-import org.hg4j.core.HgRemoteClient;
+import org.hg4j.core.HgRemoteConnection;
+import org.hg4j.core.HgRemoteConnectionFactory;
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
 import org.hg4j.core.Revlog;
@@ -45,73 +46,81 @@ public class PullCommand {
             throw new IllegalStateException("Remote source URL must be specified.");
         }
 
-        HgRemoteClient client = new HgRemoteClient(sourceUrl);
-        List<String> remoteHeads = client.getHeads();
-        if (remoteHeads.isEmpty()) {
-            return new ArrayList<>(); // Nothing to pull
-        }
+        HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl);
+        try {
+            List<String> remoteHeads = client.getHeads();
+            if (remoteHeads.isEmpty()) {
+                return new ArrayList<>(); // Nothing to pull
+            }
 
-        // Check our local heads to request only new history (Delta Pull optimization)
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog localChangelog = repository.getRevlog(clIdx, clDat);
+            // Check our local heads to request only new history (Delta Pull optimization)
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog localChangelog = repository.getRevlog(clIdx, clDat);
 
-        List<String> common = new ArrayList<>();
-        int count = localChangelog.getRevisionCount();
-        if (count > 0) {
-            boolean[] isParent = new boolean[count];
-            for (int i = 0; i < count; i++) {
-                Revlog.IndexRecord rec = localChangelog.getIndexRecord(i);
-                if (rec.getParent1() >= 0 && rec.getParent1() < count) {
-                    isParent[rec.getParent1()] = true;
+            List<String> common = new ArrayList<>();
+            int count = localChangelog.getRevisionCount();
+            if (count > 0) {
+                boolean[] isParent = new boolean[count];
+                for (int i = 0; i < count; i++) {
+                    Revlog.IndexRecord rec = localChangelog.getIndexRecord(i);
+                    if (rec.getParent1() >= 0 && rec.getParent1() < count) {
+                        isParent[rec.getParent1()] = true;
+                    }
+                    if (rec.getParent2() >= 0 && rec.getParent2() < count) {
+                        isParent[rec.getParent2()] = true;
+                    }
                 }
-                if (rec.getParent2() >= 0 && rec.getParent2() < count) {
-                    isParent[rec.getParent2()] = true;
+                // Send only local heads as common to avoid overflowing URL length limitations (E6 solved)
+                for (int i = 0; i < count; i++) {
+                    if (!isParent[i]) {
+                        byte[] node = localChangelog.getIndexRecord(i).getNodeId();
+                        common.add(NodeIdUtil.toHex(node));
+                    }
                 }
             }
-            // Send only local heads as common to avoid overflowing URL length limitations (E6 solved)
-            for (int i = 0; i < count; i++) {
-                if (!isParent[i]) {
-                    byte[] node = localChangelog.getIndexRecord(i).getNodeId();
-                    common.add(NodeIdUtil.toHex(node));
+
+            // Negotiate getbundle vs changegroup based on remote capabilities
+            List<String> caps = client.getCapabilities();
+            boolean supportsGetBundle = caps.contains("getbundle") || caps.stream().anyMatch(c -> c.startsWith("getbundle"));
+
+            byte[] bundleBytes;
+            if (supportsGetBundle) {
+                List<String> bundleCaps = new ArrayList<>();
+                boolean supportsBundle2 = caps.contains("bundle2") || caps.stream().anyMatch(c -> c.startsWith("bundle2"));
+                if (supportsBundle2) {
+                    bundleCaps.add("bundle2");
+                    bundleCaps.add("HG20");
+                    bundleCaps.add("changegroup=01,02,03");
+                    bundleCaps.add("compression=GZ,BZ,ZS");
                 }
+                bundleBytes = client.getBundle(common, remoteHeads, bundleCaps);
+            } else {
+                bundleBytes = client.getChangegroup(common);
+            }
+
+            if (bundleBytes == null || bundleBytes.length == 0) {
+                return new ArrayList<>(); // No new changes
+            }
+
+            // Automatically resolve bundle2 container if the payload is packed with HG20 format
+            byte[] changegroupBytes = bundleBytes;
+            String cgVersion = "01";
+            if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
+                org.hg4j.core.Bundle2Parser.ExtractedBundle2 ext = org.hg4j.core.Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
+                changegroupBytes = ext.changegroupBytes;
+                cgVersion = ext.cgVersion;
+            }
+
+            ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
+            return applyBundle(bundle);
+        } finally {
+            if (client instanceof AutoCloseable) {
+                try {
+                    ((AutoCloseable) client).close();
+                } catch (Exception ignored) {}
             }
         }
-
-        // Negotiate getbundle vs changegroup based on remote capabilities
-        List<String> caps = client.getCapabilities();
-        boolean supportsGetBundle = caps.contains("getbundle") || caps.stream().anyMatch(c -> c.startsWith("getbundle"));
-
-        byte[] bundleBytes;
-        if (supportsGetBundle) {
-            List<String> bundleCaps = new ArrayList<>();
-            boolean supportsBundle2 = caps.contains("bundle2") || caps.stream().anyMatch(c -> c.startsWith("bundle2"));
-            if (supportsBundle2) {
-                bundleCaps.add("bundle2");
-                bundleCaps.add("HG20");
-                bundleCaps.add("changegroup=01,02,03");
-                bundleCaps.add("compression=GZ,BZ,ZS");
-            }
-            bundleBytes = client.getBundle(common, remoteHeads, bundleCaps);
-        } else {
-            bundleBytes = client.getChangegroup(common);
-        }
-
-        if (bundleBytes == null || bundleBytes.length == 0) {
-            return new ArrayList<>(); // No new changes
-        }
-
-        // Automatically resolve bundle2 container if the payload is packed with HG20 format
-        byte[] changegroupBytes = bundleBytes;
-        String cgVersion = "01";
-        if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
-            org.hg4j.core.Bundle2Parser.ExtractedBundle2 ext = org.hg4j.core.Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
-            changegroupBytes = ext.changegroupBytes;
-            cgVersion = ext.cgVersion;
-        }
-
-        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
-        return applyBundle(bundle);
     }
 
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException {

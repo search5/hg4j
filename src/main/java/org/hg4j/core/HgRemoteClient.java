@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * Client for communicating with remote Mercurial repositories using the HTTP Wire Protocol v1.
  */
-public class HgRemoteClient {
+public class HgRemoteClient implements HgRemoteConnection {
     private final String baseUrl;
     private int connectTimeout = 10000; // 10 seconds
     private int readTimeout = 30000;    // 30 seconds

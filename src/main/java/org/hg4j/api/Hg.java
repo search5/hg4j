@@ -172,4 +172,43 @@ public class Hg {
     public static RemoveCommand remove(org.hg4j.core.HgRepository repository) {
         return new RemoveCommand(repository);
     }
+
+    /**
+     * Returns a command object to compute diffs between revisions.
+     */
+    public static DiffCommand diff(org.hg4j.core.HgRepository repository) {
+        return new DiffCommand(repository);
+    }
+
+    /**
+     * Returns a command object to navigate the file tree of a revision.
+     */
+    public static TreeCommand tree(org.hg4j.core.HgRepository repository) {
+        return new TreeCommand(repository);
+    }
+
+    /**
+     * Helper method to directly compute diff between two revisions.
+     * 
+     * @param repository the local repository
+     * @param oldRevision the older revision index
+     * @param newRevision the newer revision index
+     * @return list of {@link org.hg4j.api.DiffCommand.DiffEntry}
+     * @throws java.io.IOException if I/O fails
+     */
+    public static java.util.List<DiffCommand.DiffEntry> getDiff(org.hg4j.core.HgRepository repository, int oldRevision, int newRevision) throws java.io.IOException {
+        return diff(repository).setOldRevision(oldRevision).setNewRevision(newRevision).call();
+    }
+
+    /**
+     * Helper method to directly retrieve the file tree of a revision.
+     * 
+     * @param repository the local repository
+     * @param revision the revision index
+     * @return list of {@link org.hg4j.api.TreeCommand.TreeEntry}
+     * @throws java.io.IOException if I/O fails
+     */
+    public static java.util.List<TreeCommand.TreeEntry> getTree(org.hg4j.core.HgRepository repository, int revision) throws java.io.IOException {
+        return tree(repository).setRevision(revision).call();
+    }
 }

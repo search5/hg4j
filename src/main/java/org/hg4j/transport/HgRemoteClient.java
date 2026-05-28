@@ -1,4 +1,4 @@
-package org.hg4j.core;
+package org.hg4j.transport;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;

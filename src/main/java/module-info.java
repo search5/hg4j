@@ -1,6 +1,9 @@
 module org.hg4j {
     exports org.hg4j.core;
     exports org.hg4j.api;
+    exports org.hg4j.lib;
+    exports org.hg4j.errors;
+    exports org.hg4j.transport;
     requires java.logging;
     requires org.apache.commons.compress;
     requires com.github.luben.zstd_jni;

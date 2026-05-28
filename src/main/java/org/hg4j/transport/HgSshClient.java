@@ -1,4 +1,4 @@
-package org.hg4j.core;
+package org.hg4j.transport;
 
 import com.jcraft.jsch.*;
 import java.io.*;
@@ -157,7 +157,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     @Override
     public List<String> getHeads() throws IOException {
         ensureConnected();
-        
+
         // Command 'heads' has no arguments in stdio protocol
         out.write("heads\n".getBytes(StandardCharsets.UTF_8));
         out.flush();
@@ -187,7 +187,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
 
         // command name
         out.write("changegroup\n".getBytes(StandardCharsets.UTF_8));
-        
+
         // command arguments: key value pairs followed by a blank line
         if (roots != null && !roots.isEmpty()) {
             String rootsStr = String.join(" ", roots);
@@ -206,25 +206,25 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
         ensureConnected();
 
         out.write("getbundle\n".getBytes(StandardCharsets.UTF_8));
-        
+
         if (common != null && !common.isEmpty()) {
             out.write(("common " + String.join(" ", common) + "\n").getBytes(StandardCharsets.UTF_8));
         } else {
             out.write("common \n".getBytes(StandardCharsets.UTF_8));
         }
-        
+
         if (heads != null && !heads.isEmpty()) {
             out.write(("heads " + String.join(" ", heads) + "\n").getBytes(StandardCharsets.UTF_8));
         }
-        
+
         out.write("cg true\n".getBytes(StandardCharsets.UTF_8));
-        
+
         if (bundleCaps != null && !bundleCaps.isEmpty()) {
             out.write(("bundlecaps " + String.join(" ", bundleCaps) + "\n").getBytes(StandardCharsets.UTF_8));
         } else {
             out.write("bundlecaps bundle2 HG20 changegroup=01,02,03\n".getBytes(StandardCharsets.UTF_8));
         }
-        
+
         out.write("\n".getBytes(StandardCharsets.UTF_8));
         out.flush();
 
@@ -262,7 +262,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         byte[] buf = new byte[4096];
         int count;
-        
+
         // In hg stdio 1.0, binary stream command responses are delivered in chunks
         // Decode chunk by chunk until terminal empty chunk (length 0) is met
         while (true) {

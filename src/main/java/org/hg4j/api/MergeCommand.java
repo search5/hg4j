@@ -205,8 +205,8 @@ public class MergeCommand {
              org.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
             
             Dirstate dirstate = repository.getDirstate();
-            byte[] p1CommitNode = dirstate.getParent1();
-            if (p1CommitNode == null || NodeIdUtil.isAllZero(p1CommitNode)) {
+            org.hg4j.lib.NodeId p1CommitNode = dirstate.getParent1Node();
+            if (p1CommitNode == null || p1CommitNode.isNull()) {
                 throw new IllegalStateException("Cannot merge in an empty repository.");
             }
 
@@ -216,9 +216,9 @@ public class MergeCommand {
             Revlog changelog = repository.getRevlog(clIdx, clDat);
 
             // Resolve target revision index and Node ID
-            int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode);
+            int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
             if (p1Rev == -1) {
-                throw new IOException("Current parent commit not found: " + NodeIdUtil.toHex(p1CommitNode));
+                throw new IOException("Current parent commit not found: " + p1CommitNode.toHex());
             }
 
             int p2Rev = targetRev;
@@ -277,7 +277,7 @@ public class MergeCommand {
                     writeFileToWorkingCopy(path, content, mode);
                     dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
                 }
-                dirstate.setParents(p2CommitNode, new byte[20]);
+                dirstate.setParents(new org.hg4j.lib.NodeId(p2CommitNode), org.hg4j.lib.NodeId.NULL);
                 repository.writeDirstate(dirstate);
                 return new MergeResult(false, Collections.emptyList());
             }
@@ -358,7 +358,7 @@ public class MergeCommand {
             }
 
             // 5. Update dirstate parent headers to P1 and P2
-            dirstate.setParents(p1CommitNode, p2CommitNode);
+            dirstate.setParents(p1CommitNode, new org.hg4j.lib.NodeId(p2CommitNode));
             repository.writeDirstate(dirstate);
 
             return new MergeResult(conflicted, conflicts);

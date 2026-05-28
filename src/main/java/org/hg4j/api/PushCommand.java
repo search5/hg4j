@@ -2,8 +2,8 @@ package org.hg4j.api;
 
 import org.hg4j.core.ChangegroupParser;
 import org.hg4j.core.HgLock;
-import org.hg4j.core.HgRemoteConnection;
-import org.hg4j.core.HgRemoteConnectionFactory;
+import org.hg4j.transport.HgRemoteConnection;
+import org.hg4j.transport.HgRemoteConnectionFactory;
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
 import org.hg4j.core.Revlog;

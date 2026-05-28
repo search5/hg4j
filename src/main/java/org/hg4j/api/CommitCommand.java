@@ -121,25 +121,25 @@ public class CommitCommand {
             }
 
             Dirstate dirstate = repository.getDirstate();
-            byte[] p1CommitNode = dirstate.getParent1();
-            byte[] p2CommitNode = dirstate.getParent2();
+            org.hg4j.lib.NodeId p1CommitNode = dirstate.getParent1Node();
+            org.hg4j.lib.NodeId p2CommitNode = dirstate.getParent2Node();
 
             // 1. Load changelog and find parent commit rev index
             Revlog changelog = repository.getRevlog(clIdx, clDat);
 
             int parent1Rev = -1;
-            if (p1CommitNode != null && !NodeIdUtil.isAllZero(p1CommitNode)) {
-                parent1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode);
+            if (p1CommitNode != null && !p1CommitNode.isNull()) {
+                parent1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
                 if (parent1Rev == -1) {
-                    throw new IOException("Parent commit not found: " + NodeIdUtil.toHex(p1CommitNode));
+                    throw new IOException("Parent commit not found: " + p1CommitNode.toHex());
                 }
             }
 
             int parent2Rev = -1;
-            if (p2CommitNode != null && !NodeIdUtil.isAllZero(p2CommitNode)) {
-                parent2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode);
+            if (p2CommitNode != null && !p2CommitNode.isNull()) {
+                parent2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode.getBytes());
                 if (parent2Rev == -1) {
-                    throw new IOException("Parent 2 commit not found: " + NodeIdUtil.toHex(p2CommitNode));
+                    throw new IOException("Parent 2 commit not found: " + p2CommitNode.toHex());
                 }
             }
 
@@ -398,13 +398,13 @@ public class CommitCommand {
             clSb.append(message);
             byte[] changelogTextBytes = clSb.toString().getBytes(StandardCharsets.UTF_8);
 
-            byte[] p1CommitNodeHash = p1CommitNode != null ? p1CommitNode : new byte[20];
-            byte[] p2CommitNodeHash = p2CommitNode != null ? p2CommitNode : new byte[20];
+            byte[] p1CommitNodeHash = p1CommitNode != null ? p1CommitNode.getBytes() : new byte[20];
+            byte[] p2CommitNodeHash = p2CommitNode != null ? p2CommitNode.getBytes() : new byte[20];
 
             byte[] commitNode = changelog.appendRevision(changelogTextBytes, parent1Rev, parent2Rev, p1CommitNodeHash, p2CommitNodeHash, newCommitRev);
 
             // 6. Update and save Dirstate
-            dirstate.setParents(commitNode, new byte[20]);
+            dirstate.setParents(new org.hg4j.lib.NodeId(commitNode), org.hg4j.lib.NodeId.NULL);
             
             List<String> pathsToChange = new ArrayList<>(dirstate.getEntries().keySet());
             for (String path : pathsToChange) {

@@ -1,6 +1,7 @@
 package org.hg4j.core;
 
 import org.junit.jupiter.api.Test;
+import org.hg4j.transport.HgRemoteClient;
 import java.io.File;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -300,7 +301,7 @@ public class HgRemoteClientTest {
         out.write(new byte[]{0, 0, 0, 0});
         
         // Create unwrapper
-        java.lang.reflect.Constructor<?> constructor = Class.forName("org.hg4j.core.HgRemoteClient$MercurialChunkedInputStream")
+        java.lang.reflect.Constructor<?> constructor = Class.forName("org.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
                 .getDeclaredConstructor(InputStream.class);
         constructor.setAccessible(true);
         InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));

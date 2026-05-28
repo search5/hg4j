@@ -2,7 +2,7 @@ package org.hg4j.api;
 
 import org.hg4j.core.ChangegroupParser;
 import org.hg4j.core.Dirstate;
-import org.hg4j.core.HgRemoteClient;
+import org.hg4j.transport.HgRemoteClient;
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
 import org.hg4j.core.Revlog;

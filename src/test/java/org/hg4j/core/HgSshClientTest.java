@@ -1,6 +1,7 @@
 package org.hg4j.core;
 
 import org.apache.sshd.server.SshServer;
+import org.hg4j.transport.HgSshClient;
 import org.apache.sshd.server.command.Command;
 import org.apache.sshd.server.command.CommandFactory;
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;

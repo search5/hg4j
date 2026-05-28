@@ -44,6 +44,19 @@ public class DirstateTest {
     }
 
     @Test
+    public void testDirstateNodeIdParentMethods() {
+        Dirstate dirstate = new Dirstate();
+        org.hg4j.lib.NodeId n1 = org.hg4j.lib.NodeId.fromHex("abcdef0123456789abcdef0123456789abcdef01");
+        org.hg4j.lib.NodeId n2 = org.hg4j.lib.NodeId.fromHex("1234567890123456789012345678901234567890");
+
+        dirstate.setParents(n1, n2);
+        assertEquals(n1, dirstate.getParent1Node());
+        assertEquals(n2, dirstate.getParent2Node());
+        assertArrayEquals(n1.getBytes(), dirstate.getParent1());
+        assertArrayEquals(n2.getBytes(), dirstate.getParent2());
+    }
+
+    @Test
     public void testAddAndGetEntries() {
         Dirstate dirstate = new Dirstate();
         Dirstate.Entry entry = new Dirstate.Entry('n', 0644, 1500, 162222222);

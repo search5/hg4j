@@ -1,5 +1,6 @@
 package org.hg4j.core;
 
+import org.hg4j.lib.NodeId;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -16,8 +17,8 @@ import java.util.Map;
  */
 public class Dirstate {
 
-    private byte[] parent1 = new byte[20];
-    private byte[] parent2 = new byte[20];
+    private NodeId parent1 = NodeId.NULL;
+    private NodeId parent2 = NodeId.NULL;
     private final Map<String, Entry> entries = new LinkedHashMap<>();
     private boolean isV2 = false;
 
@@ -48,22 +49,31 @@ public class Dirstate {
     }
 
     public byte[] getParent1() {
-        return parent1;
+        return parent1.getBytes();
     }
 
     public byte[] getParent2() {
+        return parent2.getBytes();
+    }
+
+    public NodeId getParent1Node() {
+        return parent1;
+    }
+
+    public NodeId getParent2Node() {
         return parent2;
     }
 
+    public void setParents(NodeId p1, NodeId p2) {
+        if (p1 == null || p2 == null) {
+            throw new IllegalArgumentException("Parents cannot be null");
+        }
+        this.parent1 = p1;
+        this.parent2 = p2;
+    }
+
     public void setParents(byte[] p1, byte[] p2) {
-        if (p1 == null || p1.length != 20) {
-            throw new IllegalArgumentException("Parent 1 must be exactly 20 bytes");
-        }
-        if (p2 == null || p2.length != 20) {
-            throw new IllegalArgumentException("Parent 2 must be exactly 20 bytes");
-        }
-        this.parent1 = Arrays.copyOf(p1, 20);
-        this.parent2 = Arrays.copyOf(p2, 20);
+        setParents(new NodeId(p1), new NodeId(p2));
     }
 
     public Map<String, Entry> getEntries() {
@@ -88,8 +98,12 @@ public class Dirstate {
         }
 
         ByteBuffer buf = ByteBuffer.wrap(bytes);
-        buf.get(parent1);
-        buf.get(parent2);
+        byte[] p1 = new byte[20];
+        byte[] p2 = new byte[20];
+        buf.get(p1);
+        buf.get(p2);
+        this.parent1 = new NodeId(p1);
+        this.parent2 = new NodeId(p2);
 
         entries.clear();
         while (buf.hasRemaining()) {
@@ -163,8 +177,8 @@ public class Dirstate {
                 this.isV2 = true;
                 DirstateV2Parser parser = new DirstateV2Parser();
                 Dirstate parsed = parser.parse(dataBytes);
-                this.parent1 = p1;
-                this.parent2 = p2;
+                this.parent1 = new NodeId(p1);
+                this.parent2 = new NodeId(p2);
                 this.entries.clear();
                 this.entries.putAll(parsed.getEntries());
                 return;
@@ -178,8 +192,8 @@ public class Dirstate {
     public byte[] serialize() {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
-            out.write(parent1);
-            out.write(parent2);
+            out.write(parent1.getBytes());
+            out.write(parent2.getBytes());
             ByteBuffer buf = ByteBuffer.allocate(17);
             for (Map.Entry<String, Entry> item : entries.entrySet()) {
                 byte[] pathBytes = item.getKey().getBytes(StandardCharsets.UTF_8);
@@ -249,12 +263,12 @@ public class Dirstate {
 
             // P1 (32바이트, 20바이트 해시 + 12바이트 0패딩)
             byte[] p1_32 = new byte[32];
-            System.arraycopy(parent1, 0, p1_32, 0, 20);
+            System.arraycopy(parent1.getBytes(), 0, p1_32, 0, 20);
             docketBuf.put(p1_32);
 
             // P2 (32바이트, 20바이트 해시 + 12바이트 0패딩)
             byte[] p2_32 = new byte[32];
-            System.arraycopy(parent2, 0, p2_32, 0, 20);
+            System.arraycopy(parent2.getBytes(), 0, p2_32, 0, 20);
             docketBuf.put(p2_32);
 
             // Tree Metadata (44바이트): root_nodes (start=0 [4B] + count=rootCount [4B]) + nodes_with_entry_count [4B] + nodes_with_copy_source_count [4B] + 28바이트 0패딩

@@ -5,6 +5,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -197,18 +199,32 @@ public class DirstateTest {
     }
 
     @Test
-    public void testDirstateV2Detection() throws IOException {
+    public void testDirstateV2Detection(@TempDir Path tempDir) throws IOException {
+        File hgDir = tempDir.resolve(".hg").toFile();
+        hgDir.mkdirs();
+        File dirstateFile = new File(hgDir, "dirstate");
+
+        // Write V2 data file
+        File dataFile = new File(hgDir, "dirstate.d.123456");
+        Files.write(dataFile.toPath(), new byte[0]);
+
+        // Write V2 Docket file (Strict 122+ bytes)
+        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
+        ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
+        buf.put(v2Magic);
+        buf.put(new byte[32]); // p1
+        buf.put(new byte[32]); // p2
+        buf.put(new byte[44]); // tree metadata
+        buf.putInt(0); // dataLength = 0
+        buf.put((byte) uidBytes.length);
+        buf.put(uidBytes);
+        Files.write(dirstateFile.toPath(), buf.array());
+
         Dirstate dirstate = new Dirstate();
-        byte[] v2Bytes = new byte[40];
-        System.arraycopy("# dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8), 0, v2Bytes, 0, 13);
-        dirstate.read(v2Bytes);
+        dirstate.read(dirstateFile);
         assertTrue(dirstate.isV2());
-        
-        byte[] v2AltBytes = new byte[40];
-        System.arraycopy("dirstate2".getBytes(java.nio.charset.StandardCharsets.UTF_8), 0, v2AltBytes, 0, 9);
-        Dirstate dirstateAlt = new Dirstate();
-        dirstateAlt.read(v2AltBytes);
-        assertTrue(dirstateAlt.isV2());
     }
 
     @Test
@@ -218,21 +234,37 @@ public class DirstateTest {
         repository.getHgDir().mkdirs();
         repository.getStoreDir().mkdirs();
         
-        // Write dirstate file with v2 magic
         File dirstateFile = new File(repository.getHgDir(), "dirstate");
-        byte[] v2Header = new byte[40];
-        System.arraycopy("# dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8), 0, v2Header, 0, 13);
-        Files.write(dirstateFile.toPath(), v2Header);
+        
+        // Write V2 data file
+        File dataFile = new File(repository.getHgDir(), "dirstate.d.123456");
+        Files.write(dataFile.toPath(), new byte[0]);
+
+        // Write V2 Docket file (Strict 122+ bytes)
+        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
+        ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
+        buf.put(v2Magic);
+        buf.put(new byte[32]); // p1
+        buf.put(new byte[32]); // p2
+        buf.put(new byte[44]); // tree metadata
+        buf.putInt(0); // dataLength = 0
+        buf.put((byte) uidBytes.length);
+        buf.put(uidBytes);
+        Files.write(dirstateFile.toPath(), buf.array());
         
         // When reading, as there is no changelog, it should reconstruct with zero parents
         Dirstate d = repository.getDirstate();
-        assertFalse(d.isV2()); // rebuilt to v1
+        assertTrue(d.isV2()); // rebuilt to v2 (format preserved)
         assertArrayEquals(new byte[20], d.getParent1());
         assertArrayEquals(new byte[20], d.getParent2());
     }
 
     @Test
-    public void testDirstateV2Integration() throws Exception {
+    public void testDirstateV2Integration(@TempDir Path tempDir) throws Exception {
+        File dirstateFile = tempDir.resolve("dirstate").toFile();
+
         Dirstate original = new Dirstate();
         original.setV2(true);
         assertTrue(original.isV2());
@@ -243,16 +275,16 @@ public class DirstateTest {
         p2[0] = 0x2E;
         original.setParents(p1, p2);
 
-        original.addEntry("file1.txt", new Dirstate.Entry('n', 0644, 50, 1000L));
-        original.addEntry("dir/file2.txt", new Dirstate.Entry('a', 0755, 120, 2000L));
+        original.addEntry("file1.txt", new Dirstate.Entry('n', 0100644, 50, 1000L));
+        original.addEntry("dir/file2.txt", new Dirstate.Entry('a', 0100755, 120, 2000L));
 
-        // 1. Serialize using V2 Serializer via Facade
-        byte[] v2Bytes = original.serialize();
-        assertNotNull(v2Bytes);
+        // 1. Write using Dirstate.write which splits docket and data file
+        original.write(dirstateFile);
+        assertTrue(dirstateFile.exists());
 
-        // 2. Deserialize using V2 Parser via Facade
+        // 2. Deserialize using Dirstate.read which loads both docket and datafile
         Dirstate decoded = new Dirstate();
-        decoded.read(v2Bytes);
+        decoded.read(dirstateFile);
 
         assertTrue(decoded.isV2());
         assertArrayEquals(p1, decoded.getParent1());
@@ -262,12 +294,109 @@ public class DirstateTest {
         Dirstate.Entry e1 = decoded.getEntries().get("file1.txt");
         assertNotNull(e1);
         assertEquals('n', e1.getState());
-        assertEquals(0644, e1.getMode());
+        assertEquals(0100644, e1.getMode());
         assertEquals(50, e1.getSize());
         assertEquals(1000L, e1.getTime());
 
         // 3. Exception coverages
-        assertThrows(IOException.class, () -> decoded.read((byte[]) null));
-        assertThrows(IOException.class, () -> decoded.read(new byte[5])); // Too short
+        assertThrows(IOException.class, () -> decoded.read((File) null));
+    }
+
+    @Test
+    public void testDirstateV2ReadDataFileNotFound(@TempDir Path tempDir) throws IOException {
+        File dirstateFile = tempDir.resolve("dirstate").toFile();
+        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] uidBytes = "missing_uid".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
+        ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
+        buf.put(v2Magic);
+        buf.put(new byte[32]); // p1
+        buf.put(new byte[32]); // p2
+        buf.put(new byte[44]); // metadata
+        buf.putInt(100); // dataLength = 100
+        buf.put((byte) uidBytes.length);
+        buf.put(uidBytes);
+        Files.write(dirstateFile.toPath(), buf.array());
+
+        Dirstate dirstate = new Dirstate();
+        assertThrows(IOException.class, () -> dirstate.read(dirstateFile));
+    }
+
+    @Test
+    public void testDirstateV2ReadLengthMismatch(@TempDir Path tempDir) throws IOException {
+        File dirstateFile = tempDir.resolve("dirstate").toFile();
+        File dataFile = tempDir.resolve("dirstate.d.bad_len").toFile();
+        Files.write(dataFile.toPath(), new byte[50]); // actual len is 50
+
+        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] uidBytes = "bad_len".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
+        ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
+        buf.put(v2Magic);
+        buf.put(new byte[32]); // p1
+        buf.put(new byte[32]); // p2
+        buf.put(new byte[44]); // metadata
+        buf.putInt(100); // dataLength = 100 (but actual is 50)
+        buf.put((byte) uidBytes.length);
+        buf.put(uidBytes);
+        Files.write(dirstateFile.toPath(), buf.array());
+
+        Dirstate dirstate = new Dirstate();
+        assertThrows(IOException.class, () -> dirstate.read(dirstateFile));
+    }
+
+    @Test
+    public void testDirstateV2WriteOldUidCleanup(@TempDir Path tempDir) throws IOException {
+        File dirstateFile = tempDir.resolve("dirstate").toFile();
+
+        // 1. First V2 write (will create first uid datafile)
+        Dirstate d1 = new Dirstate();
+        d1.setV2(true);
+        d1.addEntry("file1.txt", new Dirstate.Entry('n', 0644, 10, 1000L));
+        d1.write(dirstateFile);
+
+        // Verify first uid file exists
+        byte[] docketBytes = Files.readAllBytes(dirstateFile.toPath());
+        ByteBuffer docketBuf = ByteBuffer.wrap(docketBytes).order(ByteOrder.BIG_ENDIAN);
+        int uidSize = docketBuf.get(124) & 0xFF;
+        byte[] uidBytes = new byte[uidSize];
+        docketBuf.position(125);
+        docketBuf.get(uidBytes);
+        String oldUid = new String(uidBytes, java.nio.charset.StandardCharsets.US_ASCII);
+        File oldDataFile = new File(dirstateFile.getParentFile(), "dirstate.d." + oldUid);
+        assertTrue(oldDataFile.exists());
+
+        // 2. Second V2 write (will create second uid datafile and clean up the old one)
+        Dirstate d2 = new Dirstate();
+        d2.setV2(true);
+        d2.addEntry("file1.txt", new Dirstate.Entry('n', 0644, 10, 2000L)); // modified
+        d2.write(dirstateFile);
+
+        // Verify new uid file exists and old uid file is cleaned up!
+        byte[] docketBytes2 = Files.readAllBytes(dirstateFile.toPath());
+        ByteBuffer docketBuf2 = ByteBuffer.wrap(docketBytes2).order(ByteOrder.BIG_ENDIAN);
+        int uidSize2 = docketBuf2.get(124) & 0xFF;
+        byte[] uidBytes2 = new byte[uidSize2];
+        docketBuf2.position(125);
+        docketBuf2.get(uidBytes2);
+        String newUid = new String(uidBytes2, java.nio.charset.StandardCharsets.US_ASCII);
+        File newDataFile = new File(dirstateFile.getParentFile(), "dirstate.d." + newUid);
+
+        assertNotEquals(oldUid, newUid);
+        assertTrue(newDataFile.exists());
+        assertFalse(oldDataFile.exists()); // CLEANED UP!
+    }
+
+    @Test
+    public void testDirstateV2WriteWithCorruptedOldDocket(@TempDir Path tempDir) throws IOException {
+        File dirstateFile = tempDir.resolve("dirstate").toFile();
+        // Write invalid corrupted bytes to docket
+        Files.write(dirstateFile.toPath(), new byte[]{1, 2, 3, 4});
+
+        Dirstate d = new Dirstate();
+        d.setV2(true);
+        d.addEntry("file1.txt", new Dirstate.Entry('n', 0644, 10, 1000L));
+        // Should write atomic without crashing, ignoring corrupted docket
+        assertDoesNotThrow(() -> d.write(dirstateFile));
     }
 }

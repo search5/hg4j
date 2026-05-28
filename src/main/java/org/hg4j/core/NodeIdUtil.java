@@ -1,6 +1,5 @@
 package org.hg4j.core;
 
-import java.util.Arrays;
 
 /**
  * Common utility methods for handling Mercurial NodeIDs and Hexadecimal representations.
@@ -157,8 +156,8 @@ public final class NodeIdUtil {
         String path = onDiskPath.toString();
         byte[] pathBytes = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
-        // Long path optimization: Mercurial hybrid/dh encoding for store paths exceeding 120 bytes
-        if (pathBytes.length > 120) {
+        // Long path optimization: Mercurial hybrid/dh encoding for store paths exceeding 120 bytes (including 'store/' prefix, so pathBytes.length + 6 > 120)
+        if (pathBytes.length + 6 > 120) {
             String subPath = path.startsWith("data/") ? path.substring(5) : path;
             int lastSlash = subPath.lastIndexOf('/');
             
@@ -168,8 +167,8 @@ public final class NodeIdUtil {
             try {
                 java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
                 
-                // If the overall path exceeds 255 bytes or the filename is extremely long, do full dh hash encoding
-                if (pathBytes.length > 255 || fileName.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 100) {
+                // If the overall path exceeds 255 bytes, the filename is extremely long, or there is no directory component (dirPath is empty)
+                if (pathBytes.length + 6 > 255 || fileName.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 100 || dirPath.isEmpty()) {
                     byte[] fullHashBytes = md.digest(subPath.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     String fullHash = toHex(fullHashBytes);
                     
@@ -178,7 +177,7 @@ public final class NodeIdUtil {
                         suffix = suffix.substring(suffix.length() - 30);
                     }
                     return "dh/" + fullHash + "_" + suffix;
-                } else if (!dirPath.isEmpty()) {
+                } else {
                     // Hybrid encoding: shorten only the directory part
                     byte[] dirHashBytes = md.digest(dirPath.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     String dirHash = toHex(dirHashBytes);

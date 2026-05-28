@@ -42,12 +42,14 @@ public class HgRepository implements Repository {
         File dirstateFile = new File(hgDir, "dirstate");
         Dirstate dirstate = new Dirstate();
         if (dirstateFile.exists()) {
+            boolean needsRebuild = false;
             try {
                 dirstate.read(dirstateFile);
             } catch (Exception e) {
-                dirstate.setV2(true);
+                LOGGER.log(Level.WARNING, "Failed to read dirstate file, attempting rebuild", e);
+                needsRebuild = true;
             }
-            if (dirstate.isV2() && dirstate.getEntries().isEmpty()) {
+            if (needsRebuild || (dirstate.isV2() && dirstate.getEntries().isEmpty())) {
                 rebuildDirstateFromManifest(dirstate);
             }
         }
@@ -105,8 +107,6 @@ public class HgRepository implements Repository {
             }
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Failed to dynamically rebuild dirstate from manifest", e);
-        } finally {
-            dirstate.setV2(false);
         }
     }
 

@@ -1,6 +1,5 @@
 package org.hg4j.core;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -100,11 +99,8 @@ public class Bundle2Parser {
             String partName = new String(headerBlock, cursor, nameSize, java.nio.charset.StandardCharsets.US_ASCII);
             cursor += nameSize;
             
-            // Part ID (4 bytes)
-            int partId = ((headerBlock[cursor++] & 0xFF) << 24) |
-                         ((headerBlock[cursor++] & 0xFF) << 16) |
-                         ((headerBlock[cursor++] & 0xFF) << 8)  |
-                         (headerBlock[cursor++] & 0xFF);
+            // Part ID (4 bytes) - Skip
+            cursor += 4;
 
             // Part parameters counts
             int mandatoryCount = headerBlock[cursor++] & 0xFF;

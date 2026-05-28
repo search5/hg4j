@@ -6,6 +6,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -50,10 +52,30 @@ public class HgRepositoryTest {
 
         // 1. Dirstate file has v2 magic, but changelog doesn't exist.
         File dirstateFile = new File(repo.getHgDir(), "dirstate");
-        Files.write(dirstateFile.toPath(), "# dirstate-v2\n".getBytes());
+        
+        // Write V2 data file
+        File dataFile = new File(repo.getHgDir(), "dirstate.d.123456");
+        byte[] v2DataHeader = new byte[12];
+        v2DataHeader[7] = 12; // nodesOffset = 12
+        v2DataHeader[11] = 12; // dataOffset = 12
+        Files.write(dataFile.toPath(), v2DataHeader);
+
+        // Write V2 Docket file (Strict 122+ bytes)
+        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
+        ByteBuffer buf = ByteBuffer.allocate(docketSize).order(java.nio.ByteOrder.BIG_ENDIAN);
+        buf.put(v2Magic);
+        buf.put(new byte[32]); // p1
+        buf.put(new byte[32]); // p2
+        buf.put(new byte[44]); // tree metadata
+        buf.putInt(12); // dataLength = 12
+        buf.put((byte) uidBytes.length);
+        buf.put(uidBytes);
+        Files.write(dirstateFile.toPath(), buf.array());
 
         Dirstate dirstate = repo.getDirstate();
-        assertFalse(dirstate.isV2(), "Should have self-healed and set v2 to false");
+        assertTrue(dirstate.isV2(), "Should preserve original v2 format during self-healing");
         assertArrayEquals(new byte[20], dirstate.getParent1());
 
         // 2. Dirstate file has v2 magic, changelog exists but is empty.
@@ -63,7 +85,7 @@ public class HgRepositoryTest {
         Files.write(clIdx.toPath(), new byte[0]);
 
         Dirstate dirstate2 = repo.getDirstate();
-        assertFalse(dirstate2.isV2());
+        assertTrue(dirstate2.isV2());
         assertArrayEquals(new byte[20], dirstate2.getParent1());
     }
 

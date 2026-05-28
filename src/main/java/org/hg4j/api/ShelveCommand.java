@@ -6,16 +6,12 @@ import org.hg4j.core.HgLock;
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
 import org.hg4j.core.Revlog;
-import org.hg4j.core.SafeFileIO;
 
-import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.DataInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -418,6 +414,12 @@ public class ShelveCommand {
         String shelveName = stateLines.get(1).trim();
         String p1Hex = stateLines.get(2).trim();
         String p2Hex = stateLines.get(3).trim();
+
+        if (!shelveName.equals(name)) {
+            throw new IOException("Cannot unshelve: Shelve name mismatch. State file has '" + shelveName 
+                + "' but expected '" + name + "'");
+        }
+
         int shelvedFilesCount = Integer.parseInt(stateLines.get(4).trim());
 
         Map<String, Character> fileStates = new HashMap<>();
@@ -438,6 +440,18 @@ public class ShelveCommand {
              HgLock storeLock = repository.lockStore()) {
 
             Dirstate dirstate = repository.getDirstate();
+
+            // Validate parent hash consistency (W1)
+            String currentP1Hex = NodeIdUtil.toHex(dirstate.getParent1());
+            if (!currentP1Hex.equalsIgnoreCase(p1Hex)) {
+                throw new IOException("Cannot unshelve: Working directory parent (" + currentP1Hex 
+                    + ") does not match shelved parent (" + p1Hex + ")");
+            }
+            String currentP2Hex = NodeIdUtil.toHex(dirstate.getParent2());
+            if (!currentP2Hex.equalsIgnoreCase(p2Hex)) {
+                throw new IOException("Cannot unshelve: Working directory parent2 (" + currentP2Hex 
+                    + ") does not match shelved parent2 (" + p2Hex + ")");
+            }
 
             // Restore files from bundle
             for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {

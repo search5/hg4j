@@ -23,23 +23,19 @@ public class DirstateV2ParserTest {
 
         // 테스트용 계층형 파일 엔트리 준비
         Map<String, Dirstate.Entry> originalEntries = new HashMap<>();
-        originalEntries.put("a.txt", new Dirstate.Entry('n', 0644, 100, 1680000000L));
-        originalEntries.put("src/b.txt", new Dirstate.Entry('a', 0755, 200, 1680000001L));
-        originalEntries.put("src/main/c.txt", new Dirstate.Entry('m', 0644, 300, 1680000002L));
+        originalEntries.put("a.txt", new Dirstate.Entry('n', 0100644, 100, 1680000000L));
+        originalEntries.put("src/b.txt", new Dirstate.Entry('a', 0100755, 200, 1680000001L));
+        originalEntries.put("src/main/c.txt", new Dirstate.Entry('m', 0100644, 300, 1680000002L));
         originalEntries.put("doc/readme.md", new Dirstate.Entry('r', 0, 0, 0)); // removed file
 
         // When: DirstateV2Serializer를 통해 dirstate-v2 바이너리로 직렬화
-        byte[] v2Bytes = DirstateV2Serializer.serialize(parent1, parent2, originalEntries);
+        byte[] v2Bytes = DirstateV2Serializer.serialize(originalEntries);
         assertNotNull(v2Bytes);
-        assertTrue(v2Bytes.length > 8 + 40 + 12); // magic + parents + header보다 커야 함
+        assertTrue(v2Bytes.length > 12); // header보다 커야 함
 
         // When: DirstateV2Parser를 통해 바이너리를 파싱하여 디코딩
         DirstateV2Parser parser = new DirstateV2Parser();
         Dirstate decoded = parser.parse(v2Bytes);
-
-        // Then: 부모 해시가 완전히 복원되었는지 단언
-        assertArrayEquals(parent1, decoded.getParent1());
-        assertArrayEquals(parent2, decoded.getParent2());
 
         // Then: 엔트리 맵이 누락되거나 손상되지 않고 완전히 일치하는지 단언
         Map<String, Dirstate.Entry> decodedEntries = decoded.getEntries();

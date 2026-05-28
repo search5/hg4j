@@ -28,7 +28,6 @@ public class RebaseCommand {
     private byte[] targetNode;
 
     private static class BackupCommit {
-        int originalRev;
         byte[] originalNode;
         byte[] parent1Node;
         byte[] parent2Node;
@@ -48,7 +47,6 @@ public class RebaseCommand {
         byte[] node;
         byte[] p1Node;
         byte[] p2Node;
-        int linkRev;
         byte[] rawContent;
     }
 
@@ -239,7 +237,6 @@ public class RebaseCommand {
 
     private BackupCommit backupRevision(int rev, Revlog changelog) throws IOException {
         BackupCommit backup = new BackupCommit();
-        backup.originalRev = rev;
         
         Revlog.IndexRecord revRec = changelog.getIndexRecord(rev);
         backup.originalNode = revRec.getNodeId();
@@ -354,7 +351,6 @@ public class RebaseCommand {
                 
                 FileBackupInfo fBackup = new FileBackupInfo();
                 fBackup.node = flRec.getNodeId();
-                fBackup.linkRev = flRec.getLinkRev();
                 
                 if (flRec.getParent1() != -1) {
                     fBackup.p1Node = filelog.getIndexRecord(flRec.getParent1()).getNodeId();

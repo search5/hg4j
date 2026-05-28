@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Arrays;
@@ -82,38 +83,6 @@ public class Dirstate {
             throw new IOException("Invalid dirstate file: content cannot be null");
         }
 
-        // dirstate-v2 magic bytes \uac10\uc9c0 (Mercurial 6.0+ rust \uad6c\ud604\uc758 \uc2e4\uc81c \ubc14\uc774\ub108\ub9ac magic)
-        // magic: \xd8\x1c\x8c\xf5\xfe\x73\x0f\x14 (8\ubc14\uc774\ud2b8)
-        if (bytes.length >= 8) {
-            byte[] v2Magic = {(byte)0xd8, (byte)0x1c, (byte)0x8c, (byte)0xf5,
-                              (byte)0xfe, (byte)0x73, (byte)0x0f, (byte)0x14};
-            boolean isV2Magic = true;
-            for (int i = 0; i < v2Magic.length; i++) {
-                if (bytes[i] != v2Magic[i]) {
-                    isV2Magic = false;
-                    break;
-                }
-            }
-            if (isV2Magic) {
-                this.isV2 = true;
-                DirstateV2Parser parser = new DirstateV2Parser();
-                Dirstate parsed = parser.parse(bytes);
-                this.parent1 = parsed.getParent1();
-                this.parent2 = parsed.getParent2();
-                this.entries.clear();
-                this.entries.putAll(parsed.getEntries());
-                return;
-            }
-        }
-        // \ubb38\uc790\uc5f4 \uae30\ubc18 \ud3f4\ubc31 \uac10\uc9c0 (\uc77c\ubd80 \ube44\ud45c\uc900 \uc2e4\ud5d8\uc801 \uad6c\ud604 \ub300\ube44)
-        if (bytes.length >= 9) {
-            String magic = new String(bytes, 0, Math.min(bytes.length, 30), StandardCharsets.UTF_8);
-            if (magic.startsWith("dirstate-v2") || magic.startsWith("# dirstate-v2") || magic.startsWith("dirstate2")) {
-                this.isV2 = true;
-                return;
-            }
-        }
-
         if (bytes.length < 40) {
             throw new IOException("Invalid dirstate file: must be at least 40 bytes");
         }
@@ -149,17 +118,64 @@ public class Dirstate {
             throw new IOException("Dirstate file does not exist");
         }
         byte[] bytes = Files.readAllBytes(file.toPath());
+
+        // dirstate-v2 docket magic bytes 감지 (정식 12바이트 스펙)
+        if (bytes.length >= 12) {
+            String magicStr = new String(bytes, 0, 12, StandardCharsets.US_ASCII);
+            if ("dirstate-v2\n".equals(magicStr)) {
+                ByteBuffer docketBuf = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+
+                // parents (오프셋 12에서 32바이트, 오프셋 44에서 32바이트)
+                byte[] p1_32 = new byte[32];
+                byte[] p2_32 = new byte[32];
+                docketBuf.position(12);
+                docketBuf.get(p1_32);
+                docketBuf.get(p2_32);
+
+                // parents의 유효 노드 ID는 앞 20바이트임
+                byte[] p1 = new byte[20];
+                byte[] p2 = new byte[20];
+                System.arraycopy(p1_32, 0, p1, 0, 20);
+                System.arraycopy(p2_32, 0, p2, 0, 20);
+
+                // data_length (오프셋 120에서 4바이트 int)
+                int dataLength = docketBuf.getInt(120);
+
+                // uid_size (오프셋 124에서 1바이트)
+                int uidSize = docketBuf.get(124) & 0xFF;
+
+                // uid (오프셋 125부터 uidSize 바이트)
+                byte[] uidBytes = new byte[uidSize];
+                docketBuf.position(125);
+                docketBuf.get(uidBytes);
+                String uid = new String(uidBytes, StandardCharsets.US_ASCII);
+
+                // .hg/dirstate.d.<uid> 데이터 파일 로드
+                File dataFile = new File(file.getParentFile(), "dirstate.d." + uid);
+                if (!dataFile.exists()) {
+                    throw new IOException("Dirstate-v2 data file not found for uid: " + uid);
+                }
+                byte[] dataBytes = Files.readAllBytes(dataFile.toPath());
+                if (dataBytes.length != dataLength) {
+                    throw new IOException("Dirstate-v2 data file length mismatch. Expected " + dataLength + " but got " + dataBytes.length);
+                }
+
+                this.isV2 = true;
+                DirstateV2Parser parser = new DirstateV2Parser();
+                Dirstate parsed = parser.parse(dataBytes);
+                this.parent1 = p1;
+                this.parent2 = p2;
+                this.entries.clear();
+                this.entries.putAll(parsed.getEntries());
+                return;
+            }
+        }
+
+        // Fallback to v1 parse
         read(bytes);
     }
 
     public byte[] serialize() {
-        if (isV2) {
-            try {
-                return DirstateV2Serializer.serialize(parent1, parent2, entries);
-            } catch (IOException e) {
-                throw new RuntimeException("dirstate-v2 serialization failed", e);
-            }
-        }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
             out.write(parent1);
@@ -188,6 +204,101 @@ public class Dirstate {
         if (file == null) {
             throw new IllegalArgumentException("Target file cannot be null");
         }
+
+        if (isV2) {
+            // W-LEAK: 쓰기 전에 기존의 docket 파일(`.hg/dirstate`)이 존재한다면,
+            // 그것을 읽어 old uid를 확인해야 한다!
+            String oldUid = null;
+            if (file.exists()) {
+                try {
+                    byte[] oldBytes = Files.readAllBytes(file.toPath());
+                    if (oldBytes.length >= 12) {
+                        String oldMagic = new String(oldBytes, 0, 12, StandardCharsets.US_ASCII);
+                        if ("dirstate-v2\n".equals(oldMagic)) {
+                            ByteBuffer oldBuf = ByteBuffer.wrap(oldBytes).order(ByteOrder.BIG_ENDIAN);
+                            int oldUidSize = oldBuf.get(124) & 0xFF;
+                            byte[] oldUidBytes = new byte[oldUidSize];
+                            oldBuf.position(125);
+                            oldBuf.get(oldUidBytes);
+                            oldUid = new String(oldUidBytes, StandardCharsets.US_ASCII);
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // 예전 파일이 손상되었거나 파싱할 수 없는 상태라면 무시
+                }
+            }
+
+            // 1. 데이터 파일 내용 직렬화
+            byte[] dataBytes = DirstateV2Serializer.serialize(entries);
+
+            // 2. 고유 UID 생성 (임의의 UUID 형태)
+            String uid = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+
+            // 3. 데이터 파일 .hg/dirstate.d.<uid> 쓰기
+            File dataFile = new File(file.getParentFile(), "dirstate.d." + uid);
+            SafeFileIO.writeAtomic(dataFile, dataBytes);
+
+            // 4. Docket 바이트 조립
+            byte[] uidBytes = uid.getBytes(StandardCharsets.US_ASCII);
+            int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
+            ByteBuffer docketBuf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
+
+            // Magic (12바이트): "dirstate-v2\n"
+            byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
+            docketBuf.put(v2Magic);
+
+            // P1 (32바이트, 20바이트 해시 + 12바이트 0패딩)
+            byte[] p1_32 = new byte[32];
+            System.arraycopy(parent1, 0, p1_32, 0, 20);
+            docketBuf.put(p1_32);
+
+            // P2 (32바이트, 20바이트 해시 + 12바이트 0패딩)
+            byte[] p2_32 = new byte[32];
+            System.arraycopy(parent2, 0, p2_32, 0, 20);
+            docketBuf.put(p2_32);
+
+            // Tree Metadata (44바이트): root_nodes (start=0 [4B] + count=rootCount [4B]) + nodes_with_entry_count [4B] + nodes_with_copy_source_count [4B] + 28바이트 0패딩
+            java.util.Set<String> rootSegments = new java.util.HashSet<>();
+            for (String path : entries.keySet()) {
+                int slashIdx = path.indexOf('/');
+                if (slashIdx == -1) {
+                    rootSegments.add(path);
+                } else {
+                    rootSegments.add(path.substring(0, slashIdx));
+                }
+            }
+            int rootCount = rootSegments.size();
+
+            byte[] treeMetadataBytes = new byte[44];
+            ByteBuffer metaBuf = ByteBuffer.wrap(treeMetadataBytes).order(ByteOrder.BIG_ENDIAN);
+            metaBuf.putInt(0); // root_nodes children_start
+            metaBuf.putInt(rootCount); // root_nodes children_count
+            metaBuf.putInt(entries.size()); // nodes_with_entry_count
+            metaBuf.putInt(0); // nodes_with_copy_source_count
+
+            docketBuf.put(treeMetadataBytes);
+
+            // Data length (4바이트 int)
+            docketBuf.putInt(dataBytes.length);
+
+            // UID Size (1바이트)
+            docketBuf.put((byte) uidBytes.length);
+
+            // UID (가변)
+            docketBuf.put(uidBytes);
+
+            // 5. Docket 파일 쓰기
+            SafeFileIO.writeAtomic(file, docketBuf.array());
+
+            // 6. W-LEAK: 예전 데이터 파일 삭제
+            if (oldUid != null && !oldUid.equals(uid)) {
+                File oldDataFile = new File(file.getParentFile(), "dirstate.d." + oldUid);
+                Files.deleteIfExists(oldDataFile.toPath());
+            }
+            return;
+        }
+
+        // v1 쓰기
         byte[] bytes = serialize();
         SafeFileIO.writeAtomic(file, bytes);
     }

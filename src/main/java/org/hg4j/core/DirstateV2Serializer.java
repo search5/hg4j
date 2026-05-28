@@ -12,9 +12,6 @@ import java.util.*;
  */
 public class DirstateV2Serializer {
 
-    private static final byte[] MAGIC = {(byte) 0xd8, (byte) 0x1c, (byte) 0x8c, (byte) 0xf5,
-                                         (byte) 0xfe, (byte) 0x73, (byte) 0x0f, (byte) 0x14};
-
     private static class TreeNode {
         final String name;
         Dirstate.Entry entry;
@@ -23,15 +20,34 @@ public class DirstateV2Serializer {
         TreeNode(String name) {
             this.name = name;
         }
+
+        int getDescendantsWithEntryCount() {
+            int count = 0;
+            for (TreeNode child : children.values()) {
+                if (child.entry != null) {
+                    count++;
+                }
+                count += child.getDescendantsWithEntryCount();
+            }
+            return count;
+        }
+
+        int getTrackedDescendantsCount() {
+            int count = 0;
+            for (TreeNode child : children.values()) {
+                if (child.entry != null && child.entry.getState() != 'r') {
+                    count++;
+                }
+                count += child.getTrackedDescendantsCount();
+            }
+            return count;
+        }
     }
 
     /**
      * Serializes memory dirstate representation into v2 binary format.
      */
-    public static byte[] serialize(byte[] parent1, byte[] parent2, Map<String, Dirstate.Entry> entries) throws IOException {
-        if (parent1 == null || parent1.length != 20 || parent2 == null || parent2.length != 20) {
-            throw new IllegalArgumentException("Parents must be exactly 20 bytes");
-        }
+    public static byte[] serialize(Map<String, Dirstate.Entry> entries) throws IOException {
 
         // 1. Build directory hierarchical tree structure
         Map<String, TreeNode> roots = new LinkedHashMap<>();
@@ -55,37 +71,33 @@ public class DirstateV2Serializer {
         }
 
         // 2. Continuous BFS serialization layout mapping
-        // Package children into flat list sequentially so children starts align side by side
         List<TreeNode> flatNodes = new ArrayList<>();
         List<TreeNode> rootList = new ArrayList<>(roots.values());
         
-        // Add root nodes first
         flatNodes.addAll(rootList);
 
         Queue<TreeNode> queue = new LinkedList<>(rootList);
-        int currentChildIndex = flatNodes.size();
-
-        Map<TreeNode, Integer> nodeToIndexMap = new HashMap<>();
-        for (int i = 0; i < flatNodes.size(); i++) {
-            nodeToIndexMap.put(flatNodes.get(i), i);
-        }
 
         Map<TreeNode, Integer> childrenStartMap = new HashMap<>();
         Map<TreeNode, Integer> childrenCountMap = new HashMap<>();
+        Map<TreeNode, String> fullPathMap = new HashMap<>();
+
+        for (TreeNode root : rootList) {
+            fullPathMap.put(root, root.name);
+        }
 
         while (!queue.isEmpty()) {
             TreeNode parent = queue.poll();
             if (!parent.children.isEmpty()) {
                 List<TreeNode> childList = new ArrayList<>(parent.children.values());
-                childrenStartMap.put(parent, currentChildIndex);
+                childrenStartMap.put(parent, flatNodes.size() * DirstateV2Node.NODE_SIZE); // bytes offset to child nodes
                 childrenCountMap.put(parent, childList.size());
 
                 for (TreeNode child : childList) {
+                    fullPathMap.put(child, fullPathMap.get(parent) + "/" + child.name);
                     flatNodes.add(child);
-                    nodeToIndexMap.put(child, flatNodes.size() - 1);
                     queue.offer(child);
                 }
-                currentChildIndex += childList.size();
             } else {
                 childrenStartMap.put(parent, 0);
                 childrenCountMap.put(parent, 0);
@@ -100,7 +112,11 @@ public class DirstateV2Serializer {
         Map<TreeNode, Short> pathLenMap = new HashMap<>();
 
         for (TreeNode node : flatNodes) {
-            byte[] nameBytes = node.name.getBytes(StandardCharsets.UTF_8);
+            String fullPath = fullPathMap.get(node);
+            byte[] nameBytes = fullPath.getBytes(StandardCharsets.UTF_8);
+            if (nameBytes.length > 65535) {
+                throw new IOException("Dirstate segment path name too long (max 65535 bytes): " + fullPath);
+            }
             pathOffsetMap.put(node, dataBlock.size());
             pathLenMap.put(node, (short) nameBytes.length);
             dataBlock.write(nameBytes);
@@ -108,29 +124,21 @@ public class DirstateV2Serializer {
 
         byte[] rawDataBlock = dataBlock.toByteArray();
 
-        // 4. Assemble final binary bytes
-        int nodesOffset = 60; // magic (8) + parents (40) + control header (12)
-        int dataOffset = nodesOffset + nodeCount * DirstateV2Node.NODE_SIZE;
+        // 4. Assemble final binary bytes (100% native Mercurial format - no 12-byte header)
+        int nodesOffset = 0; // 0번 오프셋부터 바로 노드 배열 시작
+        int dataOffset = nodeCount * DirstateV2Node.NODE_SIZE;
         int totalSize = dataOffset + rawDataBlock.length;
 
         ByteBuffer mainBuffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN);
-        
-        // Write magic
-        mainBuffer.put(MAGIC);
-        // Write parents
-        mainBuffer.put(parent1);
-        mainBuffer.put(parent2);
-        // Write header control
-        mainBuffer.putInt(nodeCount);
-        mainBuffer.putInt(nodesOffset);
-        mainBuffer.putInt(dataOffset);
 
         // Write nodes table
         for (int i = 0; i < nodeCount; i++) {
             TreeNode node = flatNodes.get(i);
             int offset = nodesOffset + i * DirstateV2Node.NODE_SIZE;
 
-            // Write state, mode, size, time
+            DirstateV2Node nodeView = new DirstateV2Node(mainBuffer, offset);
+
+            // 1. Basic properties
             char state = '\0';
             int mode = 0;
             int size = 0;
@@ -141,20 +149,50 @@ public class DirstateV2Serializer {
                 mode = node.entry.getMode();
                 size = node.entry.getSize();
                 time = node.entry.getTime();
-            } else {
-                // intermediate directory layout state
-                state = 'd';
             }
 
-            mainBuffer.put(offset + 0, (byte) state);
-            mainBuffer.put(offset + 1, (byte) 0); // flags
-            mainBuffer.putInt(offset + 4, mode);
-            mainBuffer.putInt(offset + 8, size);
-            mainBuffer.putInt(offset + 12, (int) (time & 0xFFFFFFFFL));
-            mainBuffer.putInt(offset + 16, pathOffsetMap.get(node));
-            mainBuffer.putShort(offset + 20, pathLenMap.get(node));
-            mainBuffer.putInt(offset + 24, childrenStartMap.getOrDefault(node, 0));
-            mainBuffer.putInt(offset + 28, childrenCountMap.getOrDefault(node, 0));
+            // 2. Set state (this automatically configures WDIR_TRACKED, P1_TRACKED, P2_INFO)
+            nodeView.setState(node.entry != null ? state : 'd');
+
+            // 3. Configure file mode/mtime metadata flags if it represents a file entry
+            int flagsVal = nodeView.getFlags() & 0xFFFF;
+            if (node.entry != null) {
+                flagsVal |= DirstateV2Node.HAS_MODE_AND_SIZE;
+                flagsVal |= DirstateV2Node.HAS_MTIME;
+
+                // Executable or Symlink flags conversion
+                if ((mode & 0111) != 0) {
+                    flagsVal |= DirstateV2Node.MODE_EXEC_PERM;
+                }
+                if ((mode & 0120000) == 0120000) {
+                    flagsVal |= DirstateV2Node.MODE_IS_SYMLINK;
+                }
+            }
+            nodeView.setFlags((short) flagsVal);
+
+            // 4. Set size, mode (via adapter), time
+            nodeView.setMode(mode);
+            nodeView.setSize(size);
+            nodeView.setMtime(time);
+
+            // 5. Paths & tree structures
+            nodeView.setPathOffset(pathOffsetMap.get(node));
+            nodeView.setPathLen(pathLenMap.get(node));
+            nodeView.setChildrenStart(childrenStartMap.getOrDefault(node, 0));
+            nodeView.setChildrenCount(childrenCountMap.getOrDefault(node, 0));
+
+            // 6. Basename start calculation
+            String fullPath = fullPathMap.get(node);
+            int lastSlash = fullPath.lastIndexOf('/');
+            short basenameStart = (short) (lastSlash == -1 ? 0 : lastSlash + 1);
+            nodeView.setBasenameStart(basenameStart);
+
+            // 7. Extra V2 specific metadata fields
+            nodeView.setDescendantsWithEntryCount(node.getDescendantsWithEntryCount());
+            nodeView.setTrackedDescendants(node.getTrackedDescendantsCount());
+            nodeView.setCopySourceLen((short) 0);
+            nodeView.setCopySourceOffset(0);
+            nodeView.setMtimeNanoseconds(0);
         }
 
         // Write data block

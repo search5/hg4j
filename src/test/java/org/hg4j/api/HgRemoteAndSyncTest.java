@@ -44,8 +44,8 @@ public class HgRemoteAndSyncTest {
         File f2 = new File(srcDir, "한글_파일.txt");
         Files.writeString(f2.toPath(), "동기화 한글 파일 내용");
 
-        Hg.add(srcRepo).call();
-        byte[] commitNode1 = Hg.commit(srcRepo)
+        new AddCommand(srcRepo).call();
+        byte[] commitNode1 = new CommitCommand(srcRepo)
                 .setAuthor("Alice <alice@example.com>")
                 .setMessage("First commit in source")
                 .call();
@@ -88,8 +88,8 @@ public class HgRemoteAndSyncTest {
         HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
         File f1 = new File(srcDir, "a.txt");
         Files.writeString(f1.toPath(), "test");
-        Hg.add(srcRepo).call();
-        Hg.commit(srcRepo).setMessage("First").call();
+        new AddCommand(srcRepo).call();
+        new CommitCommand(srcRepo).setMessage("First").call();
 
         ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(srcRepo);
 
@@ -236,12 +236,12 @@ public class HgRemoteAndSyncTest {
         // Commit 1
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Content 1");
-        Hg.add(repo).call();
-        byte[] node1 = Hg.commit(repo).setMessage("Commit 1").call();
+        new AddCommand(repo).call();
+        byte[] node1 = new CommitCommand(repo).setMessage("Commit 1").call();
 
         // Commit 2 (child of Commit 1)
         Files.writeString(f1.toPath(), "Content 2");
-        byte[] node2 = Hg.commit(repo).setMessage("Commit 2").call();
+        byte[] node2 = new CommitCommand(repo).setMessage("Commit 2").call();
 
         Revlog localChangelog = new Revlog(
             new File(repo.getStoreDir(), "00changelog.i"),
@@ -280,8 +280,8 @@ public class HgRemoteAndSyncTest {
         // 1. Create a baseline commit
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Hello push safety\n");
-        Hg.add(repo).call();
-        byte[] localHeadNode = Hg.commit(repo).setMessage("First local commit").call();
+        new AddCommand(repo).call();
+        byte[] localHeadNode = new CommitCommand(repo).setMessage("First local commit").call();
         String localHeadHex = NodeIdUtil.toHex(localHeadNode);
 
         // 2. Setup mock server
@@ -348,7 +348,7 @@ public class HgRemoteAndSyncTest {
         try {
             // 3. Perform push
             String destUrl = "http://127.0.0.1:" + port + "/";
-            String result = Hg.push(repo).setDestination(destUrl).call();
+            String result = new PushCommand(repo).setDestination(destUrl).call();
             assertNotNull(result);
 
             // 4. Assert correctness
@@ -374,8 +374,8 @@ public class HgRemoteAndSyncTest {
         HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
         File f1 = new File(srcDir, "a.txt");
         Files.writeString(f1.toPath(), "Revision 1 Data\n");
-        Hg.add(srcRepo).call();
-        byte[] headNode = Hg.commit(srcRepo).setMessage("Initial Commit").call();
+        new AddCommand(srcRepo).call();
+        byte[] headNode = new CommitCommand(srcRepo).setMessage("Initial Commit").call();
         String headHex = NodeIdUtil.toHex(headNode);
 
         // Prepare bundle payload
@@ -588,7 +588,7 @@ public class HgRemoteAndSyncTest {
             HgRepository localRepo = Hg.init().setDirectory(localRepoDir).call();
 
             // Execute pull command
-            List<byte[]> pulledNodes = Hg.pull(localRepo).setSource(remoteUrl).call();
+            List<byte[]> pulledNodes = new PullCommand(localRepo).setSource(remoteUrl).call();
             assertFalse(pulledNodes.isEmpty(), "Should have pulled some changesets from native hg");
 
             // 4. Verify that b.txt copy metadata is preserved and resolved correctly in localRepo
@@ -672,14 +672,14 @@ public class HgRemoteAndSyncTest {
 
             File f = new File(localRepoDir, "test.txt");
             Files.writeString(f.toPath(), "Content pushed from local hg4j repo\n");
-            Hg.add(localRepo).call();
-            byte[] pushedNode = Hg.commit(localRepo)
+            new AddCommand(localRepo).call();
+            byte[] pushedNode = new CommitCommand(localRepo)
                     .setAuthor("Bob <bob@example.com>")
                     .setMessage("Push commit from hg4j")
                     .call();
 
             // Execute push command
-            String pushResult = Hg.push(localRepo).setDestination(remoteUrl).call();
+            String pushResult = new PushCommand(localRepo).setDestination(remoteUrl).call();
             assertNotNull(pushResult, "Push result should not be null");
 
             // 4. Verify that remote repository indeed has the pushed revision

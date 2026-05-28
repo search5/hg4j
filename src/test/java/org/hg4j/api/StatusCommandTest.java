@@ -19,7 +19,7 @@ public class StatusCommandTest {
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         // 1. Initial status of empty repo
-        Status st0 = Hg.status(repo).call();
+        Status st0 = new StatusCommand(repo).call();
         assertTrue(st0.getAdded().isEmpty());
         assertTrue(st0.getModified().isEmpty());
         assertTrue(st0.getRemoved().isEmpty());
@@ -30,23 +30,23 @@ public class StatusCommandTest {
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Hello Status");
         
-        Status st1 = Hg.status(repo).call();
+        Status st1 = new StatusCommand(repo).call();
         assertTrue(st1.getAdded().isEmpty());
         assertEquals(1, st1.getUntracked().size());
         assertTrue(st1.getUntracked().contains("a.txt"));
 
         // 3. Add the file
-        Hg.add(repo).call();
+        new AddCommand(repo).call();
 
-        Status st2 = Hg.status(repo).call();
+        Status st2 = new StatusCommand(repo).call();
         assertEquals(1, st2.getAdded().size());
         assertTrue(st2.getAdded().contains("a.txt"));
         assertTrue(st2.getUntracked().isEmpty());
 
         // 4. Commit the file
-        Hg.commit(repo).setMessage("Commit a").call();
+        new CommitCommand(repo).setMessage("Commit a").call();
 
-        Status st3 = Hg.status(repo).call();
+        Status st3 = new StatusCommand(repo).call();
         assertTrue(st3.getAdded().isEmpty());
         assertEquals(1, st3.getClean().size());
         assertTrue(st3.getClean().contains("a.txt"));
@@ -54,7 +54,7 @@ public class StatusCommandTest {
         // 5. Modify the file
         Files.writeString(f1.toPath(), "Hello Status Modified");
 
-        Status st4 = Hg.status(repo).call();
+        Status st4 = new StatusCommand(repo).call();
         assertTrue(st4.getClean().isEmpty());
         assertEquals(1, st4.getModified().size());
         assertTrue(st4.getModified().contains("a.txt"));
@@ -65,7 +65,7 @@ public class StatusCommandTest {
         repo.writeDirstate(dirstate);
         assertTrue(f1.delete()); // delete from disk
 
-        Status st5 = Hg.status(repo).call();
+        Status st5 = new StatusCommand(repo).call();
         assertTrue(st5.getModified().isEmpty());
         assertEquals(1, st5.getRemoved().size());
         assertTrue(st5.getRemoved().contains("a.txt"));

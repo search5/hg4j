@@ -145,7 +145,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         try {
             url = java.net.URI.create(fullUrl).toURL();
         } catch (Exception e) {
-            throw new IOException("Malformed URL: " + fullUrl, e);
+            throw new org.hg4j.errors.HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
@@ -179,7 +179,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while ((count = in.read(buf)) != -1) {
                 totalBytes += count;
                 if (totalBytes > maxResponseBytes) {
-                    throw new IOException("Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
+                    throw new org.hg4j.errors.HgProtocolException(fullUrl, "Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
                 }
                 out.write(buf, 0, count);
             }
@@ -199,7 +199,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         try {
             url = java.net.URI.create(fullUrl).toURL();
         } catch (Exception e) {
-            throw new IOException("Malformed URL: " + fullUrl, e);
+            throw new org.hg4j.errors.HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
@@ -252,7 +252,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while ((count = in.read(buf)) != -1) {
                 totalBytes += count;
                 if (totalBytes > maxResponseBytes) {
-                    throw new IOException("Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
+                    throw new org.hg4j.errors.HgProtocolException(fullUrl, "Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
                 }
                 out.write(buf, 0, count);
             }
@@ -282,7 +282,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             int b = in.read();
             if (b == -1) {
                 eof = true;
-                throw new IOException("Unexpected EOF inside mercurial-0.2 chunk payload");
+                throw new org.hg4j.errors.HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
             }
             remaining--;
             return b;
@@ -300,7 +300,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             int read = in.read(b, off, toRead);
             if (read == -1) {
                 eof = true;
-                throw new IOException("Unexpected EOF inside mercurial-0.2 chunk payload");
+                throw new org.hg4j.errors.HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
             }
             remaining -= read;
             return read;
@@ -316,7 +316,7 @@ public class HgRemoteClient implements HgRemoteConnection {
                         eof = true;
                         return false;
                     }
-                    throw new IOException("Unexpected EOF while reading mercurial-0.2 chunk length");
+                    throw new org.hg4j.errors.HgProtocolException("", "Unexpected EOF while reading mercurial-0.2 chunk length");
                 }
                 read += count;
             }
@@ -329,7 +329,7 @@ public class HgRemoteClient implements HgRemoteConnection {
                 return false;
             }
             if (len < 0) {
-                throw new IOException("Invalid negative chunk length: " + len);
+                throw new org.hg4j.errors.HgProtocolException("", "Invalid negative chunk length: " + len);
             }
             remaining = len;
             return true;
@@ -347,7 +347,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while (read < compNameLen) {
                 int count = in.read(compNameBytes, read, compNameLen - read);
                 if (count == -1) {
-                    throw new IOException("Unexpected EOF while reading compression header in application/mercurial-0.2 stream");
+                    throw new org.hg4j.errors.HgProtocolException("", "Unexpected EOF while reading compression header in application/mercurial-0.2 stream");
                 }
                 read += count;
             }
@@ -361,7 +361,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             } else if ("none".equalsIgnoreCase(compName) || compName.isEmpty()) {
                 return chunkedIn;
             } else {
-                throw new IOException("Unsupported compression format in application/mercurial-0.2 framing: " + compName);
+                throw new org.hg4j.errors.HgProtocolException("", "Unsupported compression format in application/mercurial-0.2 framing: " + compName);
             }
         } else if (contentType != null && contentType.contains("application/mercurial-0.1")) {
             // Automatically detect and decompress application/mercurial-0.1 raw deflate (zlib) streams
@@ -403,7 +403,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         try {
             url = java.net.URI.create(fullUrl).toURL();
         } catch (Exception e) {
-            throw new IOException("Malformed URL: " + fullUrl, e);
+            throw new org.hg4j.errors.HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
@@ -443,7 +443,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while ((count = in.read(buf)) != -1) {
                 totalRead += count;
                 if (totalRead > 10 * 1024 * 1024) { // 10MB Limit Guard
-                    throw new IOException("HTTP response size exceeded 10MB safety threshold under push");
+                    throw new org.hg4j.errors.HgProtocolException(fullUrl, "HTTP response size exceeded 10MB safety threshold under push");
                 }
                 out.write(buf, 0, count);
             }

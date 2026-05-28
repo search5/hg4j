@@ -19,14 +19,14 @@ public class LogCommandTest {
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         // 1. Log of empty repo should be empty
-        List<HgCommit> emptyLog = Hg.log(repo).call();
+        List<HgCommit> emptyLog = new LogCommand(repo).call();
         assertTrue(emptyLog.isEmpty());
 
         // 2. Commit a file
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Hello Log");
-        Hg.add(repo).call();
-        byte[] node1 = Hg.commit(repo)
+        new AddCommand(repo).call();
+        byte[] node1 = new CommitCommand(repo)
                 .setAuthor("Alice <alice@example.com>")
                 .setMessage("First commit")
                 .call();
@@ -34,14 +34,14 @@ public class LogCommandTest {
         // 3. Commit another file
         File f2 = new File(repoDir, "b.txt");
         Files.writeString(f2.toPath(), "Hello Log 2");
-        Hg.add(repo).call();
-        byte[] node2 = Hg.commit(repo)
+        new AddCommand(repo).call();
+        byte[] node2 = new CommitCommand(repo)
                 .setAuthor("Bob <bob@example.com>")
                 .setMessage("Second commit\nWith body")
                 .call();
 
         // 4. Run log command
-        List<HgCommit> log = Hg.log(repo).call();
+        List<HgCommit> log = new LogCommand(repo).call();
         assertEquals(2, log.size());
 
         // Standard hg log is usually newest first or we can support chronological.
@@ -94,7 +94,7 @@ public class LogCommandTest {
         // 6. Commit with no double newline at all
         changelog.appendRevision("0000000000000000000000000000000000000000\nAuthor\n12345678 0\nNoDoubleNLMessage".getBytes(), -1, -1, new byte[20], new byte[20], 5);
 
-        List<HgCommit> log = Hg.log(repo).call();
+        List<HgCommit> log = new LogCommand(repo).call();
         
         // Malformed commits 1, 2, 3 are skipped in parsing because of structural formats.
         // Commits 4, 5, 6 should be successfully returned.
@@ -116,7 +116,7 @@ public class LogCommandTest {
         // 7. Commit with NO files (date followed directly by double newline and message)
         changelog.appendRevision("0000000000000000000000000000000000000000\nAuthor\n12345678 0\n\nNoFilesMessage".getBytes(), -1, -1, new byte[20], new byte[20], 6);
         
-        List<HgCommit> log2 = Hg.log(repo).call();
+        List<HgCommit> log2 = new LogCommand(repo).call();
         assertEquals(4, log2.size());
         
         HgCommit cNoFiles = log2.get(0); // newest first

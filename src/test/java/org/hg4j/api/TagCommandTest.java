@@ -19,17 +19,17 @@ public class TagCommandTest {
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         // 1. Initial tag list should be empty
-        Map<String, String> initialTags = Hg.tag(repo).call();
+        Map<String, String> initialTags = new TagCommand(repo).call();
         assertTrue(initialTags.isEmpty());
 
         // 2. Commit a changeset
         File file = new File(repoDir, "a.txt");
         Files.writeString(file.toPath(), "Content");
-        Hg.add(repo).call();
-        byte[] commitNode = Hg.commit(repo).setMessage("First commit").call();
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("First commit").call();
 
         // 3. Create a tag "v1.0" for this commit
-        Map<String, String> created = Hg.tag(repo)
+        Map<String, String> created = new TagCommand(repo)
                 .setTagName("v1.0")
                 .setNodeId(commitNode)
                 .setCommit(true)
@@ -41,7 +41,7 @@ public class TagCommandTest {
         assertTrue(tagsFile.exists());
 
         // 4. List tags and verify
-        Map<String, String> tags = Hg.tag(repo).call();
+        Map<String, String> tags = new TagCommand(repo).call();
         assertEquals(1, tags.size());
         
         String hexNode = toHex(commitNode).substring(0, 40);
@@ -49,7 +49,7 @@ public class TagCommandTest {
 
         // 5. Verify the tag creation committed itself
         // History should now have 2 commits (Initial commit + Tag commit)
-        assertEquals(2, Hg.log(repo).call().size());
+        assertEquals(2, new LogCommand(repo).call().size());
     }
 
     @Test
@@ -59,21 +59,21 @@ public class TagCommandTest {
 
         File file = new File(repoDir, "a.txt");
         Files.writeString(file.toPath(), "Content");
-        Hg.add(repo).call();
-        byte[] commitNode = Hg.commit(repo).setMessage("First commit").call();
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("First commit").call();
 
         // Create tag without committing
-        Hg.tag(repo)
+        new TagCommand(repo)
                 .setTagName("v1.0-alpha")
                 .setNodeId(commitNode)
                 .setCommit(false)
                 .call();
 
         // History remains at 1 commit
-        assertEquals(1, Hg.log(repo).call().size());
+        assertEquals(1, new LogCommand(repo).call().size());
 
         // But tag is successfully registered
-        Map<String, String> tags = Hg.tag(repo).call();
+        Map<String, String> tags = new TagCommand(repo).call();
         assertEquals("v1.0-alpha", tags.keySet().iterator().next());
     }
 
@@ -83,10 +83,10 @@ public class TagCommandTest {
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         assertThrows(IllegalArgumentException.class, () -> 
-                Hg.tag(repo).setTagName("v1.0").call()); // no nodeId
+                new TagCommand(repo).setTagName("v1.0").call()); // no nodeId
 
         assertThrows(IllegalArgumentException.class, () -> 
-                Hg.tag(repo).setTagName("v1.0").setNodeId(new byte[10]).call()); // short nodeId
+                new TagCommand(repo).setTagName("v1.0").setNodeId(new byte[10]).call()); // short nodeId
     }
 
     private static String toHex(byte[] bytes) {

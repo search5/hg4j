@@ -25,12 +25,12 @@ public class MergeCommandTest {
         // 1. Base Commit (Revision 0)
         File f1 = new File(repoDir, "hello.txt");
         Files.writeString(f1.toPath(), "Line 1\nLine 2\nLine 3\n");
-        Hg.add(repo).call();
-        byte[] baseNode = Hg.commit(repo).setMessage("Base commit").call();
+        new AddCommand(repo).call();
+        byte[] baseNode = new CommitCommand(repo).setMessage("Base commit").call();
 
         // 2. Commit Yours (Revision 1)
         Files.writeString(f1.toPath(), "Line 1 [MINE]\nLine 2\nLine 3\n");
-        byte[] yoursNode = Hg.commit(repo).setMessage("Yours change").call();
+        byte[] yoursNode = new CommitCommand(repo).setMessage("Yours change").call();
 
         // 3. Switch back to Base and commit Theirs (Revision 2)
         // Set dirstate parent back to base to simulate branching
@@ -40,11 +40,11 @@ public class MergeCommandTest {
         
         // Overwrite hello.txt with base + Theirs change
         Files.writeString(f1.toPath(), "Line 1\nLine 2\nLine 3 [THEIRS]\n");
-        byte[] theirsNode = Hg.commit(repo).setMessage("Theirs change").call();
+        byte[] theirsNode = new CommitCommand(repo).setMessage("Theirs change").call();
 
         // 4. Merge Yours (Revision 1) into Theirs (Revision 2)
         // Currently, dirstate parent is Theirs (Revision 2)
-        MergeCommand.MergeResult res = Hg.merge(repo).setNodeId(yoursNode).call();
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(yoursNode).call();
         assertFalse(res.isConflicted());
         assertTrue(res.getConflicts().isEmpty());
 
@@ -58,7 +58,7 @@ public class MergeCommandTest {
         assertArrayEquals(yoursNode, postMergeDs.getParent2());
 
         // 5. Commit the merge (Revision 3)
-        byte[] mergeCommitNode = Hg.commit(repo)
+        byte[] mergeCommitNode = new CommitCommand(repo)
                 .setAuthor("Merger <merger@example.com>")
                 .setMessage("Merged branch Yours")
                 .call();
@@ -86,22 +86,22 @@ public class MergeCommandTest {
         // 1. Base Commit
         File f1 = new File(repoDir, "hello.txt");
         Files.writeString(f1.toPath(), "Line 1\nLine 2\nLine 3\n");
-        Hg.add(repo).call();
-        byte[] baseNode = Hg.commit(repo).setMessage("Base commit").call();
+        new AddCommand(repo).call();
+        byte[] baseNode = new CommitCommand(repo).setMessage("Base commit").call();
 
         // 2. Commit Yours
         Files.writeString(f1.toPath(), "Line 1\nLine 2 [MINE]\nLine 3\n");
-        byte[] yoursNode = Hg.commit(repo).setMessage("Yours change").call();
+        byte[] yoursNode = new CommitCommand(repo).setMessage("Yours change").call();
 
         // 3. Switch back to Base and commit Theirs
         Dirstate dirstate = repo.getDirstate();
         dirstate.setParents(baseNode, new byte[20]);
         repo.writeDirstate(dirstate);
         Files.writeString(f1.toPath(), "Line 1\nLine 2 [THEIRS]\nLine 3\n");
-        byte[] theirsNode = Hg.commit(repo).setMessage("Theirs change").call();
+        byte[] theirsNode = new CommitCommand(repo).setMessage("Theirs change").call();
 
         // 4. Merge Yours into Theirs (Conflict expected on hello.txt)
-        MergeCommand.MergeResult res = Hg.merge(repo).setNodeId(yoursNode).call();
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(yoursNode).call();
         assertTrue(res.isConflicted());
         assertEquals(List.of("hello.txt"), res.getConflicts());
 
@@ -122,11 +122,11 @@ public class MergeCommandTest {
         // 1. Base Commit (hello.txt)
         File f1 = new File(repoDir, "hello.txt");
         Files.writeString(f1.toPath(), "Hello Base\n");
-        Hg.add(repo).call();
-        byte[] baseNode = Hg.commit(repo).setMessage("Base commit").call();
+        new AddCommand(repo).call();
+        byte[] baseNode = new CommitCommand(repo).setMessage("Base commit").call();
 
         // 2. Commit Yours (No change to f1, but keep as P1 branch)
-        byte[] yoursNode = Hg.commit(repo).setMessage("Yours branch commit").call();
+        byte[] yoursNode = new CommitCommand(repo).setMessage("Yours branch commit").call();
 
         // 3. Switch back to Base and commit Theirs with an ADDED file (added.txt)
         Dirstate dirstate = repo.getDirstate();
@@ -135,8 +135,8 @@ public class MergeCommandTest {
 
         File f2 = new File(repoDir, "added.txt");
         Files.writeString(f2.toPath(), "This file is added in Theirs\n");
-        Hg.add(repo).call();
-        byte[] theirsNode = Hg.commit(repo).setMessage("Theirs branch commit with added file").call();
+        new AddCommand(repo).call();
+        byte[] theirsNode = new CommitCommand(repo).setMessage("Theirs branch commit with added file").call();
 
         // 4. Merge Theirs (theirsNode) into Yours (yoursNode)
         // Currently, dirstate parent is Theirs (theirsNode)
@@ -148,7 +148,7 @@ public class MergeCommandTest {
         dirstate.removeEntry("added.txt");
         repo.writeDirstate(dirstate);
 
-        MergeCommand.MergeResult res = Hg.merge(repo).setNodeId(theirsNode).call();
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(theirsNode).call();
         assertFalse(res.isConflicted());
 
         // Verify added.txt is successfully merged (copied to Yours branch)
@@ -171,15 +171,15 @@ public class MergeCommandTest {
         Files.writeString(f1.toPath(), "Hello Base\n");
         File f2 = new File(repoDir, "goodbye.txt");
         Files.writeString(f2.toPath(), "Goodbye Base\n");
-        Hg.add(repo).call();
-        byte[] baseNode = Hg.commit(repo).setMessage("Base commit").call();
+        new AddCommand(repo).call();
+        byte[] baseNode = new CommitCommand(repo).setMessage("Base commit").call();
 
         // 2. Commit Yours (Keep hello.txt, but delete goodbye.txt)
         if (f2.exists()) f2.delete();
         Dirstate ds = repo.getDirstate();
         ds.addEntry("goodbye.txt", new Dirstate.Entry('r', 0, 0, 0));
         repo.writeDirstate(ds);
-        byte[] yoursNode = Hg.commit(repo).setMessage("Yours commit (deleted goodbye.txt)").call();
+        byte[] yoursNode = new CommitCommand(repo).setMessage("Yours commit (deleted goodbye.txt)").call();
 
         // 3. Switch back to Base and commit Theirs (Modify hello.txt, keep goodbye.txt)
         Dirstate dirstate = repo.getDirstate();
@@ -190,7 +190,7 @@ public class MergeCommandTest {
         repo.writeDirstate(dirstate);
 
         Files.writeString(f1.toPath(), "Hello Base [THEIRS]\n");
-        byte[] theirsNode = Hg.commit(repo).setMessage("Theirs commit (modified hello.txt)").call();
+        byte[] theirsNode = new CommitCommand(repo).setMessage("Theirs commit (modified hello.txt)").call();
 
         // 4. Merge Theirs (theirsNode) into Yours (yoursNode)
         // Reset state to Yours branch
@@ -201,7 +201,7 @@ public class MergeCommandTest {
         dirstate.removeEntry("goodbye.txt");
         repo.writeDirstate(dirstate);
 
-        MergeCommand.MergeResult res = Hg.merge(repo).setNodeId(theirsNode).call();
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(theirsNode).call();
         assertFalse(res.isConflicted());
 
         // Verify goodbye.txt remains deleted, and hello.txt is updated to Theirs version
@@ -216,15 +216,15 @@ public class MergeCommandTest {
 
         File f1 = new File(repoDir, "hello.txt");
         Files.writeString(f1.toPath(), "Line 1\n");
-        Hg.add(repo).call();
-        byte[] baseNode = Hg.commit(repo).setMessage("Base").call();
+        new AddCommand(repo).call();
+        byte[] baseNode = new CommitCommand(repo).setMessage("Base").call();
 
         Files.writeString(f1.toPath(), "Line 1\nLine 2\n");
-        byte[] p2Node = Hg.commit(repo).setMessage("Feature").call();
+        byte[] p2Node = new CommitCommand(repo).setMessage("Feature").call();
 
         // Currently, p2Node is the descendant. If we attempt to merge baseNode (which is an ancestor)
         // it should cleanly report that it's already merged.
-        MergeCommand.MergeResult res = Hg.merge(repo).setNodeId(baseNode).call();
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(baseNode).call();
         assertFalse(res.isConflicted());
         assertTrue(res.getConflicts().isEmpty());
 
@@ -240,30 +240,30 @@ public class MergeCommandTest {
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         // 1. Merge in empty repository (IllegalStateException)
-        assertThrows(IllegalStateException.class, () -> Hg.merge(repo).setRevision(0).call());
+        assertThrows(IllegalStateException.class, () -> new MergeCommand(repo).setRevision(0).call());
 
         // Create base commit
         File f1 = new File(repoDir, "hello.txt");
         Files.writeString(f1.toPath(), "Hello\n");
-        Hg.add(repo).call();
-        Hg.commit(repo).setMessage("Base").call();
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Base").call();
 
         // 2. Target commit not found by NodeID (IOException)
         byte[] fakeNode = new byte[20];
         Arrays.fill(fakeNode, (byte) 1);
-        assertThrows(IOException.class, () -> Hg.merge(repo).setNodeId(fakeNode).call());
+        assertThrows(IOException.class, () -> new MergeCommand(repo).setNodeId(fakeNode).call());
 
         // 3. Target revision index out of bounds (IllegalArgumentException)
-        assertThrows(IllegalArgumentException.class, () -> Hg.merge(repo).setRevision(999).call());
+        assertThrows(IllegalArgumentException.class, () -> new MergeCommand(repo).setRevision(999).call());
         
         // 4. No target specified (IllegalArgumentException)
-        assertThrows(IllegalArgumentException.class, () -> Hg.merge(repo).call());
+        assertThrows(IllegalArgumentException.class, () -> new MergeCommand(repo).call());
 
         // 5. Merge identical parents (p1Rev == p2Rev)
         // Find last commit node
         Revlog changelog = new Revlog(new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
         byte[] lastNode = changelog.getIndexRecord(0).getNodeId();
-        MergeCommand.MergeResult sameParentRes = Hg.merge(repo).setNodeId(lastNode).call();
+        MergeCommand.MergeResult sameParentRes = new MergeCommand(repo).setNodeId(lastNode).call();
         assertFalse(sameParentRes.isConflicted());
 
         // 6. Delete in P1, keep in P2 reconciliation branch test
@@ -275,7 +275,7 @@ public class MergeCommandTest {
         Dirstate ds = repo.getDirstate();
         ds.addEntry("hello.txt", new Dirstate.Entry('r', 0, 0, 0));
         repo.writeDirstate(ds);
-        byte[] branchANode = Hg.commit(repo).setMessage("Branch A (deleted hello.txt)").call();
+        byte[] branchANode = new CommitCommand(repo).setMessage("Branch A (deleted hello.txt)").call();
 
         // Create branch B (keep hello.txt but do another change)
         ds = repo.getDirstate();
@@ -286,8 +286,8 @@ public class MergeCommandTest {
         
         File f2 = new File(repoDir, "other.txt");
         Files.writeString(f2.toPath(), "Other file\n");
-        Hg.add(repo).call();
-        byte[] branchBNode = Hg.commit(repo).setMessage("Branch B (keep hello, add other)").call();
+        new AddCommand(repo).call();
+        byte[] branchBNode = new CommitCommand(repo).setMessage("Branch B (keep hello, add other)").call();
 
         // Merge branch B into branch A (so parent1 = branch A (deleted), parent2 = branch B (kept))
         ds = repo.getDirstate();
@@ -298,7 +298,7 @@ public class MergeCommandTest {
         ds.removeEntry("other.txt");
         repo.writeDirstate(ds);
 
-        MergeCommand.MergeResult mergeDeletedRes = Hg.merge(repo).setNodeId(branchBNode).call();
+        MergeCommand.MergeResult mergeDeletedRes = new MergeCommand(repo).setNodeId(branchBNode).call();
         assertFalse(mergeDeletedRes.isConflicted());
         // Verify hello.txt is deleted (deleted in P1, kept in P2 -> deleted)
         assertFalse(f1.exists());
@@ -312,14 +312,14 @@ public class MergeCommandTest {
         // Base revision (0)
         File f1 = new File(repoDir, "hello.txt");
         Files.writeString(f1.toPath(), "0\n");
-        Hg.add(repo).call();
-        byte[] r0 = Hg.commit(repo).setMessage("r0").call();
+        new AddCommand(repo).call();
+        byte[] r0 = new CommitCommand(repo).setMessage("r0").call();
 
         // Branch A (1) - Add a.txt
         File fa = new File(repoDir, "a.txt");
         Files.writeString(fa.toPath(), "A\n");
-        Hg.add(repo).call();
-        byte[] r1 = Hg.commit(repo).setMessage("r1").call();
+        new AddCommand(repo).call();
+        byte[] r1 = new CommitCommand(repo).setMessage("r1").call();
 
         // Branch B (2) - split from r0, Add b.txt (remove a.txt to branch out)
         Dirstate ds = repo.getDirstate();
@@ -331,12 +331,12 @@ public class MergeCommandTest {
 
         File fb = new File(repoDir, "b.txt");
         Files.writeString(fb.toPath(), "B\n");
-        Hg.add(repo).call();
-        byte[] r2 = Hg.commit(repo).setMessage("r2").call();
+        new AddCommand(repo).call();
+        byte[] r2 = new CommitCommand(repo).setMessage("r2").call();
 
         // Merge r1 into r2 to create Merge X (3)
-        Hg.merge(repo).setNodeId(r1).call();
-        byte[] r3 = Hg.commit(repo).setMessage("r3").call();
+        new MergeCommand(repo).setNodeId(r1).call();
+        byte[] r3 = new CommitCommand(repo).setMessage("r3").call();
 
         // Merge r2 into r1 to create Merge Y (4)
         ds = repo.getDirstate();
@@ -349,8 +349,8 @@ public class MergeCommandTest {
         ds.addEntry("a.txt", new Dirstate.Entry('n', 0644, 2, System.currentTimeMillis() / 1000));
         repo.writeDirstate(ds);
 
-        Hg.merge(repo).setNodeId(r2).call();
-        byte[] r4 = Hg.commit(repo).setMessage("r4").call();
+        new MergeCommand(repo).setNodeId(r2).call();
+        byte[] r4 = new CommitCommand(repo).setMessage("r4").call();
 
         // Now we have a criss-cross structure where both X (3) and Y (4) are ancestors,
         // and r1 (1) and r2 (2) are the dual LCAs.
@@ -360,7 +360,7 @@ public class MergeCommandTest {
         repo.writeDirstate(ds);
 
         // Run the merge command which will call findLCA internally
-        MergeCommand.MergeResult res = Hg.merge(repo).setNodeId(r3).call();
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(r3).call();
         assertFalse(res.isConflicted());
     }
 
@@ -372,8 +372,8 @@ public class MergeCommandTest {
         // 1. Base commit: just a dummy file
         File baseFile = new File(repoDir, "base.txt");
         Files.writeString(baseFile.toPath(), "Base\n");
-        Hg.add(repo).call();
-        byte[] baseNode = Hg.commit(repo).setMessage("Base commit").call();
+        new AddCommand(repo).call();
+        byte[] baseNode = new CommitCommand(repo).setMessage("Base commit").call();
 
         // 2. Yours branch: Add executable and symlink files
         File execFile = new File(repoDir, "run.sh");
@@ -388,8 +388,8 @@ public class MergeCommandTest {
             hasSymlink = false;
         }
 
-        Hg.add(repo).call();
-        byte[] yoursNode = Hg.commit(repo).setMessage("Yours branch with exec and symlink").call();
+        new AddCommand(repo).call();
+        byte[] yoursNode = new CommitCommand(repo).setMessage("Yours branch with exec and symlink").call();
 
         // 3. Switch back to Base, branch Theirs: just add dummy.txt (so exec and symlink don't exist here)
         Dirstate ds = repo.getDirstate();
@@ -404,8 +404,8 @@ public class MergeCommandTest {
         
         File dummy = new File(repoDir, "dummy.txt");
         Files.writeString(dummy.toPath(), "Theirs dummy\n");
-        Hg.add(repo).call();
-        byte[] theirsNode = Hg.commit(repo).setMessage("Theirs branch commit").call();
+        new AddCommand(repo).call();
+        byte[] theirsNode = new CommitCommand(repo).setMessage("Theirs branch commit").call();
 
         // 4. Merge Yours (yoursNode) into Theirs (theirsNode)
         // Currently, dirstate parent is Theirs (theirsNode)
@@ -422,7 +422,7 @@ public class MergeCommandTest {
         String yoursMfText = new String(yoursMfContent, java.nio.charset.StandardCharsets.UTF_8);
         System.out.println("YOURS MANIFEST LOG: " + yoursMfText);
 
-        MergeCommand.MergeResult res = Hg.merge(repo).setNodeId(yoursNode).call();
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(yoursNode).call();
         assertFalse(res.isConflicted());
 
         // Verify that run.sh has been restored on disk and is executable!

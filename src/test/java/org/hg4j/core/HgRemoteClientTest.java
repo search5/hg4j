@@ -456,36 +456,36 @@ public class HgRemoteClientTest {
             File testFile = new File(tempRepoDir, "sample.txt");
             Files.writeString(testFile.toPath(), "Version1_Content", StandardCharsets.UTF_8);
             
-            Hg.add(repo).addFile("sample.txt").call();
-            byte[] rev0Node = Hg.commit(repo).setAuthor("tester <test@example.com>").setMessage("Commit 1").call();
+            new AddCommand(repo).addFile("sample.txt").call();
+            byte[] rev0Node = new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Commit 1").call();
 
             // Write second version of file
             Files.writeString(testFile.toPath(), "Version2_Content", StandardCharsets.UTF_8);
-            byte[] rev1Node = Hg.commit(repo).setAuthor("tester <test@example.com>").setMessage("Commit 2").call();
+            byte[] rev1Node = new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Commit 2").call();
 
             // Write third version with new file
             File anotherFile = new File(tempRepoDir, "another.txt");
             Files.writeString(anotherFile.toPath(), "Another_Content", StandardCharsets.UTF_8);
-            Hg.add(repo).addFile("another.txt").call();
-            byte[] rev2Node = Hg.commit(repo).setAuthor("tester <test@example.com>").setMessage("Commit 3").call();
+            new AddCommand(repo).addFile("another.txt").call();
+            byte[] rev2Node = new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Commit 3").call();
 
             // 1. Verify CatCommand
-            byte[] catContent = Hg.cat(repo).setFile("sample.txt").setRevision("0").call();
+            byte[] catContent = new CatCommand(repo).setFile("sample.txt").setRevision("0").call();
             assertEquals("Version1_Content", new String(catContent, StandardCharsets.UTF_8));
 
             // 2. Verify UpdateCommand (checkout to revision 1)
-            byte[] updatedNode = Hg.update(repo).setRevision("1").call();
+            byte[] updatedNode = new UpdateCommand(repo).setRevision("1").call();
             assertArrayEquals(rev1Node, updatedNode);
             assertEquals("Version2_Content", Files.readString(testFile.toPath(), StandardCharsets.UTF_8));
             // another.txt should not exist at rev 1
             assertFalse(anotherFile.exists());
 
             // 3. Verify RevertCommand
-            Hg.revert(repo).setFile("sample.txt").setRevision("0").call();
+            new RevertCommand(repo).setFile("sample.txt").setRevision("0").call();
             assertEquals("Version1_Content", Files.readString(testFile.toPath(), StandardCharsets.UTF_8));
 
             // 4. Verify RemoveCommand
-            Hg.remove(repo).setFile("sample.txt").setForce(true).call();
+            new RemoveCommand(repo).setFile("sample.txt").setForce(true).call();
             assertFalse(testFile.exists());
             Dirstate dirstate = repo.getDirstate();
             assertEquals('r', dirstate.getEntries().get("sample.txt").getState());
@@ -503,8 +503,8 @@ public class HgRemoteClientTest {
             HgRepository repo = Hg.init().setDirectory(tempRepoDir).call();
             File testFile = new File(tempRepoDir, "sample.txt");
             Files.writeString(testFile.toPath(), "Content", StandardCharsets.UTF_8);
-            Hg.add(repo).addFile("sample.txt").call();
-            Hg.commit(repo).setAuthor("tester <test@example.com>").setMessage("Commit").call();
+            new AddCommand(repo).addFile("sample.txt").call();
+            new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Commit").call();
 
             PushCommand push = new PushCommand(repo);
             // Verify exception is thrown if destination is not specified
@@ -586,4 +586,105 @@ public class HgRemoteClientTest {
         }
         file.delete();
     }
+
+    @Test
+    public void testHgRemoteClientMalformedUrlException() {
+        HgRemoteClient client = new HgRemoteClient("http://[invalid-url");
+        org.hg4j.errors.HgTransportException ex = assertThrows(org.hg4j.errors.HgTransportException.class, () -> client.getHeads());
+        assertTrue(ex.getMessage().contains("Malformed URL"));
+    }
+
+    @Test
+    public void testMercurialChunkedInputStreamNegativeLengthException() throws Exception {
+        // Chunk length is negative (-100 => 0xFF 0xFF 0xFF 0x9C)
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0xFF);
+        out.write(0xFF);
+        out.write(0xFF);
+        out.write(0x9C);
+
+        java.lang.reflect.Constructor<?> constructor = Class.forName("org.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+                .getDeclaredConstructor(InputStream.class);
+        constructor.setAccessible(true);
+        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
+
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> chunkedStream.read());
+    }
+
+    @Test
+    public void testMercurialChunkedInputStreamUnexpectedEofLengthException() throws Exception {
+        // Chunk length is only 2 bytes instead of 4
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0);
+        out.write(10);
+
+        java.lang.reflect.Constructor<?> constructor = Class.forName("org.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+                .getDeclaredConstructor(InputStream.class);
+        constructor.setAccessible(true);
+        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
+
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> chunkedStream.read());
+    }
+
+    @Test
+    public void testMercurialChunkedInputStreamUnexpectedEofPayloadException() throws Exception {
+        // Chunk length is 10, but stream ends immediately
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0);
+        out.write(0);
+        out.write(0);
+        out.write(10);
+
+        java.lang.reflect.Constructor<?> constructor = Class.forName("org.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+                .getDeclaredConstructor(InputStream.class);
+        constructor.setAccessible(true);
+        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
+
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> chunkedStream.read());
+    }
+
+    @Test
+    public void testUnwrapResponseStreamUnsupportedCompressionException() throws Exception {
+        // application/mercurial-0.2
+        // compNameLen = 5, compName = "zstd "
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(5);
+        out.write("zstd ".getBytes(StandardCharsets.US_ASCII));
+
+        java.lang.reflect.Method method = HgRemoteClient.class.getDeclaredMethod("unwrapResponseStream", InputStream.class, String.class);
+        method.setAccessible(true);
+        
+        HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/");
+        InputStream inStream = new ByteArrayInputStream(out.toByteArray());
+        
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> {
+            try {
+                method.invoke(client, inStream, "application/mercurial-0.2");
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+    }
+
+    @Test
+    public void testUnwrapResponseStreamUnexpectedEofHeaderException() throws Exception {
+        // compNameLen = 10, but EOF immediately
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(10);
+
+        java.lang.reflect.Method method = HgRemoteClient.class.getDeclaredMethod("unwrapResponseStream", InputStream.class, String.class);
+        method.setAccessible(true);
+        
+        HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/");
+        InputStream inStream = new ByteArrayInputStream(out.toByteArray());
+        
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> {
+            try {
+                method.invoke(client, inStream, "application/mercurial-0.2");
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+    }
 }
+

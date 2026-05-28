@@ -26,12 +26,12 @@ public class TreeAndDiffCommandTest {
         File fb = new File(repoDir, "b.txt");
         Files.writeString(fb.toPath(), "Executable Content\n");
 
-        Hg.add(repo).addFile("a.txt").addFile("b.txt").call();
+        new AddCommand(repo).addFile("a.txt").addFile("b.txt").call();
         
         // b.txt에 실행 권한 부여(실제 0755 모드 저장을 보장하기 위해)
         fb.setExecutable(true, false);
         
-        byte[] rev0Node = Hg.commit(repo)
+        byte[] rev0Node = new CommitCommand(repo)
                 .setAuthor("tester <test@example.com>")
                 .setMessage("Initial commit adding a.txt and b.txt")
                 .call();
@@ -40,19 +40,19 @@ public class TreeAndDiffCommandTest {
         Files.writeString(fa.toPath(), "Line 1\nLine 2 Modified\nLine 3\nLine 4\n");
         
         fb.delete();
-        Hg.remove(repo).setFile("b.txt").setForce(true).call();
+        new RemoveCommand(repo).setFile("b.txt").setForce(true).call();
 
         File fc = new File(repoDir, "c.txt");
         Files.writeString(fc.toPath(), "Added File Content\n");
-        Hg.add(repo).addFile("c.txt").call();
+        new AddCommand(repo).addFile("c.txt").call();
 
-        byte[] rev1Node = Hg.commit(repo)
+        byte[] rev1Node = new CommitCommand(repo)
                 .setAuthor("tester <test@example.com>")
                 .setMessage("Modified a.txt, deleted b.txt, added c.txt")
                 .call();
 
         // 1. TreeCommand 테스트 (Rev 0)
-        List<TreeCommand.TreeEntry> treeRev0 = Hg.tree(repo).setRevision(0).call();
+        List<TreeCommand.TreeEntry> treeRev0 = new TreeCommand(repo).setRevision(0).call();
         assertEquals(2, treeRev0.size());
         
         TreeCommand.TreeEntry entryA0 = treeRev0.stream().filter(e -> e.getPath().equals("a.txt")).findFirst().orElse(null);
@@ -67,7 +67,7 @@ public class TreeAndDiffCommandTest {
         assertTrue(entryB0.getMode() == 0755 || entryB0.getMode() == 0644);
 
         // 2. TreeCommand 테스트 (Rev 1)
-        List<TreeCommand.TreeEntry> treeRev1 = Hg.tree(repo).setRevision(1).call();
+        List<TreeCommand.TreeEntry> treeRev1 = new TreeCommand(repo).setRevision(1).call();
         assertEquals(2, treeRev1.size()); // a.txt, c.txt
         
         assertTrue(treeRev1.stream().anyMatch(e -> e.getPath().equals("a.txt")));
@@ -75,12 +75,12 @@ public class TreeAndDiffCommandTest {
         assertFalse(treeRev1.stream().anyMatch(e -> e.getPath().equals("b.txt")));
 
         // Node ID 기반의 조회 테스트
-        List<TreeCommand.TreeEntry> treeByNode = Hg.tree(repo).setNodeId(rev0Node).call();
+        List<TreeCommand.TreeEntry> treeByNode = new TreeCommand(repo).setNodeId(rev0Node).call();
         assertEquals(2, treeByNode.size());
         assertTrue(treeByNode.stream().anyMatch(e -> e.getPath().equals("b.txt")));
 
         // 3. DiffCommand 테스트 (Rev 0 -> Rev 1)
-        List<DiffCommand.DiffEntry> diffs = Hg.diff(repo).setOldRevision(0).setNewRevision(1).call();
+        List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo).setOldRevision(0).setNewRevision(1).call();
         assertEquals(3, diffs.size()); // a.txt(modify), b.txt(delete), c.txt(add)
 
         DiffCommand.DiffEntry diffA = diffs.stream().filter(d -> d.getPath().equals("a.txt")).findFirst().orElse(null);
@@ -101,7 +101,7 @@ public class TreeAndDiffCommandTest {
         assertTrue(diffC.getDiffContent().contains("+Added File Content"));
 
         // 디폴트(oldRevision 미설정 시 newRevision의 부모인 0과 비교) 테스트
-        List<DiffCommand.DiffEntry> defaultDiffs = Hg.diff(repo).setNewRevision(1).call();
+        List<DiffCommand.DiffEntry> defaultDiffs = new DiffCommand(repo).setNewRevision(1).call();
         assertEquals(3, defaultDiffs.size());
     }
 
@@ -110,10 +110,10 @@ public class TreeAndDiffCommandTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         
-        List<TreeCommand.TreeEntry> tree = Hg.tree(repo).call();
+        List<TreeCommand.TreeEntry> tree = new TreeCommand(repo).call();
         assertTrue(tree.isEmpty());
 
-        List<DiffCommand.DiffEntry> diff = Hg.diff(repo).call();
+        List<DiffCommand.DiffEntry> diff = new DiffCommand(repo).call();
         assertTrue(diff.isEmpty());
     }
 
@@ -126,20 +126,20 @@ public class TreeAndDiffCommandTest {
         // Rev 0: a.txt 추가
         File fa = new File(repoDir, "a.txt");
         Files.writeString(fa.toPath(), "Hello Hg4j\n");
-        Hg.add(repo).addFile("a.txt").call();
-        Hg.commit(repo).setAuthor("tester <test@example.com>").setMessage("Rev 0").call();
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Rev 0").call();
 
         // Rev 1: a.txt 수정
         Files.writeString(fa.toPath(), "Hello Hg4j Modified\n");
-        Hg.commit(repo).setAuthor("tester <test@example.com>").setMessage("Rev 1").call();
+        new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Rev 1").call();
 
         // Direct getTree 호출 검증
-        List<TreeCommand.TreeEntry> tree = Hg.getTree(repo, 1);
+        List<TreeCommand.TreeEntry> tree = Hg.open(repo.getDirectory()).getTree(1);
         assertEquals(1, tree.size());
         assertEquals("a.txt", tree.get(0).getPath());
 
         // Direct getDiff 호출 검증
-        List<DiffCommand.DiffEntry> diffs = Hg.getDiff(repo, 0, 1);
+        List<DiffCommand.DiffEntry> diffs = Hg.open(repo.getDirectory()).getDiff(0, 1);
         assertEquals(1, diffs.size());
         assertEquals("a.txt", diffs.get(0).getPath());
         assertEquals(DiffCommand.ChangeType.MODIFY, diffs.get(0).getChangeType());

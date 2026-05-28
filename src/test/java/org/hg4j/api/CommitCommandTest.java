@@ -26,10 +26,10 @@ public class CommitCommandTest {
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Hello First Commit");
 
-        Hg.add(repo).call();
+        new AddCommand(repo).call();
 
         // 2. Perform commit
-        byte[] commitNode = Hg.commit(repo)
+        byte[] commitNode = new CommitCommand(repo)
                 .setAuthor("Tester <test@example.com>")
                 .setMessage("Initial commit")
                 .call();
@@ -93,8 +93,8 @@ public class CommitCommandTest {
         // Commit 1
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Version 1");
-        Hg.add(repo).call();
-        byte[] commitNode1 = Hg.commit(repo).setMessage("Commit 1").call();
+        new AddCommand(repo).call();
+        byte[] commitNode1 = new CommitCommand(repo).setMessage("Commit 1").call();
 
         // Modify file a.txt, and create b.txt
         Files.writeString(f1.toPath(), "Version 2");
@@ -103,10 +103,10 @@ public class CommitCommandTest {
         Files.writeString(f2.toPath(), "New File B");
         
         // Add b.txt
-        Hg.add(repo).call();
+        new AddCommand(repo).call();
 
         // Commit 2
-        byte[] commitNode2 = Hg.commit(repo).setMessage("Commit 2").call();
+        byte[] commitNode2 = new CommitCommand(repo).setMessage("Commit 2").call();
         assertNotNull(commitNode2);
 
         // Verify dirstate parent updated to Commit 2
@@ -133,7 +133,7 @@ public class CommitCommandTest {
     public void testCommitThrowsExceptionWhenNoMessage(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
-        CommitCommand commit = Hg.commit(repo);
+        CommitCommand commit = new CommitCommand(repo);
         assertThrows(IllegalStateException.class, commit::call);
     }
 
@@ -145,8 +145,8 @@ public class CommitCommandTest {
         // 1. Create a file and commit
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Clean Content\n");
-        Hg.add(repo).call();
-        Hg.commit(repo).setMessage("Initial").call();
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Initial").call();
 
         // 2. Put file in 'm' state manually (simulating a conflict after merge)
         Dirstate dirstate = repo.getDirstate();
@@ -157,7 +157,7 @@ public class CommitCommandTest {
         Files.writeString(f1.toPath(), "<<<<<<< Yours\nMy modification\n=======\nTheir modification\n>>>>>>> Theirs\n");
 
         // 4. Try to commit and assert it is blocked
-        CommitCommand commitCmd = Hg.commit(repo).setMessage("Trying to commit conflict");
+        CommitCommand commitCmd = new CommitCommand(repo).setMessage("Trying to commit conflict");
         IllegalStateException ex = assertThrows(IllegalStateException.class, commitCmd::call);
         assertTrue(ex.getMessage().contains("Commit blocked: Unresolved merge conflicts"));
     }
@@ -171,20 +171,20 @@ public class CommitCommandTest {
 
         // 1회 커밋 (리비전 0)
         Files.writeString(f1.toPath(), "Revision 0: Hello world!\nLine 2\nLine 3\n");
-        Hg.add(repo).call();
-        byte[] node0 = Hg.commit(repo).setMessage("Commit 0").call();
+        new AddCommand(repo).call();
+        byte[] node0 = new CommitCommand(repo).setMessage("Commit 0").call();
 
         // 2회 커밋 (리비전 1 - 델타 생성)
         Files.writeString(f1.toPath(), "Revision 1: Hello world!\nLine 2 changed\nLine 3\n");
-        byte[] node1 = Hg.commit(repo).setMessage("Commit 1").call();
+        byte[] node1 = new CommitCommand(repo).setMessage("Commit 1").call();
 
         // 3회 커밋 (리비전 2 - 델타 연쇄 생성, 종래의 C1 버그 격파 지점)
         Files.writeString(f1.toPath(), "Revision 2: Hello world!\nLine 2 changed\nLine 3 changed too!\n");
-        byte[] node2 = Hg.commit(repo).setMessage("Commit 2").call();
+        byte[] node2 = new CommitCommand(repo).setMessage("Commit 2").call();
 
         // 4회 커밋 (리비전 3)
         Files.writeString(f1.toPath(), "Revision 3: Hello world!\nLine 2 changed\nLine 3 changed too!\nFinal Line!\n");
-        byte[] node3 = Hg.commit(repo).setMessage("Commit 3").call();
+        byte[] node3 = new CommitCommand(repo).setMessage("Commit 3").call();
 
         // 저장소에 기록된 파일로그 델타 및 원문 데이터 검증
         File flIdx = new File(repo.getStoreDir(), "data/chain.txt.i");
@@ -209,17 +209,17 @@ public class CommitCommandTest {
         // 1. C1 회귀 증명용 4회 연속 커밋 파일 생성 및 트래킹
         File f1 = new File(repoDir, "chain.txt");
         Files.writeString(f1.toPath(), "Rev 0\n");
-        Hg.add(repo).call();
-        Hg.commit(repo).setMessage("Commit 0").call();
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit 0").call();
 
         Files.writeString(f1.toPath(), "Rev 0\nRev 1\n");
-        Hg.commit(repo).setMessage("Commit 1").call();
+        new CommitCommand(repo).setMessage("Commit 1").call();
 
         Files.writeString(f1.toPath(), "Rev 0\nRev 1\nRev 2\n");
-        Hg.commit(repo).setMessage("Commit 2").call();
+        new CommitCommand(repo).setMessage("Commit 2").call();
 
         Files.writeString(f1.toPath(), "Rev 0\nRev 1\nRev 2\nRev 3\n");
-        Hg.commit(repo).setMessage("Commit 3").call();
+        new CommitCommand(repo).setMessage("Commit 3").call();
 
         // 2. C5 이식 증명용 한글 파일명, 공백 포함 파일명, Windows 예약어 파일명 생성 및 커밋
         File korFile = new File(repoDir, "안녕 하세요.txt");
@@ -231,8 +231,8 @@ public class CommitCommandTest {
         File conFile = new File(repoDir, "CON.txt");
         Files.writeString(conFile.toPath(), "Windows 대문자 예약어 CON 검증");
 
-        Hg.add(repo).call();
-        Hg.commit(repo).setMessage("Commit with non-ASCII and Reserved names").call();
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit with non-ASCII and Reserved names").call();
 
         // 3. 서브프로세스로 네이티브 hg verify 구동하여 무결성 정밀 검증
         org.junit.jupiter.api.Assumptions.assumeTrue(isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg verify integration test.");
@@ -268,8 +268,8 @@ public class CommitCommandTest {
         // Write initial file and commit
         File f1 = new File(repoDir, "test_rollback.txt");
         Files.writeString(f1.toPath(), "initial content");
-        Hg.add(repo).call();
-        byte[] firstCommit = Hg.commit(repo).setMessage("Commit 1").call();
+        new AddCommand(repo).call();
+        byte[] firstCommit = new CommitCommand(repo).setMessage("Commit 1").call();
 
         // Make another file tracking dirstate entry untracked but non-existent on disk to trigger IOException
         Dirstate d = repo.getDirstate();
@@ -277,7 +277,7 @@ public class CommitCommandTest {
         repo.writeDirstate(d);
         
         // This commit should fail with untracked file not found on disk, triggering the rollback transaction!
-        CommitCommand cmd = Hg.commit(repo).setMessage("This must fail");
+        CommitCommand cmd = new CommitCommand(repo).setMessage("This must fail");
         assertThrows(IOException.class, cmd::call);
         
         // Verify dirstate restored atomically to Commit 1
@@ -292,7 +292,7 @@ public class CommitCommandTest {
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         // 1. Missing message exception
-        CommitCommand cmd = Hg.commit(repo);
+        CommitCommand cmd = new CommitCommand(repo);
         assertThrows(IllegalStateException.class, cmd::call);
 
         // 2. Author setting boundary
@@ -302,13 +302,13 @@ public class CommitCommandTest {
         // 3. Unresolved conflicts exception test
         File f1 = new File(repoDir, "conflict.txt");
         Files.writeString(f1.toPath(), "<<<<<<<\n=======\n>>>>>>>");
-        Hg.add(repo).call();
+        new AddCommand(repo).call();
         
         Dirstate d = repo.getDirstate();
         d.addEntry("conflict.txt", new Dirstate.Entry('m', 0644, 20, System.currentTimeMillis() / 1000));
         repo.writeDirstate(d);
         
-        CommitCommand conflictCmd = Hg.commit(repo).setMessage("This must fail due to conflicts");
+        CommitCommand conflictCmd = new CommitCommand(repo).setMessage("This must fail due to conflicts");
         assertThrows(IllegalStateException.class, conflictCmd::call);
     }
 
@@ -325,8 +325,8 @@ public class CommitCommandTest {
         File f3 = new File(repoDir, "한글.txt");
         Files.writeString(f3.toPath(), "한글내용");
 
-        Hg.add(repo).call();
-        byte[] commitNode = Hg.commit(repo)
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo)
                 .setAuthor("Tester <test@example.com>")
                 .setMessage("Regression test commit")
                 .call();
@@ -393,8 +393,8 @@ public class CommitCommandTest {
         // 1. First successful commit
         File f1 = new File(repoDir, "stable.txt");
         Files.writeString(f1.toPath(), "Stable Content");
-        Hg.add(repo).call();
-        byte[] commitNode1 = Hg.commit(repo).setMessage("Stable commit").call();
+        new AddCommand(repo).call();
+        byte[] commitNode1 = new CommitCommand(repo).setMessage("Stable commit").call();
         assertNotNull(commitNode1);
 
         // Record file paths and original sizes
@@ -463,13 +463,13 @@ public class CommitCommandTest {
         // 1. Create a file, write content, and add it
         File f1 = new File(repoDir, "branchfile.txt");
         Files.writeString(f1.toPath(), "Named Branch Content");
-        Hg.add(repo).call();
+        new AddCommand(repo).call();
 
         // 2. Set repository branch to a custom named branch
         repo.setBranch("feature-cool-stuff");
 
         // 3. Commit
-        byte[] commitNode = Hg.commit(repo)
+        byte[] commitNode = new CommitCommand(repo)
                 .setAuthor("Developer <dev@example.com>")
                 .setMessage("Add cool features")
                 .call();
@@ -487,7 +487,7 @@ public class CommitCommandTest {
         assertTrue(text.contains(" branch:feature-cool-stuff"), "Changelog should contain Mercurial style extra branch info");
 
         // 5. Verify that LogCommand correctly parses the branch name
-        java.util.List<org.hg4j.api.HgCommit> logs = Hg.log(repo).call();
+        java.util.List<org.hg4j.api.HgCommit> logs = new LogCommand(repo).call();
         assertEquals(1, logs.size());
         org.hg4j.api.HgCommit entry = logs.get(0);
         assertEquals("feature-cool-stuff", entry.getBranch(), "Parsed branch name must match");
@@ -512,4 +512,65 @@ public class CommitCommandTest {
             return false;
         }
     }
+
+    @Test
+    public void testFindUnescapedColonEdgeCases() {
+        // null input
+        assertEquals(-1, CommitCommand.findUnescapedColon(null));
+        // empty input
+        assertEquals(-1, CommitCommand.findUnescapedColon(""));
+        // no colon
+        assertEquals(-1, CommitCommand.findUnescapedColon("nocolonhere"));
+        // escaped colon
+        assertEquals(-1, CommitCommand.findUnescapedColon("escaped\\:colon"));
+        // escaped backslash followed by colon
+        assertEquals(9, CommitCommand.findUnescapedColon("escaped\\\\:colon"));
+        // multiple colons
+        assertEquals(3, CommitCommand.findUnescapedColon("abc:def:ghi"));
+    }
+
+    @Test
+    public void testDecodeExtraKeyNullAndEdgeCases() {
+        assertEquals("", CommitCommand.decodeExtraKey(null));
+        assertEquals("", CommitCommand.decodeExtraKey(""));
+        // normal
+        assertEquals("abc", CommitCommand.decodeExtraKey("abc"));
+        // escape character at the very end
+        assertEquals("abc\\", CommitCommand.decodeExtraKey("abc\\"));
+        // unescaped normal character after backslash
+        assertEquals("abc\\x", CommitCommand.decodeExtraKey("abc\\x"));
+        // escaped values
+        assertEquals("a\nb\rc\0d:e\\f", CommitCommand.decodeExtraKey("a\\nb\\rc\\0d\\:e\\\\f"));
+    }
+
+    @Test
+    public void testCommitThrowsExceptionWhenEmptyMessage(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        CommitCommand commit = new CommitCommand(repo).setMessage("");
+        assertThrows(IllegalStateException.class, commit::call);
+    }
+
+    @Test
+    public void testCommitThrowsHgRevisionNotFoundException(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        
+        // 1. Create a dummy file and add
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "Content");
+        new AddCommand(repo).call();
+        
+        // 2. Write invalid NodeId into Dirstate parents
+        Dirstate d = repo.getDirstate();
+        byte[] fakeHash = new byte[20];
+        fakeHash[0] = 0x12; // fake SHA-1
+        d.setParents(new org.hg4j.lib.NodeId(fakeHash), org.hg4j.lib.NodeId.NULL);
+        repo.writeDirstate(d);
+        
+        // 3. Commit should fail with HgRevisionNotFoundException
+        CommitCommand commit = new CommitCommand(repo).setMessage("This must fail due to fake parent revision");
+        assertThrows(org.hg4j.errors.HgRevisionNotFoundException.class, commit::call);
+    }
 }
+

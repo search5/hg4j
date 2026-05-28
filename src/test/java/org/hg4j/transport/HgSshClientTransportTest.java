@@ -327,4 +327,135 @@ public class HgSshClientTransportTest {
             }
         }
     }
+
+    @Test
+    @DisplayName("SSH capabilities 헤더 오류 시 HgProtocolException 발생")
+    public void testReadCapabilities_invalidHeader_throwsProtocolException() throws Exception {
+        byte[] invalidHeader = "invalidheader: something\n".getBytes(StandardCharsets.UTF_8);
+        HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
+        
+        java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+        inField.setAccessible(true);
+        inField.set(client, new ByteArrayInputStream(invalidHeader));
+        
+        java.lang.reflect.Method method = HgSshClient.class.getDeclaredMethod("readCapabilities");
+        method.setAccessible(true);
+        
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> {
+            try {
+                method.invoke(client);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("SSH chunk size EOF 시 HgProtocolException 발생")
+    public void testReadBinaryResponse_eofInSize_throwsProtocolException() throws Exception {
+        byte[] incompleteSize = new byte[]{0, 0, 1}; // 4바이트 미만
+        HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
+        
+        java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+        inField.setAccessible(true);
+        inField.set(client, new ByteArrayInputStream(incompleteSize));
+        
+        java.lang.reflect.Method method = HgSshClient.class.getDeclaredMethod("readBinaryResponse");
+        method.setAccessible(true);
+        
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> {
+            try {
+                method.invoke(client);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("SSH 음수 chunk size 시 HgProtocolException 발생")
+    public void testReadBinaryResponse_negativeSize_throwsProtocolException() throws Exception {
+        byte[] negativeSize = new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0x9C}; // 음수
+        HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
+        
+        java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+        inField.setAccessible(true);
+        inField.set(client, new ByteArrayInputStream(negativeSize));
+        
+        java.lang.reflect.Method method = HgSshClient.class.getDeclaredMethod("readBinaryResponse");
+        method.setAccessible(true);
+        
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> {
+            try {
+                method.invoke(client);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("SSH chunk payload EOF 시 HgProtocolException 발생")
+    public void testReadBinaryResponse_eofInPayload_throwsProtocolException() throws Exception {
+        byte[] incompletePayload = new byte[]{0, 0, 0, 10, 1, 2, 3}; // 10바이트 명시했으나 3바이트만 제공
+        HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
+        
+        java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+        inField.setAccessible(true);
+        inField.set(client, new ByteArrayInputStream(incompletePayload));
+        
+        java.lang.reflect.Method method = HgSshClient.class.getDeclaredMethod("readBinaryResponse");
+        method.setAccessible(true);
+        
+        assertThrows(org.hg4j.errors.HgProtocolException.class, () -> {
+            try {
+                method.invoke(client);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("Repository.open() 팩토리 메소드 기능 및 예외 정밀 검증")
+    public void testRepositoryOpenStaticMethod() throws Exception {
+        // Null 인자
+        assertThrows(IllegalArgumentException.class, () -> org.hg4j.core.Repository.open(null));
+        
+        // 존재하지 않는 디렉터리
+        File nonExistent = new File(System.getProperty("java.io.tmpdir"), "non_existent_hg_repo_test_" + System.currentTimeMillis());
+        assertThrows(org.hg4j.errors.HgRepositoryNotFoundException.class, () -> org.hg4j.core.Repository.open(nonExistent));
+        
+        // 정상적인 저장소 오픈 검증
+        java.nio.file.Path tempPath = Files.createTempDirectory("hg4j_repo_open_static_test_");
+        File tempDir = tempPath.toFile();
+        try {
+            // 초기화
+            org.hg4j.core.Repository repo = org.hg4j.api.Hg.init().setDirectory(tempDir).call();
+            assertNotNull(repo);
+            repo.close();
+            
+            // static open 호출
+            try (org.hg4j.core.Repository opened = org.hg4j.core.Repository.open(tempDir)) {
+                assertNotNull(opened);
+                assertEquals(tempDir.getCanonicalPath(), opened.getDirectory().getCanonicalPath());
+            }
+        } finally {
+            // 삭제
+            File[] files = tempDir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.isDirectory()) {
+                        File[] children = f.listFiles();
+                        if (children != null) {
+                            for (File c : children) c.delete();
+                        }
+                    }
+                    f.delete();
+                }
+            }
+            tempDir.delete();
+        }
+    }
 }
+

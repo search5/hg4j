@@ -25,17 +25,17 @@ public class HgAdvancedHistoryTest {
         // 1. Commit baseline file
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Baseline content");
-        Hg.add(repo).call();
-        Hg.commit(repo).setMessage("Base commit").call();
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Base commit").call();
 
         // 2. Modify f1 and create added f2
         Files.writeString(f1.toPath(), "Modified content is completely different and much longer!");
         File f2 = new File(repoDir, "b.txt");
         Files.writeString(f2.toPath(), "Added file content");
-        Hg.add(repo).call();
+        new AddCommand(repo).call();
 
         // 3. Perform shelve
-        Hg.shelve(repo).setName("feature_stash").call();
+        new ShelveCommand(repo).setName("feature_stash").call();
 
         // Verify working copy reverted to Baseline and f2 is deleted
         assertEquals("Baseline content", Files.readString(f1.toPath()));
@@ -46,7 +46,7 @@ public class HgAdvancedHistoryTest {
         assertNull(dsPostShelve.getEntries().get("b.txt"));
 
         // 4. Perform unshelve
-        Hg.shelve(repo).setName("feature_stash").setUnshelve(true).call();
+        new ShelveCommand(repo).setName("feature_stash").setUnshelve(true).call();
 
         // Verify working copy modifications restored
         assertEquals("Modified content is completely different and much longer!", Files.readString(f1.toPath()));
@@ -66,14 +66,14 @@ public class HgAdvancedHistoryTest {
         // Commit 0 (Common Base)
         File f1 = new File(repoDir, "base.txt");
         Files.writeString(f1.toPath(), "Common Base Content");
-        Hg.add(repo).call();
-        byte[] commonBase = Hg.commit(repo).setMessage("Commit 0").call();
+        new AddCommand(repo).call();
+        byte[] commonBase = new CommitCommand(repo).setMessage("Commit 0").call();
 
         // Branch main: Commit 1
         File fMain = new File(repoDir, "main.txt");
         Files.writeString(fMain.toPath(), "Main branch edit");
-        Hg.add(repo).call();
-        byte[] mainHead = Hg.commit(repo).setMessage("Commit 1 (Main)").call();
+        new AddCommand(repo).call();
+        byte[] mainHead = new CommitCommand(repo).setMessage("Commit 1 (Main)").call();
 
         // Backtrack to Common Base to spawn branch feature
         Dirstate ds = repo.getDirstate();
@@ -83,11 +83,11 @@ public class HgAdvancedHistoryTest {
         // Branch feature: Commit 2
         File fFeature = new File(repoDir, "feature.txt");
         Files.writeString(fFeature.toPath(), "Feature branch edit");
-        Hg.add(repo).call();
-        byte[] featureHead = Hg.commit(repo).setMessage("Commit 2 (Feature)").call();
+        new AddCommand(repo).call();
+        byte[] featureHead = new CommitCommand(repo).setMessage("Commit 2 (Feature)").call();
 
         // Now rebase featureHead on top of mainHead
-        RebaseCommand rebaseCmd = Hg.rebase(repo)
+        RebaseCommand rebaseCmd = new RebaseCommand(repo)
                 .setSource(featureHead)
                 .setTarget(mainHead);
         
@@ -118,14 +118,14 @@ public class HgAdvancedHistoryTest {
         // 1. Common Base (Commit 0)
         File fBase = new File(repoDir, "base.txt");
         Files.writeString(fBase.toPath(), "C0 Content");
-        Hg.add(repo).call();
-        byte[] c0Node = Hg.commit(repo).setMessage("Commit 0").call();
+        new AddCommand(repo).call();
+        byte[] c0Node = new CommitCommand(repo).setMessage("Commit 0").call();
 
         // 2. Main branch (Commit 1)
         File fMain = new File(repoDir, "main.txt");
         Files.writeString(fMain.toPath(), "C1 Main Edit");
-        Hg.add(repo).call();
-        byte[] c1Node = Hg.commit(repo).setMessage("Commit 1").call();
+        new AddCommand(repo).call();
+        byte[] c1Node = new CommitCommand(repo).setMessage("Commit 1").call();
 
         // 3. Backtrack to C0 for Feature branch (Commit 2)
         Dirstate ds = repo.getDirstate();
@@ -134,8 +134,8 @@ public class HgAdvancedHistoryTest {
 
         File fFeature = new File(repoDir, "feature.txt");
         Files.writeString(fFeature.toPath(), "C2 Feature Edit");
-        Hg.add(repo).call();
-        byte[] c2Node = Hg.commit(repo).setMessage("Commit 2").call();
+        new AddCommand(repo).call();
+        byte[] c2Node = new CommitCommand(repo).setMessage("Commit 2").call();
 
         // 4. Backtrack to C0 again for an Independent branch (Commit 3)
         // This independent branch should be preserved during the rebase of C2 onto C1!
@@ -145,11 +145,11 @@ public class HgAdvancedHistoryTest {
 
         File fIndependent = new File(repoDir, "independent.txt");
         Files.writeString(fIndependent.toPath(), "C3 Independent Edit");
-        Hg.add(repo).call();
-        byte[] c3Node = Hg.commit(repo).setMessage("Commit 3").call();
+        new AddCommand(repo).call();
+        byte[] c3Node = new CommitCommand(repo).setMessage("Commit 3").call();
 
         // 5. Rebase C2(Feature branch) onto C1(Main branch)
-        RebaseCommand rebaseCmd = Hg.rebase(repo)
+        RebaseCommand rebaseCmd = new RebaseCommand(repo)
                 .setSource(c2Node)
                 .setTarget(c1Node);
         

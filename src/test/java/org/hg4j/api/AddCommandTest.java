@@ -30,7 +30,7 @@ public class AddCommandTest {
         assertTrue(f2.createNewFile());
 
         // Perform hg add on specific files
-        Hg.add(repo)
+        new AddCommand(repo)
                 .addFile("file1.txt")
                 .addFile("sub/file2.txt")
                 .call();
@@ -61,7 +61,7 @@ public class AddCommandTest {
         assertTrue(new File(nested, "b.txt").createNewFile());
 
         // Add all untracked files (no files specified)
-        Hg.add(repo).call();
+        new AddCommand(repo).call();
 
         Dirstate dirstate = repo.getDirstate();
         Map<String, Dirstate.Entry> entries = dirstate.getEntries();
@@ -75,7 +75,7 @@ public class AddCommandTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
-        AddCommand add = Hg.add(repo).addFile("nonexistent.txt");
+        AddCommand add = new AddCommand(repo).addFile("nonexistent.txt");
         assertThrows(IOException.class, add::call);
     }
 }

@@ -275,7 +275,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
                     if (read == 0) {
                         return baos.toByteArray(); // EOF
                     }
-                    throw new IOException("Unexpected EOF while reading Mercurial SSH binary chunk size");
+                    throw new org.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading Mercurial SSH binary chunk size");
                 }
                 read += got;
             }
@@ -287,7 +287,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
                 break; // Empty chunk signals end of payload
             }
             if (len < 0) {
-                throw new IOException("Invalid negative binary chunk size: " + len);
+                throw new org.hg4j.errors.HgProtocolException(sshUrl, "Invalid negative binary chunk size: " + len);
             }
 
             byte[] chunkBuf = new byte[len];
@@ -295,7 +295,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
             while (chunkRead < len) {
                 int got = in.read(chunkBuf, chunkRead, len - chunkRead);
                 if (got == -1) {
-                    throw new IOException("Unexpected EOF inside Mercurial SSH binary chunk payload");
+                    throw new org.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF inside Mercurial SSH binary chunk payload");
                 }
                 chunkRead += got;
             }

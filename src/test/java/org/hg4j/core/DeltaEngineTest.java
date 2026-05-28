@@ -193,4 +193,57 @@ public class DeltaEngineTest {
         buf.putInt(length);
         return buf.array();
     }
+
+    @Test
+    @DisplayName("Line 내부 클래스 equals / hashCode 정합성 테스트")
+    public void testLineEqualsAndHashCode() throws Exception {
+        java.util.List<?> lines = (java.util.List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
+                .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
+        
+        assertNotNull(lines);
+        assertEquals(1, lines.size());
+        Object lineObj1 = lines.get(0);
+        
+        java.util.List<?> lines2 = (java.util.List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
+                .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
+        Object lineObj2 = lines2.get(0);
+        
+        assertEquals(lineObj1, lineObj2);
+        assertEquals(lineObj1.hashCode(), lineObj2.hashCode());
+        
+        java.util.List<?> lines3 = (java.util.List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
+                .invoke(null, (Object) "Line 2\n".getBytes(StandardCharsets.UTF_8));
+        Object lineObj3 = lines3.get(0);
+        
+        assertNotEquals(lineObj1, lineObj3);
+        assertNotEquals("string", lineObj1);
+        assertNotEquals(null, lineObj1);
+    }
+
+    @Test
+    @DisplayName("createDelta 엣지 케이스: base null / empty 및 target null / empty")
+    public void testCreateDeltaEdgeCases() throws Exception {
+        // 1. base null / target null
+        byte[] d1 = DeltaEngine.createDelta(null, null);
+        assertArrayEquals(new byte[12], d1);
+        
+        // 2. base empty / target empty
+        byte[] d2 = DeltaEngine.createDelta(new byte[0], new byte[0]);
+        assertArrayEquals(new byte[12], d2);
+        
+        // 3. base null / target non-empty
+        byte[] target = "hello".getBytes(StandardCharsets.UTF_8);
+        byte[] d3 = DeltaEngine.createDelta(null, target);
+        assertArrayEquals(target, DeltaEngine.applyDelta(new byte[0], d3));
+        
+        // 4. base non-empty / target null
+        byte[] base = "world".getBytes(StandardCharsets.UTF_8);
+        byte[] d4 = DeltaEngine.createDelta(base, null);
+        assertArrayEquals(new byte[0], DeltaEngine.applyDelta(base, d4));
+        
+        // 5. base non-empty / target empty
+        byte[] d5 = DeltaEngine.createDelta(base, new byte[0]);
+        assertArrayEquals(new byte[0], DeltaEngine.applyDelta(base, d5));
+    }
 }
+

@@ -44,21 +44,21 @@ public final class DeltaEngine {
 
         while (buf.hasRemaining()) {
             if (buf.remaining() < 12) {
-                throw new IOException("Truncated delta hunk header");
+                throw new org.hg4j.errors.HgCorruptDataException("Truncated delta hunk header");
             }
             int start = buf.getInt();
             int end = buf.getInt();
             int length = buf.getInt();
 
             if (length < 0 || buf.remaining() < length) {
-                throw new IOException("Truncated delta hunk data");
+                throw new org.hg4j.errors.HgCorruptDataException("Truncated delta hunk data");
             }
             byte[] insertData = new byte[length];
             buf.get(insertData);
 
             if (start < lastCopied || start > baseText.length
                     || end < start || end > baseText.length) {
-                throw new IOException("Invalid delta hunk offsets: start=" + start
+                throw new org.hg4j.errors.HgCorruptDataException("Invalid delta hunk offsets: start=" + start
                         + ", end=" + end + ", baseLen=" + baseText.length);
             }
             out.write(baseText, lastCopied, start - lastCopied);
@@ -153,38 +153,107 @@ public final class DeltaEngine {
         int n = baseLines.size();
         int m = newLines.size();
 
-        // O(N*M) 연산 한계 초과 시 단순 델타로 폴백
-        if ((long) n * m > 250000) {
-            return createSimpleDelta(baseText, newText);
-        }
+        // O(N*M) 대신 Myers Diff O(ND) 탐색
+        int max = n + m;
+        int offset = max;
+        int[] v = new int[2 * max + 1];
+        java.util.Arrays.fill(v, -1);
+        v[offset + 1] = 0;
 
-        // LCS DP 테이블 구성
-        int[][] dp = new int[n + 1][m + 1];
-        for (int i = 1; i <= n; i++) {
-            for (int j = 1; j <= m; j++) {
-                if (baseLines.get(i - 1).equals(newLines.get(j - 1))) {
-                    dp[i][j] = dp[i - 1][j - 1] + 1;
+        List<int[]> history = new java.util.ArrayList<>();
+
+        int targetD = -1;
+        for (int d = 0; d <= max; d++) {
+            int[] vCopy = new int[2 * d + 1];
+            for (int k = -d; k <= d; k += 2) {
+                int idx = offset + k;
+                int x;
+                if (k == -d || (k != d && v[idx - 1] < v[idx + 1])) {
+                    x = v[idx + 1];
                 } else {
-                    dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+                    x = v[idx - 1] + 1;
+                }
+                int y = x - k;
+                while (x < n && y < m && baseLines.get(x).equals(newLines.get(y))) {
+                    x++;
+                    y++;
+                }
+                v[idx] = x;
+                if (x >= n && y >= m) {
+                    targetD = d;
+                    int[] currentVCopy = new int[2 * d + 1];
+                    for (int k2 = -d; k2 <= d; k2 += 2) {
+                        currentVCopy[k2 + d] = v[offset + k2];
+                    }
+                    history.add(currentVCopy);
+                    break;
                 }
             }
+            if (targetD != -1) {
+                break;
+            }
+            int[] currentVCopy = new int[2 * d + 1];
+            for (int k2 = -d; k2 <= d; k2 += 2) {
+                currentVCopy[k2 + d] = v[offset + k2];
+            }
+            history.add(currentVCopy);
         }
 
-        // LCS 역추적으로 공통 라인 마킹
-        int i = n, j = m;
         boolean[] baseMatched = new boolean[n];
         boolean[] newMatched = new boolean[m];
-        while (i > 0 && j > 0) {
-            if (baseLines.get(i - 1).equals(newLines.get(j - 1))) {
-                baseMatched[i - 1] = true;
-                newMatched[j - 1] = true;
-                i--;
-                j--;
-            } else if (dp[i - 1][j] >= dp[i][j - 1]) {
-                i--;
+
+        // Myers Diff Backtracking
+        int currX = n;
+        int currY = m;
+        for (int d = targetD; d > 0; d--) {
+            int k = currX - currY;
+            int[] vPrev = history.get(d - 1);
+
+            int kPrev;
+            int dPrev = d - 1;
+            int idxMinus = k - 1 + dPrev;
+            int idxPlus = k + 1 + dPrev;
+            
+            boolean moveDown = false;
+            if (k == -d) {
+                moveDown = true;
+            } else if (k == d) {
+                moveDown = false;
             } else {
-                j--;
+                int valMinus = (idxMinus >= 0 && idxMinus < vPrev.length) ? vPrev[idxMinus] : -1;
+                int valPlus = (idxPlus >= 0 && idxPlus < vPrev.length) ? vPrev[idxPlus] : -1;
+                moveDown = valMinus < valPlus;
             }
+
+            if (moveDown) {
+                kPrev = k + 1;
+            } else {
+                kPrev = k - 1;
+            }
+
+            int xPrev = vPrev[kPrev + dPrev];
+            int yPrev = xPrev - kPrev;
+
+            while (currX > xPrev && currY > yPrev) {
+                if (currX - 1 < n && currY - 1 < m && baseLines.get(currX - 1).equals(newLines.get(currY - 1))) {
+                    baseMatched[currX - 1] = true;
+                    newMatched[currY - 1] = true;
+                }
+                currX--;
+                currY--;
+            }
+
+            currX = xPrev;
+            currY = yPrev;
+        }
+
+        while (currX > 0 && currY > 0) {
+            if (baseLines.get(currX - 1).equals(newLines.get(currY - 1))) {
+                baseMatched[currX - 1] = true;
+                newMatched[currY - 1] = true;
+            }
+            currX--;
+            currY--;
         }
 
         // 변경 구간을 hunk로 직렬화

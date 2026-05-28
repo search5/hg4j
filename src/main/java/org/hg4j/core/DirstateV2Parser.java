@@ -19,7 +19,7 @@ public class DirstateV2Parser {
      */
     public Dirstate parse(byte[] bytes) throws IOException {
         if (bytes == null) {
-            throw new IOException("Invalid dirstate-v2 data: content is null");
+            throw new org.hg4j.errors.HgCorruptDataException("Invalid dirstate-v2 data: content is null");
         }
 
         if (bytes.length == 0) {
@@ -46,7 +46,7 @@ public class DirstateV2Parser {
         }
 
         if (nodeCount == 0) {
-            throw new IOException("Malformed dirstate-v2 data: cannot resolve node count and layout");
+            throw new org.hg4j.errors.HgCorruptDataException("Malformed dirstate-v2 data: cannot resolve node count and layout");
         }
 
         int nodesOffset = 0;
@@ -66,7 +66,7 @@ public class DirstateV2Parser {
             int pathLen = node.getPathLen() & 0xFFFF; // unsigned short
 
             if (dataOffset + pathOffset + pathLen > buffer.capacity()) {
-                throw new IOException("Data block overflow for node segment: " + i);
+                throw new org.hg4j.errors.HgCorruptDataException("Data block overflow for node segment: " + i);
             }
 
             // Extract the path string

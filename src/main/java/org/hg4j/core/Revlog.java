@@ -105,7 +105,7 @@ public class Revlog {
 
         File targetFile = inline ? idxFile : datFile;
         if (!targetFile.exists()) {
-            throw new IOException("Revlog data file does not exist: " + targetFile);
+            throw new org.hg4j.errors.HgCorruptDataException("Revlog data file does not exist: " + targetFile);
         }
 
         try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(targetFile.toPath(), java.nio.file.StandardOpenOption.READ)) {
@@ -426,7 +426,7 @@ public class Revlog {
         System.arraycopy(entry.node, 0, remoteNodeId, 0, 20);
 
         if (!Arrays.equals(expectedNodeId, remoteNodeId)) {
-            throw new IOException("Security Integrity Error: Changegroup entry hash mismatch! Expected: " 
+            throw new org.hg4j.errors.HgCorruptDataException("Security Integrity Error: Changegroup entry hash mismatch! Expected: " 
                 + NodeIdUtil.toHex(expectedNodeId) + " but received: " + NodeIdUtil.toHex(remoteNodeId));
         }
 

@@ -105,21 +105,54 @@ public class ChangesetGraph {
             return Set.of(revA);
         }
 
-        Set<Integer> ancestorsA = getAllAncestors(revA, parentLookup);
-        Set<Integer> ancestorsB = getAllAncestors(revB, parentLookup);
+        int PARENT1 = 1;
+        int PARENT2 = 2;
+        int MERGE_BASE = 4;
 
-        Set<Integer> common = new HashSet<>(ancestorsA);
-        common.retainAll(ancestorsB);
+        PriorityQueue<Integer> queue = new PriorityQueue<>((a, b) -> Integer.compare(b, a));
+        Map<Integer, Integer> flags = new HashMap<>();
+        Set<Integer> inQueue = new HashSet<>();
 
-        if (common.isEmpty()) {
-            return Set.of();
+        flags.put(revA, PARENT1);
+        queue.add(revA);
+        inQueue.add(revA);
+
+        int fB = flags.getOrDefault(revB, 0);
+        flags.put(revB, fB | PARENT2);
+        if (inQueue.add(revB)) {
+            queue.add(revB);
         }
 
-        Set<Integer> candidates = new HashSet<>(common);
-        for (int c : common) {
-            for (int other : common) {
-                if (c != other && isAncestor(c, other, parentLookup)) {
-                    candidates.remove(c);
+        Set<Integer> candidates = new HashSet<>();
+
+        while (!queue.isEmpty()) {
+            int curr = queue.poll();
+            inQueue.remove(curr);
+
+            int f = flags.getOrDefault(curr, 0);
+
+            if ((f & (PARENT1 | PARENT2)) == (PARENT1 | PARENT2)) {
+                if ((f & MERGE_BASE) == 0) {
+                    candidates.add(curr);
+                    f |= MERGE_BASE;
+                    flags.put(curr, f);
+                }
+            }
+
+            int[] parents = parentLookup.apply(curr);
+            if (parents != null) {
+                for (int p : parents) {
+                    if (p != -1) {
+                        int pf = flags.getOrDefault(p, 0);
+                        int newPf = pf | f;
+                        
+                        if (newPf != pf) {
+                            flags.put(p, newPf);
+                            if (inQueue.add(p)) {
+                                queue.add(p);
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -7,7 +7,7 @@ import java.io.IOException;
  * Interface representing a Mercurial repository.
  * Provides abstraction for core repository directory access, dirstate operations, branch state, and concurrency locks.
  */
-public interface Repository {
+public interface Repository extends AutoCloseable {
 
     File getDirectory();
 
@@ -44,4 +44,7 @@ public interface Repository {
         }
         return new HgRepository(directory);
     }
+
+    @Override
+    void close();
 }

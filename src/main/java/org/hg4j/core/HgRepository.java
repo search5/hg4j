@@ -475,4 +475,9 @@ public class HgRepository implements Repository {
         }
         file.delete();
     }
+
+    @Override
+    public void close() {
+        // 리소스 캐시 정리 등 안전한 해제 수행
+    }
 }

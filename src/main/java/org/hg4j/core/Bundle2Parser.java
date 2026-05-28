@@ -43,7 +43,7 @@ public class Bundle2Parser {
         dis.readFully(magic);
         String magicStr = new String(magic, java.nio.charset.StandardCharsets.US_ASCII);
         if (!"HG20".equals(magicStr)) {
-            throw new IOException("Unsupported bundle magic: " + magicStr + ". Expected HG20.");
+            throw new org.hg4j.errors.HgCorruptDataException("Unsupported bundle magic: " + magicStr + ". Expected HG20.");
         }
 
         // 2. Stream Level Parameters Size
@@ -73,7 +73,7 @@ public class Bundle2Parser {
                 // Zstandard compression
                 payloadStream = new com.github.luben.zstd.ZstdInputStream(dis);
             } else {
-                throw new IOException("Unsupported bundle2 compression: " + compression);
+                throw new org.hg4j.errors.HgCorruptDataException("Unsupported bundle2 compression: " + compression);
             }
         }
 
@@ -134,7 +134,7 @@ public class Bundle2Parser {
                 }
                 if (chunkSize == -1) {
                     // Interrupt (nested part starts)
-                    throw new IOException("Nested stream interrupts are not supported in this lightweight parser.");
+                    throw new org.hg4j.errors.HgCorruptDataException("Nested stream interrupts are not supported in this lightweight parser.");
                 }
                 
                 byte[] chunkData = new byte[chunkSize];
@@ -147,7 +147,7 @@ public class Bundle2Parser {
         }
 
         if (cgOut.size() == 0) {
-            throw new IOException("No CHANGEGROUP part found in the bundle2 stream.");
+            throw new org.hg4j.errors.HgCorruptDataException("No CHANGEGROUP part found in the bundle2 stream.");
         }
 
         ExtractedBundle2 result = new ExtractedBundle2();

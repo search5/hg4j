@@ -138,7 +138,7 @@ public final class DeltaCodec {
                 out.write(buf, 0, count);
             }
         } catch (DataFormatException e) {
-            throw new IOException("Failed to decompress zlib revlog hunk", e);
+            throw new org.hg4j.errors.HgCorruptDataException("Failed to decompress zlib revlog hunk", e);
         } finally {
             inflater.end();
         }

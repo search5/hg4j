@@ -3,6 +3,7 @@ plugins {
     id 'jacoco'
     id 'maven-publish'
     id 'org.owasp.dependencycheck' version '9.0.9'
+    id 'org.javamodularity.moduleplugin' version '1.8.15'
 }
 
 group = 'org.hg4j'
@@ -18,6 +19,7 @@ java {
     }
     withSourcesJar()
     withJavadocJar()
+    modularity.inferModulePath = true
 }
 
 dependencies {
@@ -131,4 +133,8 @@ dependencyCheck {
     autoUpdate = true
     failBuildOnCVSS = 7.0f
     format = 'ALL'
+}
+
+compileJava {
+    exclude 'module-info.java'
 }

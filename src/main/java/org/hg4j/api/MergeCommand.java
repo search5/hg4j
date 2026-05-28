@@ -206,7 +206,7 @@ public class MergeCommand {
             // Resolve target revision index and Node ID
             int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
             if (p1Rev == -1) {
-                throw new IOException("Current parent commit not found: " + p1CommitNode.toHex());
+                throw new org.hg4j.errors.HgRevisionNotFoundException(p1CommitNode.toHex());
             }
 
             int p2Rev = targetRev;
@@ -214,7 +214,7 @@ public class MergeCommand {
             if (p2CommitNode != null) {
                 p2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode);
                 if (p2Rev == -1) {
-                    throw new IOException("Target commit not found: " + NodeIdUtil.toHex(p2CommitNode));
+                    throw new org.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(p2CommitNode));
                 }
             } else if (p2Rev != -1) {
                 if (p2Rev < 0 || p2Rev >= changelog.getRevisionCount()) {
@@ -238,7 +238,7 @@ public class MergeCommand {
             // 2. Find Merge Base (LCA)
             MergeBase lca = getMergeBase(changelog, manifestRevlog, p1Rev, p2Rev, 0);
             if (lca.manifest.isEmpty() && lca.rev == -1) {
-                throw new IOException("No common ancestor found between " + p1Rev + " and " + p2Rev);
+                throw new org.hg4j.errors.HgRevisionNotFoundException("No common ancestor found between " + p1Rev + " and " + p2Rev);
             }
 
             if (lca.rev == p2Rev) {
@@ -377,13 +377,13 @@ public class MergeCommand {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new IOException("Filelog index does not exist for: " + path);
+            throw new org.hg4j.errors.HgCorruptDataException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         String cleanHex = nodeHex.length() > 40 ? nodeHex.substring(0, 40) : nodeHex;
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(cleanHex));
         if (rev == -1) {
-            throw new IOException("File revision not found: " + path + " @ " + nodeHex);
+            throw new org.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }

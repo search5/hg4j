@@ -77,7 +77,7 @@ public class RebaseCommand {
         int tgtRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNode);
 
         if (srcRev == -1 || tgtRev == -1) {
-            throw new IOException("Source or target revision not found in history.");
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Source or target revision not found in history.");
         }
 
         // Collect all descendant revisions of source revision (inclusive)

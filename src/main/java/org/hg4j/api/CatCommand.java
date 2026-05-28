@@ -48,12 +48,12 @@ public class CatCommand {
         Revlog changelog = repository.getRevlog(clIdx, clDat);
         byte[] targetNodeId = resolveTargetNodeId(changelog);
         if (targetNodeId == null) {
-            throw new IOException("Unable to resolve revision");
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Unable to resolve revision");
         }
 
         int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
         if (commitRev == -1) {
-            throw new IOException("Commit revision not found: " + NodeIdUtil.toHex(targetNodeId));
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Commit revision not found: " + NodeIdUtil.toHex(targetNodeId));
         }
 
         // Read Manifest at that commit to find file version node
@@ -66,7 +66,7 @@ public class CatCommand {
         Revlog manifest = repository.getRevlog(mfIdx, mfDat);
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
         if (mfRev == -1) {
-            throw new IOException("Manifest not found: " + NodeIdUtil.toHex(mfNode));
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Manifest not found: " + NodeIdUtil.toHex(mfNode));
         }
 
         byte[] mfContent = manifest.getRevisionContent(mfRev);
@@ -87,19 +87,19 @@ public class CatCommand {
         }
 
         if (fileHexNode == null) {
-            throw new IOException("File not tracked at target revision: " + file);
+            throw new org.hg4j.errors.HgRevisionNotFoundException("File not tracked at target revision: " + file);
         }
 
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), file);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new IOException("Filelog not found for tracked file: " + file);
+            throw new org.hg4j.errors.HgCorruptDataException("Filelog not found for tracked file: " + file);
         }
 
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(fileHexNode));
         if (fileRev == -1) {
-            throw new IOException("File version not found in history: " + file + " @ " + fileHexNode);
+            throw new org.hg4j.errors.HgRevisionNotFoundException("File version not found in history: " + file + " @ " + fileHexNode);
         }
 
         return filelog.getRevisionContent(fileRev);
@@ -125,7 +125,7 @@ public class CatCommand {
             String hex = NodeIdUtil.toHex(node);
             if (hex.startsWith(revision.toLowerCase())) {
                 if (matchNode != null) {
-                    throw new IOException("Ambiguous revision identifier: " + revision);
+                    throw new org.hg4j.errors.HgRevisionNotFoundException("Ambiguous revision identifier: " + revision);
                 }
                 matchNode = node;
             }

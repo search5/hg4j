@@ -3,7 +3,7 @@ package org.hg4j.api;
 /**
  * Porcelain API for Mercurial commands, similar to JGit's Git class.
  */
-public class Hg {
+public class Hg implements AutoCloseable {
     
     private final org.hg4j.core.HgRepository repository;
     
@@ -319,5 +319,12 @@ public class Hg {
      */
     public static java.util.List<TreeCommand.TreeEntry> getTree(org.hg4j.core.HgRepository repository, org.hg4j.lib.NodeId revision) throws java.io.IOException {
         return tree(repository).setNodeId(revision).call();
+    }
+
+    @Override
+    public void close() {
+        if (this.repository != null) {
+            this.repository.close();
+        }
     }
 }

@@ -32,7 +32,7 @@ public class RevlogIndex {
         long len = idxFile.length();
         if (len == 0) return;
         if (len < 64) {
-            throw new IOException("Invalid revlog index: too short");
+            throw new org.hg4j.errors.HgCorruptDataException("Invalid revlog index: too short");
         }
 
         try (FileChannel channel = FileChannel.open(idxFile.toPath(), StandardOpenOption.READ)) {
@@ -47,7 +47,7 @@ public class RevlogIndex {
                     int formatFlags = (int) (offsetFlags >>> 48);
                     int version = (int) ((offsetFlags >>> 32) & 0xFFFF);
                     if (version != 1) {
-                        throw new IOException("Unsupported revlog version: " + version);
+                        throw new org.hg4j.errors.HgCorruptDataException("Unsupported revlog version: " + version);
                     }
                     this.inline = (formatFlags & 0x0001) != 0;
                     offset = 0;
@@ -74,7 +74,7 @@ public class RevlogIndex {
 
                 if (inline) {
                     if (buf.remaining() < compLen) {
-                        throw new IOException("Truncated inline revlog data at revision " + revision);
+                        throw new org.hg4j.errors.HgCorruptDataException("Truncated inline revlog data at revision " + revision);
                     }
                     buf.position(buf.position() + compLen);
                 }

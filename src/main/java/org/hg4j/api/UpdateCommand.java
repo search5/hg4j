@@ -61,7 +61,7 @@ public class UpdateCommand {
 
             int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
             if (commitRev == -1) {
-                throw new IOException("Resolved target commit not found in history: " + NodeIdUtil.toHex(targetNodeId));
+                throw new org.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
             }
 
             // Extract manifest node hex from changelog content
@@ -73,7 +73,7 @@ public class UpdateCommand {
             Revlog manifest = repository.getRevlog(mfIdx, mfDat);
             int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
             if (mfRev == -1) {
-                throw new IOException("Manifest revision not found: " + NodeIdUtil.toHex(mfNode));
+                throw new org.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(mfNode));
             }
 
             byte[] mfContent = manifest.getRevisionContent(mfRev);
@@ -198,7 +198,7 @@ public class UpdateCommand {
             String hex = NodeIdUtil.toHex(node);
             if (hex.startsWith(targetRevision.toLowerCase())) {
                 if (matchNode != null) {
-                    throw new IOException("Ambiguous revision identifier: " + targetRevision);
+                    throw new org.hg4j.errors.HgRevisionNotFoundException("Ambiguous revision identifier: " + targetRevision);
                 }
                 matchNode = node;
             }
@@ -243,6 +243,6 @@ public class UpdateCommand {
             return branchHead;
         }
 
-        throw new IOException("Unable to resolve revision identifier: " + targetRevision);
+        throw new org.hg4j.errors.HgRevisionNotFoundException("Unable to resolve revision identifier: " + targetRevision);
     }
 }

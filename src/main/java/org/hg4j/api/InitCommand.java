@@ -28,29 +28,29 @@ public class InitCommand {
         // Try to create the directory if it doesn't exist
         if (!directory.exists()) {
             if (!directory.mkdirs()) {
-                throw new IOException("Failed to create repository directory: " + directory);
+                throw new org.hg4j.errors.HgRepositoryNotFoundException("Failed to create repository directory: " + directory);
             }
         } else if (!directory.isDirectory()) {
-            throw new IOException("Path exists and is not a directory: " + directory);
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Path exists and is not a directory: " + directory);
         }
 
         File hgDir = new File(directory, ".hg");
         if (hgDir.exists() && !hgDir.isDirectory()) {
-            throw new IOException("Path exists and is not a directory: " + hgDir);
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Path exists and is not a directory: " + hgDir);
         }
         if (!hgDir.exists()) {
             if (!hgDir.mkdir()) {
-                throw new IOException("Failed to create .hg directory in: " + directory);
+                throw new org.hg4j.errors.HgRepositoryNotFoundException("Failed to create .hg directory in: " + directory);
             }
         }
 
         File storeDir = new File(hgDir, "store");
         if (storeDir.exists() && !storeDir.isDirectory()) {
-            throw new IOException("Path exists and is not a directory: " + storeDir);
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Path exists and is not a directory: " + storeDir);
         }
         if (!storeDir.exists()) {
             if (!storeDir.mkdir()) {
-                throw new IOException("Failed to create .hg/store directory");
+                throw new org.hg4j.errors.HgRepositoryNotFoundException("Failed to create .hg/store directory");
             }
         }
 
@@ -66,7 +66,7 @@ public class InitCommand {
         try {
             SafeFileIO.writeLinesAtomic(requiresFile, requirements);
         } catch (IOException e) {
-            throw new IOException("Failed to write .hg/requires file", e);
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Failed to write .hg/requires file", e);
         }
 
         return new HgRepository(directory);

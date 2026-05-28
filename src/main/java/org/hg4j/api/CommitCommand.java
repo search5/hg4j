@@ -131,7 +131,7 @@ public class CommitCommand {
             if (p1CommitNode != null && !p1CommitNode.isNull()) {
                 parent1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
                 if (parent1Rev == -1) {
-                    throw new IOException("Parent commit not found: " + p1CommitNode.toHex());
+                    throw new org.hg4j.errors.HgRevisionNotFoundException(p1CommitNode.toHex());
                 }
             }
 
@@ -139,7 +139,7 @@ public class CommitCommand {
             if (p2CommitNode != null && !p2CommitNode.isNull()) {
                 parent2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode.getBytes());
                 if (parent2Rev == -1) {
-                    throw new IOException("Parent 2 commit not found: " + p2CommitNode.toHex());
+                    throw new org.hg4j.errors.HgRevisionNotFoundException(p2CommitNode.toHex());
                 }
             }
 

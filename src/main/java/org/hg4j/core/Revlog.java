@@ -1,6 +1,5 @@
 package org.hg4j.core;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -11,9 +10,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.zip.DataFormatException;
-import java.util.zip.Deflater;
-import java.util.zip.Inflater;
 
 /**
  * Core implementation for Mercurial Revlog (index .i and data .d files).
@@ -22,8 +18,7 @@ public class Revlog {
 
     private final File idxFile;
     private final File datFile;
-    private final List<IndexRecord> records = new ArrayList<>();
-    private final java.util.Map<java.nio.ByteBuffer, Integer> nodeMap = new java.util.HashMap<>();
+    private final RevlogIndex index;
     private boolean inline = false;
 
 
@@ -59,76 +54,18 @@ public class Revlog {
     public Revlog(File idxFile, File datFile) throws IOException {
         this.idxFile = idxFile;
         this.datFile = datFile;
-
-        if (idxFile.exists()) {
-            loadIndex();
-        }
+        this.index = new RevlogIndex(idxFile);
+        this.inline = index.isInline();
     }
 
-    private synchronized void loadIndex() throws IOException {
-        long len = idxFile.length();
-        if (len == 0) return;
-        if (len < 64) {
-            throw new IOException("Invalid revlog index: too short");
-        }
 
-        try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(idxFile.toPath(), java.nio.file.StandardOpenOption.READ)) {
-            ByteBuffer buf = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, len);
-            int revision = 0;
-            while (buf.hasRemaining() && buf.remaining() >= 64) {
-                long offsetFlags = buf.getLong();
-                long offset;
-                int flags;
-
-                if (revision == 0) {
-                    int formatFlags = (int) (offsetFlags >>> 48);
-                    int version = (int) ((offsetFlags >>> 32) & 0xFFFF);
-                    if (version != 1) {
-                        throw new IOException("Unsupported revlog version: " + version);
-                    }
-                    this.inline = (formatFlags & 0x0001) != 0;
-                    offset = 0;
-                    flags = (int) (offsetFlags & 0xFFFF);
-                } else {
-                    offset = offsetFlags >>> 16;
-                    flags = (int) (offsetFlags & 0xFFFF);
-                }
-                
-                int compLen = buf.getInt();
-                int uncompLen = buf.getInt();
-                int baseRev = buf.getInt();
-                int linkRev = buf.getInt();
-                int parent1 = buf.getInt();
-                int parent2 = buf.getInt();
-                byte[] nodeId = new byte[32];
-                buf.get(nodeId);
-
-                records.add(new IndexRecord(revision, offset, flags, compLen, uncompLen,
-                        baseRev, linkRev, parent1, parent2, nodeId));
-
-                byte[] clippedNode = Arrays.copyOf(nodeId, 20);
-                nodeMap.put(java.nio.ByteBuffer.wrap(clippedNode), revision);
-
-                if (inline) {
-                    if (buf.remaining() < compLen) {
-                        throw new IOException("Truncated inline revlog data at revision " + revision);
-                    }
-                    buf.position(buf.position() + compLen);
-                }
-                revision++;
-            }
-        }
-    }
 
     public synchronized int getRevisionCount() {
-        return records.size();
+        return index.getRevisionCount();
     }
 
     public synchronized IndexRecord getIndexRecord(int rev) {
-        if (rev < 0 || rev >= records.size()) {
-            throw new IndexOutOfBoundsException("Revision out of bounds: " + rev);
-        }
-        return records.get(rev);
+        return index.getIndexRecord(rev);
     }
 
     /**
@@ -274,252 +211,23 @@ public class Revlog {
 
 
     private byte[] decompressHunk(byte[] hunk, IndexRecord rec) throws IOException {
-        if (hunk.length == 0 || rec.getUncompLen() == 0) {
-            return new byte[0];
-        }
-
-        byte type = hunk[0];
-        if (type == 'x') {
-            Inflater inflater = new Inflater();
-            boolean isZlibFromStart = false;
-            boolean isZlibFromIndex1 = false;
-            if (hunk.length >= 2) {
-                int cmf = hunk[0] & 0xFF;
-                int flg = hunk[1] & 0xFF;
-                if ((cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8) {
-                    isZlibFromStart = true;
-                }
-            }
-            if (!isZlibFromStart && hunk.length >= 3) {
-                int cmf = hunk[1] & 0xFF;
-                int flg = hunk[2] & 0xFF;
-                if ((cmf * 256 + flg) % 31 == 0 && (cmf & 0x0F) == 8) {
-                    isZlibFromIndex1 = true;
-                }
-            }
-            if (isZlibFromStart) {
-                inflater.setInput(hunk, 0, hunk.length);
-            } else if (isZlibFromIndex1) {
-                inflater.setInput(hunk, 1, hunk.length - 1);
-            } else if (hunk.length > 1 && hunk[1] == 'x') {
-                // Backwards compatibility with test/old format where 'x' was prepended to the zlib stream
-                inflater.setInput(hunk, 1, hunk.length - 1);
-            } else {
-                inflater.setInput(hunk, 0, hunk.length);
-            }
-            ByteArrayOutputStream out = new ByteArrayOutputStream(rec.getUncompLen());
-            byte[] buf = new byte[1024];
-            try {
-                while (!inflater.finished()) {
-                    int count = inflater.inflate(buf);
-                    if (count == 0 && inflater.needsInput()) {
-                        break;
-                    }
-                    out.write(buf, 0, count);
-                }
-            } catch (DataFormatException e) {
-                throw new IOException("Failed to decompress zlib revlog hunk", e);
-            } finally {
-                inflater.end();
-            }
-            return out.toByteArray();
-        } else if (type == 'u') {
-            return Arrays.copyOfRange(hunk, 1, hunk.length);
-        } else {
-            // Uncompressed fallback if signature is not present
-            return hunk;
-        }
+        return DeltaCodec.decompress(hunk, rec.getUncompLen());
     }
 
     /**
      * Creates a simple raw delta between baseText and newText using prefix-suffix matching.
-     * Preserved for verification comparisons.
+     * Preserved for verification comparisons. Delegates to {@link DeltaEngine}.
      */
     public static byte[] createSimpleDelta(byte[] baseText, byte[] newText) {
-        int prefixLen = 0;
-        int maxLen = Math.min(baseText.length, newText.length);
-        while (prefixLen < maxLen && baseText[prefixLen] == newText[prefixLen]) {
-            prefixLen++;
-        }
-
-        int suffixLen = 0;
-        int maxSuffix = maxLen - prefixLen;
-        while (suffixLen < maxSuffix && baseText[baseText.length - 1 - suffixLen] == newText[newText.length - 1 - suffixLen]) {
-            suffixLen++;
-        }
-
-        int start = prefixLen;
-        int end = baseText.length - suffixLen;
-        int insertLen = newText.length - suffixLen - prefixLen;
-
-        byte[] insertData = new byte[insertLen];
-        System.arraycopy(newText, prefixLen, insertData, 0, insertLen);
-
-        ByteBuffer buf = ByteBuffer.allocate(12 + insertLen);
-        buf.putInt(start);
-        buf.putInt(end);
-        buf.putInt(insertLen);
-        buf.put(insertData);
-        return buf.array();
-    }
-
-    private static class Line {
-        final byte[] bytes;
-        final int start;
-        final int end;
-
-        Line(byte[] bytes, int start, int end) {
-            this.bytes = bytes;
-            this.start = start;
-            this.end = end;
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            if (obj instanceof Line) {
-                Line other = (Line) obj;
-                return Arrays.equals(this.bytes, other.bytes);
-            }
-            return false;
-        }
-
-        @Override
-        public int hashCode() {
-            return Arrays.hashCode(bytes);
-        }
-    }
-
-    private static List<Line> splitLines(byte[] text) {
-        List<Line> lines = new ArrayList<>();
-        int start = 0;
-        for (int i = 0; i < text.length; i++) {
-            if (text[i] == '\n') {
-                byte[] lineBytes = Arrays.copyOfRange(text, start, i + 1);
-                lines.add(new Line(lineBytes, start, i + 1));
-                start = i + 1;
-            }
-        }
-        if (start < text.length) {
-            byte[] lineBytes = Arrays.copyOfRange(text, start, text.length);
-            lines.add(new Line(lineBytes, start, text.length));
-        }
-        return lines;
+        return DeltaEngine.createSimpleDelta(baseText, newText);
     }
 
     /**
-     * Creates a highly optimized multi-hunk delta using LCS (Longest Common Subsequence) Line Diff.
+     * Creates a highly optimized multi-hunk delta using LCS Line Diff.
+     * Delegates to {@link DeltaEngine}.
      */
     public static byte[] createDelta(byte[] baseText, byte[] newText) {
-        if (baseText == null || baseText.length == 0) {
-            ByteBuffer buf = ByteBuffer.allocate(12 + newText.length);
-            buf.putInt(0);
-            buf.putInt(0);
-            buf.putInt(newText.length);
-            buf.put(newText);
-            return buf.array();
-        }
-        if (newText == null || newText.length == 0) {
-            ByteBuffer buf = ByteBuffer.allocate(12);
-            buf.putInt(0);
-            buf.putInt(baseText.length);
-            buf.putInt(0);
-            return buf.array();
-        }
-
-        List<Line> baseLines = splitLines(baseText);
-        List<Line> newLines = splitLines(newText);
-
-        int n = baseLines.size();
-        int m = newLines.size();
-
-        // If the file is too large for O(N*M) DP, fall back to simple single-hunk delta to prevent OOM
-        if ((long) n * m > 250000) {
-            return createSimpleDelta(baseText, newText);
-        }
-
-        int[][] dp = new int[n + 1][m + 1];
-        for (int i = 1; i <= n; i++) {
-            for (int j = 1; j <= m; j++) {
-                if (baseLines.get(i - 1).equals(newLines.get(j - 1))) {
-                    dp[i][j] = dp[i - 1][j - 1] + 1;
-                } else {
-                    dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-                }
-            }
-        }
-
-        int i = n, j = m;
-        boolean[] baseMatched = new boolean[n];
-        boolean[] newMatched = new boolean[m];
-        while (i > 0 && j > 0) {
-            if (baseLines.get(i - 1).equals(newLines.get(j - 1))) {
-                baseMatched[i - 1] = true;
-                newMatched[j - 1] = true;
-                i--;
-                j--;
-            } else if (dp[i - 1][j] >= dp[i][j - 1]) {
-                i--;
-            } else {
-                j--;
-            }
-        }
-
-        ByteArrayOutputStream deltaOut = new ByteArrayOutputStream();
-        int b = 0, g = 0;
-        while (b < n || g < m) {
-            if (b < n && g < m && baseMatched[b] && newMatched[g]) {
-                b++;
-                g++;
-                continue;
-            }
-
-            int bStart = b;
-            while (b < n && !baseMatched[b]) {
-                b++;
-            }
-            int bEnd = b;
-
-            int gStart = g;
-            while (g < m && !newMatched[g]) {
-                g++;
-            }
-            int gEnd = g;
-
-            if (bEnd > bStart || gEnd > gStart) {
-                int byteStart = (bStart < n) ? baseLines.get(bStart).start : baseText.length;
-                int byteEnd = (bStart < n) ? ((bEnd > bStart) ? baseLines.get(bEnd - 1).end : baseLines.get(bStart).start) : baseText.length;
-                if (bEnd == n && bStart < n) {
-                    byteEnd = baseText.length;
-                }
-
-                ByteArrayOutputStream insertBuf = new ByteArrayOutputStream();
-                for (int k = gStart; k < gEnd; k++) {
-                    try {
-                        insertBuf.write(newLines.get(k).bytes);
-                    } catch (IOException ignored) {}
-                }
-                byte[] insertData = insertBuf.toByteArray();
-
-                ByteBuffer hunkHeader = ByteBuffer.allocate(12);
-                hunkHeader.putInt(byteStart);
-                hunkHeader.putInt(byteEnd);
-                hunkHeader.putInt(insertData.length);
-
-                try {
-                    deltaOut.write(hunkHeader.array());
-                    deltaOut.write(insertData);
-                } catch (IOException ignored) {}
-            }
-        }
-
-        byte[] multiHunkDelta = deltaOut.toByteArray();
-        // If the multi-hunk delta is actually larger than a simple delta due to hunk header overhead, fall back
-        byte[] simpleDelta = createSimpleDelta(baseText, newText);
-        if (multiHunkDelta.length > simpleDelta.length) {
-            return simpleDelta;
-        }
-
-        return multiHunkDelta;
+        return DeltaEngine.createDelta(baseText, newText);
     }
 
 
@@ -530,7 +238,7 @@ public class Revlog {
 
     public synchronized byte[] appendRevision(byte[] content, java.util.Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
-        int rev = records.size();
+        int rev = index.getRevisionCount();
 
         // Escaping logic for content and metadata
         byte[] processedContent;
@@ -607,26 +315,7 @@ public class Revlog {
         }
 
         // Compress rawToWrite
-        ByteArrayOutputStream compOut = new ByteArrayOutputStream();
-        Deflater def = new Deflater();
-        def.setInput(rawToWrite);
-        def.finish();
-        byte[] zipBuf = new byte[1024];
-        while (!def.finished()) {
-            int count = def.deflate(zipBuf);
-            compOut.write(zipBuf, 0, count);
-        }
-        def.end();
-        byte[] compressed = compOut.toByteArray();
-
-        byte[] dataHunk;
-        if (compressed.length < rawToWrite.length) {
-            dataHunk = compressed;
-        } else {
-            dataHunk = new byte[rawToWrite.length + 1];
-            dataHunk[0] = 'u';
-            System.arraycopy(rawToWrite, 0, dataHunk, 1, rawToWrite.length);
-        }
+        byte[] dataHunk = DeltaCodec.compress(rawToWrite);
 
         // We write separate .i and .d files (no inline)
         long offset = 0;
@@ -665,11 +354,8 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        records.add(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
-
-        byte[] clippedNode = Arrays.copyOf(nodeId, 20);
-        nodeMap.put(java.nio.ByteBuffer.wrap(clippedNode), rev);
 
         return hash;
     }
@@ -682,7 +368,7 @@ public class Revlog {
             return;
         }
 
-        int rev = records.size();
+        int rev = index.getRevisionCount();
         int parent1 = findRevision(entry.p1);
         int parent2 = findRevision(entry.p2);
 
@@ -765,26 +451,7 @@ public class Revlog {
             baseRev = rev;
         }
 
-        ByteArrayOutputStream compOut = new ByteArrayOutputStream();
-        Deflater def = new Deflater();
-        def.setInput(rawToWrite);
-        def.finish();
-        byte[] zipBuf = new byte[1024];
-        while (!def.finished()) {
-            int count = def.deflate(zipBuf);
-            compOut.write(zipBuf, 0, count);
-        }
-        def.end();
-        byte[] compressed = compOut.toByteArray();
-
-        byte[] dataHunk;
-        if (compressed.length < rawToWrite.length) {
-            dataHunk = compressed;
-        } else {
-            dataHunk = new byte[rawToWrite.length + 1];
-            dataHunk[0] = 'u';
-            System.arraycopy(rawToWrite, 0, dataHunk, 1, rawToWrite.length);
-        }
+        byte[] dataHunk = DeltaCodec.compress(rawToWrite);
 
         long offset = 0;
         if (datFile.exists()) {
@@ -823,89 +490,36 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        records.add(new IndexRecord(rev, offset, 0, dataHunk.length, content.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, content.length,
                 baseRev, linkRev, parent1, parent2, entry.node));
-
-        byte[] clippedEntryNode = Arrays.copyOf(entry.node, 20);
-        nodeMap.put(java.nio.ByteBuffer.wrap(clippedEntryNode), rev);
 
         clearCache();
     }
 
     public synchronized int findRevision(byte[] nodeId) {
-        if (nodeId == null) return -1;
-        byte[] clippedNode = new byte[20];
-        System.arraycopy(nodeId, 0, clippedNode, 0, Math.min(nodeId.length, 20));
-        Integer rev = nodeMap.get(java.nio.ByteBuffer.wrap(clippedNode));
-        return rev != null ? rev : -1;
+        return index.findRevision(nodeId);
     }
 
+    /** Delegates to {@link DeltaEngine}. */
     public static byte[] applyDelta(byte[] baseText, byte[] delta) throws IOException {
-        ByteBuffer buf = ByteBuffer.wrap(delta);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        int lastCopied = 0;
-        while (buf.hasRemaining()) {
-            if (buf.remaining() < 12) {
-                throw new IOException("Truncated delta hunk header");
-            }
-            int start = buf.getInt();
-            int end = buf.getInt();
-            int length = buf.getInt();
-            if (length < 0 || buf.remaining() < length) {
-                throw new IOException("Truncated delta hunk data");
-            }
-            byte[] insertData = new byte[length];
-            buf.get(insertData);
-
-            if (start < lastCopied || start > baseText.length || end < start || end > baseText.length) {
-                throw new IOException("Invalid delta hunk offsets: start=" + start + ", end=" + end + ", baseLen=" + baseText.length);
-            }
-            out.write(baseText, lastCopied, start - lastCopied);
-            out.write(insertData);
-            lastCopied = end;
-        }
-        if (lastCopied < baseText.length) {
-            out.write(baseText, lastCopied, baseText.length - lastCopied);
-        }
-        return out.toByteArray();
+        return DeltaEngine.applyDelta(baseText, delta);
     }
 
     private static int compareBytes(byte[] a, byte[] b) {
         for (int i = 0; i < Math.min(a.length, b.length); i++) {
             int byteA = a[i] & 0xFF;
             int byteB = b[i] & 0xFF;
-            if (byteA != byteB) {
-                return byteA - byteB;
-            }
+            if (byteA != byteB) return byteA - byteB;
         }
         return a.length - b.length;
     }
 
     public synchronized byte[] appendRawRevision(byte[] rawToWrite, byte[] node, int parent1, int parent2,
                                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
-        int rev = records.size();
+        int rev = index.getRevisionCount();
 
         // Compress rawToWrite
-        ByteArrayOutputStream compOut = new ByteArrayOutputStream();
-        Deflater def = new Deflater();
-        def.setInput(rawToWrite);
-        def.finish();
-        byte[] zipBuf = new byte[1024];
-        while (!def.finished()) {
-            int count = def.deflate(zipBuf);
-            compOut.write(zipBuf, 0, count);
-        }
-        def.end();
-        byte[] compressed = compOut.toByteArray();
-
-        byte[] dataHunk;
-        if (compressed.length < rawToWrite.length) {
-            dataHunk = compressed;
-        } else {
-            dataHunk = new byte[rawToWrite.length + 1];
-            dataHunk[0] = 'u';
-            System.arraycopy(rawToWrite, 0, dataHunk, 1, rawToWrite.length);
-        }
+        byte[] dataHunk = DeltaCodec.compress(rawToWrite);
 
         long offset = 0;
         if (datFile.exists()) {
@@ -944,11 +558,8 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        records.add(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
                 rev, linkRev, parent1, parent2, node));
-
-        byte[] clippedNode = Arrays.copyOf(node, 20);
-        nodeMap.put(java.nio.ByteBuffer.wrap(clippedNode), rev);
 
         clearCache();
         return node;

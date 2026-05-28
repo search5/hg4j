@@ -4,7 +4,6 @@ import com.jcraft.jsch.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -260,8 +259,6 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
 
     private byte[] readBinaryResponse() throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        byte[] buf = new byte[4096];
-        int count;
 
         // In hg stdio 1.0, binary stream command responses are delivered in chunks
         // Decode chunk by chunk until terminal empty chunk (length 0) is met

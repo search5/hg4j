@@ -4,6 +4,8 @@ import org.hg4j.core.Dirstate;
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
 import org.hg4j.core.Revlog;
+import org.hg4j.lib.ProgressMonitor;
+import org.hg4j.lib.NullProgressMonitor;
 
 import java.io.File;
 import java.io.IOException;
@@ -21,6 +23,14 @@ public class CloneCommand {
 
     private String sourceUrl;
     private File directory;
+    private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
+
+    public CloneCommand setProgressMonitor(ProgressMonitor monitor) {
+        if (monitor != null) {
+            this.monitor = monitor;
+        }
+        return this;
+    }
 
     public CloneCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
@@ -44,21 +54,28 @@ public class CloneCommand {
             throw new IOException("Destination directory is not empty: " + directory.getAbsolutePath());
         }
 
+        monitor.start("Cloning repository", 3);
+
         // 1. Initialize empty repository
         HgRepository repo = Hg.init().setDirectory(directory).call();
+        monitor.update(1);
 
         // 2. Pull changes from remote source
         PullCommand pullCmd = new PullCommand(repo);
         pullCmd.setSource(sourceUrl);
+        pullCmd.setProgressMonitor(monitor);
         List<byte[]> importedCommits = pullCmd.call();
 
         if (importedCommits.isEmpty()) {
+            monitor.end();
             return repo; // Empty repository pulled
         }
 
         // 3. Checkout (Update) the latest revision to working directory
         checkoutLatest(repo);
+        monitor.update(1);
 
+        monitor.end();
         return repo;
     }
 

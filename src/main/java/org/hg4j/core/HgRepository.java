@@ -150,6 +150,17 @@ public class HgRepository implements Repository {
         revlogCache.clear();
     }
 
+    /**
+     * Loads the phase roots from the repository.
+     * 
+     * @return the {@link PhaseRoots} instance
+     * @throws IOException if loading fails
+     */
+    public synchronized PhaseRoots getPhaseRoots() throws IOException {
+        File phaserootsFile = new File(hgDir, "phaseroots");
+        return new PhaseRoots(phaserootsFile);
+    }
+
     private java.util.List<java.util.regex.Pattern> ignorePatterns = null;
 
     private synchronized void loadIgnorePatterns() {

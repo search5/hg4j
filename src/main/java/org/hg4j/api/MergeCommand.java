@@ -19,8 +19,7 @@ public class MergeCommand {
     private final HgRepository repository;
     private byte[] targetNodeId;
     private int targetRev = -1;
-    // 개선 권고 2번(LCA 탐색 성능 개선)을 위한 메모이즈 캐시
-    private final Map<Long, Boolean> ancestorCache = new HashMap<>();
+
 
     public static class MergeResult {
         private final boolean conflicted;
@@ -106,24 +105,8 @@ public class MergeCommand {
     }
 
     private MergeBase getMergeBase(Revlog changelog, Revlog manifestRevlog, int revA, int revB, int depth) throws IOException {
-        Set<Integer> ancestorsA = getAllAncestors(changelog, revA);
-        Set<Integer> ancestorsB = getAllAncestors(changelog, revB);
-
-        Set<Integer> common = new HashSet<>(ancestorsA);
-        common.retainAll(ancestorsB);
-
-        if (common.isEmpty()) {
-            return new MergeBase(-1, Collections.emptyMap());
-        }
-
-        Set<Integer> candidates = new HashSet<>(common);
-        for (int c : common) {
-            for (int other : common) {
-                if (c != other && isAncestor(changelog, c, other)) {
-                    candidates.remove(c);
-                }
-            }
-        }
+        org.hg4j.revwalk.ChangesetGraph graph = new org.hg4j.revwalk.ChangesetGraph(changelog);
+        Set<Integer> candidates = graph.getLcaCandidates(revA, revB);
 
         if (candidates.isEmpty()) {
             return new MergeBase(-1, Collections.emptyMap());
@@ -365,52 +348,7 @@ public class MergeCommand {
         }
     }
 
-    private Set<Integer> getAllAncestors(Revlog changelog, int startRev) {
-        Set<Integer> ancestors = new HashSet<>();
-        Queue<Integer> queue = new ArrayDeque<>();
-        queue.add(startRev);
-        while (!queue.isEmpty()) {
-            int current = queue.poll();
-            if (current == -1) continue;
-            if (ancestors.add(current)) {
-                Revlog.IndexRecord rec = changelog.getIndexRecord(current);
-                queue.add(rec.getParent1());
-                queue.add(rec.getParent2());
-            }
-        }
-        return ancestors;
-    }
 
-    private boolean isAncestor(Revlog changelog, int ancestor, int descendant) {
-        if (ancestor == descendant) return true;
-        if (ancestor > descendant) return false; // In revlogs, ancestors always have smaller revision numbers
-        
-        long cacheKey = ((long) ancestor << 32) | (descendant & 0xFFFFFFFFL);
-        if (ancestorCache.containsKey(cacheKey)) {
-            return ancestorCache.get(cacheKey);
-        }
-
-        Queue<Integer> queue = new ArrayDeque<>();
-        queue.add(descendant);
-        Set<Integer> visited = new HashSet<>();
-        boolean result = false;
-        while (!queue.isEmpty()) {
-            int current = queue.poll();
-            if (current == ancestor) {
-                result = true;
-                break;
-            }
-            if (current == -1 || current < ancestor) continue;
-            if (visited.add(current)) {
-                Revlog.IndexRecord rec = changelog.getIndexRecord(current);
-                queue.add(rec.getParent1());
-                queue.add(rec.getParent2());
-            }
-        }
-        
-        ancestorCache.put(cacheKey, result);
-        return result;
-    }
 
     private Map<String, String> loadManifestAtCommit(Revlog changelog, Revlog manifestRevlog, int commitRev) throws IOException {
         byte[] commitContent = changelog.getRevisionContent(commitRev);

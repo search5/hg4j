@@ -11,6 +11,8 @@ import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
 import org.hg4j.core.Revlog;
 import org.hg4j.core.SafeFileIO;
+import org.hg4j.lib.ProgressMonitor;
+import org.hg4j.lib.NullProgressMonitor;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -31,9 +33,17 @@ public class PullCommand {
 
     private final HgRepository repository;
     private String sourceUrl;
+    private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
 
     public PullCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public PullCommand setProgressMonitor(ProgressMonitor monitor) {
+        if (monitor != null) {
+            this.monitor = monitor;
+        }
+        return this;
     }
 
     public PullCommand setSource(String sourceUrl) {
@@ -46,7 +56,10 @@ public class PullCommand {
             throw new IllegalStateException("Remote source URL must be specified.");
         }
 
+        monitor.start("Pulling changes", 3);
+
         HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl);
+        monitor.update(1);
         try {
             List<String> remoteHeads = client.getHeads();
             if (remoteHeads.isEmpty()) {
@@ -98,8 +111,10 @@ public class PullCommand {
             } else {
                 bundleBytes = client.getChangegroup(common);
             }
+            monitor.update(1);
 
             if (bundleBytes == null || bundleBytes.length == 0) {
+                monitor.end();
                 return new ArrayList<>(); // No new changes
             }
 
@@ -113,7 +128,10 @@ public class PullCommand {
             }
 
             ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
-            return applyBundle(bundle);
+            List<byte[]> results = applyBundle(bundle);
+            monitor.update(1);
+            monitor.end();
+            return results;
         } finally {
             if (client instanceof AutoCloseable) {
                 try {

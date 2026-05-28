@@ -1,0 +1,95 @@
+plugins {
+    id 'java'
+    id 'jacoco'
+    id 'maven-publish'
+}
+
+group = 'org.hg4j'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+dependencies {
+    implementation 'org.apache.commons:commons-compress:1.26.1'
+    implementation 'com.github.luben:zstd-jni:1.5.6-3'
+
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            pom {
+                name = 'hg4j'
+                description = 'Pure Java implementation of Mercurial (hg) version control system'
+                url = 'https://github.com/hg4j/hg4j'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'hg4j'
+                        name = 'hg4j contributors'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:git://github.com/hg4j/hg4j.git'
+                    developerConnection = 'scm:git:ssh://github.com/hg4j/hg4j.git'
+                    url = 'https://github.com/hg4j/hg4j'
+                }
+            }
+        }
+    }
+}
+
+jar {
+    from("${rootDir}") {
+        include 'LICENSE'
+        into 'META-INF'
+    }
+}
+
+test {
+    useJUnitPlatform()
+    finalizedBy jacocoTestReport
+}
+
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                minimum = 0.90
+            }
+        }
+    }
+}
+
+check.dependsOn jacocoTestCoverageVerification

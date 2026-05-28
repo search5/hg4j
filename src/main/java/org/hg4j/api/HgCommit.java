@@ -1,0 +1,67 @@
+package org.hg4j.api;
+
+import java.util.List;
+
+/**
+ * Represents a Mercurial commit (revision in the changelog).
+ */
+public class HgCommit {
+    private final int revision;
+    private final byte[] nodeId;
+    private final byte[] manifestNodeId;
+    private final String author;
+    private final long timestamp;
+    private final int timezoneOffset;
+    private final List<String> files;
+    private final String message;
+    private final String branch;
+
+    public HgCommit(int revision, byte[] nodeId, byte[] manifestNodeId, String author, 
+                    long timestamp, int timezoneOffset, List<String> files, String message, String branch) {
+        this.revision = revision;
+        this.nodeId = nodeId;
+        this.manifestNodeId = manifestNodeId;
+        this.author = author;
+        this.timestamp = timestamp;
+        this.timezoneOffset = timezoneOffset;
+        this.files = files;
+        this.message = message;
+        this.branch = branch != null ? branch : "default";
+    }
+
+    public int getRevision() {
+        return revision;
+    }
+
+    public byte[] getNodeId() {
+        return nodeId;
+    }
+
+    public byte[] getManifestNodeId() {
+        return manifestNodeId;
+    }
+
+    public String getAuthor() {
+        return author;
+    }
+
+    public long getTimestamp() {
+        return timestamp;
+    }
+
+    public int getTimezoneOffset() {
+        return timezoneOffset;
+    }
+
+    public List<String> getFiles() {
+        return files;
+    }
+
+    public String getMessage() {
+        return message;
+    }
+
+    public String getBranch() {
+        return branch;
+    }
+}

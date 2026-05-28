@@ -52,8 +52,40 @@ public class DiffCommand {
         return this;
     }
 
+    public DiffCommand setOldRevision(org.hg4j.lib.NodeId oldRevisionNode) {
+        if (oldRevisionNode == null) {
+            this.oldRevision = -2;
+            return this;
+        }
+        try {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+            this.oldRevision = NodeIdUtil.findRevisionByNodeId(changelog, oldRevisionNode.getBytes());
+        } catch (IOException e) {
+            this.oldRevision = -1;
+        }
+        return this;
+    }
+
     public DiffCommand setNewRevision(int newRevision) {
         this.newRevision = newRevision;
+        return this;
+    }
+
+    public DiffCommand setNewRevision(org.hg4j.lib.NodeId newRevisionNode) {
+        if (newRevisionNode == null) {
+            this.newRevision = -1;
+            return this;
+        }
+        try {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+            this.newRevision = NodeIdUtil.findRevisionByNodeId(changelog, newRevisionNode.getBytes());
+        } catch (IOException e) {
+            this.newRevision = -1;
+        }
         return this;
     }
 

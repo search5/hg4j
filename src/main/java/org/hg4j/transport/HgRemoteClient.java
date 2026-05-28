@@ -162,8 +162,11 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
 
         int status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
+            throw new org.hg4j.errors.HgAuthException(fullUrl, username != null ? username : "anonymous");
+        }
         if (status != HttpURLConnection.HTTP_OK) {
-            throw new IOException("Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
+            throw new org.hg4j.errors.HgProtocolException(fullUrl, "Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
         }
 
         String contentType = conn.getContentType();
@@ -232,8 +235,11 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
 
         int status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
+            throw new org.hg4j.errors.HgAuthException(fullUrl, username != null ? username : "anonymous");
+        }
         if (status != HttpURLConnection.HTTP_OK) {
-            throw new IOException("Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
+            throw new org.hg4j.errors.HgProtocolException(fullUrl, "Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
         }
 
         String contentType = conn.getContentType();
@@ -422,8 +428,11 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
 
         int status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
+            throw new org.hg4j.errors.HgAuthException(fullUrl, username != null ? username : "anonymous");
+        }
         if (status != HttpURLConnection.HTTP_OK) {
-            throw new IOException("Remote server returned HTTP " + status + " for unbundle: " + fullUrl);
+            throw new org.hg4j.errors.HgProtocolException(fullUrl, "Remote server returned HTTP " + status + " for unbundle: " + fullUrl);
         }
 
         try (InputStream in = conn.getInputStream();

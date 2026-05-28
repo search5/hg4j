@@ -89,11 +89,11 @@ public class Dirstate {
 
     public void read(byte[] bytes) throws IOException {
         if (bytes == null) {
-            throw new IOException("Invalid dirstate file: content cannot be null");
+            throw new org.hg4j.errors.HgCorruptDataException("Invalid dirstate file: content cannot be null");
         }
 
         if (bytes.length < 40) {
-            throw new IOException("Invalid dirstate file: must be at least 40 bytes");
+            throw new org.hg4j.errors.HgCorruptDataException("Invalid dirstate file: must be at least 40 bytes");
         }
 
         ByteBuffer buf = ByteBuffer.wrap(bytes);
@@ -107,7 +107,7 @@ public class Dirstate {
         entries.clear();
         while (buf.hasRemaining()) {
             if (buf.remaining() < 17) {
-                throw new IOException("Truncated dirstate entry header");
+                throw new org.hg4j.errors.HgCorruptDataException("Truncated dirstate entry header");
             }
             char state = (char) buf.get();
             int mode = buf.getInt();
@@ -116,7 +116,7 @@ public class Dirstate {
             int pathLen = buf.getInt();
 
             if (pathLen < 0 || buf.remaining() < pathLen) {
-                throw new IOException("Truncated dirstate entry path");
+                throw new org.hg4j.errors.HgCorruptDataException("Truncated dirstate entry path");
             }
 
             byte[] pathBytes = new byte[pathLen];
@@ -166,11 +166,11 @@ public class Dirstate {
                 // .hg/dirstate.d.<uid> 데이터 파일 로드
                 File dataFile = new File(file.getParentFile(), "dirstate.d." + uid);
                 if (!dataFile.exists()) {
-                    throw new IOException("Dirstate-v2 data file not found for uid: " + uid);
+                    throw new org.hg4j.errors.HgCorruptDataException("Dirstate-v2 data file not found for uid: " + uid);
                 }
                 byte[] dataBytes = Files.readAllBytes(dataFile.toPath());
                 if (dataBytes.length != dataLength) {
-                    throw new IOException("Dirstate-v2 data file length mismatch. Expected " + dataLength + " but got " + dataBytes.length);
+                    throw new org.hg4j.errors.HgCorruptDataException("Dirstate-v2 data file length mismatch. Expected " + dataLength + " but got " + dataBytes.length);
                 }
 
                 this.isV2 = true;

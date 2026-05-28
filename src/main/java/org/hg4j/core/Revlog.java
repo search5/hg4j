@@ -81,12 +81,16 @@ public class Revlog {
             return new byte[0];
         }
 
+        if (rev < -1 || rev >= getRevisionCount()) {
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Revision " + rev + " not found. Total revisions: " + getRevisionCount());
+        }
+
         List<Integer> chain = new ArrayList<>();
         int curr = rev;
         java.util.Set<Integer> visited = new java.util.HashSet<>();
         while (true) {
             if (!visited.add(curr)) {
-                throw new IOException("Cycle detected in revlog delta chain at revision: " + curr);
+                throw new org.hg4j.errors.HgCorruptDataException("Cycle detected in revlog delta chain at revision: " + curr);
             }
             chain.add(curr);
             IndexRecord currRec = getIndexRecord(curr);
@@ -123,6 +127,10 @@ public class Revlog {
     public synchronized byte[] getRevisionContent(int rev) throws IOException {
         if (rev == -1) {
             return new byte[0];
+        }
+
+        if (rev < -1 || rev >= getRevisionCount()) {
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Revision " + rev + " not found. Total revisions: " + getRevisionCount());
         }
 
         if (contentCache.containsKey(rev)) {
@@ -203,7 +211,7 @@ public class Revlog {
             position += read;
         }
         if (buf.hasRemaining()) {
-            throw new IOException("Failed to read complete hunk of size " + compLen + " at offset " + seekOffset);
+            throw new org.hg4j.errors.HgCorruptDataException("Failed to read complete hunk of size " + compLen + " at offset " + seekOffset);
         }
         return buf.array();
     }

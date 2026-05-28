@@ -78,6 +78,11 @@ public class MergeCommand {
         return this;
     }
 
+    public MergeCommand setNodeId(org.hg4j.lib.NodeId targetNodeId) {
+        this.targetNodeId = targetNodeId != null ? targetNodeId.getBytes() : null;
+        return this;
+    }
+
     public MergeCommand setRevision(int targetRev) {
         this.targetRev = targetRev;
         return this;

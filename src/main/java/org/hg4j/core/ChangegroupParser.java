@@ -32,14 +32,14 @@ public class ChangegroupParser {
         }
         int payloadLen = len - 4;
         if (payloadLen > 20 * 1024 * 1024) { // 20MB guard limit to prevent DoS OOM
-            throw new IOException("Security Guard: Changegroup chunk size exceeds maximum allowed limit (20MB): " + payloadLen);
+            throw new org.hg4j.errors.HgCorruptDataException("Security Guard: Changegroup chunk size exceeds maximum allowed limit (20MB): " + payloadLen);
         }
         byte[] payload = new byte[payloadLen];
         int offset = 0;
         while (offset < payloadLen) {
             int count = in.read(payload, offset, payloadLen - offset);
             if (count == -1) {
-                throw new IOException("Unexpected EOF while reading changegroup chunk payload of size: " + payloadLen);
+                throw new org.hg4j.errors.HgCorruptDataException("Unexpected EOF while reading changegroup chunk payload of size: " + payloadLen);
             }
             offset += count;
         }
@@ -84,7 +84,7 @@ public class ChangegroupParser {
                 break;
             }
             if (chunk.length < headerSize) {
-                throw new IOException("Malformed changegroup header chunk. Length too small: " + chunk.length + " for version: " + version);
+                throw new org.hg4j.errors.HgCorruptDataException("Malformed changegroup header chunk. Length too small: " + chunk.length + " for version: " + version);
             }
 
             ChangeGroupEntry entry = new ChangeGroupEntry();

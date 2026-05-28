@@ -32,6 +32,9 @@ public class TreeCommand {
 
         public String getPath() { return path; }
         public String getNodeId() { return nodeId; }
+        public org.hg4j.lib.NodeId getNode() {
+            return nodeId != null ? org.hg4j.lib.NodeId.fromHex(nodeId) : null;
+        }
         public int getMode() { return mode; }
     }
 
@@ -46,6 +49,11 @@ public class TreeCommand {
 
     public TreeCommand setNodeId(byte[] nodeId) {
         this.nodeId = nodeId;
+        return this;
+    }
+
+    public TreeCommand setNodeId(org.hg4j.lib.NodeId nodeId) {
+        this.nodeId = nodeId != null ? nodeId.getBytes() : null;
         return this;
     }
 

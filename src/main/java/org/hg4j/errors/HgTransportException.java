@@ -4,7 +4,7 @@ package org.hg4j.errors;
  * 네트워크 및 와이어 프로토콜 제어 오류의 기반 예외 클래스.
  * HTTP/SSH transport 계층에서 발생하는 모든 예외의 상위 클래스.
  */
-public class HgTransportException extends HgException {
+public class HgTransportException extends java.io.IOException {
     private static final long serialVersionUID = 1L;
 
     private final String remoteUrl;

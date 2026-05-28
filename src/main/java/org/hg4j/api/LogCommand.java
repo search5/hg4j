@@ -130,7 +130,7 @@ public class LogCommand {
                 message = text.substring(thirdNewline + 1);
             }
 
-            commits.add(new HgCommit(rev, nodeId, manifestNodeId, author, timestamp, tzOffset, files, message, branch));
+            commits.add(new HgCommit(rev, new org.hg4j.lib.NodeId(nodeId), new org.hg4j.lib.NodeId(manifestNodeId), author, timestamp, tzOffset, files, message, branch));
         }
 
         return commits;

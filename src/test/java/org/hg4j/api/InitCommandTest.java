@@ -103,10 +103,12 @@ public class InitCommandTest {
 
     @Test
     public void testHgConstructorCoverage() throws Exception {
-        java.lang.reflect.Constructor<Hg> constructor = Hg.class.getDeclaredConstructor();
+        java.lang.reflect.Constructor<Hg> constructor = Hg.class.getDeclaredConstructor(org.hg4j.core.HgRepository.class);
         assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()));
         constructor.setAccessible(true);
-        assertThrows(java.lang.reflect.InvocationTargetException.class, constructor::newInstance);
+        HgRepository fakeRepo = new HgRepository(new File("."));
+        Hg instance = constructor.newInstance(fakeRepo);
+        assertNotNull(instance);
     }
 
     @Test

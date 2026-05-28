@@ -120,7 +120,11 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
             connected = true;
         } catch (JSchException e) {
             close();
-            throw new IOException("Failed to establish SSH connection to: " + sshUrl, e);
+            String msg = e.getMessage();
+            if (msg != null && (msg.toLowerCase().contains("auth fail") || msg.toLowerCase().contains("authentication") || msg.toLowerCase().contains("permission denied"))) {
+                throw new org.hg4j.errors.HgAuthException(sshUrl, username, e);
+            }
+            throw new org.hg4j.errors.HgProtocolException(sshUrl, "Failed to establish SSH connection: " + msg, e);
         }
     }
 
@@ -135,7 +139,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
         }
         String header = new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
         if (!header.startsWith("capabilities:")) {
-            throw new IOException("Remote SSH server did not output valid Mercurial stdio capabilities header. Received: " + header);
+            throw new org.hg4j.errors.HgProtocolException(sshUrl, "Remote SSH server did not output valid Mercurial stdio capabilities header. Received: " + header);
         }
 
         String capString = header.substring("capabilities:".length()).trim();

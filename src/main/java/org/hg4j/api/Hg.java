@@ -5,9 +5,104 @@ package org.hg4j.api;
  */
 public class Hg {
     
-    // Private constructor to prevent instantiation of utility class
-    private Hg() {
-        throw new UnsupportedOperationException("This is a utility class and cannot be instantiated");
+    private final org.hg4j.core.HgRepository repository;
+    
+    private Hg(org.hg4j.core.HgRepository repository) {
+        this.repository = repository;
+    }
+    
+    /**
+     * Opens an existing Mercurial repository.
+     * 
+     * @param directory the repository directory
+     * @return the {@link Hg} instance wrapping the repository
+     * @throws java.io.IOException if repository not found or invalid
+     */
+    public static Hg open(java.io.File directory) throws java.io.IOException {
+        if (directory == null) {
+            throw new IllegalArgumentException("Directory cannot be null");
+        }
+        java.io.File hgDir = new java.io.File(directory, ".hg");
+        if (!hgDir.exists() || !hgDir.isDirectory()) {
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
+        }
+        return new Hg(new org.hg4j.core.HgRepository(directory));
+    }
+
+    public org.hg4j.core.HgRepository getRepository() {
+        return this.repository;
+    }
+
+    public AddCommand add() {
+        return add(this.repository);
+    }
+
+    public CommitCommand commit() {
+        return commit(this.repository);
+    }
+
+    public StatusCommand status() {
+        return status(this.repository);
+    }
+
+    public LogCommand log() {
+        return log(this.repository);
+    }
+
+    public BranchCommand branch() {
+        return branch(this.repository);
+    }
+
+    public TagCommand tag() {
+        return tag(this.repository);
+    }
+
+    public BookmarkCommand bookmark() {
+        return bookmark(this.repository);
+    }
+
+    public MergeCommand merge() {
+        return merge(this.repository);
+    }
+
+    public PullCommand pull() {
+        return pull(this.repository);
+    }
+
+    public ShelveCommand shelve() {
+        return shelve(this.repository);
+    }
+
+    public RebaseCommand rebase() {
+        return rebase(this.repository);
+    }
+
+    public UpdateCommand update() {
+        return update(this.repository);
+    }
+
+    public PushCommand push() {
+        return push(this.repository);
+    }
+
+    public CatCommand cat() {
+        return cat(this.repository);
+    }
+
+    public RevertCommand revert() {
+        return revert(this.repository);
+    }
+
+    public RemoveCommand remove() {
+        return remove(this.repository);
+    }
+
+    public DiffCommand diff() {
+        return diff(this.repository);
+    }
+
+    public TreeCommand tree() {
+        return tree(this.repository);
     }
     
     /**
@@ -201,6 +296,13 @@ public class Hg {
     }
 
     /**
+     * Helper method to directly compute diff between two revisions using NodeId.
+     */
+    public static java.util.List<DiffCommand.DiffEntry> getDiff(org.hg4j.core.HgRepository repository, org.hg4j.lib.NodeId oldRevision, org.hg4j.lib.NodeId newRevision) throws java.io.IOException {
+        return diff(repository).setOldRevision(oldRevision).setNewRevision(newRevision).call();
+    }
+
+    /**
      * Helper method to directly retrieve the file tree of a revision.
      * 
      * @param repository the local repository
@@ -210,5 +312,12 @@ public class Hg {
      */
     public static java.util.List<TreeCommand.TreeEntry> getTree(org.hg4j.core.HgRepository repository, int revision) throws java.io.IOException {
         return tree(repository).setRevision(revision).call();
+    }
+
+    /**
+     * Helper method to directly retrieve the file tree of a revision using NodeId.
+     */
+    public static java.util.List<TreeCommand.TreeEntry> getTree(org.hg4j.core.HgRepository repository, org.hg4j.lib.NodeId revision) throws java.io.IOException {
+        return tree(repository).setNodeId(revision).call();
     }
 }

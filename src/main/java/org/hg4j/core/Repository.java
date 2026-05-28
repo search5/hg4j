@@ -26,4 +26,22 @@ public interface Repository {
     HgLock lockWorkingCopy() throws HgLockException;
 
     HgLock lockStore() throws HgLockException;
+
+    /**
+     * Opens an existing Mercurial repository.
+     * 
+     * @param directory the repository directory
+     * @return the {@link Repository} instance
+     * @throws IOException if the repository does not exist or cannot be opened
+     */
+    static Repository open(File directory) throws IOException {
+        if (directory == null) {
+            throw new IllegalArgumentException("Directory cannot be null");
+        }
+        File hgDir = new File(directory, ".hg");
+        if (!hgDir.exists() || !hgDir.isDirectory()) {
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
+        }
+        return new HgRepository(directory);
+    }
 }

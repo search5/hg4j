@@ -3,7 +3,7 @@ package org.hg4j.errors;
 /**
  * 해시 또는 리비전 번호로 조회 시 해당 리비전을 찾지 못할 때 발생하는 예외.
  */
-public class HgRevisionNotFoundException extends HgException {
+public class HgRevisionNotFoundException extends java.io.IOException {
     private static final long serialVersionUID = 1L;
 
     /**

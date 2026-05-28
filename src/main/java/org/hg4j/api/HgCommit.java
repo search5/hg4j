@@ -1,5 +1,6 @@
 package org.hg4j.api;
 
+import org.hg4j.lib.NodeId;
 import java.util.List;
 
 /**
@@ -7,8 +8,8 @@ import java.util.List;
  */
 public class HgCommit {
     private final int revision;
-    private final byte[] nodeId;
-    private final byte[] manifestNodeId;
+    private final NodeId nodeId;
+    private final NodeId manifestNodeId;
     private final String author;
     private final long timestamp;
     private final int timezoneOffset;
@@ -16,7 +17,7 @@ public class HgCommit {
     private final String message;
     private final String branch;
 
-    public HgCommit(int revision, byte[] nodeId, byte[] manifestNodeId, String author, 
+    public HgCommit(int revision, NodeId nodeId, NodeId manifestNodeId, String author, 
                     long timestamp, int timezoneOffset, List<String> files, String message, String branch) {
         this.revision = revision;
         this.nodeId = nodeId;
@@ -33,11 +34,11 @@ public class HgCommit {
         return revision;
     }
 
-    public byte[] getNodeId() {
+    public NodeId getNodeId() {
         return nodeId;
     }
 
-    public byte[] getManifestNodeId() {
+    public NodeId getManifestNodeId() {
         return manifestNodeId;
     }
 

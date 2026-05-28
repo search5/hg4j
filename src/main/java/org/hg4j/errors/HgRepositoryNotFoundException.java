@@ -3,7 +3,7 @@ package org.hg4j.errors;
 /**
  * 잘못된 경로이거나 손상된 Mercurial 저장소를 찾을 수 없을 때 발생하는 예외.
  */
-public class HgRepositoryNotFoundException extends HgException {
+public class HgRepositoryNotFoundException extends java.io.IOException {
     private static final long serialVersionUID = 1L;
 
     private final String path;

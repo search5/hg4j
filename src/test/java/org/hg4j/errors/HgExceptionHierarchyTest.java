@@ -58,10 +58,10 @@ public class HgExceptionHierarchyTest {
     class HgRepositoryNotFoundExceptionTest {
 
         @Test
-        @DisplayName("HgException 서브클래스임을 확인")
-        void testIsHgException() {
+        @DisplayName("IOException 서브클래스임을 확인")
+        void testIsIOException() {
             HgRepositoryNotFoundException ex = new HgRepositoryNotFoundException("/no/such/path");
-            assertInstanceOf(HgException.class, ex);
+            assertInstanceOf(java.io.IOException.class, ex);
         }
 
         @Test
@@ -89,9 +89,9 @@ public class HgExceptionHierarchyTest {
         }
 
         @Test
-        @DisplayName("catch HgException으로 잡힘")
-        void testCatchAsHgException() {
-            assertThrows(HgException.class, () -> {
+        @DisplayName("catch IOException으로 잡힘")
+        void testCatchAsIOException() {
+            assertThrows(java.io.IOException.class, () -> {
                 throw new HgRepositoryNotFoundException("/missing");
             });
         }
@@ -105,10 +105,10 @@ public class HgExceptionHierarchyTest {
     class HgCorruptDataExceptionTest {
 
         @Test
-        @DisplayName("HgException 서브클래스임을 확인")
-        void testIsHgException() {
+        @DisplayName("IOException 서브클래스임을 확인")
+        void testIsIOException() {
             HgCorruptDataException ex = new HgCorruptDataException("checksum mismatch");
-            assertInstanceOf(HgException.class, ex);
+            assertInstanceOf(java.io.IOException.class, ex);
         }
 
         @Test
@@ -127,9 +127,9 @@ public class HgExceptionHierarchyTest {
         }
 
         @Test
-        @DisplayName("catch HgException으로 잡힘")
-        void testCatchAsHgException() {
-            assertThrows(HgException.class, () -> {
+        @DisplayName("catch IOException으로 잡힘")
+        void testCatchAsIOException() {
+            assertThrows(java.io.IOException.class, () -> {
                 throw new HgCorruptDataException("delta apply failed");
             });
         }
@@ -143,11 +143,11 @@ public class HgExceptionHierarchyTest {
     class HgRevisionNotFoundExceptionTest {
 
         @Test
-        @DisplayName("HgException 서브클래스임을 확인")
-        void testIsHgException() {
+        @DisplayName("IOException 서브클래스임을 확인")
+        void testIsIOException() {
             HgRevisionNotFoundException ex =
                     new HgRevisionNotFoundException("abcdef1234567890abcdef1234567890abcdef12");
-            assertInstanceOf(HgException.class, ex);
+            assertInstanceOf(java.io.IOException.class, ex);
         }
 
         @Test
@@ -176,9 +176,9 @@ public class HgExceptionHierarchyTest {
         }
 
         @Test
-        @DisplayName("catch HgException으로 잡힘")
-        void testCatchAsHgException() {
-            assertThrows(HgException.class, () -> {
+        @DisplayName("catch IOException으로 잡힘")
+        void testCatchAsIOException() {
+            assertThrows(java.io.IOException.class, () -> {
                 throw new HgRevisionNotFoundException("deadbeef");
             });
         }
@@ -288,11 +288,11 @@ public class HgExceptionHierarchyTest {
     class HgTransportExceptionTest {
 
         @Test
-        @DisplayName("HgException 서브클래스임을 확인")
-        void testIsHgException() {
+        @DisplayName("IOException 서브클래스임을 확인")
+        void testIsIOException() {
             HgTransportException ex =
                     new HgTransportException("ssh://host/repo", "connection refused");
-            assertInstanceOf(HgException.class, ex);
+            assertInstanceOf(java.io.IOException.class, ex);
         }
 
         @Test
@@ -321,9 +321,9 @@ public class HgExceptionHierarchyTest {
         }
 
         @Test
-        @DisplayName("catch HgException으로 잡힘")
-        void testCatchAsHgException() {
-            assertThrows(HgException.class, () -> {
+        @DisplayName("catch IOException으로 잡힘")
+        void testCatchAsIOException() {
+            assertThrows(java.io.IOException.class, () -> {
                 throw new HgTransportException("ssh://host", "refused");
             });
         }
@@ -344,9 +344,9 @@ public class HgExceptionHierarchyTest {
         }
 
         @Test
-        @DisplayName("HgException으로도 잡힘 (계층 전파)")
-        void testCatchAsHgException() {
-            assertThrows(HgException.class, () -> {
+        @DisplayName("IOException으로도 잡힘 (계층 전파)")
+        void testCatchAsIOException() {
+            assertThrows(java.io.IOException.class, () -> {
                 throw new HgAuthException("http://server/hg", "user");
             });
         }
@@ -390,9 +390,9 @@ public class HgExceptionHierarchyTest {
         }
 
         @Test
-        @DisplayName("HgException으로도 잡힘 (계층 전파)")
-        void testCatchAsHgException() {
-            assertThrows(HgException.class, () -> {
+        @DisplayName("IOException으로도 잡힘 (계층 전파)")
+        void testCatchAsIOException() {
+            assertThrows(java.io.IOException.class, () -> {
                 throw new HgProtocolException("ssh://host", "bad protocol");
             });
         }

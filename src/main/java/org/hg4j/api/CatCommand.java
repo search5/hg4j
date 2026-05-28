@@ -32,6 +32,11 @@ public class CatCommand {
         return this;
     }
 
+    public CatCommand setRevision(org.hg4j.lib.NodeId nodeId) {
+        this.revision = nodeId != null ? nodeId.toHex() : null;
+        return this;
+    }
+
     public byte[] call() throws IOException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");

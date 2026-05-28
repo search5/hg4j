@@ -8,12 +8,18 @@ import org.hg4j.core.NodeIdUtil;
 import org.hg4j.core.Revlog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -264,5 +270,432 @@ public class HgRemoteAndSyncTest {
 
         assertEquals(1, computedHeads.size());
         assertEquals(NodeIdUtil.toHex(node2), computedHeads.get(0));
+    }
+
+    @Test
+    public void testPushCommandWithMockServer(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // 1. Create a baseline commit
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "Hello push safety\n");
+        Hg.add(repo).call();
+        byte[] localHeadNode = Hg.commit(repo).setMessage("First local commit").call();
+        String localHeadHex = NodeIdUtil.toHex(localHeadNode);
+
+        // 2. Setup mock server
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        
+        // State variables to assert within handler
+        final List<String> remoteHeads = List.of("0000000000000000000000000000000000000000"); // empty remote head
+        final boolean[] headsCalled = {false};
+        final boolean[] unbundleCalled = {false};
+        final boolean[] magicMatches = {false};
+        final String[] unbundleQuery = {null};
+
+        server.createContext("/", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                String query = exchange.getRequestURI().getQuery();
+                String method = exchange.getRequestMethod();
+
+                if ("GET".equalsIgnoreCase(method) && query != null && query.contains("cmd=heads")) {
+                    headsCalled[0] = true;
+                    String response = String.join("\n", remoteHeads) + "\n";
+                    byte[] respBytes = response.getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, respBytes.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(respBytes);
+                    }
+                } else if ("POST".equalsIgnoreCase(method) && query != null && query.contains("cmd=unbundle")) {
+                    unbundleCalled[0] = true;
+                    unbundleQuery[0] = query;
+
+                    // Verify headers
+                    assertEquals("application/mercurial-0.1", exchange.getRequestHeaders().getFirst("Content-Type"));
+                    assertEquals("application/mercurial-0.1", exchange.getRequestHeaders().getFirst("Accept"));
+
+                    // Verify body starting with "HG10UN"
+                    try (InputStream is = exchange.getRequestBody()) {
+                        byte[] magicBytes = new byte[6];
+                        int read = is.read(magicBytes);
+                        if (read == 6 && "HG10UN".equals(new String(magicBytes, StandardCharsets.US_ASCII))) {
+                            magicMatches[0] = true;
+                        }
+
+                        // Consume remaining bytes
+                        byte[] buffer = new byte[4096];
+                        while (is.read(buffer) != -1) {}
+                    }
+
+                    String response = "0\nno changes\n";
+                    byte[] respBytes = response.getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, respBytes.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(respBytes);
+                    }
+                } else {
+                    exchange.sendResponseHeaders(404, 0);
+                    exchange.close();
+                }
+            }
+        });
+
+        server.start();
+        int port = server.getAddress().getPort();
+
+        try {
+            // 3. Perform push
+            String destUrl = "http://127.0.0.1:" + port + "/";
+            String result = Hg.push(repo).setDestination(destUrl).call();
+            assertNotNull(result);
+
+            // 4. Assert correctness
+            assertTrue(headsCalled[0], "GET heads should have been called");
+            assertTrue(unbundleCalled[0], "POST unbundle should have been called");
+            assertTrue(magicMatches[0], "Push payload should have started with 'HG10UN' magic bytes");
+            
+            // Assert that the 'heads' query param passed to unbundle matches remote heads, not local heads
+            assertNotNull(unbundleQuery[0]);
+            assertTrue(unbundleQuery[0].contains("heads=" + String.join("+", remoteHeads)), 
+                "unbundle query should contain precondition remote heads: " + unbundleQuery[0]);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void testCloneCommandWithMockServer(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("src").toFile();
+        File cloneDir = tempDir.resolve("cloned").toFile();
+
+        // 1. Create local repository with commits
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+        File f1 = new File(srcDir, "a.txt");
+        Files.writeString(f1.toPath(), "Revision 1 Data\n");
+        Hg.add(srcRepo).call();
+        byte[] headNode = Hg.commit(srcRepo).setMessage("Initial Commit").call();
+        String headHex = NodeIdUtil.toHex(headNode);
+
+        // Prepare bundle payload
+        ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(srcRepo);
+        byte[] rawCgBytes = serializeBundleToBytes(bundle);
+
+        // 2. Setup mock server
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        
+        final boolean[] capsCalled = {false};
+        final boolean[] headsCalled = {false};
+        final boolean[] cgCalled = {false};
+
+        server.createContext("/", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                String query = exchange.getRequestURI().getQuery();
+                String method = exchange.getRequestMethod();
+
+                if ("GET".equalsIgnoreCase(method) && query != null && query.contains("cmd=capabilities")) {
+                    capsCalled[0] = true;
+                    // Return empty capabilities to force changegroup v1 pull instead of getbundle
+                    byte[] respBytes = "".getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, respBytes.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(respBytes);
+                    }
+                } else if ("GET".equalsIgnoreCase(method) && query != null && query.contains("cmd=heads")) {
+                    headsCalled[0] = true;
+                    String response = headHex + "\n";
+                    byte[] respBytes = response.getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, respBytes.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(respBytes);
+                    }
+                } else if ("POST".equalsIgnoreCase(method) && query != null && query.contains("cmd=changegroup")) {
+                    cgCalled[0] = true;
+                    exchange.sendResponseHeaders(200, rawCgBytes.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(rawCgBytes);
+                    }
+                } else {
+                    exchange.sendResponseHeaders(404, 0);
+                    exchange.close();
+                }
+            }
+        });
+
+        server.start();
+        int port = server.getAddress().getPort();
+
+        try {
+            // 3. Perform clone
+            String sourceUrl = "http://127.0.0.1:" + port + "/";
+            HgRepository clonedRepo = Hg.cloneRepository()
+                    .setSource(sourceUrl)
+                    .setDirectory(cloneDir)
+                    .call();
+
+            assertNotNull(clonedRepo);
+
+            // 4. Assert correctness
+            assertTrue(capsCalled[0], "capabilities should be retrieved");
+            assertTrue(headsCalled[0], "heads should be retrieved");
+            assertTrue(cgCalled[0], "changegroup payload should be downloaded");
+
+            // Verify files checked out
+            File clonedF1 = new File(cloneDir, "a.txt");
+            assertTrue(clonedF1.exists());
+            assertEquals("Revision 1 Data\n", Files.readString(clonedF1.toPath()));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private byte[] serializeBundleToBytes(ChangegroupParser.ChangegroupBundle bundle) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (DataOutputStream dos = new DataOutputStream(baos)) {
+            // Changelog group
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                int totalLen = 4 + 80 + entry.delta.length;
+                dos.writeInt(totalLen);
+                dos.write(entry.node);
+                dos.write(entry.p1);
+                dos.write(entry.p2);
+                dos.write(entry.cs);
+                dos.write(entry.delta);
+            }
+            dos.writeInt(0);
+
+            // Manifest group
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+                int totalLen = 4 + 80 + entry.delta.length;
+                dos.writeInt(totalLen);
+                dos.write(entry.node);
+                dos.write(entry.p1);
+                dos.write(entry.p2);
+                dos.write(entry.cs);
+                dos.write(entry.delta);
+            }
+            dos.writeInt(0);
+
+            // File groups
+            for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+                byte[] pathBytes = fg.path.getBytes(StandardCharsets.UTF_8);
+                dos.writeInt(4 + pathBytes.length);
+                dos.write(pathBytes);
+                for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                    int totalLen = 4 + 80 + entry.delta.length;
+                    dos.writeInt(totalLen);
+                    dos.write(entry.node);
+                    dos.write(entry.p1);
+                    dos.write(entry.p2);
+                    dos.write(entry.cs);
+                    dos.write(entry.delta);
+                }
+                dos.writeInt(0);
+            }
+            dos.writeInt(0);
+        }
+        return baos.toByteArray();
+    }
+
+    private boolean isHgInstalled() {
+        try {
+            Process process = new ProcessBuilder("hg", "--version").start();
+            process.waitFor();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void runProcess(File dir, String... command) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(dir);
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        try (java.io.InputStream is = process.getInputStream()) {
+            is.readAllBytes();
+        }
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new IOException("Process " + java.util.Arrays.toString(command) + " failed with exit code: " + exitCode);
+        }
+    }
+
+    @Test
+    public void testNativeHgCopyRenamePull(@TempDir Path tempDir) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg pull integration test.");
+
+        // 1. Setup native hg remote repository
+        File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
+        remoteRepoDir.mkdirs();
+        runProcess(remoteRepoDir, "hg", "init");
+
+        // Write file a.txt and commit
+        File fa = new File(remoteRepoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Initial source content\n");
+        runProcess(remoteRepoDir, "hg", "add", "a.txt");
+        runProcess(remoteRepoDir, "hg", "commit", "-m", "Initial commit");
+
+        // Copy a.txt to b.txt and commit (This generates copy metadata)
+        runProcess(remoteRepoDir, "hg", "cp", "a.txt", "b.txt");
+        runProcess(remoteRepoDir, "hg", "commit", "-m", "Copy a.txt to b.txt");
+
+        // 2. Start native hg serve on port 0
+        ProcessBuilder servePb = new ProcessBuilder("hg", "serve", "-p", "0", "--address", "127.0.0.1");
+        servePb.directory(remoteRepoDir);
+        servePb.redirectErrorStream(true);
+        Process serveProcess = servePb.start();
+
+        java.io.InputStream rawIn = serveProcess.getInputStream();
+        java.io.InputStream nonCloseableIn = new java.io.FilterInputStream(rawIn) {
+            @Override
+            public void close() throws java.io.IOException {
+                // Do not close the underlying process stream
+            }
+        };
+
+        String remoteUrl = null;
+        java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8));
+        
+        long start = System.currentTimeMillis();
+        while (System.currentTimeMillis() - start < 5000) {
+            if (reader.ready()) {
+                String line = reader.readLine();
+                if (line != null && line.contains("listening at")) {
+                    int idx = line.indexOf("http://");
+                    if (idx != -1) {
+                        int end = line.indexOf("/", idx + 7);
+                        if (end != -1) {
+                            remoteUrl = line.substring(idx, end + 1);
+                        } else {
+                            remoteUrl = line.substring(idx).trim();
+                        }
+                        break;
+                    }
+                }
+            }
+            Thread.sleep(50);
+        }
+
+        assertNotNull(remoteUrl, "Failed to parse remote URL from hg serve output");
+
+        try {
+            // 3. Initialize local hg4j repository and pull from native hg serve
+            File localRepoDir = tempDir.resolve("local_repo").toFile();
+            HgRepository localRepo = Hg.init().setDirectory(localRepoDir).call();
+
+            // Execute pull command
+            List<byte[]> pulledNodes = Hg.pull(localRepo).setSource(remoteUrl).call();
+            assertFalse(pulledNodes.isEmpty(), "Should have pulled some changesets from native hg");
+
+            // 4. Verify that b.txt copy metadata is preserved and resolved correctly in localRepo
+            File bIdx = CommitCommand.getFilelogIndex(localRepo.getStoreDir(), "b.txt");
+            File bDat = new File(bIdx.getPath().substring(0, bIdx.getPath().length() - 2) + ".d");
+            assertTrue(bIdx.exists(), "b.txt filelog index must exist locally after pull");
+
+            Revlog bFilelog = localRepo.getRevlog(bIdx, bDat);
+            assertEquals(1, bFilelog.getRevisionCount(), "b.txt must have 1 revision");
+
+            // Read metadata and verify copy source
+            java.util.Map<String, String> metadata = bFilelog.getRevisionMetadata(0);
+            assertEquals("a.txt", metadata.get("copy"), "Copy source metadata must match 'a.txt'");
+
+            // Read logical content and verify it matches
+            byte[] logical = bFilelog.getRevisionContent(0);
+            assertEquals("Initial source content\n", new String(logical, StandardCharsets.UTF_8));
+        } finally {
+            serveProcess.destroy();
+            serveProcess.waitFor();
+        }
+    }
+
+    @Test
+    public void testNativeHgPush(@TempDir Path tempDir) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg push integration test.");
+
+        // 1. Setup native hg remote repository
+        File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
+        remoteRepoDir.mkdirs();
+        runProcess(remoteRepoDir, "hg", "init");
+
+        // Allow push over http in the remote repo config
+        File hgrc = new File(remoteRepoDir, ".hg/hgrc");
+        Files.writeString(hgrc.toPath(), "[web]\nallow_push = *\npush_ssl = false\n");
+
+        // 2. Start native hg serve on port 0
+        ProcessBuilder servePb = new ProcessBuilder("hg", "serve", "-p", "0", "--address", "127.0.0.1");
+        servePb.directory(remoteRepoDir);
+        servePb.redirectErrorStream(true);
+        Process serveProcess = servePb.start();
+
+        java.io.InputStream rawIn = serveProcess.getInputStream();
+        java.io.InputStream nonCloseableIn = new java.io.FilterInputStream(rawIn) {
+            @Override
+            public void close() throws java.io.IOException {
+                // Do not close the underlying process stream
+            }
+        };
+
+        String remoteUrl = null;
+        java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8));
+        
+        long start = System.currentTimeMillis();
+        while (System.currentTimeMillis() - start < 5000) {
+            if (reader.ready()) {
+                String line = reader.readLine();
+                if (line != null && line.contains("listening at")) {
+                    int idx = line.indexOf("http://");
+                    if (idx != -1) {
+                        int end = line.indexOf("/", idx + 7);
+                        if (end != -1) {
+                            remoteUrl = line.substring(idx, end + 1);
+                        } else {
+                            remoteUrl = line.substring(idx).trim();
+                        }
+                        break;
+                    }
+                }
+            }
+            Thread.sleep(50);
+        }
+
+        assertNotNull(remoteUrl, "Failed to parse remote URL from hg serve output");
+
+        try {
+            // 3. Initialize local hg4j repository and commit a file
+            File localRepoDir = tempDir.resolve("local_repo").toFile();
+            HgRepository localRepo = Hg.init().setDirectory(localRepoDir).call();
+
+            File f = new File(localRepoDir, "test.txt");
+            Files.writeString(f.toPath(), "Content pushed from local hg4j repo\n");
+            Hg.add(localRepo).call();
+            byte[] pushedNode = Hg.commit(localRepo)
+                    .setAuthor("Bob <bob@example.com>")
+                    .setMessage("Push commit from hg4j")
+                    .call();
+
+            // Execute push command
+            String pushResult = Hg.push(localRepo).setDestination(remoteUrl).call();
+            assertNotNull(pushResult, "Push result should not be null");
+
+            // 4. Verify that remote repository indeed has the pushed revision
+            ProcessBuilder logPb = new ProcessBuilder("hg", "log", "-r", "0", "--template", "{node} {desc} {author}");
+            logPb.directory(remoteRepoDir);
+            logPb.redirectErrorStream(true);
+            Process logProcess = logPb.start();
+            String logOutput = new String(logProcess.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            logProcess.waitFor();
+
+            assertTrue(logOutput.contains(NodeIdUtil.toHex(pushedNode)), "Remote log should contain the pushed node: " + NodeIdUtil.toHex(pushedNode));
+            assertTrue(logOutput.contains("Push commit from hg4j"), "Remote log should contain the commit message");
+            assertTrue(logOutput.contains("Bob <bob@example.com>"), "Remote log should contain the author");
+        } finally {
+            serveProcess.destroy();
+            serveProcess.waitFor();
+        }
     }
 }

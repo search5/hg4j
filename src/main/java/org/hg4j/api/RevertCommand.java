@@ -39,8 +39,8 @@ public class RevertCommand {
             throw new IllegalStateException("File path must be specified.");
         }
 
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
 
             Dirstate dirstate = repository.getDirstate();
             byte[] parentNodeId = dirstate.getParent1();
@@ -112,8 +112,12 @@ public class RevertCommand {
                         }
                     }
                 }
-            } catch (Exception ignored) {
-                // If file is not tracked at target commit, we delete it from disk and untrack
+            } catch (IOException e) {
+                if (e.getMessage() != null && e.getMessage().contains("File not tracked at target revision")) {
+                    // If file is not tracked at target commit, we delete it from disk and untrack
+                } else {
+                    throw e;
+                }
             }
 
             File diskFile = new File(repository.getDirectory(), file);

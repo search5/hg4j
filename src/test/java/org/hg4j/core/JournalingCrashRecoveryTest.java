@@ -30,15 +30,16 @@ public class JournalingCrashRecoveryTest {
         long origIdxSize = clIdx.length();
         long origDatSize = clDat.length();
 
-        // Create backup files
+        // Create backup files (dirstate backup simulating pre-transaction state)
         File dirstateBackupFile = new File(repo.getHgDir(), "dirstate.backup");
         Files.writeString(dirstateBackupFile.toPath(), "Dirstate V1\n");
 
         // Simulate a partial commit by writing journal entries and then appending partial data
+        // 실제 hg journal 포맷: .hg/ 기준 상대 경로 (store/... 형식)
         File journalFile = new File(repo.getStoreDir(), "journal");
         String journalContent = "dirstate\n" +
-                ".hg/store/00changelog.i " + origIdxSize + "\n" +
-                ".hg/store/00changelog.d " + origDatSize + "\n";
+                "store/00changelog.i " + origIdxSize + "\n" +
+                "store/00changelog.d " + origDatSize + "\n";
         Files.writeString(journalFile.toPath(), journalContent);
 
         // Write partial updates to files (simulating a crash mid-transaction)
@@ -87,10 +88,11 @@ public class JournalingCrashRecoveryTest {
         Files.writeString(clIdx.toPath(), "Shrunk Index\n");
         Files.writeString(clDat.toPath(), "Shrunk Data\n");
 
-        // 4. Create rebase journal simulating physical strip crash
+        // 4. 리베이스 저널 시뮬레이션 (backup 항목의 경로는 프로제트 루트 기준)
+        // 다른 항목은 네이티브 backup 엔트리로 다른 포맷 사용
         File journalFile = new File(repo.getStoreDir(), "journal");
-        String journalContent = "backup .hg/store/00changelog.i .hg/store/rebase-backup/00changelog.i\n" +
-                "backup .hg/store/00changelog.d .hg/store/rebase-backup/00changelog.d\n";
+        String journalContent = "backup store/00changelog.i store/rebase-backup/00changelog.i\n" +
+                "backup store/00changelog.d store/rebase-backup/00changelog.d\n";
         Files.writeString(journalFile.toPath(), journalContent);
 
         // 5. Instantiate a new HgRepository and trigger auto-rollback via lock acquisition

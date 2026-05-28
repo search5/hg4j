@@ -169,22 +169,57 @@ public class HgRepository implements Repository {
                     syntax = line.substring("syntax:".length()).trim();
                     continue;
                 }
-                
-                String regex;
+
                 if ("glob".equalsIgnoreCase(syntax)) {
-                    regex = globToRegex(line);
+                    // glob은 brace expansion을 지원: {a,b,c} → 각각 별도 패턴 추가
+                    for (String expanded : expandBraces(line)) {
+                        String regex = globToRegex(expanded);
+                        try {
+                            ignorePatterns.add(java.util.regex.Pattern.compile(regex));
+                        } catch (java.util.regex.PatternSyntaxException e) {
+                            // 무효 패턴 건너뜀
+                        }
+                    }
                 } else {
-                    regex = line;
-                }
-                try {
-                    ignorePatterns.add(java.util.regex.Pattern.compile(regex));
-                } catch (java.util.regex.PatternSyntaxException e) {
-                    // 무효 패턴 건너뜀
+                    // regexp 문법: 패턴이 앵커(^ 또는 $)로 끝나지 않으면 경로 전체 매칭을 위해 래핑
+                    String regex = line;
+                    if (!regex.startsWith("^")) {
+                        regex = "(?:" + regex + ")";
+                    }
+                    try {
+                        ignorePatterns.add(java.util.regex.Pattern.compile(regex));
+                    } catch (java.util.regex.PatternSyntaxException e) {
+                        // 무효 패턴 건너뜀
+                    }
                 }
             }
         } catch (IOException e) {
             // 무시 파일 로드 에러는 로깅 후 무시 처리 가능
         }
+    }
+
+    /**
+     * glob 패턴의 {a,b,c} brace expansion을 처리하여 각각의 단순 glob으로 분리한다.
+     * 실제 hg의 .hgignore glob 문법과 동일하게 중첩 brace 미지원.
+     */
+    private java.util.List<String> expandBraces(String glob) {
+        java.util.List<String> results = new java.util.ArrayList<>();
+        int open = glob.indexOf('{');
+        int close = open != -1 ? glob.indexOf('}', open) : -1;
+        if (open == -1 || close == -1) {
+            results.add(glob);
+            return results;
+        }
+        String prefix = glob.substring(0, open);
+        String suffix = glob.substring(close + 1);
+        String[] choices = glob.substring(open + 1, close).split(",", -1);
+        for (String choice : choices) {
+            // 재귀적으로 중첩 brace 처리
+            for (String expanded : expandBraces(prefix + choice + suffix)) {
+                results.add(expanded);
+            }
+        }
+        return results;
     }
 
     private String globToRegex(String glob) {
@@ -206,7 +241,10 @@ public class HgRepository implements Repository {
                 }
             } else if (c == '?') {
                 sb.append("[^/]");
-            } else if (".\\$^+|()[]{}".indexOf(c) != -1) {
+            } else if (c == '{' || c == '}') {
+                // brace expansion은 expandBraces()에서 미리 처리됨 — 여기서는 문자 그대로 처리
+                sb.append(java.util.regex.Pattern.quote(String.valueOf(c)));
+            } else if (".\\$^+|()[]".indexOf(c) != -1) {
                 sb.append('\\').append(c);
             } else {
                 sb.append(c);
@@ -349,8 +387,9 @@ public class HgRepository implements Repository {
                     if (parts.length == 2) {
                         String origRel = parts[0];
                         String backupRel = parts[1];
-                        File originalFile = new File(directory, origRel);
-                        File backupFile = new File(directory, backupRel);
+                        // .hg/ 기준 상대 경로 (실제 hg journal 포맷)
+                        File originalFile = new File(hgDir, origRel);
+                        File backupFile = new File(hgDir, backupRel);
                         if (backupFile.exists()) {
                             originalFile.getParentFile().mkdirs();
                             java.nio.file.Files.copy(backupFile.toPath(), originalFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
@@ -379,7 +418,7 @@ public class HgRepository implements Repository {
                     if (spaceIdx != -1) {
                         String filePath = line.substring(0, spaceIdx);
                         long origSize = Long.parseLong(line.substring(spaceIdx + 1));
-                        File file = new File(hgDir.getParentFile(), filePath);
+                        File file = new File(hgDir, filePath);
                         if (file.exists()) {
                             if (origSize == 0) {
                                 java.nio.file.Files.deleteIfExists(file.toPath());

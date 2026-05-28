@@ -798,6 +798,98 @@ public class RevlogTest {
         assertEquals(0, failureCount.get(), "Concurrent appends had exceptions: " + failureCount.get());
         assertEquals(threadCount, revlog.getRevisionCount());
     }
+
+    @Test
+    public void testAppendChangeGroupEntryWithCopyMetadata(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("copy.i").toFile();
+        File datFile = tempDir.resolve("copy.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+
+        // 1. Parent revision with copy metadata
+        java.util.Map<String, String> metadata = new java.util.HashMap<>();
+        metadata.put("copy", "source.txt");
+        metadata.put("copyrev", "0000000000000000000000000000000000000000");
+
+        String baseLogical = "Hello World\n";
+        byte[] contentBytes = baseLogical.getBytes(StandardCharsets.UTF_8);
+
+        byte[] p1Node = new byte[20];
+        byte[] p2Node = new byte[20];
+        byte[] parentNode = revlog.appendRevision(contentBytes, metadata, -1, -1, p1Node, p2Node, 0);
+
+        // Verify logical and raw contents
+        byte[] loadedLogical = revlog.getRevisionContent(0);
+        assertEquals(baseLogical, new String(loadedLogical, StandardCharsets.UTF_8));
+        byte[] rawParentContent = revlog.getRawRevisionContent(0);
+
+        // 2. Child revision with copy metadata (appended logical content)
+        String childLogical = "Hello World\nModified!\n";
+        byte[] childLogicalBytes = childLogical.getBytes(StandardCharsets.UTF_8);
+
+        // Reconstruct expected rawChildContent with identical metadata prefix
+        StringBuilder msb = new StringBuilder();
+        msb.append('\u0001').append('\n');
+        msb.append("copy: source.txt\n");
+        msb.append("copyrev: 0000000000000000000000000000000000000000\n");
+        msb.append('\u0001').append('\n');
+        byte[] metaBytes = msb.toString().getBytes(StandardCharsets.UTF_8);
+
+        byte[] rawChildContent = new byte[metaBytes.length + childLogicalBytes.length];
+        System.arraycopy(metaBytes, 0, rawChildContent, 0, metaBytes.length);
+        System.arraycopy(childLogicalBytes, 0, rawChildContent, metaBytes.length, childLogicalBytes.length);
+
+        // Create delta between rawParentContent and rawChildContent
+        byte[] delta = Revlog.createSimpleDelta(rawParentContent, rawChildContent);
+
+        // Calculate expected node hash: SHA-1(p1_node + p2_node + raw_child_content) where parents are sorted lexicographically
+        byte[] first = parentNode;
+        byte[] second = p2Node;
+        boolean swap = false;
+        for (int i = 0; i < 20; i++) {
+            int byteA = first[i] & 0xFF;
+            int byteB = second[i] & 0xFF;
+            if (byteA != byteB) {
+                if (byteA > byteB) {
+                    swap = true;
+                }
+                break;
+            }
+        }
+        if (swap) {
+            first = p2Node;
+            second = parentNode;
+        }
+
+        byte[] childNode = new byte[20];
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            md.update(first);
+            md.update(second);
+            md.update(rawChildContent);
+            byte[] digest = md.digest();
+            System.arraycopy(digest, 0, childNode, 0, 20);
+        } catch (Exception e) {
+            fail(e);
+        }
+
+        // 3. Build ChangeGroupEntry
+        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+        entry.node = childNode;
+        entry.p1 = parentNode;
+        entry.p2 = p2Node;
+        entry.deltabase = parentNode;
+        entry.delta = delta;
+
+        // 4. Try appending: this must succeed!
+        revlog.appendChangeGroupEntry(entry, 1);
+
+        // Verify that the child revision was successfully written and can be read back
+        assertEquals(2, revlog.getRevisionCount());
+        byte[] readBackLogical = revlog.getRevisionContent(1);
+        assertEquals(childLogical, new String(readBackLogical, StandardCharsets.UTF_8));
+        byte[] readBackRaw = revlog.getRawRevisionContent(1);
+        assertArrayEquals(rawChildContent, readBackRaw);
+    }
 }
 
 

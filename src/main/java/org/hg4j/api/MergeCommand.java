@@ -416,6 +416,9 @@ public class MergeCommand {
         byte[] commitContent = changelog.getRevisionContent(commitRev);
         String clText = new String(commitContent, StandardCharsets.UTF_8);
         String firstLine = clText.split("\n")[0].trim();
+        if (firstLine.length() > 40) {
+            firstLine = firstLine.substring(0, 40);
+        }
         byte[] prevManifestNode = NodeIdUtil.fromHex(firstLine);
 
         int manifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, prevManifestNode);

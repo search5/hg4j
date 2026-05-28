@@ -90,9 +90,9 @@ public class HgLock implements AutoCloseable {
                             try {
                                 long existingPid = Long.parseLong(ownerPidStr);
                                 String localHost = getLocalHostName();
-                                boolean isLocal = "localhost".equalsIgnoreCase(ownerHost)
+                                boolean isLocal = "localhost".equals(ownerHost)
                                                || "127.0.0.1".equals(ownerHost)
-                                               || localHost.equalsIgnoreCase(ownerHost);
+                                               || localHost.equals(ownerHost);
                                 if (isLocal) {
                                     // Same host! Check if the pid is alive.
                                     boolean isAlive = false;

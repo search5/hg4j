@@ -224,4 +224,43 @@ public class HgLockTest {
             HgLock.forceFallback = false;
         }
     }
+
+    @Test
+    public void testDifferentHostCaseInsensitiveIgnored(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        File lockFile = new File(repoDir, "lock");
+        
+        String localHost = getLocalHostName();
+        String differentCaseHost = localHost.equalsIgnoreCase("localhost") ? "LocalHost" : localHost.toUpperCase();
+        
+        if (differentCaseHost.equals(localHost)) {
+            differentCaseHost = localHost + "-different";
+        }
+        
+        String fakeLockMetadata = differentCaseHost + ":999999\n";
+        try {
+            Files.createSymbolicLink(lockFile.toPath(), java.nio.file.Path.of(differentCaseHost + ":999999"));
+        } catch (Exception e) {
+            Files.writeString(lockFile.toPath(), fakeLockMetadata, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        
+        assertThrows(HgLockException.class, () -> {
+            new HgLock(lockFile, 100);
+        });
+    }
+
+    private String getLocalHostName() {
+        String host = System.getenv("HOSTNAME");
+        if (host == null || host.isEmpty()) {
+            host = System.getenv("COMPUTERNAME");
+        }
+        if (host == null || host.isEmpty()) {
+            try {
+                host = java.net.InetAddress.getLocalHost().getHostName();
+            } catch (Exception ignored) {
+                host = "localhost";
+            }
+        }
+        return host;
+    }
 }

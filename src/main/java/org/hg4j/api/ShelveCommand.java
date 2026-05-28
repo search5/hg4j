@@ -207,8 +207,8 @@ public class ShelveCommand {
         File patchFile = new File(shelvedDir, name + ".patch");
         File hgBundleFile = new File(shelvedDir, name + ".hg");
 
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
 
             Dirstate dirstate = repository.getDirstate();
             Map<String, Dirstate.Entry> entries = dirstate.getEntries();
@@ -434,8 +434,8 @@ public class ShelveCommand {
             bundle = ChangegroupParser.parseBundle(fis);
         }
 
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
 
             Dirstate dirstate = repository.getDirstate();
 

@@ -48,7 +48,7 @@ public class Bundle2Parser {
         }
 
         // 2. Stream Level Parameters Size
-        int paramsSize = dis.readInt();
+        int paramsSize = dis.readUnsignedByte();
         String compression = null;
         if (paramsSize > 0) {
             byte[] paramBytes = new byte[paramsSize];

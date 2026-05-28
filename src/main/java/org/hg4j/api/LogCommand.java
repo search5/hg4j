@@ -116,7 +116,9 @@ public class LogCommand {
             int doubleNewline = text.indexOf("\n\n", thirdNewline + 1);
             List<String> files = new ArrayList<>();
             String message = "";
-            if (doubleNewline != -1) {
+            if (thirdNewline + 1 < text.length() && text.charAt(thirdNewline + 1) == '\n') {
+                message = text.substring(thirdNewline + 2);
+            } else if (doubleNewline != -1) {
                 String filesPart = text.substring(thirdNewline + 1, doubleNewline);
                 for (String line : filesPart.split("\n")) {
                     if (!line.isEmpty()) {

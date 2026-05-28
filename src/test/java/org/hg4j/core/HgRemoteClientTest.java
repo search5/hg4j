@@ -6,10 +6,16 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
 import org.hg4j.api.*;
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -147,9 +153,6 @@ public class HgRemoteClientTest {
         
         byte[] params = "Compression=GZ".getBytes(StandardCharsets.UTF_8);
         int paramsLen = params.length;
-        bundle2Out.write((paramsLen >> 24) & 0xFF);
-        bundle2Out.write((paramsLen >> 16) & 0xFF);
-        bundle2Out.write((paramsLen >> 8) & 0xFF);
         bundle2Out.write(paramsLen & 0xFF);
         bundle2Out.write(params);
         bundle2Out.write(compressedBytes);
@@ -235,9 +238,6 @@ public class HgRemoteClientTest {
         bundle2Out.write("HG20".getBytes(StandardCharsets.US_ASCII));
         
         int paramsLen = 0;
-        bundle2Out.write((paramsLen >> 24) & 0xFF);
-        bundle2Out.write((paramsLen >> 16) & 0xFF);
-        bundle2Out.write((paramsLen >> 8) & 0xFF);
         bundle2Out.write(paramsLen & 0xFF);
         bundle2Out.write(uncompressedBytes);
         
@@ -371,9 +371,6 @@ public class HgRemoteClientTest {
         ByteArrayOutputStream bundle2Out = new ByteArrayOutputStream();
         bundle2Out.write("HG20".getBytes(StandardCharsets.US_ASCII));
         byte[] params = "Compression=BZ".getBytes(StandardCharsets.UTF_8);
-        bundle2Out.write((params.length >> 24) & 0xFF);
-        bundle2Out.write((params.length >> 16) & 0xFF);
-        bundle2Out.write((params.length >> 8) & 0xFF);
         bundle2Out.write(params.length & 0xFF);
         bundle2Out.write(params);
         bundle2Out.write(bzBytes);
@@ -487,7 +484,7 @@ public class HgRemoteClientTest {
             assertEquals("Version1_Content", Files.readString(testFile.toPath(), StandardCharsets.UTF_8));
 
             // 4. Verify RemoveCommand
-            Hg.remove(repo).setFile("sample.txt").call();
+            Hg.remove(repo).setFile("sample.txt").setForce(true).call();
             assertFalse(testFile.exists());
             Dirstate dirstate = repo.getDirstate();
             assertEquals('r', dirstate.getEntries().get("sample.txt").getState());
@@ -514,6 +511,67 @@ public class HgRemoteClientTest {
         } finally {
             deleteDirRecursively(tempRepoDir);
         }
+    }
+
+    @Test
+    public void testHgRemoteClientNetworkOptions() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        
+        final boolean[] headsCalled = {false};
+        final String[] authHeader = {null};
+
+        server.createContext("/", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                headsCalled[0] = true;
+                authHeader[0] = exchange.getRequestHeaders().getFirst("Authorization");
+
+                String response = "remotehead1234567890\n";
+                byte[] respBytes = response.getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, respBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(respBytes);
+                }
+            }
+        });
+
+        server.start();
+        int port = server.getAddress().getPort();
+
+        try {
+            String url = "http://127.0.0.1:" + port + "/";
+            HgRemoteClient client = new HgRemoteClient(url);
+            
+            // Set options
+            client.setTimeouts(5000, 5000);
+            client.setCredentials("user", "pass");
+            client.setProxy(Proxy.NO_PROXY);
+            client.setForceTls(false);
+
+            List<String> heads = client.getHeads();
+            assertNotNull(heads);
+            assertEquals(1, heads.size());
+            assertEquals("remotehead1234567890", heads.get(0));
+
+            assertTrue(headsCalled[0]);
+            assertNotNull(authHeader[0]);
+            assertTrue(authHeader[0].startsWith("Basic "));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void testHgRemoteClientTlsCheckAndErrors() {
+        HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:9999/hg");
+        client.setForceTls(true);
+
+        // SecurityException due to forceTls on non-https url
+        assertThrows(SecurityException.class, () -> client.getHeads());
+        
+        // Malformed URL check
+        HgRemoteClient invalidUrlClient = new HgRemoteClient("invalid_url_protocol://foo");
+        assertThrows(IOException.class, () -> invalidUrlClient.getHeads());
     }
 
     private void deleteDirRecursively(File file) {

@@ -74,7 +74,7 @@ public class LogCommandTest {
 
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        org.hg4j.core.Revlog changelog = new org.hg4j.core.Revlog(clIdx, clDat);
+        org.hg4j.core.Revlog changelog = repo.getRevlog(clIdx, clDat);
 
         // 1. Malformed commit: no newline at all
         changelog.appendRevision("NoNewline".getBytes(), -1, -1, new byte[20], new byte[20], 0);
@@ -112,5 +112,15 @@ public class LogCommandTest {
         // Revision 3: invalid date (with space)
         HgCommit cSpaceDate = log.get(2);
         assertEquals(0, cSpaceDate.getTimestamp());
+
+        // 7. Commit with NO files (date followed directly by double newline and message)
+        changelog.appendRevision("0000000000000000000000000000000000000000\nAuthor\n12345678 0\n\nNoFilesMessage".getBytes(), -1, -1, new byte[20], new byte[20], 6);
+        
+        List<HgCommit> log2 = Hg.log(repo).call();
+        assertEquals(4, log2.size());
+        
+        HgCommit cNoFiles = log2.get(0); // newest first
+        assertEquals(0, cNoFiles.getFiles().size(), "Should have no files");
+        assertEquals("NoFilesMessage", cNoFiles.getMessage(), "Message should NOT contain leading newline");
     }
 }

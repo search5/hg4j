@@ -235,6 +235,8 @@ public class CommitCommandTest {
         Hg.commit(repo).setMessage("Commit with non-ASCII and Reserved names").call();
 
         // 3. 서브프로세스로 네이티브 hg verify 구동하여 무결성 정밀 검증
+        org.junit.jupiter.api.Assumptions.assumeTrue(isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg verify integration test.");
+
         ProcessBuilder pb = new ProcessBuilder("hg", "verify");
         pb.directory(repoDir);
         pb.redirectErrorStream(true);
@@ -377,11 +379,10 @@ public class CommitCommandTest {
         java.util.List<String> fncachePaths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
         
         assertTrue(fncachePaths.contains("data/.hgignore.i"));
-        assertTrue(fncachePaths.contains("data/.hgignore.d"));
+        // .d 파일은 fncache에 등록되지 않음 (실제 hg 동작과 동일)
+        assertFalse(fncachePaths.contains("data/.hgignore.d"), "fncache should not contain .d paths");
         assertTrue(fncachePaths.contains("data/README.MD.i"));
-        assertTrue(fncachePaths.contains("data/README.MD.d"));
         assertTrue(fncachePaths.contains("data/한글.txt.i"));
-        assertTrue(fncachePaths.contains("data/한글.txt.d"));
     }
 
     @Test
@@ -407,10 +408,11 @@ public class CommitCommandTest {
         assertEquals(targetSize, clIdx.length());
 
         // Create mock journal simulating dirstate, fncache and changelog.i changes
+        // 실제 hg journal 포맷: .hg/ 기준 상대 경로 (store/... 형식)
         File journalFile = new File(repo.getStoreDir(), "journal");
         java.util.List<String> journalEntries = java.util.Arrays.asList(
             "dirstate",
-            ".hg/store/00changelog.i " + origClIdxLen
+            "store/00changelog.i " + origClIdxLen
         );
         Files.write(journalFile.toPath(), journalEntries, StandardCharsets.UTF_8);
 
@@ -491,5 +493,23 @@ public class CommitCommandTest {
         assertEquals("feature-cool-stuff", entry.getBranch(), "Parsed branch name must match");
         assertEquals("Developer <dev@example.com>", entry.getAuthor());
         assertEquals("Add cool features", entry.getMessage());
+    }
+
+    @Test
+    public void testDecodeExtraKeyRoundtrip() {
+        String original = "backslash\\newline\\nand\\colon:";
+        String encoded = CommitCommand.encodeExtraKey(original);
+        String decoded = CommitCommand.decodeExtraKey(encoded);
+        assertEquals(original, decoded, "Extra key roundtrip encoding/decoding should be identical");
+    }
+
+    private boolean isHgInstalled() {
+        try {
+            Process process = new ProcessBuilder("hg", "--version").start();
+            process.waitFor();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

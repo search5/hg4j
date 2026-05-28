@@ -77,8 +77,8 @@ public class CommitCommand {
         byte[] fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
         File journalFile = new File(repository.getStoreDir(), "journal");
 
-        try (HgLock storeLock = skipLockAndJournal ? null : repository.lockStore();
-             HgLock wlock = skipLockAndJournal ? null : repository.lockWorkingCopy()) {
+        try (HgLock wlock = skipLockAndJournal ? null : repository.lockWorkingCopy();
+             HgLock storeLock = skipLockAndJournal ? null : repository.lockStore()) {
 
             if (!skipLockAndJournal) {
                 // Create physical journal and backups for Crash Resilience
@@ -113,10 +113,11 @@ public class CommitCommand {
             fileSizes.put(mfDat, mfDatLen);
 
             if (!skipLockAndJournal) {
-                appendToJournal(journalFile, ".hg/store/00changelog.i " + clIdxLen);
-                appendToJournal(journalFile, ".hg/store/00changelog.d " + clDatLen);
-                appendToJournal(journalFile, ".hg/store/00manifest.i " + mfIdxLen);
-                appendToJournal(journalFile, ".hg/store/00manifest.d " + mfDatLen);
+                // 경로는 .hg/ 기준 상대 경로 (실제 hg journal 포맷)
+                appendToJournal(journalFile, "store/00changelog.i " + clIdxLen);
+                appendToJournal(journalFile, "store/00changelog.d " + clDatLen);
+                appendToJournal(journalFile, "store/00manifest.i " + mfIdxLen);
+                appendToJournal(journalFile, "store/00manifest.d " + mfDatLen);
             }
 
             Dirstate dirstate = repository.getDirstate();
@@ -183,6 +184,8 @@ public class CommitCommand {
             }
 
             // 3. Process dirstate entries and write filelogs
+            // M-2: racy-hg 조건 판정을 위해 트랜잭션 시작 시각 기록 (epoch seconds)
+            final long txStartSec = System.currentTimeMillis() / 1000;
             Map<String, String> newManifest = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
             List<String> filesModified = new ArrayList<>();
             Set<String> fncachePaths = new LinkedHashSet<>();
@@ -228,9 +231,11 @@ public class CommitCommand {
                     if (dEntry.getState() == 'n') {
                         long diskTime = diskFile.lastModified() / 1000;
                         if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
+                            // 크기나 mtime이 다르면 명확히 변경됨
                             changed = true;
-                        } else {
-                            // Racy-hg check: same size and timestamp within fast execution
+                        } else if (dEntry.getTime() >= txStartSec) {
+                            // M-2: racy-hg 판정 — dirstate mtime이 트랜잭션 시작 시각과
+                            // 같거나 이후이면 로카 시간 해상도 문제로 내용을 직접 비교해야 함
                             File flIdx = getFilelogIndex(repository.getStoreDir(), path);
                             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                             if (flIdx.exists()) {
@@ -244,6 +249,8 @@ public class CommitCommand {
                                 }
                             }
                         }
+                        // dEntry.getTime() < txStartSec 이면서 크기/mtime이 동일하면 변경없음
+                        // (changed 는 false로 유지)
                     }
 
                     if (changed) {
@@ -261,8 +268,9 @@ public class CommitCommand {
                             long idxLen = flIdx.exists() ? flIdx.length() : 0L;
                             fileSizes.put(flIdx, idxLen);
                             if (!skipLockAndJournal) {
+                                // .hg/ 기준 상대 경로 (실제 hg journal 포맷)
                                 String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path) + ".i";
-                                appendToJournal(journalFile, ".hg/" + storeRelIdx + " " + idxLen);
+                                appendToJournal(journalFile, storeRelIdx + " " + idxLen);
                             }
                         }
                         if (!fileSizes.containsKey(flDat)) {
@@ -270,7 +278,7 @@ public class CommitCommand {
                             fileSizes.put(flDat, datLen);
                             if (!skipLockAndJournal) {
                                 String storeRelDat = "store/" + NodeIdUtil.encodeFname(path) + ".d";
-                                appendToJournal(journalFile, ".hg/" + storeRelDat + " " + datLen);
+                                appendToJournal(journalFile, storeRelDat + " " + datLen);
                             }
                         }
 
@@ -316,10 +324,9 @@ public class CommitCommand {
                         newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
                         filesModified.add(path);
 
-                        // Register filelog .i and .d paths in fncache using raw paths
+                        // fncache에는 .i 파일 경로만 등록 (실제 hg 동작과 동일, .d는 등록하지 않음)
                         String rawPath = "data/" + path.replace('\\', '/');
                         fncachePaths.add(rawPath + ".i");
-                        fncachePaths.add(rawPath + ".d");
                     } else {
                         // File has not changed in working directory
                         String hexP1 = manifestP1.get(path);
@@ -554,7 +561,34 @@ public class CommitCommand {
 
     public static String decodeExtraKey(String s) {
         if (s == null) return "";
-        return s.replace("\\0", "\0").replace("\\r", "\r").replace("\\n", "\n").replace("\\:", ":").replace("\\\\", "\\");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char next = s.charAt(i + 1);
+                if (next == '0') {
+                    sb.append('\0');
+                    i++;
+                } else if (next == 'r') {
+                    sb.append('\r');
+                    i++;
+                } else if (next == 'n') {
+                    sb.append('\n');
+                    i++;
+                } else if (next == ':') {
+                    sb.append(':');
+                    i++;
+                } else if (next == '\\') {
+                    sb.append('\\');
+                    i++;
+                } else {
+                    sb.append(c);
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     private void appendToJournal(File journalFile, String entry) throws IOException {

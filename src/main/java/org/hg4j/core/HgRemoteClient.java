@@ -357,6 +357,20 @@ public class HgRemoteClient {
             } else {
                 throw new IOException("Unsupported compression format in application/mercurial-0.2 framing: " + compName);
             }
+        } else if (contentType != null && contentType.contains("application/mercurial-0.1")) {
+            // Automatically detect and decompress application/mercurial-0.1 raw deflate (zlib) streams
+            java.io.PushbackInputStream pbis = new java.io.PushbackInputStream(in, 2);
+            int b1 = pbis.read();
+            int b2 = pbis.read();
+            if (b1 == 0x78 && (b2 == 0x9C || b2 == 0x01 || b2 == 0x5E || b2 == 0xDA)) {
+                pbis.unread(b2);
+                pbis.unread(b1);
+                return new java.util.zip.InflaterInputStream(pbis);
+            } else {
+                if (b2 != -1) pbis.unread(b2);
+                if (b1 != -1) pbis.unread(b1);
+                return pbis;
+            }
         }
         return in;
     }

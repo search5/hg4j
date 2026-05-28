@@ -71,17 +71,51 @@ public class PushCommand {
 
             // Calculate startRev for new commits to push
             int startRev = 0;
-            if (!remoteHeads.isEmpty()) {
-                int maxRemoteRev = -1;
+            List<String> validRemoteHeads = new ArrayList<>();
+            if (remoteHeads != null) {
                 for (String rh : remoteHeads) {
-                    int rev = changelog.findRevision(NodeIdUtil.fromHex(rh));
-                    if (rev > maxRemoteRev) {
-                        maxRemoteRev = rev;
+                    if (rh != null && !rh.equals("0000000000000000000000000000000000000000")) {
+                        validRemoteHeads.add(rh);
                     }
                 }
-                if (maxRemoteRev != -1) {
-                    startRev = maxRemoteRev + 1;
+            }
+
+            if (!validRemoteHeads.isEmpty()) {
+                boolean[] remoteKnown = new boolean[count];
+                for (String rh : validRemoteHeads) {
+                    int rev = changelog.findRevision(NodeIdUtil.fromHex(rh));
+                    if (rev != -1) {
+                        remoteKnown[rev] = true;
+                    }
                 }
+                // Propagate remote status to ancestors downwards
+                for (int i = count - 1; i >= 0; i--) {
+                    if (remoteKnown[i]) {
+                        Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+                        if (rec.getParent1() >= 0) remoteKnown[rec.getParent1()] = true;
+                        if (rec.getParent2() >= 0) remoteKnown[rec.getParent2()] = true;
+                    }
+                }
+                boolean hasAnyCommon = false;
+                for (boolean k : remoteKnown) {
+                    if (k) {
+                        hasAnyCommon = true;
+                        break;
+                    }
+                }
+                if (!hasAnyCommon) {
+                    throw new IOException("abort: repository is unrelated");
+                }
+
+                // Find the first revision not known to remote
+                int firstNewRev = count;
+                for (int i = 0; i < count; i++) {
+                    if (!remoteKnown[i]) {
+                        firstNewRev = i;
+                        break;
+                    }
+                }
+                startRev = firstNewRev;
             }
 
             if (startRev >= count) {
@@ -187,6 +221,9 @@ public class PushCommand {
             // 2. Serialize bundle to binary bytes
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             try (DataOutputStream dos = new DataOutputStream(baos)) {
+                // Write HG10UN magic bytes for uncompressed bundle1 format compatibility with native hg
+                dos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
+
                 // Changelog group
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                     writeEntryChunk(dos, entry);
@@ -211,7 +248,7 @@ public class PushCommand {
             }
 
             // 3. Dispatch bundle to remote destination
-            return client.push(baos.toByteArray(), localHeads);
+            return client.push(baos.toByteArray(), remoteHeads);
         }
     }
 

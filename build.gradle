@@ -2,6 +2,7 @@ plugins {
     id 'java'
     id 'jacoco'
     id 'maven-publish'
+    id 'org.owasp.dependencycheck' version '9.0.9'
 }
 
 group = 'org.hg4j'
@@ -84,7 +85,34 @@ jacocoTestReport {
 
 jacocoTestCoverageVerification {
     violationRules {
+        // 규칙 1: 전체 번들 커버리지 (최소 70% - 네트워크 의존 클래스 제외 전 기준)
         rule {
+            element = 'BUNDLE'
+            limit {
+                minimum = 0.70
+            }
+        }
+        // 규칙 2: 클래스 별 90% 규칙 (외부 의존성이 없는 핵심 클래스만 적용)
+        rule {
+            element = 'CLASS'
+            includes = [
+                'org.hg4j.core.Dirstate',
+                'org.hg4j.core.NodeIdUtil',
+                'org.hg4j.core.SafeFileIO',
+                'org.hg4j.core.Merge3',
+                'org.hg4j.core.Bundle2Parser',
+                'org.hg4j.core.ChangegroupParser',
+                'org.hg4j.api.AddCommand',
+                'org.hg4j.api.BookmarkCommand',
+                'org.hg4j.api.BranchCommand',
+                'org.hg4j.api.InitCommand',
+                'org.hg4j.api.LogCommand',
+                'org.hg4j.api.RemoveCommand',
+                'org.hg4j.api.RevertCommand',
+                'org.hg4j.api.ShelveCommand',
+                'org.hg4j.api.StatusCommand',
+                'org.hg4j.api.TagCommand',
+            ]
             limit {
                 minimum = 0.90
             }
@@ -93,3 +121,9 @@ jacocoTestCoverageVerification {
 }
 
 check.dependsOn jacocoTestCoverageVerification
+
+dependencyCheck {
+    autoUpdate = true
+    failBuildOnCVSS = 7.0f
+    format = 'ALL'
+}

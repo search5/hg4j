@@ -639,8 +639,8 @@ public class RebaseCommand {
             File origFile = entry.getKey();
             File backupFile = entry.getValue();
             
-            String origRel = repository.getDirectory().toPath().relativize(origFile.toPath()).toString().replace('\\', '/');
-            String backupRel = repository.getDirectory().toPath().relativize(backupFile.toPath()).toString().replace('\\', '/');
+            String origRel = repository.getHgDir().toPath().relativize(origFile.toPath()).toString().replace('\\', '/');
+            String backupRel = repository.getHgDir().toPath().relativize(backupFile.toPath()).toString().replace('\\', '/');
             
             sb.append("backup ").append(origRel).append(" ").append(backupRel).append("\n");
         }

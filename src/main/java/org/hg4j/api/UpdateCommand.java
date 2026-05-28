@@ -21,6 +21,7 @@ public class UpdateCommand {
 
     private final HgRepository repository;
     private String targetRevision;
+    private boolean force = false;
 
     public UpdateCommand(HgRepository repository) {
         this.repository = repository;
@@ -31,14 +32,26 @@ public class UpdateCommand {
         return this;
     }
 
+    public UpdateCommand setForce(boolean force) {
+        this.force = force;
+        return this;
+    }
+
     public byte[] call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
+
+            if (!force) {
+                Status status = new StatusCommand(repository).call();
+                if (!status.getAdded().isEmpty() || !status.getModified().isEmpty() || !status.getRemoved().isEmpty()) {
+                    throw new IOException("Working directory has uncommitted changes. Use force to update.");
+                }
+            }
 
             Revlog changelog = repository.getRevlog(clIdx, clDat);
             byte[] targetNodeId = resolveTargetNodeId(changelog);

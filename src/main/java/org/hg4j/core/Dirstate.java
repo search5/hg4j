@@ -82,7 +82,24 @@ public class Dirstate {
             throw new IOException("Invalid dirstate file: content cannot be null");
         }
 
-        // Check for dirstate-v2 magic signature (N-5: dirstate-v2 detection)
+        // dirstate-v2 magic bytes \uac10\uc9c0 (Mercurial 6.0+ rust \uad6c\ud604\uc758 \uc2e4\uc81c \ubc14\uc774\ub108\ub9ac magic)
+        // magic: \xd8\x1c\x8c\xf5\xfe\x73\x0f\x14 (8\ubc14\uc774\ud2b8)
+        if (bytes.length >= 8) {
+            byte[] v2Magic = {(byte)0xd8, (byte)0x1c, (byte)0x8c, (byte)0xf5,
+                              (byte)0xfe, (byte)0x73, (byte)0x0f, (byte)0x14};
+            boolean isV2Magic = true;
+            for (int i = 0; i < v2Magic.length; i++) {
+                if (bytes[i] != v2Magic[i]) {
+                    isV2Magic = false;
+                    break;
+                }
+            }
+            if (isV2Magic) {
+                this.isV2 = true;
+                return;
+            }
+        }
+        // \ubb38\uc790\uc5f4 \uae30\ubc18 \ud3f4\ubc31 \uac10\uc9c0 (\uc77c\ubd80 \ube44\ud45c\uc900 \uc2e4\ud5d8\uc801 \uad6c\ud604 \ub300\ube44)
         if (bytes.length >= 9) {
             String magic = new String(bytes, 0, Math.min(bytes.length, 30), StandardCharsets.UTF_8);
             if (magic.startsWith("dirstate-v2") || magic.startsWith("# dirstate-v2") || magic.startsWith("dirstate2")) {

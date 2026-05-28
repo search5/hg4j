@@ -139,14 +139,12 @@ public class Revlog {
      * 캐시 일관성 유지를 위해 인메모리 콘텐츠 캐시를 완전히 비웁니다.
      * (개선 권고 4번: 캐시 무효화 정책 완비)
      */
-    public void clearCache() {
+    public synchronized void clearCache() {
         synchronized (contentCache) {
             contentCache.clear();
         }
-        synchronized (this) {
-            datMappedBuf = null;
-            datMappedLength = -1;
-        }
+        datMappedBuf = null;
+        datMappedLength = -1;
     }
 
     public synchronized byte[] getRawRevisionContent(int rev) throws IOException {
@@ -623,7 +621,7 @@ public class Revlog {
             curr = currRec.getBaseRev();
         }
 
-        if (rev > 0 && parent1 != -1 && chainLen < 100) {
+        if (rev > 0 && parent1 != -1 && chainLen < 40) {
             byte[] baseContent = getRawRevisionContent(parent1);
             byte[] delta = createDelta(baseContent, processedContent);
             if (delta.length < processedContent.length) {
@@ -684,8 +682,8 @@ public class Revlog {
         // Build 64-byte index record
         ByteBuffer recordBuf = ByteBuffer.allocate(64);
         recordBuf.putLong(offsetFlags);
-        recordBuf.putInt(dataHunk.length);
-        recordBuf.putInt(content.length);
+        recordBuf.putInt(dataHunk.length);           // compLen
+        recordBuf.putInt(processedContent.length);   // uncompLen: 메타데이터 prefix 포함 압축 전 길이 (실제 hg 명세)
         recordBuf.putInt(baseRev);
         recordBuf.putInt(linkRev);
         recordBuf.putInt(parent1);
@@ -724,14 +722,14 @@ public class Revlog {
             if (baseRev == -1 || NodeIdUtil.isAllZero(entry.deltabase)) {
                 content = applyDelta(new byte[0], entry.delta);
             } else {
-                byte[] baseContent = getRevisionContent(baseRev);
+                byte[] baseContent = getRawRevisionContent(baseRev);
                 content = applyDelta(baseContent, entry.delta);
             }
         } else {
             if (parent1 == -1) {
                 content = applyDelta(new byte[0], entry.delta);
             } else {
-                byte[] baseContent = getRevisionContent(parent1);
+                byte[] baseContent = getRawRevisionContent(parent1);
                 content = applyDelta(baseContent, entry.delta);
             }
         }
@@ -783,7 +781,7 @@ public class Revlog {
         }
 
         if (rev > 0 && parent1 != -1 && chainLen < 100) {
-            byte[] baseContent = getRevisionContent(parent1);
+            byte[] baseContent = getRawRevisionContent(parent1);
             byte[] delta = createDelta(baseContent, content);
             if (delta.length < content.length) {
                 rawToWrite = delta;

@@ -230,4 +230,44 @@ public class DirstateTest {
         assertArrayEquals(new byte[20], d.getParent1());
         assertArrayEquals(new byte[20], d.getParent2());
     }
+
+    @Test
+    public void testDirstateV2Integration() throws Exception {
+        Dirstate original = new Dirstate();
+        original.setV2(true);
+        assertTrue(original.isV2());
+
+        byte[] p1 = new byte[20];
+        byte[] p2 = new byte[20];
+        p1[0] = 0x1F;
+        p2[0] = 0x2E;
+        original.setParents(p1, p2);
+
+        original.addEntry("file1.txt", new Dirstate.Entry('n', 0644, 50, 1000L));
+        original.addEntry("dir/file2.txt", new Dirstate.Entry('a', 0755, 120, 2000L));
+
+        // 1. Serialize using V2 Serializer via Facade
+        byte[] v2Bytes = original.serialize();
+        assertNotNull(v2Bytes);
+
+        // 2. Deserialize using V2 Parser via Facade
+        Dirstate decoded = new Dirstate();
+        decoded.read(v2Bytes);
+
+        assertTrue(decoded.isV2());
+        assertArrayEquals(p1, decoded.getParent1());
+        assertArrayEquals(p2, decoded.getParent2());
+        assertEquals(2, decoded.getEntries().size());
+
+        Dirstate.Entry e1 = decoded.getEntries().get("file1.txt");
+        assertNotNull(e1);
+        assertEquals('n', e1.getState());
+        assertEquals(0644, e1.getMode());
+        assertEquals(50, e1.getSize());
+        assertEquals(1000L, e1.getTime());
+
+        // 3. Exception coverages
+        assertThrows(IOException.class, () -> decoded.read((byte[]) null));
+        assertThrows(IOException.class, () -> decoded.read(new byte[5])); // Too short
+    }
 }

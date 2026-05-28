@@ -25,6 +25,9 @@ public class StatusCommand {
         Status status = new Status();
         Dirstate dirstate = repository.getDirstate();
         File repoDir = repository.getDirectory();
+        
+        File dirstateFile = new File(repository.getHgDir(), "dirstate");
+        long dirstateMtime = dirstateFile.exists() ? dirstateFile.lastModified() / 1000 : 0;
 
         // 1. Scan working directory recursively for disk files
         List<String> diskFilesList = repository.scanWorkingCopy();
@@ -56,21 +59,23 @@ public class StatusCommand {
                     if (entry.getSize() != diskSize || entry.getTime() != diskTime) {
                         status.getModified().add(path);
                     } else {
-                        // Racy-hg check: same size and timestamp within fast execution
+                        // Racy-hg check: same size and timestamp within fast execution (Only executed if modification coincides with dirstate's time)
                         boolean isRacyModified = false;
-                        File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-                        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                        if (flIdx.exists()) {
-                            try {
-                                org.hg4j.core.Revlog filelog = new org.hg4j.core.Revlog(flIdx, flDat);
-                                if (filelog.getRevisionCount() > 0) {
-                                    byte[] fileContent = java.nio.file.Files.readAllBytes(diskFile.toPath());
-                                    byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                    if (!java.util.Arrays.equals(fileContent, lastContent)) {
-                                        isRacyModified = true;
+                        if (diskTime == dirstateMtime) {
+                            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                            if (flIdx.exists()) {
+                                try {
+                                    org.hg4j.core.Revlog filelog = new org.hg4j.core.Revlog(flIdx, flDat);
+                                    if (filelog.getRevisionCount() > 0) {
+                                        byte[] fileContent = java.nio.file.Files.readAllBytes(diskFile.toPath());
+                                        byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
+                                        if (!java.util.Arrays.equals(fileContent, lastContent)) {
+                                            isRacyModified = true;
+                                        }
                                     }
+                                } catch (Exception ignored) {
                                 }
-                            } catch (Exception ignored) {
                             }
                         }
                         

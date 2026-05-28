@@ -127,7 +127,7 @@ public final class NodeIdUtil {
     }
 
     /**
-     * Encodes a file path to its final on-disk Mercurial store path format (incorporating dotencode rules).
+     * Encodes a file path to its final on-disk Mercurial store path format (incorporating dotencode and long path dh/ encoding rules).
      */
     public static String encodeFname(String relPath) {
         String basic = encodeFnameBasic(relPath);
@@ -153,7 +153,42 @@ public final class NodeIdUtil {
             }
             onDiskPath.append(part);
         }
-        return onDiskPath.toString();
+
+        String path = onDiskPath.toString();
+        byte[] pathBytes = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        // Long path optimization: Mercurial hybrid/dh encoding for store paths exceeding 120 bytes
+        if (pathBytes.length > 120) {
+            String subPath = path.startsWith("data/") ? path.substring(5) : path;
+            int lastSlash = subPath.lastIndexOf('/');
+            
+            String dirPath = lastSlash != -1 ? subPath.substring(0, lastSlash) : "";
+            String fileName = lastSlash != -1 ? subPath.substring(lastSlash + 1) : subPath;
+
+            try {
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+                
+                // If the overall path exceeds 255 bytes or the filename is extremely long, do full dh hash encoding
+                if (pathBytes.length > 255 || fileName.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 100) {
+                    byte[] fullHashBytes = md.digest(subPath.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    String fullHash = toHex(fullHashBytes);
+                    
+                    String suffix = fileName;
+                    if (suffix.length() > 30) {
+                        suffix = suffix.substring(suffix.length() - 30);
+                    }
+                    return "dh/" + fullHash + "_" + suffix;
+                } else if (!dirPath.isEmpty()) {
+                    // Hybrid encoding: shorten only the directory part
+                    byte[] dirHashBytes = md.digest(dirPath.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    String dirHash = toHex(dirHashBytes);
+                    return "dh/" + dirHash + "/" + fileName;
+                }
+            } catch (java.security.NoSuchAlgorithmException e) {
+                // Fallback to basic on-disk path if SHA-1 is not available
+            }
+        }
+        return path;
     }
 
     public static final java.util.Comparator<String> UTF8_STRING_COMPARATOR = (s1, s2) -> {

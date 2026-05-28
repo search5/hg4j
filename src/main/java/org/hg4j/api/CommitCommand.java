@@ -77,8 +77,8 @@ public class CommitCommand {
         byte[] fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
         File journalFile = new File(repository.getStoreDir(), "journal");
 
-        try (HgLock wlock = skipLockAndJournal ? null : repository.lockWorkingCopy();
-             HgLock storeLock = skipLockAndJournal ? null : repository.lockStore()) {
+        try (HgLock wlock = skipLockAndJournal ? HgLock.noOp() : repository.lockWorkingCopy();
+             HgLock storeLock = skipLockAndJournal ? HgLock.noOp() : repository.lockStore()) {
 
             if (!skipLockAndJournal) {
                 // Create physical journal and backups for Crash Resilience

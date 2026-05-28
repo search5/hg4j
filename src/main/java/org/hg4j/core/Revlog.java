@@ -28,9 +28,7 @@ public class Revlog {
     private final java.util.Map<java.nio.ByteBuffer, Integer> nodeMap = new java.util.HashMap<>();
     private boolean inline = false;
 
-    // Mmap 기반 고성능 디스크 리더를 위한 캐시 필드
-    private java.nio.MappedByteBuffer datMappedBuf = null;
-    private long datMappedLength = -1;
+
 
     // 인메모리 LRU 리비전 컨텐트 캐시 (최대 100개)
     private final java.util.Map<Integer, byte[]> contentCache = new java.util.LinkedHashMap<>(16, 0.75f, true) {
@@ -140,11 +138,7 @@ public class Revlog {
      * (개선 권고 4번: 캐시 무효화 정책 완비)
      */
     public synchronized void clearCache() {
-        synchronized (contentCache) {
-            contentCache.clear();
-        }
-        datMappedBuf = null;
-        datMappedLength = -1;
+        contentCache.clear();
     }
 
     public synchronized byte[] getRawRevisionContent(int rev) throws IOException {
@@ -196,10 +190,8 @@ public class Revlog {
             return new byte[0];
         }
 
-        synchronized (contentCache) {
-            if (contentCache.containsKey(rev)) {
-                return contentCache.get(rev).clone();
-            }
+        if (contentCache.containsKey(rev)) {
+            return contentCache.get(rev).clone();
         }
 
         byte[] raw = getRawRevisionContent(rev);
@@ -225,9 +217,7 @@ public class Revlog {
             processed = raw;
         }
 
-        synchronized (contentCache) {
-            contentCache.put(rev, processed.clone());
-        }
+        contentCache.put(rev, processed.clone());
 
         return processed;
     }
@@ -268,24 +258,6 @@ public class Revlog {
             return new byte[0];
         }
 
-        // Mmap 기반 I/O 적용: 파일 채널 전체 크기를 버퍼로 캐싱
-        synchronized (this) {
-            long currentFileSize = channel.size();
-            if (datMappedBuf == null || datMappedLength < currentFileSize) {
-                datMappedBuf = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, currentFileSize);
-                datMappedLength = currentFileSize;
-            }
-
-            if (seekOffset + compLen <= datMappedLength) {
-                byte[] data = new byte[compLen];
-                java.nio.ByteBuffer dup = datMappedBuf.duplicate();
-                dup.position((int) seekOffset);
-                dup.get(data);
-                return data;
-            }
-        }
-
-        // Fallback: Mmap 오프셋 초과 등 예외 상황 시 기존 Stream 방식 기동
         ByteBuffer buf = ByteBuffer.allocate(compLen);
         long position = seekOffset;
         while (buf.hasRemaining()) {
@@ -462,8 +434,8 @@ public class Revlog {
         int n = baseLines.size();
         int m = newLines.size();
 
-        // If the file is too large for O(N*M) DP, fall back to simple single-hunk delta
-        if ((long) n * m > 4000000) {
+        // If the file is too large for O(N*M) DP, fall back to simple single-hunk delta to prevent OOM
+        if ((long) n * m > 250000) {
             return createSimpleDelta(baseText, newText);
         }
 
@@ -695,7 +667,7 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        records.add(new IndexRecord(rev, offset, 0, dataHunk.length, content.length,
+        records.add(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
 
         byte[] clippedNode = Arrays.copyOf(nodeId, 20);

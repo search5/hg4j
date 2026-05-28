@@ -430,7 +430,12 @@ public class HgRemoteClient implements HgRemoteConnection {
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buf = new byte[4096];
             int count;
+            long totalRead = 0;
             while ((count = in.read(buf)) != -1) {
+                totalRead += count;
+                if (totalRead > 10 * 1024 * 1024) { // 10MB Limit Guard
+                    throw new IOException("HTTP response size exceeded 10MB safety threshold under push");
+                }
                 out.write(buf, 0, count);
             }
             return new String(out.toByteArray(), StandardCharsets.UTF_8);

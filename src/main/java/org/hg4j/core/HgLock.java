@@ -27,6 +27,30 @@ public class HgLock implements AutoCloseable {
     private boolean acquiredFileLock = false;
 
     /**
+     * Internal constructor for No-op Dummy Lock.
+     */
+    protected HgLock() {
+        this.lockFile = null;
+        this.timeoutMs = 0;
+    }
+
+    /**
+     * Creates a dummy, no-op lock that does nothing on close.
+     */
+    public static HgLock noOp() {
+        return new NoOpLock();
+    }
+
+    private static class NoOpLock extends HgLock {
+        private NoOpLock() {
+            super();
+        }
+
+        @Override
+        public void close() {}
+    }
+
+    /**
      * Acquires a lock immediately (fail-fast, timeout = 0).
      */
     public HgLock(File lockFile) throws HgLockException {
@@ -102,10 +126,14 @@ public class HgLock implements AutoCloseable {
 
                                     if (!isAlive) {
                                         // Owning process is dead! Perform stale lock recovery.
+                                        boolean deleted = false;
                                         try {
-                                            Files.deleteIfExists(lockFile.toPath());
+                                            deleted = Files.deleteIfExists(lockFile.toPath());
                                         } catch (IOException ignored) {}
-                                        continue; // Try acquiring immediately again
+                                        if (deleted) {
+                                            continue; // Try acquiring immediately again
+                                        }
+                                        throw new HgLockException("Failed to clear stale lock file: " + absPath);
                                     }
                                 }
                             } catch (NumberFormatException ignored) {}
@@ -190,6 +218,9 @@ public class HgLock implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        if (lockFile == null) {
+            return;
+        }
         String absPath = lockFile.getAbsolutePath();
         try {
             if (acquiredFileLock) {

@@ -96,6 +96,12 @@ public class Dirstate {
             }
             if (isV2Magic) {
                 this.isV2 = true;
+                DirstateV2Parser parser = new DirstateV2Parser();
+                Dirstate parsed = parser.parse(bytes);
+                this.parent1 = parsed.getParent1();
+                this.parent2 = parsed.getParent2();
+                this.entries.clear();
+                this.entries.putAll(parsed.getEntries());
                 return;
             }
         }
@@ -147,6 +153,13 @@ public class Dirstate {
     }
 
     public byte[] serialize() {
+        if (isV2) {
+            try {
+                return DirstateV2Serializer.serialize(parent1, parent2, entries);
+            } catch (IOException e) {
+                throw new RuntimeException("dirstate-v2 serialization failed", e);
+            }
+        }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
             out.write(parent1);

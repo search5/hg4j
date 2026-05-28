@@ -42,8 +42,12 @@ public class HgRepository implements Repository {
         File dirstateFile = new File(hgDir, "dirstate");
         Dirstate dirstate = new Dirstate();
         if (dirstateFile.exists()) {
-            dirstate.read(dirstateFile);
-            if (dirstate.isV2()) {
+            try {
+                dirstate.read(dirstateFile);
+            } catch (Exception e) {
+                dirstate.setV2(true);
+            }
+            if (dirstate.isV2() && dirstate.getEntries().isEmpty()) {
                 rebuildDirstateFromManifest(dirstate);
             }
         }
@@ -100,7 +104,7 @@ public class HgRepository implements Repository {
                 }
             }
         } catch (Exception e) {
-            // Rebuild failure fallback
+            LOGGER.log(Level.SEVERE, "Failed to dynamically rebuild dirstate from manifest", e);
         } finally {
             dirstate.setV2(false);
         }
@@ -194,7 +198,7 @@ public class HgRepository implements Repository {
                 }
             }
         } catch (IOException e) {
-            // 무시 파일 로드 에러는 로깅 후 무시 처리 가능
+            LOGGER.log(Level.WARNING, "Failed to load ignore patterns from .hgignore", e);
         }
     }
 

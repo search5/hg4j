@@ -217,13 +217,13 @@ public class CommitCommand {
                 } else if (dEntry.getState() == 'a' || dEntry.getState() == 'm' || dEntry.getState() == 'n') {
                     File diskFile = new File(repository.getDirectory(), path);
                     if (!diskFile.exists() || !diskFile.isFile()) {
-                        throw new IOException("Tracked file not found on disk: " + path);
+                        throw new org.hg4j.errors.HgValidationException("Tracked file not found on disk: " + path);
                     }
 
                     // Large file protection check (2GB Limit Truncation Safeguard)
                     long diskSize = diskFile.length();
                     if (diskSize > Integer.MAX_VALUE) {
-                        throw new IOException("File size exceeds 2GB maximum limit allowed for Dirstate: " + path);
+                        throw new org.hg4j.errors.HgValidationException("File size exceeds 2GB maximum limit allowed for Dirstate: " + path);
                     }
 
                     // Check if the file has actually changed compared to the recorded dirstate
@@ -507,12 +507,12 @@ public class CommitCommand {
         File flIdx = getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new IOException("Filelog index does not exist for: " + path);
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(nodeHex.substring(0, 40)));
         if (rev == -1) {
-            throw new IOException("File revision not found: " + path + " @ " + nodeHex);
+            throw new org.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }

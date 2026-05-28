@@ -278,7 +278,7 @@ public class ShelveCommand {
             Revlog cl = repository.getRevlog(clIdx, clDat);
             int tempRev = cl.findRevision(tempCommitNode);
             if (tempRev == -1) {
-                throw new IOException("Failed to resolve temporary shelve commit.");
+                throw new org.hg4j.errors.HgRevisionNotFoundException("Failed to resolve temporary shelve commit.");
             }
 
             ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
@@ -407,7 +407,7 @@ public class ShelveCommand {
         File hgBundleFile = new File(shelvedDir, name + ".hg");
 
         if (!stateFile.exists() || !hgBundleFile.exists()) {
-            throw new IOException("Shelve file not found: " + name);
+            throw new org.hg4j.errors.HgRepositoryNotFoundException("Shelve file not found: " + name);
         }
 
         List<String> stateLines = Files.readAllLines(stateFile.toPath(), StandardCharsets.UTF_8);
@@ -416,7 +416,7 @@ public class ShelveCommand {
         String p2Hex = stateLines.get(3).trim();
 
         if (!shelveName.equals(name)) {
-            throw new IOException("Cannot unshelve: Shelve name mismatch. State file has '" + shelveName 
+            throw new org.hg4j.errors.HgValidationException("Cannot unshelve: Shelve name mismatch. State file has '" + shelveName 
                 + "' but expected '" + name + "'");
         }
 
@@ -444,12 +444,12 @@ public class ShelveCommand {
             // Validate parent hash consistency (W1)
             String currentP1Hex = NodeIdUtil.toHex(dirstate.getParent1());
             if (!currentP1Hex.equalsIgnoreCase(p1Hex)) {
-                throw new IOException("Cannot unshelve: Working directory parent (" + currentP1Hex 
+                throw new org.hg4j.errors.HgValidationException("Cannot unshelve: Working directory parent (" + currentP1Hex 
                     + ") does not match shelved parent (" + p1Hex + ")");
             }
             String currentP2Hex = NodeIdUtil.toHex(dirstate.getParent2());
             if (!currentP2Hex.equalsIgnoreCase(p2Hex)) {
-                throw new IOException("Cannot unshelve: Working directory parent2 (" + currentP2Hex 
+                throw new org.hg4j.errors.HgValidationException("Cannot unshelve: Working directory parent2 (" + currentP2Hex 
                     + ") does not match shelved parent2 (" + p2Hex + ")");
             }
 

@@ -43,13 +43,13 @@ public class RemoveCommand {
             Dirstate.Entry entry = dirstate.getEntries().get(file);
 
             if (entry == null) {
-                throw new IOException("File is not tracked: " + file);
+                throw new org.hg4j.errors.HgValidationException("File is not tracked: " + file);
             }
 
             if (!force) {
                 char state = entry.getState();
                 if (state == 'a') {
-                    throw new IOException("File has uncommitted changes (added): " + file + ". Use force to remove.");
+                    throw new org.hg4j.errors.HgValidationException("File has uncommitted changes (added): " + file + ". Use force to remove.");
                 } else if (state == 'n' || state == 'm') {
                     File diskFile = new File(repository.getDirectory(), file);
                     if (diskFile.exists() && diskFile.isFile()) {
@@ -74,7 +74,7 @@ public class RemoveCommand {
                             }
                         }
                         if (isDirty) {
-                            throw new IOException("File has uncommitted changes (modified): " + file + ". Use force to remove.");
+                            throw new org.hg4j.errors.HgValidationException("File has uncommitted changes (modified): " + file + ". Use force to remove.");
                         }
                     }
                 }

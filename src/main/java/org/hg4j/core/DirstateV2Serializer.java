@@ -115,7 +115,7 @@ public class DirstateV2Serializer {
             String fullPath = fullPathMap.get(node);
             byte[] nameBytes = fullPath.getBytes(StandardCharsets.UTF_8);
             if (nameBytes.length > 65535) {
-                throw new IOException("Dirstate segment path name too long (max 65535 bytes): " + fullPath);
+                throw new org.hg4j.errors.HgValidationException("Dirstate segment path name too long (max 65535 bytes): " + fullPath);
             }
             pathOffsetMap.put(node, dataBlock.size());
             pathLenMap.put(node, (short) nameBytes.length);

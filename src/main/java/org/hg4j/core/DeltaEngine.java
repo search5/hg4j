@@ -164,7 +164,6 @@ public final class DeltaEngine {
 
         int targetD = -1;
         for (int d = 0; d <= max; d++) {
-            int[] vCopy = new int[2 * d + 1];
             for (int k = -d; k <= d; k += 2) {
                 int idx = offset + k;
                 int x;

@@ -104,7 +104,7 @@ public class PushCommand {
                         }
                     }
                     if (!hasAnyCommon) {
-                        throw new IOException("abort: repository is unrelated");
+                        throw new org.hg4j.errors.HgValidationException("abort: repository is unrelated");
                     }
 
                     // Find the first revision not known to remote

@@ -45,7 +45,7 @@ public class AddCommand {
             for (String relPath : filesToAdd) {
                 File diskFile = new File(repository.getDirectory(), relPath);
                 if (!diskFile.exists() || !diskFile.isFile()) {
-                    throw new IOException("File not found or is not a standard file: " + relPath);
+                    throw new org.hg4j.errors.HgValidationException("File not found or is not a standard file: " + relPath);
                 }
 
                 boolean executable = diskFile.canExecute();

@@ -128,4 +128,46 @@ public class PhaseRootsTest {
         assertTrue(savedContent.contains("1 " + n1.toHex()));
         assertTrue(savedContent.contains("2 " + n2.toHex()));
     }
+
+    @Test
+    @DisplayName("Revlog 인스턴스를 활용한 getPhase 및 setPhase 및 isPublic/isDraft/isSecret 검증")
+    void testRevlogOverloads() throws Exception {
+        File clIdx = tempDir.resolve("00changelog.i").toFile();
+        File clDat = tempDir.resolve("00changelog.d").toFile();
+        
+        Files.write(clIdx.toPath(), new byte[0]);
+        Files.write(clDat.toPath(), new byte[0]);
+        
+        Revlog changelog = new Revlog(clIdx, clDat);
+        
+        File file = createTempFile("");
+        PhaseRoots phaseRoots = new PhaseRoots(file);
+        
+        NodeId n1 = NodeId.fromHex("3".repeat(40));
+        
+        // 1. getPhase(Revlog) 검증
+        assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase(n1, changelog));
+        assertTrue(phaseRoots.isPublic(n1, changelog));
+        assertFalse(phaseRoots.isDraft(n1, changelog));
+        assertFalse(phaseRoots.isSecret(n1, changelog));
+        
+        // 2. setPhase(Revlog) 검증
+        phaseRoots.setPhase(n1, PhaseRoots.Phase.DRAFT, changelog);
+        assertEquals(PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(n1, changelog));
+        assertFalse(phaseRoots.isPublic(n1, changelog));
+        assertTrue(phaseRoots.isDraft(n1, changelog));
+        assertFalse(phaseRoots.isSecret(n1, changelog));
+        
+        // null / empty node 검증
+        assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase((NodeId) null, n -> new NodeId[0]));
+        phaseRoots.setPhase(null, PhaseRoots.Phase.SECRET, n -> new NodeId[0]);
+        
+        // 헬퍼 메서드 (Function) 검증
+        assertTrue(phaseRoots.isDraft(n1, n -> new NodeId[0]));
+        assertFalse(phaseRoots.isPublic(n1, n -> new NodeId[0]));
+        assertFalse(phaseRoots.isSecret(n1, n -> new NodeId[0]));
+        
+        phaseRoots.setPhase(n1, PhaseRoots.Phase.SECRET, n -> new NodeId[0]);
+        assertTrue(phaseRoots.isSecret(n1, n -> new NodeId[0]));
+    }
 }

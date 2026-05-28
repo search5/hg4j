@@ -49,14 +49,14 @@ public class UpdateCommand {
             if (!force) {
                 Status status = new StatusCommand(repository).call();
                 if (!status.getAdded().isEmpty() || !status.getModified().isEmpty() || !status.getRemoved().isEmpty()) {
-                    throw new IOException("Working directory has uncommitted changes. Use force to update.");
+                    throw new org.hg4j.errors.HgValidationException("Working directory has uncommitted changes. Use force to update.");
                 }
             }
 
             Revlog changelog = repository.getRevlog(clIdx, clDat);
             byte[] targetNodeId = resolveTargetNodeId(changelog);
             if (targetNodeId == null) {
-                throw new IOException("Repository is empty, cannot update.");
+                throw new org.hg4j.errors.HgValidationException("Repository is empty, cannot update.");
             }
 
             int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
@@ -130,13 +130,13 @@ public class UpdateCommand {
                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
 
                 if (!flIdx.exists()) {
-                    throw new IOException("Filelog index not found for tracked file: " + path);
+                    throw new org.hg4j.errors.HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
                 }
 
                 Revlog filelog = repository.getRevlog(flIdx, flDat);
                 int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
                 if (fileRev == -1) {
-                    throw new IOException("File version not found in filelog: " + path + " rev hex " + hexNode);
+                    throw new org.hg4j.errors.HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
                 }
 
                 byte[] fileContent = filelog.getRevisionContent(fileRev);

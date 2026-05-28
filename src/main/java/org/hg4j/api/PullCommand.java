@@ -240,7 +240,7 @@ public class PullCommand {
                     for (ChangegroupParser.ChangeGroupEntry entry : mg.entries) {
                         int linkRev = changelog.findRevision(entry.cs);
                         if (linkRev == -1) {
-                            throw new IOException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
+                            throw new org.hg4j.errors.HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
                         }
                         subManifest.appendChangeGroupEntry(entry, linkRev);
                     }
@@ -250,7 +250,7 @@ public class PullCommand {
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
-                        throw new IOException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
+                        throw new org.hg4j.errors.HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
                     }
                     manifest.appendChangeGroupEntry(entry, linkRev);
                 }
@@ -281,7 +281,7 @@ public class PullCommand {
                 for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
-                        throw new IOException("Missing link commit for file revision: " + NodeIdUtil.toHex(entry.cs));
+                        throw new org.hg4j.errors.HgCorruptDataException("Missing link commit for file revision: " + NodeIdUtil.toHex(entry.cs));
                     }
                     filelog.appendChangeGroupEntry(entry, linkRev);
                 }

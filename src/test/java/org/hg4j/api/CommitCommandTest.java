@@ -18,6 +18,34 @@ import static org.junit.jupiter.api.Assertions.*;
 public class CommitCommandTest {
 
     @Test
+    public void testCommitWithInvalidParentNode(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        
+        // a.txt 추가 및 첫 커밋
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "Hello");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit 1").call();
+
+        // dirstate에 존재하지 않는 parent2 설정
+        Dirstate dirstate = repo.getDirstate();
+        byte[] fakeParent2 = new byte[20];
+        fakeParent2[0] = 9; // fake hash
+        dirstate.setParents(dirstate.getParent1(), fakeParent2);
+        repo.writeDirstate(dirstate);
+
+        // 커밋 시 parent2가 없으므로 HgRevisionNotFoundException 발생해야 함
+        File f2 = new File(repoDir, "b.txt");
+        Files.writeString(f2.toPath(), "Hello 2");
+        new AddCommand(repo).call();
+        
+        assertThrows(org.hg4j.errors.HgRevisionNotFoundException.class, () -> {
+            new CommitCommand(repo).setMessage("Commit 2").call();
+        });
+    }
+
+    @Test
     public void testFirstCommit(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();

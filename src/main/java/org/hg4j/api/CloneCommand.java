@@ -51,7 +51,7 @@ public class CloneCommand {
         }
 
         if (directory.exists() && directory.list() != null && directory.list().length > 0) {
-            throw new IOException("Destination directory is not empty: " + directory.getAbsolutePath());
+            throw new org.hg4j.errors.HgValidationException("Destination directory is not empty: " + directory.getAbsolutePath());
         }
 
         monitor.start("Cloning repository", 3);
@@ -102,7 +102,7 @@ public class CloneCommand {
         Revlog manifest = new Revlog(mfIdx, mfDat);
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
         if (mfRev == -1) {
-            throw new IOException("Manifest revision not found: " + NodeIdUtil.toHex(mfNode));
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Manifest revision not found: " + NodeIdUtil.toHex(mfNode));
         }
 
         byte[] mfContent = manifest.getRevisionContent(mfRev);
@@ -135,13 +135,13 @@ public class CloneCommand {
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
 
             if (!flIdx.exists()) {
-                throw new IOException("Filelog index not found for tracked file: " + path);
+                throw new org.hg4j.errors.HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
             }
 
             Revlog filelog = new Revlog(flIdx, flDat);
             int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
             if (fileRev == -1) {
-                throw new IOException("File version not found in filelog: " + path + " rev hex " + hexNode);
+                throw new org.hg4j.errors.HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
             }
 
             byte[] fileContent = filelog.getRevisionContent(fileRev);

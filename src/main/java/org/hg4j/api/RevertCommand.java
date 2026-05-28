@@ -66,7 +66,7 @@ public class RevertCommand {
                     repository.writeDirstate(dirstate);
                     return true;
                 }
-                throw new IOException("Cannot revert file when parent commit is zero and file is not tracked.");
+                throw new org.hg4j.errors.HgValidationException("Cannot revert file when parent commit is zero and file is not tracked.");
             }
 
             // Retrieve the historical version of this file
@@ -160,7 +160,7 @@ public class RevertCommand {
             String hex = NodeIdUtil.toHex(node);
             if (hex.startsWith(revision.toLowerCase())) {
                 if (matchNode != null) {
-                    throw new IOException("Ambiguous revision identifier: " + revision);
+                    throw new org.hg4j.errors.HgRevisionNotFoundException("Ambiguous revision identifier: " + revision);
                 }
                 matchNode = node;
             }

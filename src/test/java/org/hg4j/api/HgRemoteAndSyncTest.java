@@ -32,6 +32,21 @@ import static org.junit.jupiter.api.Assertions.*;
 public class HgRemoteAndSyncTest {
 
     @Test
+    public void testPullCommandValidationAndEdgeCases(@TempDir Path tempDir) throws Exception {
+        File destDir = tempDir.resolve("dest_validation").toFile();
+        HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+        
+        PullCommand pullCmd = new PullCommand(destRepo);
+        
+        // 1. URL이 null일 때 예외 검증
+        assertThrows(IllegalStateException.class, () -> pullCmd.call());
+        
+        // 2. URL이 empty일 때 예외 검증
+        pullCmd.setSource("");
+        assertThrows(IllegalStateException.class, () -> pullCmd.call());
+    }
+
+    @Test
     public void testPullAndCloneEndToEnd(@TempDir Path tempDir) throws Exception {
         File srcDir = tempDir.resolve("source").toFile();
         File destDir = tempDir.resolve("dest").toFile();

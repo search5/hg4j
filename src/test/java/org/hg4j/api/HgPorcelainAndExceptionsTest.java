@@ -54,6 +54,57 @@ public class HgPorcelainAndExceptionsTest {
     }
 
     @Test
+    public void testHgPorcelainAllMethods() throws IOException {
+        File repoDir = new File(tempDir, "real_repo_all");
+        assertTrue(repoDir.mkdir());
+        File hgDir = new File(repoDir, ".hg");
+        assertTrue(hgDir.mkdir());
+
+        try (Hg hg = Hg.open(repoDir)) {
+            assertNotNull(hg);
+            assertThrows(IllegalArgumentException.class, () -> Hg.open(null));
+
+            // 커맨드 빌더 확인
+            assertNotNull(hg.branch());
+            assertNotNull(hg.tag());
+            assertNotNull(hg.bookmark());
+            assertNotNull(hg.merge());
+            assertNotNull(hg.pull());
+            assertNotNull(hg.shelve());
+            assertNotNull(hg.rebase());
+            assertNotNull(hg.update());
+            assertNotNull(hg.push());
+            assertNotNull(hg.cat());
+            assertNotNull(hg.revert());
+            assertNotNull(hg.remove());
+            assertNotNull(hg.diff());
+            assertNotNull(hg.tree());
+
+            // NodeId diff, tree 헬퍼 메서드
+            NodeId node1 = new NodeId(new byte[20]);
+            NodeId node2 = new NodeId(new byte[20]);
+            
+            // 빈 저장소이므로 예외 없이 빈 리스트를 리턴함
+            assertTrue(hg.getDiff(node1, node2).isEmpty());
+            assertTrue(hg.getTree(node1).isEmpty());
+            
+            // int 기반 헬퍼 메서드 커버
+            assertTrue(hg.getTree(0).isEmpty());
+        }
+    }
+
+    @Test
+    public void testHgValidationException() {
+        org.hg4j.errors.HgValidationException ex1 = new org.hg4j.errors.HgValidationException("val error");
+        assertEquals("val error", ex1.getMessage());
+        
+        Throwable cause = new RuntimeException("cause");
+        org.hg4j.errors.HgValidationException ex2 = new org.hg4j.errors.HgValidationException("val error 2", cause);
+        assertEquals("val error 2", ex2.getMessage());
+        assertEquals(cause, ex2.getCause());
+    }
+
+    @Test
     public void testNodeIdPublicApi() {
         byte[] rawNode = new byte[20];
         byte[] rawManifest = new byte[20];

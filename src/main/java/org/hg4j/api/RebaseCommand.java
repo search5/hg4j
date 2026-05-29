@@ -400,6 +400,8 @@ public class RebaseCommand {
             mfIdxSize = (long) minMfRev * 64;
             if (minMfRev > 0) {
                 mfDatSize = manifest.getIndexRecord(minMfRev).getOffset();
+            } else {
+                mfDatSize = 0;
             }
         }
 
@@ -593,7 +595,7 @@ public class RebaseCommand {
         org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, manifestNode);
         while (mw.next()) {
             org.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
-            String flag = entry.isExecutable() ? "x" : "";
+            String flag = entry.isExecutable() ? "x" : (entry.isSymlink() ? "l" : "");
             entries.put(entry.getPath(), entry.getNodeIdHex() + flag);
         }
 
@@ -603,6 +605,7 @@ public class RebaseCommand {
             String path = entry.getKey();
             String nodeWithFlags = entry.getValue();
             String hexNode = nodeWithFlags.substring(0, 40);
+            String flags = nodeWithFlags.length() > 40 ? nodeWithFlags.substring(40) : "";
 
             File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
@@ -613,9 +616,30 @@ public class RebaseCommand {
 
             File diskFile = new File(repository.getDirectory(), path);
             diskFile.getParentFile().mkdirs();
-            Files.write(diskFile.toPath(), fileContent);
+            if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                Files.delete(diskFile.toPath());
+            }
 
-            int mode = diskFile.canExecute() ? 0755 : 0644;
+            int mode = 0644;
+            if (flags.contains("l")) {
+                mode = 0120000;
+                String target = new String(fileContent, StandardCharsets.UTF_8).trim();
+                try {
+                    Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                } catch (Exception e) {
+                    Files.write(diskFile.toPath(), fileContent);
+                }
+            } else {
+                Files.write(diskFile.toPath(), fileContent);
+                if (flags.contains("x")) {
+                    diskFile.setExecutable(true, false);
+                    mode = 0755;
+                } else {
+                    diskFile.setExecutable(false, false);
+                    mode = 0644;
+                }
+            }
+
             dirstate.addEntry(path, new Dirstate.Entry('n', mode, fileContent.length, diskFile.lastModified() / 1000));
         }
 

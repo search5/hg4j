@@ -588,6 +588,8 @@ public class ShelveCommand {
             mfIdxSize = (long) minMfRev * 64;
             if (minMfRev > 0) {
                 mfDatSize = manifest.getIndexRecord(minMfRev).getOffset();
+            } else {
+                mfDatSize = 0;
             }
         }
 

@@ -44,10 +44,19 @@ public class DirstateV2Serializer {
         }
     }
 
+    public static byte[] serialize(Map<String, Dirstate.Entry> entries) throws IOException {
+        Dirstate d = new Dirstate();
+        for (Map.Entry<String, Dirstate.Entry> entry : entries.entrySet()) {
+            d.addEntry(entry.getKey(), entry.getValue());
+        }
+        return serialize(d);
+    }
+
     /**
      * Serializes memory dirstate representation into v2 binary format.
      */
-    public static byte[] serialize(Map<String, Dirstate.Entry> entries) throws IOException {
+    public static byte[] serialize(Dirstate dirstate) throws IOException {
+        Map<String, Dirstate.Entry> entries = dirstate.getEntries();
 
         // 1. Build directory hierarchical tree structure
         Map<String, TreeNode> roots = new LinkedHashMap<>();
@@ -111,6 +120,9 @@ public class DirstateV2Serializer {
         Map<TreeNode, Integer> pathOffsetMap = new HashMap<>();
         Map<TreeNode, Short> pathLenMap = new HashMap<>();
 
+        Map<TreeNode, Integer> copyOffsetMap = new HashMap<>();
+        Map<TreeNode, Short> copyLenMap = new HashMap<>();
+
         for (TreeNode node : flatNodes) {
             String fullPath = fullPathMap.get(node);
             byte[] nameBytes = fullPath.getBytes(StandardCharsets.UTF_8);
@@ -120,6 +132,17 @@ public class DirstateV2Serializer {
             pathOffsetMap.put(node, dataBlock.size());
             pathLenMap.put(node, (short) nameBytes.length);
             dataBlock.write(nameBytes);
+
+            String copySrc = dirstate.getCopyMap().get(fullPath);
+            if (copySrc != null && !copySrc.isEmpty()) {
+                byte[] copyBytes = copySrc.getBytes(StandardCharsets.UTF_8);
+                copyOffsetMap.put(node, dataBlock.size());
+                copyLenMap.put(node, (short) copyBytes.length);
+                dataBlock.write(copyBytes);
+            } else {
+                copyOffsetMap.put(node, 0);
+                copyLenMap.put(node, (short) 0);
+            }
         }
 
         byte[] rawDataBlock = dataBlock.toByteArray();
@@ -192,8 +215,14 @@ public class DirstateV2Serializer {
             // 7. Extra V2 specific metadata fields
             nodeView.setDescendantsWithEntryCount(node.getDescendantsWithEntryCount());
             nodeView.setTrackedDescendants(node.getTrackedDescendantsCount());
-            nodeView.setCopySourceLen((short) 0);
-            nodeView.setCopySourceOffset(0);
+            int copyLen = copyLenMap.getOrDefault(node, (short) 0);
+            int copyOffset = copyOffsetMap.getOrDefault(node, 0);
+            nodeView.setCopySourceLen((short) copyLen);
+            if (copyLen > 0) {
+                nodeView.setCopySourceOffset(dataOffset + copyOffset);
+            } else {
+                nodeView.setCopySourceOffset(0);
+            }
             nodeView.setMtimeNanoseconds(nanos);
         }
 

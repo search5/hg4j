@@ -71,6 +71,18 @@ public class DirstateV2Parser {
                 decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime(), node.getMtimeNanoseconds()));
             }
 
+            int copyOffset = node.getCopySourceOffset();
+            int copyLen = node.getCopySourceLen() & 0xFFFF;
+            if (copyLen > 0 && copyOffset + copyLen <= buffer.capacity()) {
+                byte[] copyBytes = new byte[copyLen];
+                int copyOriginalPos = buffer.position();
+                buffer.position(copyOffset);
+                buffer.get(copyBytes);
+                buffer.position(copyOriginalPos);
+                String copySrc = new String(copyBytes, StandardCharsets.UTF_8);
+                decoded.addCopy(currentPath, copySrc);
+            }
+
             int childrenStart = node.getChildrenStart();
             int childrenCount = node.getChildrenCount();
             if (childrenCount > 0) {

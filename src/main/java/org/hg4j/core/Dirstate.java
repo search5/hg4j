@@ -261,7 +261,7 @@ public class Dirstate {
             }
 
             // 1. 데이터 파일 내용 직렬화
-            byte[] dataBytes = DirstateV2Serializer.serialize(entries);
+            byte[] dataBytes = DirstateV2Serializer.serialize(this);
 
             // 2. 고유 UID 생성 (임의의 UUID 형태)
             String uid = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16);

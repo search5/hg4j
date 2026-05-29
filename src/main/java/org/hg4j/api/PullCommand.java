@@ -383,7 +383,6 @@ public class PullCommand {
 
                 String rawPath = "data/" + path.replace('\\', '/');
                 fncachePaths.add(rawPath + ".i");
-                fncachePaths.add(rawPath + ".d");
             }
 
             // Write updated fncache atomically

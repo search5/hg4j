@@ -253,6 +253,71 @@ public class Hg implements AutoCloseable {
         return new ImportCommand(this.repository);
     }
 
+    public GraftCommand graft() {
+        return new GraftCommand(this.repository);
+    }
+
+    public PurgeCommand purge() {
+        return new PurgeCommand(this.repository);
+    }
+
+    public ArchiveCommand archive() {
+        return new ArchiveCommand(this.repository);
+    }
+
+    public GcCommand gc() {
+        return new GcCommand(this.repository);
+    }
+
+    public SubrepoCommand subrepo() {
+        return new SubrepoCommand(this.repository);
+    }
+
+    public IncomingCommand incoming() {
+        return new IncomingCommand(this.repository);
+    }
+
+    public OutgoingCommand outgoing() {
+        return new OutgoingCommand(this.repository);
+    }
+
+    public DescribeCommand describe() {
+        return new DescribeCommand(this.repository);
+    }
+
+    public PhaseCommand phase() {
+        return new PhaseCommand(this.repository);
+    }
+
+    public RevsetCommand revset() {
+        return new RevsetCommand(this.repository);
+    }
+
+    public HeadsCommand heads() {
+        return new HeadsCommand(this.repository);
+    }
+
+    public IdentifyCommand identify() {
+        return new IdentifyCommand(this.repository);
+    }
+
+    public StripCommand strip() {
+        return new StripCommand(this.repository);
+    }
+
+    /**
+     * Expose HgRcConfig directly on the facade.
+     */
+    public org.hg4j.core.HgRcConfig config() {
+        org.hg4j.core.HgRcConfig cfg = new org.hg4j.core.HgRcConfig();
+        try {
+            cfg.load(new java.io.File(this.repository.getHgDir(), "hgrc"));
+        } catch (java.io.IOException e) {
+            // ignore
+        }
+        return cfg;
+    }
+
     public static NarrowCloneCommand narrowClone() {
         return new NarrowCloneCommand();
     }

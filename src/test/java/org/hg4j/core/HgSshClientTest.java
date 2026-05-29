@@ -82,6 +82,53 @@ public class HgSshClientTest {
         }
     }
 
+    @Test
+    public void testCustomSshSessionFactoryPluggability() throws Exception {
+        org.hg4j.transport.SshSessionFactory originalFactory = HgSshClient.getSshSessionFactory();
+        assertNotNull(originalFactory);
+        assertInstanceOf(org.hg4j.transport.JschSessionFactory.class, originalFactory);
+
+        final int customPort = 22222;
+        final boolean[] openSessionCalled = {false};
+        org.hg4j.transport.SshSessionFactory mockFactory = new org.hg4j.transport.SshSessionFactory() {
+            @Override
+            public com.jcraft.jsch.Session openSession(String host, int port, String username, String password, String privateKeyPath, String passphrase) throws Exception {
+                openSessionCalled[0] = true;
+                assertEquals("127.0.0.1", host);
+                assertEquals(customPort, port); // custom port verify
+                assertEquals("mockuser", username);
+                assertEquals("mockpass", password);
+                
+                // Return actual JSch dummy session (JSch session without connection is fine)
+                com.jcraft.jsch.JSch jsch = new com.jcraft.jsch.JSch();
+                return jsch.getSession(username, host, port);
+            }
+        };
+
+        try {
+            // 1. 주입 검증
+            HgSshClient.setSshSessionFactory(mockFactory);
+            assertEquals(mockFactory, HgSshClient.getSshSessionFactory());
+
+            // 2. 실행 검증 (openSession이 정확한 파라미터로 호출되는지)
+            String sshUrl = "ssh://mockuser:mockpass@127.0.0.1:" + customPort + "/test/repo";
+            HgSshClient client = new HgSshClient(sshUrl);
+            
+            try {
+                client.getCapabilities(); // 트리거 ensureConnected()
+            } catch (Exception ignored) {
+                // connection timeout or dummy session failures are expected and ignored
+            } finally {
+                client.close();
+            }
+
+            assertTrue(openSessionCalled[0], "SshSessionFactory's openSession must be actively invoked");
+        } finally {
+            // 3. 복원
+            HgSshClient.setSshSessionFactory(originalFactory);
+        }
+    }
+
     /**
      * Mock Command simulating 'hg serve --stdio' protocol behaviour.
      */

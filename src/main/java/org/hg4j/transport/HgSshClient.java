@@ -23,6 +23,18 @@ public class HgSshClient implements HgRemoteConnection {
     private String privateKeyPath;
     private String passphrase;
 
+    private static SshSessionFactory sshSessionFactory = new JschSessionFactory();
+
+    public static void setSshSessionFactory(SshSessionFactory factory) {
+        if (factory != null) {
+            sshSessionFactory = factory;
+        }
+    }
+
+    public static SshSessionFactory getSshSessionFactory() {
+        return sshSessionFactory;
+    }
+
     private Session session;
     private ChannelExec channel;
     private InputStream in;
@@ -128,40 +140,8 @@ public class HgSshClient implements HgRemoteConnection {
         }
 
         try {
-            JSch jsch = new JSch();
-            
-            // Integrate SSH Agent and Identity loading for standard agent forwarding
-            String userHome = System.getProperty("user.home");
-            File knownHostsFile = new File(userHome, ".ssh/known_hosts");
-            if (knownHostsFile.exists()) {
-                jsch.setKnownHosts(knownHostsFile.getAbsolutePath());
-            }
-
-            if (privateKeyPath != null) {
-                if (passphrase != null) {
-                    jsch.addIdentity(privateKeyPath, passphrase);
-                } else {
-                    jsch.addIdentity(privateKeyPath);
-                }
-            }
-
-            session = jsch.getSession(username, host, port);
-            if (password != null) {
-                session.setPassword(password);
-            }
-
-            // Standard strict host key verification configuration
-            boolean isLocal = host.equals("localhost") || host.equals("127.0.0.1");
-            if (knownHostsFile.exists() && !isLocal) {
-                session.setConfig("StrictHostKeyChecking", "ask");
-            } else {
-                session.setConfig("StrictHostKeyChecking", "no");
-            }
-            // JSch가 ECDH 등 일부 최신 key exchange 수행 중 Bouncy Castle과의 예외(ArrayIndexOutOfBoundsException)를 방지하도록 호환성 높은 kex 알고리즘 목록을 강제 지정함
-            session.setConfig("kex", "ecdh-sha2-nistp256,ecdh-sha2-nistp384,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256");
+            session = sshSessionFactory.openSession(host, port, username, password, privateKeyPath, passphrase);
             session.connect(15000); // 15 seconds connection timeout
-
-
 
             channel = (ChannelExec) session.openChannel("exec");
             channel.setAgentForwarding(true); // SSH agent forwarding enabled!
@@ -178,10 +158,10 @@ public class HgSshClient implements HgRemoteConnection {
             readCapabilities();
 
             connected = true;
-        } catch (JSchException e) {
+        } catch (Exception e) {
             close();
             String msg = e.getMessage();
-            if (msg != null && (msg.toLowerCase().contains("auth fail") || msg.toLowerCase().contains("authentication") || msg.toLowerCase().contains("permission denied"))) {
+            if (e instanceof JSchException || (msg != null && (msg.toLowerCase().contains("auth fail") || msg.toLowerCase().contains("authentication") || msg.toLowerCase().contains("permission denied")))) {
                 throw new org.hg4j.errors.HgAuthException(sshUrl, username, e);
             }
             throw new org.hg4j.errors.HgProtocolException(sshUrl, "Failed to establish SSH connection: " + msg, e);

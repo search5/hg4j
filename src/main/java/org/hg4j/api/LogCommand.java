@@ -18,9 +18,17 @@ public class LogCommand {
     private final HgRepository repository;
     private boolean followAncestors = false;
     private String startRev = null;
+    private org.hg4j.core.HgTreeFilter treeFilter = org.hg4j.core.HgTreeFilter.ALL;
 
     public LogCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public LogCommand setTreeFilter(org.hg4j.core.HgTreeFilter treeFilter) {
+        if (treeFilter != null) {
+            this.treeFilter = treeFilter;
+        }
+        return this;
     }
 
     public LogCommand setFollowAncestors(boolean follow) {
@@ -154,6 +162,19 @@ public class LogCommand {
                 message = text.substring(doubleNewline + 2);
             } else {
                 message = text.substring(thirdNewline + 1);
+            }
+
+            if (treeFilter != null && treeFilter != org.hg4j.core.HgTreeFilter.ALL) {
+                boolean matched = false;
+                for (String file : files) {
+                    if (treeFilter.accept(file)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    continue;
+                }
             }
 
             commits.add(new HgCommit(rev, new org.hg4j.lib.NodeId(nodeId), new org.hg4j.lib.NodeId(manifestNodeId), author, timestamp, tzOffset, files, message, branch));

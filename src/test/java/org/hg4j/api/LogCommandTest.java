@@ -123,4 +123,38 @@ public class LogCommandTest {
         assertEquals(0, cNoFiles.getFiles().size(), "Should have no files");
         assertEquals("NoFilesMessage", cNoFiles.getMessage(), "Message should NOT contain leading newline");
     }
+
+    @Test
+    public void testLogCommandTreeFilter(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // Commit 0: src/a.txt
+        File srcDir = new File(repoDir, "src");
+        srcDir.mkdirs();
+        File fa = new File(srcDir, "a.txt");
+        Files.writeString(fa.toPath(), "Hello Src");
+        new AddCommand(repo).addFile("src/a.txt").call();
+        new CommitCommand(repo).setMessage("Commit Src").call();
+
+        // Commit 1: doc/b.txt
+        File docDir = new File(repoDir, "doc");
+        docDir.mkdirs();
+        File fb = new File(docDir, "b.txt");
+        Files.writeString(fb.toPath(), "Hello Doc");
+        new AddCommand(repo).addFile("doc/b.txt").call();
+        new CommitCommand(repo).setMessage("Commit Doc").call();
+
+        // Without filter: should return both commits
+        List<HgCommit> commitsAll = new LogCommand(repo).call();
+        assertEquals(2, commitsAll.size());
+
+        // With filter (only "src/"): should only return Commit 0
+        org.hg4j.core.HgTreeFilter filter = org.hg4j.core.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
+        List<HgCommit> commitsFiltered = new LogCommand(repo).setTreeFilter(filter).call();
+
+        assertEquals(1, commitsFiltered.size());
+        assertEquals("Commit Src", commitsFiltered.get(0).getMessage().trim());
+        assertTrue(commitsFiltered.get(0).getFiles().contains("src/a.txt"));
+    }
 }

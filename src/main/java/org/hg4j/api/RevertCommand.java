@@ -78,10 +78,15 @@ public class RevertCommand {
                 targetContent = cat.call();
                 tracked = true;
                 
-                // Get flags from manifest
                 java.util.Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
                 String nodeWithFlags = manifestMap.get(file);
-                if (nodeWithFlags != null && nodeWithFlags.substring(Math.min(40, nodeWithFlags.length())).contains("x")) {
+                String flags = "";
+                if (nodeWithFlags != null) {
+                    flags = nodeWithFlags.substring(Math.min(40, nodeWithFlags.length()));
+                }
+                if (flags.contains("l")) {
+                    mode = 0120000;
+                } else if (flags.contains("x")) {
                     mode = 0755;
                 }
             } catch (IOException e) {
@@ -96,9 +101,21 @@ public class RevertCommand {
 
             if (tracked && targetContent != null) {
                 diskFile.getParentFile().mkdirs();
-                Files.write(diskFile.toPath(), targetContent);
-                boolean executable = (mode == 0755);
-                diskFile.setExecutable(executable, false);
+                if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                    Files.delete(diskFile.toPath());
+                }
+                if (mode == 0120000) {
+                    String target = new String(targetContent, java.nio.charset.StandardCharsets.UTF_8).trim();
+                    try {
+                        Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                    } catch (Exception e) {
+                        Files.write(diskFile.toPath(), targetContent);
+                    }
+                } else {
+                    Files.write(diskFile.toPath(), targetContent);
+                    boolean executable = (mode == 0755);
+                    diskFile.setExecutable(executable, false);
+                }
                 
                 long time = diskFile.lastModified() / 1000;
                 dirstate.addEntry(file, new Dirstate.Entry('n', mode, targetContent.length, time));

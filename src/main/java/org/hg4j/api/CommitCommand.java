@@ -114,10 +114,10 @@ public class CommitCommand {
 
             if (!skipLockAndJournal) {
                 // 경로는 .hg/ 기준 상대 경로 (실제 hg journal 포맷)
-                appendToJournal(journalFile, "store/00changelog.i " + clIdxLen);
-                appendToJournal(journalFile, "store/00changelog.d " + clDatLen);
-                appendToJournal(journalFile, "store/00manifest.i " + mfIdxLen);
-                appendToJournal(journalFile, "store/00manifest.d " + mfDatLen);
+                appendToJournal(journalFile, "store/00changelog.i\t" + clIdxLen);
+                appendToJournal(journalFile, "store/00changelog.d\t" + clDatLen);
+                appendToJournal(journalFile, "store/00manifest.i\t" + mfIdxLen);
+                appendToJournal(journalFile, "store/00manifest.d\t" + mfDatLen);
             }
 
             Dirstate dirstate = repository.getDirstate();
@@ -332,7 +332,7 @@ public class CommitCommand {
                                 fileSizes.put(flIdx, idxLen);
                                 if (!skipLockAndJournal) {
                                     String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path) + ".i";
-                                    appendToJournal(journalFile, storeRelIdx + " " + idxLen);
+                                    appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
                                 }
                             }
                             if (!fileSizes.containsKey(flDat)) {
@@ -340,7 +340,7 @@ public class CommitCommand {
                                 fileSizes.put(flDat, datLen);
                                 if (!skipLockAndJournal) {
                                     String storeRelDat = "store/" + NodeIdUtil.encodeFname(path) + ".d";
-                                    appendToJournal(journalFile, storeRelDat + " " + datLen);
+                                    appendToJournal(journalFile, storeRelDat + "\t" + datLen);
                                 }
                             }
 

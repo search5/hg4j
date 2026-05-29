@@ -125,26 +125,51 @@ public class UpdateCommand {
 
                     byte[] fileContent = filelog.getRevisionContent(fileRev);
 
+                    boolean symlink = tw.isSymlink(1);
+
                     File diskFile = new File(repository.getDirectory(), path);
                     boolean needsWrite = true;
 
-                    if (diskFile.exists()) {
-                        // Optimized content checksum match comparison to bypass disk writes
-                        byte[] existingContent = Files.readAllBytes(diskFile.toPath());
-                        if (java.util.Arrays.equals(existingContent, fileContent)) {
-                            needsWrite = false;
+                    if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                        if (!symlink) {
+                            try {
+                                byte[] existingContent = Files.readAllBytes(diskFile.toPath());
+                                if (java.util.Arrays.equals(existingContent, fileContent)) {
+                                    needsWrite = false;
+                                }
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        if (needsWrite) {
+                            Files.delete(diskFile.toPath());
                         }
                     }
 
+                    int mode = 0644;
                     if (needsWrite) {
                         diskFile.getParentFile().mkdirs();
-                        Files.write(diskFile.toPath(), fileContent);
+                        if (symlink) {
+                            mode = 0120000;
+                            String target = new String(fileContent, StandardCharsets.UTF_8).trim();
+                            try {
+                                Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                            } catch (Exception e) {
+                                Files.write(diskFile.toPath(), fileContent);
+                            }
+                        } else {
+                            Files.write(diskFile.toPath(), fileContent);
+                            diskFile.setExecutable(executable, false);
+                            mode = executable ? 0755 : 0644;
+                        }
+                    } else {
+                        if (symlink) {
+                            mode = 0120000;
+                        } else {
+                            diskFile.setExecutable(executable, false);
+                            mode = executable ? 0755 : 0644;
+                        }
                     }
 
-                    // Apply executable flag if 'x'
-                    diskFile.setExecutable(executable, false);
-
-                    int mode = executable ? 0755 : 0644;
                     int size = fileContent.length;
                     long time = diskFile.lastModified() / 1000;
 

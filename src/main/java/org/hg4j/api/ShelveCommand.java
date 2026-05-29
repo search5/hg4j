@@ -204,21 +204,33 @@ public class ShelveCommand {
 
                 if (entry.getState() == 'm' || entry.getState() == 'a') {
                     File file = new File(repository.getDirectory(), path);
-                    if (file.exists() && file.isFile()) {
-                        byte[] content = Files.readAllBytes(file.toPath());
-                        shelvedFiles.add(new ShelvedFile(path, entry.getState(), content));
+                    boolean isSym = Files.isSymbolicLink(file.toPath());
+                    if (file.exists() || isSym) {
+                        byte[] content;
+                        if (isSym) {
+                            content = Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8);
+                        } else {
+                            content = Files.readAllBytes(file.toPath());
+                        }
+                        shelvedFiles.add(new ShelvedFile(path, entry.getState(), content, entry.getMode()));
                     }
                 } else if (entry.getState() == 'r') {
-                    shelvedFiles.add(new ShelvedFile(path, 'r', new byte[0]));
+                    shelvedFiles.add(new ShelvedFile(path, 'r', new byte[0], entry.getMode()));
                 } else if (entry.getState() == 'n') {
                     // Check if modified on disk without being added (uncommitted modification)
                     File file = new File(repository.getDirectory(), path);
-                    if (file.exists() && file.isFile()) {
-                        long diskSize = file.length();
+                    boolean isSym = Files.isSymbolicLink(file.toPath());
+                    if (file.exists() || isSym) {
+                        long diskSize = isSym ? Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8).length : file.length();
                         long diskTime = file.lastModified() / 1000;
                         if (entry.getSize() != diskSize || entry.getTime() != diskTime) {
-                            byte[] content = Files.readAllBytes(file.toPath());
-                            shelvedFiles.add(new ShelvedFile(path, 'n', content));
+                            byte[] content;
+                            if (isSym) {
+                                content = Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8);
+                            } else {
+                                content = Files.readAllBytes(file.toPath());
+                            }
+                            shelvedFiles.add(new ShelvedFile(path, 'n', content, entry.getMode()));
                         }
                     }
                 }
@@ -376,7 +388,7 @@ public class ShelveCommand {
             stateSb.append(p2Hex).append("\n");
             stateSb.append(shelvedFiles.size()).append("\n");
             for (ShelvedFile sf : shelvedFiles) {
-                stateSb.append(sf.path).append(" ").append(sf.state).append("\n");
+                stateSb.append(sf.path).append(" ").append(sf.state).append(" ").append(sf.mode).append("\n");
             }
 
             Files.writeString(stateFile.toPath(), stateSb.toString(), StandardCharsets.UTF_8);
@@ -408,12 +420,27 @@ public class ShelveCommand {
         int shelvedFilesCount = Integer.parseInt(stateLines.get(4).trim());
 
         Map<String, Character> fileStates = new HashMap<>();
+        Map<String, Integer> fileModes = new HashMap<>();
         for (int i = 0; i < shelvedFilesCount; i++) {
             String line = stateLines.get(5 + i).trim();
-            int space = line.lastIndexOf(' ');
-            String path = line.substring(0, space);
-            char state = line.substring(space + 1).charAt(0);
-            fileStates.put(path, state);
+            String[] tokens = line.split(" ");
+            if (tokens.length >= 3) {
+                int mode = Integer.parseInt(tokens[tokens.length - 1]);
+                char state = tokens[tokens.length - 2].charAt(0);
+                StringBuilder pathSb = new StringBuilder();
+                for (int t = 0; t <= tokens.length - 3; t++) {
+                    if (t > 0) pathSb.append(" ");
+                    pathSb.append(tokens[t]);
+                }
+                String path = pathSb.toString();
+                fileStates.put(path, state);
+                fileModes.put(path, mode);
+            } else {
+                int space = line.lastIndexOf(' ');
+                String path = line.substring(0, space);
+                char state = line.substring(space + 1).charAt(0);
+                fileStates.put(path, state);
+            }
         }
 
         ChangegroupParser.ChangegroupBundle bundle;
@@ -449,9 +476,31 @@ public class ShelveCommand {
 
                 File diskFile = new File(repository.getDirectory(), path);
                 diskFile.getParentFile().mkdirs();
-                Files.write(diskFile.toPath(), content);
+                if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                    Files.delete(diskFile.toPath());
+                }
 
-                int mode = diskFile.canExecute() ? 0755 : 0644;
+                Integer savedMode = fileModes.get(path);
+                int mode = 0644;
+                if (savedMode != null) {
+                    mode = savedMode;
+                } else {
+                    mode = diskFile.canExecute() ? 0755 : 0644;
+                }
+
+                if (mode == 0120000) {
+                    String target = new String(content, StandardCharsets.UTF_8).trim();
+                    try {
+                        Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                    } catch (Exception e) {
+                        Files.write(diskFile.toPath(), content);
+                    }
+                } else {
+                    Files.write(diskFile.toPath(), content);
+                    boolean exec = (mode == 0755);
+                    diskFile.setExecutable(exec, false);
+                }
+
                 int size = content.length;
                 long time = diskFile.lastModified() / 1000;
 
@@ -504,7 +553,7 @@ public class ShelveCommand {
         org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, mfNode);
         while (mw.next()) {
             org.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
-            String flag = entry.isExecutable() ? "x" : "";
+            String flag = entry.isSymlink() ? "l" : (entry.isExecutable() ? "x" : "");
             manifestEntries.put(entry.getPath(), entry.getNodeIdHex() + flag);
         }
 
@@ -514,7 +563,9 @@ public class ShelveCommand {
 
             if (manifestNodeWithFlags == null) {
                 // File was not in latest commit (i.e. was added), so delete it
-                Files.deleteIfExists(diskFile.toPath());
+                if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                    Files.delete(diskFile.toPath());
+                }
                 dirstate.removeEntry(sf.path);
             } else {
                 // File was in latest commit, so restore it
@@ -529,12 +580,26 @@ public class ShelveCommand {
                 byte[] originalContent = filelog.getRevisionContent(fileRev);
 
                 diskFile.getParentFile().mkdirs();
-                Files.write(diskFile.toPath(), originalContent);
+                if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                    Files.delete(diskFile.toPath());
+                }
 
-                boolean exec = flags.contains("x");
-                diskFile.setExecutable(exec, false);
+                int mode = 0644;
+                if (flags.contains("l")) {
+                    mode = 0120000;
+                    String target = new String(originalContent, StandardCharsets.UTF_8).trim();
+                    try {
+                        Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                    } catch (Exception e) {
+                        Files.write(diskFile.toPath(), originalContent);
+                    }
+                } else {
+                    Files.write(diskFile.toPath(), originalContent);
+                    boolean exec = flags.contains("x");
+                    diskFile.setExecutable(exec, false);
+                    mode = exec ? 0755 : 0644;
+                }
 
-                int mode = exec ? 0755 : 0644;
                 int size = originalContent.length;
                 long time = diskFile.lastModified() / 1000;
 
@@ -549,11 +614,13 @@ public class ShelveCommand {
         String path;
         char state;
         byte[] content;
+        int mode;
 
-        ShelvedFile(String path, char state, byte[] content) {
+        ShelvedFile(String path, char state, byte[] content, int mode) {
             this.path = path;
             this.state = state;
             this.content = content;
+            this.mode = mode;
         }
     }
 

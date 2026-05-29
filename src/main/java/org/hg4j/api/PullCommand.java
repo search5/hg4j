@@ -203,10 +203,10 @@ public class PullCommand {
             fileSizes.put(mfIdx, mfIdxLen);
             fileSizes.put(mfDat, mfDatLen);
 
-            appendToJournal(journalFile, "store/00changelog.i " + clIdxLen);
-            appendToJournal(journalFile, "store/00changelog.d " + clDatLen);
-            appendToJournal(journalFile, "store/00manifest.i " + mfIdxLen);
-            appendToJournal(journalFile, "store/00manifest.d " + mfDatLen);
+            appendToJournal(journalFile, "store/00changelog.i\t" + clIdxLen);
+            appendToJournal(journalFile, "store/00changelog.d\t" + clDatLen);
+            appendToJournal(journalFile, "store/00manifest.i\t" + mfIdxLen);
+            appendToJournal(journalFile, "store/00manifest.d\t" + mfDatLen);
 
             // 1. Apply Changelog
             Revlog changelog = repository.getRevlog(clIdx, clDat);
@@ -243,13 +243,13 @@ public class PullCommand {
                             long idxLen = mIdx.exists() ? mIdx.length() : 0L;
                             fileSizes.put(mIdx, idxLen);
                             String storeRelIdx = "store/" + NodeIdUtil.encodeFname(storeRel) + ".i";
-                            appendToJournal(journalFile, storeRelIdx + " " + idxLen);
+                            appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
                         }
                         if (!fileSizes.containsKey(mDat)) {
                             long datLen = mDat.exists() ? mDat.length() : 0L;
                             fileSizes.put(mDat, datLen);
                             String storeRelDat = "store/" + NodeIdUtil.encodeFname(storeRel) + ".d";
-                            appendToJournal(journalFile, storeRelDat + " " + datLen);
+                            appendToJournal(journalFile, storeRelDat + "\t" + datLen);
                         }
                         mIdx.getParentFile().mkdirs();
                     }
@@ -284,13 +284,13 @@ public class PullCommand {
                     long idxLen = flIdx.exists() ? flIdx.length() : 0L;
                     fileSizes.put(flIdx, idxLen);
                     String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path) + ".i";
-                    appendToJournal(journalFile, storeRelIdx + " " + idxLen);
+                    appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
                 }
                 if (!fileSizes.containsKey(flDat)) {
                     long datLen = flDat.exists() ? flDat.length() : 0L;
                     fileSizes.put(flDat, datLen);
                     String storeRelDat = "store/" + NodeIdUtil.encodeFname(path) + ".d";
-                    appendToJournal(journalFile, storeRelDat + " " + datLen);
+                    appendToJournal(journalFile, storeRelDat + "\t" + datLen);
                 }
 
                 flIdx.getParentFile().mkdirs();

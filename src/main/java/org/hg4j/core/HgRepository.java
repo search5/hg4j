@@ -409,7 +409,13 @@ public class HgRepository implements Repository {
                 line = line.trim();
                 if (line.isEmpty()) continue;
                 if (line.startsWith("backup ")) {
-                    String[] parts = line.substring(7).trim().split(" ", 2);
+                    String[] parts;
+                    String content = line.substring(7).trim();
+                    if (content.contains("\t")) {
+                        parts = content.split("\t", 2);
+                    } else {
+                        parts = content.split(" ", 2);
+                    }
                     if (parts.length == 2) {
                         String origRel = parts[0];
                         String backupRel = parts[1];
@@ -440,10 +446,13 @@ public class HgRepository implements Repository {
                         java.nio.file.Files.deleteIfExists(fncacheFile.toPath());
                     }
                 } else {
-                    int spaceIdx = line.lastIndexOf(' ');
-                    if (spaceIdx != -1) {
-                        String filePath = line.substring(0, spaceIdx);
-                        long origSize = Long.parseLong(line.substring(spaceIdx + 1));
+                    int splitIdx = line.lastIndexOf('\t');
+                    if (splitIdx == -1) {
+                        splitIdx = line.lastIndexOf(' ');
+                    }
+                    if (splitIdx != -1) {
+                        String filePath = line.substring(0, splitIdx);
+                        long origSize = Long.parseLong(line.substring(splitIdx + 1));
                         File file = new File(hgDir, filePath);
                         if (file.exists()) {
                             if (origSize == 0) {

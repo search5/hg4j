@@ -676,7 +676,7 @@ public class RebaseCommand {
             String origRel = repository.getHgDir().toPath().relativize(origFile.toPath()).toString().replace('\\', '/');
             String backupRel = repository.getHgDir().toPath().relativize(backupFile.toPath()).toString().replace('\\', '/');
             
-            sb.append("backup ").append(origRel).append(" ").append(backupRel).append("\n");
+            sb.append("backup ").append(origRel).append("\t").append(backupRel).append("\n");
         }
         Files.writeString(journalFile.toPath(), sb.toString(), java.nio.charset.StandardCharsets.UTF_8);
         try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {

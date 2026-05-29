@@ -201,6 +201,14 @@ public class Revlog {
             return new byte[0];
         }
 
+        // Hardening for OOM (L-3): Use memory-mapping for large hunks to save JVM heap space
+        if (compLen > 5 * 1024 * 1024) { 
+            java.nio.MappedByteBuffer mapBuf = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, seekOffset, compLen);
+            byte[] data = new byte[compLen];
+            mapBuf.get(data);
+            return data;
+        }
+
         ByteBuffer buf = ByteBuffer.allocate(compLen);
         long position = seekOffset;
         while (buf.hasRemaining()) {

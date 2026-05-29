@@ -147,13 +147,27 @@ public class CloneCommand {
             // Write to working copy
             File diskFile = new File(repo.getDirectory(), path);
             diskFile.getParentFile().mkdirs();
-            Files.write(diskFile.toPath(), fileContent);
+            if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                Files.delete(diskFile.toPath());
+            }
 
-            // Apply executable flag if 'x'
-            boolean executable = flags.contains("x");
-            diskFile.setExecutable(executable, false);
+            int mode = 0644;
+            if (flags.contains("l")) {
+                mode = 0120000;
+                String target = new String(fileContent, StandardCharsets.UTF_8).trim();
+                try {
+                    Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                } catch (Exception e) {
+                    Files.write(diskFile.toPath(), fileContent);
+                }
+            } else {
+                Files.write(diskFile.toPath(), fileContent);
+                // Apply executable flag if 'x'
+                boolean executable = flags.contains("x");
+                diskFile.setExecutable(executable, false);
+                mode = executable ? 0755 : 0644;
+            }
 
-            int mode = executable ? 0755 : 0644;
             int size = fileContent.length;
             long time = diskFile.lastModified() / 1000;
 

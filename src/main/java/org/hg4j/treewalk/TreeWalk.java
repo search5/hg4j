@@ -120,6 +120,16 @@ public class TreeWalk {
         return false;
     }
 
+    public boolean isSymlink(int treeIndex) {
+        if (isTracked(treeIndex)) {
+            TreeIterator tree = trees.get(treeIndex);
+            if (tree instanceof ManifestTreeIterator) {
+                return ((ManifestTreeIterator) tree).isSymlink();
+            }
+        }
+        return false;
+    }
+
     public char getState(int treeIndex) {
         if (isTracked(treeIndex)) {
             return trees.get(treeIndex).getEntryState();

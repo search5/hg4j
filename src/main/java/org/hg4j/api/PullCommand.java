@@ -34,9 +34,17 @@ public class PullCommand {
     private final HgRepository repository;
     private String sourceUrl;
     private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
+    private org.hg4j.core.HgTreeFilter treeFilter = org.hg4j.core.HgTreeFilter.ALL;
 
     public PullCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public PullCommand setTreeFilter(org.hg4j.core.HgTreeFilter treeFilter) {
+        if (treeFilter != null) {
+            this.treeFilter = treeFilter;
+        }
+        return this;
     }
 
     public PullCommand setProgressMonitor(ProgressMonitor monitor) {
@@ -277,6 +285,9 @@ public class PullCommand {
             // 3. Apply Filelogs
             for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
                 String path = fg.path;
+                if (treeFilter != null && !treeFilter.accept(path)) {
+                    continue;
+                }
                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
 

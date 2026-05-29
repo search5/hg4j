@@ -84,7 +84,8 @@ public class Hg implements AutoCloseable {
 
         // Robustness: Validate repository requirements format to prevent silent data corruption
         java.util.Set<String> SUPPORTED = java.util.Set.of(
-            "dotencode", "fncache", "generaldelta", "revlogv1", "store", "dirstate-v2", "share-safe"
+            "dotencode", "fncache", "generaldelta", "revlogv1", "store", "dirstate-v2", "share-safe",
+            "revlog-compression", "narrowspec"
         );
 
         java.io.File[] requiresFiles = {

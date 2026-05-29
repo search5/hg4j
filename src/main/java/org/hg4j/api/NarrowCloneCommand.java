@@ -83,10 +83,10 @@ public final class NarrowCloneCommand {
         org.hg4j.core.SafeFileIO.writeStringAtomic(narrowSpecFile, sb.toString());
 
         // Perform the standard SCM clone/pull
-        hg.pull().setSource(sourceUrl).call();
+        hg.pull().setSource(sourceUrl).setTreeFilter(pathFilter).call();
 
         // 4. sparse working copy update
-        hg.update().call();
+        hg.update().setTreeFilter(pathFilter).call();
 
         return hg;
     }

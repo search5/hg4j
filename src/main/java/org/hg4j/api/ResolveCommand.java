@@ -63,15 +63,35 @@ public final class ResolveCommand {
         // Load existing merge state
         if (mergeStateFile.exists() && mergeStateFile.isFile()) {
             String content = Files.readString(mergeStateFile.toPath(), StandardCharsets.UTF_8);
-            for (String line : content.split("\n")) {
+            String[] lines = content.split("\n");
+            int lineNum = 0;
+            for (String line : lines) {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty()) continue;
                 
+                // Skip the first two lines (P1 and P2 node ids) if they are not key-value format
+                if (lineNum < 2 && trimmed.length() == 40 && !trimmed.contains("=")) {
+                    lineNum++;
+                    continue;
+                }
+                
                 int eqIdx = trimmed.indexOf('=');
                 if (eqIdx != -1) {
+                    // Fallback to legacy path=true/false format
                     String path = trimmed.substring(0, eqIdx).trim();
                     boolean state = Boolean.parseBoolean(trimmed.substring(eqIdx + 1).trim());
                     states.put(path, state);
+                } else if (trimmed.startsWith("u ") || trimmed.startsWith("U ")) {
+                    String path = trimmed.substring(2).trim();
+                    states.put(path, false);
+                } else if (trimmed.startsWith("r ") || trimmed.startsWith("R ")) {
+                    String path = trimmed.substring(2).trim();
+                    states.put(path, true);
+                } else {
+                    // Other record types or standalone 40-char hashes not matched above
+                    if (trimmed.length() == 40) {
+                        lineNum++;
+                    }
                 }
             }
         }
@@ -90,11 +110,35 @@ public final class ResolveCommand {
                 throw new IOException("Failed to create merge state directories");
             }
 
+            // Extract parents from dirstate for standard compatibility
+            String p1 = "0000000000000000000000000000000000000000";
+            String p2 = "0000000000000000000000000000000000000000";
+            try {
+                org.hg4j.core.Dirstate dirstate = repository.getDirstate();
+                if (dirstate.getParent1() != null) {
+                    p1 = org.hg4j.core.NodeIdUtil.toHex(dirstate.getParent1());
+                }
+                if (dirstate.getParent2() != null) {
+                    p2 = org.hg4j.core.NodeIdUtil.toHex(dirstate.getParent2());
+                }
+            } catch (Exception ignored) {}
+
             StringBuilder sb = new StringBuilder();
+            sb.append(p1).append("\n");
+            sb.append(p2).append("\n");
             for (Map.Entry<String, Boolean> entry : states.entrySet()) {
-                sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                String prefix = entry.getValue() ? "r" : "u";
+                sb.append(prefix).append(" ").append(entry.getKey()).append("\n");
             }
             SafeFileIO.writeStringAtomic(mergeStateFile, sb.toString());
+            
+            if (!list) {
+                Map<String, Boolean> filtered = new LinkedHashMap<>();
+                if (states.containsKey(fileToMark)) {
+                    filtered.put(fileToMark, states.get(fileToMark));
+                }
+                return filtered;
+            }
         }
 
         return states;

@@ -22,9 +22,17 @@ public class UpdateCommand {
     private final HgRepository repository;
     private String targetRevision;
     private boolean force = false;
+    private org.hg4j.core.HgTreeFilter treeFilter = org.hg4j.core.HgTreeFilter.ALL;
 
     public UpdateCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public UpdateCommand setTreeFilter(org.hg4j.core.HgTreeFilter treeFilter) {
+        if (treeFilter != null) {
+            this.treeFilter = treeFilter;
+        }
+        return this;
     }
 
     public UpdateCommand setRevision(String targetRevision) {
@@ -83,6 +91,9 @@ public class UpdateCommand {
             tw.reset();
             while (tw.next()) {
                 String path = tw.getPath();
+                if (treeFilter != null && !treeFilter.accept(path)) {
+                    continue;
+                }
                 boolean inParent = tw.isTracked(0);
                 boolean inTarget = tw.isTracked(1);
 

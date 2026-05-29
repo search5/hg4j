@@ -109,6 +109,7 @@ public class GraftCommand {
             CommitCommand commitCmd = new CommitCommand(repository);
             commitCmd.setAuthor(author);
             commitCmd.setMessage(graftMessage);
+            commitCmd.setSkipLockAndJournal(true);
 
             byte[] newCommitNode = commitCmd.call();
             return NodeIdUtil.toHex(newCommitNode);

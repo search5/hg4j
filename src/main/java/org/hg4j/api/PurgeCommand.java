@@ -58,7 +58,7 @@ public class PurgeCommand {
             // Check if directory is untracked and empty, and if we should purge directories
             if (purgeDirectories && !path.equals(repository.getDirectory().toPath())) {
                 String rel = repository.getDirectory().toPath().relativize(path).toString().replace('\\', '/');
-                if (!rel.isEmpty() && !trackedFiles.contains(rel)) {
+                if (!rel.isEmpty() && !trackedFiles.contains(rel) && !repository.isIgnored(rel)) {
                     try (java.util.stream.Stream<Path> stream = Files.list(path)) {
                         if (stream.findAny().isEmpty()) {
                             Files.delete(path);
@@ -69,7 +69,7 @@ public class PurgeCommand {
         } else {
             // File node
             String rel = repository.getDirectory().toPath().relativize(path).toString().replace('\\', '/');
-            if (!trackedFiles.contains(rel)) {
+            if (!trackedFiles.contains(rel) && !repository.isIgnored(rel)) {
                 Files.delete(path);
             }
         }

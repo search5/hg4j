@@ -92,10 +92,21 @@ public class SubrepoCommand {
                         }
                     }
 
-                    // Recursively clone/initialize subrepo in target path
+                    // Recursively clone/initialize subrepo in target path from configured URL
                     File subrepoDir = new File(repository.getDirectory(), path);
                     if (!subrepoDir.exists()) {
-                        Hg.init().setDirectory(subrepoDir).call();
+                        if (url != null && !url.isEmpty()) {
+                            try {
+                                Hg.cloneRepository()
+                                  .setSource(url)
+                                  .setDirectory(subrepoDir)
+                                  .call();
+                            } catch (Exception e) {
+                                Hg.init().setDirectory(subrepoDir).call();
+                            }
+                        } else {
+                            Hg.init().setDirectory(subrepoDir).call();
+                        }
                     }
                     // For dummy in-memory SCM update verification: sync parent Dirstate of subrepository
                     try (Hg hg = Hg.open(subrepoDir)) {

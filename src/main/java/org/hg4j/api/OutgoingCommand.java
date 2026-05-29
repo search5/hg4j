@@ -64,9 +64,18 @@ public class OutgoingCommand {
             boolean isKnownByRemote = false;
             
             for (byte[] rHead : remoteHeads) {
-                if (java.util.Arrays.equals(node, rHead)) {
-                    isKnownByRemote = true;
-                    break;
+                int rHeadRev = changelog.findRevision(rHead);
+                if (rHeadRev != -1) {
+                    // If remote head is descendant of local revision i, remote already knows i
+                    if (isAncestor(changelog, i, rHeadRev)) {
+                        isKnownByRemote = true;
+                        break;
+                    }
+                } else {
+                    if (java.util.Arrays.equals(node, rHead)) {
+                        isKnownByRemote = true;
+                        break;
+                    }
                 }
             }
 
@@ -88,6 +97,38 @@ public class OutgoingCommand {
             outgoingMessages.add("no outgoing changes found");
         }
         return outgoingMessages;
+    }
+
+    private boolean isAncestor(Revlog changelog, int ancestorRev, int descendantRev) {
+        if (ancestorRev < 0 || descendantRev < 0) return false;
+        if (ancestorRev == descendantRev) return true;
+        if (ancestorRev > descendantRev) return false; // Topological ordering optimization
+        
+        java.util.Queue<Integer> queue = new java.util.LinkedList<>();
+        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        queue.add(descendantRev);
+        visited.add(descendantRev);
+        
+        while (!queue.isEmpty()) {
+            int curr = queue.poll();
+            if (curr == ancestorRev) {
+                return true;
+            }
+            if (curr < ancestorRev) {
+                continue;
+            }
+            
+            Revlog.IndexRecord rec = changelog.getIndexRecord(curr);
+            int p1 = rec.getParent1();
+            int p2 = rec.getParent2();
+            if (p1 != -1 && visited.add(p1)) {
+                queue.add(p1);
+            }
+            if (p2 != -1 && visited.add(p2)) {
+                queue.add(p2);
+            }
+        }
+        return false;
     }
 }
 

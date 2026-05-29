@@ -46,6 +46,26 @@ public class IdentifyCommand {
             tagPart = " tip";
         }
 
+        // Fetch actual tags matching from .hgtags file
+        File hgTagsFile = new File(repository.getDirectory(), ".hgtags");
+        if (hgTagsFile.exists()) {
+            java.util.List<String> tagLines = java.nio.file.Files.readAllLines(hgTagsFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+            String targetHex = NodeIdUtil.toHex(p1);
+            for (String line : tagLines) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                String[] parts = line.split("\\s+", 2);
+                if (parts.length == 2) {
+                    String tagHex = parts[0];
+                    String tagName = parts[1];
+                    if (targetHex.startsWith(tagHex) || tagHex.startsWith(targetHex)) {
+                        tagPart = " " + tagName;
+                        break;
+                    }
+                }
+            }
+        }
+
         return hexShort + tagPart + " " + branch;
     }
 }

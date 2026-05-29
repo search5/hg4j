@@ -77,9 +77,18 @@ public class IncomingCommand {
                 try (java.io.ByteArrayInputStream bin = new java.io.ByteArrayInputStream(bundleBytes)) {
                     org.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = org.hg4j.core.ChangegroupParser.parseBundle(bin);
                     if (bundle != null && bundle.changelogEntries != null) {
+                        byte[] currentBase = new byte[0];
                         for (org.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                            byte[] clContent;
+                            try {
+                                clContent = org.hg4j.core.DeltaEngine.applyDelta(currentBase, entry.delta);
+                            } catch (Exception e) {
+                                // Fallback if applyDelta fails, use delta as raw text
+                                clContent = entry.delta;
+                            }
+                            currentBase = clContent;
+
                             if (changelog.findRevision(entry.node) == -1) {
-                                byte[] clContent = entry.delta; // ChangeGroupEntry delta encapsulates raw commit txt
                                 if (clContent != null && clContent.length > 0) {
                                     String clText = new String(clContent, StandardCharsets.UTF_8);
                                     String[] clLines = clText.split("\n");

@@ -93,4 +93,48 @@ public class ChangesetGraphTest {
         assertEquals(2, lca.size());
         assertTrue(lca.containsAll(Set.of(1, 2)));
     }
+
+    @Test
+    @DisplayName("위상 정렬(SortOrder.TOPO) 설정 시 자식이 부모보다 항상 먼저 반환되는지 검증")
+    void testTopologicalSortOrder() {
+        // 그래프 구조:
+        // 0 -> 1 -> 3
+        // 0 -> 2 -> 3
+        mockRevisionRecord(0, -1, -1);
+        mockRevisionRecord(1, 0, -1);
+        mockRevisionRecord(2, 0, -1);
+        mockRevisionRecord(3, 1, 2);
+
+        // 1. DEFAULT 정렬 검증 (기본 BFS 순서 등)
+        graph.setSortOrder(SortOrder.DEFAULT);
+        assertEquals(SortOrder.DEFAULT, graph.getSortOrder());
+        
+        java.util.Iterator<Integer> defaultIt = graph.lazyAncestors(3, parentLookup);
+        java.util.List<Integer> defaultList = new java.util.ArrayList<>();
+        defaultIt.forEachRemaining(defaultList::add);
+        assertFalse(defaultList.isEmpty());
+
+        // 2. TOPO 정렬 검증 (자식이 부모보다 항상 앞서는 위상 정렬 순서)
+        graph.setSortOrder(SortOrder.TOPO);
+        assertEquals(SortOrder.TOPO, graph.getSortOrder());
+
+        java.util.Iterator<Integer> topoIt = graph.lazyAncestors(3, parentLookup);
+        java.util.List<Integer> topoList = new java.util.ArrayList<>();
+        topoIt.forEachRemaining(topoList::add);
+
+        // 결과는 [3, 2, 1, 0] 또는 [3, 1, 2, 0] 형태여야 함
+        assertEquals(4, topoList.size());
+        
+        int idx3 = topoList.indexOf(3);
+        int idx2 = topoList.indexOf(2);
+        int idx1 = topoList.indexOf(1);
+        int idx0 = topoList.indexOf(0);
+
+        // 자식이 부모보다 항상 먼저 와야 한다는 위상적 제약 조건(Invariants)을 수학적으로 완벽 검증
+        assertTrue(idx3 < idx1, "자식 3은 부모 1보다 먼저 와야 합니다.");
+        assertTrue(idx3 < idx2, "자식 3은 부모 2보다 먼저 와야 합니다.");
+        assertTrue(idx3 < idx0, "자식 3은 조상 0보다 먼저 와야 합니다.");
+        assertTrue(idx1 < idx0, "자식 1은 부모 0보다 먼저 와야 합니다.");
+        assertTrue(idx2 < idx0, "자식 2은 부모 0보다 먼저 와야 합니다.");
+    }
 }

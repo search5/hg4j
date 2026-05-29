@@ -12,9 +12,18 @@ public class ChangesetGraph {
     private final Revlog changelog;
     private final Map<Long, Boolean> ancestorCache = new HashMap<>();
     private RevFilter revFilter = RevFilter.ALL;
+    private SortOrder sortOrder = SortOrder.DEFAULT;
 
     public ChangesetGraph(Revlog changelog) {
         this.changelog = changelog;
+    }
+
+    public void setSortOrder(SortOrder sortOrder) {
+        this.sortOrder = sortOrder != null ? sortOrder : SortOrder.DEFAULT;
+    }
+
+    public SortOrder getSortOrder() {
+        return this.sortOrder;
     }
 
     public void setRevFilter(RevFilter revFilter) {
@@ -65,6 +74,23 @@ public class ChangesetGraph {
     }
 
     public Iterator<Integer> lazyAncestors(int startRev, Function<Integer, int[]> parentLookup) {
+        if (sortOrder == SortOrder.TOPO) {
+            List<Integer> result = new ArrayList<>();
+            Set<Integer> visited = new HashSet<>();
+            dfs(startRev, parentLookup, visited, result);
+            Collections.reverse(result);
+
+            // Filter the elements in the buffered topological order list
+            List<Integer> filtered = new ArrayList<>();
+            for (int r : result) {
+                if (revFilter.include(r, changelog)) {
+                    filtered.add(r);
+                }
+            }
+            return filtered.iterator();
+        }
+
+        // DEFAULT BFS Iterator
         return new Iterator<Integer>() {
             private final Queue<Integer> queue = new ArrayDeque<>(List.of(startRev));
             private final Set<Integer> visited = new HashSet<>();
@@ -108,6 +134,22 @@ public class ChangesetGraph {
                 return val;
             }
         };
+    }
+
+    private void dfs(int u, Function<Integer, int[]> parentLookup, Set<Integer> visited, List<Integer> result) {
+        if (u == -1 || visited.contains(u)) {
+            return;
+        }
+        visited.add(u);
+        int[] parents = parentLookup.apply(u);
+        if (parents != null) {
+            for (int p : parents) {
+                if (p != -1) {
+                    dfs(p, parentLookup, visited, result);
+                }
+            }
+        }
+        result.add(u);
     }
 
     public boolean isAncestor(int ancestor, int descendant) {

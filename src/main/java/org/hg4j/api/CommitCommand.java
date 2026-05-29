@@ -151,7 +151,7 @@ public class CommitCommand {
             byte[] p1ManifestNode = new byte[20];
             byte[] p2ManifestNode = new byte[20];
 
-            Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
+            Revlog manifestRevlog = repository.getManifestRevlog();
 
             int parent1ManifestRev = -1;
             if (parent1Rev != -1) {

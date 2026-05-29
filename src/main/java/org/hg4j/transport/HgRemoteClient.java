@@ -19,6 +19,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     private String password;
     private boolean forceTls = false;
     private java.net.Proxy proxy = java.net.Proxy.NO_PROXY;
+    private boolean isV2 = false;
 
     public HgRemoteClient(String url) {
         if (url.endsWith("/")) {
@@ -56,10 +57,22 @@ public class HgRemoteClient implements HgRemoteConnection {
         List<String> caps = new ArrayList<>();
         if (resp != null && !resp.trim().isEmpty()) {
             for (String cap : resp.split("\\s+")) {
-                caps.add(cap.trim());
+                String clean = cap.trim();
+                caps.add(clean);
+                if ("http-v2".equalsIgnoreCase(clean) || "api-v2".equalsIgnoreCase(clean) || clean.startsWith("http-v2")) {
+                    this.isV2 = true;
+                }
             }
         }
         return caps;
+    }
+
+    public boolean isV2() {
+        return isV2;
+    }
+
+    public void setV2(boolean isV2) {
+        this.isV2 = isV2;
     }
 
     /**
@@ -153,7 +166,11 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
-        conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
+        if (isV2) {
+            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2, application/mercurial-0.2");
+        } else {
+            conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
+        }
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;
@@ -208,7 +225,11 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
         conn.setDoOutput(true);
-        conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
+        if (isV2) {
+            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2, application/mercurial-0.2");
+        } else {
+            conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
+        }
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
 
         if (username != null && password != null) {

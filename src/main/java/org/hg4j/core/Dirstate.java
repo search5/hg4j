@@ -38,7 +38,11 @@ public class Dirstate {
         this.isV2 = v2;
     }
 
-    public record Entry(char state, int mode, int size, long time) {
+    public record Entry(char state, int mode, int size, long time, int nanos) {
+        public Entry(char state, int mode, int size, long time) {
+            this(state, mode, size, time, 0);
+        }
+
         public char getState() {
             return state;
         }
@@ -53,6 +57,10 @@ public class Dirstate {
 
         public long getTime() {
             return time;
+        }
+
+        public int getNanos() {
+            return nanos;
         }
     }
 

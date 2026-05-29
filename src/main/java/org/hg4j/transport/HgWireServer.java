@@ -28,10 +28,30 @@ public class HgWireServer {
         BufferedReader reader = new BufferedReader(new InputStreamReader(in));
         String command = reader.readLine();
         
+        if (command != null && command.startsWith("upgrade ")) {
+            String[] parts = command.split(" ");
+            if (parts.length >= 3) {
+                String token = parts[1];
+                String proto = parts[2];
+                if (proto.equals("proto=exp-ssh-v2-0003")) {
+                    out.write(("upgraded " + token + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    String v2Caps = "capabilities: lookup changegroup=01,02,03 getbundle bundle2=HG20 compression=GZ,BZ,ZS\n";
+                    out.write(v2Caps.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    out.flush();
+                }
+            }
+            return;
+        }
+        
         if ("capabilities".equals(command)) {
             // 서버 측 지원 스펙 다운스트림 전송 (압축 협상 및 bundle2 활성화 포함)
-            String caps = "capabilities: lookup changegroup=01,02,03 getbundle bundle2=HG20 compression=GZ,BZ,ZS\n";
+            String caps = "capabilities: lookup changegroup=01,02,03 getbundle bundle2=HG20 compression=GZ,BZ,ZS exp-ssh-v2-0003\n";
             out.write(caps.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.flush();
+        } else if ("heads".equals(command)) {
+            // mock or real heads query response
+            String heads = "\n";
+            out.write(heads.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
         } else if (command != null && command.startsWith("unbundle")) {
             // Push 수신 처리 (JGit의 ReceivePack 등가)

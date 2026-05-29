@@ -68,7 +68,7 @@ public class DirstateV2Parser {
 
             char state = node.getState();
             if (state != '\0' && state != 'd') {
-                decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime()));
+                decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime(), node.getMtimeNanoseconds()));
             }
 
             int childrenStart = node.getChildrenStart();

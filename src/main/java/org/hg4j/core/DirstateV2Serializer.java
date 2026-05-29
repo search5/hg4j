@@ -144,11 +144,13 @@ public class DirstateV2Serializer {
             int size = 0;
             long time = 0;
 
+            int nanos = 0;
             if (node.entry != null) {
                 state = node.entry.getState();
                 mode = node.entry.getMode();
                 size = node.entry.getSize();
                 time = node.entry.getTime();
+                nanos = node.entry.nanos();
             }
 
             // 2. Set state (this automatically configures WDIR_TRACKED, P1_TRACKED, P2_INFO)
@@ -192,7 +194,7 @@ public class DirstateV2Serializer {
             nodeView.setTrackedDescendants(node.getTrackedDescendantsCount());
             nodeView.setCopySourceLen((short) 0);
             nodeView.setCopySourceOffset(0);
-            nodeView.setMtimeNanoseconds(0);
+            nodeView.setMtimeNanoseconds(nanos);
         }
 
         // Write data block

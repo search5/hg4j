@@ -137,19 +137,61 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     }
 
     private String readLine() throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        int b;
-        while ((b = in.read()) != -1) {
-            if (b == '\n') {
-                break;
+        if (protocolVersion == 2) {
+            int channelId = in.read();
+            if (channelId == -1) {
+                return "";
             }
-            baos.write(b);
+            byte[] lenBytes = new byte[4];
+            int read = 0;
+            while (read < 4) {
+                int got = in.read(lenBytes, read, 4 - read);
+                if (got == -1) {
+                    throw new org.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 frame size");
+                }
+                read += got;
+            }
+            int len = ((lenBytes[0] & 0xFF) << 24) |
+                      ((lenBytes[1] & 0xFF) << 16) |
+                      ((lenBytes[2] & 0xFF) << 8)  |
+                      (lenBytes[3] & 0xFF);
+            if (len <= 0) {
+                return "";
+            }
+            byte[] buf = new byte[len];
+            int total = 0;
+            while (total < len) {
+                int got = in.read(buf, total, len - total);
+                if (got == -1) {
+                    throw new org.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 frame payload");
+                }
+                total += got;
+            }
+            return new String(buf, StandardCharsets.UTF_8).trim();
+        } else {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            int b;
+            while ((b = in.read()) != -1) {
+                if (b == '\n') {
+                    break;
+                }
+                baos.write(b);
+            }
+            return new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
         }
-        return new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
     }
 
     private void writeLine(String line) throws IOException {
-        out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+        if (protocolVersion == 2) {
+            byte[] data = (line + "\n").getBytes(StandardCharsets.UTF_8);
+            java.nio.ByteBuffer header = java.nio.ByteBuffer.allocate(5);
+            header.put((byte) 1);
+            header.putInt(data.length);
+            out.write(header.array());
+            out.write(data);
+        } else {
+            out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+        }
         out.flush();
     }
 
@@ -286,14 +328,18 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     public String push(byte[] bundleBytes, List<String> heads) throws IOException {
         ensureConnected();
 
-        out.write("unbundle\n".getBytes(StandardCharsets.UTF_8));
+        writeLine("unbundle");
         if (heads != null && !heads.isEmpty()) {
-            out.write(("heads " + String.join(" ", heads) + "\n").getBytes(StandardCharsets.UTF_8));
+            writeLine("heads " + String.join(" ", heads));
         }
-        out.write("\n".getBytes(StandardCharsets.UTF_8));
-        out.flush();
+        writeLine("");
 
-        // Stdio protocol expects the raw binary bundle to be immediately written right after the command header block
+        if (protocolVersion == 2) {
+            java.nio.ByteBuffer header = java.nio.ByteBuffer.allocate(5);
+            header.put((byte) 1);
+            header.putInt(bundleBytes.length);
+            out.write(header.array());
+        }
         out.write(bundleBytes);
         out.flush();
 
@@ -312,6 +358,45 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     }
 
     private byte[] readBinaryResponse() throws IOException {
+        if (protocolVersion == 2) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            while (true) {
+                int channelId = in.read();
+                if (channelId == -1) {
+                    break; // EOF
+                }
+                byte[] lenBytes = new byte[4];
+                int read = 0;
+                while (read < 4) {
+                    int got = in.read(lenBytes, read, 4 - read);
+                    if (got == -1) {
+                        throw new org.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 binary frame size");
+                    }
+                    read += got;
+                }
+                int len = ((lenBytes[0] & 0xFF) << 24) |
+                          ((lenBytes[1] & 0xFF) << 16) |
+                          ((lenBytes[2] & 0xFF) << 8)  |
+                          (lenBytes[3] & 0xFF);
+                if (len <= 0) {
+                    break; // Empty frame signals end
+                }
+                byte[] chunkBuf = new byte[len];
+                int chunkRead = 0;
+                while (chunkRead < len) {
+                    int got = in.read(chunkBuf, chunkRead, len - chunkRead);
+                    if (got == -1) {
+                        throw new org.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 binary frame payload");
+                    }
+                    chunkRead += got;
+                }
+                if (channelId == 1 || channelId == 2) {
+                    baos.write(chunkBuf);
+                }
+            }
+            return baos.toByteArray();
+        }
+
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
         // In hg stdio 1.0, binary stream command responses are delivered in chunks

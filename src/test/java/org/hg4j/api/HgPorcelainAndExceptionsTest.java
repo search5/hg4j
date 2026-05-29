@@ -207,4 +207,30 @@ public class HgPorcelainAndExceptionsTest {
         cat.setRevision(new org.hg4j.lib.NodeId(revNode));
         assertThrows(org.hg4j.errors.HgCorruptDataException.class, cat::call);
     }
+
+    @Test
+    public void testHgOpenRequiresValidationAndWrap(@TempDir java.nio.file.Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("requires_val_repo").toFile();
+        org.hg4j.core.HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        
+        // 1. wrap() verify
+        try (Hg hg = Hg.wrap(repo)) {
+            assertNotNull(hg);
+            assertEquals(repo, hg.getRepository());
+        }
+
+        // 2. open(String) overload verify
+        try (Hg hg = Hg.open(repoDir.getAbsolutePath())) {
+            assertNotNull(hg);
+        }
+
+        // 3. unsupported requirement check in .hg/requires
+        File hgDir = new File(repoDir, ".hg");
+        File requires = new File(hgDir, "requires");
+        Files.writeString(requires.toPath(), "unsupported-ext-requirement-123\n");
+        
+        assertThrows(org.hg4j.errors.HgValidationException.class, () -> {
+            Hg.open(repoDir);
+        });
+    }
 }

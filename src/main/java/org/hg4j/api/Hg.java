@@ -216,6 +216,26 @@ public class Hg implements AutoCloseable {
         return new TreeCommand(this.repository);
     }
 
+    public RenameCommand rename() {
+        return new RenameCommand(this.repository);
+    }
+
+    public AnnotateCommand annotate() {
+        return new AnnotateCommand(this.repository);
+    }
+
+    public ResolveCommand resolve() {
+        return new ResolveCommand(this.repository);
+    }
+
+    public AmendCommand amend() {
+        return new AmendCommand(this.repository);
+    }
+
+    public static NarrowCloneCommand narrowClone() {
+        return new NarrowCloneCommand();
+    }
+
     /**
      * Helper method to directly compute diff between two revisions.
      */

@@ -138,8 +138,16 @@ public class Dirstate {
 
             byte[] pathBytes = new byte[pathLen];
             buf.get(pathBytes);
-            String path = new String(pathBytes, StandardCharsets.UTF_8);
-            entries.put(path, new Entry(state, mode, size, time));
+            String rawPath = new String(pathBytes, StandardCharsets.UTF_8);
+            int nullIdx = rawPath.indexOf('\0');
+            if (nullIdx != -1) {
+                String target = rawPath.substring(0, nullIdx);
+                String source = rawPath.substring(nullIdx + 1);
+                entries.put(target, new Entry(state, mode, size, time));
+                copyMap.put(target, source);
+            } else {
+                entries.put(rawPath, new Entry(state, mode, size, time));
+            }
         }
     }
 
@@ -214,7 +222,11 @@ public class Dirstate {
             out.write(parent2.getBytes());
             ByteBuffer buf = ByteBuffer.allocate(17);
             for (Map.Entry<String, Entry> item : entries.entrySet()) {
-                byte[] pathBytes = item.getKey().getBytes(StandardCharsets.UTF_8);
+                String path = item.getKey();
+                if (copyMap.containsKey(path)) {
+                    path = path + "\0" + copyMap.get(path);
+                }
+                byte[] pathBytes = path.getBytes(StandardCharsets.UTF_8);
                 Entry entry = item.getValue();
                 buf.clear();
                 buf.put((byte) entry.getState());

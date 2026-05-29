@@ -51,4 +51,11 @@ public class DefaultFileStoreEngine implements StoreEngine {
         File dirstateFile = new File(repository.getHgDir(), "dirstate");
         dirstate.write(dirstateFile);
     }
+
+    @Override
+    public Revlog getManifestRevlog(HgRepository repository) throws IOException {
+        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
+        return repository.getRevlog(mfIdx, mfDat);
+    }
 }

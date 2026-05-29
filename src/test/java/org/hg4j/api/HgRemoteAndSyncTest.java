@@ -68,7 +68,7 @@ public class HgRemoteAndSyncTest {
                 .call();
 
         // 2. Mock a ChangegroupBundle based on source repository revisions
-        ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(srcRepo);
+        ChangegroupParser.ChangegroupBundle bundle = org.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
 
         // 3. Apply bundle via PullCommand in a new destination repository
         HgRepository destRepo = Hg.init().setDirectory(destDir).call();
@@ -106,7 +106,7 @@ public class HgRemoteAndSyncTest {
         new AddCommand(srcRepo).call();
         new CommitCommand(srcRepo).setMessage("First").call();
 
-        ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(srcRepo);
+        ChangegroupParser.ChangegroupBundle bundle = org.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
 
         // Let's corrupt the manifest entries to trigger failure during pull application
         bundle.manifestEntries.get(0).cs = new byte[20]; // Corrupt link revision hash to trigger IOException
@@ -125,77 +125,6 @@ public class HgRemoteAndSyncTest {
         }
         File fncacheFile = new File(destRepo.getStoreDir(), "fncache");
         assertFalse(fncacheFile.exists());
-    }
-
-    private ChangegroupParser.ChangegroupBundle createMockBundleFromRepo(HgRepository repo) throws Exception {
-        ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
-        bundle.changelogEntries = new ArrayList<>();
-        bundle.manifestEntries = new ArrayList<>();
-        bundle.fileGroups = new ArrayList<>();
-
-        Revlog cl = new Revlog(new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
-        for (int i = 0; i < cl.getRevisionCount(); i++) {
-            Revlog.IndexRecord rec = cl.getIndexRecord(i);
-            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
-            entry.node = rec.getNodeId();
-            entry.p1 = rec.getParent1() != -1 ? cl.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
-            entry.p2 = rec.getParent2() != -1 ? cl.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
-            entry.cs = rec.getNodeId();
-            
-            // Create chunk-like delta (in v1 bundle delta is basically simple delta formatted)
-            byte[] rawContent = cl.getRevisionContent(i);
-            entry.delta = Revlog.createSimpleDelta(new byte[0], rawContent);
-            bundle.changelogEntries.add(entry);
-        }
-
-        Revlog mf = new Revlog(new File(repo.getStoreDir(), "00manifest.i"), new File(repo.getStoreDir(), "00manifest.d"));
-        for (int i = 0; i < mf.getRevisionCount(); i++) {
-            Revlog.IndexRecord rec = mf.getIndexRecord(i);
-            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
-            entry.node = rec.getNodeId();
-            entry.p1 = rec.getParent1() != -1 ? mf.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
-            entry.p2 = rec.getParent2() != -1 ? mf.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
-            
-            // Link to the corresponding changelog node
-            entry.cs = cl.getIndexRecord(rec.getLinkRev()).getNodeId();
-            
-            byte[] rawContent = mf.getRevisionContent(i);
-            entry.delta = Revlog.createSimpleDelta(new byte[0], rawContent);
-            bundle.manifestEntries.add(entry);
-        }
-
-        // Search for tracked files in fncache
-        File fncacheFile = new File(repo.getStoreDir(), "fncache");
-        if (fncacheFile.exists()) {
-            List<String> paths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
-            for (String p : paths) {
-                if (p.endsWith(".i")) {
-                    String rawPath = p.substring("data/".length(), p.length() - 2);
-                    File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), rawPath);
-                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-
-                    Revlog fl = new Revlog(flIdx, flDat);
-                    ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
-                    fg.path = rawPath;
-                    fg.entries = new ArrayList<>();
-                    for (int j = 0; j < fl.getRevisionCount(); j++) {
-                        Revlog.IndexRecord rec = fl.getIndexRecord(j);
-                        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
-                        entry.node = rec.getNodeId();
-                        entry.p1 = rec.getParent1() != -1 ? fl.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
-                        entry.p2 = rec.getParent2() != -1 ? fl.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
-                        entry.cs = cl.getIndexRecord(rec.getLinkRev()).getNodeId();
-
-                        byte[] rawContent = fl.getRevisionContent(j);
-                        entry.delta = Revlog.createSimpleDelta(new byte[0], rawContent);
-                        fg.entries.add(entry);
-                    }
-                    bundle.fileGroups.add(fg);
-                }
-            }
-        }
-
-        return bundle;
     }
 
     @Test
@@ -393,8 +322,8 @@ public class HgRemoteAndSyncTest {
         String headHex = NodeIdUtil.toHex(headNode);
 
         // Prepare bundle payload
-        ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(srcRepo);
-        byte[] rawCgBytes = serializeBundleToBytes(bundle);
+        ChangegroupParser.ChangegroupBundle bundle = org.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] rawCgBytes = org.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
 
         // 2. Setup mock server
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -463,54 +392,6 @@ public class HgRemoteAndSyncTest {
         } finally {
             server.stop(0);
         }
-    }
-
-    private byte[] serializeBundleToBytes(ChangegroupParser.ChangegroupBundle bundle) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (DataOutputStream dos = new DataOutputStream(baos)) {
-            // Changelog group
-            for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
-                int totalLen = 4 + 80 + entry.delta.length;
-                dos.writeInt(totalLen);
-                dos.write(entry.node);
-                dos.write(entry.p1);
-                dos.write(entry.p2);
-                dos.write(entry.cs);
-                dos.write(entry.delta);
-            }
-            dos.writeInt(0);
-
-            // Manifest group
-            for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
-                int totalLen = 4 + 80 + entry.delta.length;
-                dos.writeInt(totalLen);
-                dos.write(entry.node);
-                dos.write(entry.p1);
-                dos.write(entry.p2);
-                dos.write(entry.cs);
-                dos.write(entry.delta);
-            }
-            dos.writeInt(0);
-
-            // File groups
-            for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
-                byte[] pathBytes = fg.path.getBytes(StandardCharsets.UTF_8);
-                dos.writeInt(4 + pathBytes.length);
-                dos.write(pathBytes);
-                for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
-                    int totalLen = 4 + 80 + entry.delta.length;
-                    dos.writeInt(totalLen);
-                    dos.write(entry.node);
-                    dos.write(entry.p1);
-                    dos.write(entry.p2);
-                    dos.write(entry.cs);
-                    dos.write(entry.delta);
-                }
-                dos.writeInt(0);
-            }
-            dos.writeInt(0);
-        }
-        return baos.toByteArray();
     }
 
 

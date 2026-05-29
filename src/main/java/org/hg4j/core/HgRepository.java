@@ -69,51 +69,56 @@ public class HgRepository implements Repository {
         Dirstate dirstate = null;
         try {
             dirstate = storeEngine.getDirstate(this);
-        } catch (Exception e) {
+        } catch (IOException e) {
             LOGGER.log(Level.WARNING, "Failed to read dirstate file, attempting rebuild", e);
             dirstate = new Dirstate();
-            rebuildDirstateFromManifest(dirstate);
+            try {
+                rebuildDirstateFromManifest(dirstate);
+            } catch (IOException ex) {
+                LOGGER.log(Level.SEVERE, "Failed to dynamically rebuild dirstate from manifest", ex);
+                throw new IOException("Failed to read dirstate and failed to rebuild from manifest", ex);
+            }
         }
         return dirstate;
     }
 
-    private void rebuildDirstateFromManifest(Dirstate dirstate) {
-        try {
-            File clIdx = new File(storeDir, "00changelog.i");
-            File clDat = new File(storeDir, "00changelog.d");
-            
-            if (!clIdx.exists()) {
-                dirstate.setParents(new byte[20], new byte[20]);
-                return;
+    private void rebuildDirstateFromManifest(Dirstate dirstate) throws IOException {
+        File clIdx = new File(storeDir, "00changelog.i");
+        File clDat = new File(storeDir, "00changelog.d");
+        
+        if (!clIdx.exists()) {
+            dirstate.setParents(new byte[20], new byte[20]);
+            return;
+        }
+        
+        Revlog changelog = getRevlog(clIdx, clDat);
+        int lastRev = changelog.getRevisionCount() - 1;
+        if (lastRev < 0) {
+            dirstate.setParents(new byte[20], new byte[20]);
+            return;
+        }
+        
+        byte[] parentNode = changelog.getIndexRecord(lastRev).getNodeId();
+        dirstate.setParents(parentNode, new byte[20]);
+        
+        java.util.Map<String, String> manifestMap = getManifestAtCommit(parentNode);
+        for (String path : manifestMap.keySet()) {
+            File diskFile = new File(directory, path);
+            if (diskFile.exists() && diskFile.isFile()) {
+                int mode = diskFile.canExecute() ? 0755 : 0644;
+                int size = (int) diskFile.length();
+                long time = diskFile.lastModified() / 1000;
+                dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
             }
-            
-            Revlog changelog = getRevlog(clIdx, clDat);
-            int lastRev = changelog.getRevisionCount() - 1;
-            if (lastRev < 0) {
-                dirstate.setParents(new byte[20], new byte[20]);
-                return;
-            }
-            
-            byte[] parentNode = changelog.getIndexRecord(lastRev).getNodeId();
-            dirstate.setParents(parentNode, new byte[20]);
-            
-            java.util.Map<String, String> manifestMap = getManifestAtCommit(parentNode);
-            for (String path : manifestMap.keySet()) {
-                File diskFile = new File(directory, path);
-                if (diskFile.exists() && diskFile.isFile()) {
-                    int mode = diskFile.canExecute() ? 0755 : 0644;
-                    int size = (int) diskFile.length();
-                    long time = diskFile.lastModified() / 1000;
-                    dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
-                }
-            }
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Failed to dynamically rebuild dirstate from manifest", e);
         }
     }
 
     public java.util.Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
         return storeEngine.getManifestAtCommit(this, commitNodeId);
+    }
+
+    public Revlog getManifestRevlog() throws IOException {
+        return storeEngine.getManifestRevlog(this);
     }
 
     /**

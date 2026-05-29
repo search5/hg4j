@@ -30,4 +30,9 @@ public interface StoreEngine {
      * Writes the specified dirstate back to the repository storage.
      */
     void writeDirstate(HgRepository repository, Dirstate dirstate) throws IOException;
+
+    /**
+     * Resolves the manifest Revlog instance.
+     */
+    Revlog getManifestRevlog(HgRepository repository) throws IOException;
 }

@@ -184,8 +184,19 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
                         }
                     }
                 }
+            } else {
+                // upgrade 거절 시: 이미 upgradeResponse(거절 한 줄)를 다 읽었으므로 스트림이 정상적입니다.
+                // 만약 스트림에 잔여 버퍼 데이터가 있다면 sleep 없이 즉시 skip 처리합니다.
+                int avail = in.available();
+                if (avail > 0) {
+                    in.skip(avail);
+                }
             }
         }
+    }
+
+    public int getProtocolVersion() {
+        return protocolVersion;
     }
 
     @Override

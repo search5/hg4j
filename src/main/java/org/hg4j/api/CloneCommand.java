@@ -82,10 +82,8 @@ public class CloneCommand {
     private void checkoutLatest(HgRepository repo) throws IOException {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repo.getStoreDir(), "00manifest.d");
 
-        Revlog changelog = new Revlog(clIdx, clDat);
+        Revlog changelog = repo.getRevlog(clIdx, clDat);
         int lastRev = changelog.getRevisionCount() - 1;
         if (lastRev < 0) {
             return;
@@ -99,7 +97,7 @@ public class CloneCommand {
         String firstLine = clText.split("\n")[0];
         byte[] mfNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
 
-        Revlog manifest = new Revlog(mfIdx, mfDat);
+        Revlog manifest = repo.getManifestRevlog();
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
         if (mfRev == -1) {
             throw new org.hg4j.errors.HgRevisionNotFoundException("Manifest revision not found: " + NodeIdUtil.toHex(mfNode));
@@ -138,7 +136,7 @@ public class CloneCommand {
                 throw new org.hg4j.errors.HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
             }
 
-            Revlog filelog = new Revlog(flIdx, flDat);
+            Revlog filelog = repo.getRevlog(flIdx, flDat);
             int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
             if (fileRev == -1) {
                 throw new org.hg4j.errors.HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);

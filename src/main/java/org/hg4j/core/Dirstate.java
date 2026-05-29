@@ -19,7 +19,16 @@ public class Dirstate {
     private NodeId parent1 = NodeId.NULL;
     private NodeId parent2 = NodeId.NULL;
     private final Map<String, Entry> entries = new LinkedHashMap<>();
+    private final Map<String, String> copyMap = new LinkedHashMap<>();
     private boolean isV2 = false;
+
+    public Map<String, String> getCopyMap() {
+        return copyMap;
+    }
+
+    public void addCopy(String dest, String src) {
+        copyMap.put(dest, src);
+    }
 
     public boolean isV2() {
         return isV2;

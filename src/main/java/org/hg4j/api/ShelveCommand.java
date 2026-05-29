@@ -66,7 +66,11 @@ public class ShelveCommand {
         }
 
         Revlog changelog = repository.getRevlog(clIdx, clDat);
-        int lastRev = changelog.getRevisionCount() - 1;
+        byte[] p1 = repository.getDirstate().getParent1();
+        int lastRev = changelog.findRevision(p1);
+        if (lastRev == -1) {
+            lastRev = changelog.getRevisionCount() - 1;
+        }
         if (lastRev < 0) {
             return null;
         }
@@ -255,8 +259,6 @@ public class ShelveCommand {
             // 3. Construct and write native .hg binary bundle from the temporary commit
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
-            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
             Revlog cl = repository.getRevlog(clIdx, clDat);
             int tempRev = cl.findRevision(tempCommitNode);
@@ -283,7 +285,7 @@ public class ShelveCommand {
             // Manifest entry
             String clText = new String(rawClContent, StandardCharsets.UTF_8);
             byte[] mfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
-            Revlog mf = repository.getRevlog(mfIdx, mfDat);
+            Revlog mf = repository.getManifestRevlog();
             int mfRev = mf.findRevision(mfNode);
             Revlog.IndexRecord mfRec = mf.getIndexRecord(mfRev);
 
@@ -478,7 +480,11 @@ public class ShelveCommand {
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
         Revlog changelog = repository.getRevlog(clIdx, clDat);
-        int lastRev = changelog.getRevisionCount() - 1;
+        byte[] p1 = dirstate.getParent1();
+        int lastRev = changelog.findRevision(p1);
+        if (lastRev == -1) {
+            lastRev = changelog.getRevisionCount() - 1;
+        }
 
         if (lastRev < 0) {
             // No commits yet, just delete added/modified files
@@ -491,8 +497,11 @@ public class ShelveCommand {
             return;
         }
 
+        byte[] clContent = changelog.getRevisionContent(lastRev);
+        String clText = new String(clContent, StandardCharsets.UTF_8);
+        byte[] mfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
         Map<String, String> manifestEntries = new HashMap<>();
-        org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, String.valueOf(lastRev));
+        org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, mfNode);
         while (mw.next()) {
             org.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
             String flag = entry.isExecutable() ? "x" : "";
@@ -555,7 +564,7 @@ public class ShelveCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         Revlog changelog = repository.getRevlog(clIdx, clDat);
-        Revlog manifest = repository.getRevlog(mfIdx, mfDat);
+        Revlog manifest = repository.getManifestRevlog();
 
         // Calculate truncate boundaries
         long clIdxSize = (long) startRev * 64;
@@ -574,7 +583,7 @@ public class ShelveCommand {
         }
 
         long mfIdxSize = manifest.getRevisionCount() * 64L;
-        long mfDatSize = 0;
+        long mfDatSize = mfDat.exists() ? mfDat.length() : 0L;
         if (minMfRev != -1) {
             mfIdxSize = (long) minMfRev * 64;
             if (minMfRev > 0) {

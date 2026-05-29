@@ -50,6 +50,10 @@ public class ManifestWalk {
         this.iterator = new ManifestTreeIterator(repository, revision);
     }
 
+    public ManifestWalk(HgRepository repository, byte[] manifestNode) {
+        this.iterator = new ManifestTreeIterator(repository, manifestNode);
+    }
+
     public void reset() throws IOException {
         cachedIndex = -1;
     }

@@ -63,8 +63,31 @@ public class TreeWalk {
                 continue;
             }
 
-            if (!recursive && currentPath.contains("/")) {
-                continue;
+            if (!recursive) {
+                // Find the base directory for this currentPath according to filter
+                String baseDir = "";
+                if (filter != null) {
+                    int lastSlash = currentPath.lastIndexOf('/');
+                    while (lastSlash != -1) {
+                        String parent = currentPath.substring(0, lastSlash);
+                        if (filter.accept(parent)) {
+                            baseDir = parent;
+                            break;
+                        }
+                        lastSlash = parent.lastIndexOf('/');
+                    }
+                }
+                
+                // Remainder of path relative to baseDir must not contain '/'
+                String remainder = currentPath;
+                if (!baseDir.isEmpty()) {
+                    if (currentPath.startsWith(baseDir + "/")) {
+                        remainder = currentPath.substring(baseDir.length() + 1);
+                    }
+                }
+                if (remainder.contains("/")) {
+                    continue;
+                }
             }
 
             return true;

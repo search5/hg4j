@@ -192,7 +192,7 @@ public class CommitCommand {
                     p1ManifestNode = mfNode;
                     parent1ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p1ManifestNode);
                 }
-                LOGGER.log(Level.INFO, "[DEBUG MERGE] parent1Rev={0}, p1ManifestNode={1}, parent1ManifestRev={2}", new Object[]{parent1Rev, (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null"), parent1ManifestRev});
+                LOGGER.log(Level.FINE, "[DEBUG MERGE] parent1Rev={0}, p1ManifestNode={1}, parent1ManifestRev={2}", new Object[]{parent1Rev, (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null"), parent1ManifestRev});
             }
 
             int parent2ManifestRev = -1;
@@ -233,7 +233,7 @@ public class CommitCommand {
                     p2ManifestNode = mfNode;
                     parent2ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p2ManifestNode);
                 }
-                LOGGER.log(Level.INFO, "[DEBUG MERGE] parent2Rev={0}, p2CommitNode={1}, p2ManifestNode={2}, parent2ManifestRev={3}", new Object[]{parent2Rev, p2CommitNode.toHex(), (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null"), parent2ManifestRev});
+                LOGGER.log(Level.FINE, "[DEBUG MERGE] parent2Rev={0}, p2CommitNode={1}, p2ManifestNode={2}, parent2ManifestRev={3}", new Object[]{parent2Rev, p2CommitNode.toHex(), (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null"), parent2ManifestRev});
             }
 
             // 3. Process dirstate entries and write filelogs
@@ -298,8 +298,8 @@ public class CommitCommand {
                                 if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
                                     // 크기나 mtime이 다르면 명확히 변경됨
                                     changed = true;
-                                } else if (diskTime >= txStartSec) {
-                                    // M-2: racy-hg 판정
+                                } else if (diskTime >= txStartSec - 1) {
+                                    // M-2: racy-hg 판정 (1초 경계선 허용한계 반영)
                                     File flIdx = getFilelogIndex(repository.getStoreDir(), path);
                                     File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                                     if (flIdx.exists()) {
@@ -371,7 +371,23 @@ public class CommitCommand {
                                 }
                             }
 
-                            byte[] newFileNode = filelog.appendRevision(fileContent, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
+                            // Copy-Rename Track "Writer" 통합
+                            String originalPath = dirstate.getCopyMap().get(path);
+                            byte[] finalPayload;
+
+                            if (originalPath != null) {
+                                String hexP1 = NodeIdUtil.toHex(p1FileNode);
+                                String metaText = "\u0001\ncopy: " + originalPath + "\ncopyrev: " + hexP1 + "\n\u0001";
+                                
+                                byte[] metaBytes = metaText.getBytes(StandardCharsets.UTF_8);
+                                finalPayload = new byte[metaBytes.length + fileContent.length];
+                                System.arraycopy(metaBytes, 0, finalPayload, 0, metaBytes.length);
+                                System.arraycopy(fileContent, 0, finalPayload, metaBytes.length, fileContent.length);
+                            } else {
+                                finalPayload = fileContent;
+                            }
+
+                            byte[] newFileNode = filelog.appendRevision(finalPayload, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
                             
                             // Capture execution flag and symlink flag for serialization
                             String flag = "";

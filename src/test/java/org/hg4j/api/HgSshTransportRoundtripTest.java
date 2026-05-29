@@ -88,8 +88,8 @@ public class HgSshTransportRoundtripTest {
         byte[] c2 = new CommitCommand(srcRepo).setAuthor("Tester <tester@example.com>").setMessage("SSH Second").call();
         
         // 2. Serialize source repo to mock bundle
-        ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(srcRepo);
-        byte[] rawCg = serializeBundleToBytes(bundle);
+        ChangegroupParser.ChangegroupBundle bundle = org.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] rawCg = org.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
         
         ByteArrayOutputStream serverResponse = new ByteArrayOutputStream();
         // Heads response: c2 + "\n"
@@ -176,10 +176,10 @@ public class HgSshTransportRoundtripTest {
         byte[] c1 = new CommitCommand(localRepo).setAuthor("Tester <tester@example.com>").setMessage("SSH Push Commit").call();
         
         // 2. Serialize local repo bundle bytes
-        ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(localRepo);
+        ChangegroupParser.ChangegroupBundle bundle = org.hg4j.HgTestUtils.createMockBundleFromRepo(localRepo);
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         bos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
-        bos.write(serializeBundleToBytes(bundle));
+        bos.write(org.hg4j.HgTestUtils.serializeBundleToBytes(bundle));
         byte[] localBundleBytes = bos.toByteArray();
         
         // 3. Inject reflection mock to HgSshClient
@@ -215,138 +215,5 @@ public class HgSshTransportRoundtripTest {
             String sentString = new String(sentData, StandardCharsets.UTF_8);
             assertTrue(sentString.contains("unbundle\n"));
         }
-    }
-
-    private ChangegroupParser.ChangegroupBundle createMockBundleFromRepo(HgRepository repo) throws Exception {
-        ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
-        bundle.changelogEntries = new ArrayList<>();
-        bundle.manifestEntries = new ArrayList<>();
-        bundle.fileGroups = new ArrayList<>();
-
-        Revlog cl = new Revlog(new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
-        for (int i = 0; i < cl.getRevisionCount(); i++) {
-            Revlog.IndexRecord rec = cl.getIndexRecord(i);
-            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
-            entry.node = rec.getNodeId();
-            entry.p1 = rec.getParent1() != -1 ? cl.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
-            entry.p2 = rec.getParent2() != -1 ? cl.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
-            entry.cs = rec.getNodeId();
-            
-            byte[] rawContent = cl.getRawRevisionContent(i);
-            byte[] delta;
-            if (i == 0) {
-                delta = Revlog.createSimpleDelta(new byte[0], rawContent);
-            } else {
-                byte[] prevContent = cl.getRawRevisionContent(i - 1);
-                delta = Revlog.createSimpleDelta(prevContent, rawContent);
-            }
-            entry.delta = delta;
-            bundle.changelogEntries.add(entry);
-        }
-
-        Revlog mf = new Revlog(new File(repo.getStoreDir(), "00manifest.i"), new File(repo.getStoreDir(), "00manifest.d"));
-        for (int i = 0; i < mf.getRevisionCount(); i++) {
-            Revlog.IndexRecord rec = mf.getIndexRecord(i);
-            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
-            entry.node = rec.getNodeId();
-            entry.p1 = rec.getParent1() != -1 ? mf.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
-            entry.p2 = rec.getParent2() != -1 ? mf.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
-            entry.cs = cl.getIndexRecord(rec.getLinkRev()).getNodeId();
-            
-            byte[] rawContent = mf.getRawRevisionContent(i);
-            byte[] delta;
-            if (i == 0) {
-                delta = Revlog.createSimpleDelta(new byte[0], rawContent);
-            } else {
-                byte[] prevContent = mf.getRawRevisionContent(i - 1);
-                delta = Revlog.createSimpleDelta(prevContent, rawContent);
-            }
-            entry.delta = delta;
-            bundle.manifestEntries.add(entry);
-        }
-
-        File fncacheFile = new File(repo.getStoreDir(), "fncache");
-        if (fncacheFile.exists()) {
-            List<String> paths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
-            for (String p : paths) {
-                if (p.endsWith(".i")) {
-                    String rawPath = p.substring("data/".length(), p.length() - 2);
-                    File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), rawPath);
-                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-
-                    Revlog fl = new Revlog(flIdx, flDat);
-                    ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
-                    fg.path = rawPath;
-                    fg.entries = new ArrayList<>();
-                    for (int j = 0; j < fl.getRevisionCount(); j++) {
-                        Revlog.IndexRecord rec = fl.getIndexRecord(j);
-                        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
-                        entry.node = rec.getNodeId();
-                        entry.p1 = rec.getParent1() != -1 ? fl.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
-                        entry.p2 = rec.getParent2() != -1 ? fl.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
-                        entry.cs = cl.getIndexRecord(rec.getLinkRev()).getNodeId();
-
-                        byte[] rawContent = fl.getRawRevisionContent(j);
-                        byte[] delta;
-                        if (j == 0) {
-                            delta = Revlog.createSimpleDelta(new byte[0], rawContent);
-                        } else {
-                            byte[] prevContent = fl.getRawRevisionContent(j - 1);
-                            delta = Revlog.createSimpleDelta(prevContent, rawContent);
-                        }
-                        entry.delta = delta;
-                        fg.entries.add(entry);
-                    }
-                    bundle.fileGroups.add(fg);
-                }
-            }
-        }
-
-        return bundle;
-    }
-
-    private byte[] serializeBundleToBytes(ChangegroupParser.ChangegroupBundle bundle) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (DataOutputStream dos = new DataOutputStream(baos)) {
-            for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
-                int totalLen = 4 + 80 + entry.delta.length;
-                dos.writeInt(totalLen);
-                dos.write(entry.node);
-                dos.write(entry.p1);
-                dos.write(entry.p2);
-                dos.write(entry.cs);
-                dos.write(entry.delta);
-            }
-            dos.writeInt(0);
-
-            for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
-                int totalLen = 4 + 80 + entry.delta.length;
-                dos.writeInt(totalLen);
-                dos.write(entry.node);
-                dos.write(entry.p1);
-                dos.write(entry.p2);
-                dos.write(entry.cs);
-                dos.write(entry.delta);
-            }
-            dos.writeInt(0);
-
-            for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
-                byte[] pathBytes = fg.path.getBytes(StandardCharsets.UTF_8);
-                dos.writeInt(4 + pathBytes.length);
-                dos.write(pathBytes);
-                for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
-                    int totalLen = 4 + 80 + entry.delta.length;
-                    dos.writeInt(totalLen);
-                    dos.write(entry.node);
-                    dos.write(entry.p1);
-                    dos.write(entry.p2);
-                    dos.write(entry.cs);
-                    dos.write(entry.delta);
-                }
-                dos.writeInt(0);
-            }
-            dos.writeInt(0);
-        }
-        return baos.toByteArray();
     }
 }

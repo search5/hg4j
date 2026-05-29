@@ -211,7 +211,7 @@ public class PullCommand {
             // 1. Apply Changelog
             Revlog changelog = repository.getRevlog(clIdx, clDat);
             for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
-                LOGGER.log(Level.INFO, "[DEBUG CHANGELOG] node={0}, deltabase={1}", new Object[]{NodeIdUtil.toHex(entry.node), (entry.deltabase != null ? NodeIdUtil.toHex(entry.deltabase) : "null")});
+                LOGGER.log(Level.FINE, "[DEBUG CHANGELOG] node={0}, deltabase={1}", new Object[]{NodeIdUtil.toHex(entry.node), (entry.deltabase != null ? NodeIdUtil.toHex(entry.deltabase) : "null")});
                 int rev = changelog.getRevisionCount();
                 changelog.appendChangeGroupEntry(entry, rev);
                 importedCommits.add(entry.node);
@@ -253,7 +253,7 @@ public class PullCommand {
                         }
                         mIdx.getParentFile().mkdirs();
                     }
-                    Revlog subManifest = repository.getRevlog(mIdx, mDat);
+                    Revlog subManifest = (mIdx == mfIdx) ? repository.getManifestRevlog() : repository.getRevlog(mIdx, mDat);
                     for (ChangegroupParser.ChangeGroupEntry entry : mg.entries) {
                         int linkRev = changelog.findRevision(entry.cs);
                         if (linkRev == -1) {
@@ -263,9 +263,9 @@ public class PullCommand {
                     }
                 }
             } else {
-                Revlog manifest = repository.getRevlog(mfIdx, mfDat);
+                Revlog manifest = repository.getManifestRevlog();
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
-                    LOGGER.log(Level.INFO, "[DEBUG PULL] manifest entry node={0}, deltabase={1}", new Object[]{NodeIdUtil.toHex(entry.node), (entry.deltabase != null ? NodeIdUtil.toHex(entry.deltabase) : "null")});
+                    LOGGER.log(Level.FINE, "[DEBUG PULL] manifest entry node={0}, deltabase={1}", new Object[]{NodeIdUtil.toHex(entry.node), (entry.deltabase != null ? NodeIdUtil.toHex(entry.deltabase) : "null")});
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
                         throw new org.hg4j.errors.HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));

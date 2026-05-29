@@ -44,8 +44,6 @@ public class PushCommand {
 
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
-            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
             try (HgLock storeLock = repository.lockStore()) {
                 Revlog changelog = repository.getRevlog(clIdx, clDat);
@@ -156,7 +154,7 @@ public class PushCommand {
                 }
 
                 // 1b. Pack Manifests
-                Revlog manifest = repository.getRevlog(mfIdx, mfDat);
+                Revlog manifest = repository.getManifestRevlog();
                 java.util.Set<String> affectedFiles = new java.util.HashSet<>();
                 for (int r = startRev; r < count; r++) {
                     byte[] clContent = changelog.getRevisionContent(r);

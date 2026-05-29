@@ -14,10 +14,11 @@ public class ManifestTreeIterator implements TreeIterator {
 
     private final HgRepository repository;
     private final String revision;
+    private final byte[] directManifestNode;
     private final List<Entry> entries = new ArrayList<>();
     private int index = -1;
 
-    private static class Entry {
+    public static class Entry {
         final String path;
         final byte[] nodeId;
         final boolean executable;
@@ -34,6 +35,13 @@ public class ManifestTreeIterator implements TreeIterator {
     public ManifestTreeIterator(HgRepository repository, String revision) {
         this.repository = repository;
         this.revision = revision;
+        this.directManifestNode = null;
+    }
+
+    public ManifestTreeIterator(HgRepository repository, byte[] manifestNode) {
+        this.repository = repository;
+        this.revision = null;
+        this.directManifestNode = manifestNode;
     }
 
     @Override
@@ -43,67 +51,8 @@ public class ManifestTreeIterator implements TreeIterator {
         loadEntries();
     }
 
-    private void loadEntries() throws IOException {
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
-
-        byte[] targetNodeId = NodeIdUtil.resolveRevision(changelog, revision);
-        if (targetNodeId == null) {
-            return;
-        }
-
-        int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
-        if (commitRev == -1) {
-            return;
-        }
-
-        byte[] clContent = changelog.getRevisionContent(commitRev);
-
-        int firstNewLine = -1;
-        for (int i = 0; i < clContent.length; i++) {
-            if (clContent[i] == '\n') {
-                firstNewLine = i;
-                break;
-            }
-        }
-
-        byte[] mfNode = null;
-        if (firstNewLine >= 40) {
-            boolean isHexText = true;
-            for (int i = 0; i < 40; i++) {
-                char c = (char) clContent[i];
-                if (Character.digit(c, 16) == -1) {
-                    isHexText = false;
-                    break;
-                }
-            }
-
-            if (isHexText) {
-                String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
-                mfNode = NodeIdUtil.fromHex(hexNode);
-            }
-        }
-
-        if (mfNode == null) {
-            if (clContent.length >= 20) {
-                mfNode = new byte[20];
-                System.arraycopy(clContent, 0, mfNode, 0, 20);
-            } else {
-                throw new IOException("Changelog content too short to extract manifest node ID");
-            }
-        }
-
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
-        int mfRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, mfNode);
-        if (mfRev == -1) {
-            throw new IOException("Manifest not found: " + NodeIdUtil.toHex(mfNode));
-        }
-
-        byte[] mfContent = manifestRevlog.getRevisionContent(mfRev);
-
+    public static List<Entry> parseManifestContent(byte[] mfContent) {
+        List<Entry> result = new ArrayList<>();
         int start = 0;
         int len = mfContent.length;
         while (start < len) {
@@ -144,7 +93,7 @@ public class ManifestTreeIterator implements TreeIterator {
                             }
                             boolean executable = flag.contains("x");
                             boolean symlink = flag.contains("l");
-                            entries.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink));
+                            result.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink));
 
                             start = end + 1;
                             continue;
@@ -163,12 +112,85 @@ public class ManifestTreeIterator implements TreeIterator {
                         }
                         boolean executable = flag.contains("x");
                         boolean symlink = flag.contains("l");
-                        entries.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink));
+                        result.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink));
                     }
                 }
             }
             start = end + 1;
         }
+        return result;
+    }
+
+    private void loadEntries() throws IOException {
+        byte[] mfNode = null;
+
+        if (directManifestNode != null) {
+            mfNode = directManifestNode;
+        } else {
+            if (revision == null || "".equals(revision) || "-1".equals(revision) || "null".equalsIgnoreCase(revision)) {
+                return;
+            }
+
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+
+            byte[] targetNodeId = NodeIdUtil.resolveRevision(changelog, revision);
+            if (targetNodeId == null) {
+                throw new org.hg4j.errors.HgRevisionNotFoundException("Revision not found in changelog: " + revision);
+            }
+
+            int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
+            if (commitRev == -1) {
+                throw new org.hg4j.errors.HgRevisionNotFoundException("Commit not found in changelog for node: " + NodeIdUtil.toHex(targetNodeId));
+            }
+
+            byte[] clContent = changelog.getRevisionContent(commitRev);
+
+            int firstNewLine = -1;
+            for (int i = 0; i < clContent.length; i++) {
+                if (clContent[i] == '\n') {
+                    firstNewLine = i;
+                    break;
+                }
+            }
+
+            if (firstNewLine >= 40) {
+                boolean isHexText = true;
+                for (int i = 0; i < 40; i++) {
+                    char c = (char) clContent[i];
+                    if (Character.digit(c, 16) == -1) {
+                        isHexText = false;
+                        break;
+                    }
+                }
+
+                if (isHexText) {
+                    String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
+                    mfNode = NodeIdUtil.fromHex(hexNode);
+                }
+            }
+
+            if (mfNode == null) {
+                if (clContent.length >= 20) {
+                    mfNode = new byte[20];
+                    System.arraycopy(clContent, 0, mfNode, 0, 20);
+                } else {
+                    throw new IOException("Changelog content too short to extract manifest node ID");
+                }
+            }
+        }
+
+        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
+        Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
+        int mfRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, mfNode);
+        if (mfRev == -1) {
+            throw new IOException("Manifest not found: " + NodeIdUtil.toHex(mfNode));
+        }
+
+        byte[] mfContent = manifestRevlog.getRevisionContent(mfRev);
+        entries.addAll(parseManifestContent(mfContent));
         
         entries.sort((e1, e2) -> NodeIdUtil.UTF8_STRING_COMPARATOR.compare(e1.path, e2.path));
     }

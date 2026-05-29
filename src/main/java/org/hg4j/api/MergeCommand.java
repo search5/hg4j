@@ -231,9 +231,7 @@ public class MergeCommand {
             }
 
             // 3. Load manifest revlog
-            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-            Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
+            Revlog manifestRevlog = repository.getManifestRevlog();
 
             // 2. Find Merge Base (LCA)
             MergeBase lca = getMergeBase(changelog, manifestRevlog, p1Rev, p2Rev, 0);

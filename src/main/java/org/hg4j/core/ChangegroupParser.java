@@ -144,13 +144,13 @@ public class ChangegroupParser {
     }
 
     private static String autoDetectVersion(byte[] chunk) {
-        LOGGER.log(Level.INFO, "[DEBUG AUTO] chunk length: {0}", chunk.length);
+        LOGGER.log(Level.FINE, "[DEBUG AUTO] chunk length: {0}", chunk.length);
         if (chunk.length < 80) {
             return "01";
         }
         boolean v3Valid = chunk.length >= 102 + 12 && isValidDeltaHeader(chunk, 102);
         boolean v2Valid = chunk.length >= 100 + 12 && isValidDeltaHeader(chunk, 100);
-        LOGGER.log(Level.INFO, "[DEBUG AUTO] v3Valid: {0}, v2Valid: {1}", new Object[]{v3Valid, v2Valid});
+        LOGGER.log(Level.FINE, "[DEBUG AUTO] v3Valid: {0}, v2Valid: {1}", new Object[]{v3Valid, v2Valid});
         if (v3Valid) {
             return "03";
         }
@@ -175,7 +175,7 @@ public class ChangegroupParser {
                     (chunk[offset + 11] & 0xFF);
 
         boolean valid = (start >= 0 && end >= 0 && len >= 0 && start <= end && len <= (chunk.length - (offset + 12)));
-        LOGGER.log(Level.INFO, "[DEBUG AUTO] isValidDeltaHeader offset: {0}, start: {1}, end: {2}, len: {3}, remaining: {4} -> {5}", 
+        LOGGER.log(Level.FINE, "[DEBUG AUTO] isValidDeltaHeader offset: {0}, start: {1}, end: {2}, len: {3}, remaining: {4} -> {5}", 
                 new Object[]{offset, start, end, len, (chunk.length - (offset + 12)), valid});
         return valid;
     }

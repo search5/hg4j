@@ -81,11 +81,11 @@ public class RebaseCommand {
         }
 
         // Collect all descendant revisions of source revision (inclusive)
+        org.hg4j.revwalk.ChangesetGraph graph = new org.hg4j.revwalk.ChangesetGraph(changelog);
         List<Integer> revisionsToRebase = new ArrayList<>();
         revisionsToRebase.add(srcRev);
         for (int r = srcRev + 1; r < changelog.getRevisionCount(); r++) {
-            Revlog.IndexRecord rec = changelog.getIndexRecord(r);
-            if (revisionsToRebase.contains(rec.getParent1()) || revisionsToRebase.contains(rec.getParent2())) {
+            if (graph.isAncestor(srcRev, r)) {
                 revisionsToRebase.add(r);
             }
         }
@@ -321,9 +321,7 @@ public class RebaseCommand {
         backup.message = msgSb.toString();
 
         // Backup file contents referenced in manifest
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-        Revlog manifest = repository.getRevlog(mfIdx, mfDat);
+        Revlog manifest = repository.getManifestRevlog();
 
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, backup.manifestNode);
         backup.rawManifestContent = manifest.getRawRevisionContent(mfRev);
@@ -378,7 +376,7 @@ public class RebaseCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         Revlog changelog = repository.getRevlog(clIdx, clDat);
-        Revlog manifest = repository.getRevlog(mfIdx, mfDat);
+        Revlog manifest = repository.getManifestRevlog();
 
         // Calculate truncate boundaries
         long clIdxSize = (long) startRev * 64;
@@ -397,7 +395,7 @@ public class RebaseCommand {
         }
 
         long mfIdxSize = manifest.getRevisionCount() * 64L;
-        long mfDatSize = 0;
+        long mfDatSize = mfDat.exists() ? mfDat.length() : 0L;
         if (minMfRev != -1) {
             mfIdxSize = (long) minMfRev * 64;
             if (minMfRev > 0) {
@@ -501,11 +499,9 @@ public class RebaseCommand {
     private byte[] restoreBackup(BackupCommit backup, byte[] p1Node, byte[] p2Node, Map<java.nio.ByteBuffer, byte[]> nodeMapping) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         Revlog changelog = repository.getRevlog(clIdx, clDat);
-        Revlog manifest = repository.getRevlog(mfIdx, mfDat);
+        Revlog manifest = repository.getManifestRevlog();
 
         // 1. Restore filelogs physically
         for (Map.Entry<String, FileBackupInfo> entry : backup.fileBackups.entrySet()) {
@@ -527,8 +523,29 @@ public class RebaseCommand {
         }
 
         // 2. Restore Manifest physically
-        int p1MfRev = manifest.findRevision(backup.parent1Node);
-        int p2MfRev = manifest.findRevision(backup.parent2Node);
+        int p1MfRev = -1;
+        byte[] p1MfNode = new byte[20];
+        if (backup.parent1Node != null && !Arrays.equals(backup.parent1Node, new byte[20])) {
+            int p1CommitRev = changelog.findRevision(backup.parent1Node);
+            if (p1CommitRev != -1) {
+                byte[] clContent = changelog.getRevisionContent(p1CommitRev);
+                String clText = new String(clContent, StandardCharsets.UTF_8);
+                p1MfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
+                p1MfRev = manifest.findRevision(p1MfNode);
+            }
+        }
+
+        int p2MfRev = -1;
+        byte[] p2MfNode = new byte[20];
+        if (backup.parent2Node != null && !Arrays.equals(backup.parent2Node, new byte[20])) {
+            int p2CommitRev = changelog.findRevision(backup.parent2Node);
+            if (p2CommitRev != -1) {
+                byte[] clContent = changelog.getRevisionContent(p2CommitRev);
+                String clText = new String(clContent, StandardCharsets.UTF_8);
+                p2MfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
+                p2MfRev = manifest.findRevision(p2MfNode);
+            }
+        }
 
         byte[] mappedP1 = nodeMapping.get(java.nio.ByteBuffer.wrap(Arrays.copyOf(backup.parent1Node, 20)));
         if (mappedP1 != null) {
@@ -536,8 +553,8 @@ public class RebaseCommand {
             if (rebasedP1Rev != -1) {
                 byte[] clContent = changelog.getRevisionContent(rebasedP1Rev);
                 String clText = new String(clContent, StandardCharsets.UTF_8);
-                byte[] rebasedMfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
-                p1MfRev = manifest.findRevision(rebasedMfNode);
+                p1MfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
+                p1MfRev = manifest.findRevision(p1MfNode);
             }
         }
         byte[] mappedP2 = nodeMapping.get(java.nio.ByteBuffer.wrap(Arrays.copyOf(backup.parent2Node, 20)));
@@ -546,13 +563,13 @@ public class RebaseCommand {
             if (rebasedP2Rev != -1) {
                 byte[] clContent = changelog.getRevisionContent(rebasedP2Rev);
                 String clText = new String(clContent, StandardCharsets.UTF_8);
-                byte[] rebasedMfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
-                p2MfRev = manifest.findRevision(rebasedMfNode);
+                p2MfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
+                p2MfRev = manifest.findRevision(p2MfNode);
             }
         }
 
         manifest.appendRawRevision(backup.rawManifestContent, backup.manifestNode, p1MfRev, p2MfRev,
-                backup.parent1Node, backup.parent2Node, changelog.getRevisionCount());
+                p1MfNode, p2MfNode, changelog.getRevisionCount());
 
         // 3. Restore Changelog physically preserving identical nodeId
         int parent1ChangelogRev = changelog.findRevision(p1Node);
@@ -565,9 +582,7 @@ public class RebaseCommand {
     }
 
     private void applyManifestToWorkingCopy(byte[] manifestNode) throws IOException {
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-        Revlog manifest = repository.getRevlog(mfIdx, mfDat);
+        Revlog manifest = repository.getManifestRevlog();
 
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, manifestNode);
         if (mfRev == -1) {
@@ -575,7 +590,7 @@ public class RebaseCommand {
         }
 
         Map<String, String> entries = new HashMap<>();
-        org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, String.valueOf(mfRev));
+        org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, manifestNode);
         while (mw.next()) {
             org.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
             String flag = entry.isExecutable() ? "x" : "";

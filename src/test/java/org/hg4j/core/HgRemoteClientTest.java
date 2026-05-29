@@ -703,7 +703,7 @@ public class HgRemoteClientTest {
         HgRepository repository = new HgRepository(tempStore);
         HgWireServer wireServer = new HgWireServer(repository);
 
-        server.createContext("/api/v2/heads", new HttpHandler() {
+        server.createContext("/.hg/api/v2/heads", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
                 String acceptHeader = exchange.getRequestHeaders().getFirst("Accept");

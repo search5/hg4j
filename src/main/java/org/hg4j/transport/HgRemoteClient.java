@@ -210,7 +210,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     private byte[] executeGetBinary(String cmd) throws IOException {
-        String fullUrl = isV2 ? (baseUrl + "/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
+        String fullUrl = isV2 ? (baseUrl + "/.hg/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
@@ -279,7 +279,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     private byte[] executePostBinary(String cmd, java.util.Map<String, String> params) throws IOException {
-        String fullUrl = isV2 ? (baseUrl + "/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
+        String fullUrl = isV2 ? (baseUrl + "/.hg/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }

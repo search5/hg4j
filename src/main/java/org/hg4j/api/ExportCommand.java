@@ -82,18 +82,25 @@ public class ExportCommand {
         }
         sb.append(desc.toString()).append("\n\n");
         
-        sb.append("diff -r ");
+        DiffCommand diffCmd = new DiffCommand(repository);
+        diffCmd.setNewRevision(rev);
         if (rev > 0) {
-            sb.append(NodeIdUtil.toHex(changelog.getIndexRecord(rev - 1).getNodeId()).substring(0, 12));
+            diffCmd.setOldRevision(rev - 1);
         } else {
-            sb.append("000000000000");
+            diffCmd.setOldRevision(-2);
         }
-        sb.append(" -r ").append(NodeIdUtil.toHex(nodeBytes).substring(0, 12)).append(" exported_patch\n");
-        sb.append("--- a/exported_patch\n");
-        sb.append("+++ b/exported_patch\n");
-        sb.append("@@ -1,1 +1,1 @@\n");
-        sb.append("-old dummy content\n");
-        sb.append("+new dummy content\n");
+        
+        java.util.List<DiffCommand.DiffEntry> diffs = diffCmd.call();
+        for (DiffCommand.DiffEntry diff : diffs) {
+            sb.append("diff -r ");
+            if (rev > 0) {
+                sb.append(NodeIdUtil.toHex(changelog.getIndexRecord(rev - 1).getNodeId()).substring(0, 12));
+            } else {
+                sb.append("000000000000");
+            }
+            sb.append(" -r ").append(NodeIdUtil.toHex(nodeBytes).substring(0, 12)).append(" ").append(diff.getPath()).append("\n");
+            sb.append(diff.getDiffContent());
+        }
 
         return sb.toString();
     }

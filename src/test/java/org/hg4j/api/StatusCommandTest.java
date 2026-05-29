@@ -99,4 +99,71 @@ public class StatusCommandTest {
         assertTrue(stFiltered.getUntracked().contains("src/a.txt"));
         assertFalse(stFiltered.getUntracked().contains("doc/b.txt"));
     }
+
+    @Test
+    public void testFastPathVsSlowPath(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // 1. 다양한 상태의 파일 구성 단계
+        
+        // Clean, Modified, Removed 파일은 처음에 생성
+        File f2 = new File(repoDir, "clean.txt");
+        Files.writeString(f2.toPath(), "clean content");
+
+        File f3 = new File(repoDir, "modified.txt");
+        Files.writeString(f3.toPath(), "modified content");
+
+        File f4 = new File(repoDir, "removed.txt");
+        Files.writeString(f4.toPath(), "removed content");
+
+        // 이 세 파일들을 추적하기 위해 add
+        new AddCommand(repo).call();
+        // 커밋하여 clean 상태로 변경
+        new CommitCommand(repo).setMessage("Initial").call();
+
+        // 커밋 후에 added.txt 파일 생성 및 add -> Added 상태
+        File f1 = new File(repoDir, "added.txt");
+        Files.writeString(f1.toPath(), "added content");
+        new AddCommand(repo).addFile("added.txt").call();
+
+        // f3 수정 -> Modified 상태
+        Files.writeString(f3.toPath(), "modified content - changed");
+
+        // f4 dirstate 'r'로 변경 및 디스크에서 물리 삭제 -> Removed 상태
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.addEntry("removed.txt", new Dirstate.Entry('r', 0644, 0, 0));
+        repo.writeDirstate(dirstate);
+        assertTrue(f4.delete());
+
+        // untracked.txt 파일 생성 (add하지 않음) -> Untracked 상태
+        File f5 = new File(repoDir, "untracked.txt");
+        Files.writeString(f5.toPath(), "untracked content");
+
+        // 2. Fast Path로 Status 호출 (treeFilter == ALL)
+        Status fastStatus = new StatusCommand(repo).setTreeFilter(org.hg4j.core.HgTreeFilter.ALL).call();
+
+        // 3. Slow Path로 Status 호출 (custom filter를 써서 treeFilter == ALL 조건 우회)
+        org.hg4j.core.HgTreeFilter customFilter = new org.hg4j.core.HgTreeFilter() {
+            @Override
+            public boolean accept(String path) {
+                return true;
+            }
+        };
+        Status slowStatus = new StatusCommand(repo).setTreeFilter(customFilter).call();
+
+        // 4. 두 Status 결과 비교 및 완벽한 일치 증명
+        assertEquals(slowStatus.getAdded(), fastStatus.getAdded());
+        assertEquals(slowStatus.getModified(), fastStatus.getModified());
+        assertEquals(slowStatus.getRemoved(), fastStatus.getRemoved());
+        assertEquals(slowStatus.getClean(), fastStatus.getClean());
+        assertEquals(slowStatus.getUntracked(), fastStatus.getUntracked());
+
+        // 개별 리스트 내용 확인
+        assertTrue(fastStatus.getAdded().contains("added.txt"));
+        assertTrue(fastStatus.getModified().contains("modified.txt"));
+        assertTrue(fastStatus.getRemoved().contains("removed.txt"));
+        assertTrue(fastStatus.getClean().contains("clean.txt"));
+        assertTrue(fastStatus.getUntracked().contains("untracked.txt"));
+    }
 }

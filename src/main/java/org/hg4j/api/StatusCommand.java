@@ -37,6 +37,75 @@ public class StatusCommand {
         File dirstateFile = new File(repository.getHgDir(), "dirstate");
         long dirstateMtime = dirstateFile.exists() ? dirstateFile.lastModified() / 1000 : 0;
 
+        // Fast Path: treeFilter가 없거나 ALL인 경우 (고성능 dirstate 기반 경로)
+        if (treeFilter == null || treeFilter == org.hg4j.core.HgTreeFilter.ALL) {
+            Map<String, Dirstate.Entry> tracked = dirstate.getEntries();
+            List<String> trackedKeys = new ArrayList<>(tracked.keySet());
+            trackedKeys.sort(org.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR);
+
+            for (String path : trackedKeys) {
+                Dirstate.Entry dEntry = tracked.get(path);
+                char state = dEntry.getState();
+                
+                if (state == 'a') {
+                    status.getAdded().add(path);
+                } else if (state == 'r') {
+                    status.getRemoved().add(path);
+                } else if (state == 'n' || state == 'm') {
+                    File diskFile = new File(repoDir, path);
+                    if (!diskFile.exists() || !diskFile.isFile()) {
+                        status.getRemoved().add(path);
+                    } else {
+                        long diskSize = diskFile.length();
+                        long diskTime = diskFile.lastModified() / 1000;
+                        if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
+                            status.getModified().add(path);
+                        } else {
+                            boolean isRacyModified = false;
+                            if (diskTime == dirstateMtime) {
+                                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                                if (flIdx.exists()) {
+                                    try {
+                                        Revlog filelog = repository.getRevlog(flIdx, flDat);
+                                        if (filelog.getRevisionCount() > 0) {
+                                            byte[] fileContent = java.nio.file.Files.readAllBytes(diskFile.toPath());
+                                            byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
+                                            if (!java.util.Arrays.equals(fileContent, lastContent)) {
+                                                isRacyModified = true;
+                                            }
+                                        }
+                                    } catch (Exception ignored) {}
+                                }
+                            }
+                            
+                            if (isRacyModified) {
+                                status.getModified().add(path);
+                            } else {
+                                status.getClean().add(path);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Untracked 수집
+            List<String> physicalFiles = repository.scanWorkingCopy();
+            List<String> untrackedList = new ArrayList<>();
+            for (String path : physicalFiles) {
+                if (!tracked.containsKey(path)) {
+                    untrackedList.add(path);
+                }
+            }
+            untrackedList.sort(org.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR);
+            for (String path : untrackedList) {
+                status.getUntracked().add(path);
+            }
+
+            return status;
+        }
+
+        // Slow Path: TreeWalk 경유 (경로 필터 등이 지정된 경우)
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
@@ -66,11 +135,11 @@ public class StatusCommand {
             
             char workingState = tw.getState(1);
 
-            if (!inParent && inWorking) {
+            if (workingState == '?') {
+                status.getUntracked().add(path);
+            } else if (!inParent && inWorking) {
                 if (workingState == 'a') {
                     status.getAdded().add(path);
-                } else if (workingState == '?') {
-                    status.getUntracked().add(path);
                 }
             } else if (inParent && !inWorking) {
                 status.getRemoved().add(path);

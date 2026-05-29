@@ -42,5 +42,45 @@ public enum HgHookType {
     /**
      * Update(체크아웃) 완료 후 동작하는 훅
      */
-    POST_UPDATE
+    POST_UPDATE,
+
+    /**
+     * Merge 실행 전 검증 훅 (거부 가능)
+     */
+    PRE_MERGE,
+
+    /**
+     * Update 실행 전 검증 훅 (거부 가능)
+     */
+    PRE_UPDATE,
+
+    /**
+     * Rebase 실행 전 검증 훅 (거부 가능)
+     */
+    PRE_REBASE,
+
+    /**
+     * Strip 완료 후 동작하는 훅
+     */
+    POST_STRIP,
+
+    /**
+     * Amend 완료 후 동작하는 훅
+     */
+    POST_AMEND,
+
+    /**
+     * Tag 생성 전 검증 훅 (거부 가능)
+     */
+    PRE_TAG,
+
+    /**
+     * Tag 생성 후 동작하는 훅
+     */
+    POST_TAG,
+
+    /**
+     * Changegroup 수신 완료 후 동작하는 훅
+     */
+    CHANGEGROUP
 }

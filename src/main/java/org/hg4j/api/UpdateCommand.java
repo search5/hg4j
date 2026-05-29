@@ -24,10 +24,18 @@ public class UpdateCommand {
     private String targetRevision;
     private boolean force = false;
     private org.hg4j.core.HgTreeFilter treeFilter = org.hg4j.core.HgTreeFilter.ALL;
+    private final java.util.List<HgHook> preUpdateHooks = new java.util.ArrayList<>();
     private final java.util.List<HgHook> postUpdateHooks = new java.util.ArrayList<>();
 
     public UpdateCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public UpdateCommand registerPreUpdateHook(HgHook hook) {
+        if (hook != null) {
+            preUpdateHooks.add(hook);
+        }
+        return this;
     }
 
     public UpdateCommand registerPostUpdateHook(HgHook hook) {
@@ -60,6 +68,19 @@ public class UpdateCommand {
 
         try (HgLock wlock = repository.lockWorkingCopy();
              HgLock storeLock = repository.lockStore()) {
+
+            // PRE_UPDATE hooks trigger
+            if (!preUpdateHooks.isEmpty()) {
+                Map<String, Object> ctx = new java.util.HashMap<>();
+                ctx.put("repository", repository);
+                ctx.put("targetRevision", targetRevision);
+                ctx.put("force", force);
+                for (HgHook hook : preUpdateHooks) {
+                    if (!hook.run(ctx)) {
+                        throw new org.hg4j.errors.HgValidationException("Update rejected by PRE_UPDATE hook");
+                    }
+                }
+            }
 
             Dirstate dirstate = repository.getDirstate();
             if (!force) {

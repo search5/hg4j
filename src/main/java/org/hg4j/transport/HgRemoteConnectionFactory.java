@@ -2,12 +2,81 @@ package org.hg4j.transport;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Factory class to dynamically instantiate the appropriate remote connection
  * client (HTTP, SSH, or Local) based on the target URL protocol.
+ * Now supports extensibility with pluggable {@link TransportProtocol} registry.
  */
 public class HgRemoteConnectionFactory {
+
+    private static final List<TransportProtocol> protocols = new CopyOnWriteArrayList<>();
+
+    static {
+        // 기본 프로토콜 등록
+        protocols.add(new TransportProtocol() {
+            @Override
+            public boolean canHandle(String url) {
+                return url.startsWith("ssh://");
+            }
+            @Override
+            public HgRemoteConnection open(String url) throws IOException {
+                return new HgSshClient(url);
+            }
+        });
+        protocols.add(new TransportProtocol() {
+            @Override
+            public boolean canHandle(String url) {
+                return url.startsWith("file://");
+            }
+            @Override
+            public HgRemoteConnection open(String url) throws IOException {
+                return new HgLocalClient(url);
+            }
+        });
+        protocols.add(new TransportProtocol() {
+            @Override
+            public boolean canHandle(String url) {
+                return url.startsWith("http://") || url.startsWith("https://");
+            }
+            @Override
+            public HgRemoteConnection open(String url) throws IOException {
+                return new HgRemoteClient(url);
+            }
+        });
+        protocols.add(new TransportProtocol() {
+            @Override
+            public boolean canHandle(String url) {
+                File f = new File(url);
+                return f.exists() && f.isDirectory();
+            }
+            @Override
+            public HgRemoteConnection open(String url) throws IOException {
+                return new HgLocalClient(url);
+            }
+        });
+    }
+
+    /**
+     * 새로운 Transport 프로토콜을 레지스트리에 등록합니다.
+     * 사용자 정의 프로토콜이 기본 프로토콜보다 우선되도록 가장 처음에 등록됩니다.
+     *
+     * @param protocol 등록할 TransportProtocol 인스턴스
+     */
+    public static void register(TransportProtocol protocol) {
+        if (protocol != null) {
+            protocols.add(0, protocol);
+        }
+    }
+
+    /**
+     * 등록된 모든 TransportProtocol 리스트를 반환합니다.
+     */
+    public static List<TransportProtocol> getRegisteredProtocols() {
+        return java.util.Collections.unmodifiableList(protocols);
+    }
 
     /**
      * Creates and returns a connection client compatible with the target URL protocol.
@@ -21,20 +90,13 @@ public class HgRemoteConnectionFactory {
             throw new IllegalArgumentException("Connection URL cannot be null or empty.");
         }
 
-        if (url.startsWith("ssh://")) {
-            return new HgSshClient(url);
-        } else if (url.startsWith("file://")) {
-            return new HgLocalClient(url);
-        } else if (url.startsWith("http://") || url.startsWith("https://")) {
-            return new HgRemoteClient(url);
-        } else {
-            // 절대/상대 파일 경로로 처리 (로컬 저장소)
-            File f = new File(url);
-            if (f.exists() && f.isDirectory()) {
-                return new HgLocalClient(url);
+        for (TransportProtocol protocol : protocols) {
+            if (protocol.canHandle(url)) {
+                return protocol.open(url);
             }
-            // 기본 fallback: HTTP 클라이언트
-            return new HgRemoteClient(url);
         }
+
+        // 기본 fallback: HTTP 클라이언트
+        return new HgRemoteClient(url);
     }
 }

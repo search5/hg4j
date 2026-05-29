@@ -223,4 +223,70 @@ public class HgRemoteConnectionFactoryTest {
         HgSshClient client = new HgSshClient("ssh://user@256.0.0.1:22/repo");
         assertThrows(IOException.class, () -> client.push(new byte[]{0}, List.of()));
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // TransportProtocol 플러그인 추상화 테스트
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("커스텀 프로토콜 등록 및 동적 처리 테스트")
+    public void testCustomTransportProtocolRegistration() throws IOException {
+        TransportProtocol customProto = new TransportProtocol() {
+            @Override
+            public boolean canHandle(String url) {
+                return url.startsWith("custom://");
+            }
+
+            @Override
+            public HgRemoteConnection open(String url) throws IOException {
+                return new HgRemoteConnection() {
+                    @Override
+                    public java.util.List<String> getCapabilities() throws IOException {
+                        return java.util.List.of("custom-cap=true");
+                    }
+
+                    @Override
+                    public java.util.List<String> getHeads() throws IOException {
+                        return java.util.List.of("custom-head");
+                    }
+
+                    @Override
+                    public byte[] getChangegroup(java.util.List<String> roots) throws IOException {
+                        return new byte[0];
+                    }
+
+                    @Override
+                    public byte[] getBundle(java.util.List<String> common, java.util.List<String> heads, java.util.List<String> bundleCaps) throws IOException {
+                        return new byte[0];
+                    }
+
+                    @Override
+                    public String push(byte[] bundleBytes, java.util.List<String> heads) throws IOException {
+                        return "";
+                    }
+
+                    @Override
+                    public java.util.Map<String, String> listKeys(String namespace) throws IOException {
+                        return java.util.Collections.emptyMap();
+                    }
+
+                    @Override
+                    public void close() throws IOException {
+                        // no-op
+                    }
+                };
+            }
+        };
+
+        // 1. 등록 검증
+        HgRemoteConnectionFactory.register(customProto);
+        assertTrue(HgRemoteConnectionFactory.getRegisteredProtocols().contains(customProto));
+
+        // 2. 생성 검증
+        HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection("custom://my-custom-repo");
+        assertNotNull(conn);
+        java.util.List<String> caps = conn.getCapabilities();
+        assertTrue(caps.contains("custom-cap=true"));
+        assertEquals(java.util.List.of("custom-head"), conn.getHeads());
+    }
 }

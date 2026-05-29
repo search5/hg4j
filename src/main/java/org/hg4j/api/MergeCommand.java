@@ -20,6 +20,7 @@ public class MergeCommand {
     private final HgRepository repository;
     private byte[] targetNodeId;
     private int targetRev = -1;
+    private final java.util.List<HgHook> preMergeHooks = new java.util.ArrayList<>();
     private final java.util.List<HgHook> postMergeHooks = new java.util.ArrayList<>();
 
 
@@ -73,6 +74,13 @@ public class MergeCommand {
 
     public MergeCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public MergeCommand registerPreMergeHook(HgHook hook) {
+        if (hook != null) {
+            preMergeHooks.add(hook);
+        }
+        return this;
     }
 
     public MergeCommand registerPostMergeHook(HgHook hook) {
@@ -202,6 +210,19 @@ public class MergeCommand {
         try (org.hg4j.core.HgLock storeLock = repository.lockStore();
              org.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
             
+            // PRE_MERGE hooks trigger
+            if (!preMergeHooks.isEmpty()) {
+                Map<String, Object> ctx = new java.util.HashMap<>();
+                ctx.put("repository", repository);
+                ctx.put("targetRev", targetRev);
+                ctx.put("targetNodeId", targetNodeId);
+                for (HgHook hook : preMergeHooks) {
+                    if (!hook.run(ctx)) {
+                        throw new org.hg4j.errors.HgValidationException("Merge rejected by PRE_MERGE hook");
+                    }
+                }
+            }
+
             Dirstate dirstate = repository.getDirstate();
             org.hg4j.lib.NodeId p1CommitNode = dirstate.getParent1Node();
             if (p1CommitNode == null || p1CommitNode.isNull()) {

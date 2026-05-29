@@ -20,6 +20,8 @@ public class TagCommand {
     private String tagName;
     private byte[] nodeId;
     private boolean commit = true;
+    private final List<HgHook> preTagHooks = new java.util.ArrayList<>();
+    private final List<HgHook> postTagHooks = new java.util.ArrayList<>();
 
     public TagCommand(HgRepository repository) {
         this.repository = repository;
@@ -40,6 +42,20 @@ public class TagCommand {
         return this;
     }
 
+    public TagCommand registerPreTagHook(HgHook hook) {
+        if (hook != null) {
+            this.preTagHooks.add(hook);
+        }
+        return this;
+    }
+
+    public TagCommand registerPostTagHook(HgHook hook) {
+        if (hook != null) {
+            this.postTagHooks.add(hook);
+        }
+        return this;
+    }
+
     public Map<String, String> call() throws IOException {
         File tagsFile = new File(repository.getDirectory(), ".hgtags");
 
@@ -48,6 +64,20 @@ public class TagCommand {
                 throw new IllegalArgumentException("Valid NodeID must be specified for creating a tag");
             }
             String hex = NodeIdUtil.toHex(nodeId).substring(0, 40);
+
+            // 1. PRE_TAG hooks trigger
+            if (!preTagHooks.isEmpty()) {
+                Map<String, Object> ctx = new java.util.HashMap<>();
+                ctx.put("repository", repository);
+                ctx.put("tag", tagName);
+                ctx.put("node", nodeId);
+                for (HgHook hook : preTagHooks) {
+                    if (!hook.run(ctx)) {
+                        throw new org.hg4j.errors.HgValidationException("Tag creation rejected by PRE_TAG hook: " + tagName);
+                    }
+                }
+            }
+
             String entry = hex + " " + tagName + "\n";
 
             // Append to .hgtags
@@ -65,10 +95,22 @@ public class TagCommand {
                         .call();
             }
 
+            // 2. POST_TAG hooks trigger
+            if (!postTagHooks.isEmpty()) {
+                Map<String, Object> ctx = new java.util.HashMap<>();
+                ctx.put("repository", repository);
+                ctx.put("tag", tagName);
+                ctx.put("node", nodeId);
+                for (HgHook hook : postTagHooks) {
+                    hook.run(ctx);
+                }
+            }
+
             Map<String, String> result = new LinkedHashMap<>();
             result.put(tagName, hex);
             return result;
         }
+
 
         // List tags
         if (!tagsFile.exists()) {

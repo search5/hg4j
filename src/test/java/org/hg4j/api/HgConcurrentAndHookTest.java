@@ -616,4 +616,51 @@ public class HgConcurrentAndHookTest {
         assertTrue(text.contains("Native Initial Commit"));
     }
 
+    @Test
+    public void testPreValidationHooksPreventExecution() throws Exception {
+        File repoDir = new File(tempDir, "pre_hooks_validation_repo_" + System.nanoTime());
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Hg hg = Hg.wrap(repo);
+
+        File f = new File(repoDir, "a.txt");
+        java.nio.file.Files.writeString(f.toPath(), "Some Content");
+        hg.add().addFile("a.txt").call();
+        byte[] commitNode = hg.commit().setAuthor("tester").setMessage("First").call();
+
+        // 1. PRE_UPDATE Hook 거부 검증
+        hg.registerHook(HgHookType.PRE_UPDATE, ctx -> {
+            assertEquals(repo, ctx.get("repository"));
+            assertEquals("0", ctx.get("targetRevision"));
+            return false; // 거부
+        });
+
+        assertThrows(org.hg4j.errors.HgValidationException.class, () -> {
+            hg.update().setRevision("0").call();
+        });
+
+        // 2. PRE_MERGE Hook 거부 검증
+        hg.registerHook(HgHookType.PRE_MERGE, ctx -> {
+            assertEquals(repo, ctx.get("repository"));
+            assertArrayEquals(commitNode, (byte[]) ctx.get("targetNodeId"));
+            return false; // 거부
+        });
+
+        assertThrows(org.hg4j.errors.HgValidationException.class, () -> {
+            hg.merge().setNodeId(commitNode).call();
+        });
+
+        // 3. PRE_REBASE Hook 거부 검증
+        hg.registerHook(HgHookType.PRE_REBASE, ctx -> {
+            assertEquals(repo, ctx.get("repository"));
+            assertArrayEquals(commitNode, (byte[]) ctx.get("sourceNode"));
+            assertArrayEquals(commitNode, (byte[]) ctx.get("targetNode"));
+            return false; // 거부
+        });
+
+        assertThrows(org.hg4j.errors.HgValidationException.class, () -> {
+            hg.rebase().setSource(commitNode).setTarget(commitNode).call();
+        });
+
+        hg.close();
+    }
 }

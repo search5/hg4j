@@ -171,8 +171,16 @@ public class Hg implements AutoCloseable {
     }
 
     public TagCommand tag() {
-        return new TagCommand(this.repository);
+        TagCommand command = new TagCommand(this.repository);
+        for (HgHook hook : getHooks(HgHookType.PRE_TAG)) {
+            command.registerPreTagHook(hook);
+        }
+        for (HgHook hook : getHooks(HgHookType.POST_TAG)) {
+            command.registerPostTagHook(hook);
+        }
+        return command;
     }
+
 
     public BookmarkCommand bookmark() {
         return new BookmarkCommand(this.repository);
@@ -180,6 +188,9 @@ public class Hg implements AutoCloseable {
 
     public MergeCommand merge() {
         MergeCommand command = new MergeCommand(this.repository);
+        for (HgHook hook : getHooks(HgHookType.PRE_MERGE)) {
+            command.registerPreMergeHook(hook);
+        }
         for (HgHook hook : getHooks(HgHookType.POST_MERGE)) {
             command.registerPostMergeHook(hook);
         }
@@ -204,6 +215,9 @@ public class Hg implements AutoCloseable {
 
     public RebaseCommand rebase() {
         RebaseCommand command = new RebaseCommand(this.repository);
+        for (HgHook hook : getHooks(HgHookType.PRE_REBASE)) {
+            command.registerPreRebaseHook(hook);
+        }
         for (HgHook hook : getHooks(HgHookType.POST_REBASE)) {
             command.registerPostRebaseHook(hook);
         }
@@ -212,11 +226,15 @@ public class Hg implements AutoCloseable {
 
     public UpdateCommand update() {
         UpdateCommand command = new UpdateCommand(this.repository);
+        for (HgHook hook : getHooks(HgHookType.PRE_UPDATE)) {
+            command.registerPreUpdateHook(hook);
+        }
         for (HgHook hook : getHooks(HgHookType.POST_UPDATE)) {
             command.registerPostUpdateHook(hook);
         }
         return command;
     }
+
 
     public PushCommand push() {
         PushCommand command = new PushCommand(this.repository);

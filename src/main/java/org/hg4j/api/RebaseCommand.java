@@ -27,6 +27,7 @@ public class RebaseCommand {
     private final HgRepository repository;
     private byte[] sourceNode;
     private byte[] targetNode;
+    private final java.util.List<HgHook> preRebaseHooks = new java.util.ArrayList<>();
     private final java.util.List<HgHook> postRebaseHooks = new java.util.ArrayList<>();
 
     private static class BackupCommit {
@@ -54,6 +55,13 @@ public class RebaseCommand {
 
     public RebaseCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public RebaseCommand registerPreRebaseHook(HgHook hook) {
+        if (hook != null) {
+            preRebaseHooks.add(hook);
+        }
+        return this;
     }
 
     public RebaseCommand registerPostRebaseHook(HgHook hook) {
@@ -123,6 +131,19 @@ public class RebaseCommand {
         try (HgLock storeLock = repository.lockStore();
              HgLock wlock = repository.lockWorkingCopy()) {
             
+            // PRE_REBASE hooks trigger
+            if (!preRebaseHooks.isEmpty()) {
+                Map<String, Object> ctx = new java.util.HashMap<>();
+                ctx.put("repository", repository);
+                ctx.put("sourceNode", sourceNode);
+                ctx.put("targetNode", targetNode);
+                for (HgHook hook : preRebaseHooks) {
+                    if (!hook.run(ctx)) {
+                        throw new org.hg4j.errors.HgValidationException("Rebase rejected by PRE_REBASE hook");
+                    }
+                }
+            }
+
             deleteDirRecursively(backupDir);
             backupStoreFiles(backupDir, backupMapping, minOrigRev, revisionsToRebase, changelog);
             

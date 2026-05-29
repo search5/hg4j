@@ -11,7 +11,7 @@ import java.util.List;
  * using the Mercurial SSH Wire Protocol over ssh:// connection.
  * Seamlessly compliant with JGit-style pure Java architecture.
  */
-public class HgSshClient implements HgRemoteConnection, AutoCloseable {
+public class HgSshClient implements HgRemoteConnection {
 
     private final String sshUrl;
     private String username;

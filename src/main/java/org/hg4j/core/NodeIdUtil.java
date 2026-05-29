@@ -232,4 +232,48 @@ public final class NodeIdUtil {
         }
         return matchNode;
     }
+
+    public static byte[] computeNodeId(byte[] content, byte[] p1, byte[] p2) {
+        byte[] p1Node = new byte[20];
+        if (p1 != null) {
+            System.arraycopy(p1, 0, p1Node, 0, Math.min(p1.length, 20));
+        }
+        byte[] p2Node = new byte[20];
+        if (p2 != null) {
+            System.arraycopy(p2, 0, p2Node, 0, Math.min(p2.length, 20));
+        }
+
+        // Compare and sort lexicographically
+        byte[] first = p1Node;
+        byte[] second = p2Node;
+        boolean swap = false;
+        for (int i = 0; i < 20; i++) {
+            int v1 = first[i] & 0xFF;
+            int v2 = second[i] & 0xFF;
+            if (v1 != v2) {
+                if (v1 > v2) {
+                    swap = true;
+                }
+                break;
+            }
+        }
+        if (swap) {
+            first = p2Node;
+            second = p1Node;
+        }
+
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            md.update(first);
+            md.update(second);
+            md.update(content);
+            byte[] hash = md.digest();
+
+            byte[] nodeId = new byte[32];
+            System.arraycopy(hash, 0, nodeId, 0, 20);
+            return nodeId;
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-1 digest not available", e);
+        }
+    }
 }

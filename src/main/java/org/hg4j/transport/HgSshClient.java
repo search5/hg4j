@@ -29,6 +29,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     private OutputStream out;
     private List<String> capabilities = new ArrayList<>();
     private boolean connected = false;
+    private int protocolVersion = 1;
 
     public HgSshClient(String sshUrl) {
         this.sshUrl = sshUrl;
@@ -135,7 +136,7 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
         }
     }
 
-    private void readCapabilities() throws IOException {
+    private String readLine() throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         int b;
         while ((b = in.read()) != -1) {
@@ -144,7 +145,16 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
             }
             baos.write(b);
         }
-        String header = new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
+        return new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
+    }
+
+    private void writeLine(String line) throws IOException {
+        out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+        out.flush();
+    }
+
+    private void readCapabilities() throws IOException {
+        String header = readLine();
         if (!header.startsWith("capabilities:")) {
             throw new org.hg4j.errors.HgProtocolException(sshUrl, "Remote SSH server did not output valid Mercurial stdio capabilities header. Received: " + header);
         }
@@ -154,6 +164,26 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
         if (!capString.isEmpty()) {
             for (String cap : capString.split("\\s+")) {
                 capabilities.add(cap);
+            }
+        }
+
+        // v2 upgrade 시도
+        if (capabilities.contains("exp-ssh-v2-0003")) {
+            String token = java.util.UUID.randomUUID().toString().replace("-", "");
+            writeLine("upgrade " + token + " proto=exp-ssh-v2-0003");
+            String upgradeResponse = readLine();
+            if (upgradeResponse.startsWith("upgraded " + token)) {
+                this.protocolVersion = 2;
+                String v2CapsHeader = readLine();
+                if (v2CapsHeader.startsWith("capabilities:")) {
+                    String v2CapString = v2CapsHeader.substring("capabilities:".length()).trim();
+                    capabilities.clear();
+                    if (!v2CapString.isEmpty()) {
+                        for (String cap : v2CapString.split("\\s+")) {
+                            capabilities.add(cap);
+                        }
+                    }
+                }
             }
         }
     }
@@ -256,16 +286,18 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
         out.write(bundleBytes);
         out.flush();
 
-        // Read text response response
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        int b;
-        while ((b = in.read()) != -1) {
-            if (b == '\n') {
-                break;
+        // Read unbundle status line first (Mercurial stdio 1.0 protocol specification)
+        String statusLine = readLine();
+        StringBuilder sb = new StringBuilder(statusLine);
+        try {
+            int linesToRead = Integer.parseInt(statusLine.trim());
+            for (int i = 0; i < linesToRead; i++) {
+                sb.append("\n").append(readLine());
             }
-            baos.write(b);
+        } catch (NumberFormatException e) {
+            // If the response is not a number (e.g. "push ok"), just return it immediately
         }
-        return new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
+        return sb.toString().trim();
     }
 
     private byte[] readBinaryResponse() throws IOException {

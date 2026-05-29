@@ -570,17 +570,16 @@ public class RebaseCommand {
         Revlog manifest = repository.getRevlog(mfIdx, mfDat);
 
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, manifestNode);
-        byte[] mfContent = manifest.getRevisionContent(mfRev);
-        String mfText = new String(mfContent, StandardCharsets.UTF_8);
+        if (mfRev == -1) {
+            throw new org.hg4j.errors.HgRevisionNotFoundException("Manifest revision not found for node: " + NodeIdUtil.toHex(manifestNode));
+        }
 
         Map<String, String> entries = new HashMap<>();
-        String[] lines = mfText.split("\n");
-        for (String line : lines) {
-            if (line.isEmpty()) continue;
-            int nullIdx = line.indexOf('\0');
-            if (nullIdx != -1) {
-                entries.put(line.substring(0, nullIdx), line.substring(nullIdx + 1).trim());
-            }
+        org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, String.valueOf(mfRev));
+        while (mw.next()) {
+            org.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
+            String flag = entry.isExecutable() ? "x" : "";
+            entries.put(entry.getPath(), entry.getNodeIdHex() + flag);
         }
 
         Dirstate dirstate = repository.getDirstate();

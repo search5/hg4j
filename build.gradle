@@ -75,6 +75,9 @@ jar {
 
 test {
     useJUnitPlatform()
+    maxHeapSize = "2048m"
+    maxParallelForks = 1
+    forkEvery = 100
     finalizedBy jacocoTestReport
 }
 

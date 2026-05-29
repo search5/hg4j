@@ -4,6 +4,10 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import org.hg4j.core.HgRepository;
+import org.hg4j.core.ChangegroupParser;
+import org.hg4j.core.SafeFileIO;
+import org.hg4j.core.Revlog;
+import org.hg4j.core.NodeIdUtil;
 import org.hg4j.errors.HgAuthException;
 import org.hg4j.errors.HgProtocolException;
 import org.junit.jupiter.api.AfterEach;
@@ -14,11 +18,17 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class HgHttpTransportRoundtripTest {
 
@@ -27,6 +37,11 @@ public class HgHttpTransportRoundtripTest {
     private volatile int responseCode = 200;
     private volatile boolean simulateDisconnect = false;
     private volatile boolean corruptStream = false;
+    
+    // Test data storage for success roundtrips
+    private volatile byte[] mockBundleResponse = null;
+    private volatile String mockHeadsResponse = null;
+    private final AtomicReference<byte[]> capturedPushBundle = new AtomicReference<>();
 
     @BeforeEach
     public void setUp() throws IOException {
@@ -35,6 +50,9 @@ public class HgHttpTransportRoundtripTest {
         responseCode = 200;
         simulateDisconnect = false;
         corruptStream = false;
+        mockBundleResponse = null;
+        mockHeadsResponse = null;
+        capturedPushBundle.set(null);
 
         server.createContext("/", new HttpHandler() {
             @Override
@@ -47,7 +65,6 @@ public class HgHttpTransportRoundtripTest {
 
                 String query = exchange.getRequestURI().getQuery();
                 if (simulateDisconnect) {
-                    // Disconnect abruptly without sending headers
                     exchange.close();
                     return;
                 }
@@ -70,7 +87,26 @@ public class HgHttpTransportRoundtripTest {
                     }
                 } else if (query != null && query.contains("cmd=heads")) {
                     String heads = "0000000000000000000000000000000000000000\n";
+                    if (mockHeadsResponse != null) {
+                        heads = mockHeadsResponse;
+                    }
                     byte[] resp = heads.getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, resp.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(resp);
+                    }
+                } else if (query != null && (query.contains("cmd=getbundle") || query.contains("cmd=changegroup"))) {
+                    byte[] resp = mockBundleResponse != null ? mockBundleResponse : new byte[0];
+                    exchange.sendResponseHeaders(200, resp.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(resp);
+                    }
+                } else if (query != null && query.contains("cmd=unbundle")) {
+                    try (java.io.InputStream is = exchange.getRequestBody()) {
+                        byte[] body = is.readAllBytes();
+                        capturedPushBundle.set(body);
+                    }
+                    byte[] resp = "0\nno errors\n".getBytes(StandardCharsets.UTF_8);
                     exchange.sendResponseHeaders(200, resp.length);
                     try (OutputStream os = exchange.getResponseBody()) {
                         os.write(resp);
@@ -133,7 +169,6 @@ public class HgHttpTransportRoundtripTest {
         PullCommand pull = new PullCommand(repository)
                 .setSource("http://127.0.0.1:" + port + "/");
 
-        // Abrupt close during capabilities/heads fetch should trigger protocol exception
         assertThrows(Exception.class, pull::call, "Disconnect must throw Exception");
     }
 
@@ -148,7 +183,222 @@ public class HgHttpTransportRoundtripTest {
         PullCommand pull = new PullCommand(repository)
                 .setSource("http://127.0.0.1:" + port + "/");
 
-        // Completely garbage stream returned for capabilities should trigger protocol/parse exception
         assertThrows(Exception.class, pull::call, "Corrupted/garbage headers/capabilities stream must fail with exception");
+    }
+
+    @Test
+    public void testPullCommitsMatchExactly(@TempDir Path tempDir) throws Exception {
+        // 1. Create a source repository (srcRepo) dynamically and commit changes
+        File srcDir = tempDir.resolve("src_repo").toFile();
+        new InitCommand().setDirectory(srcDir).call();
+        HgRepository srcRepo = new HgRepository(srcDir);
+        
+        File file1 = new File(srcDir, "file1.txt");
+        Files.writeString(file1.toPath(), "Content 1");
+        new AddCommand(srcRepo).addFile("file1.txt").call();
+        byte[] c1 = new CommitCommand(srcRepo).setAuthor("Tester <tester@example.com>").setMessage("Initial commit").call();
+        
+        Files.writeString(file1.toPath(), "Content 1 modified");
+        byte[] c2 = new CommitCommand(srcRepo).setAuthor("Tester <tester@example.com>").setMessage("Second commit").call();
+        
+        Files.writeString(file1.toPath(), "Content 1 final");
+        byte[] c3 = new CommitCommand(srcRepo).setAuthor("Tester <tester@example.com>").setMessage("Third commit").call();
+        
+        // 2. Serialize source repo to mock bundle
+        ChangegroupParser.ChangegroupBundle bundle = createMockBundleFromRepo(srcRepo);
+        byte[] rawCg = serializeBundleToBytes(bundle);
+        
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        bos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
+        bos.write(rawCg);
+        mockBundleResponse = bos.toByteArray();
+        mockHeadsResponse = NodeIdUtil.toHex(c3) + "\n";
+        
+        // 3. Perform pull command in local destination repository
+        File destDir = tempDir.resolve("dest_repo").toFile();
+        new InitCommand().setDirectory(destDir).call();
+        HgRepository destRepo = new HgRepository(destDir);
+        
+        PullCommand pull = new PullCommand(destRepo)
+                .setSource("http://127.0.0.1:" + port + "/");
+        List<byte[]> pulledCommits = pull.call();
+        
+        // 4. Assert correctness
+        assertEquals(3, pulledCommits.size());
+        
+        LogCommand log = new LogCommand(destRepo);
+        List<HgCommit> commits = log.call();
+        assertEquals(3, commits.size());
+        assertEquals("Third commit", commits.get(0).getMessage());
+        assertEquals("Second commit", commits.get(1).getMessage());
+        assertEquals("Initial commit", commits.get(2).getMessage());
+        assertEquals(NodeIdUtil.toHex(c3), commits.get(0).getNodeId().toHex());
+    }
+
+    @Test
+    public void testPushBundleBytesAreValid(@TempDir Path tempDir) throws Exception {
+        // 1. Create a local repository and commit changes
+        File localDir = tempDir.resolve("local_repo").toFile();
+        new InitCommand().setDirectory(localDir).call();
+        HgRepository localRepo = new HgRepository(localDir);
+        
+        File file1 = new File(localDir, "hello.txt");
+        Files.writeString(file1.toPath(), "Hello World");
+        new AddCommand(localRepo).addFile("hello.txt").call();
+        byte[] c1 = new CommitCommand(localRepo).setAuthor("Tester <tester@example.com>").setMessage("Push Commit").call();
+        
+        // 2. Perform push command
+        PushCommand push = new PushCommand(localRepo)
+                .setDestination("http://127.0.0.1:" + port + "/");
+        push.call();
+        
+        // 3. Verify pushed bundle bytes
+        byte[] pushedData = capturedPushBundle.get();
+        assertNotNull(pushedData);
+        assertTrue(pushedData.length > 6);
+        
+        String magic = new String(pushedData, 0, 6, StandardCharsets.US_ASCII);
+        assertEquals("HG10UN", magic);
+        
+        byte[] cgBytes = new byte[pushedData.length - 6];
+        System.arraycopy(pushedData, 6, cgBytes, 0, cgBytes.length);
+        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new java.io.ByteArrayInputStream(cgBytes), "01");
+        
+        assertEquals(1, bundle.changelogEntries.size());
+        assertArrayEquals(c1, bundle.changelogEntries.get(0).node);
+    }
+
+    // Helper methods for generating bundles from dynamic repository states
+    private ChangegroupParser.ChangegroupBundle createMockBundleFromRepo(HgRepository repo) throws Exception {
+        ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
+        bundle.changelogEntries = new ArrayList<>();
+        bundle.manifestEntries = new ArrayList<>();
+        bundle.fileGroups = new ArrayList<>();
+
+        Revlog cl = new Revlog(new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
+        for (int i = 0; i < cl.getRevisionCount(); i++) {
+            Revlog.IndexRecord rec = cl.getIndexRecord(i);
+            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+            entry.node = rec.getNodeId();
+            entry.p1 = rec.getParent1() != -1 ? cl.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
+            entry.p2 = rec.getParent2() != -1 ? cl.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
+            entry.cs = rec.getNodeId();
+            
+            byte[] rawContent = cl.getRawRevisionContent(i);
+            byte[] delta;
+            if (i == 0) {
+                delta = Revlog.createSimpleDelta(new byte[0], rawContent);
+            } else {
+                byte[] prevContent = cl.getRawRevisionContent(i - 1);
+                delta = Revlog.createSimpleDelta(prevContent, rawContent);
+            }
+            entry.delta = delta;
+            bundle.changelogEntries.add(entry);
+        }
+
+        Revlog mf = new Revlog(new File(repo.getStoreDir(), "00manifest.i"), new File(repo.getStoreDir(), "00manifest.d"));
+        for (int i = 0; i < mf.getRevisionCount(); i++) {
+            Revlog.IndexRecord rec = mf.getIndexRecord(i);
+            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+            entry.node = rec.getNodeId();
+            entry.p1 = rec.getParent1() != -1 ? mf.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
+            entry.p2 = rec.getParent2() != -1 ? mf.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
+            entry.cs = cl.getIndexRecord(rec.getLinkRev()).getNodeId();
+            
+            byte[] rawContent = mf.getRawRevisionContent(i);
+            byte[] delta;
+            if (i == 0) {
+                delta = Revlog.createSimpleDelta(new byte[0], rawContent);
+            } else {
+                byte[] prevContent = mf.getRawRevisionContent(i - 1);
+                delta = Revlog.createSimpleDelta(prevContent, rawContent);
+            }
+            entry.delta = delta;
+            bundle.manifestEntries.add(entry);
+        }
+
+        File fncacheFile = new File(repo.getStoreDir(), "fncache");
+        if (fncacheFile.exists()) {
+            List<String> paths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
+            for (String p : paths) {
+                if (p.endsWith(".i")) {
+                    String rawPath = p.substring("data/".length(), p.length() - 2);
+                    File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), rawPath);
+                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+
+                    Revlog fl = new Revlog(flIdx, flDat);
+                    ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
+                    fg.path = rawPath;
+                    fg.entries = new ArrayList<>();
+                    for (int j = 0; j < fl.getRevisionCount(); j++) {
+                        Revlog.IndexRecord rec = fl.getIndexRecord(j);
+                        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+                        entry.node = rec.getNodeId();
+                        entry.p1 = rec.getParent1() != -1 ? fl.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
+                        entry.p2 = rec.getParent2() != -1 ? fl.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
+                        entry.cs = cl.getIndexRecord(rec.getLinkRev()).getNodeId();
+
+                        byte[] rawContent = fl.getRawRevisionContent(j);
+                        byte[] delta;
+                        if (j == 0) {
+                            delta = Revlog.createSimpleDelta(new byte[0], rawContent);
+                        } else {
+                            byte[] prevContent = fl.getRawRevisionContent(j - 1);
+                            delta = Revlog.createSimpleDelta(prevContent, rawContent);
+                        }
+                        entry.delta = delta;
+                        fg.entries.add(entry);
+                    }
+                    bundle.fileGroups.add(fg);
+                }
+            }
+        }
+
+        return bundle;
+    }
+
+    private byte[] serializeBundleToBytes(ChangegroupParser.ChangegroupBundle bundle) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (DataOutputStream dos = new DataOutputStream(baos)) {
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                int totalLen = 4 + 80 + entry.delta.length;
+                dos.writeInt(totalLen);
+                dos.write(entry.node);
+                dos.write(entry.p1);
+                dos.write(entry.p2);
+                dos.write(entry.cs);
+                dos.write(entry.delta);
+            }
+            dos.writeInt(0);
+
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+                int totalLen = 4 + 80 + entry.delta.length;
+                dos.writeInt(totalLen);
+                dos.write(entry.node);
+                dos.write(entry.p1);
+                dos.write(entry.p2);
+                dos.write(entry.cs);
+                dos.write(entry.delta);
+            }
+            dos.writeInt(0);
+
+            for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+                byte[] pathBytes = fg.path.getBytes(StandardCharsets.UTF_8);
+                dos.writeInt(4 + pathBytes.length);
+                dos.write(pathBytes);
+                for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                    int totalLen = 4 + 80 + entry.delta.length;
+                    dos.writeInt(totalLen);
+                    dos.write(entry.node);
+                    dos.write(entry.p1);
+                    dos.write(entry.p2);
+                    dos.write(entry.cs);
+                    dos.write(entry.delta);
+                }
+                dos.writeInt(0);
+            }
+            dos.writeInt(0);
+        }
+        return baos.toByteArray();
     }
 }

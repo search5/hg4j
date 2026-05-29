@@ -4,12 +4,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Parser for unpackaging and applying Mercurial changegroup (Bundle) payload
  * to local repositories with robust error boundaries.
  */
 public class ChangegroupParser {
+    private static final Logger LOGGER = Logger.getLogger(ChangegroupParser.class.getName());
 
     /**
      * Reads a single chunk from the stream.
@@ -141,13 +144,13 @@ public class ChangegroupParser {
     }
 
     private static String autoDetectVersion(byte[] chunk) {
-        System.out.println("[DEBUG AUTO] chunk length: " + chunk.length);
+        LOGGER.log(Level.INFO, "[DEBUG AUTO] chunk length: {0}", chunk.length);
         if (chunk.length < 80) {
             return "01";
         }
         boolean v3Valid = chunk.length >= 102 + 12 && isValidDeltaHeader(chunk, 102);
         boolean v2Valid = chunk.length >= 100 + 12 && isValidDeltaHeader(chunk, 100);
-        System.out.println("[DEBUG AUTO] v3Valid: " + v3Valid + ", v2Valid: " + v2Valid);
+        LOGGER.log(Level.INFO, "[DEBUG AUTO] v3Valid: {0}, v2Valid: {1}", new Object[]{v3Valid, v2Valid});
         if (v3Valid) {
             return "03";
         }
@@ -163,16 +166,17 @@ public class ChangegroupParser {
                     ((chunk[offset + 2] & 0xFF) << 8) |
                     (chunk[offset + 3] & 0xFF);
         int end = ((chunk[offset + 4] & 0xFF) << 24) |
-                  ((chunk[offset + 5] & 0xFF) << 16) |
-                  ((chunk[offset + 6] & 0xFF) << 8) |
-                  (chunk[offset + 7] & 0xFF);
+                    ((chunk[offset + 5] & 0xFF) << 16) |
+                    ((chunk[offset + 6] & 0xFF) << 8) |
+                    (chunk[offset + 7] & 0xFF);
         int len = ((chunk[offset + 8] & 0xFF) << 24) |
-                  ((chunk[offset + 9] & 0xFF) << 16) |
-                  ((chunk[offset + 10] & 0xFF) << 8) |
-                  (chunk[offset + 11] & 0xFF);
+                    ((chunk[offset + 9] & 0xFF) << 16) |
+                    ((chunk[offset + 10] & 0xFF) << 8) |
+                    (chunk[offset + 11] & 0xFF);
 
         boolean valid = (start >= 0 && end >= 0 && len >= 0 && start <= end && len <= (chunk.length - (offset + 12)));
-        System.out.println("[DEBUG AUTO] isValidDeltaHeader offset: " + offset + ", start: " + start + ", end: " + end + ", len: " + len + ", remaining: " + (chunk.length - (offset + 12)) + " -> " + valid);
+        LOGGER.log(Level.INFO, "[DEBUG AUTO] isValidDeltaHeader offset: {0}, start: {1}, end: {2}, len: {3}, remaining: {4} -> {5}", 
+                new Object[]{offset, start, end, len, (chunk.length - (offset + 12)), valid});
         return valid;
     }
 

@@ -9,42 +9,66 @@ public class TreeWalk {
     private final List<TreeIterator> trees = new ArrayList<>();
     private String currentPath;
     private boolean first = true;
+    private PathFilter filter = null;
+    private boolean recursive = true;
 
     public void addTree(TreeIterator iterator) throws IOException {
         iterator.reset();
         trees.add(iterator);
     }
 
+    public TreeWalk setFilter(PathFilter filter) {
+        this.filter = filter;
+        return this;
+    }
+
+    public TreeWalk setRecursive(boolean recursive) {
+        this.recursive = recursive;
+        return this;
+    }
+
     public boolean next() throws IOException {
-        if (first) {
-            first = false;
-            for (TreeIterator tree : trees) {
-                tree.next();
-            }
-        } else {
-            for (TreeIterator tree : trees) {
-                if (currentPath != null && currentPath.equals(tree.getEntryPath())) {
+        while (true) {
+            if (first) {
+                first = false;
+                for (TreeIterator tree : trees) {
                     tree.next();
                 }
-            }
-        }
-
-        String minPath = null;
-        for (TreeIterator tree : trees) {
-            String path = tree.getEntryPath();
-            if (path != null) {
-                if (minPath == null || org.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR.compare(path, minPath) < 0) {
-                    minPath = path;
+            } else {
+                for (TreeIterator tree : trees) {
+                    if (currentPath != null && currentPath.equals(tree.getEntryPath())) {
+                        tree.next();
+                    }
                 }
             }
-        }
 
-        if (minPath == null) {
-            return false;
-        }
+            String minPath = null;
+            for (TreeIterator tree : trees) {
+                String path = tree.getEntryPath();
+                if (path != null) {
+                    if (minPath == null || org.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR.compare(path, minPath) < 0) {
+                        minPath = path;
+                    }
+                }
+            }
 
-        currentPath = minPath;
-        return true;
+            if (minPath == null) {
+                currentPath = null;
+                return false;
+            }
+
+            currentPath = minPath;
+
+            if (filter != null && !filter.accept(currentPath)) {
+                continue;
+            }
+
+            if (!recursive && currentPath.contains("/")) {
+                continue;
+            }
+
+            return true;
+        }
     }
 
     public String getPath() {

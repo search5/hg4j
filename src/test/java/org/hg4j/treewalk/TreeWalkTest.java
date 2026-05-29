@@ -215,6 +215,40 @@ public class TreeWalkTest {
         }
     }
 
+    @Test
+    public void testTreeWalkWithSparsePathFilter() throws Exception {
+        try (Hg hg = Hg.open(tempRepoDir)) {
+            // 1. Create directory structure
+            File srcMainDir = new File(tempRepoDir, "src/main/java");
+            srcMainDir.mkdirs();
+            File srcTestDir = new File(tempRepoDir, "src/test/java");
+            srcTestDir.mkdirs();
+            File docDir = new File(tempRepoDir, "doc");
+            docDir.mkdirs();
+
+            Files.writeString(new File(srcMainDir, "a.java").toPath(), "class A {}", StandardCharsets.UTF_8);
+            Files.writeString(new File(srcTestDir, "b.java").toPath(), "class B {}", StandardCharsets.UTF_8);
+            Files.writeString(new File(docDir, "readme.md").toPath(), "Readme", StandardCharsets.UTF_8);
+
+            hg.add().addFile("src/main/java/a.java")
+                    .addFile("src/test/java/b.java")
+                    .addFile("doc/readme.md").call();
+            hg.commit().setAuthor("tester").setMessage("Commit 1").call();
+
+            // 2. Create TreeWalk and mount SparsePathFilter (matching only src/main/**)
+            TreeWalk walk = new TreeWalk();
+            walk.addTree(new ManifestTreeIterator(repository, "0"));
+            
+            SparsePathFilter filter = new SparsePathFilter("src/main/**");
+            walk.setFilter(filter);
+
+            // 3. Traversal must skip doc/readme.md and src/test/java/b.java and only yield src/main/java/a.java
+            assertTrue(walk.next());
+            assertEquals("src/main/java/a.java", walk.getPath());
+            assertFalse(walk.next());
+        }
+    }
+
     private void deleteDirRecursively(File file) {
         if (file.isDirectory()) {
             File[] children = file.listFiles();

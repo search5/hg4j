@@ -5,12 +5,15 @@ import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.zip.InflaterInputStream;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Lightweight, production-grade parser for decoding the Mercurial bundle2 (HG20) container format.
  * Dynamically resolves stream-level compression (zlib deflate) and extracts the inner CHANGEGROUP payload.
  */
 public class Bundle2Parser {
+    private static final Logger LOGGER = Logger.getLogger(Bundle2Parser.class.getName());
 
     /**
      * Structure representing the result of bundle2 extraction.
@@ -97,7 +100,7 @@ public class Bundle2Parser {
             int cursor = 0;
             int nameSize = headerBlock[cursor++] & 0xFF;
             String partName = new String(headerBlock, cursor, nameSize, java.nio.charset.StandardCharsets.US_ASCII);
-            System.out.println("[DEBUG BUNDLE2] Parsed partName: '" + partName + "', partHeaderSize: " + partHeaderSize + ", nameSize: " + nameSize);
+            LOGGER.log(Level.INFO, "[DEBUG BUNDLE2] Parsed partName: ''{0}'', partHeaderSize: {1}, nameSize: {2}", new Object[]{partName, partHeaderSize, nameSize});
             cursor += nameSize;
             
             // Part ID (4 bytes) - Skip

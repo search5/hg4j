@@ -487,7 +487,7 @@ public class Revlog {
         ByteBuffer recordBuf = ByteBuffer.allocate(64);
         recordBuf.putLong(offsetFlags);
         recordBuf.putInt(dataHunk.length);
-        recordBuf.putInt(content.length);
+        recordBuf.putInt(rawToWrite.length);
         recordBuf.putInt(baseRev);
         recordBuf.putInt(linkRev);
         recordBuf.putInt(parent1);
@@ -502,7 +502,7 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, content.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
                 baseRev, linkRev, parent1, parent2, entry.node));
 
         clearCache();

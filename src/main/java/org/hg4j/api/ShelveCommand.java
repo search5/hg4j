@@ -60,8 +60,6 @@ public class ShelveCommand {
     private byte[] getBaselineContent(String path) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         if (!clIdx.exists()) {
             return null;
@@ -73,37 +71,22 @@ public class ShelveCommand {
             return null;
         }
 
-        byte[] clContent = changelog.getRevisionContent(lastRev);
-        String clText = new String(clContent, StandardCharsets.UTF_8);
-        String firstLine = clText.split("\n")[0];
-        byte[] mfNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
-
-        Revlog manifest = repository.getRevlog(mfIdx, mfDat);
-        int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
-        byte[] mfContent = manifest.getRevisionContent(mfRev);
-        String mfText = new String(mfContent, StandardCharsets.UTF_8);
-
-        String[] lines = mfText.split("\n");
-        for (String line : lines) {
-            if (line.isEmpty()) continue;
-            int nullIdx = line.indexOf('\0');
-            if (nullIdx != -1) {
-                String p = line.substring(0, nullIdx);
-                if (p.equals(path)) {
-                    String manifestNodeWithFlags = line.substring(nullIdx + 1).trim();
-                    String hexNode = manifestNodeWithFlags.substring(0, 40);
-                    File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                    if (!flIdx.exists()) {
-                        return null;
-                    }
-                    Revlog filelog = repository.getRevlog(flIdx, flDat);
-                    int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
-                    if (fileRev == -1) {
-                        return null;
-                    }
-                    return filelog.getRevisionContent(fileRev);
+        org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, String.valueOf(lastRev));
+        while (mw.next()) {
+            org.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
+            if (entry.getPath().equals(path)) {
+                byte[] nodeId = entry.getNodeId();
+                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                if (!flIdx.exists()) {
+                    return null;
                 }
+                Revlog filelog = repository.getRevlog(flIdx, flDat);
+                int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, nodeId);
+                if (fileRev == -1) {
+                    return null;
+                }
+                return filelog.getRevisionContent(fileRev);
             }
         }
         return null;
@@ -493,8 +476,6 @@ public class ShelveCommand {
     private void revertToLatestCommit(Dirstate dirstate, List<ShelvedFile> shelvedFiles) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         Revlog changelog = repository.getRevlog(clIdx, clDat);
         int lastRev = changelog.getRevisionCount() - 1;
@@ -510,25 +491,12 @@ public class ShelveCommand {
             return;
         }
 
-        byte[] clContent = changelog.getRevisionContent(lastRev);
-        String clText = new String(clContent, StandardCharsets.UTF_8);
-        String firstLine = clText.split("\n")[0];
-        byte[] mfNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
-
-        Revlog manifest = repository.getRevlog(mfIdx, mfDat);
-        int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
-        byte[] mfContent = manifest.getRevisionContent(mfRev);
-        String mfText = new String(mfContent, StandardCharsets.UTF_8);
-
         Map<String, String> manifestEntries = new HashMap<>();
-        String[] lines = mfText.split("\n");
-        for (String line : lines) {
-            if (line.isEmpty()) continue;
-            int nullIdx = line.indexOf('\0');
-            if (nullIdx != -1) {
-                String path = line.substring(0, nullIdx);
-                manifestEntries.put(path, line.substring(nullIdx + 1).trim());
-            }
+        org.hg4j.treewalk.ManifestWalk mw = new org.hg4j.treewalk.ManifestWalk(repository, String.valueOf(lastRev));
+        while (mw.next()) {
+            org.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
+            String flag = entry.isExecutable() ? "x" : "";
+            manifestEntries.put(entry.getPath(), entry.getNodeIdHex() + flag);
         }
 
         for (ShelvedFile sf : shelvedFiles) {

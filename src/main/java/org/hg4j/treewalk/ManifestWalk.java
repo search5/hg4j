@@ -16,11 +16,13 @@ public class ManifestWalk {
         private final String path;
         private final byte[] nodeId;
         private final boolean executable;
+        private final boolean symlink;
 
-        public Entry(String path, byte[] nodeId, boolean executable) {
+        public Entry(String path, byte[] nodeId, boolean executable, boolean symlink) {
             this.path = path;
             this.nodeId = nodeId;
             this.executable = executable;
+            this.symlink = symlink;
         }
 
         public String getPath() {
@@ -37,6 +39,10 @@ public class ManifestWalk {
 
         public boolean isExecutable() {
             return executable;
+        }
+
+        public boolean isSymlink() {
+            return symlink;
         }
     }
 
@@ -55,7 +61,8 @@ public class ManifestWalk {
                 cachedEntries.add(new Entry(
                     iterator.getEntryPath(),
                     iterator.getEntryNodeId(),
-                    iterator.isExecutable()
+                    iterator.isExecutable(),
+                    iterator.isSymlink()
                 ));
             }
         }

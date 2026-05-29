@@ -42,9 +42,45 @@ public class DirstateV2Parser {
             }
         }
 
-        for (int i = 0; i < rootCount; i++) {
-            int nodeOffset = rootStart + i * nodeSize;
-            parseNode(buffer, nodeOffset, dataOffset, decoded);
+        java.util.Deque<Integer> stack = new java.util.ArrayDeque<>();
+        for (int i = rootCount - 1; i >= 0; i--) {
+            stack.push(rootStart + i * nodeSize);
+        }
+
+        while (!stack.isEmpty()) {
+            int nodeOffset = stack.pop();
+            DirstateV2Node node = new DirstateV2Node(buffer, nodeOffset);
+
+            int pathOffset = node.getPathOffset();
+            int pathLen = node.getPathLen() & 0xFFFF;
+
+            if (dataOffset + pathOffset + pathLen > buffer.capacity()) {
+                throw new org.hg4j.errors.HgCorruptDataException("Data block overflow for node at offset: " + nodeOffset);
+            }
+
+            byte[] pathBytes = new byte[pathLen];
+            int originalPos = buffer.position();
+            buffer.position(dataOffset + pathOffset);
+            buffer.get(pathBytes);
+            buffer.position(originalPos);
+
+            String currentPath = new String(pathBytes, StandardCharsets.UTF_8);
+
+            char state = node.getState();
+            if (state != '\0' && state != 'd') {
+                decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime()));
+            }
+
+            int childrenStart = node.getChildrenStart();
+            int childrenCount = node.getChildrenCount();
+            if (childrenCount > 0) {
+                if (childrenStart + childrenCount * DirstateV2Node.NODE_SIZE > buffer.capacity()) {
+                    throw new org.hg4j.errors.HgCorruptDataException("Children segment overflow for node at offset: " + nodeOffset);
+                }
+                for (int i = childrenCount - 1; i >= 0; i--) {
+                    stack.push(childrenStart + i * DirstateV2Node.NODE_SIZE);
+                }
+            }
         }
 
         return decoded;
@@ -104,41 +140,5 @@ public class DirstateV2Parser {
         }
 
         return parse(bytes, 0, nodeCount);
-    }
-
-    private void parseNode(ByteBuffer buffer, int nodeOffset, int dataOffset, Dirstate decoded) throws IOException {
-        DirstateV2Node node = new DirstateV2Node(buffer, nodeOffset);
-
-        int pathOffset = node.getPathOffset();
-        int pathLen = node.getPathLen() & 0xFFFF;
-
-        if (dataOffset + pathOffset + pathLen > buffer.capacity()) {
-            throw new org.hg4j.errors.HgCorruptDataException("Data block overflow for node at offset: " + nodeOffset);
-        }
-
-        byte[] pathBytes = new byte[pathLen];
-        int originalPos = buffer.position();
-        buffer.position(dataOffset + pathOffset);
-        buffer.get(pathBytes);
-        buffer.position(originalPos);
-
-        String currentPath = new String(pathBytes, StandardCharsets.UTF_8);
-
-        char state = node.getState();
-        if (state != '\0' && state != 'd') {
-            decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime()));
-        }
-
-        int childrenStart = node.getChildrenStart();
-        int childrenCount = node.getChildrenCount();
-        if (childrenCount > 0) {
-            if (childrenStart + childrenCount * DirstateV2Node.NODE_SIZE > buffer.capacity()) {
-                throw new org.hg4j.errors.HgCorruptDataException("Children segment overflow for node at offset: " + nodeOffset);
-            }
-            for (int i = 0; i < childrenCount; i++) {
-                int childOffset = childrenStart + i * DirstateV2Node.NODE_SIZE;
-                parseNode(buffer, childOffset, dataOffset, decoded);
-            }
-        }
     }
 }

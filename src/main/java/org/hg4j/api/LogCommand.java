@@ -1,23 +1,36 @@
 package org.hg4j.api;
-
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.Revlog;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Traverses changelog revlog and retrieves commit history.
  */
 public class LogCommand {
+    private static final Logger LOGGER = Logger.getLogger(LogCommand.class.getName());
     private final HgRepository repository;
+    private boolean followAncestors = false;
+    private String startRev = null;
 
     public LogCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public LogCommand setFollowAncestors(boolean follow) {
+        this.followAncestors = follow;
+        return this;
+    }
+
+    public LogCommand setStartRev(String startRev) {
+        this.startRev = startRev;
+        return this;
     }
 
     public List<HgCommit> call() throws IOException {
@@ -32,8 +45,21 @@ public class LogCommand {
         int totalRevisions = changelog.getRevisionCount();
         List<HgCommit> commits = new ArrayList<>();
 
+        java.util.Set<Integer> allowedRevs = null;
+        if (followAncestors && startRev != null) {
+            byte[] resolvedNode = org.hg4j.core.NodeIdUtil.resolveRevision(changelog, startRev);
+            int startRevNum = org.hg4j.core.NodeIdUtil.findRevisionByNodeId(changelog, resolvedNode);
+            if (startRevNum != -1) {
+                org.hg4j.revwalk.ChangesetGraph graph = new org.hg4j.revwalk.ChangesetGraph(changelog);
+                allowedRevs = graph.getAllAncestors(startRevNum);
+            }
+        }
+
         // Return newest commits first
         for (int rev = totalRevisions - 1; rev >= 0; rev--) {
+            if (allowedRevs != null && !allowedRevs.contains(rev)) {
+                continue;
+            }
             Revlog.IndexRecord rec = changelog.getIndexRecord(rev);
             byte[] nodeId = rec.getNodeId();
 
@@ -43,26 +69,26 @@ public class LogCommand {
             // Parse text
             int firstNewline = text.indexOf('\n');
             if (firstNewline == -1) {
-                System.err.println("Warning: Malformed commit text at revision " + rev + ": first newline not found");
+                LOGGER.log(Level.WARNING, "Warning: Malformed commit text at revision {0}: first newline not found", rev);
                 continue;
             }
             String manifestHex = text.substring(0, firstNewline).trim();
             if (manifestHex.length() != 40) {
-                System.err.println("Warning: Malformed commit text at revision " + rev + ": invalid manifest hex length");
+                LOGGER.log(Level.WARNING, "Warning: Malformed commit text at revision {0}: invalid manifest hex length", rev);
                 continue;
             }
             byte[] manifestNodeId = fromHex(manifestHex);
 
             int secondNewline = text.indexOf('\n', firstNewline + 1);
             if (secondNewline == -1) {
-                System.err.println("Warning: Malformed commit text at revision " + rev + ": second newline not found");
+                LOGGER.log(Level.WARNING, "Warning: Malformed commit text at revision {0}: second newline not found", rev);
                 continue;
             }
             String author = text.substring(firstNewline + 1, secondNewline);
 
             int thirdNewline = text.indexOf('\n', secondNewline + 1);
             if (thirdNewline == -1) {
-                System.err.println("Warning: Malformed commit text at revision " + rev + ": third newline not found");
+                LOGGER.log(Level.WARNING, "Warning: Malformed commit text at revision {0}: third newline not found", rev);
                 continue;
             }
             String dateLine = text.substring(secondNewline + 1, thirdNewline).trim();

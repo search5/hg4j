@@ -192,7 +192,7 @@ public class CommitCommand {
                     p1ManifestNode = mfNode;
                     parent1ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p1ManifestNode);
                 }
-                System.out.println("[DEBUG MERGE] parent1Rev=" + parent1Rev + ", p1ManifestNode=" + (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null") + ", parent1ManifestRev=" + parent1ManifestRev);
+                LOGGER.log(Level.INFO, "[DEBUG MERGE] parent1Rev={0}, p1ManifestNode={1}, parent1ManifestRev={2}", new Object[]{parent1Rev, (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null"), parent1ManifestRev});
             }
 
             int parent2ManifestRev = -1;
@@ -233,7 +233,7 @@ public class CommitCommand {
                     p2ManifestNode = mfNode;
                     parent2ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p2ManifestNode);
                 }
-                System.out.println("[DEBUG MERGE] parent2Rev=" + parent2Rev + ", p2CommitNode=" + p2CommitNode.toHex() + ", p2ManifestNode=" + (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null") + ", parent2ManifestRev=" + parent2ManifestRev);
+                LOGGER.log(Level.INFO, "[DEBUG MERGE] parent2Rev={0}, p2CommitNode={1}, p2ManifestNode={2}, parent2ManifestRev={3}", new Object[]{parent2Rev, p2CommitNode.toHex(), (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null"), parent2ManifestRev});
             }
 
             // 3. Process dirstate entries and write filelogs

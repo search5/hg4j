@@ -41,36 +41,59 @@ public class RevsetCommand {
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        int count = changelog.getRevisionCount();
-        List<String> results = new ArrayList<>();
+        // 1. Reuse high-performance evaluation engine
+        org.hg4j.core.HgRevsetEngine engine = new org.hg4j.core.HgRevsetEngine(repository);
 
-        if ("all()".equalsIgnoreCase(expression) || "all".equalsIgnoreCase(expression)) {
-            for (int i = 0; i < count; i++) {
-                results.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
+        // Preprocess symbolic revision terms inside queries (e.g. parents(tip) -> parents(<hex>))
+        String resolvedExpr = expression;
+        if (expression.contains("(") && expression.endsWith(")")) {
+            int openIdx = expression.indexOf('(');
+            int closeIdx = expression.lastIndexOf(')');
+            if (openIdx != -1 && closeIdx != -1 && openIdx < closeIdx) {
+                String funcName = expression.substring(0, openIdx).trim();
+                String target = expression.substring(openIdx + 1, closeIdx).trim();
+                if ("parents".equalsIgnoreCase(funcName)) {
+                    byte[] resolvedNode = NodeIdUtil.resolveRevision(changelog, target);
+                    if (resolvedNode != null) {
+                        resolvedExpr = "parents(" + NodeIdUtil.toHex(resolvedNode) + ")";
+                    }
+                }
             }
-        } else if (expression.startsWith("parents(") && expression.endsWith(")")) {
-            String target = expression.substring(8, expression.length() - 1);
-            byte[] node = NodeIdUtil.resolveRevision(changelog, target);
+        }
+
+        // 2. Query engine with fallbacks
+        List<Integer> revIndexes;
+        try {
+            if ("all()".equalsIgnoreCase(expression) || "all".equalsIgnoreCase(expression)) {
+                revIndexes = new ArrayList<>();
+                for (int i = 0; i < changelog.getRevisionCount(); i++) {
+                    revIndexes.add(i);
+                }
+            } else if ("tip".equalsIgnoreCase(expression)) {
+                revIndexes = new ArrayList<>();
+                int count = changelog.getRevisionCount();
+                if (count > 0) {
+                    revIndexes.add(count - 1);
+                }
+            } else {
+                revIndexes = engine.query(resolvedExpr);
+            }
+        } catch (Exception e) {
+            // Evaluator fallback: parse as single commit nodeId / revision
+            revIndexes = new ArrayList<>();
+            byte[] node = NodeIdUtil.resolveRevision(changelog, expression);
             if (node != null) {
                 int rev = changelog.findRevision(node);
                 if (rev != -1) {
-                    Revlog.IndexRecord rec = changelog.getIndexRecord(rev);
-                    int p1 = rec.getParent1();
-                    int p2 = rec.getParent2();
-                    if (p1 != -1) results.add(NodeIdUtil.toHex(changelog.getIndexRecord(p1).getNodeId()));
-                    if (p2 != -1) results.add(NodeIdUtil.toHex(changelog.getIndexRecord(p2).getNodeId()));
+                    revIndexes.add(rev);
                 }
             }
-        } else if ("tip".equalsIgnoreCase(expression)) {
-            if (count > 0) {
-                results.add(NodeIdUtil.toHex(changelog.getIndexRecord(count - 1).getNodeId()));
-            }
-        } else {
-            // Default fallback: parse single revision representation
-            byte[] node = NodeIdUtil.resolveRevision(changelog, expression);
-            if (node != null) {
-                results.add(NodeIdUtil.toHex(node));
-            }
+        }
+
+        // 3. Convert revision index offsets to hex strings
+        List<String> results = new ArrayList<>();
+        for (int rev : revIndexes) {
+            results.add(NodeIdUtil.toHex(changelog.getIndexRecord(rev).getNodeId()));
         }
         return results;
     }

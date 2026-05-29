@@ -57,14 +57,54 @@ public class IncomingCommand {
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
         List<String> incomingMessages = new ArrayList<>();
-        
-        // Compare remote heads to local repository
+        List<String> missingHeads = new ArrayList<>();
+
         for (byte[] head : remoteHeads) {
             if (changelog.findRevision(head) == -1) {
-                // This head is missing locally, simulate discovering incoming revision metadata
-                incomingMessages.add("changeset:   " + NodeIdUtil.toHex(head).substring(0, 12) + " (incoming head)");
-                incomingMessages.add("user:        remote_developer");
-                incomingMessages.add("summary:     Remote feature changeset summary");
+                missingHeads.add(NodeIdUtil.toHex(head));
+            }
+        }
+
+        if (missingHeads.isEmpty()) {
+            incomingMessages.add("no incoming changes found");
+            return incomingMessages;
+        }
+
+        // Fetch actual missing changegroup binary from the remote server
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
+            byte[] bundleBytes = client.getChangegroup(java.util.Collections.emptyList());
+            if (bundleBytes != null && bundleBytes.length > 0) {
+                try (java.io.ByteArrayInputStream bin = new java.io.ByteArrayInputStream(bundleBytes)) {
+                    org.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = org.hg4j.core.ChangegroupParser.parseBundle(bin);
+                    if (bundle != null && bundle.changelogEntries != null) {
+                        for (org.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                            if (changelog.findRevision(entry.node) == -1) {
+                                byte[] clContent = entry.delta; // ChangeGroupEntry delta encapsulates raw commit txt
+                                if (clContent != null && clContent.length > 0) {
+                                    String clText = new String(clContent, StandardCharsets.UTF_8);
+                                    String[] clLines = clText.split("\n");
+                                    String author = (clLines.length > 1) ? clLines[1].trim() : "remote_developer";
+                                    String msg = (clLines.length > 4) ? clLines[clLines.length - 1].trim() : "Remote changeset summary";
+                                    
+                                    incomingMessages.add("changeset:   " + NodeIdUtil.toHex(entry.node).substring(0, 12));
+                                    incomingMessages.add("user:        " + author);
+                                    incomingMessages.add("summary:     " + msg);
+                                } else {
+                                    incomingMessages.add("changeset:   " + NodeIdUtil.toHex(entry.node).substring(0, 12));
+                                    incomingMessages.add("user:        remote_developer");
+                                    incomingMessages.add("summary:     [Binary delta metadata]");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Fallback: listing missing head revisions with error status clearly
+            for (String hexHead : missingHeads) {
+                incomingMessages.add("changeset:   " + hexHead.substring(0, 12) + " (incoming head - offline)");
+                incomingMessages.add("user:        remote_developer (fetch failed)");
+                incomingMessages.add("summary:     Failed to fetch remote metadata: " + e.getMessage());
             }
         }
 

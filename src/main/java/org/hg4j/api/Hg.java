@@ -307,11 +307,41 @@ public class Hg implements AutoCloseable {
 
     /**
      * Expose HgRcConfig directly on the facade.
+     * Incorporates Mercurial's priority load order:
+     * 1. System global hgrc (/etc/mercurial/hgrc)
+     * 2. User global hgrc (~/.hgrc or ~/mercurial.ini)
+     * 3. Local repository hgrc (.hg/hgrc)
      */
     public org.hg4j.core.HgRcConfig config() {
         org.hg4j.core.HgRcConfig cfg = new org.hg4j.core.HgRcConfig();
         try {
-            cfg.load(new java.io.File(this.repository.getHgDir(), "hgrc"));
+            // 1. System-wide configuration
+            java.io.File systemHgrc = new java.io.File("/etc/mercurial/hgrc");
+            if (systemHgrc.exists()) {
+                cfg.load(systemHgrc);
+            }
+            
+            // 2. User-wide configuration
+            String userHome = System.getProperty("user.home");
+            if (userHome != null) {
+                java.io.File userHgrc = new java.io.File(userHome, ".hgrc");
+                if (userHgrc.exists()) {
+                    cfg.load(userHgrc);
+                } else {
+                    java.io.File userIni = new java.io.File(userHome, "mercurial.ini");
+                    if (userIni.exists()) {
+                        cfg.load(userIni);
+                    }
+                }
+            }
+            
+            // 3. Local repository configuration
+            if (this.repository != null && this.repository.getHgDir() != null) {
+                java.io.File localHgrc = new java.io.File(this.repository.getHgDir(), "hgrc");
+                if (localHgrc.exists()) {
+                    cfg.load(localHgrc);
+                }
+            }
         } catch (java.io.IOException e) {
             // ignore
         }

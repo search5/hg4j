@@ -36,16 +36,22 @@ public class RevlogIndex {
         }
 
         try (FileChannel channel = FileChannel.open(idxFile.toPath(), StandardOpenOption.READ)) {
-            ByteBuffer buf = ByteBuffer.allocate((int) len);
-            while (buf.hasRemaining()) {
-                if (channel.read(buf) == -1) {
+            ByteBuffer headerBuf = ByteBuffer.allocate(64);
+            int revision = 0;
+            
+            while (true) {
+                headerBuf.clear();
+                while (headerBuf.hasRemaining()) {
+                    if (channel.read(headerBuf) == -1) {
+                        break;
+                    }
+                }
+                if (headerBuf.position() < 64) {
                     break;
                 }
-            }
-            buf.flip();
-            int revision = 0;
-            while (buf.hasRemaining() && buf.remaining() >= 64) {
-                long offsetFlags = buf.getLong();
+                headerBuf.flip();
+
+                long offsetFlags = headerBuf.getLong();
                 long offset;
                 int flags;
 
@@ -63,14 +69,14 @@ public class RevlogIndex {
                     flags = (int) (offsetFlags & 0xFFFF);
                 }
 
-                int compLen = buf.getInt();
-                int uncompLen = buf.getInt();
-                int baseRev = buf.getInt();
-                int linkRev = buf.getInt();
-                int parent1 = buf.getInt();
-                int parent2 = buf.getInt();
+                int compLen = headerBuf.getInt();
+                int uncompLen = headerBuf.getInt();
+                int baseRev = headerBuf.getInt();
+                int linkRev = headerBuf.getInt();
+                int parent1 = headerBuf.getInt();
+                int parent2 = headerBuf.getInt();
                 byte[] nodeId = new byte[32];
-                buf.get(nodeId);
+                headerBuf.get(nodeId);
 
                 records.add(new Revlog.IndexRecord(revision, offset, flags, compLen, uncompLen,
                         baseRev, linkRev, parent1, parent2, nodeId));
@@ -79,10 +85,12 @@ public class RevlogIndex {
                 nodeMap.put(ByteBuffer.wrap(clippedNode), revision);
 
                 if (inline) {
-                    if (buf.remaining() < compLen) {
+                    long currentPos = channel.position();
+                    long targetPos = currentPos + compLen;
+                    if (targetPos > channel.size()) {
                         throw new org.hg4j.errors.HgCorruptDataException("Truncated inline revlog data at revision " + revision);
                     }
-                    buf.position(buf.position() + compLen);
+                    channel.position(targetPos);
                 }
                 revision++;
             }

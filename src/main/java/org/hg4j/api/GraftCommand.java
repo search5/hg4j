@@ -81,115 +81,38 @@ public class GraftCommand {
 
         java.util.Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
 
-        // 2. Get current parent and initialize new manifest
-        byte[] parent = repository.getDirstate().getParent1();
-        java.util.Map<String, String> newManifest = getManifestForCommit(changelog, manifestRevlog, parent);
-
-        // 3. For each modified file, copy the revision from original filelog and commit to new filelog
-        for (String path : filesModified) {
-            String hexAndFlag = originalManifest.get(path);
-            if (hexAndFlag == null) {
-                newManifest.remove(path);
-                continue;
-            }
-            String fileHex = hexAndFlag.substring(0, 40);
-            String flag = hexAndFlag.substring(40);
-
-            byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
-
-            // Write content to working directory file
-            File wFile = new File(repository.getDirectory(), path);
-            wFile.getParentFile().mkdirs();
-            Files.write(wFile.toPath(), fileContent);
-
-            // Commit to new filelog
-            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-            flIdx.getParentFile().mkdirs();
-            Revlog filelog = repository.getRevlog(flIdx, flDat);
-
-            int parent1FileRev = -1;
-            byte[] p1FileNode = new byte[20];
-            String parentFileHexAndFlag = newManifest.get(path);
-            if (parentFileHexAndFlag != null) {
-                String parentFileHex = parentFileHexAndFlag.substring(0, 40);
-                p1FileNode = org.hg4j.core.NodeIdUtil.fromHex(parentFileHex);
-                parent1FileRev = org.hg4j.core.NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
-            }
-
-            int newCommitRev = changelog.getRevisionCount();
-            byte[] newFileNode = filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], newCommitRev);
-
-            newManifest.put(path, org.hg4j.core.NodeIdUtil.toHex(newFileNode) + flag);
-        }
-
-        // 4. Serialize and append new manifest revision
-        StringBuilder manifestSb = new StringBuilder();
-        for (java.util.Map.Entry<String, String> entry : newManifest.entrySet()) {
-            manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
-        }
-        byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
-
-        int parent1ManifestRev = -1;
-        byte[] p1ManifestNode = new byte[20];
-        if (parent != null && !org.hg4j.core.NodeIdUtil.isAllZero(parent)) {
-            int pRev = changelog.findRevision(parent);
-            if (pRev != -1) {
-                byte[] pContent = changelog.getRevisionContent(pRev);
-                String pText = new String(pContent, StandardCharsets.UTF_8);
-                String[] pLines = pText.split("\n");
-                if (pLines.length > 0) {
-                    p1ManifestNode = org.hg4j.core.NodeIdUtil.fromHex(pLines[0].trim());
-                    parent1ManifestRev = manifestRevlog.findRevision(p1ManifestNode);
+        // Acquire lock explicitly to restore files and commit safely in a transaction
+        try (org.hg4j.core.HgLock storeLock = repository.lockStore();
+             org.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
+            
+            // 2. For each modified file in the source revision, copy contents and write to working copy
+            for (String path : filesModified) {
+                String hexAndFlag = originalManifest.get(path);
+                if (hexAndFlag == null) {
+                    // File deleted in source revision -> delete in working copy too
+                    File wFile = new File(repository.getDirectory(), path);
+                    if (wFile.exists()) {
+                        wFile.delete();
+                    }
+                    continue;
                 }
+                String fileHex = hexAndFlag.substring(0, 40);
+                byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
+
+                File wFile = new File(repository.getDirectory(), path);
+                wFile.getParentFile().mkdirs();
+                Files.write(wFile.toPath(), fileContent);
             }
+
+            // 3. Delegate execution to CommitCommand to ensure locks, rollback journal, 
+            // fncache registry, phase draft transition, and hooks are fully executed!
+            CommitCommand commitCmd = new CommitCommand(repository);
+            commitCmd.setAuthor(author);
+            commitCmd.setMessage(graftMessage);
+
+            byte[] newCommitNode = commitCmd.call();
+            return NodeIdUtil.toHex(newCommitNode);
         }
-
-        int newCommitRev = changelog.getRevisionCount();
-        byte[] manifestNode = manifestRevlog.appendRevision(manifestTextBytes, parent1ManifestRev, -1, p1ManifestNode, new byte[20], newCommitRev);
-
-        // 5. Serialize and append new changelog (commit) revision
-        StringBuilder clSb = new StringBuilder();
-        clSb.append(org.hg4j.core.NodeIdUtil.toHex(manifestNode)).append('\n');
-        clSb.append(author).append('\n');
-
-        long secs = System.currentTimeMillis() / 1000;
-        clSb.append(secs).append(" 0 branch:default\n");
-
-        java.util.Collections.sort(filesModified, org.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR);
-        for (String path : filesModified) {
-            clSb.append(path).append('\n');
-        }
-        clSb.append('\n'); // empty line separator
-        clSb.append(graftMessage);
-
-        byte[] changelogTextBytes = clSb.toString().getBytes(StandardCharsets.UTF_8);
-
-        byte[] p1Normalized = new byte[20];
-        if (parent != null) {
-            System.arraycopy(parent, 0, p1Normalized, 0, Math.min(parent.length, 20));
-        }
-
-        org.hg4j.core.ChangegroupParser.ChangeGroupEntry entry = new org.hg4j.core.ChangegroupParser.ChangeGroupEntry();
-        entry.node = NodeIdUtil.computeNodeId(changelogTextBytes, p1Normalized, new byte[20]);
-        byte[] entryNode20 = new byte[20];
-        System.arraycopy(entry.node, 0, entryNode20, 0, 20);
-        entry.node = entryNode20;
-        entry.p1 = p1Normalized;
-        entry.p2 = new byte[20];
-        entry.cs = entry.node;
-        entry.deltabase = new byte[20];
-        entry.delta = Revlog.createDelta(new byte[0], changelogTextBytes);
-
-        changelog.appendChangeGroupEntry(entry, newCommitRev);
-
-        // Sync workspace dirstate
-        Dirstate d = repository.getDirstate();
-        d.setParents(entry.node, new byte[20]);
-        repository.writeDirstate(d);
-        repository.clearRevlogCache();
-
-        return NodeIdUtil.toHex(entry.node);
     }
 
     private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {

@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
+import com.github.luben.zstd.Zstd;
 
 /**
  * Revlog 데이터 압축 및 해제를 전담하는 컴포넌트 (SRP 분리).
@@ -80,6 +81,10 @@ public final class DeltaCodec {
 
         if (type == 'x' || type == (byte) 0x78) {
             return decompressZlib(hunk, uncompLen);
+        } else if (type == 0x28) { // Zstd magic
+            byte[] dest = new byte[uncompLen];
+            Zstd.decompress(dest, hunk);
+            return dest;
         } else if (type == 'u') {
             // 'u' 접두 바이트 이후가 실제 데이터
             return Arrays.copyOfRange(hunk, 1, hunk.length);

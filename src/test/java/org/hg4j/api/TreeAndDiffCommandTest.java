@@ -46,7 +46,7 @@ public class TreeAndDiffCommandTest {
         Files.writeString(fc.toPath(), "Added File Content\n");
         new AddCommand(repo).addFile("c.txt").call();
 
-        byte[] rev1Node = new CommitCommand(repo)
+        new CommitCommand(repo)
                 .setAuthor("tester <test@example.com>")
                 .setMessage("Modified a.txt, deleted b.txt, added c.txt")
                 .call();

@@ -17,16 +17,16 @@ public class DirstateV2LayoutTest {
         byte[] buffer = new byte[44];
         ByteBuffer wrapper = ByteBuffer.wrap(buffer).order(ByteOrder.BIG_ENDIAN);
 
-        // 노드 필드 정보 기입 (Offset 기반 정밀 바이너리 라이팅)
-        wrapper.putInt(0, 500);             // path_offset: 500
-        wrapper.putShort(4, (short) 12);    // path_len: 12 bytes
-        wrapper.putShort(6, (short) 4);     // basename_start: 4
-        wrapper.putInt(8, 600);             // copy_source_offset: 600
-        wrapper.putShort(12, (short) 5);    // copy_source_len: 5 bytes
-        wrapper.putInt(14, 10);             // children_start: index 10
-        wrapper.putInt(18, 2);              // children_count: 2 (L, 4B)
-        wrapper.putInt(22, 20);             // descendants_with_entry: 20
-        wrapper.putInt(26, 15);             // tracked_descendants: 15
+        // 노드 필드 정보 기입 (Offset 기반 정밀 바이너리 라이팅 - Native Mercurial 사양 정렬)
+        wrapper.putInt(0, 10);              // children_start: index 10
+        wrapper.putInt(4, 2);               // children_count: 2
+        wrapper.putInt(8, 20);              // descendants_with_entry: 20
+        wrapper.putInt(12, 15);             // tracked_descendants: 15
+        wrapper.putInt(16, 500);            // path_offset: 500
+        wrapper.putShort(20, (short) 12);   // path_len: 12 bytes
+        wrapper.putShort(22, (short) 4);    // basename_start: 4
+        wrapper.putInt(24, 600);            // copy_source_offset: 600
+        wrapper.putShort(28, (short) 5);    // copy_source_len: 5 bytes
         wrapper.putShort(30, (short) 0x3B); // flags: 0x3B (WDIR_TRACKED | P1_TRACKED | MODE_EXEC_PERM | HAS_MODE_AND_SIZE | HAS_MTIME) -> state 'n', executable
         wrapper.putInt(32, 12345);          // size: 12345 bytes
         wrapper.putInt(36, 1680000000);    // mtime: epoch seconds
@@ -68,16 +68,16 @@ public class DirstateV2LayoutTest {
         node.setTrackedDescendants(35);
         node.setMtimeNanoseconds(888);
 
-        // Then: 원본 바이트 버퍼에 실시간 및 정합하게 반영되었는지 교차 검증
-        assertEquals(800, wrapper.getInt(0));
-        assertEquals((short) 15, wrapper.getShort(4));
-        assertEquals((short) 6, wrapper.getShort(6));
-        assertEquals(700, wrapper.getInt(8));
-        assertEquals((short) 7, wrapper.getShort(12));
-        assertEquals(30, wrapper.getInt(14));
-        assertEquals(4, wrapper.getInt(18));
-        assertEquals(40, wrapper.getInt(22));
-        assertEquals(35, wrapper.getInt(26));
+        // Then: 원본 바이트 버퍼에 실시간 및 정합하게 반영되었는지 교차 검증 (Native Mercurial 사양 정렬)
+        assertEquals(30, wrapper.getInt(0));
+        assertEquals(4, wrapper.getInt(4));
+        assertEquals(40, wrapper.getInt(8));
+        assertEquals(35, wrapper.getInt(12));
+        assertEquals(800, wrapper.getInt(16));
+        assertEquals((short) 15, wrapper.getShort(20));
+        assertEquals((short) 6, wrapper.getShort(22));
+        assertEquals(700, wrapper.getInt(24));
+        assertEquals((short) 7, wrapper.getShort(28));
         assertEquals((short) 0x19, wrapper.getShort(30)); // state 'a' & normal file -> flags = 0x19 (WDIR_TRACKED | HAS_MODE_AND_SIZE | HAS_MTIME)
         assertEquals(9999, wrapper.getInt(32));
         assertEquals(1700000000L, wrapper.getInt(36) & 0xFFFFFFFFL);

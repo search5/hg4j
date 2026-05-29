@@ -356,21 +356,8 @@ public class MergeCommand {
 
 
     private Map<String, String> loadManifestAtCommit(Revlog changelog, Revlog manifestRevlog, int commitRev) throws IOException {
-        byte[] commitContent = changelog.getRevisionContent(commitRev);
-        String clText = new String(commitContent, StandardCharsets.UTF_8);
-        String firstLine = clText.split("\n")[0].trim();
-        if (firstLine.length() > 40) {
-            firstLine = firstLine.substring(0, 40);
-        }
-        byte[] prevManifestNode = NodeIdUtil.fromHex(firstLine);
-
-        int manifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, prevManifestNode);
-        Map<String, String> manifestMap = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-        if (manifestRev != -1) {
-            byte[] manifestContent = manifestRevlog.getRevisionContent(manifestRev);
-            parseManifest(new String(manifestContent, StandardCharsets.UTF_8), manifestMap);
-        }
-        return manifestMap;
+        byte[] commitNodeId = changelog.getIndexRecord(commitRev).getNodeId();
+        return repository.getManifestAtCommit(commitNodeId);
     }
 
     private byte[] getFileRevisionContent(String path, String nodeHex) throws IOException {
@@ -436,16 +423,5 @@ public class MergeCommand {
         return list;
     }
 
-    private void parseManifest(String text, Map<String, String> result) {
-        if (text == null || text.isEmpty()) return;
-        for (String line : text.split("\n")) {
-            if (line.isEmpty()) continue;
-            int nullIdx = line.indexOf('\0');
-            if (nullIdx != -1) {
-                String path = line.substring(0, nullIdx);
-                String hex = line.substring(nullIdx + 1);
-                result.put(path, hex.trim());
-            }
-        }
-    }
+
 }

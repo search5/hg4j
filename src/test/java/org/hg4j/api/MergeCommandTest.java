@@ -98,7 +98,7 @@ public class MergeCommandTest {
         dirstate.setParents(baseNode, new byte[20]);
         repo.writeDirstate(dirstate);
         Files.writeString(f1.toPath(), "Line 1\nLine 2 [THEIRS]\nLine 3\n");
-        byte[] theirsNode = new CommitCommand(repo).setMessage("Theirs change").call();
+        new CommitCommand(repo).setMessage("Theirs change").call();
 
         // 4. Merge Yours into Theirs (Conflict expected on hello.txt)
         MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(yoursNode).call();
@@ -405,7 +405,7 @@ public class MergeCommandTest {
         File dummy = new File(repoDir, "dummy.txt");
         Files.writeString(dummy.toPath(), "Theirs dummy\n");
         new AddCommand(repo).call();
-        byte[] theirsNode = new CommitCommand(repo).setMessage("Theirs branch commit").call();
+        new CommitCommand(repo).setMessage("Theirs branch commit").call();
 
         // 4. Merge Yours (yoursNode) into Theirs (theirsNode)
         // Currently, dirstate parent is Theirs (theirsNode)
@@ -442,5 +442,20 @@ public class MergeCommandTest {
             if (b != 0) return false;
         }
         return true;
+    }
+
+    @Test
+    public void testMergeCommandSetNodeIdNodeIdType(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        MergeCommand cmd = new MergeCommand(repo);
+        
+        byte[] dummyBytes = new byte[20];
+        org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(dummyBytes);
+        
+        // setNodeId(NodeId) 테스트
+        cmd.setNodeId(nodeId);
+        // setNodeId(null) 테스트
+        cmd.setNodeId((org.hg4j.lib.NodeId) null);
     }
 }

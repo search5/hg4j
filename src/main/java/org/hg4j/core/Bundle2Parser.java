@@ -97,6 +97,7 @@ public class Bundle2Parser {
             int cursor = 0;
             int nameSize = headerBlock[cursor++] & 0xFF;
             String partName = new String(headerBlock, cursor, nameSize, java.nio.charset.StandardCharsets.US_ASCII);
+            System.out.println("[DEBUG BUNDLE2] Parsed partName: '" + partName + "', partHeaderSize: " + partHeaderSize + ", nameSize: " + nameSize);
             cursor += nameSize;
             
             // Part ID (4 bytes) - Skip

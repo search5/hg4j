@@ -1,7 +1,6 @@
 package org.hg4j.api;
 
 import org.hg4j.core.Dirstate;
-import org.hg4j.core.HgRepository;
 import org.hg4j.core.Revlog;
 import org.hg4j.errors.HgCorruptDataException;
 import org.hg4j.errors.HgRepositoryNotFoundException;

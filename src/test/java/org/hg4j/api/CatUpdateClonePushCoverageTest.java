@@ -127,6 +127,62 @@ public class CatUpdateClonePushCoverageTest {
         assertThrows(IOException.class, cat::call);
     }
 
+    @Test
+    public void testCatCommandSetRevisionNodeIdNull(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision((org.hg4j.lib.NodeId) null);
+        // 리비전이 null이면 null로 셋팅되고 빈 리포지토리에서 call() 시 리비전 해석 실패로 예외 발생
+        assertThrows(IOException.class, cat::call);
+    }
+
+    @Test
+    public void testCatCommandNonExistent40HexRevision(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "content\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("커밋").call();
+
+        // 40자리 존재하지 않는 hex nodeId를 주면 해석되지 않아 Unable to resolve revision 예외가 발생함
+        String nonExistent40Hex = "f".repeat(40);
+        CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision(nonExistent40Hex);
+        org.hg4j.errors.HgRevisionNotFoundException ex = assertThrows(org.hg4j.errors.HgRevisionNotFoundException.class, cat::call);
+        assertTrue(ex.getMessage().contains("Unable to resolve revision"));
+    }
+
+    @Test
+    public void testCatCommandSetFileNullOrEmpty(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        
+        CatCommand catNullFile = new CatCommand(repo).setFile(null);
+        assertThrows(IllegalStateException.class, catNullFile::call);
+
+        CatCommand catEmptyFile = new CatCommand(repo).setFile("");
+        assertThrows(IllegalStateException.class, catEmptyFile::call);
+    }
+
+    @Test
+    public void testCatCommandFilelogNotFound(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "content a\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("커밋").call();
+
+        // 매니페스트에는 등록되었으나, 실제 파일로그 파일(.i)을 강제로 삭제
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "a.txt");
+        assertTrue(flIdx.exists());
+        assertTrue(flIdx.delete());
+
+        CatCommand cat = new CatCommand(repo).setFile("a.txt");
+        org.hg4j.errors.HgCorruptDataException ex = assertThrows(org.hg4j.errors.HgCorruptDataException.class, cat::call);
+        assertTrue(ex.getMessage().contains("Filelog not found"));
+    }
+
     // ─────────────────────────────────────────────
     // UpdateCommand 커버리지 추가 경로
     // ─────────────────────────────────────────────
@@ -254,14 +310,14 @@ public class CatUpdateClonePushCoverageTest {
         File fa = new File(repoDir, "a.txt");
         Files.writeString(fa.toPath(), "Content A");
         new AddCommand(repo).call();
-        byte[] nodeA = new CommitCommand(repo).setMessage("Commit A").call();
+        new CommitCommand(repo).setMessage("Commit A").call();
 
         // Rev 1: B (parent: A) on branch-B
         repo.setBranch("branch-B");
         File fb = new File(repoDir, "b.txt");
         Files.writeString(fb.toPath(), "Content B");
         new AddCommand(repo).call();
-        byte[] nodeB = new CommitCommand(repo).setMessage("Commit B").call();
+        new CommitCommand(repo).setMessage("Commit B").call();
 
         // Rev 2: C (parent: A) on default
         new UpdateCommand(repo).setRevision("0").setForce(true).call();
@@ -269,7 +325,7 @@ public class CatUpdateClonePushCoverageTest {
         File fc = new File(repoDir, "c.txt");
         Files.writeString(fc.toPath(), "Content C");
         new AddCommand(repo).call();
-        byte[] nodeC = new CommitCommand(repo).setMessage("Commit C").call();
+        new CommitCommand(repo).setMessage("Commit C").call();
 
         // Rev 3: D (parent: C) on default
         File fd = new File(repoDir, "d.txt");

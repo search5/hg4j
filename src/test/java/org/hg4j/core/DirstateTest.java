@@ -173,42 +173,42 @@ public class DirstateTest {
     @Test
     public void testHgIgnoreAndScanning(@TempDir Path tempDir) throws IOException {
         File repoDir = tempDir.toFile();
-        HgRepository repository = new HgRepository(repoDir);
-        
-        // Create files
-        File f1 = new File(repoDir, "keep.txt");
-        Files.writeString(f1.toPath(), "content");
-        
-        File f2 = new File(repoDir, "ignore_me.tmp");
-        Files.writeString(f2.toPath(), "content");
-        
-        File subDir = new File(repoDir, "build");
-        subDir.mkdirs();
-        File f3 = new File(subDir, "output.class");
-        Files.writeString(f3.toPath(), "class content");
-        
-        File nestedDir = new File(repoDir, "src/nested");
-        nestedDir.mkdirs();
-        File nestedTmp = new File(nestedDir, "sub_temp.tmp");
-        Files.writeString(nestedTmp.toPath(), "nested temp");
-        
-        // 1. Without .hgignore - all should be found
-        java.util.List<String> files1 = repository.scanWorkingCopy();
-        assertTrue(files1.contains("keep.txt"));
-        assertTrue(files1.contains("ignore_me.tmp"));
-        assertTrue(files1.contains("build/output.class"));
-        assertTrue(files1.contains("src/nested/sub_temp.tmp"));
-        
-        // 2. Create .hgignore
-        File ignoreFile = new File(repoDir, ".hgignore");
-        Files.writeString(ignoreFile.toPath(), "syntax: glob\n*.tmp\nbuild/\n");
-        
-        // Reload ignore patterns (it will load automatically on next isIgnored / scan)
-        java.util.List<String> files2 = repository.scanWorkingCopy();
-        assertTrue(files2.contains("keep.txt"));
-        assertFalse(files2.contains("ignore_me.tmp"));
-        assertFalse(files2.contains("build/output.class"));
-        assertFalse(files2.contains("src/nested/sub_temp.tmp")); // verified subdirectory match!
+        try (HgRepository repository = new HgRepository(repoDir)) {
+            // Create files
+            File f1 = new File(repoDir, "keep.txt");
+            Files.writeString(f1.toPath(), "content");
+            
+            File f2 = new File(repoDir, "ignore_me.tmp");
+            Files.writeString(f2.toPath(), "content");
+            
+            File subDir = new File(repoDir, "build");
+            subDir.mkdirs();
+            File f3 = new File(subDir, "output.class");
+            Files.writeString(f3.toPath(), "class content");
+            
+            File nestedDir = new File(repoDir, "src/nested");
+            nestedDir.mkdirs();
+            File nestedTmp = new File(nestedDir, "sub_temp.tmp");
+            Files.writeString(nestedTmp.toPath(), "nested temp");
+            
+            // 1. Without .hgignore - all should be found
+            java.util.List<String> files1 = repository.scanWorkingCopy();
+            assertTrue(files1.contains("keep.txt"));
+            assertTrue(files1.contains("ignore_me.tmp"));
+            assertTrue(files1.contains("build/output.class"));
+            assertTrue(files1.contains("src/nested/sub_temp.tmp"));
+            
+            // 2. Create .hgignore
+            File ignoreFile = new File(repoDir, ".hgignore");
+            Files.writeString(ignoreFile.toPath(), "syntax: glob\n*.tmp\nbuild/\n");
+            
+            // Reload ignore patterns (it will load automatically on next isIgnored / scan)
+            java.util.List<String> files2 = repository.scanWorkingCopy();
+            assertTrue(files2.contains("keep.txt"));
+            assertFalse(files2.contains("ignore_me.tmp"));
+            assertFalse(files2.contains("build/output.class"));
+            assertFalse(files2.contains("src/nested/sub_temp.tmp")); // verified subdirectory match!
+        }
     }
 
     @Test
@@ -243,35 +243,36 @@ public class DirstateTest {
     @Test
     public void testDirstateV2DynamicRebuild(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
-        HgRepository repository = new HgRepository(repoDir);
-        repository.getHgDir().mkdirs();
-        repository.getStoreDir().mkdirs();
-        
-        File dirstateFile = new File(repository.getHgDir(), "dirstate");
-        
-        // Write V2 data file
-        File dataFile = new File(repository.getHgDir(), "dirstate.d.123456");
-        Files.write(dataFile.toPath(), new byte[0]);
+        try (HgRepository repository = new HgRepository(repoDir)) {
+            repository.getHgDir().mkdirs();
+            repository.getStoreDir().mkdirs();
+            
+            File dirstateFile = new File(repository.getHgDir(), "dirstate");
+            
+            // Write V2 data file
+            File dataFile = new File(repository.getHgDir(), "dirstate.d.123456");
+            Files.write(dataFile.toPath(), new byte[0]);
 
-        // Write V2 Docket file (Strict 122+ bytes)
-        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
-        ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
-        buf.put(v2Magic);
-        buf.put(new byte[32]); // p1
-        buf.put(new byte[32]); // p2
-        buf.put(new byte[44]); // tree metadata
-        buf.putInt(0); // dataLength = 0
-        buf.put((byte) uidBytes.length);
-        buf.put(uidBytes);
-        Files.write(dirstateFile.toPath(), buf.array());
-        
-        // When reading, as there is no changelog, it should reconstruct with zero parents
-        Dirstate d = repository.getDirstate();
-        assertTrue(d.isV2()); // rebuilt to v2 (format preserved)
-        assertArrayEquals(new byte[20], d.getParent1());
-        assertArrayEquals(new byte[20], d.getParent2());
+            // Write V2 Docket file (Strict 122+ bytes)
+            byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
+            ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
+            buf.put(v2Magic);
+            buf.put(new byte[32]); // p1
+            buf.put(new byte[32]); // p2
+            buf.put(new byte[44]); // tree metadata
+            buf.putInt(0); // dataLength = 0
+            buf.put((byte) uidBytes.length);
+            buf.put(uidBytes);
+            Files.write(dirstateFile.toPath(), buf.array());
+            
+            // When reading, as there is no changelog, it should reconstruct with zero parents
+            Dirstate d = repository.getDirstate();
+            assertTrue(d.isV2()); // rebuilt to v2 (format preserved)
+            assertArrayEquals(new byte[20], d.getParent1());
+            assertArrayEquals(new byte[20], d.getParent2());
+        }
     }
 
     @Test

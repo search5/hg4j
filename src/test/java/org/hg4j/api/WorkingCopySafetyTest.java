@@ -1,6 +1,5 @@
 package org.hg4j.api;
 
-import org.hg4j.core.Dirstate;
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
 import org.junit.jupiter.api.Test;
@@ -28,7 +27,7 @@ public class WorkingCopySafetyTest {
 
         // 2. Second Commit (Revision 1)
         Files.writeString(f1.toPath(), "Revision 1 Content\n");
-        byte[] rev1Node = new CommitCommand(repo).setMessage("Rev 1").call();
+        new CommitCommand(repo).setMessage("Rev 1").call();
 
         // 3. Make working copy dirty by modifying f1
         Files.writeString(f1.toPath(), "Dirty Content\n");
@@ -100,7 +99,7 @@ public class WorkingCopySafetyTest {
         // This will trigger an IOException in CatCommand/resolveTargetNodeId, not "File not tracked at target revision".
         // The file should NOT be deleted, and the IOException should propagate to the caller.
         RevertCommand revertCmd = new RevertCommand(repo).setFile("a.txt").setRevision("invalid_rev_123");
-        IOException ex = assertThrows(IOException.class, revertCmd::call);
+        assertThrows(IOException.class, revertCmd::call);
         
         // Assert file still exists and has not been deleted due to the error
         assertTrue(f1.exists());
@@ -156,7 +155,7 @@ public class WorkingCopySafetyTest {
         File f2 = new File(repoDir, "b.txt");
         Files.writeString(f2.toPath(), "Tracked in rev 1\n");
         new AddCommand(repo).call();
-        byte[] rev1Node = new CommitCommand(repo).setMessage("Rev 1").call();
+        new CommitCommand(repo).setMessage("Rev 1").call();
 
         // Reverting b.txt to revision "0" (baseNode) where it wasn't tracked
         // It should delete it from disk and untrack it completely because it's not tracked in target commit

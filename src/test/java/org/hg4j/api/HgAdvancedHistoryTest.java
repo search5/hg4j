@@ -11,7 +11,6 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -146,7 +145,7 @@ public class HgAdvancedHistoryTest {
         File fIndependent = new File(repoDir, "independent.txt");
         Files.writeString(fIndependent.toPath(), "C3 Independent Edit");
         new AddCommand(repo).call();
-        byte[] c3Node = new CommitCommand(repo).setMessage("Commit 3").call();
+        new CommitCommand(repo).setMessage("Commit 3").call();
 
         // 5. Rebase C2(Feature branch) onto C1(Main branch)
         RebaseCommand rebaseCmd = new RebaseCommand(repo)

@@ -152,6 +152,14 @@ public class Hg implements AutoCloseable {
         return tree().setNodeId(revision).call();
     }
 
+    public org.hg4j.treewalk.ManifestWalk walkManifest(String revision) {
+        return new org.hg4j.treewalk.ManifestWalk(this.repository, revision);
+    }
+
+    public org.hg4j.treewalk.WorkingDirWalk walkWorkingDir() {
+        return new org.hg4j.treewalk.WorkingDirWalk(this.repository);
+    }
+
     @Override
     public void close() {
         if (this.repository != null) {

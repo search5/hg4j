@@ -81,29 +81,26 @@ public class DirstateV2ParserTest {
         DirstateV2Parser parser = new DirstateV2Parser();
         
         // DirstateV2Node.NODE_SIZE = 44 bytes.
-        // Node 1개짜리 바이트 배열 생성.
-        // pathOffset = 100, pathLen = 50 지정하여 capacity overflow 유발!
         byte[] malformedBytes = new byte[44];
         
-        // pathOffset (offset 0): 100
-        malformedBytes[0] = 0;
-        malformedBytes[1] = 0;
-        malformedBytes[2] = 0;
-        malformedBytes[3] = 100;
+        // pathOffset (offset 16): 100
+        malformedBytes[16] = 0;
+        malformedBytes[17] = 0;
+        malformedBytes[18] = 0;
+        malformedBytes[19] = 100;
         
-        // pathLen (offset 4): 50
-        malformedBytes[4] = 0;
-        malformedBytes[5] = 50;
+        // pathLen (offset 20): 50
+        malformedBytes[20] = 0;
+        malformedBytes[21] = 50;
         
-        // N=1, bytes.length = 44 => N * 44 + pathOffset + pathLen = 1 * 44 + 100 + 50 = 194.
-        // nodeLayout 검증을 통과시키기 위해 bytes.length를 정확하게 194바이트로 설정!
-        byte[] fullBytes = new byte[194];
+        // pathOffset + pathLen = 100 + 50 = 150.
+        // nodeLayout 검증을 통과시키기 위해 bytes.length를 정확하게 150바이트로 설정!
+        byte[] fullBytes = new byte[150];
         System.arraycopy(malformedBytes, 0, fullBytes, 0, 44);
         
-        // dataOffset + pathOffset + pathLen = 44 + 100 + 50 = 194 => fullBytes.capacity()는 194이므로,
-        // buffer.capacity()를 초과하도록 pathLen을 살짝 올려 55로 조작!
-        fullBytes[4] = 0;
-        fullBytes[5] = 55; // 55
+        // capacity()를 초과하도록 pathLen을 살짝 올려 55로 조작!
+        fullBytes[20] = 0;
+        fullBytes[21] = 55;
         
         assertThrows(org.hg4j.errors.HgCorruptDataException.class, () -> parser.parse(fullBytes));
     }

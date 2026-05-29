@@ -70,7 +70,16 @@ public class ChangegroupParser {
      * Parses chunks belonging to a single revlog group with a specific changegroup version.
      */
     public static List<ChangeGroupEntry> parseGroup(InputStream in, String version) throws IOException {
+        return parseGroup(in, version, null);
+    }
+
+    /**
+     * Parses chunks belonging to a single revlog group with a specific changegroup version and reports the detected version.
+     */
+    public static List<ChangeGroupEntry> parseGroup(InputStream in, String version, String[] outVersion) throws IOException {
         List<ChangeGroupEntry> entries = new ArrayList<>();
+        boolean first = true;
+        String detectedVersion = version;
         int headerSize = 80;
         if ("02".equals(version)) {
             headerSize = 100;
@@ -83,8 +92,24 @@ public class ChangegroupParser {
             if (chunk == null) {
                 break;
             }
+            
+            if (first) {
+                first = false;
+                if ("01".equals(version)) {
+                    detectedVersion = autoDetectVersion(chunk);
+                    if ("02".equals(detectedVersion)) {
+                        headerSize = 100;
+                    } else if ("03".equals(detectedVersion)) {
+                        headerSize = 102;
+                    }
+                }
+                if (outVersion != null) {
+                    outVersion[0] = detectedVersion;
+                }
+            }
+
             if (chunk.length < headerSize) {
-                throw new org.hg4j.errors.HgCorruptDataException("Malformed changegroup header chunk. Length too small: " + chunk.length + " for version: " + version);
+                throw new org.hg4j.errors.HgCorruptDataException("Malformed changegroup header chunk. Length too small: " + chunk.length + " for version: " + detectedVersion);
             }
 
             ChangeGroupEntry entry = new ChangeGroupEntry();
@@ -115,6 +140,42 @@ public class ChangegroupParser {
         return entries;
     }
 
+    private static String autoDetectVersion(byte[] chunk) {
+        System.out.println("[DEBUG AUTO] chunk length: " + chunk.length);
+        if (chunk.length < 80) {
+            return "01";
+        }
+        boolean v3Valid = chunk.length >= 102 + 12 && isValidDeltaHeader(chunk, 102);
+        boolean v2Valid = chunk.length >= 100 + 12 && isValidDeltaHeader(chunk, 100);
+        System.out.println("[DEBUG AUTO] v3Valid: " + v3Valid + ", v2Valid: " + v2Valid);
+        if (v3Valid) {
+            return "03";
+        }
+        if (v2Valid) {
+            return "02";
+        }
+        return "01";
+    }
+
+    private static boolean isValidDeltaHeader(byte[] chunk, int offset) {
+        int start = ((chunk[offset] & 0xFF) << 24) |
+                    ((chunk[offset + 1] & 0xFF) << 16) |
+                    ((chunk[offset + 2] & 0xFF) << 8) |
+                    (chunk[offset + 3] & 0xFF);
+        int end = ((chunk[offset + 4] & 0xFF) << 24) |
+                  ((chunk[offset + 5] & 0xFF) << 16) |
+                  ((chunk[offset + 6] & 0xFF) << 8) |
+                  (chunk[offset + 7] & 0xFF);
+        int len = ((chunk[offset + 8] & 0xFF) << 24) |
+                  ((chunk[offset + 9] & 0xFF) << 16) |
+                  ((chunk[offset + 10] & 0xFF) << 8) |
+                  (chunk[offset + 11] & 0xFF);
+
+        boolean valid = (start >= 0 && end >= 0 && len >= 0 && start <= end && len <= (chunk.length - (offset + 12)));
+        System.out.println("[DEBUG AUTO] isValidDeltaHeader offset: " + offset + ", start: " + start + ", end: " + end + ", len: " + len + ", remaining: " + (chunk.length - (offset + 12)) + " -> " + valid);
+        return valid;
+    }
+
     public static class ManifestGroup {
         public String path;
         public List<ChangeGroupEntry> entries;
@@ -143,10 +204,12 @@ public class ChangegroupParser {
      * Parses a complete Mercurial changegroup bundle of specific version from stream.
      */
     public static ChangegroupBundle parseBundle(InputStream in, String version) throws IOException {
+        String[] versionHolder = new String[]{ version };
         ChangegroupBundle bundle = new ChangegroupBundle();
-        bundle.changelogEntries = parseGroup(in, version);
+        bundle.changelogEntries = parseGroup(in, version, versionHolder);
+        String detectedVersion = versionHolder[0];
         
-        if ("03".equals(version)) {
+        if ("03".equals(detectedVersion)) {
             bundle.manifestGroups = new ArrayList<>();
             while (true) {
                 byte[] pathChunk = readChunk(in);
@@ -155,11 +218,11 @@ public class ChangegroupParser {
                 }
                 ManifestGroup mg = new ManifestGroup();
                 mg.path = new String(pathChunk, java.nio.charset.StandardCharsets.UTF_8);
-                mg.entries = parseGroup(in, version);
+                mg.entries = parseGroup(in, detectedVersion, versionHolder);
                 bundle.manifestGroups.add(mg);
             }
         } else {
-            bundle.manifestEntries = parseGroup(in, version);
+            bundle.manifestEntries = parseGroup(in, detectedVersion, versionHolder);
         }
 
         bundle.fileGroups = new ArrayList<>();
@@ -170,7 +233,7 @@ public class ChangegroupParser {
             }
             FileGroup fg = new FileGroup();
             fg.path = new String(pathChunk, java.nio.charset.StandardCharsets.UTF_8);
-            fg.entries = parseGroup(in, version);
+            fg.entries = parseGroup(in, detectedVersion, versionHolder);
             bundle.fileGroups.add(fg);
         }
         return bundle;

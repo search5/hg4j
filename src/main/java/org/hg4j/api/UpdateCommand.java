@@ -40,8 +40,6 @@ public class UpdateCommand {
     public byte[] call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         try (HgLock wlock = repository.lockWorkingCopy();
              HgLock storeLock = repository.lockStore()) {
@@ -64,33 +62,7 @@ public class UpdateCommand {
                 throw new org.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
             }
 
-            // Extract manifest node hex from changelog content
-            byte[] clContent = changelog.getRevisionContent(commitRev);
-            String clText = new String(clContent, StandardCharsets.UTF_8);
-            String firstLine = clText.split("\n")[0];
-            byte[] mfNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
-
-            Revlog manifest = repository.getRevlog(mfIdx, mfDat);
-            int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
-            if (mfRev == -1) {
-                throw new org.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(mfNode));
-            }
-
-            byte[] mfContent = manifest.getRevisionContent(mfRev);
-            String mfText = new String(mfContent, StandardCharsets.UTF_8);
-
-            // 1. Parse target manifest entries
-            Map<String, String> targetEntries = new HashMap<>();
-            String[] lines = mfText.split("\n");
-            for (String line : lines) {
-                if (line.isEmpty()) continue;
-                int nullIdx = line.indexOf('\0');
-                if (nullIdx != -1) {
-                    String path = line.substring(0, nullIdx);
-                    String nodeWithFlags = line.substring(nullIdx + 1);
-                    targetEntries.put(path, nodeWithFlags.trim());
-                }
-            }
+            Map<String, String> targetEntries = repository.getManifestAtCommit(targetNodeId);
 
             // 2. Read current dirstate
             Dirstate dirstate = repository.getDirstate();
@@ -177,34 +149,16 @@ public class UpdateCommand {
     }
 
     private byte[] resolveTargetNodeId(Revlog changelog) throws IOException {
-        if (targetRevision == null || targetRevision.isEmpty()) {
-            int count = changelog.getRevisionCount();
-            if (count == 0) return null;
-            return changelog.getIndexRecord(count - 1).getNodeId();
-        }
-
-        // 1. Try revision number
         try {
-            int rev = Integer.parseInt(targetRevision);
-            if (rev >= 0 && rev < changelog.getRevisionCount()) {
-                return changelog.getIndexRecord(rev).getNodeId();
+            byte[] resolved = NodeIdUtil.resolveRevision(changelog, targetRevision);
+            if (resolved != null) {
+                return resolved;
             }
-        } catch (NumberFormatException ignored) {}
-
-        // 2. Try hex node ID prefix
-        byte[] matchNode = null;
-        for (int i = 0; i < changelog.getRevisionCount(); i++) {
-            byte[] node = changelog.getIndexRecord(i).getNodeId();
-            String hex = NodeIdUtil.toHex(node);
-            if (hex.startsWith(targetRevision.toLowerCase())) {
-                if (matchNode != null) {
-                    throw new org.hg4j.errors.HgRevisionNotFoundException("Ambiguous revision identifier: " + targetRevision);
-                }
-                matchNode = node;
+        } catch (IOException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Ambiguous")) {
+                throw new org.hg4j.errors.HgRevisionNotFoundException(e.getMessage());
             }
-        }
-        if (matchNode != null) {
-            return matchNode;
+            throw e;
         }
 
         // 3. Try named branch head

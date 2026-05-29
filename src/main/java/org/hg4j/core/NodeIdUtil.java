@@ -1,5 +1,7 @@
 package org.hg4j.core;
 
+import java.io.IOException;
+
 
 /**
  * Common utility methods for handling Mercurial NodeIDs and Hexadecimal representations.
@@ -203,4 +205,31 @@ public final class NodeIdUtil {
         }
         return b1.length - b2.length;
     };
+
+    public static byte[] resolveRevision(Revlog changelog, String revStr) throws IOException {
+        if (revStr == null || revStr.isEmpty() || "tip".equalsIgnoreCase(revStr)) {
+            int count = changelog.getRevisionCount();
+            if (count == 0) return null;
+            return changelog.getIndexRecord(count - 1).getNodeId();
+        }
+        try {
+            int rev = Integer.parseInt(revStr);
+            if (rev >= 0 && rev < changelog.getRevisionCount()) {
+                return changelog.getIndexRecord(rev).getNodeId();
+            }
+        } catch (NumberFormatException ignored) {}
+
+        byte[] matchNode = null;
+        for (int i = 0; i < changelog.getRevisionCount(); i++) {
+            byte[] node = changelog.getIndexRecord(i).getNodeId();
+            String hex = toHex(node);
+            if (hex.startsWith(revStr.toLowerCase())) {
+                if (matchNode != null) {
+                    throw new IOException("Ambiguous revision identifier: " + revStr);
+                }
+                matchNode = node;
+            }
+        }
+        return matchNode;
+    }
 }

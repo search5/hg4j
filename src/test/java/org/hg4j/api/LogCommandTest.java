@@ -26,7 +26,7 @@ public class LogCommandTest {
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Hello Log");
         new AddCommand(repo).call();
-        byte[] node1 = new CommitCommand(repo)
+        new CommitCommand(repo)
                 .setAuthor("Alice <alice@example.com>")
                 .setMessage("First commit")
                 .call();
@@ -35,7 +35,7 @@ public class LogCommandTest {
         File f2 = new File(repoDir, "b.txt");
         Files.writeString(f2.toPath(), "Hello Log 2");
         new AddCommand(repo).call();
-        byte[] node2 = new CommitCommand(repo)
+        new CommitCommand(repo)
                 .setAuthor("Bob <bob@example.com>")
                 .setMessage("Second commit\nWith body")
                 .call();

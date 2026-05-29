@@ -13,11 +13,30 @@ public class HgRepository implements Repository {
     private final File directory;
     private final File hgDir;
     private final File storeDir;
+    private boolean defaultDirstateV2 = false;
 
     public HgRepository(File directory) {
         this.directory = directory;
         this.hgDir = new File(directory, ".hg");
         this.storeDir = new File(hgDir, "store");
+        loadRequires();
+    }
+
+    private void loadRequires() {
+        File requiresFile = new File(hgDir, "requires");
+        if (requiresFile.exists() && requiresFile.isFile()) {
+            try {
+                java.util.List<String> lines = java.nio.file.Files.readAllLines(requiresFile.toPath());
+                for (String line : lines) {
+                    if ("dirstate-v2".equals(line.trim())) {
+                        this.defaultDirstateV2 = true;
+                        break;
+                    }
+                }
+            } catch (Exception ignored) {
+                // Fallback to default v1
+            }
+        }
     }
 
     public File getDirectory() {
@@ -49,7 +68,7 @@ public class HgRepository implements Repository {
                 LOGGER.log(Level.WARNING, "Failed to read dirstate file, attempting rebuild", e);
                 needsRebuild = true;
             }
-            if (needsRebuild || (dirstate.isV2() && dirstate.getEntries().isEmpty())) {
+            if (needsRebuild) {
                 rebuildDirstateFromManifest(dirstate);
             }
         }
@@ -60,15 +79,13 @@ public class HgRepository implements Repository {
         try {
             File clIdx = new File(storeDir, "00changelog.i");
             File clDat = new File(storeDir, "00changelog.d");
-            File mfIdx = new File(storeDir, "00manifest.i");
-            File mfDat = new File(storeDir, "00manifest.d");
             
             if (!clIdx.exists()) {
                 dirstate.setParents(new byte[20], new byte[20]);
                 return;
             }
             
-            Revlog changelog = new Revlog(clIdx, clDat);
+            Revlog changelog = getRevlog(clIdx, clDat);
             int lastRev = changelog.getRevisionCount() - 1;
             if (lastRev < 0) {
                 dirstate.setParents(new byte[20], new byte[20]);
@@ -78,36 +95,139 @@ public class HgRepository implements Repository {
             byte[] parentNode = changelog.getIndexRecord(lastRev).getNodeId();
             dirstate.setParents(parentNode, new byte[20]);
             
-            Revlog manifestRevlog = new Revlog(mfIdx, mfDat);
-            byte[] clContent = changelog.getRevisionContent(lastRev);
-            String clText = new String(clContent, java.nio.charset.StandardCharsets.UTF_8);
-            String firstLine = clText.split("\n")[0];
-            byte[] mfNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
-            
-            int mfRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, mfNode);
-            if (mfRev != -1) {
-                byte[] mfContent = manifestRevlog.getRevisionContent(mfRev);
-                String mfText = new String(mfContent, java.nio.charset.StandardCharsets.UTF_8);
-                
-                String[] lines = mfText.split("\n");
-                for (String line : lines) {
-                    if (line.isEmpty()) continue;
-                    int nullIdx = line.indexOf('\0');
-                    if (nullIdx != -1) {
-                        String path = line.substring(0, nullIdx);
-                        File diskFile = new File(directory, path);
-                        if (diskFile.exists() && diskFile.isFile()) {
-                            int mode = diskFile.canExecute() ? 0755 : 0644;
-                            int size = (int) diskFile.length();
-                            long time = diskFile.lastModified() / 1000;
-                            dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
-                        }
-                    }
+            java.util.Map<String, String> manifestMap = getManifestAtCommit(parentNode);
+            for (String path : manifestMap.keySet()) {
+                File diskFile = new File(directory, path);
+                if (diskFile.exists() && diskFile.isFile()) {
+                    int mode = diskFile.canExecute() ? 0755 : 0644;
+                    int size = (int) diskFile.length();
+                    long time = diskFile.lastModified() / 1000;
+                    dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
                 }
             }
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Failed to dynamically rebuild dirstate from manifest", e);
         }
+    }
+
+    public java.util.Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
+        File clIdx = new File(storeDir, "00changelog.i");
+        File clDat = new File(storeDir, "00changelog.d");
+        Revlog changelog = getRevlog(clIdx, clDat);
+        int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, commitNodeId);
+        if (commitRev == -1) {
+            throw new IOException("Commit revision not found: " + NodeIdUtil.toHex(commitNodeId));
+        }
+
+        byte[] clContent = changelog.getRevisionContent(commitRev);
+
+        int firstNewLine = -1;
+        for (int i = 0; i < clContent.length; i++) {
+            if (clContent[i] == '\n') {
+                firstNewLine = i;
+                break;
+            }
+        }
+
+        byte[] mfNode = null;
+        if (firstNewLine >= 40) {
+            boolean isHexText = true;
+            for (int i = 0; i < 40; i++) {
+                char c = (char) clContent[i];
+                if (Character.digit(c, 16) == -1) {
+                    isHexText = false;
+                    break;
+                }
+            }
+
+            if (isHexText) {
+                String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
+                mfNode = NodeIdUtil.fromHex(hexNode);
+            }
+        }
+
+        if (mfNode == null) {
+            if (clContent.length >= 20) {
+                mfNode = new byte[20];
+                System.arraycopy(clContent, 0, mfNode, 0, 20);
+            } else {
+                throw new IOException("Changelog content too short to extract manifest node ID");
+            }
+        }
+
+        File mfIdx = new File(storeDir, "00manifest.i");
+        File mfDat = new File(storeDir, "00manifest.d");
+        Revlog manifestRevlog = getRevlog(mfIdx, mfDat);
+        int mfRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, mfNode);
+        if (mfRev == -1) {
+            throw new IOException("Manifest not found: " + NodeIdUtil.toHex(mfNode));
+        }
+
+        byte[] mfContent = manifestRevlog.getRevisionContent(mfRev);
+        java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
+
+        int start = 0;
+        int len = mfContent.length;
+        while (start < len) {
+            int end = start;
+            while (end < len && mfContent[end] != '\n') {
+                end++;
+            }
+
+            if (end > start) {
+                int nullIdx = -1;
+                for (int i = start; i < end; i++) {
+                    if (mfContent[i] == '\0') {
+                        nullIdx = i;
+                        break;
+                    }
+                }
+
+                if (nullIdx != -1) {
+                    String path = new String(mfContent, start, nullIdx - start, java.nio.charset.StandardCharsets.UTF_8);
+                    int valStart = nullIdx + 1;
+                    int valLen = end - valStart;
+
+                    if (valLen >= 40) {
+                        boolean isHexText = true;
+                        for (int i = 0; i < 40; i++) {
+                            char c = (char) mfContent[valStart + i];
+                            if (Character.digit(c, 16) == -1) {
+                                isHexText = false;
+                                break;
+                            }
+                        }
+
+                        if (isHexText) {
+                            String hexNodeId = new String(mfContent, valStart, 40, java.nio.charset.StandardCharsets.UTF_8);
+                            String flag = "";
+                            if (valLen > 40) {
+                                flag = new String(mfContent, valStart + 40, valLen - 40, java.nio.charset.StandardCharsets.UTF_8).trim();
+                            }
+                            result.put(path, hexNodeId + flag);
+
+                            start = end + 1;
+                            continue;
+                        }
+                    }
+
+                    if (valStart + 20 <= end) {
+                        byte[] hashBytes = new byte[20];
+                        System.arraycopy(mfContent, valStart, hashBytes, 0, 20);
+                        String hexNodeId = NodeIdUtil.toHex(hashBytes);
+
+                        int flagStart = valStart + 20;
+                        String flag = "";
+                        if (flagStart < end) {
+                            flag = new String(mfContent, flagStart, end - flagStart, java.nio.charset.StandardCharsets.UTF_8).trim();
+                        }
+                        result.put(path, hexNodeId + flag);
+                    }
+                }
+            }
+            start = end + 1;
+        }
+        return result;
     }
 
     /**
@@ -120,6 +240,7 @@ public class HgRepository implements Repository {
         if (dirstate == null) {
             throw new IllegalArgumentException("Dirstate cannot be null");
         }
+        dirstate.setV2(defaultDirstateV2);
         File dirstateFile = new File(hgDir, "dirstate");
         dirstate.write(dirstateFile);
     }
@@ -300,7 +421,7 @@ public class HgRepository implements Repository {
             String rel = root.toURI().relativize(child.toURI()).getPath();
             rel = rel.replace('\\', '/');
             
-            boolean isDir = child.isDirectory();
+            boolean isDir = child.isDirectory() && !java.nio.file.Files.isSymbolicLink(child.toPath());
             if (isDir) {
                 if (!rel.endsWith("/")) {
                     rel = rel + "/";
@@ -479,5 +600,6 @@ public class HgRepository implements Repository {
     @Override
     public void close() {
         // 리소스 캐시 정리 등 안전한 해제 수행
+        clearRevlogCache();
     }
 }

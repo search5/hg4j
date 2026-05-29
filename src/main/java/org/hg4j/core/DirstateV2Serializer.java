@@ -176,7 +176,7 @@ public class DirstateV2Serializer {
             nodeView.setMtime(time);
 
             // 5. Paths & tree structures
-            nodeView.setPathOffset(pathOffsetMap.get(node));
+            nodeView.setPathOffset(dataOffset + pathOffsetMap.get(node));
             nodeView.setPathLen(pathLenMap.get(node));
             nodeView.setChildrenStart(childrenStartMap.getOrDefault(node, 0));
             nodeView.setChildrenCount(childrenCountMap.getOrDefault(node, 0));

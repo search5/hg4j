@@ -175,7 +175,9 @@ public class Dirstate {
 
                 this.isV2 = true;
                 DirstateV2Parser parser = new DirstateV2Parser();
-                Dirstate parsed = parser.parse(dataBytes);
+                int rootStart = docketBuf.getInt(76);
+                int rootCount = docketBuf.getInt(80);
+                Dirstate parsed = parser.parse(dataBytes, rootStart, rootCount);
                 this.parent1 = new NodeId(p1);
                 this.parent2 = new NodeId(p2);
                 this.entries.clear();

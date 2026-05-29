@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -156,34 +155,8 @@ public class DiffCommand {
         if (commitRev < 0 || commitRev >= changelog.getRevisionCount()) {
             return Collections.emptyMap();
         }
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
-
-        byte[] commitContent = changelog.getRevisionContent(commitRev);
-        String clText = new String(commitContent, StandardCharsets.UTF_8);
-        String firstLine = clText.split("\n")[0].trim();
-        if (firstLine.length() > 40) {
-            firstLine = firstLine.substring(0, 40);
-        }
-        byte[] manifestNode = NodeIdUtil.fromHex(firstLine);
-
-        int manifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, manifestNode);
-        Map<String, String> manifestMap = new HashMap<>();
-        if (manifestRev != -1) {
-            byte[] manifestContent = manifestRevlog.getRevisionContent(manifestRev);
-            String manifestText = new String(manifestContent, StandardCharsets.UTF_8);
-            for (String line : manifestText.split("\n")) {
-                if (line.isEmpty()) continue;
-                int nullIdx = line.indexOf('\0');
-                if (nullIdx != -1) {
-                    String path = line.substring(0, nullIdx);
-                    String hex = line.substring(nullIdx + 1).trim();
-                    manifestMap.put(path, hex);
-                }
-            }
-        }
-        return manifestMap;
+        byte[] commitNodeId = changelog.getIndexRecord(commitRev).getNodeId();
+        return repository.getManifestAtCommit(commitNodeId);
     }
 
     private byte[] getFileContent(String path, String nodeHex) throws IOException {

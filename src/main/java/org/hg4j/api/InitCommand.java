@@ -5,18 +5,21 @@ import org.hg4j.core.SafeFileIO;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
 
 /**
  * Initializes a new Mercurial repository.
  */
 public class InitCommand {
     private File directory;
+    private boolean dirstateV2 = false;
 
     public InitCommand setDirectory(File directory) {
         this.directory = directory;
+        return this;
+    }
+
+    public InitCommand setDirstateV2(boolean dirstateV2) {
+        this.dirstateV2 = dirstateV2;
         return this;
     }
 
@@ -55,13 +58,16 @@ public class InitCommand {
         }
 
         File requiresFile = new File(hgDir, "requires");
-        List<String> requirements = List.of(
+        java.util.List<String> requirements = new java.util.ArrayList<>(java.util.List.of(
                 "dotencode",
                 "fncache",
                 "generaldelta",
                 "revlogv1",
                 "store"
-        );
+        ));
+        if (dirstateV2) {
+            requirements.add("dirstate-v2");
+        }
         
         try {
             SafeFileIO.writeLinesAtomic(requiresFile, requirements);

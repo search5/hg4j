@@ -8,7 +8,6 @@ import org.hg4j.core.Revlog;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 /**
@@ -51,7 +50,7 @@ public class RevertCommand {
                 File clIdx = new File(repository.getStoreDir(), "00changelog.i");
                 File clDat = new File(repository.getStoreDir(), "00changelog.d");
                 Revlog changelog = repository.getRevlog(clIdx, clDat);
-                targetNodeId = resolveTargetNodeId(changelog);
+                targetNodeId = NodeIdUtil.resolveRevision(changelog, revision);
             }
 
             if (targetNodeId == null || NodeIdUtil.isAllZero(targetNodeId)) {
@@ -80,37 +79,10 @@ public class RevertCommand {
                 tracked = true;
                 
                 // Get flags from manifest
-                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-                File clDat = new File(repository.getStoreDir(), "00changelog.d");
-                Revlog changelog = repository.getRevlog(clIdx, clDat);
-                int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
-                if (commitRev != -1) {
-                    byte[] clContent = changelog.getRevisionContent(commitRev);
-                    String clText = new String(clContent, StandardCharsets.UTF_8);
-                    byte[] mfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
-
-                    File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-                    File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-                    Revlog manifest = repository.getRevlog(mfIdx, mfDat);
-                    int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
-                    if (mfRev != -1) {
-                        byte[] mfContent = manifest.getRevisionContent(mfRev);
-                        String mfText = new String(mfContent, StandardCharsets.UTF_8);
-                        for (String line : mfText.split("\n")) {
-                            if (line.isEmpty()) continue;
-                            int nullIdx = line.indexOf('\0');
-                            if (nullIdx != -1) {
-                                String path = line.substring(0, nullIdx);
-                                if (file.equals(path)) {
-                                    String nodeWithFlags = line.substring(nullIdx + 1).trim();
-                                    if (nodeWithFlags.length() > 40 && nodeWithFlags.substring(40).contains("x")) {
-                                        mode = 0755;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                java.util.Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
+                String nodeWithFlags = manifestMap.get(file);
+                if (nodeWithFlags != null && nodeWithFlags.substring(Math.min(40, nodeWithFlags.length())).contains("x")) {
+                    mode = 0755;
                 }
             } catch (IOException e) {
                 if (e.getMessage() != null && e.getMessage().contains("File not tracked at target revision")) {
@@ -142,29 +114,4 @@ public class RevertCommand {
         }
     }
 
-    private byte[] resolveTargetNodeId(Revlog changelog) throws IOException {
-        if (revision == null || revision.isEmpty()) {
-            return null;
-        }
-
-        try {
-            int rev = Integer.parseInt(revision);
-            if (rev >= 0 && rev < changelog.getRevisionCount()) {
-                return changelog.getIndexRecord(rev).getNodeId();
-            }
-        } catch (NumberFormatException ignored) {}
-
-        byte[] matchNode = null;
-        for (int i = 0; i < changelog.getRevisionCount(); i++) {
-            byte[] node = changelog.getIndexRecord(i).getNodeId();
-            String hex = NodeIdUtil.toHex(node);
-            if (hex.startsWith(revision.toLowerCase())) {
-                if (matchNode != null) {
-                    throw new org.hg4j.errors.HgRevisionNotFoundException("Ambiguous revision identifier: " + revision);
-                }
-                matchNode = node;
-            }
-        }
-        return matchNode;
-    }
 }

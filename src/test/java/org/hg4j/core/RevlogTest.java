@@ -102,7 +102,7 @@ public class RevlogTest {
 
         // 3. Append second revision as fulltext snapshot
         byte[] content1 = "Line 1\nLine 2\nLine 3\n".getBytes(StandardCharsets.UTF_8);
-        byte[] node1 = revlog.appendRevision(content1, 0, -1, node0, p2Node, 1);
+        revlog.appendRevision(content1, 0, -1, node0, p2Node, 1);
         assertEquals(2, revlog.getRevisionCount());
 
         // Verify loaded revision 1
@@ -120,8 +120,8 @@ public class RevlogTest {
         assertEquals(1, rec1.getRevision());
         assertEquals(0, rec1.getParent1());
         assertEquals(-1, rec1.getParent2());
-        // Since we implemented generaldelta support, the second revision is successfully stored as a delta chunk
-        assertEquals(0, rec1.getBaseRev()); 
+        // Since we decided to store revision as a robust fulltext chunk for specifications interop safety
+        assertEquals(1, rec1.getBaseRev()); 
     }
 
     @Test
@@ -220,7 +220,7 @@ public class RevlogTest {
 
         // 2. Compressible append ('x', covers line 278)
         byte[] largeContent = "A".repeat(1000).getBytes(StandardCharsets.UTF_8);
-        byte[] node1 = revlog.appendRevision(largeContent, 0, -1, node, p, 51);
+        revlog.appendRevision(largeContent, 0, -1, node, p, 51);
 
         Revlog.IndexRecord rec1 = revlog.getIndexRecord(1);
         assertEquals(1, rec1.getRevision());
@@ -500,7 +500,6 @@ public class RevlogTest {
     @Test
     public void testMultiLevelDeltaChain(@TempDir Path tempDir) throws Exception {
         File idxFile = tempDir.resolve("multichain.i").toFile();
-        File datFile = tempDir.resolve("multichain.d").toFile();
 
         // 1. Snapshot revision 0: "Hello\n"
         byte[] content0 = "Hello\n".getBytes(StandardCharsets.UTF_8);
@@ -719,7 +718,7 @@ public class RevlogTest {
 
         // 2. 쓰기 추가 발생 시 Mmap 캐시 무효화 및 갱신 검증
         byte[] content2 = "Second large content chunk, appended later.\n".repeat(50).getBytes(StandardCharsets.UTF_8);
-        byte[] node2 = revlog.appendRevision(content2, 0, -1, node1, pNode, 1);
+        revlog.appendRevision(content2, 0, -1, node1, pNode, 1);
 
         // 이전 캐시를 비우고 다시 읽어도 최신 크기로 자동 리매핑되어 정상 조회가 되어야 함
         revlog.clearCache();

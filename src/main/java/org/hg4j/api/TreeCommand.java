@@ -6,7 +6,6 @@ import org.hg4j.core.Revlog;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -81,50 +80,27 @@ public class TreeCommand {
             return Collections.emptyList();
         }
 
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
-
-        byte[] commitContent = changelog.getRevisionContent(targetRev);
-        String clText = new String(commitContent, StandardCharsets.UTF_8);
-        String firstLine = clText.split("\n")[0].trim();
-        if (firstLine.length() > 40) {
-            firstLine = firstLine.substring(0, 40);
-        }
-        byte[] manifestNode = NodeIdUtil.fromHex(firstLine);
-
-        int manifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, manifestNode);
-        if (manifestRev == -1) {
-            return Collections.emptyList();
-        }
-
-        byte[] manifestContent = manifestRevlog.getRevisionContent(manifestRev);
-        String manifestText = new String(manifestContent, StandardCharsets.UTF_8);
+        byte[] commitNodeId = changelog.getIndexRecord(targetRev).getNodeId();
+        java.util.Map<String, String> manifestMap = repository.getManifestAtCommit(commitNodeId);
 
         List<TreeEntry> entries = new ArrayList<>();
-        if (!manifestText.isEmpty()) {
-            for (String line : manifestText.split("\n")) {
-                if (line.isEmpty()) continue;
-                int nullIdx = line.indexOf('\0');
-                if (nullIdx != -1) {
-                    String path = line.substring(0, nullIdx);
-                    String hex = line.substring(nullIdx + 1).trim();
-                    
-                    int mode = 0644;
-                    String cleanHex = hex;
-                    if (hex.length() > 40) {
-                        char flag = hex.charAt(40);
-                        if (flag == 'x') {
-                            mode = 0755;
-                        } else if (flag == 'l') {
-                            mode = 0120000;
-                        }
-                        cleanHex = hex.substring(0, 40);
-                    }
-                    
-                    entries.add(new TreeEntry(path, cleanHex, mode));
+        for (java.util.Map.Entry<String, String> entry : manifestMap.entrySet()) {
+            String path = entry.getKey();
+            String hex = entry.getValue();
+            
+            int mode = 0644;
+            String cleanHex = hex;
+            if (hex.length() > 40) {
+                char flag = hex.charAt(40);
+                if (flag == 'x') {
+                    mode = 0755;
+                } else if (flag == 'l') {
+                    mode = 0120000;
                 }
+                cleanHex = hex.substring(0, 40);
             }
+            
+            entries.add(new TreeEntry(path, cleanHex, mode));
         }
         return entries;
     }

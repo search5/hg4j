@@ -125,75 +125,75 @@ public class DirstateV2Node {
     }
 
     public int getPathOffset() {
-        return buffer.getInt(offset + 0);
+        return buffer.getInt(offset + 16);
     }
 
     public void setPathOffset(int pathOffset) {
-        buffer.putInt(offset + 0, pathOffset);
+        buffer.putInt(offset + 16, pathOffset);
     }
 
     public short getPathLen() {
-        return buffer.getShort(offset + 4);
+        return buffer.getShort(offset + 20);
     }
 
     public void setPathLen(short pathLen) {
-        buffer.putShort(offset + 4, pathLen);
+        buffer.putShort(offset + 20, pathLen);
     }
 
     public short getBasenameStart() {
-        return buffer.getShort(offset + 6);
+        return buffer.getShort(offset + 22);
     }
 
     public void setBasenameStart(short start) {
-        buffer.putShort(offset + 6, start);
+        buffer.putShort(offset + 22, start);
     }
 
     public int getCopySourceOffset() {
-        return buffer.getInt(offset + 8);
+        return buffer.getInt(offset + 24);
     }
 
     public void setCopySourceOffset(int offsetVal) {
-        buffer.putInt(offset + 8, offsetVal);
+        buffer.putInt(offset + 24, offsetVal);
     }
 
     public short getCopySourceLen() {
-        return buffer.getShort(offset + 12);
+        return buffer.getShort(offset + 28);
     }
 
     public void setCopySourceLen(short len) {
-        buffer.putShort(offset + 12, len);
+        buffer.putShort(offset + 28, len);
     }
 
     public int getChildrenStart() {
-        return buffer.getInt(offset + 14);
+        return buffer.getInt(offset + 0);
     }
 
     public void setChildrenStart(int childrenStart) {
-        buffer.putInt(offset + 14, childrenStart);
+        buffer.putInt(offset + 0, childrenStart);
     }
 
     public int getChildrenCount() {
-        return buffer.getInt(offset + 18);
+        return buffer.getInt(offset + 4);
     }
 
     public void setChildrenCount(int childrenCount) {
-        buffer.putInt(offset + 18, childrenCount);
+        buffer.putInt(offset + 4, childrenCount);
     }
 
     public int getDescendantsWithEntryCount() {
-        return buffer.getInt(offset + 22);
+        return buffer.getInt(offset + 8);
     }
 
     public void setDescendantsWithEntryCount(int count) {
-        buffer.putInt(offset + 22, count);
+        buffer.putInt(offset + 8, count);
     }
 
     public int getTrackedDescendants() {
-        return buffer.getInt(offset + 26);
+        return buffer.getInt(offset + 12);
     }
 
     public void setTrackedDescendants(int count) {
-        buffer.putInt(offset + 26, count);
+        buffer.putInt(offset + 12, count);
     }
 
     public short getFlags() {

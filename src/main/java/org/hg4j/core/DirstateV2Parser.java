@@ -11,7 +11,47 @@ import java.nio.charset.StandardCharsets;
 public class DirstateV2Parser {
 
     /**
-     * Parses dirstate-v2 binary content into a standard Dirstate instance.
+     * Parses dirstate-v2 binary content into a standard Dirstate instance using absolute tree traversal.
+     *
+     * @param bytes raw binary content
+     * @param rootStart start offset of root nodes
+     * @param rootCount number of root nodes
+     * @return decoded Dirstate object
+     * @throws IOException if format is invalid
+     */
+    public Dirstate parse(byte[] bytes, int rootStart, int rootCount) throws IOException {
+        Dirstate decoded = new Dirstate();
+        decoded.setV2(true);
+        if (bytes == null || bytes.length == 0) {
+            return decoded;
+        }
+
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+        
+        // Detect old hg4j relative offset compatibility
+        int dataOffset = 0;
+        int nodeSize = DirstateV2Node.NODE_SIZE;
+        if (rootStart == 0 && rootCount * nodeSize <= bytes.length) {
+            int lastNodeOffset = (rootCount - 1) * nodeSize;
+            if (lastNodeOffset >= 0 && lastNodeOffset + nodeSize <= bytes.length) {
+                int pathOffset = buffer.getInt(lastNodeOffset + 16);
+                int pathLen = buffer.getShort(lastNodeOffset + 20) & 0xFFFF;
+                if (rootCount * nodeSize + pathOffset + pathLen == bytes.length) {
+                    dataOffset = rootCount * nodeSize;
+                }
+            }
+        }
+
+        for (int i = 0; i < rootCount; i++) {
+            int nodeOffset = rootStart + i * nodeSize;
+            parseNode(buffer, nodeOffset, dataOffset, decoded);
+        }
+
+        return decoded;
+    }
+
+    /**
+     * Parses dirstate-v2 binary content into a standard Dirstate instance (Legacy fallback compatibility).
      *
      * @param bytes raw binary content
      * @return decoded Dirstate object
@@ -28,20 +68,34 @@ public class DirstateV2Parser {
             return decoded;
         }
 
-        // 100% native Mercurial format - no 12-byte header.
-        // Find nodeCount (N) using the invariant: N * 44 + pathOffset[N-1] + pathLen[N-1] == bytes.length
         int nodeCount = 0;
         int nodeSize = DirstateV2Node.NODE_SIZE;
         ByteBuffer tempBuf = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
         
+        // Try detecting with absolute path offset
         for (int n = 1; n * nodeSize <= bytes.length; n++) {
             int lastNodeOffset = (n - 1) * nodeSize;
-            int pathOffset = tempBuf.getInt(lastNodeOffset + 0);
-            int pathLen = tempBuf.getShort(lastNodeOffset + 4) & 0xFFFF;
+            int pathOffset = tempBuf.getInt(lastNodeOffset + 16);
+            int pathLen = tempBuf.getShort(lastNodeOffset + 20) & 0xFFFF;
             
-            if (n * nodeSize + pathOffset + pathLen == bytes.length) {
+            if (pathOffset + pathLen == bytes.length) {
                 nodeCount = n;
                 break;
+            }
+        }
+
+        // Fallback to relative path offset for old hg4j compat
+        if (nodeCount == 0) {
+            for (int n = 1; n * nodeSize <= bytes.length; n++) {
+                int lastNodeOffset = (n - 1) * nodeSize;
+                int pathOffset = tempBuf.getInt(lastNodeOffset + 16);
+                int pathLen = tempBuf.getShort(lastNodeOffset + 20) & 0xFFFF;
+                int dataOffset = n * nodeSize;
+                
+                if (dataOffset + pathOffset + pathLen == bytes.length) {
+                    nodeCount = n;
+                    break;
+                }
             }
         }
 
@@ -49,41 +103,42 @@ public class DirstateV2Parser {
             throw new org.hg4j.errors.HgCorruptDataException("Malformed dirstate-v2 data: cannot resolve node count and layout");
         }
 
-        int nodesOffset = 0;
-        int dataOffset = nodeCount * nodeSize;
+        return parse(bytes, 0, nodeCount);
+    }
 
-        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+    private void parseNode(ByteBuffer buffer, int nodeOffset, int dataOffset, Dirstate decoded) throws IOException {
+        DirstateV2Node node = new DirstateV2Node(buffer, nodeOffset);
 
-        Dirstate decoded = new Dirstate();
-        decoded.setV2(true);
+        int pathOffset = node.getPathOffset();
+        int pathLen = node.getPathLen() & 0xFFFF;
 
-        // 2. Loop through all nodes sequentially to extract path and entry status (100% compliant with native hg layout)
-        for (int i = 0; i < nodeCount; i++) {
-            int nodeStart = nodesOffset + i * nodeSize;
-            DirstateV2Node node = new DirstateV2Node(buffer, nodeStart);
-
-            int pathOffset = node.getPathOffset();
-            int pathLen = node.getPathLen() & 0xFFFF; // unsigned short
-
-            if (dataOffset + pathOffset + pathLen > buffer.capacity()) {
-                throw new org.hg4j.errors.HgCorruptDataException("Data block overflow for node segment: " + i);
-            }
-
-            // Extract the path string
-            byte[] pathBytes = new byte[pathLen];
-            int originalPos = buffer.position();
-            buffer.position(dataOffset + pathOffset);
-            buffer.get(pathBytes);
-            buffer.position(originalPos);
-
-            String currentPath = new String(pathBytes, StandardCharsets.UTF_8);
-
-            char state = node.getState();
-            if (state != '\0' && state != 'd') { // 'd' represents intermediate directories
-                decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime()));
-            }
+        if (dataOffset + pathOffset + pathLen > buffer.capacity()) {
+            throw new org.hg4j.errors.HgCorruptDataException("Data block overflow for node at offset: " + nodeOffset);
         }
 
-        return decoded;
+        byte[] pathBytes = new byte[pathLen];
+        int originalPos = buffer.position();
+        buffer.position(dataOffset + pathOffset);
+        buffer.get(pathBytes);
+        buffer.position(originalPos);
+
+        String currentPath = new String(pathBytes, StandardCharsets.UTF_8);
+
+        char state = node.getState();
+        if (state != '\0' && state != 'd') {
+            decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime()));
+        }
+
+        int childrenStart = node.getChildrenStart();
+        int childrenCount = node.getChildrenCount();
+        if (childrenCount > 0) {
+            if (childrenStart + childrenCount * DirstateV2Node.NODE_SIZE > buffer.capacity()) {
+                throw new org.hg4j.errors.HgCorruptDataException("Children segment overflow for node at offset: " + nodeOffset);
+            }
+            for (int i = 0; i < childrenCount; i++) {
+                int childOffset = childrenStart + i * DirstateV2Node.NODE_SIZE;
+                parseNode(buffer, childOffset, dataOffset, decoded);
+            }
+        }
     }
 }

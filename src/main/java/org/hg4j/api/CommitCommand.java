@@ -155,32 +155,85 @@ public class CommitCommand {
 
             int parent1ManifestRev = -1;
             if (parent1Rev != -1) {
-                byte[] parent1CommitContent = changelog.getRevisionContent(parent1Rev);
-                String clText = new String(parent1CommitContent, StandardCharsets.UTF_8);
-                String firstLine = clText.split("\n")[0];
-                byte[] prevManifestNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
-                
-                parent1ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, prevManifestNode);
-                if (parent1ManifestRev != -1) {
-                    p1ManifestNode = prevManifestNode;
-                    byte[] manifestContent = manifestRevlog.getRevisionContent(parent1ManifestRev);
-                    parseManifest(new String(manifestContent, StandardCharsets.UTF_8), manifestP1);
+                byte[] p1CommitNodeBytes = p1CommitNode.getBytes();
+                java.util.Map<String, String> mf1 = repository.getManifestAtCommit(p1CommitNodeBytes);
+                manifestP1.putAll(mf1);
+                // manifest node ID를 index에서 추출
+                byte[] clContent = changelog.getRevisionContent(parent1Rev);
+                int firstNewLine = -1;
+                for (int i = 0; i < clContent.length; i++) {
+                    if (clContent[i] == '\n') {
+                        firstNewLine = i;
+                        break;
+                    }
                 }
+                byte[] mfNode = null;
+                if (firstNewLine >= 40) {
+                    boolean isHexText = true;
+                    for (int i = 0; i < 40; i++) {
+                        char c = (char) clContent[i];
+                        if (Character.digit(c, 16) == -1) {
+                            isHexText = false;
+                            break;
+                        }
+                    }
+                    if (isHexText) {
+                        String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
+                        mfNode = NodeIdUtil.fromHex(hexNode);
+                    }
+                }
+                if (mfNode == null) {
+                    if (clContent.length >= 20) {
+                        mfNode = new byte[20];
+                        System.arraycopy(clContent, 0, mfNode, 0, 20);
+                    }
+                }
+                if (mfNode != null) {
+                    p1ManifestNode = mfNode;
+                    parent1ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p1ManifestNode);
+                }
+                System.out.println("[DEBUG MERGE] parent1Rev=" + parent1Rev + ", p1ManifestNode=" + (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null") + ", parent1ManifestRev=" + parent1ManifestRev);
             }
 
             int parent2ManifestRev = -1;
-            if (parent2Rev != -1) {
-                byte[] parent2CommitContent = changelog.getRevisionContent(parent2Rev);
-                String clText = new String(parent2CommitContent, StandardCharsets.UTF_8);
-                String firstLine = clText.split("\n")[0];
-                byte[] prevManifestNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
-                
-                parent2ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, prevManifestNode);
-                if (parent2ManifestRev != -1) {
-                    p2ManifestNode = prevManifestNode;
-                    byte[] manifestContent = manifestRevlog.getRevisionContent(parent2ManifestRev);
-                    parseManifest(new String(manifestContent, StandardCharsets.UTF_8), manifestP2);
+            if (parent2Rev != -1 && p2CommitNode != null && !p2CommitNode.isNull()) {
+                byte[] p2CommitNodeBytes = p2CommitNode.getBytes();
+                java.util.Map<String, String> mf2 = repository.getManifestAtCommit(p2CommitNodeBytes);
+                manifestP2.putAll(mf2);
+                byte[] clContent = changelog.getRevisionContent(parent2Rev);
+                int firstNewLine = -1;
+                for (int i = 0; i < clContent.length; i++) {
+                    if (clContent[i] == '\n') {
+                        firstNewLine = i;
+                        break;
+                    }
                 }
+                byte[] mfNode = null;
+                if (firstNewLine >= 40) {
+                    boolean isHexText = true;
+                    for (int i = 0; i < 40; i++) {
+                        char c = (char) clContent[i];
+                        if (Character.digit(c, 16) == -1) {
+                            isHexText = false;
+                            break;
+                        }
+                    }
+                    if (isHexText) {
+                        String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
+                        mfNode = NodeIdUtil.fromHex(hexNode);
+                    }
+                }
+                if (mfNode == null) {
+                    if (clContent.length >= 20) {
+                        mfNode = new byte[20];
+                        System.arraycopy(clContent, 0, mfNode, 0, 20);
+                    }
+                }
+                if (mfNode != null) {
+                    p2ManifestNode = mfNode;
+                    parent2ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p2ManifestNode);
+                }
+                System.out.println("[DEBUG MERGE] parent2Rev=" + parent2Rev + ", p2CommitNode=" + p2CommitNode.toHex() + ", p2ManifestNode=" + (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null") + ", parent2ManifestRev=" + parent2ManifestRev);
             }
 
             // 3. Process dirstate entries and write filelogs
@@ -517,19 +570,7 @@ public class CommitCommand {
         return filelog.getRevisionContent(rev);
     }
 
-    private void parseManifest(String text, Map<String, String> result) {
-        if (text == null || text.isEmpty()) return;
-        String[] lines = text.split("\n");
-        for (String line : lines) {
-            if (line.isEmpty()) continue;
-            int nullIdx = line.indexOf('\0');
-            if (nullIdx != -1) {
-                String path = line.substring(0, nullIdx);
-                String hex = line.substring(nullIdx + 1);
-                result.put(path, hex.trim());
-            }
-        }
-    }
+
 
     public static File getFilelogIndex(File storeDir, String relPath) {
         String encoded = NodeIdUtil.encodeFname(relPath);

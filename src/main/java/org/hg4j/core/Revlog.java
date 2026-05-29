@@ -292,74 +292,74 @@ public class Revlog {
         System.arraycopy(hash, 0, nodeId, 0, 20);
 
         // Decide whether to write delta or fulltext
-        byte[] rawToWrite;
-        int baseRev;
-
-        // 델타 체인 길이 계산 (개선 권고 1: 델타 체인 길이 상한)
-        int chainLen = 0;
-        int curr = parent1;
-        while (curr != -1) {
-            chainLen++;
-            IndexRecord currRec = getIndexRecord(curr);
-            if (currRec.getBaseRev() == curr || currRec.getBaseRev() == -1) {
-                break;
-            }
-            curr = currRec.getBaseRev();
-        }
-
-        if (rev > 0 && parent1 != -1 && chainLen < 40) {
-            byte[] baseContent = getRawRevisionContent(parent1);
-            byte[] delta = createDelta(baseContent, processedContent);
-            if (delta.length < processedContent.length) {
-                rawToWrite = delta;
-                baseRev = parent1; // C1 해결: baseRev는 델타의 직접적인 기준(parent1)을 가리켜야 generaldelta 체인 복원이 성립함
-            } else {
-                rawToWrite = processedContent;
-                baseRev = rev;
-            }
-        } else {
-            rawToWrite = processedContent;
-            baseRev = rev;
-        }
+        byte[] rawToWrite = processedContent;
+        int baseRev = rev;
 
         // Compress rawToWrite
         byte[] dataHunk = DeltaCodec.compress(rawToWrite);
 
-        // We write separate .i and .d files (no inline)
         long offset = 0;
-        if (datFile.exists()) {
-            offset = datFile.length();
+        if (rev > 0) {
+            IndexRecord prevRec = getIndexRecord(rev - 1);
+            offset = prevRec.getOffset() + prevRec.getCompLen();
         }
 
-        try (FileOutputStream out = new FileOutputStream(datFile, true)) {
-            out.write(dataHunk);
-            out.getFD().sync();
-        }
+        if (inline) {
+            // Write 64-byte index record followed by dataHunk into idxFile (Inline Format Implementation)
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0003L; // inline(1) + generaldelta(2) = 3
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            } else {
+                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+            }
 
-        long offsetFlags;
-        if (rev == 0) {
-            // Version 1, format flags: 2 (generaldelta)
-            long formatFlags = 0x0002L;
-            long version = 1L;
-            offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(processedContent.length);
+            recordBuf.putInt(baseRev);
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
         } else {
-            offsetFlags = (offset << 16) | (0 & 0xFFFF);
-        }
+            // Non-inline: Write dataHunk into datFile, and 64-byte record into idxFile
+            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
 
-        // Build 64-byte index record
-        ByteBuffer recordBuf = ByteBuffer.allocate(64);
-        recordBuf.putLong(offsetFlags);
-        recordBuf.putInt(dataHunk.length);           // compLen
-        recordBuf.putInt(processedContent.length);   // uncompLen: 메타데이터 prefix 포함 압축 전 길이 (실제 hg 명세)
-        recordBuf.putInt(baseRev);
-        recordBuf.putInt(linkRev);
-        recordBuf.putInt(parent1);
-        recordBuf.putInt(parent2);
-        recordBuf.put(nodeId);
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0002L; // generaldelta
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            } else {
+                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+            }
 
-        try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
-            out.write(recordBuf.array());
-            out.getFD().sync();
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(processedContent.length);
+            recordBuf.putInt(baseRev);
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.getFD().sync();
+            }
         }
 
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
@@ -383,17 +383,21 @@ public class Revlog {
         byte[] content;
         if (entry.deltabase != null) {
             int baseRev = findRevision(entry.deltabase);
-            if (baseRev == -1 || NodeIdUtil.isAllZero(entry.deltabase)) {
-                content = applyDelta(new byte[0], entry.delta);
+            if (baseRev == -1) {
+                if (NodeIdUtil.isAllZero(entry.deltabase)) {
+                    content = applyDelta(new byte[0], entry.delta);
+                } else {
+                    throw new org.hg4j.errors.HgCorruptDataException("Delta base revision not found in local index: " + NodeIdUtil.toHex(entry.deltabase) + " for commit: " + NodeIdUtil.toHex(entry.node));
+                }
             } else {
                 byte[] baseContent = getRawRevisionContent(baseRev);
                 content = applyDelta(baseContent, entry.delta);
             }
         } else {
-            if (parent1 == -1) {
+            if (rev == 0) {
                 content = applyDelta(new byte[0], entry.delta);
             } else {
-                byte[] baseContent = getRawRevisionContent(parent1);
+                byte[] baseContent = getRawRevisionContent(rev - 1);
                 content = applyDelta(baseContent, entry.delta);
             }
         }

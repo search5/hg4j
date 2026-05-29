@@ -1,7 +1,6 @@
 package org.hg4j.core;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**

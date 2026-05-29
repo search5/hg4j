@@ -1,7 +1,6 @@
 package org.hg4j.api;
 
 import org.hg4j.core.ChangegroupParser;
-import org.hg4j.core.Dirstate;
 import org.hg4j.transport.HgRemoteClient;
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
@@ -76,9 +75,7 @@ public class HgRemoteAndSyncTest {
         assertEquals(1, imported.size());
         assertArrayEquals(commitNode1, imported.get(0));
 
-        // 4. Perform CloneCommand-like Checkout on dest repo and verify files are reconstructed
-        CloneCommand cloneCommand = new CloneCommand(); // To call checkoutLatest helper indirectly or check layout
-        
+
         // Let's verify destRepo has the correct history in changelog
         Revlog cl = new Revlog(new File(destRepo.getStoreDir(), "00changelog.i"), new File(destRepo.getStoreDir(), "00changelog.d"));
         assertEquals(1, cl.getRevisionCount());
@@ -252,7 +249,7 @@ public class HgRemoteAndSyncTest {
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Content 1");
         new AddCommand(repo).call();
-        byte[] node1 = new CommitCommand(repo).setMessage("Commit 1").call();
+        new CommitCommand(repo).setMessage("Commit 1").call();
 
         // Commit 2 (child of Commit 1)
         Files.writeString(f1.toPath(), "Content 2");
@@ -297,7 +294,6 @@ public class HgRemoteAndSyncTest {
         Files.writeString(f1.toPath(), "Hello push safety\n");
         new AddCommand(repo).call();
         byte[] localHeadNode = new CommitCommand(repo).setMessage("First local commit").call();
-        String localHeadHex = NodeIdUtil.toHex(localHeadNode);
 
         // 2. Setup mock server
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -514,18 +510,18 @@ public class HgRemoteAndSyncTest {
         return baos.toByteArray();
     }
 
-    private boolean isHgInstalled() {
-        try {
-            Process process = new ProcessBuilder("hg", "--version").start();
-            process.waitFor();
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
+
 
     private void runProcess(File dir, String... command) throws Exception {
-        ProcessBuilder pb = new ProcessBuilder(command);
+        String[] cmd = command;
+        if (command.length > 0 && "hg".equals(command[0])) {
+            cmd = new String[command.length + 2];
+            cmd[0] = "hg";
+            cmd[1] = "--config";
+            cmd[2] = "format.usezstd=false";
+            System.arraycopy(command, 1, cmd, 3, command.length - 1);
+        }
+        ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(dir);
         pb.redirectErrorStream(true);
         Process process = pb.start();
@@ -534,13 +530,13 @@ public class HgRemoteAndSyncTest {
         }
         int exitCode = process.waitFor();
         if (exitCode != 0) {
-            throw new IOException("Process " + java.util.Arrays.toString(command) + " failed with exit code: " + exitCode);
+            throw new IOException("Process " + java.util.Arrays.toString(cmd) + " failed with exit code: " + exitCode);
         }
     }
 
     @Test
     public void testNativeHgCopyRenamePull(@TempDir Path tempDir) throws Exception {
-        org.junit.jupiter.api.Assumptions.assumeTrue(isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg pull integration test.");
+        org.junit.jupiter.api.Assumptions.assumeTrue(org.hg4j.HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg pull integration test.");
 
         // 1. Setup native hg remote repository
         File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
@@ -588,6 +584,9 @@ public class HgRemoteAndSyncTest {
                         } else {
                             remoteUrl = line.substring(idx).trim();
                         }
+                        if (remoteUrl != null) {
+                            remoteUrl = remoteUrl.replaceAll("http://[^:]+:", "http://127.0.0.1:");
+                        }
                         break;
                     }
                 }
@@ -629,7 +628,7 @@ public class HgRemoteAndSyncTest {
 
     @Test
     public void testNativeHgPush(@TempDir Path tempDir) throws Exception {
-        org.junit.jupiter.api.Assumptions.assumeTrue(isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg push integration test.");
+        org.junit.jupiter.api.Assumptions.assumeTrue(org.hg4j.HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg push integration test.");
 
         // 1. Setup native hg remote repository
         File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
@@ -655,27 +654,31 @@ public class HgRemoteAndSyncTest {
         };
 
         String remoteUrl = null;
-        java.io.BufferedReader reader = new java.io.BufferedReader(
-                new java.io.InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8));
-        
-        long start = System.currentTimeMillis();
-        while (System.currentTimeMillis() - start < 5000) {
-            if (reader.ready()) {
-                String line = reader.readLine();
-                if (line != null && line.contains("listening at")) {
-                    int idx = line.indexOf("http://");
-                    if (idx != -1) {
-                        int end = line.indexOf("/", idx + 7);
-                        if (end != -1) {
-                            remoteUrl = line.substring(idx, end + 1);
-                        } else {
-                            remoteUrl = line.substring(idx).trim();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8))) {
+            
+            long start = System.currentTimeMillis();
+            while (System.currentTimeMillis() - start < 5000) {
+                if (reader.ready()) {
+                    String line = reader.readLine();
+                    if (line != null && line.contains("listening at")) {
+                        int idx = line.indexOf("http://");
+                        if (idx != -1) {
+                            int end = line.indexOf("/", idx + 7);
+                            if (end != -1) {
+                                remoteUrl = line.substring(idx, end + 1);
+                            } else {
+                                remoteUrl = line.substring(idx).trim();
+                            }
+                            if (remoteUrl != null) {
+                                remoteUrl = remoteUrl.replaceAll("http://[^:]+:", "http://127.0.0.1:");
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
+                Thread.sleep(50);
             }
-            Thread.sleep(50);
         }
 
         assertNotNull(remoteUrl, "Failed to parse remote URL from hg serve output");

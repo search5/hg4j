@@ -125,6 +125,29 @@ public class PullCommand {
                 org.hg4j.core.Bundle2Parser.ExtractedBundle2 ext = org.hg4j.core.Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
                 changegroupBytes = ext.changegroupBytes;
                 cgVersion = ext.cgVersion;
+            } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
+                String comp = new String(bundleBytes, 4, 2, StandardCharsets.US_ASCII);
+                ByteArrayInputStream bais = new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
+                if ("UN".equals(comp)) {
+                    changegroupBytes = bais.readAllBytes();
+                } else if ("GZ".equals(comp)) {
+                    try (java.util.zip.InflaterInputStream iis = new java.util.zip.InflaterInputStream(bais)) {
+                        changegroupBytes = iis.readAllBytes();
+                    }
+                } else if ("BZ".equals(comp)) {
+                    byte[] rawData = bais.readAllBytes();
+                    byte[] bzData = new byte[rawData.length + 2];
+                    bzData[0] = 'B';
+                    bzData[1] = 'Z';
+                    System.arraycopy(rawData, 0, bzData, 2, rawData.length);
+                    try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream bzis = 
+                                 new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
+                        changegroupBytes = bzis.readAllBytes();
+                    }
+                } else {
+                    throw new org.hg4j.errors.HgCorruptDataException("Unsupported bundle1 compression format: HG10" + comp);
+                }
+                cgVersion = "01";
             }
 
             ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
@@ -195,6 +218,7 @@ public class PullCommand {
             // 1. Apply Changelog
             Revlog changelog = repository.getRevlog(clIdx, clDat);
             for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                System.out.println("[DEBUG CHANGELOG] node=" + NodeIdUtil.toHex(entry.node) + ", deltabase=" + (entry.deltabase != null ? NodeIdUtil.toHex(entry.deltabase) : "null"));
                 int rev = changelog.getRevisionCount();
                 changelog.appendChangeGroupEntry(entry, rev);
                 importedCommits.add(entry.node);
@@ -248,6 +272,7 @@ public class PullCommand {
             } else {
                 Revlog manifest = repository.getRevlog(mfIdx, mfDat);
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+                    System.out.println("[DEBUG PULL] manifest entry node=" + NodeIdUtil.toHex(entry.node) + ", deltabase=" + (entry.deltabase != null ? NodeIdUtil.toHex(entry.deltabase) : "null"));
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
                         throw new org.hg4j.errors.HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));

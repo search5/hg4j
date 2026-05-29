@@ -305,6 +305,43 @@ public class HgLocalClient implements HgRemoteConnection, AutoCloseable {
     }
 
     @Override
+    public java.util.Map<String, String> listKeys(String namespace) throws IOException {
+        java.util.Map<String, String> map = new java.util.HashMap<>();
+        if ("bookmarks".equals(namespace)) {
+            File bkFile = new File(remoteRepo.getHgDir(), "bookmarks");
+            if (bkFile.exists()) {
+                List<String> lines = java.nio.file.Files.readAllLines(bkFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+                for (String line : lines) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    int spaceIdx = line.indexOf(' ');
+                    if (spaceIdx != -1) {
+                        String node = line.substring(0, spaceIdx).trim();
+                        String name = line.substring(spaceIdx + 1).trim();
+                        map.put(name, node);
+                    }
+                }
+            }
+        } else if ("phases".equals(namespace)) {
+            org.hg4j.core.PhaseRoots phaseRoots = remoteRepo.getPhaseRoots();
+            File clIdx = new File(remoteRepo.getStoreDir(), "00changelog.i");
+            File clDat = new File(remoteRepo.getStoreDir(), "00changelog.d");
+            if (clIdx.exists()) {
+                Revlog cl = remoteRepo.getRevlog(clIdx, clDat);
+                for (int i = 0; i < cl.getRevisionCount(); i++) {
+                    byte[] nodeBytes = cl.getIndexRecord(i).getNodeId();
+                    org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(nodeBytes);
+                    org.hg4j.core.PhaseRoots.Phase phase = phaseRoots.getPhase(nodeId, cl);
+                    if (phase != org.hg4j.core.PhaseRoots.Phase.PUBLIC) {
+                        map.put(org.hg4j.core.NodeIdUtil.toHex(nodeBytes), String.valueOf(phase.getValue()));
+                    }
+                }
+            }
+        }
+        return map;
+    }
+
+    @Override
     public void close() {
         // 리소스 해제 불필요
     }

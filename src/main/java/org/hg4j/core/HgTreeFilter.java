@@ -3,12 +3,31 @@ package org.hg4j.core;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
+import org.hg4j.treewalk.PathFilter;
 
 /**
  * Filter interface for pruning and matching file paths during SCM tree walks.
  * Inspired by JGit's TreeFilter api to support narrow/sparse operations.
  */
-public abstract class HgTreeFilter {
+public abstract class HgTreeFilter implements PathFilter {
+
+    /**
+     * Creates a bridge filter that wraps a generic PathFilter.
+     */
+    public static HgTreeFilter fromPathFilter(final PathFilter pathFilter) {
+        if (pathFilter == null) {
+            return ALL;
+        }
+        if (pathFilter instanceof HgTreeFilter) {
+            return (HgTreeFilter) pathFilter;
+        }
+        return new HgTreeFilter() {
+            @Override
+            public boolean accept(String path) {
+                return pathFilter.accept(path);
+            }
+        };
+    }
 
     /**
      * Determines whether the specified path matches the filter criteria.

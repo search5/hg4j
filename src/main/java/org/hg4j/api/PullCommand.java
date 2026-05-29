@@ -159,6 +159,72 @@ public class PullCommand {
 
             ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
             List<byte[]> results = applyBundle(bundle);
+
+            // 5. Bookmarks & Phases Synchronization (TDD Integrity)
+            try {
+                // Bookmarks Sync
+                java.util.Map<String, String> remoteBookmarks = client.listKeys("bookmarks");
+                if (remoteBookmarks != null && !remoteBookmarks.isEmpty()) {
+                    File bkFile = new File(repository.getHgDir(), "bookmarks");
+                    java.util.Map<String, String> localBookmarks = new java.util.LinkedHashMap<>();
+                    if (bkFile.exists()) {
+                        List<String> bkLines = Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8);
+                        for (String line : bkLines) {
+                            line = line.trim();
+                            if (line.isEmpty()) continue;
+                            int spaceIdx = line.indexOf(' ');
+                            if (spaceIdx != -1) {
+                                String node = line.substring(0, spaceIdx).trim();
+                                String name = line.substring(spaceIdx + 1).trim();
+                                localBookmarks.put(name, node);
+                            }
+                        }
+                    }
+                    boolean modifiedBookmarks = false;
+                    for (java.util.Map.Entry<String, String> entry : remoteBookmarks.entrySet()) {
+                        String name = entry.getKey();
+                        String hexNode = entry.getValue();
+                        byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
+                        if (localChangelog.findRevision(nodeBytes) != -1) {
+                            localBookmarks.put(name, hexNode.substring(0, 40));
+                            modifiedBookmarks = true;
+                        }
+                    }
+                    if (modifiedBookmarks) {
+                        StringBuilder sb = new StringBuilder();
+                        for (java.util.Map.Entry<String, String> entry : localBookmarks.entrySet()) {
+                            sb.append(entry.getValue()).append(" ").append(entry.getKey()).append("\n");
+                        }
+                        SafeFileIO.writeStringAtomic(bkFile, sb.toString());
+                    }
+                }
+
+                // Phases Sync
+                org.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
+                java.util.Map<String, String> remotePhases = client.listKeys("phases");
+                
+                // 1. Pull된 커밋들은 기본적으로 로컬에서 PUBLIC(0)으로 격상 (Mercurial 스펙)
+                for (byte[] nodeBytes : results) {
+                    org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(nodeBytes);
+                    phaseRoots.setPhase(nodeId, org.hg4j.core.PhaseRoots.Phase.PUBLIC, localChangelog);
+                }
+                
+                // 2. 만약 원격에 명시적인 phase 정보가 들어온 경우 해당 노드의 phase를 로컬에 동기화
+                if (remotePhases != null && !remotePhases.isEmpty()) {
+                    for (java.util.Map.Entry<String, String> entry : remotePhases.entrySet()) {
+                        String hexNode = entry.getKey();
+                        int phaseVal = Integer.parseInt(entry.getValue().trim());
+                        byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
+                        if (localChangelog.findRevision(nodeBytes) != -1) {
+                            org.hg4j.core.PhaseRoots.Phase p = org.hg4j.core.PhaseRoots.Phase.fromValue(phaseVal);
+                            phaseRoots.setPhase(new org.hg4j.lib.NodeId(nodeBytes), p, localChangelog);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "Failed to synchronize remote bookmarks or phases during pull", e);
+            }
+
             monitor.update(1);
             monitor.end();
             return results;

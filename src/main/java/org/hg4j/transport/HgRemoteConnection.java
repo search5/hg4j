@@ -35,4 +35,9 @@ public interface HgRemoteConnection extends java.io.Closeable {
      * Pushes a changegroup bundle to the remote repository.
      */
     String push(byte[] bundleBytes, List<String> heads) throws IOException, HgAuthException, HgProtocolException;
+
+    /**
+     * Queries remote keys/values for the given namespace (e.g. "bookmarks", "phases").
+     */
+    java.util.Map<String, String> listKeys(String namespace) throws IOException, HgAuthException, HgProtocolException;
 }

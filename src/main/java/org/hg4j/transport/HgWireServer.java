@@ -49,8 +49,7 @@ public class HgWireServer {
             out.write(caps.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
         } else if ("heads".equals(command)) {
-            // mock or real heads query response
-            String heads = "\n";
+            String heads = getRepositoryHeads();
             out.write(heads.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
         } else if (command != null && command.startsWith("unbundle")) {
@@ -141,7 +140,7 @@ public class HgWireServer {
 
             // Write back fncache
             if (!fncachePaths.isEmpty()) {
-                Files.write(fncacheFile.toPath(), fncachePaths, java.nio.charset.StandardCharsets.UTF_8);
+                org.hg4j.core.SafeFileIO.writeLinesAtomic(fncacheFile, new java.util.ArrayList<>(fncachePaths));
             }
 
             // Clear cache and write response
@@ -184,7 +183,7 @@ public class HgWireServer {
             }
             out.flush();
         } else if ("heads".equalsIgnoreCase(cmd)) {
-            String heads = "\n";
+            String heads = getRepositoryHeads();
             if (isV2Mediated) {
                 out.write("application/mercurial-x-api-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
             }
@@ -203,5 +202,36 @@ public class HgWireServer {
             out.write(defaultResp.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
         }
+    }
+
+    private String getRepositoryHeads() throws IOException {
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        if (!clIdx.exists()) {
+            return "\n";
+        }
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        int count = changelog.getRevisionCount();
+        if (count == 0) {
+            return "\n";
+        }
+
+        boolean[] isParent = new boolean[count];
+        for (int i = 0; i < count; i++) {
+            Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+            if (rec.getParent1() >= 0 && rec.getParent1() < count) isParent[rec.getParent1()] = true;
+            if (rec.getParent2() >= 0 && rec.getParent2() < count) isParent[rec.getParent2()] = true;
+        }
+
+        java.util.List<String> heads = new java.util.ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            if (!isParent[i]) {
+                heads.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
+            }
+        }
+        if (heads.isEmpty()) {
+            return "\n";
+        }
+        return String.join(" ", heads) + "\n";
     }
 }

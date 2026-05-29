@@ -431,6 +431,26 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     }
 
     @Override
+    public java.util.Map<String, String> listKeys(String namespace) throws IOException {
+        ensureConnected();
+        writeLine("listkeys");
+        writeLine("namespace " + namespace);
+        writeLine("");
+
+        String resp = readLine();
+        java.util.Map<String, String> map = new java.util.HashMap<>();
+        if (!resp.isEmpty()) {
+            for (String line : resp.split("\n")) {
+                int tab = line.indexOf('\t');
+                if (tab != -1) {
+                    map.put(line.substring(0, tab), line.substring(tab + 1));
+                }
+            }
+        }
+        return map;
+    }
+
+    @Override
     public synchronized void close() {
         if (channel != null) {
             try {

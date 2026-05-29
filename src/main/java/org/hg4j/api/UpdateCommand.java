@@ -219,7 +219,8 @@ public class UpdateCommand {
                             if (subEntry.getSourceUrl() != null && !subEntry.getSourceUrl().isEmpty()) {
                                 try {
                                     hgSub.pull().setSource(subEntry.getSourceUrl()).call();
-                                } catch (Exception ignored) {
+                                } catch (Exception e) {
+                                    LOGGER.log(java.util.logging.Level.WARNING, "Failed to pull subrepo from: " + subEntry.getSourceUrl() + ", error: " + e.getMessage(), e);
                                 }
                             }
                             

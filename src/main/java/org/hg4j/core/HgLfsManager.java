@@ -143,32 +143,43 @@ public final class HgLfsManager {
         String downloadUrl = null;
         String authHeaderVal = null;
 
-        int hrefKeyIdx = responseBody.indexOf("\"href\"");
-        if (hrefKeyIdx != -1) {
-            int colonIdx = responseBody.indexOf(":", hrefKeyIdx);
-            if (colonIdx != -1) {
-                int quoteStart = responseBody.indexOf("\"", colonIdx);
-                if (quoteStart != -1) {
-                    int quoteEnd = responseBody.indexOf("\"", quoteStart + 1);
-                    if (quoteEnd != -1) {
-                        downloadUrl = responseBody.substring(quoteStart + 1, quoteEnd);
-                    }
-                }
+        // Robust LFS JSON Parsing
+        try {
+            MapJsonParser parser = new MapJsonParser(responseBody);
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> resMap = (java.util.Map<String, Object>) parser.parse();
+            @SuppressWarnings("unchecked")
+            java.util.List<Object> objects = (java.util.List<Object>) resMap.get("objects");
+            if (objects == null || objects.isEmpty()) {
+                throw new IOException("No objects in LFS batch response: " + responseBody);
             }
-        }
-
-        int authKeyIdx = responseBody.indexOf("\"Authorization\"");
-        if (authKeyIdx != -1) {
-            int colonIdx = responseBody.indexOf(":", authKeyIdx);
-            if (colonIdx != -1) {
-                int quoteStart = responseBody.indexOf("\"", colonIdx);
-                if (quoteStart != -1) {
-                    int quoteEnd = responseBody.indexOf("\"", quoteStart + 1);
-                    if (quoteEnd != -1) {
-                        authHeaderVal = responseBody.substring(quoteStart + 1, quoteEnd);
-                    }
-                }
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> objMap = (java.util.Map<String, Object>) objects.get(0);
+            if (objMap.containsKey("error")) {
+                @SuppressWarnings("unchecked")
+                java.util.Map<String, Object> errMap = (java.util.Map<String, Object>) objMap.get("error");
+                throw new IOException("LFS object download failed from batch API: " 
+                    + errMap.get("code") + " - " + errMap.get("message"));
             }
+            
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> actions = (java.util.Map<String, Object>) objMap.get("actions");
+            if (actions == null) {
+                throw new IOException("No actions for LFS object in batch response: " + responseBody);
+            }
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> download = (java.util.Map<String, Object>) actions.get("download");
+            if (download == null) {
+                throw new IOException("No download action for LFS object: " + responseBody);
+            }
+            downloadUrl = (String) download.get("href");
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> headers = (java.util.Map<String, Object>) download.get("header");
+            if (headers != null) {
+                authHeaderVal = (String) headers.get("Authorization");
+            }
+        } catch (Exception e) {
+            throw new IOException("Failed to parse LFS batch JSON response. Body: " + responseBody, e);
         }
 
         if (downloadUrl == null) {
@@ -190,5 +201,150 @@ public final class HgLfsManager {
 
         // 3. Cache downloaded object into local store/lfs/objects/
         cacheObject(pointer, getResponse.body());
+    }
+
+    public static class MapJsonParser {
+        private final String src;
+        private int ptr = 0;
+        
+        public MapJsonParser(String src) {
+            this.src = src;
+        }
+        
+        public Object parse() throws IOException {
+            skipWhitespace();
+            if (ptr >= src.length()) throw new IOException("Unexpected end of JSON");
+            char c = src.charAt(ptr);
+            if (c == '{') return parseObject();
+            if (c == '[') return parseArray();
+            if (c == '"') return parseString();
+            if (Character.isDigit(c) || c == '-') return parseNumber();
+            if (c == 't' || c == 'f') return parseBoolean();
+            if (c == 'n') return parseNull();
+            throw new IOException("Unexpected character: " + c + " at " + ptr);
+        }
+        
+        private void skipWhitespace() {
+            while (ptr < src.length() && Character.isWhitespace(src.charAt(ptr))) {
+                ptr++;
+            }
+        }
+        
+        private java.util.Map<String, Object> parseObject() throws IOException {
+            ptr++; // skip '{'
+            java.util.Map<String, Object> map = new java.util.HashMap<>();
+            skipWhitespace();
+            if (ptr < src.length() && src.charAt(ptr) == '}') {
+                ptr++;
+                return map;
+            }
+            while (true) {
+                skipWhitespace();
+                if (ptr >= src.length() || src.charAt(ptr) != '"') throw new IOException("Expected string key at " + ptr);
+                String key = parseString();
+                skipWhitespace();
+                if (ptr >= src.length() || src.charAt(ptr) != ':') throw new IOException("Expected ':' at " + ptr);
+                ptr++; // skip ':'
+                Object val = parse();
+                map.put(key, val);
+                skipWhitespace();
+                if (ptr < src.length() && src.charAt(ptr) == '}') {
+                    ptr++;
+                    break;
+                }
+                if (ptr >= src.length() || src.charAt(ptr) != ',') throw new IOException("Expected ',' or '}' at " + ptr);
+                ptr++; // skip ','
+            }
+            return map;
+        }
+        
+        private java.util.List<Object> parseArray() throws IOException {
+            ptr++; // skip '['
+            java.util.List<Object> list = new java.util.ArrayList<>();
+            skipWhitespace();
+            if (ptr < src.length() && src.charAt(ptr) == ']') {
+                ptr++;
+                return list;
+            }
+            while (true) {
+                list.add(parse());
+                skipWhitespace();
+                if (ptr < src.length() && src.charAt(ptr) == ']') {
+                    ptr++;
+                    break;
+                }
+                if (ptr >= src.length() || src.charAt(ptr) != ',') throw new IOException("Expected ',' or ']' at " + ptr);
+                ptr++; // skip ','
+            }
+            return list;
+        }
+        
+        private String parseString() throws IOException {
+            ptr++; // skip opening quote
+            StringBuilder sb = new StringBuilder();
+            while (ptr < src.length()) {
+                char c = src.charAt(ptr);
+                if (c == '"') {
+                    ptr++;
+                    return sb.toString();
+                }
+                if (c == '\\') {
+                    ptr++;
+                    if (ptr >= src.length()) throw new IOException("Unterminated string escape");
+                    char esc = src.charAt(ptr);
+                    if (esc == '"') sb.append('"');
+                    else if (esc == '\\') sb.append('\\');
+                    else if (esc == '/') sb.append('/');
+                    else if (esc == 'b') sb.append('\b');
+                    else if (esc == 'f') sb.append('\f');
+                    else if (esc == 'n') sb.append('\n');
+                    else if (esc == 'r') sb.append('\r');
+                    else if (esc == 't') sb.append('\t');
+                    else if (esc == 'u') {
+                        if (ptr + 4 >= src.length()) throw new IOException("Unterminated unicode escape");
+                        String hex = src.substring(ptr + 1, ptr + 5);
+                        sb.append((char) Integer.parseInt(hex, 16));
+                        ptr += 4;
+                    } else sb.append(esc);
+                } else {
+                    sb.append(c);
+                }
+                ptr++;
+            }
+            throw new IOException("Unterminated string");
+        }
+        
+        private Object parseNumber() {
+            int start = ptr;
+            if (src.charAt(ptr) == '-') ptr++;
+            while (ptr < src.length() && (Character.isDigit(src.charAt(ptr)) || src.charAt(ptr) == '.' || src.charAt(ptr) == 'e' || src.charAt(ptr) == 'E' || src.charAt(ptr) == '+' || src.charAt(ptr) == '-')) {
+                ptr++;
+            }
+            String numStr = src.substring(start, ptr);
+            if (numStr.contains(".") || numStr.contains("e") || numStr.contains("E")) {
+                return Double.parseDouble(numStr);
+            }
+            return Long.parseLong(numStr);
+        }
+        
+        private Boolean parseBoolean() throws IOException {
+            if (src.startsWith("true", ptr)) {
+                ptr += 4;
+                return Boolean.TRUE;
+            }
+            if (src.startsWith("false", ptr)) {
+                ptr += 5;
+                return Boolean.FALSE;
+            }
+            throw new IOException("Expected boolean");
+        }
+        
+        private Object parseNull() throws IOException {
+            if (src.startsWith("null", ptr)) {
+                ptr += 4;
+                return null;
+            }
+            throw new IOException("Expected null");
+        }
     }
 }

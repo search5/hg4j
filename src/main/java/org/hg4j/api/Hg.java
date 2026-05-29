@@ -253,10 +253,6 @@ public class Hg implements AutoCloseable {
         return new ImportCommand(this.repository);
     }
 
-    public ImportCommand importCommand() {
-        return new ImportCommand(this.repository);
-    }
-
     public static NarrowCloneCommand narrowClone() {
         return new NarrowCloneCommand();
     }

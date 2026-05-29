@@ -428,7 +428,7 @@ public class CommitCommand {
                             filesModified.add(path);
 
                             // fncache에는 .i 파일 경로만 등록
-                            String rawPath = "data/" + path.replace('\\', '/');
+                            String rawPath = NodeIdUtil.encodeFnameBasic(path);
                             fncachePaths.add(rawPath + ".i");
                         } else {
                             // File has not changed in working directory

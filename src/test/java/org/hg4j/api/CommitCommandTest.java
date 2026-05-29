@@ -410,8 +410,8 @@ public class CommitCommandTest {
             assertTrue(fncachePaths.contains("data/.hgignore.i"));
             // .d 파일은 fncache에 등록되지 않음 (실제 hg 동작과 동일)
             assertFalse(fncachePaths.contains("data/.hgignore.d"), "fncache should not contain .d paths");
-            assertTrue(fncachePaths.contains("data/README.MD.i"));
-            assertTrue(fncachePaths.contains("data/한글.txt.i"));
+            assertTrue(fncachePaths.contains(org.hg4j.core.NodeIdUtil.encodeFnameBasic("README.MD") + ".i"));
+            assertTrue(fncachePaths.contains(org.hg4j.core.NodeIdUtil.encodeFnameBasic("한글.txt") + ".i"));
         }
     }
 

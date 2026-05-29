@@ -125,43 +125,43 @@ public class DirstateV2Node {
     }
 
     public int getPathOffset() {
-        return buffer.getInt(offset + 16);
+        return buffer.getInt(offset + 30);
     }
 
     public void setPathOffset(int pathOffset) {
-        buffer.putInt(offset + 16, pathOffset);
+        buffer.putInt(offset + 30, pathOffset);
     }
 
     public short getPathLen() {
-        return buffer.getShort(offset + 20);
+        return buffer.getShort(offset + 34);
     }
 
     public void setPathLen(short pathLen) {
-        buffer.putShort(offset + 20, pathLen);
+        buffer.putShort(offset + 34, pathLen);
     }
 
     public short getBasenameStart() {
-        return buffer.getShort(offset + 22);
+        return buffer.getShort(offset + 36);
     }
 
     public void setBasenameStart(short start) {
-        buffer.putShort(offset + 22, start);
+        buffer.putShort(offset + 36, start);
     }
 
     public int getCopySourceOffset() {
-        return buffer.getInt(offset + 24);
+        return buffer.getInt(offset + 38);
     }
 
     public void setCopySourceOffset(int offsetVal) {
-        buffer.putInt(offset + 24, offsetVal);
+        buffer.putInt(offset + 38, offsetVal);
     }
 
     public short getCopySourceLen() {
-        return buffer.getShort(offset + 28);
+        return buffer.getShort(offset + 42);
     }
 
     public void setCopySourceLen(short len) {
-        buffer.putShort(offset + 28, len);
+        buffer.putShort(offset + 42, len);
     }
 
     public int getChildrenStart() {
@@ -197,43 +197,43 @@ public class DirstateV2Node {
     }
 
     public short getFlags() {
-        return buffer.getShort(offset + 30);
+        return buffer.getShort(offset + 16);
     }
 
     public void setFlags(short flags) {
-        buffer.putShort(offset + 30, flags);
+        buffer.putShort(offset + 16, flags);
     }
 
     public int getSize() {
         if ((getFlags() & HAS_MODE_AND_SIZE) == 0) {
             return 0;
         }
-        return buffer.getInt(offset + 32);
+        return buffer.getInt(offset + 18);
     }
 
     public void setSize(int size) {
-        buffer.putInt(offset + 32, size);
+        buffer.putInt(offset + 18, size);
     }
 
     public long getMtime() {
         if ((getFlags() & HAS_MTIME) == 0) {
             return 0;
         }
-        return buffer.getInt(offset + 36) & 0xFFFFFFFFL;
+        return buffer.getInt(offset + 22) & 0xFFFFFFFFL;
     }
 
     public void setMtime(long mtime) {
-        buffer.putInt(offset + 36, (int) (mtime & 0xFFFFFFFFL));
+        buffer.putInt(offset + 22, (int) (mtime & 0xFFFFFFFFL));
     }
 
     public int getMtimeNanoseconds() {
         if ((getFlags() & HAS_MTIME) == 0) {
             return 0;
         }
-        return buffer.getInt(offset + 40);
+        return buffer.getInt(offset + 26);
     }
 
     public void setMtimeNanoseconds(int nanos) {
-        buffer.putInt(offset + 40, nanos);
+        buffer.putInt(offset + 26, nanos);
     }
 }

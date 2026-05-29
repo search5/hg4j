@@ -14,6 +14,7 @@ public class HgRepository implements Repository {
     private final File hgDir;
     private final File storeDir;
     private boolean defaultDirstateV2 = false;
+    private boolean useZstdCompression = false;
     private StoreEngine storeEngine = new DefaultFileStoreEngine();
 
     public synchronized void setStoreEngine(StoreEngine storeEngine) {
@@ -36,15 +37,21 @@ public class HgRepository implements Repository {
             try {
                 java.util.List<String> lines = java.nio.file.Files.readAllLines(requiresFile.toPath());
                 for (String line : lines) {
-                    if ("dirstate-v2".equals(line.trim())) {
+                    String trimmed = line.trim();
+                    if ("dirstate-v2".equals(trimmed)) {
                         this.defaultDirstateV2 = true;
-                        break;
+                    } else if ("revlog-compression=zstd".equals(trimmed)) {
+                        this.useZstdCompression = true;
                     }
                 }
             } catch (Exception ignored) {
                 // Fallback to default v1
             }
         }
+    }
+
+    public boolean isUseZstdCompression() {
+        return useZstdCompression;
     }
 
     public File getDirectory() {

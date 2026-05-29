@@ -34,8 +34,8 @@ public class DirstateV2Parser {
         if (rootStart == 0 && rootCount * nodeSize <= bytes.length) {
             int lastNodeOffset = (rootCount - 1) * nodeSize;
             if (lastNodeOffset >= 0 && lastNodeOffset + nodeSize <= bytes.length) {
-                int pathOffset = buffer.getInt(lastNodeOffset + 16);
-                int pathLen = buffer.getShort(lastNodeOffset + 20) & 0xFFFF;
+                int pathOffset = buffer.getInt(lastNodeOffset + 30);
+                int pathLen = buffer.getShort(lastNodeOffset + 34) & 0xFFFF;
                 if (rootCount * nodeSize + pathOffset + pathLen == bytes.length) {
                     dataOffset = rootCount * nodeSize;
                 }
@@ -123,8 +123,8 @@ public class DirstateV2Parser {
         // Try detecting with absolute path offset
         for (int n = 1; n * nodeSize <= bytes.length; n++) {
             int lastNodeOffset = (n - 1) * nodeSize;
-            int pathOffset = tempBuf.getInt(lastNodeOffset + 16);
-            int pathLen = tempBuf.getShort(lastNodeOffset + 20) & 0xFFFF;
+            int pathOffset = tempBuf.getInt(lastNodeOffset + 30);
+            int pathLen = tempBuf.getShort(lastNodeOffset + 34) & 0xFFFF;
             
             if (pathOffset + pathLen == bytes.length) {
                 nodeCount = n;
@@ -136,8 +136,8 @@ public class DirstateV2Parser {
         if (nodeCount == 0) {
             for (int n = 1; n * nodeSize <= bytes.length; n++) {
                 int lastNodeOffset = (n - 1) * nodeSize;
-                int pathOffset = tempBuf.getInt(lastNodeOffset + 16);
-                int pathLen = tempBuf.getShort(lastNodeOffset + 20) & 0xFFFF;
+                int pathOffset = tempBuf.getInt(lastNodeOffset + 30);
+                int pathLen = tempBuf.getShort(lastNodeOffset + 34) & 0xFFFF;
                 int dataOffset = n * nodeSize;
                 
                 if (dataOffset + pathOffset + pathLen == bytes.length) {

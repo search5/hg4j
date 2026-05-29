@@ -233,4 +233,98 @@ public class HgPorcelainAndExceptionsTest {
             Hg.open(repoDir);
         });
     }
+
+    @Test
+    public void testJavaScmHookSystemIntegration(@TempDir java.nio.file.Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("hook_test_repo").toFile();
+        org.hg4j.core.HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        
+        try (Hg hg = Hg.wrap(repo)) {
+            // 1. PRE_COMMIT hook 등록하여 커밋 트랜잭션을 거부하는지 확인
+            hg.registerHook(HgHookType.PRE_COMMIT, ctx -> {
+                String message = (String) ctx.get("message");
+                // "bad message" 이면 거절
+                return !"bad message".equals(message);
+            });
+
+            // 2. POST_COMMIT hook 등록하여 성공 시 context 데이터를 수집하는지 검사
+            final List<String> hookResults = new java.util.ArrayList<>();
+            hg.registerHook(HgHookType.POST_COMMIT, ctx -> {
+                hookResults.add((String) ctx.get("message"));
+                return true;
+            });
+
+            File file1 = new File(repoDir, "a.txt");
+            Files.writeString(file1.toPath(), "Some Content");
+            hg.add().addFile("a.txt").call();
+
+            // 3. PRE_COMMIT 훅 거부 시 예외가 발생하는지 확인
+            CommitCommand rejectCommit = hg.commit().setAuthor("Tester").setMessage("bad message");
+            assertThrows(org.hg4j.errors.HgValidationException.class, rejectCommit::call);
+
+            // 4. 정상적인 메시지로 커밋 시 성공적으로 수행되고 POST_COMMIT 훅이 구동되는지 확인
+            byte[] node = hg.commit().setAuthor("Tester").setMessage("good message").call();
+            assertNotNull(node);
+            assertEquals(1, hookResults.size());
+            assertEquals("good message", hookResults.get(0));
+        }
+    }
+
+    @Test
+    public void testDynamicZstdCompressionIntegration(@TempDir java.nio.file.Path tempDir) throws Exception {
+        // 1. Zstd 압축이 활성화된 저장소 초기화
+        File zstdRepoDir = tempDir.resolve("zstd_repo").toFile();
+        org.hg4j.core.HgRepository zstdRepo = Hg.init()
+                .setDirectory(zstdRepoDir)
+                .setUseZstd(true)
+                .call();
+        
+        assertTrue(zstdRepo.isUseZstdCompression());
+        
+        // 2. 텍스트 파일 기입 및 커밋
+        try (Hg hg = Hg.wrap(zstdRepo)) {
+            File largeFile = new File(zstdRepoDir, "large.txt");
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 200; i++) {
+                sb.append("This is repeated text that compresses extremely well with Zstandard compression. Line ").append(i).append("\n");
+            }
+            Files.writeString(largeFile.toPath(), sb.toString());
+            
+            hg.add().addFile("large.txt").call();
+            byte[] node = hg.commit().setAuthor("Tester").setMessage("commit with zstd").call();
+            assertNotNull(node);
+            
+            // 3. 기록된 데이터 읽기 검증 (zstd 압축 해제가 투명하게 진행되는지 확인)
+            File flIdx = new File(zstdRepo.getStoreDir(), "data/large.txt.i");
+            File flDat = new File(zstdRepo.getStoreDir(), "data/large.txt.d");
+            assertTrue(flIdx.exists());
+            
+            Revlog fl = zstdRepo.getRevlog(flIdx, flDat);
+            byte[] content = fl.getRevisionContent(0);
+            assertEquals(sb.toString(), new String(content, java.nio.charset.StandardCharsets.UTF_8));
+        }
+
+        // 4. 일반 저장소(Zstd 비활성화)와 대조 검증
+        File normalRepoDir = tempDir.resolve("normal_repo").toFile();
+        org.hg4j.core.HgRepository normalRepo = Hg.init()
+                .setDirectory(normalRepoDir)
+                .setUseZstd(false)
+                .call();
+        
+        assertFalse(normalRepo.isUseZstdCompression());
+        
+        try (Hg hg = Hg.wrap(normalRepo)) {
+            File file = new File(normalRepoDir, "a.txt");
+            Files.writeString(file.toPath(), "Simple text");
+            hg.add().addFile("a.txt").call();
+            byte[] node = hg.commit().setAuthor("Tester").setMessage("normal commit").call();
+            assertNotNull(node);
+            
+            File flIdx = new File(normalRepo.getStoreDir(), "data/a.txt.i");
+            File flDat = new File(normalRepo.getStoreDir(), "data/a.txt.d");
+            Revlog fl = normalRepo.getRevlog(flIdx, flDat);
+            byte[] content = fl.getRevisionContent(0);
+            assertEquals("Simple text", new String(content, java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }
 }

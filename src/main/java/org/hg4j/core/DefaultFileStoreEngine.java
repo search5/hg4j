@@ -12,7 +12,7 @@ public class DefaultFileStoreEngine implements StoreEngine {
 
     @Override
     public Revlog getRevlog(HgRepository repository, File indexFile, File dataFile) throws IOException {
-        return new Revlog(indexFile, dataFile);
+        return new Revlog(indexFile, dataFile, repository.isUseZstdCompression());
     }
 
     @Override

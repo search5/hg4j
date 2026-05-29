@@ -232,7 +232,7 @@ public class HgRemoteMockAndServeExtensionTest {
 
                                 ByteArrayOutputStream bundle2Out = new ByteArrayOutputStream();
                                 bundle2Out.write("HG20".getBytes(StandardCharsets.US_ASCII));
-                                bundle2Out.write(0); // paramsSize = 0
+                                bundle2Out.write(new byte[]{0, 0}); // paramsSize = 0 (2 bytes)
                                 bundle2Out.write(uncompressedBytes);
                                 byte[] payload = bundle2Out.toByteArray();
 

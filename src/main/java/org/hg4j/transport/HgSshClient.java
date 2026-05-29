@@ -375,7 +375,13 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
                     }
                     chunkRead += got;
                 }
-                if (channelId == 1 || channelId == 2) {
+                if (channelId == 1) {
+                    baos.write(chunkBuf);
+                } else if (channelId == 2) {
+                    String errMessage = new String(chunkBuf, StandardCharsets.UTF_8).trim();
+                    if (!errMessage.isEmpty()) {
+                        System.err.println("[HgSshClient Channel 2 Warning]: " + errMessage);
+                    }
                     baos.write(chunkBuf);
                 }
             }

@@ -26,15 +26,39 @@ public final class DeltaCodec {
 
     /**
      * 주어진 데이터를 압축합니다.
-     * 압축 후 크기가 원본보다 작으면 zlib 압축 결과를 반환하고,
+     *
+     * @param data 압축할 원본 데이터
+     * @return 압축된 hunk 바이트 배열 (기본 zlib deflate)
+     */
+    public static byte[] compress(byte[] data) throws IOException {
+        return compress(data, false);
+    }
+
+    /**
+     * 주어진 데이터를 압축합니다. useZstd가 true인 경우 Zstd 압축 방식을 사용합니다.
+     * 압축 후 크기가 원본보다 작으면 압축 결과를 반환하고,
      * 그렇지 않으면 {@code 'u'} 접두 바이트를 붙인 비압축 형식으로 반환합니다.
      *
      * @param data 압축할 원본 데이터
+     * @param useZstd Zstd 압축 사용 여부
      * @return 압축된 hunk 바이트 배열
      */
-    public static byte[] compress(byte[] data) throws IOException {
+    public static byte[] compress(byte[] data, boolean useZstd) throws IOException {
         if (data == null || data.length == 0) {
             return new byte[0];
+        }
+
+        if (useZstd) {
+            byte[] compressed = Zstd.compress(data);
+            if (compressed.length < data.length) {
+                return compressed;
+            } else {
+                // 비압축 형식: 'u' + 원본 데이터
+                byte[] uncompressed = new byte[data.length + 1];
+                uncompressed[0] = 'u';
+                System.arraycopy(data, 0, uncompressed, 1, data.length);
+                return uncompressed;
+            }
         }
 
         Deflater deflater = new Deflater();

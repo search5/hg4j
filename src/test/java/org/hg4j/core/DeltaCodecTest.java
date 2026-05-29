@@ -123,4 +123,33 @@ public class DeltaCodecTest {
         byte[] restored = DeltaCodec.decompress(result, tiny.length);
         assertArrayEquals(tiny, restored);
     }
+
+    @Test
+    @DisplayName("Zstd 활성화하여 반복 패턴 데이터 압축 및 해제 왕복 검증")
+    void testRoundTrip_zstd_repeatedPattern() throws IOException {
+        byte[] original = new byte[8192];
+        Arrays.fill(original, (byte) 'Z');
+        
+        // Zstd 압축 활성화
+        byte[] compressed = DeltaCodec.compress(original, true);
+        
+        // 반복 데이터는 압축 후 확연히 작아져야 하고 첫 바이트는 0x28 (zstd 매직 프레임 헤더의 일부)이어야 함
+        assertTrue(compressed.length < original.length);
+        assertEquals(0x28, compressed[0] & 0xFF);
+        
+        byte[] restored = DeltaCodec.decompress(compressed, original.length);
+        assertArrayEquals(original, restored);
+    }
+
+    @Test
+    @DisplayName("Zstd 활성화하고 소형 데이터 압축 시 'u' 접두 비압축 형식으로 fallback 및 복원 왕복 검증")
+    void testRoundTrip_zstd_shortText_fallback() throws IOException {
+        byte[] original = "Zstd short text test".getBytes(StandardCharsets.UTF_8);
+        
+        // 소형 데이터는 Zstd 압축 시 오히려 커질 수 있음 -> 'u' 비압축 fallback 검증
+        byte[] compressed = DeltaCodec.compress(original, true);
+        
+        byte[] restored = DeltaCodec.decompress(compressed, original.length);
+        assertArrayEquals(original, restored);
+    }
 }

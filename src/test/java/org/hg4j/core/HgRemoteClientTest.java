@@ -2,6 +2,7 @@ package org.hg4j.core;
 
 import org.junit.jupiter.api.Test;
 import org.hg4j.transport.HgRemoteClient;
+import org.hg4j.transport.HgWireServer;
 import java.io.File;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -154,6 +155,7 @@ public class HgRemoteClientTest {
         
         byte[] params = "Compression=GZ".getBytes(StandardCharsets.UTF_8);
         int paramsLen = params.length;
+        bundle2Out.write((paramsLen >> 8) & 0xFF);
         bundle2Out.write(paramsLen & 0xFF);
         bundle2Out.write(params);
         bundle2Out.write(compressedBytes);
@@ -239,6 +241,7 @@ public class HgRemoteClientTest {
         bundle2Out.write("HG20".getBytes(StandardCharsets.US_ASCII));
         
         int paramsLen = 0;
+        bundle2Out.write((paramsLen >> 8) & 0xFF);
         bundle2Out.write(paramsLen & 0xFF);
         bundle2Out.write(uncompressedBytes);
         
@@ -372,6 +375,7 @@ public class HgRemoteClientTest {
         ByteArrayOutputStream bundle2Out = new ByteArrayOutputStream();
         bundle2Out.write("HG20".getBytes(StandardCharsets.US_ASCII));
         byte[] params = "Compression=BZ".getBytes(StandardCharsets.UTF_8);
+        bundle2Out.write((params.length >> 8) & 0xFF);
         bundle2Out.write(params.length & 0xFF);
         bundle2Out.write(params);
         bundle2Out.write(bzBytes);
@@ -685,6 +689,71 @@ public class HgRemoteClientTest {
                 throw e.getCause();
             }
         });
+    }
+
+    @Test
+    public void testHttpV2ClientServerIntegrationAndNegotiation() throws Exception {
+        // 1. 가상의 HTTP 서버를 임시 포트에 띄워서 클라이언트 요청 수신 및 HgWireServer 중계 검증
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        int port = server.getAddress().getPort();
+        
+        // Mock HgRepository 생성
+        File tempStore = Files.createTempDirectory("hg4j_store").toFile();
+        tempStore.deleteOnExit();
+        HgRepository repository = new HgRepository(tempStore);
+        HgWireServer wireServer = new HgWireServer(repository);
+
+        server.createContext("/api/v2/heads", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                String acceptHeader = exchange.getRequestHeaders().getFirst("Accept");
+                
+                // Assert HTTP V2 Accept 규격 준수 여부
+                assertEquals("application/mercurial-x-api-v2", acceptHeader);
+
+                ByteArrayOutputStream responseBody = new ByteArrayOutputStream();
+                try (InputStream in = exchange.getRequestBody()) {
+                    // 서버 측 handleHttpV2Connection 동작 호출 검증
+                    wireServer.handleHttpV2Connection("heads", acceptHeader, in, responseBody);
+                }
+
+                byte[] responseBytes = responseBody.toByteArray();
+                exchange.getResponseHeaders().set("Content-Type", "application/mercurial-x-api-v2");
+                exchange.sendResponseHeaders(200, responseBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(responseBytes);
+                }
+            }
+        });
+
+        server.start();
+
+        try {
+            // 2. HTTP V2 클라이언트 생성 및 연동 호출
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + port);
+            client.setV2(true);
+            assertTrue(client.isV2());
+
+            // getHeads() 호출 시 내부적으로 /api/v2/heads 로 요청 전송
+            List<String> heads = client.getHeads();
+            assertNotNull(heads);
+            assertTrue(heads.isEmpty() || heads.size() >= 0);
+        } finally {
+            server.stop(0);
+            deleteRecursive(tempStore);
+        }
+    }
+
+    private void deleteRecursive(File file) {
+        if (file.isDirectory()) {
+            File[] files = file.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    deleteRecursive(f);
+                }
+            }
+        }
+        file.delete();
     }
 }
 

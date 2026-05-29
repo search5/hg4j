@@ -306,7 +306,7 @@ public class Dirstate {
             metaBuf.putInt(0); // root_nodes children_start
             metaBuf.putInt(rootCount); // root_nodes children_count
             metaBuf.putInt(entries.size()); // nodes_with_entry_count
-            metaBuf.putInt(0); // nodes_with_copy_source_count
+            metaBuf.putInt(copyMap.size()); // nodes_with_copy_source_count
 
             docketBuf.put(treeMetadataBytes);
 

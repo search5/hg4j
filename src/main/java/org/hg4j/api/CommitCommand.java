@@ -37,6 +37,23 @@ public class CommitCommand {
     private Long forcedTime = null;
     private Integer forcedOffset = null;
     private boolean skipLockAndJournal = false;
+    
+    private final List<HgHook> preCommitHooks = new ArrayList<>();
+    private final List<HgHook> postCommitHooks = new ArrayList<>();
+
+    public CommitCommand registerPreCommitHook(HgHook hook) {
+        if (hook != null) {
+            preCommitHooks.add(hook);
+        }
+        return this;
+    }
+
+    public CommitCommand registerPostCommitHook(HgHook hook) {
+        if (hook != null) {
+            postCommitHooks.add(hook);
+        }
+        return this;
+    }
 
     public CommitCommand setSkipLockAndJournal(boolean skip) {
         this.skipLockAndJournal = skip;
@@ -68,6 +85,19 @@ public class CommitCommand {
     public byte[] call() throws IOException {
         if (message == null || message.isEmpty()) {
             throw new IllegalStateException("Commit message must be specified.");
+        }
+
+        // PRE_COMMIT hooks trigger
+        if (!preCommitHooks.isEmpty()) {
+            Map<String, Object> ctx = new HashMap<>();
+            ctx.put("author", author);
+            ctx.put("message", message);
+            ctx.put("repository", repository);
+            for (HgHook hook : preCommitHooks) {
+                if (!hook.run(ctx)) {
+                    throw new org.hg4j.errors.HgValidationException("Pre-commit hook execution rejected the commit txn");
+                }
+            }
         }
 
         Map<File, Long> fileSizes = new HashMap<>();
@@ -373,21 +403,18 @@ public class CommitCommand {
 
                             // Copy-Rename Track "Writer" 통합
                             String originalPath = dirstate.getCopyMap().get(path);
-                            byte[] finalPayload;
+                            java.util.Map<String, String> copyMeta = null;
 
                             if (originalPath != null) {
-                                String hexP1 = NodeIdUtil.toHex(p1FileNode);
-                                String metaText = "\u0001\ncopy: " + originalPath + "\ncopyrev: " + hexP1 + "\n\u0001";
-                                
-                                byte[] metaBytes = metaText.getBytes(StandardCharsets.UTF_8);
-                                finalPayload = new byte[metaBytes.length + fileContent.length];
-                                System.arraycopy(metaBytes, 0, finalPayload, 0, metaBytes.length);
-                                System.arraycopy(fileContent, 0, finalPayload, metaBytes.length, fileContent.length);
-                            } else {
-                                finalPayload = fileContent;
+                                String sourceEntry = manifestP1.get(originalPath);
+                                String hexSource = (sourceEntry != null && sourceEntry.length() >= 40)
+                                        ? sourceEntry.substring(0, 40) : "0000000000000000000000000000000000000000";
+                                copyMeta = new java.util.LinkedHashMap<>();
+                                copyMeta.put("copy", originalPath);
+                                copyMeta.put("copyrev", hexSource);
                             }
 
-                            byte[] newFileNode = filelog.appendRevision(finalPayload, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
+                            byte[] newFileNode = filelog.appendRevision(fileContent, copyMeta, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
                             
                             // Capture execution flag and symlink flag for serialization
                             String flag = "";
@@ -519,6 +546,22 @@ public class CommitCommand {
                 }
             }
 
+            // POST_COMMIT hooks trigger
+            if (!postCommitHooks.isEmpty()) {
+                Map<String, Object> ctx = new HashMap<>();
+                ctx.put("author", author);
+                ctx.put("message", message);
+                ctx.put("commitNode", commitNode);
+                ctx.put("repository", repository);
+                for (HgHook hook : postCommitHooks) {
+                    try {
+                        hook.run(ctx);
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Post-commit hook execution failed", e);
+                    }
+                }
+            }
+
             return commitNode;
         } catch (Exception t) {
             if (skipLockAndJournal) {
@@ -561,9 +604,35 @@ public class CommitCommand {
                 }
             }
  
-            // Restore dirstate atomically (N-1 Rollback Refinement)
+            // Restore dirstate atomically (N-1 Rollback Refinement with Dirstate V2 garbage collection)
             if (dirstateBackup != null) {
                 try {
+                    if (dirstateFile.exists()) {
+                        byte[] currentBytes = Files.readAllBytes(dirstateFile.toPath());
+                        if (currentBytes.length >= 12 && new String(currentBytes, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
+                            java.nio.ByteBuffer currentBuf = java.nio.ByteBuffer.wrap(currentBytes).order(java.nio.ByteOrder.BIG_ENDIAN);
+                            int currentUidSize = currentBuf.get(124) & 0xFF;
+                            byte[] currentUidBytes = new byte[currentUidSize];
+                            currentBuf.position(125);
+                            currentBuf.get(currentUidBytes);
+                            String currentUid = new String(currentUidBytes, StandardCharsets.US_ASCII);
+                            
+                            String oldUid = null;
+                            if (dirstateBackup.length >= 12 && new String(dirstateBackup, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
+                                java.nio.ByteBuffer oldBuf = java.nio.ByteBuffer.wrap(dirstateBackup).order(java.nio.ByteOrder.BIG_ENDIAN);
+                                int oldUidSize = oldBuf.get(124) & 0xFF;
+                                byte[] oldUidBytes = new byte[oldUidSize];
+                                oldBuf.position(125);
+                                oldBuf.get(oldUidBytes);
+                                oldUid = new String(oldUidBytes, StandardCharsets.US_ASCII);
+                            }
+                            
+                            if (currentUid != null && !currentUid.equals(oldUid)) {
+                                File newDirstateDataFile = new File(dirstateFile.getParentFile(), "dirstate.d." + currentUid);
+                                Files.deleteIfExists(newDirstateDataFile.toPath());
+                            }
+                        }
+                    }
                     SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
                 } catch (Exception ignored) {
                     LOGGER.log(Level.WARNING, "Failed to restore dirstate backup during rollback", ignored);

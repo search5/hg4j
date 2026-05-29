@@ -82,7 +82,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         String resp = executeGet("heads");
         List<String> heads = new ArrayList<>();
         if (resp != null && !resp.trim().isEmpty()) {
-            for (String head : resp.split("\\n")) {
+            for (String head : resp.split("\\s+")) {
                 String clean = head.trim();
                 if (!clean.isEmpty()) {
                     heads.add(clean);
@@ -149,7 +149,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     private byte[] executeGetBinary(String cmd) throws IOException {
-        String fullUrl = baseUrl + "?cmd=" + cmd;
+        String fullUrl = isV2 ? (baseUrl + "/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
@@ -167,7 +167,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
         if (isV2) {
-            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2, application/mercurial-0.2");
+            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2");
         } else {
             conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
         }
@@ -207,7 +207,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     private byte[] executePostBinary(String cmd, java.util.Map<String, String> params) throws IOException {
-        String fullUrl = baseUrl + "?cmd=" + cmd;
+        String fullUrl = isV2 ? (baseUrl + "/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
@@ -226,11 +226,12 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setUseCaches(false);
         conn.setDoOutput(true);
         if (isV2) {
-            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2, application/mercurial-0.2");
+            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2");
+            conn.setRequestProperty("Content-Type", "application/mercurial-x-api-v2");
         } else {
             conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
         }
-        conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;

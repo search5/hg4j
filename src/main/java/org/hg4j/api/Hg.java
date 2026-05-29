@@ -11,9 +11,31 @@ package org.hg4j.api;
 public class Hg implements AutoCloseable {
     
     private final org.hg4j.core.HgRepository repository;
+    private final java.util.Map<HgHookType, java.util.List<HgHook>> hooks = new java.util.concurrent.ConcurrentHashMap<>();
     
     private Hg(org.hg4j.core.HgRepository repository) {
         this.repository = repository;
+    }
+
+    /**
+     * SCM 자바 훅을 동적으로 등록합니다.
+     *
+     * @param type 훅의 실행 시점 종류
+     * @param hook 훅 동작을 구현한 HgHook 인스턴스
+     * @return 자기 자신 (Chaining 지원)
+     */
+    public Hg registerHook(HgHookType type, HgHook hook) {
+        if (type != null && hook != null) {
+            hooks.computeIfAbsent(type, k -> new java.util.concurrent.CopyOnWriteArrayList<>()).add(hook);
+        }
+        return this;
+    }
+
+    /**
+     * 특정 시점에 등록된 모든 자바 훅 리스트를 반환합니다.
+     */
+    public java.util.List<HgHook> getHooks(HgHookType type) {
+        return hooks.getOrDefault(type, java.util.Collections.emptyList());
     }
     
     /**
@@ -113,7 +135,14 @@ public class Hg implements AutoCloseable {
     }
 
     public CommitCommand commit() {
-        return new CommitCommand(this.repository);
+        CommitCommand command = new CommitCommand(this.repository);
+        for (HgHook hook : getHooks(HgHookType.PRE_COMMIT)) {
+            command.registerPreCommitHook(hook);
+        }
+        for (HgHook hook : getHooks(HgHookType.POST_COMMIT)) {
+            command.registerPostCommitHook(hook);
+        }
+        return command;
     }
 
     public StatusCommand status() {
@@ -157,7 +186,14 @@ public class Hg implements AutoCloseable {
     }
 
     public PushCommand push() {
-        return new PushCommand(this.repository);
+        PushCommand command = new PushCommand(this.repository);
+        for (HgHook hook : getHooks(HgHookType.PRE_PUSH)) {
+            command.registerPrePushHook(hook);
+        }
+        for (HgHook hook : getHooks(HgHookType.POST_PUSH)) {
+            command.registerPostPushHook(hook);
+        }
+        return command;
     }
 
     public CatCommand cat() {

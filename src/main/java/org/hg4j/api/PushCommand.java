@@ -24,6 +24,23 @@ public class PushCommand {
 
     private final HgRepository repository;
     private String destinationUrl;
+    
+    private final List<HgHook> prePushHooks = new ArrayList<>();
+    private final List<HgHook> postPushHooks = new ArrayList<>();
+
+    public PushCommand registerPrePushHook(HgHook hook) {
+        if (hook != null) {
+            prePushHooks.add(hook);
+        }
+        return this;
+    }
+
+    public PushCommand registerPostPushHook(HgHook hook) {
+        if (hook != null) {
+            postPushHooks.add(hook);
+        }
+        return this;
+    }
 
     public PushCommand(HgRepository repository) {
         this.repository = repository;
@@ -37,6 +54,18 @@ public class PushCommand {
     public String call() throws IOException {
         if (destinationUrl == null || destinationUrl.isEmpty()) {
             throw new IllegalStateException("Remote destination URL must be specified.");
+        }
+
+        // PRE_PUSH hooks trigger
+        if (!prePushHooks.isEmpty()) {
+            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            ctx.put("destinationUrl", destinationUrl);
+            ctx.put("repository", repository);
+            for (HgHook hook : prePushHooks) {
+                if (!hook.run(ctx)) {
+                    throw new org.hg4j.errors.HgValidationException("Pre-push hook execution rejected the push action");
+                }
+            }
         }
 
         try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(destinationUrl)) {
@@ -255,7 +284,24 @@ public class PushCommand {
                 }
 
                 // 3. Dispatch bundle to remote destination
-                return client.push(baos.toByteArray(), remoteHeads);
+                String response = client.push(baos.toByteArray(), remoteHeads);
+
+                // POST_PUSH hooks trigger
+                if (!postPushHooks.isEmpty()) {
+                    java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+                    ctx.put("destinationUrl", destinationUrl);
+                    ctx.put("response", response);
+                    ctx.put("repository", repository);
+                    for (HgHook hook : postPushHooks) {
+                        try {
+                            hook.run(ctx);
+                        } catch (Exception e) {
+                            // Non-blocking postScm trigger warning
+                        }
+                    }
+                }
+
+                return response;
             }
         }
     }

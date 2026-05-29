@@ -12,6 +12,7 @@ import java.io.IOException;
 public class InitCommand {
     private File directory;
     private boolean dirstateV2 = false;
+    private boolean useZstd = false;
 
     public InitCommand setDirectory(File directory) {
         this.directory = directory;
@@ -20,6 +21,11 @@ public class InitCommand {
 
     public InitCommand setDirstateV2(boolean dirstateV2) {
         this.dirstateV2 = dirstateV2;
+        return this;
+    }
+
+    public InitCommand setUseZstd(boolean useZstd) {
+        this.useZstd = useZstd;
         return this;
     }
 
@@ -67,6 +73,9 @@ public class InitCommand {
         ));
         if (dirstateV2) {
             requirements.add("dirstate-v2");
+        }
+        if (useZstd) {
+            requirements.add("revlog-compression=zstd");
         }
         
         try {

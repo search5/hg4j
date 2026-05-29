@@ -20,8 +20,7 @@ public class Revlog {
     private final File datFile;
     private final RevlogIndex index;
     private boolean inline = false;
-
-
+    private boolean useZstd = false;
 
     // 인메모리 LRU 리비전 컨텐트 캐시 (최대 100개)
     private final java.util.Map<Integer, byte[]> contentCache = new java.util.LinkedHashMap<>(16, 0.75f, true) {
@@ -52,10 +51,15 @@ public class Revlog {
     }
 
     public Revlog(File idxFile, File datFile) throws IOException {
+        this(idxFile, datFile, false);
+    }
+
+    public Revlog(File idxFile, File datFile, boolean useZstd) throws IOException {
         this.idxFile = idxFile;
         this.datFile = datFile;
         this.index = new RevlogIndex(idxFile);
         this.inline = index.isInline();
+        this.useZstd = useZstd;
     }
 
 
@@ -304,7 +308,7 @@ public class Revlog {
         int baseRev = rev;
 
         // Compress rawToWrite
-        byte[] dataHunk = DeltaCodec.compress(rawToWrite);
+        byte[] dataHunk = DeltaCodec.compress(rawToWrite, useZstd);
 
         long offset = 0;
         if (rev > 0) {
@@ -326,7 +330,7 @@ public class Revlog {
             ByteBuffer recordBuf = ByteBuffer.allocate(64);
             recordBuf.putLong(offsetFlags);
             recordBuf.putInt(dataHunk.length);
-            recordBuf.putInt(processedContent.length);
+            recordBuf.putInt(rawToWrite.length);
             recordBuf.putInt(baseRev);
             recordBuf.putInt(linkRev);
             recordBuf.putInt(parent1);
@@ -357,7 +361,7 @@ public class Revlog {
             ByteBuffer recordBuf = ByteBuffer.allocate(64);
             recordBuf.putLong(offsetFlags);
             recordBuf.putInt(dataHunk.length);
-            recordBuf.putInt(processedContent.length);
+            recordBuf.putInt(rawToWrite.length);
             recordBuf.putInt(baseRev);
             recordBuf.putInt(linkRev);
             recordBuf.putInt(parent1);
@@ -370,7 +374,7 @@ public class Revlog {
             }
         }
 
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
 
         return hash;
@@ -471,7 +475,7 @@ public class Revlog {
             baseRev = rev;
         }
 
-        byte[] dataHunk = DeltaCodec.compress(rawToWrite);
+        byte[] dataHunk = DeltaCodec.compress(rawToWrite, useZstd);
 
         long offset = 0;
         if (datFile.exists()) {
@@ -495,7 +499,7 @@ public class Revlog {
         ByteBuffer recordBuf = ByteBuffer.allocate(64);
         recordBuf.putLong(offsetFlags);
         recordBuf.putInt(dataHunk.length);
-        recordBuf.putInt(content.length);
+        recordBuf.putInt(rawToWrite.length);
         recordBuf.putInt(baseRev);
         recordBuf.putInt(linkRev);
         recordBuf.putInt(parent1);
@@ -510,7 +514,7 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, content.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
                 baseRev, linkRev, parent1, parent2, entry.node));
 
         clearCache();
@@ -539,7 +543,7 @@ public class Revlog {
         int rev = index.getRevisionCount();
 
         // Compress rawToWrite
-        byte[] dataHunk = DeltaCodec.compress(rawToWrite);
+        byte[] dataHunk = DeltaCodec.compress(rawToWrite, useZstd);
 
         long offset = 0;
         if (datFile.exists()) {

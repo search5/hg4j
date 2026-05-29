@@ -22,15 +22,15 @@ public class DirstateV2LayoutTest {
         wrapper.putInt(4, 2);               // children_count: 2
         wrapper.putInt(8, 20);              // descendants_with_entry: 20
         wrapper.putInt(12, 15);             // tracked_descendants: 15
-        wrapper.putInt(16, 500);            // path_offset: 500
-        wrapper.putShort(20, (short) 12);   // path_len: 12 bytes
-        wrapper.putShort(22, (short) 4);    // basename_start: 4
-        wrapper.putInt(24, 600);            // copy_source_offset: 600
-        wrapper.putShort(28, (short) 5);    // copy_source_len: 5 bytes
-        wrapper.putShort(30, (short) 0x3B); // flags: 0x3B (WDIR_TRACKED | P1_TRACKED | MODE_EXEC_PERM | HAS_MODE_AND_SIZE | HAS_MTIME) -> state 'n', executable
-        wrapper.putInt(32, 12345);          // size: 12345 bytes
-        wrapper.putInt(36, 1680000000);    // mtime: epoch seconds
-        wrapper.putInt(40, 999);            // mtime_nanoseconds: 999
+        wrapper.putShort(16, (short) 0x3B); // flags: 0x3B (WDIR_TRACKED | P1_TRACKED | MODE_EXEC_PERM | HAS_MODE_AND_SIZE | HAS_MTIME) -> state 'n', executable
+        wrapper.putInt(18, 12345);          // size: 12345 bytes
+        wrapper.putInt(22, 1680000000);    // mtime: epoch seconds
+        wrapper.putInt(26, 999);            // mtime_nanoseconds: 999
+        wrapper.putInt(30, 500);            // path_offset: 500
+        wrapper.putShort(34, (short) 12);   // path_len: 12 bytes
+        wrapper.putShort(36, (short) 4);    // basename_start: 4
+        wrapper.putInt(38, 600);            // copy_source_offset: 600
+        wrapper.putShort(42, (short) 5);    // copy_source_len: 5 bytes
 
         // When: DirstateV2Node 구조체 매퍼 바인딩
         DirstateV2Node node = new DirstateV2Node(buffer, 0);
@@ -73,14 +73,14 @@ public class DirstateV2LayoutTest {
         assertEquals(4, wrapper.getInt(4));
         assertEquals(40, wrapper.getInt(8));
         assertEquals(35, wrapper.getInt(12));
-        assertEquals(800, wrapper.getInt(16));
-        assertEquals((short) 15, wrapper.getShort(20));
-        assertEquals((short) 6, wrapper.getShort(22));
-        assertEquals(700, wrapper.getInt(24));
-        assertEquals((short) 7, wrapper.getShort(28));
-        assertEquals((short) 0x19, wrapper.getShort(30)); // state 'a' & normal file -> flags = 0x19 (WDIR_TRACKED | HAS_MODE_AND_SIZE | HAS_MTIME)
-        assertEquals(9999, wrapper.getInt(32));
-        assertEquals(1700000000L, wrapper.getInt(36) & 0xFFFFFFFFL);
-        assertEquals(888, wrapper.getInt(40));
+        assertEquals((short) 0x19, wrapper.getShort(16)); // state 'a' & normal file -> flags = 0x19 (WDIR_TRACKED | HAS_MODE_AND_SIZE | HAS_MTIME)
+        assertEquals(9999, wrapper.getInt(18));
+        assertEquals(1700000000L, wrapper.getInt(22) & 0xFFFFFFFFL);
+        assertEquals(888, wrapper.getInt(26));
+        assertEquals(800, wrapper.getInt(30));
+        assertEquals((short) 15, wrapper.getShort(34));
+        assertEquals((short) 6, wrapper.getShort(36));
+        assertEquals(700, wrapper.getInt(38));
+        assertEquals((short) 7, wrapper.getShort(42));
     }
 }

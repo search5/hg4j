@@ -156,4 +156,52 @@ public class HgWireServer {
             out.flush();
         }
     }
+
+    /**
+     * HTTP V2 프로토콜 요청(api/v2/<cmd>)을 중계 및 처리하는 전용 엔드포인트 핸들러입니다.
+     *
+     * @param cmd 호출된 커맨드 이름 (예: "capabilities", "heads", "unbundle" 등)
+     * @param acceptHeader 클라이언트로부터 유입된 HTTP Accept 헤더
+     * @param in HTTP 요청 본문 입력 스트림
+     * @param out HTTP 응답 본문 출력 스트림
+     * @throws IOException I/O 오류 발생 시
+     */
+    public void handleHttpV2Connection(String cmd, String acceptHeader, InputStream in, OutputStream out) throws IOException {
+        if (cmd == null || cmd.isEmpty()) {
+            throw new IllegalArgumentException("HTTP V2 Command cannot be null or empty");
+        }
+
+        // HTTP V2에서는 'application/mercurial-x-api-v2' 헤더 협상이 충족되어야 합니다.
+        boolean isV2Mediated = acceptHeader != null && acceptHeader.contains("application/mercurial-x-api-v2");
+
+        if ("capabilities".equalsIgnoreCase(cmd)) {
+            // V2 용 capabilities는 V2 전용 규격으로 인코딩하여 반환합니다.
+            String caps = "capabilities: lookup changegroup=01,02,03 getbundle bundle2=HG20 compression=GZ,BZ,ZS exp-ssh-v2-0003\n";
+            if (isV2Mediated) {
+                out.write(("application/mercurial-x-api-v2\n" + caps).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            } else {
+                out.write(caps.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            out.flush();
+        } else if ("heads".equalsIgnoreCase(cmd)) {
+            String heads = "\n";
+            if (isV2Mediated) {
+                out.write("application/mercurial-x-api-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            out.write(heads.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.flush();
+        } else if ("unbundle".equalsIgnoreCase(cmd)) {
+            if (isV2Mediated) {
+                out.write("application/mercurial-x-api-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            processIncomingPush(in, out);
+        } else {
+            if (isV2Mediated) {
+                out.write("application/mercurial-x-api-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            String defaultResp = "0\nno errors\n";
+            out.write(defaultResp.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.flush();
+        }
+    }
 }

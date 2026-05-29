@@ -92,16 +92,34 @@ public class HgSshClientTest {
         final boolean[] openSessionCalled = {false};
         org.hg4j.transport.SshSessionFactory mockFactory = new org.hg4j.transport.SshSessionFactory() {
             @Override
-            public com.jcraft.jsch.Session openSession(String host, int port, String username, String password, String privateKeyPath, String passphrase) throws Exception {
+            public org.hg4j.transport.SshSession createSession(String host, int port, String username, String password, String privateKeyPath, String passphrase) throws Exception {
                 openSessionCalled[0] = true;
                 assertEquals("127.0.0.1", host);
                 assertEquals(customPort, port); // custom port verify
                 assertEquals("mockuser", username);
                 assertEquals("mockpass", password);
                 
-                // Return actual JSch dummy session (JSch session without connection is fine)
-                com.jcraft.jsch.JSch jsch = new com.jcraft.jsch.JSch();
-                return jsch.getSession(username, host, port);
+                // Return mock SshSession
+                return new org.hg4j.transport.SshSession() {
+                    @Override
+                    public void connect(int timeoutMs) throws Exception {}
+
+                    @Override
+                    public void executeCommand(String command, int timeoutMs) throws Exception {}
+
+                    @Override
+                    public java.io.InputStream getInputStream() throws java.io.IOException {
+                        return new java.io.ByteArrayInputStream("capabilities: heads\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    }
+
+                    @Override
+                    public java.io.OutputStream getOutputStream() throws java.io.IOException {
+                        return new java.io.ByteArrayOutputStream();
+                    }
+
+                    @Override
+                    public void close() throws java.io.IOException {}
+                };
             }
         };
 
@@ -115,14 +133,14 @@ public class HgSshClientTest {
             HgSshClient client = new HgSshClient(sshUrl);
             
             try {
-                client.getCapabilities(); // 트리거 ensureConnected()
-            } catch (Exception ignored) {
-                // connection timeout or dummy session failures are expected and ignored
+                java.util.List<String> caps = client.getCapabilities(); // 트리거 ensureConnected()
+                assertNotNull(caps);
+                assertTrue(caps.contains("heads"));
             } finally {
                 client.close();
             }
 
-            assertTrue(openSessionCalled[0], "SshSessionFactory's openSession must be actively invoked");
+            assertTrue(openSessionCalled[0], "SshSessionFactory's createSession must be actively invoked");
         } finally {
             // 3. 복원
             HgSshClient.setSshSessionFactory(originalFactory);

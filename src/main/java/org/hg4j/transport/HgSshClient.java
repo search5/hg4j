@@ -35,8 +35,7 @@ public class HgSshClient implements HgRemoteConnection {
         return sshSessionFactory;
     }
 
-    private Session session;
-    private ChannelExec channel;
+    private SshSession sshSession;
     private InputStream in;
     private OutputStream out;
     private List<String> capabilities = new ArrayList<>();
@@ -140,19 +139,12 @@ public class HgSshClient implements HgRemoteConnection {
         }
 
         try {
-            session = sshSessionFactory.openSession(host, port, username, password, privateKeyPath, passphrase);
-            session.connect(15000); // 15 seconds connection timeout
+            sshSession = sshSessionFactory.createSession(host, port, username, password, privateKeyPath, passphrase);
+            sshSession.connect(15000); // 15 seconds connection timeout
+            sshSession.executeCommand("hg -R " + repoPath + " serve --stdio", 15000);
 
-            channel = (ChannelExec) session.openChannel("exec");
-            channel.setAgentForwarding(true); // SSH agent forwarding enabled!
-            
-            // Execute the standard mercurial stdio server command
-            channel.setCommand("hg -R " + repoPath + " serve --stdio");
-
-            this.in = channel.getInputStream();
-            this.out = channel.getOutputStream();
-
-            channel.connect(15000);
+            this.in = sshSession.getInputStream();
+            this.out = sshSession.getOutputStream();
 
             // Stdio protocol begins by immediate server output of its capabilities
             readCapabilities();
@@ -512,17 +504,11 @@ public class HgSshClient implements HgRemoteConnection {
 
     @Override
     public synchronized void close() {
-        if (channel != null) {
+        if (sshSession != null) {
             try {
-                channel.disconnect();
+                sshSession.close();
             } catch (Exception ignored) {}
-            channel = null;
-        }
-        if (session != null) {
-            try {
-                session.disconnect();
-            } catch (Exception ignored) {}
-            session = null;
+            sshSession = null;
         }
         connected = false;
     }

@@ -22,10 +22,12 @@ import java.util.Map;
  * Now supports full physical strip of original duplicate history for complete interop fidelity.
  */
 public class RebaseCommand {
+    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(RebaseCommand.class.getName());
 
     private final HgRepository repository;
     private byte[] sourceNode;
     private byte[] targetNode;
+    private final java.util.List<HgHook> postRebaseHooks = new java.util.ArrayList<>();
 
     private static class BackupCommit {
         byte[] originalNode;
@@ -54,6 +56,13 @@ public class RebaseCommand {
         this.repository = repository;
     }
 
+    public RebaseCommand registerPostRebaseHook(HgHook hook) {
+        if (hook != null) {
+            postRebaseHooks.add(hook);
+        }
+        return this;
+    }
+
     public RebaseCommand setSource(byte[] sourceNode) {
         this.sourceNode = sourceNode;
         return this;
@@ -65,6 +74,7 @@ public class RebaseCommand {
     }
 
     public byte[] call() throws IOException {
+        repository.clearRevlogCache();
         if (sourceNode == null || targetNode == null) {
             throw new IllegalStateException("Source and Target nodes must be specified for rebase.");
         }
@@ -157,6 +167,20 @@ public class RebaseCommand {
             // Clean physical backup copies and journal on success
             deleteRebaseJournal();
             deleteDirRecursively(backupDir);
+
+            // POST_REBASE hooks trigger
+            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            ctx.put("sourceNode", sourceNode);
+            ctx.put("targetNode", targetNode);
+            ctx.put("rebasedTipNode", NodeIdUtil.toHex(currentBaseNode));
+            ctx.put("repository", repository);
+            for (HgHook hook : postRebaseHooks) {
+                try {
+                    hook.run(ctx);
+                } catch (Exception e) {
+                    LOGGER.log(java.util.logging.Level.WARNING, "Post-rebase hook execution failed", e);
+                }
+            }
 
             return currentBaseNode;
 

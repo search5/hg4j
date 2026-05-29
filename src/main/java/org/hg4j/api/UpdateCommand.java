@@ -24,9 +24,17 @@ public class UpdateCommand {
     private String targetRevision;
     private boolean force = false;
     private org.hg4j.core.HgTreeFilter treeFilter = org.hg4j.core.HgTreeFilter.ALL;
+    private final java.util.List<HgHook> postUpdateHooks = new java.util.ArrayList<>();
 
     public UpdateCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public UpdateCommand registerPostUpdateHook(HgHook hook) {
+        if (hook != null) {
+            postUpdateHooks.add(hook);
+        }
+        return this;
     }
 
     public UpdateCommand setTreeFilter(org.hg4j.core.HgTreeFilter treeFilter) {
@@ -231,6 +239,18 @@ public class UpdateCommand {
                     }
                 } catch (Exception e) {
                     LOGGER.log(java.util.logging.Level.WARNING, "Failed to perform recursive subrepo checkout", e);
+                }
+            }
+
+            // POST_UPDATE hooks trigger
+            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            ctx.put("targetNode", NodeIdUtil.toHex(targetNodeId));
+            ctx.put("repository", repository);
+            for (HgHook hook : postUpdateHooks) {
+                try {
+                    hook.run(ctx);
+                } catch (Exception e) {
+                    LOGGER.log(java.util.logging.Level.WARNING, "Post-update hook execution failed", e);
                 }
             }
 

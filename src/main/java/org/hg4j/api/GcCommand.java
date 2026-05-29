@@ -47,17 +47,24 @@ public class GcCommand {
             }
         }
 
-        // 2. Rebuild fncache based on actual index files on disk
-        File fncacheFile = new File(storeDir, "fncache");
+        // 2. Perform Pack GC: Compress and defragment all revlogs (.i and .d) in the store
         java.util.Set<String> validStorePaths = new java.util.LinkedHashSet<>();
-
-        // Add default core revlogs
+        
         File clIdx = new File(storeDir, "00changelog.i");
-        if (clIdx.exists()) validStorePaths.add("00changelog.i");
-        File mfIdx = new File(storeDir, "00manifest.i");
-        if (mfIdx.exists()) validStorePaths.add("00manifest.i");
+        File clDat = new File(storeDir, "00changelog.d");
+        if (clIdx.exists()) {
+            compressRevlog(clIdx, clDat);
+            validStorePaths.add("00changelog.i");
+        }
 
-        // Scan data and meta directories recursively
+        File mfIdx = new File(storeDir, "00manifest.i");
+        File mfDat = new File(storeDir, "00manifest.d");
+        if (mfIdx.exists()) {
+            compressRevlog(mfIdx, mfDat);
+            validStorePaths.add("00manifest.i");
+        }
+
+        // Recursively find and compress meta and data store logs
         File dataDir = new File(storeDir, "data");
         if (dataDir.exists() && dataDir.isDirectory()) {
             scanForIndexFiles(dataDir, validStorePaths);
@@ -67,15 +74,71 @@ public class GcCommand {
             scanForIndexFiles(metaDir, validStorePaths);
         }
 
+        for (String relPath : validStorePaths) {
+            if ("00changelog.i".equals(relPath) || "00manifest.i".equals(relPath)) {
+                continue;
+            }
+            File idxFile = new File(storeDir, relPath);
+            File datFile = new File(storeDir, relPath.substring(0, relPath.length() - 2) + ".d");
+            compressRevlog(idxFile, datFile);
+        }
+
+        // 3. Rebuild fncache with atomic file IO
+        File fncacheFile = new File(storeDir, "fncache");
         if (!validStorePaths.isEmpty()) {
             org.hg4j.core.SafeFileIO.writeLinesAtomic(fncacheFile, new java.util.ArrayList<>(validStorePaths));
         }
 
-        // 3. Request JVM Garbage Collection
+        // 4. Request JVM level defragmentation
         System.gc();
 
-        return "GC / Compaction complete: cleaned " + deletedBackups + " orphaned temp files, re-indexed " 
-                + validStorePaths.size() + " revlog entries in fncache.";
+        return "GC / Compaction complete: defragmented and re-delta optimized " + validStorePaths.size() 
+                + " store revlogs, cleaned " + deletedBackups + " orphaned temp files.";
+    }
+
+    private void compressRevlog(File idxFile, File datFile) throws IOException {
+        if (!idxFile.exists()) return;
+
+        File tmpIdx = new File(idxFile.getParent(), idxFile.getName() + ".tmp");
+        File tmpDat = new File(datFile.getParent(), datFile.getName() + ".tmp");
+
+        // Cleanup stale temp files
+        tmpIdx.delete();
+        tmpDat.delete();
+
+        try {
+            Revlog original = new Revlog(idxFile, datFile);
+            Revlog compressed = new Revlog(tmpIdx, tmpDat);
+
+            int count = original.getRevisionCount();
+            for (int i = 0; i < count; i++) {
+                Revlog.IndexRecord rec = original.getIndexRecord(i);
+                byte[] content = original.getRawRevisionContent(i);
+
+                byte[] p1Node = new byte[20];
+                byte[] p2Node = new byte[20];
+                if (rec.getParent1() >= 0) {
+                    p1Node = original.getIndexRecord(rec.getParent1()).getNodeId();
+                }
+                if (rec.getParent2() >= 0) {
+                    p2Node = original.getIndexRecord(rec.getParent2()).getNodeId();
+                }
+
+                int newP1 = compressed.findRevision(p1Node);
+                int newP2 = compressed.findRevision(p2Node);
+
+                compressed.appendOptimizedRevision(content, rec.getNodeId(), newP1, newP2, p1Node, p2Node, rec.getLinkRev());
+            }
+
+            // Atomic replace of store files
+            java.nio.file.Files.move(tmpIdx.toPath(), idxFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            if (tmpDat.exists()) {
+                java.nio.file.Files.move(tmpDat.toPath(), datFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            tmpIdx.delete();
+            tmpDat.delete();
+        }
     }
 
     private void scanForIndexFiles(File dir, java.util.Set<String> result) {

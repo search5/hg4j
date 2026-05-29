@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.NoSuchElementException;
 
 public class ManifestWalk {
 
@@ -83,13 +84,82 @@ public class ManifestWalk {
 
     public Entry getEntry() {
         if (cachedIndex < 0 || cachedIndex >= cachedEntries.size()) {
-            throw new java.util.NoSuchElementException("No current entry");
+            throw new NoSuchElementException("No current entry");
         }
         return cachedEntries.get(cachedIndex);
     }
 
     public List<Entry> getEntries() throws IOException {
-        loadAll();
-        return Collections.unmodifiableList(cachedEntries);
+        return new java.util.AbstractList<Entry>() {
+            private final List<Entry> cache = new java.util.ArrayList<>();
+            private final java.util.Iterator<Entry> it = lazyEntries();
+
+            @Override
+            public Entry get(int index) {
+                while (cache.size() <= index && it.hasNext()) {
+                    cache.add(it.next());
+                }
+                if (index < cache.size()) {
+                    return cache.get(index);
+                }
+                throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size());
+            }
+
+            @Override
+            public int size() {
+                while (it.hasNext()) {
+                    cache.add(it.next());
+                }
+                return cache.size();
+            }
+
+            @Override
+            public java.util.Iterator<Entry> iterator() {
+                return lazyEntries();
+            }
+        };
+    }
+
+    /**
+     * JGit TreeWalk 스타일의 lazy streaming 탐색을 제공합니다.
+     * 메모리를 선적재하지 않고, 필요한 요소를 순차적으로 스트리밍합니다 (힙 압박 해결).
+     */
+    public java.util.Iterator<Entry> lazyEntries() {
+        return new java.util.Iterator<Entry>() {
+            private final ManifestTreeIterator it = iterator;
+            private boolean initialized = false;
+
+            private void init() {
+                if (!initialized) {
+                    try {
+                        it.reset();
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                    initialized = true;
+                }
+            }
+
+            @Override
+            public boolean hasNext() {
+                init();
+                try {
+                    return it.next();
+                } catch (IOException e) {
+                    return false;
+                }
+            }
+
+            @Override
+            public Entry next() {
+                init();
+                return new Entry(
+                    it.getEntryPath(),
+                    it.getEntryNodeId(),
+                    it.isExecutable(),
+                    it.isSymlink()
+                );
+            }
+        };
     }
 }

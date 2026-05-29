@@ -55,4 +55,24 @@ public class HgRcConfigTest {
         config2.load(new File(tempDir, "non_existent_hgrc"));
         assertNull(config2.getUsername());
     }
+
+    @Test
+    public void testHgRcConfigWritingAndSaving() throws Exception {
+        HgRcConfig config = new HgRcConfig();
+        config.set("ui", "username", "Writer Tester <writer@example.com>");
+        config.set("paths", "default", "https://hg.example.com/project-write");
+        config.set("ui", "verbose", "False");
+
+        File saveFile = new File(tempDir, "saved_hgrc");
+        config.save(saveFile);
+
+        assertTrue(saveFile.exists());
+
+        HgRcConfig config2 = new HgRcConfig();
+        config2.load(saveFile);
+
+        assertEquals("Writer Tester <writer@example.com>", config2.getUsername());
+        assertEquals("https://hg.example.com/project-write", config2.getPath("default"));
+        assertEquals("False", config2.get("ui", "verbose"));
+    }
 }

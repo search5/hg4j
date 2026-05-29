@@ -19,12 +19,24 @@ public class HgLock implements AutoCloseable {
 
     static boolean forceFallback = false;
 
-    private static final Set<String> JVM_ACTIVE_LOCKS = ConcurrentHashMap.newKeySet();
+    private static class LockInfo {
+        final Thread thread;
+        int count;
+
+        LockInfo(Thread thread) {
+            this.thread = thread;
+            this.count = 1;
+        }
+    }
+
+    private static final java.util.Map<String, LockInfo> JVM_ACTIVE_LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final File lockFile;
     private final int timeoutMs;
+    private final boolean allowReentrant;
     private boolean acquiredJvmLock = false;
     private boolean acquiredFileLock = false;
+    private boolean isReentrant = false;
 
     /**
      * Internal constructor for No-op Dummy Lock.
@@ -32,6 +44,7 @@ public class HgLock implements AutoCloseable {
     protected HgLock() {
         this.lockFile = null;
         this.timeoutMs = 0;
+        this.allowReentrant = false;
     }
 
     /**
@@ -54,18 +67,26 @@ public class HgLock implements AutoCloseable {
      * Acquires a lock immediately (fail-fast, timeout = 0).
      */
     public HgLock(File lockFile) throws HgLockException {
-        this(lockFile, 0);
+        this(lockFile, 0, false);
     }
 
     /**
      * Acquires a lock on the specified file, waiting up to timeoutMs if it is already locked.
      */
     public HgLock(File lockFile, int timeoutMs) throws HgLockException {
+        this(lockFile, timeoutMs, false);
+    }
+
+    /**
+     * Acquires a lock on the specified file, waiting up to timeoutMs with reentrancy option.
+     */
+    public HgLock(File lockFile, int timeoutMs, boolean allowReentrant) throws HgLockException {
         if (lockFile == null) {
             throw new IllegalArgumentException("Lock file cannot be null");
         }
         this.lockFile = lockFile;
         this.timeoutMs = timeoutMs;
+        this.allowReentrant = allowReentrant;
         acquire();
     }
 
@@ -77,17 +98,30 @@ public class HgLock implements AutoCloseable {
 
         String absPath = lockFile.getAbsolutePath();
         long start = System.currentTimeMillis();
+        Thread currentThread = Thread.currentThread();
 
         while (true) {
-            // 1. JVM-wide lock check
+            // 1. JVM-wide lock check with reentrancy support
             if (!acquiredJvmLock) {
-                if (JVM_ACTIVE_LOCKS.add(absPath)) {
-                    acquiredJvmLock = true;
+                synchronized (JVM_ACTIVE_LOCKS) {
+                    LockInfo info = JVM_ACTIVE_LOCKS.get(absPath);
+                    if (info != null) {
+                        if (allowReentrant && info.thread == currentThread) {
+                            info.count++;
+                            this.acquiredJvmLock = true;
+                            this.acquiredFileLock = true;
+                            this.isReentrant = true;
+                            return; // Reentrant success!
+                        }
+                    } else {
+                        JVM_ACTIVE_LOCKS.put(absPath, new LockInfo(currentThread));
+                        this.acquiredJvmLock = true;
+                    }
                 }
             }
 
             // 2. File-system wide lock check (Atomic Symlink Creation with File Fallback)
-            if (acquiredJvmLock) {
+            if (acquiredJvmLock && !isReentrant) {
                 try {
                     String target = getHostAndPid();
                     try {
@@ -146,7 +180,9 @@ public class HgLock implements AutoCloseable {
 
             // Release JVM lock block if file lock wasn't acquired to let other threads compete
             if (acquiredJvmLock && !acquiredFileLock) {
-                JVM_ACTIVE_LOCKS.remove(absPath);
+                synchronized (JVM_ACTIVE_LOCKS) {
+                    JVM_ACTIVE_LOCKS.remove(absPath);
+                }
                 acquiredJvmLock = false;
             }
 
@@ -222,13 +258,20 @@ public class HgLock implements AutoCloseable {
             return;
         }
         String absPath = lockFile.getAbsolutePath();
-        try {
-            if (acquiredFileLock) {
-                Files.deleteIfExists(lockFile.toPath());
-            }
-        } finally {
-            if (acquiredJvmLock) {
-                JVM_ACTIVE_LOCKS.remove(absPath);
+        synchronized (JVM_ACTIVE_LOCKS) {
+            LockInfo info = JVM_ACTIVE_LOCKS.get(absPath);
+            if (info != null && info.thread == Thread.currentThread()) {
+                info.count--;
+                if (info.count > 0) {
+                    return; // Keep lock active since other levels of reentrant scopes still own it
+                }
+                try {
+                    if (acquiredFileLock && !isReentrant) {
+                        Files.deleteIfExists(lockFile.toPath());
+                    }
+                } finally {
+                    JVM_ACTIVE_LOCKS.remove(absPath);
+                }
             }
         }
     }

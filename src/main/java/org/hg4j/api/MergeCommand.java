@@ -16,9 +16,11 @@ import java.util.*;
  * Performs a 3-way merge of a target revision into the working copy.
  */
 public class MergeCommand {
+    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(MergeCommand.class.getName());
     private final HgRepository repository;
     private byte[] targetNodeId;
     private int targetRev = -1;
+    private final java.util.List<HgHook> postMergeHooks = new java.util.ArrayList<>();
 
 
     public static class MergeResult {
@@ -71,6 +73,13 @@ public class MergeCommand {
 
     public MergeCommand(HgRepository repository) {
         this.repository = repository;
+    }
+
+    public MergeCommand registerPostMergeHook(HgHook hook) {
+        if (hook != null) {
+            postMergeHooks.add(hook);
+        }
+        return this;
     }
 
     public MergeCommand setNodeId(byte[] targetNodeId) {
@@ -189,6 +198,7 @@ public class MergeCommand {
     }
 
     public MergeResult call() throws IOException {
+        repository.clearRevlogCache();
         try (org.hg4j.core.HgLock storeLock = repository.lockStore();
              org.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
             
@@ -351,6 +361,19 @@ public class MergeCommand {
             // 5. Update dirstate parent headers to P1 and P2
             dirstate.setParents(p1CommitNode, new org.hg4j.lib.NodeId(p2CommitNode));
             repository.writeDirstate(dirstate);
+
+            // POST_MERGE hooks trigger
+            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            ctx.put("conflicted", conflicted);
+            ctx.put("conflicts", conflicts);
+            ctx.put("repository", repository);
+            for (HgHook hook : postMergeHooks) {
+                try {
+                    hook.run(ctx);
+                } catch (Exception e) {
+                    LOGGER.log(java.util.logging.Level.WARNING, "Post-merge hook execution failed", e);
+                }
+            }
 
             return new MergeResult(conflicted, conflicts);
         }

@@ -73,11 +73,16 @@ public class Revlog {
     }
 
     /**
-     * 캐시 일관성 유지를 위해 인메모리 콘텐츠 캐시를 완전히 비웁니다.
+     * 캐시 일관성 유지를 위해 인메모리 콘텐츠 캐시와 인덱스를 완전히 비우고 디스크 상태를 리로드합니다.
      * (개선 권고 4번: 캐시 무효화 정책 완비)
      */
     public synchronized void clearCache() {
         contentCache.clear();
+        try {
+            index.clearCache();
+        } catch (Exception e) {
+            // ignore
+        }
     }
 
     public synchronized byte[] getRawRevisionContent(int rev) throws IOException {
@@ -617,5 +622,112 @@ public class Revlog {
 
         clearCache();
         return node;
+    }
+
+    public synchronized void appendOptimizedRevision(byte[] processedContent, byte[] nodeId, int parent1, int parent2,
+                                                     byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
+        int rev = index.getRevisionCount();
+
+        // Decide whether to write delta or fulltext (defragmentation / re-delta optimization)
+        byte[] rawToWrite = processedContent;
+        int baseRev = rev;
+
+        int chainLen = 0;
+        int curr = parent1;
+        while (curr != -1) {
+            chainLen++;
+            IndexRecord currRec = getIndexRecord(curr);
+            if (currRec.getBaseRev() == curr || currRec.getBaseRev() == -1) {
+                break;
+            }
+            curr = currRec.getBaseRev();
+        }
+
+        boolean isMetadataLog = idxFile.getName().contains("00manifest") || idxFile.getName().contains("00changelog");
+
+        if (!isMetadataLog && rev > 0 && parent1 != -1 && chainLen < 100) {
+            byte[] baseContent = getRawRevisionContent(parent1);
+            byte[] delta = createDelta(baseContent, processedContent);
+            if (delta.length < processedContent.length) {
+                rawToWrite = delta;
+                baseRev = parent1;
+            } else {
+                rawToWrite = processedContent;
+                baseRev = rev;
+            }
+        } else {
+            rawToWrite = processedContent;
+            baseRev = rev;
+        }
+
+        // Compress rawToWrite
+        byte[] dataHunk = DeltaCodec.compress(rawToWrite, useZstd);
+
+        long offset = 0;
+        if (rev > 0) {
+            IndexRecord prevRec = getIndexRecord(rev - 1);
+            offset = prevRec.getOffset() + prevRec.getCompLen();
+        }
+
+        if (inline) {
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0003L; // inline + generaldelta
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            } else {
+                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+            }
+
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(processedContent.length);
+            recordBuf.putInt(baseRev);
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
+        } else {
+            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
+
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0002L; // generaldelta
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            } else {
+                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+            }
+
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(processedContent.length);
+            recordBuf.putInt(baseRev);
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.getFD().sync();
+            }
+        }
+
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
+                baseRev, linkRev, parent1, parent2, nodeId));
+
+        clearCache();
     }
 }

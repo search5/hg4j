@@ -42,6 +42,20 @@ public class HgRemoteClient implements HgRemoteConnection {
         this.password = password;
     }
 
+    @Override
+    public void setCredentialsProvider(CredentialsProvider provider) {
+        if (provider != null) {
+            CredentialItem.Username u = new CredentialItem.Username();
+            CredentialItem.Password p = new CredentialItem.Password();
+            if (provider.get(this.baseUrl, u, p)) {
+                String user = u.getValue();
+                char[] passChars = p.getValue();
+                String pass = passChars != null ? new String(passChars) : null;
+                setCredentials(user, pass);
+            }
+        }
+    }
+
     public void setForceTls(boolean forceTls) {
         this.forceTls = forceTls;
     }
@@ -599,6 +613,23 @@ public class HgRemoteClient implements HgRemoteConnection {
             }
         }
         return map;
+    }
+
+    @Override
+    public List<String> between(List<String> pairs) throws IOException {
+        String resp = executeGet("between?pairs=" + java.net.URLEncoder.encode(String.join(" ", pairs), "UTF-8"));
+        List<String> list = new java.util.ArrayList<>();
+        if (resp != null && !resp.trim().isEmpty()) {
+            for (String val : resp.trim().split("\\s+")) {
+                list.add(val.trim());
+            }
+        }
+        return list;
+    }
+
+    @Override
+    public String known(List<String> nodes) throws IOException {
+        return executeGet("known?nodes=" + java.net.URLEncoder.encode(String.join(" ", nodes), "UTF-8"));
     }
 
     @Override

@@ -36,6 +36,7 @@ public class CatCommand {
     }
 
     public byte[] call() throws IOException {
+        repository.clearRevlogCache();
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");
         }

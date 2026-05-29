@@ -14,8 +14,10 @@ import java.nio.file.Files;
  * Copies the changes of a source revision and commits them on top of the current parent.
  */
 public class GraftCommand {
+    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(GraftCommand.class.getName());
     private final HgRepository repository;
     private String sourceRevision;
+    private final java.util.List<HgHook> postGraftHooks = new java.util.ArrayList<>();
 
     public GraftCommand(HgRepository repository) {
         this.repository = repository;
@@ -23,6 +25,13 @@ public class GraftCommand {
 
     public GraftCommand setSource(String sourceRevision) {
         this.sourceRevision = sourceRevision;
+        return this;
+    }
+
+    public GraftCommand registerPostGraftHook(HgHook hook) {
+        if (hook != null) {
+            postGraftHooks.add(hook);
+        }
         return this;
     }
 
@@ -112,6 +121,20 @@ public class GraftCommand {
             commitCmd.setSkipLockAndJournal(true);
 
             byte[] newCommitNode = commitCmd.call();
+
+            // POST_GRAFT hooks trigger
+            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            ctx.put("sourceRevision", sourceRevision);
+            ctx.put("graftedNode", NodeIdUtil.toHex(newCommitNode));
+            ctx.put("repository", repository);
+            for (HgHook hook : postGraftHooks) {
+                try {
+                    hook.run(ctx);
+                } catch (Exception e) {
+                    LOGGER.log(java.util.logging.Level.WARNING, "Post-graft hook execution failed", e);
+                }
+            }
+
             return NodeIdUtil.toHex(newCommitNode);
         }
     }

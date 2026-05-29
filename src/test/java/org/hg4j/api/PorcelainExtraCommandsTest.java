@@ -70,6 +70,30 @@ public class PorcelainExtraCommandsTest {
         assertEquals(1, revsParents.size());
         assertEquals(hexA, revsParents.get(0));
 
+        // heads() 테스트
+        List<String> revsHeads = new RevsetCommand(repo).setExpression("heads()").call();
+        assertEquals(1, revsHeads.size());
+        assertEquals(hexB, revsHeads.get(0));
+
+        // ancestors(tip) 테스트
+        List<String> revsAncestors = new RevsetCommand(repo).setExpression("ancestors(tip)").call();
+        assertEquals(2, revsAncestors.size()); // tip(hexB)과 p1(hexA) 모두 포함
+
+        // descendants(0) 테스트
+        List<String> revsDescendants = new RevsetCommand(repo).setExpression("descendants(0)").call();
+        assertEquals(2, revsDescendants.size()); // 0(hexA)의 후손은 0, 1(hexB)
+
+        // logical NOT (!) 연산자 테스트
+        List<String> revsNotHeads = new RevsetCommand(repo).setExpression("!heads()").call();
+        assertEquals(1, revsNotHeads.size());
+        assertEquals(hexA, revsNotHeads.get(0)); // heads()가 아닌 것은 hexA뿐
+
+        // bookmark() 및 tag() 테스트
+        new BookmarkCommand(repo).setBookmarkName("bookA").setNodeId(nodeA).call();
+        List<String> revsBkmk = new RevsetCommand(repo).setExpression("bookmark(bookA)").call();
+        assertEquals(1, revsBkmk.size());
+        assertEquals(hexA, revsBkmk.get(0));
+
         // 7. Test Archive SNAPSHOT ZIP
         File zipFile = new File(repoDir, "archive.zip");
         new ArchiveCommand(repo).setRevision("tip").setDestination(zipFile).call();

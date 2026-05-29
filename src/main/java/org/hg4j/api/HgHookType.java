@@ -22,5 +22,25 @@ public enum HgHookType {
     /**
      * 푸시 완료 후 동작하는 훅
      */
-    POST_PUSH
+    POST_PUSH,
+
+    /**
+     * Graft(체리픽) 완료 후 동작하는 훅
+     */
+    POST_GRAFT,
+
+    /**
+     * Rebase 완료 후 동작하는 훅
+     */
+    POST_REBASE,
+
+    /**
+     * Merge 완료 후 동작하는 훅
+     */
+    POST_MERGE,
+
+    /**
+     * Update(체크아웃) 완료 후 동작하는 훅
+     */
+    POST_UPDATE
 }

@@ -96,16 +96,12 @@ public class SubrepoCommand {
                     File subrepoDir = new File(repository.getDirectory(), path);
                     if (!subrepoDir.exists()) {
                         if (url != null && !url.isEmpty()) {
-                            try {
-                                Hg.cloneRepository()
-                                  .setSource(url)
-                                  .setDirectory(subrepoDir)
-                                  .call();
-                            } catch (Exception e) {
-                                Hg.init().setDirectory(subrepoDir).call();
-                            }
+                            Hg.cloneRepository()
+                              .setSource(url)
+                              .setDirectory(subrepoDir)
+                              .call();
                         } else {
-                            Hg.init().setDirectory(subrepoDir).call();
+                            throw new IOException("Subrepo URL cannot be null or empty for path: " + path);
                         }
                     }
                     // For dummy in-memory SCM update verification: sync parent Dirstate of subrepository

@@ -40,4 +40,25 @@ public interface HgRemoteConnection extends java.io.Closeable {
      * Queries remote keys/values for the given namespace (e.g. "bookmarks", "phases").
      */
     java.util.Map<String, String> listKeys(String namespace) throws IOException, HgAuthException, HgProtocolException;
+
+    /**
+     * Executes the 'between' command to query revisions between pairs of nodes.
+     */
+    default List<String> between(List<String> pairs) throws IOException {
+        return java.util.Collections.emptyList();
+    }
+
+    /**
+     * Executes the 'known' command to check if remote knows specified nodes.
+     */
+    default String known(List<String> nodes) throws IOException {
+        return "";
+    }
+
+    /**
+     * Sets the credentials provider for authenticating with the remote repository.
+     */
+    default void setCredentialsProvider(CredentialsProvider provider) {
+        // Default no-op
+    }
 }

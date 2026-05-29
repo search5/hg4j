@@ -68,4 +68,54 @@ public class EscapeAndMetadataTest {
         assertEquals("src/original.txt", readMeta.get("copy"));
         assertEquals("1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b", readMeta.get("copyrev"));
     }
+
+    @Test
+    public void testGcCommandWithMetadataFiles(@TempDir Path tempDir) throws Exception {
+        // 1. 임시 리포지토리 생성
+        File repoDir = tempDir.resolve("repo").toFile();
+        org.hg4j.core.HgRepository repo = org.hg4j.api.Hg.init().setDirectory(repoDir).call();
+
+        // 2. 메타데이터(복사 등)를 가지는 파일의 Revlog 생성 및 리비전 추가
+        File idxFile = new File(repo.getStoreDir(), "data/test.i");
+        File datFile = new File(repo.getStoreDir(), "data/test.d");
+        idxFile.getParentFile().mkdirs();
+
+        Revlog revlog = new Revlog(idxFile, datFile);
+        byte[] content1 = "First version content".getBytes(StandardCharsets.UTF_8);
+        Map<String, String> metadata1 = Map.of(
+            "copy", "source_file.txt",
+            "copyrev", "1234567890123456789012345678901234567890"
+        );
+        byte[] pNode = new byte[20];
+        byte[] node1 = revlog.appendRevision(content1, metadata1, -1, -1, pNode, pNode, 0);
+
+        byte[] content2 = "Second version content".getBytes(StandardCharsets.UTF_8);
+        byte[] node2 = revlog.appendRevision(content2, null, 0, -1, node1, pNode, 1);
+
+        // 3. Compaction(GcCommand) 실행 전 상태 검증
+        assertArrayEquals(content1, revlog.getRevisionContent(0));
+        assertEquals("source_file.txt", revlog.getRevisionMetadata(0).get("copy"));
+        assertArrayEquals(content2, revlog.getRevisionContent(1));
+
+        // fncache에 경로 등록 (GcCommand가 fncache를 빌드할 수 있도록)
+        File fncacheFile = new File(repo.getStoreDir(), "fncache");
+        java.nio.file.Files.writeString(fncacheFile.toPath(), "data/test.i\n");
+
+
+        // 4. GcCommand 실행
+        org.hg4j.api.GcCommand gc = new org.hg4j.api.GcCommand(repo);
+        String report = gc.call();
+        assertTrue(report.contains("GC / Compaction complete"));
+
+        // 5. Compaction 실행 후 상태 검증 - 데이터 손상이나 델타 불일치 없이 정확히 불러와지는가?
+        // Revlog 캐시 클리어 후 다시 로드
+        repo.clearRevlogCache();
+        Revlog compactedRevlog = new Revlog(idxFile, datFile);
+
+        assertEquals(2, compactedRevlog.getRevisionCount());
+        assertArrayEquals(content1, compactedRevlog.getRevisionContent(0));
+        assertEquals("source_file.txt", compactedRevlog.getRevisionMetadata(0).get("copy"));
+        assertArrayEquals(content2, compactedRevlog.getRevisionContent(1));
+    }
 }
+

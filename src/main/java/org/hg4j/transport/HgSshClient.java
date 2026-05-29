@@ -89,6 +89,39 @@ public class HgSshClient implements HgRemoteConnection {
         this.passphrase = passphrase;
     }
 
+    @Override
+    public void setCredentialsProvider(CredentialsProvider provider) {
+        if (provider != null) {
+            CredentialItem.Username u = new CredentialItem.Username();
+            CredentialItem.Password p = new CredentialItem.Password();
+            CredentialItem.SshKeyPath k = new CredentialItem.SshKeyPath();
+            CredentialItem.SshPassphrase pass = new CredentialItem.SshPassphrase();
+
+            // Try loading SSH key details first
+            if (provider.get(this.sshUrl, k, pass)) {
+                String keyPath = k.getValue();
+                char[] passphraseChars = pass.getValue();
+                String passphraseStr = passphraseChars != null ? new String(passphraseChars) : null;
+                if (keyPath != null) {
+                    setPrivateKey(keyPath, passphraseStr);
+                }
+            }
+
+            // Try loading SSH password/username credentials as well
+            if (provider.get(this.sshUrl, u, p)) {
+                String user = u.getValue();
+                char[] passChars = p.getValue();
+                String passwordStr = passChars != null ? new String(passChars) : null;
+                if (passwordStr != null) {
+                    setPassword(passwordStr);
+                }
+                if (user != null && !user.isEmpty()) {
+                    this.username = user;
+                }
+            }
+        }
+    }
+
     private synchronized void ensureConnected() throws IOException {
         if (connected) {
             return;
@@ -96,6 +129,14 @@ public class HgSshClient implements HgRemoteConnection {
 
         try {
             JSch jsch = new JSch();
+            
+            // Integrate SSH Agent and Identity loading for standard agent forwarding
+            String userHome = System.getProperty("user.home");
+            File knownHostsFile = new File(userHome, ".ssh/known_hosts");
+            if (knownHostsFile.exists()) {
+                jsch.setKnownHosts(knownHostsFile.getAbsolutePath());
+            }
+
             if (privateKeyPath != null) {
                 if (passphrase != null) {
                     jsch.addIdentity(privateKeyPath, passphrase);
@@ -109,11 +150,22 @@ public class HgSshClient implements HgRemoteConnection {
                 session.setPassword(password);
             }
 
-            // Safe defaults for connection stability
-            session.setConfig("StrictHostKeyChecking", "no");
+            // Standard strict host key verification configuration
+            boolean isLocal = host.equals("localhost") || host.equals("127.0.0.1");
+            if (knownHostsFile.exists() && !isLocal) {
+                session.setConfig("StrictHostKeyChecking", "ask");
+            } else {
+                session.setConfig("StrictHostKeyChecking", "no");
+            }
+            // JSch가 ECDH 등 일부 최신 key exchange 수행 중 Bouncy Castle과의 예외(ArrayIndexOutOfBoundsException)를 방지하도록 호환성 높은 kex 알고리즘 목록을 강제 지정함
+            session.setConfig("kex", "ecdh-sha2-nistp256,ecdh-sha2-nistp384,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256");
             session.connect(15000); // 15 seconds connection timeout
 
+
+
             channel = (ChannelExec) session.openChannel("exec");
+            channel.setAgentForwarding(true); // SSH agent forwarding enabled!
+            
             // Execute the standard mercurial stdio server command
             channel.setCommand("hg -R " + repoPath + " serve --stdio");
 
@@ -209,11 +261,12 @@ public class HgSshClient implements HgRemoteConnection {
             }
         }
 
-        // v2 upgrade 시도
-        if (capabilities.contains("exp-ssh-v2-0003")) {
+        // v2 upgrade 시도 (기본적으로 비활성화, 필요시 JVM 옵션 -Dhg4j.ssh.v2.enabled=true로 활성화 가능)
+        if (Boolean.getBoolean("hg4j.ssh.v2.enabled") && capabilities.contains("exp-ssh-v2-0003")) {
             String token = java.util.UUID.randomUUID().toString().replace("-", "");
             writeLine("upgrade " + token + " proto=exp-ssh-v2-0003");
             String upgradeResponse = readLine();
+
             if (upgradeResponse.startsWith("upgraded " + token)) {
                 this.protocolVersion = 2;
                 String v2CapsHeader = readLine();
@@ -448,6 +501,33 @@ public class HgSshClient implements HgRemoteConnection {
             }
         }
         return map;
+    }
+
+    @Override
+    public List<String> between(List<String> pairs) throws IOException {
+        ensureConnected();
+        writeLine("between");
+        writeLine("pairs " + String.join(" ", pairs));
+        writeLine("");
+
+        String resp = readLine();
+        List<String> list = new ArrayList<>();
+        if (!resp.isEmpty()) {
+            for (String val : resp.split("\\s+")) {
+                list.add(val.trim());
+            }
+        }
+        return list;
+    }
+
+    @Override
+    public String known(List<String> nodes) throws IOException {
+        ensureConnected();
+        writeLine("known");
+        writeLine("nodes " + String.join(" ", nodes));
+        writeLine("");
+
+        return readLine().trim();
     }
 
     @Override

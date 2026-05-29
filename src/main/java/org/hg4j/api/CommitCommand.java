@@ -40,6 +40,12 @@ public class CommitCommand {
     
     private final List<HgHook> preCommitHooks = new ArrayList<>();
     private final List<HgHook> postCommitHooks = new ArrayList<>();
+    private org.hg4j.core.GpgSignature gpgSignature;
+
+    public CommitCommand setGpgSignature(org.hg4j.core.GpgSignature gpgSignature) {
+        this.gpgSignature = gpgSignature;
+        return this;
+    }
 
     public CommitCommand registerPreCommitHook(HgHook hook) {
         if (hook != null) {
@@ -313,11 +319,8 @@ public class CommitCommand {
                             throw new org.hg4j.errors.HgValidationException("Tracked file not found on disk: " + path);
                         }
 
-                        // Large file protection check (2GB Limit Truncation Safeguard)
+                        // Large file support: safely record 32-bit masked size in dirstate v1
                         long diskSize = diskFile.length();
-                        if (diskSize > Integer.MAX_VALUE) {
-                            throw new org.hg4j.errors.HgValidationException("File size exceeds 2GB maximum limit allowed for Dirstate: " + path);
-                        }
 
                         // Check if the file has actually changed compared to the recorded dirstate
                         boolean changed = workingState == 'a' || workingState == 'm';
@@ -505,7 +508,13 @@ public class CommitCommand {
             byte[] p1CommitNodeHash = p1CommitNode != null ? p1CommitNode.getBytes() : new byte[20];
             byte[] p2CommitNodeHash = p2CommitNode != null ? p2CommitNode.getBytes() : new byte[20];
 
-            byte[] commitNode = changelog.appendRevision(changelogTextBytes, parent1Rev, parent2Rev, p1CommitNodeHash, p2CommitNodeHash, newCommitRev);
+            Map<String, String> clMeta = new HashMap<>();
+            if (this.gpgSignature != null) {
+                clMeta.put("gpgsig", this.gpgSignature.toAsciiArmored().replace("\n", "\\n"));
+                clMeta.put("gpgfingerprint", this.gpgSignature.getKeyFingerprint());
+            }
+
+            byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, parent1Rev, parent2Rev, p1CommitNodeHash, p2CommitNodeHash, newCommitRev);
 
             // 6. Update and save Dirstate
             dirstate.setParents(new org.hg4j.lib.NodeId(commitNode), org.hg4j.lib.NodeId.NULL);

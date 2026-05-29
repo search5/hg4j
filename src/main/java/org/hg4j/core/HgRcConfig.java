@@ -97,4 +97,49 @@ public final class HgRcConfig {
     public String getPath(String name) {
         return get("paths", name);
     }
+
+    /**
+     * Sets a configuration value for a specific section and key.
+     *
+     * @param section section name (case-insensitive)
+     * @param key key name
+     * @param value configuration value
+     */
+    public void set(String section, String key, String value) {
+        if (section == null || key == null) {
+            return;
+        }
+        String sectionName = section.toLowerCase().trim();
+        Map<String, String> sec = sections.computeIfAbsent(sectionName, k -> new LinkedHashMap<>());
+        if (value == null) {
+            sec.remove(key);
+        } else {
+            sec.put(key, value);
+        }
+    }
+
+    /**
+     * Saves the current configuration to a specific file in INI format.
+     * Uses atomic file IO for safety.
+     *
+     * @param file hgrc config file to save to
+     * @throws IOException if writing fails
+     */
+    public void save(File file) throws IOException {
+        if (file == null) {
+            throw new IllegalArgumentException("File cannot be null");
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Map<String, String>> secEntry : sections.entrySet()) {
+            if (secEntry.getValue().isEmpty()) {
+                continue;
+            }
+            sb.append("[").append(secEntry.getKey()).append("]\n");
+            for (Map.Entry<String, String> entry : secEntry.getValue().entrySet()) {
+                sb.append(entry.getKey()).append(" = ").append(entry.getValue()).append("\n");
+            }
+            sb.append("\n");
+        }
+        SafeFileIO.writeStringAtomic(file, sb.toString());
+    }
 }

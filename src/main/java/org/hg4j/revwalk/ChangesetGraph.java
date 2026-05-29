@@ -11,17 +11,29 @@ public class ChangesetGraph {
 
     private final Revlog changelog;
     private final Map<Long, Boolean> ancestorCache = new HashMap<>();
+    private RevFilter revFilter = RevFilter.ALL;
 
     public ChangesetGraph(Revlog changelog) {
         this.changelog = changelog;
     }
 
+    public void setRevFilter(RevFilter revFilter) {
+        this.revFilter = revFilter != null ? revFilter : RevFilter.ALL;
+    }
+
+    public RevFilter getRevFilter() {
+        return this.revFilter;
+    }
+
+    /**
+     * 필터 조건에 구애받지 않고 지정한 리비전의 모든 조상 노드를 반환합니다 (내부 DAG 연산용).
+     */
     public Set<Integer> getAllAncestors(int startRev) {
         return getAllAncestors(startRev, getRevlogLookup());
     }
 
     public Set<Integer> getAllAncestors(int startRev, Function<Integer, int[]> parentLookup) {
-        Set<Integer> ancestors = new HashSet<>();
+        Set<Integer> ancestors = new LinkedHashSet<>();
         Queue<Integer> queue = new ArrayDeque<>();
         queue.add(startRev);
 
@@ -44,6 +56,60 @@ public class ChangesetGraph {
         return ancestors;
     }
 
+    /**
+     * 지정한 리비전부터 조상을 lazy하게 순회하는 Iterator를 반환하며, RevFilter를 반영합니다.
+     * 대형 저장소에서 메모리를 효율적으로 유지하고 JGit RevWalk 스타일의 스트리밍을 제공합니다.
+     */
+    public Iterator<Integer> lazyAncestors(int startRev) {
+        return lazyAncestors(startRev, getRevlogLookup());
+    }
+
+    public Iterator<Integer> lazyAncestors(int startRev, Function<Integer, int[]> parentLookup) {
+        return new Iterator<Integer>() {
+            private final Queue<Integer> queue = new ArrayDeque<>(List.of(startRev));
+            private final Set<Integer> visited = new HashSet<>();
+            private Integer nextVal = null;
+
+            @Override
+            public boolean hasNext() {
+                if (nextVal != null) {
+                    return true;
+                }
+                while (!queue.isEmpty()) {
+                    int current = queue.poll();
+                    if (current == -1) {
+                        continue;
+                    }
+                    if (visited.add(current)) {
+                        int[] parents = parentLookup.apply(current);
+                        if (parents != null) {
+                            for (int p : parents) {
+                                if (p != -1) {
+                                    queue.add(p);
+                                }
+                            }
+                        }
+                        if (revFilter.include(current, changelog)) {
+                            nextVal = current;
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            @Override
+            public Integer next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+                Integer val = nextVal;
+                nextVal = null;
+                return val;
+            }
+        };
+    }
+
     public boolean isAncestor(int ancestor, int descendant) {
         return isAncestor(ancestor, descendant, getRevlogLookup());
     }
@@ -53,7 +119,6 @@ public class ChangesetGraph {
             return true;
         }
         if (ancestor > descendant) {
-            // Mercurial 리비전 특성상 조상은 항상 자손보다 작거나 같은 리비전 번호를 가집니다.
             return false;
         }
 

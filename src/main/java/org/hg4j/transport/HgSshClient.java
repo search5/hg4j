@@ -251,20 +251,11 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     public List<String> getHeads() throws IOException {
         ensureConnected();
 
-        // Command 'heads' has no arguments in stdio protocol
-        out.write("heads\n".getBytes(StandardCharsets.UTF_8));
-        out.flush();
+        writeLine("heads");
+        writeLine("");
 
         // Read response line (space separated 40-char hex hashes)
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        int b;
-        while ((b = in.read()) != -1) {
-            if (b == '\n') {
-                break;
-            }
-            baos.write(b);
-        }
-        String resp = new String(baos.toByteArray(), StandardCharsets.UTF_8).trim();
+        String resp = readLine();
         List<String> heads = new ArrayList<>();
         if (!resp.isEmpty()) {
             for (String head : resp.split("\\s+")) {
@@ -278,19 +269,14 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     public byte[] getChangegroup(List<String> roots) throws IOException {
         ensureConnected();
 
-        // command name
-        out.write("changegroup\n".getBytes(StandardCharsets.UTF_8));
+        writeLine("changegroup");
 
-        // command arguments: key value pairs followed by a blank line
         if (roots != null && !roots.isEmpty()) {
             String rootsStr = String.join(" ", roots);
-            out.write(("roots " + rootsStr + "\n").getBytes(StandardCharsets.UTF_8));
+            writeLine("roots " + rootsStr);
         }
-        out.write("\n".getBytes(StandardCharsets.UTF_8));
-        out.flush();
+        writeLine("");
 
-        // Read binary changegroup bundle back (formatted as standard chunks)
-        // Let's decode it fully using a standard buffer
         return readBinaryResponse();
     }
 
@@ -298,28 +284,27 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException {
         ensureConnected();
 
-        out.write("getbundle\n".getBytes(StandardCharsets.UTF_8));
+        writeLine("getbundle");
 
         if (common != null && !common.isEmpty()) {
-            out.write(("common " + String.join(" ", common) + "\n").getBytes(StandardCharsets.UTF_8));
+            writeLine("common " + String.join(" ", common));
         } else {
-            out.write("common \n".getBytes(StandardCharsets.UTF_8));
+            writeLine("common ");
         }
 
         if (heads != null && !heads.isEmpty()) {
-            out.write(("heads " + String.join(" ", heads) + "\n").getBytes(StandardCharsets.UTF_8));
+            writeLine("heads " + String.join(" ", heads));
         }
 
-        out.write("cg true\n".getBytes(StandardCharsets.UTF_8));
+        writeLine("cg true");
 
         if (bundleCaps != null && !bundleCaps.isEmpty()) {
-            out.write(("bundlecaps " + String.join(" ", bundleCaps) + "\n").getBytes(StandardCharsets.UTF_8));
+            writeLine("bundlecaps " + String.join(" ", bundleCaps));
         } else {
-            out.write("bundlecaps bundle2 HG20 changegroup=01,02,03\n".getBytes(StandardCharsets.UTF_8));
+            writeLine("bundlecaps bundle2 HG20 changegroup=01,02,03");
         }
 
-        out.write("\n".getBytes(StandardCharsets.UTF_8));
-        out.flush();
+        writeLine("");
 
         return readBinaryResponse();
     }

@@ -21,6 +21,14 @@ public class DiffCommand {
     private final HgRepository repository;
     private int oldRevision = -2; // -2 means not set (defaults to newRevision's parent)
     private int newRevision = -1; // -1 defaults to tip
+    private org.hg4j.core.HgTreeFilter treeFilter = org.hg4j.core.HgTreeFilter.ALL;
+
+    public DiffCommand setTreeFilter(org.hg4j.core.HgTreeFilter treeFilter) {
+        if (treeFilter != null) {
+            this.treeFilter = treeFilter;
+        }
+        return this;
+    }
 
     public enum ChangeType {
         ADD, MODIFY, DELETE
@@ -124,6 +132,9 @@ public class DiffCommand {
         tw.reset();
         while (tw.next()) {
             String path = tw.getPath();
+            if (treeFilter != null && !treeFilter.accept(path)) {
+                continue;
+            }
             boolean inOld = tw.isTracked(0);
             boolean inNew = tw.isTracked(1);
 

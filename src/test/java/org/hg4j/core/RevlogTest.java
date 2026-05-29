@@ -120,8 +120,8 @@ public class RevlogTest {
         assertEquals(1, rec1.getRevision());
         assertEquals(0, rec1.getParent1());
         assertEquals(-1, rec1.getParent2());
-        // Since we decided to store revision as a robust fulltext chunk for specifications interop safety
-        assertEquals(1, rec1.getBaseRev()); 
+        // Since we decided to store revision as a robust delta chain
+        assertEquals(0, rec1.getBaseRev()); 
     }
 
     @Test
@@ -888,6 +888,32 @@ public class RevlogTest {
         assertEquals(childLogical, new String(readBackLogical, StandardCharsets.UTF_8));
         byte[] readBackRaw = revlog.getRawRevisionContent(1);
         assertArrayEquals(rawChildContent, readBackRaw);
+    }
+
+    @Test
+    public void testAppendRevisionUsesDeltaCompression(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("delta.i").toFile();
+        File datFile = tempDir.resolve("delta.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+
+        byte[] p1 = new byte[20];
+        byte[] p2 = new byte[20];
+
+        // 1. Revision 0
+        String line1 = "Alice Line 1\nAlice Line 2\n";
+        byte[] parentNode = revlog.appendRevision(line1.getBytes(StandardCharsets.UTF_8), -1, -1, p1, p2, 0);
+
+        // 2. Revision 1 (slight modification, delta is much smaller)
+        String line2 = "Alice Line 1\nAlice Line 2\nModified!\n";
+        byte[] childNode = revlog.appendRevision(line2.getBytes(StandardCharsets.UTF_8), 0, -1, parentNode, p2, 1);
+
+        // Verify read back succeeds
+        assertEquals(2, revlog.getRevisionCount());
+        assertEquals(line2, new String(revlog.getRevisionContent(1), StandardCharsets.UTF_8));
+
+        // Get index record of revision 1 and verify baseRev is indeed 0 (written as a delta against revision 0)
+        Revlog.IndexRecord rec = revlog.getIndexRecord(1);
+        assertEquals(0, rec.getBaseRev());
     }
 }
 

@@ -233,4 +233,43 @@ public class TreeAndDiffCommandTest {
         assertNotNull(hugeEntry);
         assertTrue(hugeEntry.getDiffContent().contains("@@ -1,2002 +1,2003 @@"));
     }
+
+    @Test
+    public void testDiffCommandTreeFilter(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        assertNotNull(repo);
+
+        // Rev 0: src/a.txt, doc/b.txt 추가
+        File srcDir = new File(repoDir, "src");
+        srcDir.mkdirs();
+        File fa = new File(srcDir, "a.txt");
+        Files.writeString(fa.toPath(), "Hello Src\n");
+
+        File docDir = new File(repoDir, "doc");
+        docDir.mkdirs();
+        File fb = new File(docDir, "b.txt");
+        Files.writeString(fb.toPath(), "Hello Doc\n");
+
+        new AddCommand(repo).addFile("src/a.txt").addFile("doc/b.txt").call();
+        new CommitCommand(repo).setMessage("Rev 0").call();
+
+        // Rev 1: 둘 다 수정
+        Files.writeString(fa.toPath(), "Hello Src Modified\n");
+        Files.writeString(fb.toPath(), "Hello Doc Modified\n");
+        new CommitCommand(repo).setMessage("Rev 1").call();
+
+        // treeFilter 적용: "src/" 접두사만 포함
+        org.hg4j.core.HgTreeFilter filter = org.hg4j.core.HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
+
+        List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo)
+                .setOldRevision(0)
+                .setNewRevision(1)
+                .setTreeFilter(filter)
+                .call();
+
+        // "doc/b.txt"는 필터링되어 제외되고, "src/a.txt"만 조회되어야 함
+        assertEquals(1, diffs.size());
+        assertEquals("src/a.txt", diffs.get(0).getPath());
+    }
 }

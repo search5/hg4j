@@ -307,6 +307,34 @@ public class Revlog {
         byte[] rawToWrite = processedContent;
         int baseRev = rev;
 
+        int chainLen = 0;
+        int curr = parent1;
+        while (curr != -1) {
+            chainLen++;
+            IndexRecord currRec = getIndexRecord(curr);
+            if (currRec.getBaseRev() == curr || currRec.getBaseRev() == -1) {
+                break;
+            }
+            curr = currRec.getBaseRev();
+        }
+
+        boolean isMetadataLog = idxFile.getName().contains("00manifest") || idxFile.getName().contains("00changelog");
+
+        if (!isMetadataLog && rev > 0 && parent1 != -1 && chainLen < 100) {
+            byte[] baseContent = getRawRevisionContent(parent1);
+            byte[] delta = createDelta(baseContent, processedContent);
+            if (delta.length < processedContent.length) {
+                rawToWrite = delta;
+                baseRev = parent1;
+            } else {
+                rawToWrite = processedContent;
+                baseRev = rev;
+            }
+        } else {
+            rawToWrite = processedContent;
+            baseRev = rev;
+        }
+
         // Compress rawToWrite
         byte[] dataHunk = DeltaCodec.compress(rawToWrite, useZstd);
 
@@ -330,7 +358,7 @@ public class Revlog {
             ByteBuffer recordBuf = ByteBuffer.allocate(64);
             recordBuf.putLong(offsetFlags);
             recordBuf.putInt(dataHunk.length);
-            recordBuf.putInt(rawToWrite.length);
+            recordBuf.putInt(processedContent.length);
             recordBuf.putInt(baseRev);
             recordBuf.putInt(linkRev);
             recordBuf.putInt(parent1);
@@ -361,7 +389,7 @@ public class Revlog {
             ByteBuffer recordBuf = ByteBuffer.allocate(64);
             recordBuf.putLong(offsetFlags);
             recordBuf.putInt(dataHunk.length);
-            recordBuf.putInt(rawToWrite.length);
+            recordBuf.putInt(processedContent.length);
             recordBuf.putInt(baseRev);
             recordBuf.putInt(linkRev);
             recordBuf.putInt(parent1);
@@ -374,7 +402,7 @@ public class Revlog {
             }
         }
 
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
 
         return hash;
@@ -460,7 +488,9 @@ public class Revlog {
             curr = currRec.getBaseRev();
         }
 
-        if (rev > 0 && parent1 != -1 && chainLen < 100) {
+        boolean isMetadataLog = idxFile.getName().contains("00manifest") || idxFile.getName().contains("00changelog");
+
+        if (!isMetadataLog && rev > 0 && parent1 != -1 && chainLen < 100) {
             byte[] baseContent = getRawRevisionContent(parent1);
             byte[] delta = createDelta(baseContent, content);
             if (delta.length < content.length) {
@@ -499,7 +529,7 @@ public class Revlog {
         ByteBuffer recordBuf = ByteBuffer.allocate(64);
         recordBuf.putLong(offsetFlags);
         recordBuf.putInt(dataHunk.length);
-        recordBuf.putInt(rawToWrite.length);
+        recordBuf.putInt(content.length);
         recordBuf.putInt(baseRev);
         recordBuf.putInt(linkRev);
         recordBuf.putInt(parent1);
@@ -514,7 +544,7 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, content.length,
                 baseRev, linkRev, parent1, parent2, entry.node));
 
         clearCache();

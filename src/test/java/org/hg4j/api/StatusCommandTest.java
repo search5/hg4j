@@ -70,4 +70,33 @@ public class StatusCommandTest {
         assertEquals(1, st5.getRemoved().size());
         assertTrue(st5.getRemoved().contains("a.txt"));
     }
+
+    @Test
+    public void testStatusCommandTreeFilter(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // Create src/a.txt (untracked) and doc/b.txt (untracked)
+        File srcDir = new File(repoDir, "src");
+        srcDir.mkdirs();
+        File fa = new File(srcDir, "a.txt");
+        Files.writeString(fa.toPath(), "Hello Src");
+
+        File docDir = new File(repoDir, "doc");
+        docDir.mkdirs();
+        File fb = new File(docDir, "b.txt");
+        Files.writeString(fb.toPath(), "Hello Doc");
+
+        // Status without filter
+        Status stAll = new StatusCommand(repo).call();
+        assertEquals(2, stAll.getUntracked().size());
+
+        // Status with filter (only "src/")
+        org.hg4j.core.HgTreeFilter filter = org.hg4j.core.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
+        Status stFiltered = new StatusCommand(repo).setTreeFilter(filter).call();
+
+        assertEquals(1, stFiltered.getUntracked().size());
+        assertTrue(stFiltered.getUntracked().contains("src/a.txt"));
+        assertFalse(stFiltered.getUntracked().contains("doc/b.txt"));
+    }
 }

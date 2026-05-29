@@ -2,13 +2,14 @@ package org.hg4j.api;
 
 import org.hg4j.core.Dirstate;
 import org.hg4j.core.HgRepository;
+import org.hg4j.core.NodeIdUtil;
+import org.hg4j.core.Revlog;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Computes differences between working directory, dirstate, and parent commits.
@@ -28,70 +29,84 @@ public class StatusCommand {
         File dirstateFile = new File(repository.getHgDir(), "dirstate");
         long dirstateMtime = dirstateFile.exists() ? dirstateFile.lastModified() / 1000 : 0;
 
-        // 1. Scan working directory recursively for disk files
-        List<String> diskFilesList = repository.scanWorkingCopy();
-        Set<String> diskFiles = new HashSet<>(diskFilesList);
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        // 2. Load entries from the dirstate
-        Map<String, Dirstate.Entry> entries = dirstate.getEntries();
+        // Resolve parent revision string for TreeWalk comparison
+        String parentRev = "";
+        if (changelog.getRevisionCount() > 0) {
+            byte[] parentNode = dirstate.getParent1();
+            int parentRevNum = NodeIdUtil.findRevisionByNodeId(changelog, parentNode);
+            if (parentRevNum != -1) {
+                parentRev = String.valueOf(parentRevNum);
+            }
+        }
 
-        // 3. Check tracked entries
-        for (Map.Entry<String, Dirstate.Entry> item : entries.entrySet()) {
-            String path = item.getKey();
-            Dirstate.Entry entry = item.getValue();
-            char state = entry.getState();
+        org.hg4j.treewalk.TreeWalk tw = new org.hg4j.treewalk.TreeWalk();
+        tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, parentRev));
+        tw.addTree(new org.hg4j.treewalk.WorkingDirTreeIterator(repository));
 
-            if (state == 'a') {
-                status.getAdded().add(path);
-            } else if (state == 'r') {
+        tw.reset();
+        while (tw.next()) {
+            String path = tw.getPath();
+            boolean inParent = tw.isTracked(0);
+            boolean inWorking = tw.isTracked(1);
+            
+            char workingState = tw.getState(1);
+
+            if (!inParent && inWorking) {
+                if (workingState == 'a') {
+                    status.getAdded().add(path);
+                } else if (workingState == '?') {
+                    status.getUntracked().add(path);
+                }
+            } else if (inParent && !inWorking) {
                 status.getRemoved().add(path);
-            } else if (state == 'n' || state == 'm') {
-                File diskFile = new File(repoDir, path);
-                if (!diskFile.exists() || !diskFile.isFile()) {
-                    // Tracked but deleted/missing on disk
+            } else if (inParent && inWorking) {
+                if (workingState == 'r') {
                     status.getRemoved().add(path);
-                } else {
-                    // Compare size and timestamp to check if modified
-                    long diskSize = diskFile.length();
-                    long diskTime = diskFile.lastModified() / 1000;
-                    
-                    if (entry.getSize() != diskSize || entry.getTime() != diskTime) {
-                        status.getModified().add(path);
+                } else if (workingState == 'n' || workingState == 'm') {
+                    File diskFile = new File(repoDir, path);
+                    if (!diskFile.exists() || !diskFile.isFile()) {
+                        status.getRemoved().add(path);
                     } else {
-                        // Racy-hg check: same size and timestamp within fast execution (Only executed if modification coincides with dirstate's time)
-                        boolean isRacyModified = false;
-                        if (diskTime == dirstateMtime) {
-                            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-                            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                            if (flIdx.exists()) {
-                                try {
-                                    org.hg4j.core.Revlog filelog = new org.hg4j.core.Revlog(flIdx, flDat);
-                                    if (filelog.getRevisionCount() > 0) {
-                                        byte[] fileContent = java.nio.file.Files.readAllBytes(diskFile.toPath());
-                                        byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                        if (!java.util.Arrays.equals(fileContent, lastContent)) {
-                                            isRacyModified = true;
-                                        }
+                        Dirstate.Entry dEntry = dirstate.getEntries().get(path);
+                        if (dEntry != null) {
+                            long diskSize = diskFile.length();
+                            long diskTime = diskFile.lastModified() / 1000;
+                            if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
+                                status.getModified().add(path);
+                            } else {
+                                boolean isRacyModified = false;
+                                if (diskTime == dirstateMtime) {
+                                    File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                                    if (flIdx.exists()) {
+                                        try {
+                                            Revlog filelog = repository.getRevlog(flIdx, flDat);
+                                            if (filelog.getRevisionCount() > 0) {
+                                                byte[] fileContent = java.nio.file.Files.readAllBytes(diskFile.toPath());
+                                                byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
+                                                if (!java.util.Arrays.equals(fileContent, lastContent)) {
+                                                    isRacyModified = true;
+                                                }
+                                            }
+                                        } catch (Exception ignored) {}
                                     }
-                                } catch (Exception ignored) {
+                                }
+                                
+                                if (isRacyModified) {
+                                    status.getModified().add(path);
+                                } else {
+                                    status.getClean().add(path);
                                 }
                             }
-                        }
-                        
-                        if (isRacyModified) {
-                            status.getModified().add(path);
                         } else {
                             status.getClean().add(path);
                         }
                     }
                 }
-            }
-        }
-
-        // 4. Untracked files: files on disk that are NOT in dirstate entries
-        for (String path : diskFiles) {
-            if (!entries.containsKey(path)) {
-                status.getUntracked().add(path);
             }
         }
 

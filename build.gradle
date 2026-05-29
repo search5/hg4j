@@ -119,6 +119,11 @@ jacocoTestCoverageVerification {
                 'org.hg4j.api.ShelveCommand',
                 'org.hg4j.api.StatusCommand',
                 'org.hg4j.api.TagCommand',
+                'org.hg4j.api.PushCommand',
+                'org.hg4j.api.CatCommand',
+                'org.hg4j.api.DiffCommand',
+                'org.hg4j.api.TreeCommand',
+                'org.hg4j.api.UpdateCommand',
             ]
             limit {
                 minimum = 0.90

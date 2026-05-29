@@ -163,4 +163,48 @@ public class WorkingCopySafetyTest {
         assertFalse(f2.exists());
         assertNull(repo.getDirstate().getEntries().get("b.txt"));
     }
+
+    @Test
+    public void testUpdateCommandEdgeCases(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // 1. Empty repository validation exception
+        UpdateCommand updateEmpty = new UpdateCommand(repo).setRevision(null);
+        Exception ex1 = assertThrows(Exception.class, updateEmpty::call);
+        assertTrue(ex1.getMessage().contains("Repository is empty"));
+
+        // 2. Non-existent branch / revision exception
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "Content\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Base").call();
+
+        UpdateCommand updateInvalid = new UpdateCommand(repo).setRevision("non_existent_branch_999");
+        assertThrows(Exception.class, updateInvalid::call);
+
+        // 3. File version missing from filelog index (invalid node ID in manifest map simulation)
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "a.txt");
+        assertTrue(flIdx.exists());
+        
+        // Let's delete the filelog index to force "Filelog index not found" exception during update
+        assertTrue(flIdx.delete());
+        UpdateCommand updateCorrupt = new UpdateCommand(repo).setRevision("0").setForce(true);
+        assertThrows(org.hg4j.errors.HgRepositoryNotFoundException.class, updateCorrupt::call);
+
+        // 4. Named branch update test (restore repo state by initializing a new one)
+        File repoDirBranch = new File(repoDir, "branch_test_dir");
+        repoDirBranch.mkdirs();
+        HgRepository repoB = Hg.init().setDirectory(repoDirBranch).call();
+
+        File fBranch = new File(repoDirBranch, "branch.txt");
+        Files.writeString(fBranch.toPath(), "Branch content\n");
+        new AddCommand(repoB).call();
+        new BranchCommand(repoB).setBranchName("my-feature").call();
+        new CommitCommand(repoB).setMessage("Branch commit").call();
+
+        // Update using branch name "my-feature" should succeed
+        byte[] resBranch = new UpdateCommand(repoB).setRevision("my-feature").setForce(true).call();
+        assertNotNull(resBranch);
+    }
 }

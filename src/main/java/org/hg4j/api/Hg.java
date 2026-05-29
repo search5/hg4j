@@ -3,6 +3,10 @@ package org.hg4j.api;
 /**
  * Porcelain API for Mercurial commands, similar to JGit's Git class.
  * Designed with elegant instance-level encapsulation and strict resource management (AutoCloseable).
+ * 
+ * <p><strong>Thread Safety:</strong> Hg instances are designed for sequential use in a single thread.
+ * For concurrent access across multiple threads, each thread should open its own Hg instance,
+ * relying on underlying repository locks to coordinate safety.
  */
 public class Hg implements AutoCloseable {
     
@@ -13,7 +17,35 @@ public class Hg implements AutoCloseable {
     }
     
     /**
+     * Wraps an existing {@link org.hg4j.core.HgRepository} instance into the {@link Hg} facade.
+     * 
+     * @param repository the repository instance to wrap
+     * @return the {@link Hg} facade instance
+     */
+    public static Hg wrap(org.hg4j.core.HgRepository repository) {
+        if (repository == null) {
+            throw new IllegalArgumentException("Repository cannot be null");
+        }
+        return new Hg(repository);
+    }
+
+    /**
+     * Opens an existing Mercurial repository from a path string.
+     * 
+     * @param path the repository directory path
+     * @return the {@link Hg} instance wrapping the repository
+     * @throws java.io.IOException if repository not found or invalid
+     */
+    public static Hg open(String path) throws java.io.IOException {
+        if (path == null || path.isEmpty()) {
+            throw new IllegalArgumentException("Path cannot be null or empty");
+        }
+        return open(new java.io.File(path));
+    }
+
+    /**
      * Opens an existing Mercurial repository.
+     * Checks repository requirements in both .hg/requires and .hg/store/requires for safety.
      * 
      * @param directory the repository directory
      * @return the {@link Hg} instance wrapping the repository
@@ -27,6 +59,30 @@ public class Hg implements AutoCloseable {
         if (!hgDir.exists() || !hgDir.isDirectory()) {
             throw new org.hg4j.errors.HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
         }
+
+        // Robustness: Validate repository requirements format to prevent silent data corruption
+        java.util.Set<String> SUPPORTED = java.util.Set.of(
+            "dotencode", "fncache", "generaldelta", "revlogv1", "store", "dirstate-v2", "share-safe"
+        );
+
+        java.io.File[] requiresFiles = {
+            new java.io.File(hgDir, "requires"),
+            new java.io.File(new java.io.File(hgDir, "store"), "requires")
+        };
+
+        for (java.io.File reqFile : requiresFiles) {
+            if (reqFile.exists()) {
+                for (String line : java.nio.file.Files.readAllLines(reqFile.toPath())) {
+                    String r = line.trim();
+                    if (r.isEmpty()) continue;
+                    String key = r.contains("=") ? r.substring(0, r.indexOf('=')) : r;
+                    if (!SUPPORTED.contains(r) && !SUPPORTED.contains(key)) {
+                        throw new org.hg4j.errors.HgValidationException("unsupported repository requirement: " + r);
+                    }
+                }
+            }
+        }
+
         return new Hg(new org.hg4j.core.HgRepository(directory));
     }
 
@@ -158,6 +214,13 @@ public class Hg implements AutoCloseable {
 
     public org.hg4j.treewalk.WorkingDirWalk walkWorkingDir() {
         return new org.hg4j.treewalk.WorkingDirWalk(this.repository);
+    }
+
+    /**
+     * Returns a new TreeWalk instance for advanced parallel sorted traversal of multiple trees.
+     */
+    public org.hg4j.treewalk.TreeWalk walkTree() {
+        return new org.hg4j.treewalk.TreeWalk();
     }
 
     @Override

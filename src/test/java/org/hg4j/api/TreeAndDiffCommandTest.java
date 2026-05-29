@@ -145,4 +145,92 @@ public class TreeAndDiffCommandTest {
         assertEquals(DiffCommand.ChangeType.MODIFY, diffs.get(0).getChangeType());
         assertTrue(diffs.get(0).getDiffContent().contains("+Hello Hg4j Modified"));
     }
+
+    @Test
+    public void testTreeCommandEdgeCases(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        assertNotNull(repo);
+
+        File fa = new File(repoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Hello Edge\n");
+        new AddCommand(repo).addFile("a.txt").call();
+        byte[] revNode = new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Rev 0").call();
+
+        org.hg4j.lib.NodeId nodeIdObj = new org.hg4j.lib.NodeId(revNode);
+
+        // 1. setNodeId(org.hg4j.lib.NodeId) 호출 테스트
+        TreeCommand cmd = new TreeCommand(repo).setNodeId(nodeIdObj);
+        List<TreeCommand.TreeEntry> tree = cmd.call();
+        assertFalse(tree.isEmpty());
+
+        // 2. TreeEntry.getNode() 및 getMode() 테스트
+        TreeCommand.TreeEntry entry = tree.get(0);
+        assertNotNull(entry.getNode());
+        assertEquals(40, entry.getNode().toHex().length());
+        assertEquals(0644, entry.getMode());
+
+        // null nodeId에 대한 getNode() 테스트
+        TreeCommand.TreeEntry nullEntry = new TreeCommand.TreeEntry("b.txt", null, 0644);
+        assertNull(nullEntry.getNode());
+
+        // setNodeId(null) 호출 테스트
+        TreeCommand cmdNull = new TreeCommand(repo).setNodeId((org.hg4j.lib.NodeId) null);
+        assertNotNull(cmdNull.call());
+    }
+
+    @Test
+    public void testDiffCommandEdgeCases(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // 1. Commit baseline (Rev 0)
+        File fa = new File(repoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Line 1\n");
+        new AddCommand(repo).addFile("a.txt").call();
+        byte[] rev0Node = new CommitCommand(repo).setMessage("Rev 0").call();
+
+        // 2. Commit modification (Rev 1)
+        Files.writeString(fa.toPath(), "Line 1 Modified\n");
+        byte[] rev1Node = new CommitCommand(repo).setMessage("Rev 1").call();
+
+        org.hg4j.lib.NodeId node0 = new org.hg4j.lib.NodeId(rev0Node);
+        org.hg4j.lib.NodeId node1 = new org.hg4j.lib.NodeId(rev1Node);
+
+        // setOldRevision(NodeId) 및 setNewRevision(NodeId) 테스트
+        DiffCommand diff = new DiffCommand(repo)
+                .setOldRevision(node0)
+                .setNewRevision(node1);
+        List<DiffCommand.DiffEntry> results = diff.call();
+        assertEquals(1, results.size());
+        assertTrue(results.get(0).getDiffContent().contains("+Line 1 Modified"));
+
+        // setOldRevision(null) 및 setNewRevision(null) 테스트
+        DiffCommand diffNull = new DiffCommand(repo)
+                .setOldRevision((org.hg4j.lib.NodeId) null)
+                .setNewRevision((org.hg4j.lib.NodeId) null);
+        assertNotNull(diffNull.call());
+
+        // 3. OOM Optimization Guard test (n * m > 2000000)
+        File fh = new File(repoDir, "huge.txt");
+        Files.writeString(fh.toPath(), "A\n".repeat(2001));
+        new AddCommand(repo).addFile("huge.txt").call();
+        new CommitCommand(repo).setMessage("Huge Rev 2").call();
+
+        Files.writeString(fh.toPath(), "B\n".repeat(2002));
+        new CommitCommand(repo).setMessage("Huge Rev 3").call();
+
+        // Diff between Rev 2 and Rev 3 should trigger OOM bypass guard branch
+        List<DiffCommand.DiffEntry> hugeDiffs = new DiffCommand(repo)
+                .setOldRevision(2)
+                .setNewRevision(3)
+                .call();
+        
+        DiffCommand.DiffEntry hugeEntry = hugeDiffs.stream()
+                .filter(d -> d.getPath().equals("huge.txt"))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(hugeEntry);
+        assertTrue(hugeEntry.getDiffContent().contains("@@ -1,2002 +1,2003 @@"));
+    }
 }

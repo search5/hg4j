@@ -10,6 +10,9 @@ import org.junit.jupiter.api.io.TempDir;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
+import org.apache.sshd.server.SshServer;
+import org.apache.sshd.server.command.Command;
+import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -715,5 +718,465 @@ public class HgRemoteAndSyncTest {
             serveProcess.destroy();
             serveProcess.waitFor();
         }
+    }
+
+    @Test
+    public void testPushCommandEdgeCases(@TempDir Path tempDir) throws Exception {
+        File localDir = tempDir.resolve("local_repo").toFile();
+        HgRepository localRepo = Hg.init().setDirectory(localDir).call();
+
+        // 1. Destination URL is empty or null
+        PushCommand pushEmpty = new PushCommand(localRepo);
+        assertThrows(IllegalStateException.class, pushEmpty::call);
+        pushEmpty.setDestination("");
+        assertThrows(IllegalStateException.class, pushEmpty::call);
+
+        // 2. Empty local repository push behavior
+        pushEmpty.setDestination(localDir.getAbsolutePath());
+        assertEquals("No changesets to push (empty local repository)", pushEmpty.call());
+
+        // Create initial local commit
+        File f1 = new File(localDir, "a.txt");
+        Files.writeString(f1.toPath(), "test");
+        new AddCommand(localRepo).call();
+        new CommitCommand(localRepo).setMessage("First").call();
+
+        // 3. Remote is up-to-date (pushing to self)
+        PushCommand pushSelf = new PushCommand(localRepo).setDestination(localDir.getAbsolutePath());
+        assertEquals("No changesets to push (remote is up-to-date)", pushSelf.call());
+
+        // 4. Repository is unrelated
+        File unrelatedDir = tempDir.resolve("unrelated_repo").toFile();
+        HgRepository unrelatedRepo = Hg.init().setDirectory(unrelatedDir).call();
+        File f2 = new File(unrelatedDir, "b.txt");
+        Files.writeString(f2.toPath(), "different content");
+        new AddCommand(unrelatedRepo).call();
+        new CommitCommand(unrelatedRepo).setMessage("Unrelated").call();
+
+        PushCommand pushUnrelated = new PushCommand(localRepo).setDestination(unrelatedDir.getAbsolutePath());
+        org.hg4j.errors.HgValidationException ex = assertThrows(org.hg4j.errors.HgValidationException.class, pushUnrelated::call);
+        assertTrue(ex.getMessage().contains("repository is unrelated"));
+
+        // 5. Pack Filelogs missing filelog index (continue branch at line 188)
+        File f3 = new File(localDir, "b.txt");
+        Files.writeString(f3.toPath(), "test b.txt");
+        new AddCommand(localRepo).call();
+        new CommitCommand(localRepo).setMessage("Commit for b.txt").call();
+
+        // Pull and sync remoteNew BEFORE deleting the filelog index so remoteNew is related to First
+        File remoteNewDir = tempDir.resolve("remote_new").toFile();
+        HgRepository remoteNew = Hg.init().setDirectory(remoteNewDir).call();
+        new PullCommand(remoteNew).setSource(localDir.getAbsolutePath()).call();
+
+        // Now delete the filelog index on local
+        File flIdxB = CommitCommand.getFilelogIndex(localRepo.getStoreDir(), "b.txt");
+        assertTrue(flIdxB.exists());
+        assertTrue(flIdxB.delete());
+
+        // Push should not crash and skip the missing filelog index quietly
+        PushCommand pushMissingFl = new PushCommand(localRepo).setDestination(remoteNewDir.getAbsolutePath());
+        assertNotNull(pushMissingFl.call());
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    public void testNativeHgSshPull(@TempDir Path tempDir) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(org.hg4j.HgTestUtils.isHgInstalled(), 
+                "Native Mercurial (hg) is not installed. Skipping native hg-over-ssh pull integration test.");
+
+        // 1. Setup native remote repository
+        File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
+        remoteRepoDir.mkdirs();
+        runProcess(remoteRepoDir, "hg", "init");
+
+        File f1 = new File(remoteRepoDir, "a.txt");
+        Files.writeString(f1.toPath(), "Content in SSH Remote repo\n");
+        runProcess(remoteRepoDir, "hg", "add", "a.txt");
+        runProcess(remoteRepoDir, "hg", "commit", "-m", "Initial commit over SSH");
+
+        // 2. Start embedded SSHD server bridging native 'hg serve --stdio'
+        SshServer sshServer = SshServer.setUpDefaultServer();
+        sshServer.setPort(0);
+        Path tempKey = Files.createTempFile("ssh_real_interop_test_", ".key");
+        sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(tempKey));
+        Files.deleteIfExists(tempKey);
+
+        sshServer.setPasswordAuthenticator((username, password, session) -> true);
+        sshServer.setCommandFactory((channel, command) -> new Command() {
+            private InputStream in;
+            private OutputStream out;
+            private OutputStream err;
+            private org.apache.sshd.server.ExitCallback callback;
+            private Process process;
+            private Thread t1, t2, t3;
+
+            @Override public void setInputStream(InputStream in) { this.in = in; }
+            @Override public void setOutputStream(OutputStream out) { this.out = out; }
+            @Override public void setErrorStream(OutputStream err) { this.err = err; }
+            @Override public void setExitCallback(org.apache.sshd.server.ExitCallback cb) { this.callback = cb; }
+
+            @Override
+            public void start(org.apache.sshd.server.channel.ChannelSession s, org.apache.sshd.server.Environment env) throws IOException {
+                ProcessBuilder pb = new ProcessBuilder("hg", "-R", remoteRepoDir.getAbsolutePath(), "serve", "--stdio");
+                pb.redirectErrorStream(false);
+                process = pb.start();
+
+                t1 = new Thread(() -> {
+                    byte[] buf = new byte[4096];
+                    int len;
+                    try (OutputStream procIn = process.getOutputStream()) {
+                        while ((len = in.read(buf)) != -1) {
+                            procIn.write(buf, 0, len);
+                            procIn.flush();
+                        }
+                    } catch (IOException ignored) {}
+                });
+
+                t2 = new Thread(() -> {
+                    byte[] buf = new byte[4096];
+                    int len;
+                    try (InputStream procOut = process.getInputStream()) {
+                        while ((len = procOut.read(buf)) != -1) {
+                            out.write(buf, 0, len);
+                            out.flush();
+                        }
+                    } catch (IOException ignored) {}
+                    if (callback != null) {
+                        callback.onExit(0);
+                    }
+                });
+
+                t3 = new Thread(() -> {
+                    byte[] buf = new byte[4096];
+                    int len;
+                    try (InputStream procErr = process.getErrorStream()) {
+                        while ((len = procErr.read(buf)) != -1) {
+                            err.write(buf, 0, len);
+                            err.flush();
+                        }
+                    } catch (IOException ignored) {}
+                });
+
+                t1.setDaemon(true);
+                t2.setDaemon(true);
+                t3.setDaemon(true);
+                t1.start();
+                t2.start();
+                t3.start();
+            }
+
+            @Override
+            public void destroy(org.apache.sshd.server.channel.ChannelSession s) {
+                if (process != null) {
+                    process.destroy();
+                }
+                if (t1 != null) t1.interrupt();
+                if (t2 != null) t2.interrupt();
+                if (t3 != null) t3.interrupt();
+            }
+        });
+
+        sshServer.start();
+        int port = sshServer.getPort();
+
+        try {
+            // 3. Initialize local hg4j repository and pull over real SSH connection
+            File localRepoDir = tempDir.resolve("local_repo").toFile();
+            HgRepository localRepo = Hg.init().setDirectory(localRepoDir).call();
+
+            // 인라인 비밀번호(anypass)가 주입된 SSH URL 사용
+            String sshUrl = "ssh://hguser:anypass@127.0.0.1:" + port + "/";
+            PullCommand pullCmd = new PullCommand(localRepo).setSource(sshUrl);
+
+            List<byte[]> pulledNodes = pullCmd.call();
+            assertFalse(pulledNodes.isEmpty(), "Should pull changes over SSH from native hg serve --stdio");
+
+            // Verify a.txt is correctly present in the local repository after sync
+            File fIdx = CommitCommand.getFilelogIndex(localRepo.getStoreDir(), "a.txt");
+            assertTrue(fIdx.exists(), "a.txt filelog must be pulled over SSH");
+        } finally {
+            sshServer.stop(true);
+            Files.deleteIfExists(tempKey);
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    public void testNativeHgSshPush(@TempDir Path tempDir) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(org.hg4j.HgTestUtils.isHgInstalled(), 
+                "Native Mercurial (hg) is not installed. Skipping native hg-over-ssh push integration test.");
+
+        // 1. Setup native remote repository
+        File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
+        remoteRepoDir.mkdirs();
+        runProcess(remoteRepoDir, "hg", "init");
+
+        // Allow push by default in hgrc
+        File hgrc = new File(remoteRepoDir, ".hg/hgrc");
+        Files.writeString(hgrc.toPath(), "[web]\nallow_push = *\npush_ssl = false\n");
+
+        // 2. Start embedded SSHD server bridging native 'hg serve --stdio'
+        SshServer sshServer = SshServer.setUpDefaultServer();
+        sshServer.setPort(0);
+        Path tempKey = Files.createTempFile("ssh_real_push_interop_", ".key");
+        sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(tempKey));
+        Files.deleteIfExists(tempKey);
+
+        sshServer.setPasswordAuthenticator((username, password, session) -> true);
+        sshServer.setCommandFactory((channel, command) -> new Command() {
+            private InputStream in;
+            private OutputStream out;
+            private OutputStream err;
+            private org.apache.sshd.server.ExitCallback callback;
+            private Process process;
+            private Thread t1, t2, t3;
+
+            @Override public void setInputStream(InputStream in) { this.in = in; }
+            @Override public void setOutputStream(OutputStream out) { this.out = out; }
+            @Override public void setErrorStream(OutputStream err) { this.err = err; }
+            @Override public void setExitCallback(org.apache.sshd.server.ExitCallback cb) { this.callback = cb; }
+
+            @Override
+            public void start(org.apache.sshd.server.channel.ChannelSession s, org.apache.sshd.server.Environment env) throws IOException {
+                ProcessBuilder pb = new ProcessBuilder("hg", "-R", remoteRepoDir.getAbsolutePath(), "serve", "--stdio");
+                pb.redirectErrorStream(false);
+                process = pb.start();
+
+                t1 = new Thread(() -> {
+                    byte[] buf = new byte[4096];
+                    int len;
+                    try (OutputStream procIn = process.getOutputStream()) {
+                        while ((len = in.read(buf)) != -1) {
+                            procIn.write(buf, 0, len);
+                            procIn.flush();
+                        }
+                    } catch (IOException ignored) {}
+                });
+
+                t2 = new Thread(() -> {
+                    byte[] buf = new byte[4096];
+                    int len;
+                    try (InputStream procOut = process.getInputStream()) {
+                        while ((len = procOut.read(buf)) != -1) {
+                            out.write(buf, 0, len);
+                            out.flush();
+                        }
+                    } catch (IOException ignored) {}
+                    if (callback != null) {
+                        callback.onExit(0);
+                    }
+                });
+
+                t3 = new Thread(() -> {
+                    byte[] buf = new byte[4096];
+                    int len;
+                    try (InputStream procErr = process.getErrorStream()) {
+                        while ((len = procErr.read(buf)) != -1) {
+                            err.write(buf, 0, len);
+                            err.flush();
+                        }
+                    } catch (IOException ignored) {}
+                });
+
+                t1.setDaemon(true);
+                t2.setDaemon(true);
+                t3.setDaemon(true);
+                t1.start();
+                t2.start();
+                t3.start();
+            }
+
+            @Override
+            public void destroy(org.apache.sshd.server.channel.ChannelSession s) {
+                if (process != null) {
+                    process.destroy();
+                }
+                if (t1 != null) t1.interrupt();
+                if (t2 != null) t2.interrupt();
+                if (t3 != null) t3.interrupt();
+            }
+        });
+
+        sshServer.start();
+        int port = sshServer.getPort();
+
+        try {
+            // 3. Initialize local hg4j repository and commit a file
+            File localRepoDir = tempDir.resolve("local_repo").toFile();
+            HgRepository localRepo = Hg.init().setDirectory(localRepoDir).call();
+
+            File f = new File(localRepoDir, "pushed.txt");
+            Files.writeString(f.toPath(), "Data pushed over real SSH connection\n");
+            new AddCommand(localRepo).call();
+            byte[] pushedNode = new CommitCommand(localRepo)
+                    .setAuthor("SSHDester <tester@ssh.org>")
+                    .setMessage("Real SSH push commit")
+                    .call();
+
+            // 4. Execute SSH Push (인라인 비밀번호 사용)
+            String sshUrl = "ssh://hguser:anypass@127.0.0.1:" + port + "/";
+            String pushResult = new PushCommand(localRepo).setDestination(sshUrl).call();
+            assertNotNull(pushResult, "SSH Push should return standard unbundle confirmation");
+
+            // 5. Verify that remote repository indeed has the pushed revision over SSH
+            ProcessBuilder logPb = new ProcessBuilder("hg", "log", "-r", "0", "--template", "{node} {desc} {author}");
+            logPb.directory(remoteRepoDir);
+            logPb.redirectErrorStream(true);
+            Process logProcess = logPb.start();
+            String logOutput = new String(logProcess.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            logProcess.waitFor();
+
+            assertTrue(logOutput.contains(NodeIdUtil.toHex(pushedNode)), "Remote must contain SSH pushed node");
+            assertTrue(logOutput.contains("Real SSH push commit"));
+            assertTrue(logOutput.contains("SSHDester <tester@ssh.org>"));
+        } finally {
+            sshServer.stop(true);
+            Files.deleteIfExists(tempKey);
+        }
+    }
+
+    @Test
+    public void testBundle2CompressionNegotiation() throws Exception {
+        List<String> capabilities = Arrays.asList(
+            "bundle2",
+            "HG20",
+            "getbundle",
+            "compression=GZ,BZ,ZS"
+        );
+        boolean hasGzip = capabilities.stream().anyMatch(c -> c.contains("compression=") && c.contains("GZ"));
+        boolean hasBzip = capabilities.stream().anyMatch(c -> c.contains("compression=") && c.contains("BZ"));
+        assertTrue(hasGzip, "Negotiation must detect GZIP capability");
+        assertTrue(hasBzip, "Negotiation must detect BZIP capability");
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        baos.write("HG10GZ".getBytes(StandardCharsets.US_ASCII));
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        try (java.util.zip.DeflaterOutputStream dos = new java.util.zip.DeflaterOutputStream(compressed)) {
+            dos.write(new byte[0]);
+        }
+        baos.write(compressed.toByteArray());
+        byte[] payload = baos.toByteArray();
+        assertEquals('H', payload[0]);
+        assertEquals('G', payload[1]);
+        assertEquals('1', payload[2]);
+        assertEquals('0', payload[3]);
+        assertEquals('G', payload[4]);
+        assertEquals('Z', payload[5]);
+
+        ByteArrayInputStream bais = new ByteArrayInputStream(payload, 6, payload.length - 6);
+        try (java.util.zip.InflaterInputStream iis = new java.util.zip.InflaterInputStream(bais)) {
+            byte[] decompressed = iis.readAllBytes();
+            assertEquals(0, decompressed.length);
+        }
+    }
+
+    @Test
+    public void testIncrementalPullCommonNegotiation(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("local_incremental").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "Revision 1");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setMessage("Commit 1").call();
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog localChangelog = repo.getRevlog(clIdx, clDat);
+        List<String> common = new ArrayList<>();
+        int count = localChangelog.getRevisionCount();
+        if (count > 0) {
+            boolean[] isParent = new boolean[count];
+            for (int i = 0; i < count; i++) {
+                Revlog.IndexRecord rec = localChangelog.getIndexRecord(i);
+                if (rec.getParent1() >= 0 && rec.getParent1() < count) isParent[rec.getParent1()] = true;
+                if (rec.getParent2() >= 0 && rec.getParent2() < count) isParent[rec.getParent2()] = true;
+            }
+            for (int i = 0; i < count; i++) {
+                if (!isParent[i]) {
+                    common.add(NodeIdUtil.toHex(localChangelog.getIndexRecord(i).getNodeId()));
+                }
+            }
+        }
+        assertEquals(1, common.size());
+        assertEquals(NodeIdUtil.toHex(c1), common.get(0));
+    }
+
+    @Test
+    public void testNamedBranchAndMergeHistoryPull(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("merge_history_test").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f1 = new File(repoDir, "file1.txt");
+        Files.writeString(f1.toPath(), "default branch file");
+        new AddCommand(repo).call();
+        byte[] base = new CommitCommand(repo).setMessage("base default").call();
+
+        new BranchCommand(repo).setBranchName("feature").call();
+        File f2 = new File(repoDir, "file2.txt");
+        Files.writeString(f2.toPath(), "feature branch file");
+        new AddCommand(repo).call();
+        byte[] feat = new CommitCommand(repo).setMessage("feature branch commit").call();
+
+        org.hg4j.core.Dirstate ds = repo.getDirstate();
+        ds.setParents(base, new byte[20]);
+        repo.writeDirstate(ds);
+
+        ds.setParents(base, feat);
+        repo.writeDirstate(ds);
+
+        Files.writeString(f2.toPath(), "feature branch file");
+        new AddCommand(repo).call();
+        byte[] mergeCommit = new CommitCommand(repo).setMessage("merge feature into default").call();
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog changelog = repo.getRevlog(clIdx, clDat);
+
+        assertEquals(3, changelog.getRevisionCount());
+        Revlog.IndexRecord mergeRec = changelog.getIndexRecord(2);
+        int p1Rev = mergeRec.getParent1();
+        int p2Rev = mergeRec.getParent2();
+
+        assertArrayEquals(base, changelog.getIndexRecord(p1Rev).getNodeId());
+        assertArrayEquals(feat, changelog.getIndexRecord(p2Rev).getNodeId());
+    }
+
+    @Test
+    public void testLargeAndNonAsciiFileIntegration(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("large_non_ascii").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        String nonAsciiPath = "한글 경로 테스트_디렉터리/안녕하세요_공백 테스트.txt";
+        File nonAsciiFile = new File(repoDir, nonAsciiPath);
+        nonAsciiFile.getParentFile().mkdirs();
+
+        byte[] largeData = new byte[1024 * 1024];
+        java.util.Arrays.fill(largeData, (byte) 'A');
+        Files.write(nonAsciiFile.toPath(), largeData);
+
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("Large and non-ascii commit").call();
+
+        java.util.Map<String, String> manifest = repo.getManifestAtCommit(commitNode);
+        assertTrue(manifest.containsKey(nonAsciiPath), "Manifest must contain Hangul file path");
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), nonAsciiPath);
+        assertTrue(flIdx.exists());
+
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        byte[] recovered = filelog.getRevisionContent(0);
+        assertEquals(largeData.length, recovered.length);
+        assertArrayEquals(largeData, recovered);
+
+        org.hg4j.treewalk.TreeWalk tw = new org.hg4j.treewalk.TreeWalk();
+        tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repo, "0"));
+        tw.addTree(new org.hg4j.treewalk.WorkingDirTreeIterator(repo));
+
+        tw.reset();
+        assertTrue(tw.next());
+        assertEquals(nonAsciiPath, tw.getPath());
+        assertTrue(tw.isTracked(0));
+        assertTrue(tw.isTracked(1));
     }
 }

@@ -52,7 +52,14 @@ public class HgSshClient implements HgRemoteConnection, AutoCloseable {
 
         int atIdx = authority.indexOf('@');
         if (atIdx != -1) {
-            this.username = authority.substring(0, atIdx);
+            String userPart = authority.substring(0, atIdx);
+            int colonIdx = userPart.indexOf(':');
+            if (colonIdx != -1) {
+                this.username = userPart.substring(0, colonIdx);
+                this.password = userPart.substring(colonIdx + 1);
+            } else {
+                this.username = userPart;
+            }
             authority = authority.substring(atIdx + 1);
         } else {
             this.username = System.getProperty("user.name");

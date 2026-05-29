@@ -2,6 +2,7 @@ package org.hg4j.api;
 
 import org.hg4j.core.HgRepository;
 import org.hg4j.core.NodeIdUtil;
+import org.hg4j.core.Revlog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -414,5 +415,104 @@ public class CatUpdateClonePushCoverageTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    public void testCatCommandSetRevisionNodeIdNotNull(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "NodeId test content\n");
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("커밋").call();
+
+        // NodeId 객체로 setRevision을 호출하여 null이 아닌 분기 실행
+        org.hg4j.lib.NodeId nodeIdObj = new org.hg4j.lib.NodeId(commitNode);
+        byte[] content = new CatCommand(repo).setFile("a.txt").setRevision(nodeIdObj).call();
+        assertEquals("NodeId test content\n", new String(content));
+    }
+
+    @Test
+    public void testCatCommandFileVersionNotFoundInHistory(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "content a\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("커밋").call();
+
+        // getManifestAtCommit을 오버라이드하여 존재하지 않는 file version hex를 반환하게 만듦
+        HgRepository spyRepo = new HgRepository(repoDir) {
+            @Override
+            public java.util.Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
+                java.util.Map<String, String> fakeMap = new java.util.HashMap<>();
+                fakeMap.put("a.txt", "1".repeat(40)); // 존재하지 않는 40자리 hex
+                return fakeMap;
+            }
+        };
+
+        CatCommand cat = new CatCommand(spyRepo).setFile("a.txt").setRevision("0");
+        org.hg4j.errors.HgRevisionNotFoundException ex = assertThrows(org.hg4j.errors.HgRevisionNotFoundException.class, cat::call);
+        assertTrue(ex.getMessage().contains("File version not found in history"));
+    }
+
+    @Test
+    public void testCommitDefaultDraftPhase(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "test content");
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("신규 커밋").call();
+
+        // 새로 생성된 커밋의 페이즈가 draft인지 검증
+        org.hg4j.core.PhaseRoots phaseRoots = repo.getPhaseRoots();
+        org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(commitNode);
+        
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog cl = repo.getRevlog(clIdx, clDat);
+
+        assertEquals(org.hg4j.core.PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(nodeId, cl));
+    }
+
+    @Test
+    public void testPushBlocksSecretPhaseCommits(@TempDir Path tempDir) throws Exception {
+        // 1. remote 저장소 초기화 및 첫 커밋 생성
+        File remoteDir = tempDir.resolve("remote").toFile();
+        HgRepository remoteRepo = Hg.init().setDirectory(remoteDir).call();
+        File rf = new File(remoteDir, "base.txt");
+        Files.writeString(rf.toPath(), "base content");
+        new AddCommand(remoteRepo).call();
+        new CommitCommand(remoteRepo).setMessage("Base commit").call();
+
+        // 2. remote 저장소를 local 디렉토리로 clone하여 완벽한 연관 관계 형성
+        File localDir = tempDir.resolve("local").toFile();
+        Hg.cloneRepository().setSource(remoteDir.getAbsolutePath()).setDirectory(localDir).call();
+        
+        HgRepository localRepo = Hg.open(localDir).getRepository();
+        File lf = new File(localDir, "secret.txt");
+        Files.writeString(lf.toPath(), "secret content");
+        new AddCommand(localRepo).call();
+        byte[] commitNode = new CommitCommand(localRepo).setMessage("Secret commit").call();
+
+        // 3. local의 신규 커밋을 SECRET 페이즈로 강제 변경
+        org.hg4j.core.PhaseRoots phaseRoots = localRepo.getPhaseRoots();
+        org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(commitNode);
+        
+        File clIdx = new File(localRepo.getStoreDir(), "00changelog.i");
+        File clDat = new File(localRepo.getStoreDir(), "00changelog.d");
+        Revlog cl = localRepo.getRevlog(clIdx, clDat);
+        
+        phaseRoots.setPhase(nodeId, org.hg4j.core.PhaseRoots.Phase.SECRET, cl);
+        assertEquals(org.hg4j.core.PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nodeId, cl));
+
+        // 4. push 호출 시 예외 발생 검증
+        PushCommand push = new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath());
+        org.hg4j.errors.HgValidationException ex = assertThrows(org.hg4j.errors.HgValidationException.class, push::call);
+        assertTrue(ex.getMessage().contains("push includes secret commit"));
     }
 }

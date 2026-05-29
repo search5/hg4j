@@ -39,8 +39,7 @@ public class PushCommand {
             throw new IllegalStateException("Remote destination URL must be specified.");
         }
 
-        HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(destinationUrl);
-        try {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(destinationUrl)) {
             List<String> remoteHeads = client.getHeads();
 
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
@@ -120,6 +119,16 @@ public class PushCommand {
 
                 if (startRev >= count) {
                     return "No changesets to push (remote is up-to-date)";
+                }
+
+                // Phase Check: 만약 푸시 대상 커밋 중 secret 페이즈가 있다면 푸시 차단 (E-4 Phases workflow)
+                org.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
+                for (int r = startRev; r < count; r++) {
+                    byte[] nodeBytes = changelog.getIndexRecord(r).getNodeId();
+                    org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(nodeBytes);
+                    if (phaseRoots.isSecret(nodeId, changelog)) {
+                        throw new org.hg4j.errors.HgValidationException("abort: push includes secret commit: " + nodeId.toHex());
+                    }
                 }
 
                 // 1. Pack changesets startRev ~ tip into changegroup bundle
@@ -249,12 +258,6 @@ public class PushCommand {
 
                 // 3. Dispatch bundle to remote destination
                 return client.push(baos.toByteArray(), remoteHeads);
-            }
-        } finally {
-            if (client instanceof AutoCloseable) {
-                try {
-                    ((AutoCloseable) client).close();
-                } catch (Exception ignored) {}
             }
         }
     }

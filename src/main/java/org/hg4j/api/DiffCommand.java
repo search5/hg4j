@@ -115,34 +115,35 @@ public class DiffCommand {
             targetOld = rec.getParent1();
         }
 
-        // Load manifests
-        Map<String, String> oldManifest = loadManifest(changelog, targetOld);
-        Map<String, String> newManifest = loadManifest(changelog, targetNew);
-
-        Set<String> allFiles = new HashSet<>();
-        allFiles.addAll(oldManifest.keySet());
-        allFiles.addAll(newManifest.keySet());
-
         List<DiffEntry> diffs = new ArrayList<>();
 
-        for (String path : allFiles) {
-            String oldHex = oldManifest.get(path);
-            String newHex = newManifest.get(path);
+        org.hg4j.treewalk.TreeWalk tw = new org.hg4j.treewalk.TreeWalk();
+        tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(targetOld)));
+        tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(targetNew)));
 
-            if (oldHex == null && newHex != null) {
+        tw.reset();
+        while (tw.next()) {
+            String path = tw.getPath();
+            boolean inOld = tw.isTracked(0);
+            boolean inNew = tw.isTracked(1);
+
+            byte[] oldNode = tw.getNodeId(0);
+            byte[] newNode = tw.getNodeId(1);
+
+            if (!inOld && inNew) {
                 // ADDED
-                byte[] newContent = getFileContent(path, newHex);
+                byte[] newContent = getFileContent(path, org.hg4j.core.NodeIdUtil.toHex(newNode));
                 String diffText = generateUnifiedDiff(path, new byte[0], newContent);
                 diffs.add(new DiffEntry(path, ChangeType.ADD, diffText));
-            } else if (oldHex != null && newHex == null) {
+            } else if (inOld && !inNew) {
                 // DELETED
-                byte[] oldContent = getFileContent(path, oldHex);
+                byte[] oldContent = getFileContent(path, org.hg4j.core.NodeIdUtil.toHex(oldNode));
                 String diffText = generateUnifiedDiff(path, oldContent, new byte[0]);
                 diffs.add(new DiffEntry(path, ChangeType.DELETE, diffText));
-            } else if (oldHex != null && newHex != null && !oldHex.equals(newHex)) {
+            } else if (inOld && inNew && !java.util.Arrays.equals(oldNode, newNode)) {
                 // MODIFIED
-                byte[] oldContent = getFileContent(path, oldHex);
-                byte[] newContent = getFileContent(path, newHex);
+                byte[] oldContent = getFileContent(path, org.hg4j.core.NodeIdUtil.toHex(oldNode));
+                byte[] newContent = getFileContent(path, org.hg4j.core.NodeIdUtil.toHex(newNode));
                 String diffText = generateUnifiedDiff(path, oldContent, newContent);
                 diffs.add(new DiffEntry(path, ChangeType.MODIFY, diffText));
             }
@@ -228,6 +229,7 @@ public class DiffCommand {
         }
         Collections.reverse(diffLines);
         
+        sb.append("@@ -1," + n + " +1," + m + " @@\n");
         for (String line : diffLines) {
             sb.append(line).append("\n");
         }

@@ -48,7 +48,7 @@ public class ManifestTreeIterator implements TreeIterator {
 
         byte[] targetNodeId = NodeIdUtil.resolveRevision(changelog, revision);
         if (targetNodeId == null) {
-            throw new IOException("Unable to resolve revision: " + revision);
+            return;
         }
 
         java.util.Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
@@ -60,7 +60,7 @@ public class ManifestTreeIterator implements TreeIterator {
             entries.add(new Entry(path, NodeIdUtil.fromHex(hex), executable));
         }
         
-        entries.sort(Comparator.comparing(e -> e.path));
+        entries.sort((e1, e2) -> NodeIdUtil.UTF8_STRING_COMPARATOR.compare(e1.path, e2.path));
     }
 
 

@@ -33,7 +33,7 @@ public class TreeWalk {
         for (TreeIterator tree : trees) {
             String path = tree.getEntryPath();
             if (path != null) {
-                if (minPath == null || path.compareTo(minPath) < 0) {
+                if (minPath == null || org.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR.compare(path, minPath) < 0) {
                     minPath = path;
                 }
             }

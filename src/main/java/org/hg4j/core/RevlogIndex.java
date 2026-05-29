@@ -36,7 +36,13 @@ public class RevlogIndex {
         }
 
         try (FileChannel channel = FileChannel.open(idxFile.toPath(), StandardOpenOption.READ)) {
-            ByteBuffer buf = channel.map(FileChannel.MapMode.READ_ONLY, 0, len);
+            ByteBuffer buf = ByteBuffer.allocate((int) len);
+            while (buf.hasRemaining()) {
+                if (channel.read(buf) == -1) {
+                    break;
+                }
+            }
+            buf.flip();
             int revision = 0;
             while (buf.hasRemaining() && buf.remaining() >= 64) {
                 long offsetFlags = buf.getLong();

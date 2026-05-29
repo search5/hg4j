@@ -44,10 +44,13 @@ public class UpdateCommand {
         try (HgLock wlock = repository.lockWorkingCopy();
              HgLock storeLock = repository.lockStore()) {
 
+            Dirstate dirstate = repository.getDirstate();
             if (!force) {
-                Status status = new StatusCommand(repository).call();
-                if (!status.getAdded().isEmpty() || !status.getModified().isEmpty() || !status.getRemoved().isEmpty()) {
-                    throw new org.hg4j.errors.HgValidationException("Working directory has uncommitted changes. Use force to update.");
+                if (!dirstate.getEntries().isEmpty()) {
+                    Status status = new StatusCommand(repository).call();
+                    if (!status.getAdded().isEmpty() || !status.getModified().isEmpty() || !status.getRemoved().isEmpty()) {
+                        throw new org.hg4j.errors.HgValidationException("Working directory has uncommitted changes. Use force to update.");
+                    }
                 }
             }
 
@@ -62,16 +65,29 @@ public class UpdateCommand {
                 throw new org.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
             }
 
-            Map<String, String> targetEntries = repository.getManifestAtCommit(targetNodeId);
+            // Resolve current parent revision for TreeWalk
+            dirstate = repository.getDirstate();
+            String parentRev = "";
+            if (changelog.getRevisionCount() > 0) {
+                byte[] parentNode = dirstate.getParent1();
+                int parentRevNum = NodeIdUtil.findRevisionByNodeId(changelog, parentNode);
+                if (parentRevNum != -1) {
+                    parentRev = String.valueOf(parentRevNum);
+                }
+            }
 
-            // 2. Read current dirstate
-            Dirstate dirstate = repository.getDirstate();
-            Map<String, Dirstate.Entry> activeEntries = new HashMap<>(dirstate.getEntries());
+            org.hg4j.treewalk.TreeWalk tw = new org.hg4j.treewalk.TreeWalk();
+            tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest
+            tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(commitRev))); // Tree 1: Target Commit Manifest
 
-            // 3. Reconcile workspace and dirstate
-            // 3a. Process deletions: Files in current dirstate that are NOT in target manifest
-            for (String path : activeEntries.keySet()) {
-                if (!targetEntries.containsKey(path)) {
+            tw.reset();
+            while (tw.next()) {
+                String path = tw.getPath();
+                boolean inParent = tw.isTracked(0);
+                boolean inTarget = tw.isTracked(1);
+
+                if (inParent && !inTarget) {
+                    // Process deletions: Files in current manifest that are NOT in target manifest
                     File diskFile = new File(repository.getDirectory(), path);
                     if (diskFile.exists()) {
                         Files.delete(diskFile.toPath());
@@ -88,56 +104,52 @@ public class UpdateCommand {
                         }
                     }
                     dirstate.removeEntry(path);
-                }
-            }
+                } else if (inTarget) {
+                    // Process updates and creations: Files in target manifest
+                    byte[] targetNode = tw.getNodeId(1);
+                    String hexNode = NodeIdUtil.toHex(targetNode);
+                    boolean executable = tw.isExecutable(1);
 
-            // 3b. Process updates and creations: Files in target manifest
-            for (Map.Entry<String, String> targetEntry : targetEntries.entrySet()) {
-                String path = targetEntry.getKey();
-                String nodeWithFlags = targetEntry.getValue();
-                String hexNode = nodeWithFlags.substring(0, 40);
-                String flags = nodeWithFlags.substring(40);
+                    File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
 
-                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-
-                if (!flIdx.exists()) {
-                    throw new org.hg4j.errors.HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
-                }
-
-                Revlog filelog = repository.getRevlog(flIdx, flDat);
-                int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
-                if (fileRev == -1) {
-                    throw new org.hg4j.errors.HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
-                }
-
-                byte[] fileContent = filelog.getRevisionContent(fileRev);
-
-                File diskFile = new File(repository.getDirectory(), path);
-                boolean needsWrite = true;
-
-                if (diskFile.exists()) {
-                    // Optimized content checksum match comparison to bypass disk writes
-                    byte[] existingContent = Files.readAllBytes(diskFile.toPath());
-                    if (java.util.Arrays.equals(existingContent, fileContent)) {
-                        needsWrite = false;
+                    if (!flIdx.exists()) {
+                        throw new org.hg4j.errors.HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
                     }
+
+                    Revlog filelog = repository.getRevlog(flIdx, flDat);
+                    int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, targetNode);
+                    if (fileRev == -1) {
+                        throw new org.hg4j.errors.HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
+                    }
+
+                    byte[] fileContent = filelog.getRevisionContent(fileRev);
+
+                    File diskFile = new File(repository.getDirectory(), path);
+                    boolean needsWrite = true;
+
+                    if (diskFile.exists()) {
+                        // Optimized content checksum match comparison to bypass disk writes
+                        byte[] existingContent = Files.readAllBytes(diskFile.toPath());
+                        if (java.util.Arrays.equals(existingContent, fileContent)) {
+                            needsWrite = false;
+                        }
+                    }
+
+                    if (needsWrite) {
+                        diskFile.getParentFile().mkdirs();
+                        Files.write(diskFile.toPath(), fileContent);
+                    }
+
+                    // Apply executable flag if 'x'
+                    diskFile.setExecutable(executable, false);
+
+                    int mode = executable ? 0755 : 0644;
+                    int size = fileContent.length;
+                    long time = diskFile.lastModified() / 1000;
+
+                    dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
                 }
-
-                if (needsWrite) {
-                    diskFile.getParentFile().mkdirs();
-                    Files.write(diskFile.toPath(), fileContent);
-                }
-
-                // Apply executable flag if 'x'
-                boolean executable = flags.contains("x");
-                diskFile.setExecutable(executable, false);
-
-                int mode = executable ? 0755 : 0644;
-                int size = fileContent.length;
-                long time = diskFile.lastModified() / 1000;
-
-                dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
             }
 
             // 4. Conclude checkout parent node updates
@@ -149,6 +161,9 @@ public class UpdateCommand {
     }
 
     private byte[] resolveTargetNodeId(Revlog changelog) throws IOException {
+        if (changelog.getRevisionCount() == 0) {
+            return null;
+        }
         try {
             byte[] resolved = NodeIdUtil.resolveRevision(changelog, targetRevision);
             if (resolved != null) {

@@ -9,7 +9,7 @@ import org.hg4j.errors.HgProtocolException;
  * Common connection interface for remote Mercurial repositories,
  * supporting both HTTP and SSH protocols dynamically.
  */
-public interface HgRemoteConnection {
+public interface HgRemoteConnection extends java.io.Closeable {
 
     /**
      * Executes the 'capabilities' command on the remote server.

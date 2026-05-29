@@ -1,6 +1,7 @@
 package org.hg4j.api;
 
 import org.hg4j.core.Dirstate;
+import org.hg4j.core.HgRepository;
 import org.hg4j.core.Revlog;
 import org.hg4j.errors.HgCorruptDataException;
 import org.hg4j.errors.HgRepositoryNotFoundException;
@@ -61,7 +62,7 @@ public class HgPorcelainAndExceptionsTest {
 
         try (Hg hg = Hg.open(repoDir)) {
             assertNotNull(hg);
-            assertThrows(IllegalArgumentException.class, () -> Hg.open(null));
+            assertThrows(IllegalArgumentException.class, () -> Hg.open((java.io.File) null));
 
             // 커맨드 빌더 확인
             assertNotNull(hg.branch());
@@ -165,5 +166,45 @@ public class HgPorcelainAndExceptionsTest {
         assertThrows(HgRevisionNotFoundException.class, () -> {
             revlog.getRawRevisionContent(5);
         });
+    }
+
+    @Test
+    public void testCatCommandEdgeCases() throws Exception {
+        File repoDir = new File(tempDir, "cat_edge_repo");
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // 1. File path must be specified
+        CatCommand cat = new CatCommand(repo);
+        assertThrows(IllegalStateException.class, cat::call);
+        cat.setFile("");
+        assertThrows(IllegalStateException.class, cat::call);
+
+        cat.setFile("a.txt");
+
+        // 2. Commit a file
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "Hello Cat\n");
+        new AddCommand(repo).call();
+        byte[] revNode = new CommitCommand(repo).setMessage("Base").call();
+
+        // setRevision(NodeId) 테스트
+        cat.setRevision(new org.hg4j.lib.NodeId(revNode));
+        assertArrayEquals("Hello Cat\n".getBytes(), cat.call());
+
+        // setRevision(NodeId null) 테스트
+        cat.setRevision((org.hg4j.lib.NodeId) null);
+        assertArrayEquals("Hello Cat\n".getBytes(), cat.call()); // defaults to tip
+
+        // 3. Revision not found
+        cat.setRevision("non_existent_branch_123");
+        assertThrows(org.hg4j.errors.HgRevisionNotFoundException.class, cat::call);
+
+        // 4. Filelog index not found
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "a.txt");
+        assertTrue(flIdx.exists());
+        assertTrue(flIdx.delete());
+
+        cat.setRevision(new org.hg4j.lib.NodeId(revNode));
+        assertThrows(org.hg4j.errors.HgCorruptDataException.class, cat::call);
     }
 }

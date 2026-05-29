@@ -261,154 +261,162 @@ public class CommitCommand {
                 }
             }
 
-            for (Map.Entry<String, Dirstate.Entry> item : dirstate.getEntries().entrySet()) {
-                String path = item.getKey();
-                Dirstate.Entry dEntry = item.getValue();
+            org.hg4j.treewalk.TreeWalk tw = new org.hg4j.treewalk.TreeWalk();
+            tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(parent1Rev))); // Tree 0: P1
+            tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(parent2Rev))); // Tree 1: P2
+            tw.addTree(new org.hg4j.treewalk.WorkingDirTreeIterator(repository));                           // Tree 2: Working Copy
 
-                if (dEntry.getState() == 'r') {
-                    filesModified.add(path);
-                } else if (dEntry.getState() == 'a' || dEntry.getState() == 'm' || dEntry.getState() == 'n') {
-                    File diskFile = new File(repository.getDirectory(), path);
-                    if (!diskFile.exists() || !diskFile.isFile()) {
-                        throw new org.hg4j.errors.HgValidationException("Tracked file not found on disk: " + path);
-                    }
+            tw.reset();
+            while (tw.next()) {
+                String path = tw.getPath();
+                boolean inP1 = tw.isTracked(0);
+                boolean inP2 = tw.isTracked(1);
+                boolean inWorking = tw.isTracked(2);
 
-                    // Large file protection check (2GB Limit Truncation Safeguard)
-                    long diskSize = diskFile.length();
-                    if (diskSize > Integer.MAX_VALUE) {
-                        throw new org.hg4j.errors.HgValidationException("File size exceeds 2GB maximum limit allowed for Dirstate: " + path);
-                    }
+                if (inWorking) {
+                    char workingState = tw.getState(2);
+                    if (workingState == 'r') {
+                        filesModified.add(path);
+                    } else if (workingState == 'a' || workingState == 'm' || workingState == 'n') {
+                        File diskFile = new File(repository.getDirectory(), path);
+                        if (!diskFile.exists() || !diskFile.isFile()) {
+                            throw new org.hg4j.errors.HgValidationException("Tracked file not found on disk: " + path);
+                        }
 
-                    // Check if the file has actually changed compared to the recorded dirstate
-                    boolean changed = dEntry.getState() == 'a' || dEntry.getState() == 'm';
-                    if (dEntry.getState() == 'n') {
-                        long diskTime = diskFile.lastModified() / 1000;
-                        if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
-                            // 크기나 mtime이 다르면 명확히 변경됨
-                            changed = true;
-                        } else if (dEntry.getTime() >= txStartSec) {
-                            // M-2: racy-hg 판정 — dirstate mtime이 트랜잭션 시작 시각과
-                            // 같거나 이후이면 로카 시간 해상도 문제로 내용을 직접 비교해야 함
-                            File flIdx = getFilelogIndex(repository.getStoreDir(), path);
-                            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                            if (flIdx.exists()) {
-                                Revlog filelog = repository.getRevlog(flIdx, flDat);
-                                if (filelog.getRevisionCount() > 0) {
-                                    byte[] fileContent = Files.readAllBytes(diskFile.toPath());
-                                    byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                    if (!Arrays.equals(fileContent, lastContent)) {
-                                        changed = true;
+                        // Large file protection check (2GB Limit Truncation Safeguard)
+                        long diskSize = diskFile.length();
+                        if (diskSize > Integer.MAX_VALUE) {
+                            throw new org.hg4j.errors.HgValidationException("File size exceeds 2GB maximum limit allowed for Dirstate: " + path);
+                        }
+
+                        // Check if the file has actually changed compared to the recorded dirstate
+                        boolean changed = workingState == 'a' || workingState == 'm';
+                        if (workingState == 'n') {
+                            long diskTime = diskFile.lastModified() / 1000;
+                            Dirstate.Entry dEntry = dirstate.getEntries().get(path);
+                            if (dEntry != null) {
+                                if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
+                                    // 크기나 mtime이 다르면 명확히 변경됨
+                                    changed = true;
+                                } else if (diskTime >= txStartSec) {
+                                    // M-2: racy-hg 판정
+                                    File flIdx = getFilelogIndex(repository.getStoreDir(), path);
+                                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                                    if (flIdx.exists()) {
+                                        Revlog filelog = repository.getRevlog(flIdx, flDat);
+                                        if (filelog.getRevisionCount() > 0) {
+                                            byte[] fileContent = Files.readAllBytes(diskFile.toPath());
+                                            byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
+                                            if (!Arrays.equals(fileContent, lastContent)) {
+                                                changed = true;
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                        // dEntry.getTime() < txStartSec 이면서 크기/mtime이 동일하면 변경없음
-                        // (changed 는 false로 유지)
-                    }
 
-                    if (changed) {
-                        byte[] fileContent;
-                        if (Files.isSymbolicLink(diskFile.toPath())) {
-                            fileContent = Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8);
+                        if (changed) {
+                            byte[] fileContent;
+                            if (Files.isSymbolicLink(diskFile.toPath())) {
+                                fileContent = Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8);
+                            } else {
+                                fileContent = Files.readAllBytes(diskFile.toPath());
+                            }
+                            File flIdx = getFilelogIndex(repository.getStoreDir(), path);
+                            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                            
+                            // Capture pre-write file sizes for potential rollback transaction
+                            if (!fileSizes.containsKey(flIdx)) {
+                                long idxLen = flIdx.exists() ? flIdx.length() : 0L;
+                                fileSizes.put(flIdx, idxLen);
+                                if (!skipLockAndJournal) {
+                                    String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path) + ".i";
+                                    appendToJournal(journalFile, storeRelIdx + " " + idxLen);
+                                }
+                            }
+                            if (!fileSizes.containsKey(flDat)) {
+                                long datLen = flDat.exists() ? flDat.length() : 0L;
+                                fileSizes.put(flDat, datLen);
+                                if (!skipLockAndJournal) {
+                                    String storeRelDat = "store/" + NodeIdUtil.encodeFname(path) + ".d";
+                                    appendToJournal(journalFile, storeRelDat + " " + datLen);
+                                }
+                            }
+
+                            // Ensure parent directories exist in store
+                            flIdx.getParentFile().mkdirs();
+
+                            Revlog filelog = repository.getRevlog(flIdx, flDat);
+
+                            // Find parent1 filelog revision index
+                            int parent1FileRev = -1;
+                            byte[] p1FileNode = new byte[20];
+                            if (inP1) {
+                                byte[] prevFileNode = tw.getNodeId(0);
+                                parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNode);
+                                if (parent1FileRev != -1) {
+                                    p1FileNode = prevFileNode;
+                                }
+                            }
+
+                            // Find parent2 filelog revision index (N-4: Merge ancestral track protection)
+                            int parent2FileRev = -1;
+                            byte[] p2FileNode = new byte[20];
+                            if (inP2) {
+                                byte[] prevFileNodeP2 = tw.getNodeId(1);
+                                parent2FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNodeP2);
+                                if (parent2FileRev != -1) {
+                                    p2FileNode = prevFileNodeP2;
+                                }
+                            }
+
+                            byte[] newFileNode = filelog.appendRevision(fileContent, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
+                            
+                            // Capture execution flag and symlink flag for serialization
+                            String flag = "";
+                            if (Files.isSymbolicLink(diskFile.toPath())) {
+                                flag = "l";
+                            } else if (diskFile.canExecute()) {
+                                flag = "x";
+                            }
+
+                            newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
+                            filesModified.add(path);
+
+                            // fncache에는 .i 파일 경로만 등록
+                            String rawPath = "data/" + path.replace('\\', '/');
+                            fncachePaths.add(rawPath + ".i");
                         } else {
-                            fileContent = Files.readAllBytes(diskFile.toPath());
-                        }
-                        File flIdx = getFilelogIndex(repository.getStoreDir(), path);
-                        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                        
-                        // Capture pre-write file sizes for potential rollback transaction
-                        if (!fileSizes.containsKey(flIdx)) {
-                            long idxLen = flIdx.exists() ? flIdx.length() : 0L;
-                            fileSizes.put(flIdx, idxLen);
-                            if (!skipLockAndJournal) {
-                                // .hg/ 기준 상대 경로 (실제 hg journal 포맷)
-                                String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path) + ".i";
-                                appendToJournal(journalFile, storeRelIdx + " " + idxLen);
-                            }
-                        }
-                        if (!fileSizes.containsKey(flDat)) {
-                            long datLen = flDat.exists() ? flDat.length() : 0L;
-                            fileSizes.put(flDat, datLen);
-                            if (!skipLockAndJournal) {
-                                String storeRelDat = "store/" + NodeIdUtil.encodeFname(path) + ".d";
-                                appendToJournal(journalFile, storeRelDat + " " + datLen);
-                            }
-                        }
-
-                        // Ensure parent directories exist in store
-                        flIdx.getParentFile().mkdirs();
-
-                        Revlog filelog = repository.getRevlog(flIdx, flDat);
-
-                        // Find parent1 filelog revision index
-                        int parent1FileRev = -1;
-                        byte[] p1FileNode = new byte[20];
-                        String prevFileHex = manifestP1.get(path);
-                        if (prevFileHex != null) {
-                            byte[] prevFileNode = NodeIdUtil.fromHex(prevFileHex.substring(0, 40));
-                            parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNode);
-                            if (parent1FileRev != -1) {
-                                p1FileNode = prevFileNode;
-                            }
-                        }
-
-                        // Find parent2 filelog revision index (N-4: Merge ancestral track protection)
-                        int parent2FileRev = -1;
-                        byte[] p2FileNode = new byte[20];
-                        String prevFileHexP2 = manifestP2.get(path);
-                        if (prevFileHexP2 != null) {
-                            byte[] prevFileNodeP2 = NodeIdUtil.fromHex(prevFileHexP2.substring(0, 40));
-                            parent2FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNodeP2);
-                            if (parent2FileRev != -1) {
-                                p2FileNode = prevFileNodeP2;
-                            }
-                        }
-
-                        byte[] newFileNode = filelog.appendRevision(fileContent, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
-                        
-                        // Capture execution flag and symlink flag for serialization (N-4: Manifest Fidelity)
-                        String flag = "";
-                        if (Files.isSymbolicLink(diskFile.toPath())) {
-                            flag = "l";
-                        } else if (diskFile.canExecute()) {
-                            flag = "x";
-                        }
-
-                        newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
-                        filesModified.add(path);
-
-                        // fncache에는 .i 파일 경로만 등록 (실제 hg 동작과 동일, .d는 등록하지 않음)
-                        String rawPath = "data/" + path.replace('\\', '/');
-                        fncachePaths.add(rawPath + ".i");
-                    } else {
-                        // File has not changed in working directory
-                        String hexP1 = manifestP1.get(path);
-                        String hexP2 = manifestP2.get(path);
-                        if (parent2Rev == -1) {
-                            if (hexP1 != null) {
-                                newManifest.put(path, hexP1);
-                            }
-                        } else {
-                            if (hexP1 != null && hexP2 == null) {
-                                newManifest.put(path, hexP1);
-                            } else if (hexP1 == null && hexP2 != null) {
-                                newManifest.put(path, hexP2);
-                            } else if (hexP1 != null && hexP2 != null) {
-                                if (hexP1.equals(hexP2)) {
+                            // File has not changed in working directory
+                            String hexP1 = manifestP1.get(path);
+                            String hexP2 = manifestP2.get(path);
+                            if (parent2Rev == -1) {
+                                if (hexP1 != null) {
                                     newManifest.put(path, hexP1);
-                                } else {
-                                    // Bytes level disambiguation to determine which side this file belongs to
-                                    byte[] diskBytes = Files.readAllBytes(diskFile.toPath());
-                                    byte[] p1Bytes = null;
-                                    try {
-                                        p1Bytes = getFileRevisionContent(repository, path, hexP1);
-                                    } catch (Exception e) {
-                                        // Ignore
-                                    }
-                                    if (p1Bytes != null && Arrays.equals(diskBytes, p1Bytes)) {
+                                }
+                            } else {
+                                if (hexP1 != null && hexP2 == null) {
+                                    newManifest.put(path, hexP1);
+                                } else if (hexP1 == null && hexP2 != null) {
+                                    newManifest.put(path, hexP2);
+                                } else if (hexP1 != null && hexP2 != null) {
+                                    if (hexP1.equals(hexP2)) {
                                         newManifest.put(path, hexP1);
                                     } else {
-                                        newManifest.put(path, hexP2);
+                                        // Bytes level disambiguation to determine which side this file belongs to
+                                        byte[] diskBytes = Files.readAllBytes(diskFile.toPath());
+                                        byte[] p1Bytes = null;
+                                        try {
+                                            p1Bytes = getFileRevisionContent(repository, path, hexP1);
+                                        } catch (Exception e) {
+                                            // Ignore
+                                        }
+                                        if (p1Bytes != null && Arrays.equals(diskBytes, p1Bytes)) {
+                                            newManifest.put(path, hexP1);
+                                        } else {
+                                            newManifest.put(path, hexP2);
+                                        }
                                     }
                                 }
                             }
@@ -475,6 +483,14 @@ public class CommitCommand {
                 }
             }
             repository.writeDirstate(dirstate);
+
+            // 6.5. Update Phase for the new commit (all new commits default to DRAFT)
+            try {
+                org.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
+                phaseRoots.setPhase(new org.hg4j.lib.NodeId(commitNode), org.hg4j.core.PhaseRoots.Phase.DRAFT, changelog);
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "Failed to set phase for new commit node", e);
+            }
 
             // Commit transaction: delete journal and backup files
             if (!skipLockAndJournal) {

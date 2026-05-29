@@ -274,19 +274,24 @@ public class MergeCommand {
             Map<String, String> manifestP1 = loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
             Map<String, String> manifestP2 = loadManifestAtCommit(changelog, manifestRevlog, p2Rev);
 
-            // 4. Reconcile manifests
-            Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-            allPaths.addAll(manifestLca.keySet());
-            allPaths.addAll(manifestP1.keySet());
-            allPaths.addAll(manifestP2.keySet());
+            org.hg4j.treewalk.TreeWalk tw = new org.hg4j.treewalk.TreeWalk();
+            tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(lca.rev))); // Tree 0: LCA
+            tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(p1Rev)));   // Tree 1: P1
+            tw.addTree(new org.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(p2Rev)));   // Tree 2: P2
 
             List<String> conflicts = new ArrayList<>();
             boolean conflicted = false;
 
-            for (String path : allPaths) {
-                String hLca = manifestLca.get(path);
-                String hP1 = manifestP1.get(path);
-                String hP2 = manifestP2.get(path);
+            tw.reset();
+            while (tw.next()) {
+                String path = tw.getPath();
+                boolean inLca = tw.isTracked(0);
+                boolean inP1 = tw.isTracked(1);
+                boolean inP2 = tw.isTracked(2);
+
+                String hLca = inLca ? manifestLca.get(path) : null;
+                String hP1 = inP1 ? manifestP1.get(path) : null;
+                String hP2 = inP2 ? manifestP2.get(path) : null;
 
                 if (Objects.equals(hP1, hP2)) {
                     continue;

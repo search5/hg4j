@@ -58,9 +58,8 @@ public class PullCommand {
 
         monitor.start("Pulling changes", 3);
 
-        HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl);
         monitor.update(1);
-        try {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
             List<String> remoteHeads = client.getHeads();
             if (remoteHeads.isEmpty()) {
                 return new ArrayList<>(); // Nothing to pull
@@ -155,12 +154,6 @@ public class PullCommand {
             monitor.update(1);
             monitor.end();
             return results;
-        } finally {
-            if (client instanceof AutoCloseable) {
-                try {
-                    ((AutoCloseable) client).close();
-                } catch (Exception ignored) {}
-            }
         }
     }
 

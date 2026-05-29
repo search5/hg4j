@@ -98,4 +98,97 @@ public final class HgLfsManager {
         File cacheFile = getLocalPath(pointer.getOid());
         return Files.readAllBytes(cacheFile.toPath());
     }
+
+    /**
+     * Fetches the missing LFS object from the remote LFS server and caches it.
+     * Built with zero-dependency native HttpClient for specifications fidelity.
+     *
+     * @param pointer LFS pointer metadata
+     * @param lfsServerUrl remote LFS server base url (e.g. "https://lfs.example.com/repo/info/lfs")
+     * @throws IOException if network or caching fails
+     * @throws InterruptedException if thread is interrupted
+     */
+    public void fetchObject(HgLfsPointer pointer, String lfsServerUrl) throws IOException, InterruptedException {
+        if (pointer == null || lfsServerUrl == null) {
+            throw new IllegalArgumentException("Pointer and server URL cannot be null");
+        }
+        if (isCached(pointer)) {
+            return; // Already cached
+        }
+
+        // 1. Build Batch Request JSON according to Git LFS API v1 download spec
+        String batchJson = "{"
+                + "\"operation\":\"download\","
+                + "\"transfers\":[\"basic\"],"
+                + "\"objects\":[{"
+                + "\"oid\":\"" + pointer.getOid() + "\","
+                + "\"size\":" + pointer.getSize()
+                + "}]"
+                + "}";
+
+        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        java.net.http.HttpRequest batchRequest = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(lfsServerUrl + "/objects/batch"))
+                .header("Accept", "application/vnd.git-lfs+json")
+                .header("Content-Type", "application/vnd.git-lfs+json")
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(batchJson, java.nio.charset.StandardCharsets.UTF_8))
+                .build();
+
+        java.net.http.HttpResponse<String> batchResponse = client.send(batchRequest, java.net.http.HttpResponse.BodyHandlers.ofString());
+        if (batchResponse.statusCode() != 200) {
+            throw new IOException("LFS batch API request failed with status: " + batchResponse.statusCode());
+        }
+
+        String responseBody = batchResponse.body();
+        String downloadUrl = null;
+        String authHeaderVal = null;
+
+        int hrefKeyIdx = responseBody.indexOf("\"href\"");
+        if (hrefKeyIdx != -1) {
+            int colonIdx = responseBody.indexOf(":", hrefKeyIdx);
+            if (colonIdx != -1) {
+                int quoteStart = responseBody.indexOf("\"", colonIdx);
+                if (quoteStart != -1) {
+                    int quoteEnd = responseBody.indexOf("\"", quoteStart + 1);
+                    if (quoteEnd != -1) {
+                        downloadUrl = responseBody.substring(quoteStart + 1, quoteEnd);
+                    }
+                }
+            }
+        }
+
+        int authKeyIdx = responseBody.indexOf("\"Authorization\"");
+        if (authKeyIdx != -1) {
+            int colonIdx = responseBody.indexOf(":", authKeyIdx);
+            if (colonIdx != -1) {
+                int quoteStart = responseBody.indexOf("\"", colonIdx);
+                if (quoteStart != -1) {
+                    int quoteEnd = responseBody.indexOf("\"", quoteStart + 1);
+                    if (quoteEnd != -1) {
+                        authHeaderVal = responseBody.substring(quoteStart + 1, quoteEnd);
+                    }
+                }
+            }
+        }
+
+        if (downloadUrl == null) {
+            throw new IOException("Failed to extract download URL from LFS batch response: " + responseBody);
+        }
+
+        // 2. Download LFS object payload via HTTP GET
+        java.net.http.HttpRequest.Builder getReqBuilder = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(downloadUrl))
+                .GET();
+        if (authHeaderVal != null) {
+            getReqBuilder.header("Authorization", authHeaderVal);
+        }
+
+        java.net.http.HttpResponse<byte[]> getResponse = client.send(getReqBuilder.build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+        if (getResponse.statusCode() != 200) {
+            throw new IOException("LFS object download failed with status: " + getResponse.statusCode() + " from: " + downloadUrl);
+        }
+
+        // 3. Cache downloaded object into local store/lfs/objects/
+        cacheObject(pointer, getResponse.body());
+    }
 }

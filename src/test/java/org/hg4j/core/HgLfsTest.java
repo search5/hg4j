@@ -86,4 +86,72 @@ public class HgLfsTest {
             manager.getCachedObject(pointer);
         });
     }
+
+    @Test
+    public void testLfsFetchObjectFlow() throws Exception {
+        // 1. Start a simple native HTTP mock LFS server
+        com.sun.net.httpserver.HttpServer mockServer = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(0), 0);
+        int port = mockServer.getAddress().getPort();
+        String lfsServerUrl = "http://localhost:" + port + "/info/lfs";
+        
+        String oid = "223344556677889900aabbccddeeff11223344556677889900aabbccddeeffaa";
+        byte[] originalPayload = "LFS Mock File Data".getBytes(StandardCharsets.UTF_8);
+        
+        // Batch endpoint mock response
+        String downloadUrl = "http://localhost:" + port + "/download/object/" + oid;
+        String batchResponseJson = "{\n"
+                + "  \"transfer\": \"basic\",\n"
+                + "  \"objects\": [\n"
+                + "    {\n"
+                + "      \"oid\": \"" + oid + "\",\n"
+                + "      \"size\": " + originalPayload.length + ",\n"
+                + "      \"actions\": {\n"
+                + "        \"download\": {\n"
+                + "          \"href\": \"" + downloadUrl + "\",\n"
+                + "          \"header\": {\n"
+                + "            \"Authorization\": \"Bearer mocktoken\"\n"
+                + "          }\n"
+                + "        }\n"
+                + "      }\n"
+                + "    }\n"
+                + "  ]\n"
+                + "}";
+
+        // Mock /info/lfs/objects/batch handler
+        mockServer.createContext("/info/lfs/objects/batch", exchange -> {
+            exchange.getResponseHeaders().set("Content-Type", "application/vnd.git-lfs+json");
+            byte[] responseBytes = batchResponseJson.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, responseBytes.length);
+            exchange.getResponseBody().write(responseBytes);
+            exchange.close();
+        });
+
+        // Mock /download/object/{oid} handler
+        mockServer.createContext("/download/object/" + oid, exchange -> {
+            assertEquals("Bearer mocktoken", exchange.getRequestHeaders().getFirst("Authorization"));
+            exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+            exchange.sendResponseHeaders(200, originalPayload.length);
+            exchange.getResponseBody().write(originalPayload);
+            exchange.close();
+        });
+
+        mockServer.start();
+
+        try {
+            HgLfsManager manager = new HgLfsManager(tempDir);
+            HgLfsPointer pointer = new HgLfsPointer("v1", oid, originalPayload.length);
+
+            assertFalse(manager.isCached(pointer));
+
+            // Fetch object from mock server
+            manager.fetchObject(pointer, lfsServerUrl);
+
+            // Assert cached successfully
+            assertTrue(manager.isCached(pointer));
+            byte[] restored = manager.getCachedObject(pointer);
+            assertArrayEquals(originalPayload, restored);
+        } finally {
+            mockServer.stop(0);
+        }
+    }
 }

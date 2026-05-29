@@ -18,6 +18,7 @@ import java.util.Map;
  * Built with full transaction isolation and strict dirstate state transitions.
  */
 public class UpdateCommand {
+    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(UpdateCommand.class.getName());
 
     private final HgRepository repository;
     private String targetRevision;
@@ -191,6 +192,46 @@ public class UpdateCommand {
             // 4. Conclude checkout parent node updates
             dirstate.setParents(targetNodeId, new byte[20]);
             repository.writeDirstate(dirstate);
+
+            // 5. Recursive Subrepo Checkout (JGit-like subrepository checkout support)
+            File hgsubFile = new File(repository.getDirectory(), ".hgsub");
+            File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");
+            if (hgsubFile.exists() && hgsubstateFile.exists()) {
+                try {
+                    byte[] hgsubBytes = Files.readAllBytes(hgsubFile.toPath());
+                    byte[] hgsubstateBytes = Files.readAllBytes(hgsubstateFile.toPath());
+                    java.util.Map<String, org.hg4j.core.HgSubrepoEntry> subrepos = org.hg4j.core.HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
+                    
+                    for (org.hg4j.core.HgSubrepoEntry subEntry : subrepos.values()) {
+                        if (subEntry.isGit()) {
+                            continue; // Skip Git subrepos
+                        }
+                        
+                        File subDir = new File(repository.getDirectory(), subEntry.getPath());
+                        org.hg4j.core.HgRepository subRepo;
+                        if (!new File(subDir, ".hg").exists()) {
+                            subRepo = Hg.init().setDirectory(subDir).call();
+                        } else {
+                            subRepo = new org.hg4j.core.HgRepository(subDir);
+                        }
+
+                        try (Hg hgSub = Hg.wrap(subRepo)) {
+                            if (subEntry.getSourceUrl() != null && !subEntry.getSourceUrl().isEmpty()) {
+                                try {
+                                    hgSub.pull().setSource(subEntry.getSourceUrl()).call();
+                                } catch (Exception ignored) {
+                                }
+                            }
+                            
+                            if (subEntry.getRevision() != null && !subEntry.getRevision().isEmpty()) {
+                                hgSub.update().setRevision(subEntry.getRevision()).setForce(true).call();
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    LOGGER.log(java.util.logging.Level.WARNING, "Failed to perform recursive subrepo checkout", e);
+                }
+            }
 
             return targetNodeId;
         }

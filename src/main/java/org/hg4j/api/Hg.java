@@ -233,6 +233,30 @@ public class Hg implements AutoCloseable {
         return new AmendCommand(this.repository);
     }
 
+    public BisectCommand bisect() {
+        return new BisectCommand(this.repository);
+    }
+
+    public GrepCommand grep() {
+        return new GrepCommand(this.repository);
+    }
+
+    public HisteditCommand histedit() {
+        return new HisteditCommand(this.repository);
+    }
+
+    public ExportCommand export() {
+        return new ExportCommand(this.repository);
+    }
+
+    public ImportCommand importPatch() {
+        return new ImportCommand(this.repository);
+    }
+
+    public ImportCommand importCommand() {
+        return new ImportCommand(this.repository);
+    }
+
     public static NarrowCloneCommand narrowClone() {
         return new NarrowCloneCommand();
     }

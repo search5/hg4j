@@ -24,6 +24,7 @@ public class RevlogIndex {
     private boolean inline = false;
     private int revisionCount = 0;
     private long lastKnownSize = 0;
+    private long lastCheckedTime = 0;
 
     // 디스크에 있는 각 리비전의 실제 파일 물리 오프셋
     private long[] fileOffsets = new long[1024];
@@ -47,11 +48,27 @@ public class RevlogIndex {
             // 디스크 파일이 없을 때는 메모리에 기입 중인 addedRecords와 nodeMap이 보존되어야 하므로 캐시를 지우지 않고 그대로 리턴합니다.
             return;
         }
+        long now = System.currentTimeMillis();
+        if (now < lastCheckedTime + 200) {
+            // 시간 기반 Throttling: 200ms 이내의 빈번한 호출 시 디스크 조회를 전면 스킵
+            return;
+        }
+        lastCheckedTime = now;
+
         long currentSize = idxFile.length();
         if (currentSize != lastKnownSize) {
-            try {
-                clearCache();
-            } catch (IOException ignored) {
+            // 로컬 쓰기 트랜잭션 중에는 addedRecords가 채워지므로, addedRecords가 비어있을 때만 캐시를 재설정하여 트랜잭션 일관성을 완벽히 보호
+            if (addedRecords.isEmpty()) {
+                try {
+                    if (currentSize > lastKnownSize && lastKnownSize > 0) {
+                        // Incremental Update: 파일이 커진 경우에는 무효화하지 않고 증분 파싱
+                        loadIndexIncremental(lastKnownSize);
+                    } else {
+                        // 파일이 작아졌거나 최초 로드 시에는 전체 무효화 후 새로 로드
+                        clearCache();
+                    }
+                } catch (IOException ignored) {
+                }
             }
         }
     }
@@ -93,6 +110,51 @@ public class RevlogIndex {
                     }
                     this.inline = (formatFlags & 0x0001) != 0;
                 }
+
+                buf.position(32); // Seek directly to NodeID
+                byte[] nodeId = new byte[32];
+                buf.get(nodeId);
+
+                byte[] clippedNode = Arrays.copyOf(nodeId, 20);
+                nodeMap.put(ByteBuffer.wrap(clippedNode), revisionCount);
+
+                addFileOffset(currentPos);
+
+                long nextPos = currentPos + 64;
+                if (inline) {
+                    buf.position(8);
+                    int compLen = buf.getInt();
+                    nextPos += compLen;
+                    if (nextPos > len) {
+                        throw new org.hg4j.errors.HgCorruptDataException("Truncated inline revlog data at revision " + revisionCount);
+                    }
+                }
+                currentPos = nextPos;
+                revisionCount++;
+            }
+        }
+    }
+
+    private synchronized void loadIndexIncremental(long fromPos) throws IOException {
+        if (!idxFile.exists()) return;
+        try (FileChannel channel = FileChannel.open(idxFile.toPath(), StandardOpenOption.READ)) {
+            long len = channel.size();
+            this.lastKnownSize = len;
+            if (fromPos >= len) return;
+
+            ByteBuffer buf = ByteBuffer.allocate(64);
+            long currentPos = fromPos;
+
+            while (currentPos + 64 <= len) {
+                channel.position(currentPos);
+                buf.clear();
+                while (buf.hasRemaining()) {
+                    if (channel.read(buf) == -1) break;
+                }
+                if (buf.hasRemaining()) break; // EOF
+
+                buf.flip();
+                long offsetFlags = buf.getLong();
 
                 buf.position(32); // Seek directly to NodeID
                 byte[] nodeId = new byte[32];

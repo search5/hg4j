@@ -29,45 +29,33 @@ public final class SafeFileIO {
             parent.mkdirs();
         }
 
-        // Multiprocess lock protection for concurrency safety (L-4)
-        // We lock on a dedicated lock file to prevent collision during atomic rename
-        File lockFile = new File(parent, file.getName() + ".lock");
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(lockFile, "rw");
-             java.nio.channels.FileChannel lockChannel = raf.getChannel();
-             java.nio.channels.FileLock fileLock = lockChannel.lock()) { // Blocks until exclusive lock is acquired
-
-            File tempFile = File.createTempFile(file.getName() + "_", ".tmp", parent);
-            try {
-                // Write and physically fsync to disk before renaming (Durability)
-                try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(tempFile.toPath(),
-                        java.nio.file.StandardOpenOption.CREATE,
-                        java.nio.file.StandardOpenOption.WRITE)) {
-                    channel.write(java.nio.ByteBuffer.wrap(data));
-                    channel.force(true);
-                }
-                
-                Files.move(tempFile.toPath(), file.toPath(),
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                
-                // Attempt to fsync the parent directory to persist directory entries (metadata) on supported filesystems/platforms
-                if (parent != null) {
-                    try (java.nio.channels.FileChannel dirChannel = java.nio.channels.FileChannel.open(parent.toPath(),
-                            java.nio.file.StandardOpenOption.READ)) {
-                        dirChannel.force(true);
-                    } catch (Exception ignored) {
-                        // Silent fallback if platform/filesystem does not support directory fsync
-                    }
-                }
-            } catch (IOException e) {
-                if (tempFile.exists()) {
-                    tempFile.delete();
-                }
-                throw e;
+        File tempFile = File.createTempFile(file.getName() + "_", ".tmp", parent);
+        try {
+            // Write and physically fsync to disk before renaming (Durability)
+            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(tempFile.toPath(),
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.WRITE)) {
+                channel.write(java.nio.ByteBuffer.wrap(data));
+                channel.force(true);
             }
-        } finally {
-            try {
-                Files.deleteIfExists(lockFile.toPath());
-            } catch (Exception ignored) {}
+            
+            Files.move(tempFile.toPath(), file.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            
+            // Attempt to fsync the parent directory to persist directory entries (metadata) on supported filesystems/platforms
+            if (parent != null) {
+                try (java.nio.channels.FileChannel dirChannel = java.nio.channels.FileChannel.open(parent.toPath(),
+                        java.nio.file.StandardOpenOption.READ)) {
+                    dirChannel.force(true);
+                } catch (Exception ignored) {
+                    // Silent fallback if platform/filesystem does not support directory fsync
+                }
+            }
+        } catch (IOException e) {
+            if (tempFile.exists()) {
+                tempFile.delete();
+            }
+            throw e;
         }
     }
 

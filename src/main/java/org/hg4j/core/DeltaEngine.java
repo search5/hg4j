@@ -230,7 +230,8 @@ public final class DeltaEngine {
                 kPrev = k - 1;
             }
 
-            int xPrev = vPrev[kPrev + dPrev];
+            int idx = kPrev + dPrev;
+            int xPrev = (idx >= 0 && idx < vPrev.length) ? vPrev[idx] : 0;
             int yPrev = xPrev - kPrev;
 
             while (currX > xPrev && currY > yPrev) {

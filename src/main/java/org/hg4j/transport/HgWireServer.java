@@ -92,10 +92,10 @@ public class HgWireServer {
                         mDat = mfDat;
                     } else {
                         String storeRel = "meta/" + mg.path + "/00manifest";
-                        mIdx = new File(repository.getStoreDir(), NodeIdUtil.encodeFname(storeRel) + ".i");
-                        mDat = new File(repository.getStoreDir(), NodeIdUtil.encodeFname(storeRel) + ".d");
-                        fncachePaths.add("meta/" + mg.path + "/00manifest.i");
-                        fncachePaths.add("meta/" + mg.path + "/00manifest.d");
+                        mIdx = new File(repository.getStoreDir(), NodeIdUtil.encodeFname(storeRel + ".i"));
+                        mDat = new File(repository.getStoreDir(), NodeIdUtil.encodeFname(storeRel + ".d"));
+                        fncachePaths.add(NodeIdUtil.encodeFname(storeRel + ".i"));
+                        fncachePaths.add(NodeIdUtil.encodeFname(storeRel + ".d"));
                         mIdx.getParentFile().mkdirs();
                     }
                     Revlog subManifest = (mIdx == mfIdx) ? repository.getManifestRevlog() : repository.getRevlog(mIdx, mDat);
@@ -124,8 +124,8 @@ public class HgWireServer {
                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                 
-                fncachePaths.add(NodeIdUtil.encodeFname(path) + ".i");
-                fncachePaths.add(NodeIdUtil.encodeFname(path) + ".d");
+                fncachePaths.add(NodeIdUtil.encodeFname(path + ".i"));
+                fncachePaths.add(NodeIdUtil.encodeFname(path + ".d"));
                 flIdx.getParentFile().mkdirs();
                 
                 Revlog filelog = repository.getRevlog(flIdx, flDat);

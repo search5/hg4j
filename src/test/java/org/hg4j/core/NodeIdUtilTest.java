@@ -48,10 +48,27 @@ public class NodeIdUtilTest {
         String superLongDir = "very/deep/path/to/some/excessively/long/nested/directory/structure/that/goes/on/and/on/".repeat(3);
         String superLongFileName = "extremely-long-filename-that-will-surely-push-the-entire-store-path-limit-beyond-two-hundred-and-fifty-five-characters.txt";
         String superLongPath = superLongDir + "/" + superLongFileName;
-
         String fullEncoded = NodeIdUtil.encodeFname(superLongPath);
         assertTrue(fullEncoded.startsWith("dh/"));
         assertFalse(fullEncoded.substring(3).contains("/"));
         assertTrue(fullEncoded.endsWith("characters.txt"));
+    }
+
+    @Test
+    public void testEncodeFnameWithExtensionsAndStorePrefix() {
+        // 이미 스토어 접두사를 가질 때 data/ 중복 추가 방지 검증
+        String metaPath = "meta/testdir/00manifest.i";
+        String encodedMeta = NodeIdUtil.encodeFname(metaPath);
+        assertTrue(encodedMeta.startsWith("meta/"));
+        assertFalse(encodedMeta.startsWith("data/meta/"));
+
+        // 확장자가 있는 긴 경로에 대해 하이브리드 인코딩 검증
+        String dirPath = "a/".repeat(55) + "longdir";
+        String fileName = "test.txt.i";
+        String longPath = dirPath + "/" + fileName;
+
+        String encoded = NodeIdUtil.encodeFname(longPath);
+        assertTrue(encoded.startsWith("dh/"));
+        assertTrue(encoded.endsWith("/test.txt.i"));
     }
 }

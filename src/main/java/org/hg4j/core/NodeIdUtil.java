@@ -76,9 +76,12 @@ public final class NodeIdUtil {
         if (relPath == null || relPath.isEmpty()) {
             return relPath;
         }
+        boolean startsWithStorePrefix = relPath.startsWith("data/") || relPath.startsWith("meta/");
         String[] parts = relPath.split("/");
         StringBuilder encodedPath = new StringBuilder();
-        encodedPath.append("data/");
+        if (!startsWithStorePrefix) {
+            encodedPath.append("data/");
+        }
         for (int p = 0; p < parts.length; p++) {
             if (p > 0) {
                 encodedPath.append("/");

@@ -194,38 +194,9 @@ public class CommitCommand {
                 byte[] p1CommitNodeBytes = p1CommitNode.getBytes();
                 java.util.Map<String, String> mf1 = repository.getManifestAtCommit(p1CommitNodeBytes);
                 manifestP1.putAll(mf1);
-                // manifest node ID를 index에서 추출
                 byte[] clContent = changelog.getRevisionContent(parent1Rev);
-                int firstNewLine = -1;
-                for (int i = 0; i < clContent.length; i++) {
-                    if (clContent[i] == '\n') {
-                        firstNewLine = i;
-                        break;
-                    }
-                }
-                byte[] mfNode = null;
-                if (firstNewLine >= 40) {
-                    boolean isHexText = true;
-                    for (int i = 0; i < 40; i++) {
-                        char c = (char) clContent[i];
-                        if (Character.digit(c, 16) == -1) {
-                            isHexText = false;
-                            break;
-                        }
-                    }
-                    if (isHexText) {
-                        String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
-                        mfNode = NodeIdUtil.fromHex(hexNode);
-                    }
-                }
-                if (mfNode == null) {
-                    if (clContent.length >= 20) {
-                        mfNode = new byte[20];
-                        System.arraycopy(clContent, 0, mfNode, 0, 20);
-                    }
-                }
-                if (mfNode != null) {
-                    p1ManifestNode = mfNode;
+                p1ManifestNode = extractManifestNode(clContent);
+                if (p1ManifestNode != null) {
                     parent1ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p1ManifestNode);
                 }
                 LOGGER.log(Level.FINE, "[DEBUG MERGE] parent1Rev={0}, p1ManifestNode={1}, parent1ManifestRev={2}", new Object[]{parent1Rev, (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null"), parent1ManifestRev});
@@ -237,36 +208,8 @@ public class CommitCommand {
                 java.util.Map<String, String> mf2 = repository.getManifestAtCommit(p2CommitNodeBytes);
                 manifestP2.putAll(mf2);
                 byte[] clContent = changelog.getRevisionContent(parent2Rev);
-                int firstNewLine = -1;
-                for (int i = 0; i < clContent.length; i++) {
-                    if (clContent[i] == '\n') {
-                        firstNewLine = i;
-                        break;
-                    }
-                }
-                byte[] mfNode = null;
-                if (firstNewLine >= 40) {
-                    boolean isHexText = true;
-                    for (int i = 0; i < 40; i++) {
-                        char c = (char) clContent[i];
-                        if (Character.digit(c, 16) == -1) {
-                            isHexText = false;
-                            break;
-                        }
-                    }
-                    if (isHexText) {
-                        String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
-                        mfNode = NodeIdUtil.fromHex(hexNode);
-                    }
-                }
-                if (mfNode == null) {
-                    if (clContent.length >= 20) {
-                        mfNode = new byte[20];
-                        System.arraycopy(clContent, 0, mfNode, 0, 20);
-                    }
-                }
-                if (mfNode != null) {
-                    p2ManifestNode = mfNode;
+                p2ManifestNode = extractManifestNode(clContent);
+                if (p2ManifestNode != null) {
                     parent2ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p2ManifestNode);
                 }
                 LOGGER.log(Level.FINE, "[DEBUG MERGE] parent2Rev={0}, p2CommitNode={1}, p2ManifestNode={2}, parent2ManifestRev={3}", new Object[]{parent2Rev, p2CommitNode.toHex(), (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null"), parent2ManifestRev});
@@ -364,7 +307,7 @@ public class CommitCommand {
                                 long idxLen = flIdx.exists() ? flIdx.length() : 0L;
                                 fileSizes.put(flIdx, idxLen);
                                 if (!skipLockAndJournal) {
-                                    String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path) + ".i";
+                                    String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path + ".i");
                                     appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
                                 }
                             }
@@ -372,7 +315,7 @@ public class CommitCommand {
                                 long datLen = flDat.exists() ? flDat.length() : 0L;
                                 fileSizes.put(flDat, datLen);
                                 if (!skipLockAndJournal) {
-                                    String storeRelDat = "store/" + NodeIdUtil.encodeFname(path) + ".d";
+                                    String storeRelDat = "store/" + NodeIdUtil.encodeFname(path + ".d");
                                     appendToJournal(journalFile, storeRelDat + "\t" + datLen);
                                 }
                             }
@@ -679,12 +622,44 @@ public class CommitCommand {
         }
         return filelog.getRevisionContent(rev);
     }
-
-
+    private static byte[] extractManifestNode(byte[] clContent) {
+        if (clContent == null || clContent.length == 0) {
+            return new byte[20];
+        }
+        int firstNewLine = -1;
+        for (int i = 0; i < clContent.length; i++) {
+            if (clContent[i] == '\n') {
+                firstNewLine = i;
+                break;
+            }
+        }
+        byte[] mfNode = null;
+        if (firstNewLine >= 40) {
+            boolean isHexText = true;
+            for (int i = 0; i < 40; i++) {
+                char c = (char) clContent[i];
+                if (Character.digit(c, 16) == -1) {
+                    isHexText = false;
+                    break;
+                }
+            }
+            if (isHexText) {
+                String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
+                mfNode = NodeIdUtil.fromHex(hexNode);
+            }
+        }
+        if (mfNode == null) {
+            if (clContent.length >= 20) {
+                mfNode = new byte[20];
+                System.arraycopy(clContent, 0, mfNode, 0, 20);
+            }
+        }
+        return mfNode != null ? mfNode : new byte[20];
+    }
 
     public static File getFilelogIndex(File storeDir, String relPath) {
-        String encoded = NodeIdUtil.encodeFname(relPath);
-        return new File(storeDir, encoded + ".i");
+        String encoded = NodeIdUtil.encodeFname(relPath + ".i");
+        return new File(storeDir, encoded);
     }
 
     public static int findUnescapedColon(String s) {

@@ -291,20 +291,23 @@ public class RevlogIndex {
         int rev = record.getRevision();
         addedRecords.put(rev, record);
 
-        long physicalOffset = 0;
+        long physicalIndexOffset = 0;
         if (rev > 0) {
             if (inline) {
                 Revlog.IndexRecord prev = getIndexRecord(rev - 1);
-                physicalOffset = getFileOffset(rev - 1) + 64 + prev.getCompLen();
+                physicalIndexOffset = getFileOffset(rev - 1) + 64 + prev.getCompLen();
             } else {
-                physicalOffset = (long) rev * 64;
+                // non-inline 경로: 인덱스 파일(.i)에는 오직 64바이트짜리 인덱스 레코드들이 연달아 기입되므로
+                // 인덱스 파일 내에서의 물리 오프셋은 정확히 rev * 64바이트가 됩니다.
+                // (주의: 이는 데이터 파일(.d)의 물리 데이터 오프셋이 아니며, 오직 인덱스 파일(.i)의 lazy load seek 전용 오프셋입니다!)
+                physicalIndexOffset = (long) rev * 64;
             }
         }
 
         if (rev >= fileOffsets.length) {
             fileOffsets = Arrays.copyOf(fileOffsets, Math.max(fileOffsets.length * 2, rev + 1));
         }
-        fileOffsets[rev] = physicalOffset;
+        fileOffsets[rev] = physicalIndexOffset;
 
         revisionCount = Math.max(revisionCount, rev + 1);
         

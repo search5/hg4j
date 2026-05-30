@@ -1,9 +1,9 @@
 package org.hg4j.errors;
 
 /**
- * Base RuntimeException class representing Mercurial domain and operational exceptions in hg4j.
+ * Base Exception class representing Mercurial domain and operational exceptions in hg4j (Checked Exception).
  */
-public class HgException extends RuntimeException {
+public class HgException extends Exception {
     private static final long serialVersionUID = 1L;
 
     public HgException(String message) {

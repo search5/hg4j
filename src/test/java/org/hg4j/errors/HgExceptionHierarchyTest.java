@@ -37,7 +37,7 @@ public class HgExceptionHierarchyTest {
             HgException ex = new HgException("base error");
             assertEquals("base error", ex.getMessage());
             assertNull(ex.getCause());
-            assertInstanceOf(RuntimeException.class, ex);
+            assertInstanceOf(Exception.class, ex);
         }
 
         @Test

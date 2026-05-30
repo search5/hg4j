@@ -15,7 +15,7 @@ public class HgExceptionTest {
 
         assertEquals(msg, ex.getMessage());
         assertNull(ex.getCause());
-        assertTrue(ex instanceof RuntimeException);
+        assertTrue(ex instanceof Exception);
     }
 
     @Test

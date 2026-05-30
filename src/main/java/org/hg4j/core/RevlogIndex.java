@@ -191,6 +191,15 @@ public class RevlogIndex {
         }
     }
 
+    public synchronized long getFileOffset(int rev) {
+        checkAndUpdate();
+        int maxCount = getRevisionCount();
+        if (rev < 0 || rev >= maxCount) {
+            throw new IndexOutOfBoundsException("Revision out of bounds: " + rev);
+        }
+        return fileOffsets[rev];
+    }
+
     public synchronized int findRevision(byte[] nodeId) {
         checkAndUpdate();
         if (nodeId == null) return -1;
@@ -219,6 +228,22 @@ public class RevlogIndex {
         checkAndUpdate();
         int rev = record.getRevision();
         addedRecords.put(rev, record);
+
+        long physicalOffset = 0;
+        if (rev > 0) {
+            if (inline) {
+                Revlog.IndexRecord prev = getIndexRecord(rev - 1);
+                physicalOffset = getFileOffset(rev - 1) + 64 + prev.getCompLen();
+            } else {
+                physicalOffset = (long) rev * 64;
+            }
+        }
+
+        if (rev >= fileOffsets.length) {
+            fileOffsets = Arrays.copyOf(fileOffsets, Math.max(fileOffsets.length * 2, rev + 1));
+        }
+        fileOffsets[rev] = physicalOffset;
+
         revisionCount = Math.max(revisionCount, rev + 1);
         
         byte[] clippedNode = Arrays.copyOf(record.getNodeId(), 20);

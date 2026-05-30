@@ -203,7 +203,7 @@ public class Revlog {
     private byte[] readHunk(java.nio.channels.FileChannel channel, IndexRecord rec) throws IOException {
         long seekOffset = rec.getOffset();
         if (inline) {
-            seekOffset += (long) (rec.getRevision() + 1) * 64;
+            seekOffset = index.getFileOffset(rec.getRevision()) + 64;
         }
         int compLen = rec.getCompLen();
         if (compLen <= 0) {

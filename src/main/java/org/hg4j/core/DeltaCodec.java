@@ -105,7 +105,7 @@ public final class DeltaCodec {
 
         if (type == 'x' || type == (byte) 0x78) {
             return decompressZlib(hunk, uncompLen);
-        } else if (type == 0x28) { // Zstd magic
+        } else if (hunk.length >= 4 && hunk[0] == 0x28 && hunk[1] == (byte) 0xB5 && hunk[2] == 0x2F && hunk[3] == (byte) 0xFD) { // Zstd magic (28 B5 2F FD)
             byte[] dest = new byte[uncompLen];
             Zstd.decompress(dest, hunk);
             return dest;

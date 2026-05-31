@@ -4,6 +4,9 @@ plugins {
     id 'maven-publish'
     id 'org.owasp.dependencycheck' version '9.0.9'
     id 'org.asciidoctor.jvm.convert' version '4.0.2'
+    id 'java-gradle-plugin'
+    id 'com.gradle.plugin-publish' version '1.2.1'
+    id 'signing'
 }
 
 group = 'io.github.search5.hg4j'
@@ -114,27 +117,27 @@ jacocoTestCoverageVerification {
         rule {
             element = 'CLASS'
             includes = [
-                'io.github.search5.hg4j.core.Dirstate',
-                'io.github.search5.hg4j.core.NodeIdUtil',
-                'io.github.search5.hg4j.core.SafeFileIO',
-                'io.github.search5.hg4j.core.Merge3',
-                'io.github.search5.hg4j.core.Bundle2Parser',
-                'io.github.search5.hg4j.core.ChangegroupParser',
-                'io.github.search5.hg4j.api.AddCommand',
-                'io.github.search5.hg4j.api.BookmarkCommand',
-                'io.github.search5.hg4j.api.BranchCommand',
-                'io.github.search5.hg4j.api.InitCommand',
-                'io.github.search5.hg4j.api.LogCommand',
-                'io.github.search5.hg4j.api.RemoveCommand',
-                'io.github.search5.hg4j.api.RevertCommand',
-                'io.github.search5.hg4j.api.ShelveCommand',
-                'io.github.search5.hg4j.api.StatusCommand',
-                'io.github.search5.hg4j.api.TagCommand',
-                'io.github.search5.hg4j.api.PushCommand',
-                'io.github.search5.hg4j.api.CatCommand',
-                'io.github.search5.hg4j.api.DiffCommand',
-                'io.github.search5.hg4j.api.TreeCommand',
-                'io.github.search5.hg4j.api.UpdateCommand',
+                'com.github.search5.hg4j.core.Dirstate',
+                'com.github.search5.hg4j.core.NodeIdUtil',
+                'com.github.search5.hg4j.core.SafeFileIO',
+                'com.github.search5.hg4j.core.Merge3',
+                'com.github.search5.hg4j.core.Bundle2Parser',
+                'com.github.search5.hg4j.core.ChangegroupParser',
+                'com.github.search5.hg4j.api.AddCommand',
+                'com.github.search5.hg4j.api.BookmarkCommand',
+                'com.github.search5.hg4j.api.BranchCommand',
+                'com.github.search5.hg4j.api.InitCommand',
+                'com.github.search5.hg4j.api.LogCommand',
+                'com.github.search5.hg4j.api.RemoveCommand',
+                'com.github.search5.hg4j.api.RevertCommand',
+                'com.github.search5.hg4j.api.ShelveCommand',
+                'com.github.search5.hg4j.api.StatusCommand',
+                'com.github.search5.hg4j.api.TagCommand',
+                'com.github.search5.hg4j.api.PushCommand',
+                'com.github.search5.hg4j.api.CatCommand',
+                'com.github.search5.hg4j.api.DiffCommand',
+                'com.github.search5.hg4j.api.TreeCommand',
+                'com.github.search5.hg4j.api.UpdateCommand',
             ]
             limit {
                 minimum = 0.90
@@ -193,4 +196,26 @@ asciidoctor {
                'toc': 'left',
                'icons': 'font',
                'sectnums': ''
+}
+
+// Gradle Plugin Portal 배포를 위한 플러그인 정의 설정
+gradlePlugin {
+    website = 'https://github.com/hg4j/hg4j'
+    vcsUrl = 'https://github.com/hg4j/hg4j.git'
+    plugins {
+        hg4jPlugin {
+            id = 'com.github.search5.hg4j'
+            displayName = 'hg4j Gradle SCM Plugin'
+            description = 'Pure Java Mercurial (hg) Gradle integration plugin modeled after JGit.'
+            tags.set(['mercurial', 'hg', 'vcs', 'hg4j'])
+            implementationClass = 'com.github.search5.hg4j.HgPlugin'
+        }
+    }
+}
+
+// 3번: GPG 아티팩트 서명 설정 (Maven Central 배포 필수 요건)
+signing {
+    // 실제 저장소에 배포하는 태스크가 수행될 때만 서명을 강력히 의무화하여 로컬 단순 빌드 시 깨지는 현상 방지
+    required { gradle.taskGraph.hasTask("publish") || gradle.taskGraph.hasTask("publishToMavenLocal") }
+    sign publishing.publications.mavenJava
 }

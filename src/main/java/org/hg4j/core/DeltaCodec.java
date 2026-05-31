@@ -105,7 +105,13 @@ public final class DeltaCodec {
 
         if (type == 'x' || type == (byte) 0x78) {
             return decompressZlib(hunk, uncompLen);
-        } else if (hunk.length >= 4 && hunk[0] == 0x28 && hunk[1] == (byte) 0xB5 && hunk[2] == 0x2F && hunk[3] == (byte) 0xFD) { // Zstd magic (28 B5 2F FD)
+        } else if (type == 0x00 && hunk.length >= 5 && hunk[1] == 0x28 && hunk[2] == (byte) 0xB5 && hunk[3] == 0x2F && hunk[4] == (byte) 0xFD) {
+            // Mercurial V2/Zstd standard: 0x00 prefix + Zstd magic (28 B5 2F FD)
+            byte[] dest = new byte[uncompLen];
+            byte[] rawZstd = Arrays.copyOfRange(hunk, 1, hunk.length);
+            Zstd.decompress(dest, rawZstd);
+            return dest;
+        } else if (hunk.length >= 4 && hunk[0] == 0x28 && hunk[1] == (byte) 0xB5 && hunk[2] == 0x2F && hunk[3] == (byte) 0xFD) { // Zstd magic raw fallback
             byte[] dest = new byte[uncompLen];
             Zstd.decompress(dest, hunk);
             return dest;

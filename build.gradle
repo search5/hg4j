@@ -204,7 +204,7 @@ gradlePlugin {
     vcsUrl = 'https://github.com/hg4j/hg4j.git'
     plugins {
         hg4jPlugin {
-            id = 'com.github.search5.hg4j'
+            id = 'io.github.search5.hg4j'
             displayName = 'hg4j Gradle SCM Plugin'
             description = 'Pure Java Mercurial (hg) Gradle integration plugin modeled after JGit.'
             tags.set(['mercurial', 'hg', 'vcs', 'hg4j'])

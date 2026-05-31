@@ -17,7 +17,7 @@ public class ChangegroupParser {
     /**
      * Reads a single chunk from the stream.
      * Each chunk starts with a 4-byte big-endian length field.
-     * Length of 0 or < 4 indicates end of chunk collection.
+     * Length of 0 or {@code < 4} indicates end of chunk collection.
      */
     public static byte[] readChunk(InputStream in) throws IOException {
         byte[] lenBytes = new byte[4];
@@ -63,7 +63,7 @@ public class ChangegroupParser {
     }
 
     /**
-     * Parses chunks belonging to a single revlog group until a terminal chunk (len <= 4) is found.
+     * Parses chunks belonging to a single revlog group until a terminal chunk {@code (len <= 4)} is found.
      */
     public static List<ChangeGroupEntry> parseGroup(InputStream in) throws IOException {
         return parseGroup(in, "01");

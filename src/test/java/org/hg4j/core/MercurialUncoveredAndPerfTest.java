@@ -988,12 +988,9 @@ public class MercurialUncoveredAndPerfTest {
         // Demonstrates that it is restored incorrectly as 28488704L instead of 4323456000L due to upper bit truncation
         assertNotEquals(post2106Mtime, restoredMtime, "Timestamps post-2106 are lost and corrupted to a past date due to upper bit truncation.");
         
-        // 3) API Exposure Gap Verification: Assert that Entry.getTime() accepts long but does not throw warnings or exceptions for the 32-bit limit
-        Dirstate.Entry entry = new Dirstate.Entry('n', 0100644, 100, post2106Mtime);
-        
-        // Proves the API contract leak defect where the incorrect time value is accepted silently without warnings/exceptions
-        assertDoesNotThrow(() -> {
-            entry.getTime();
-        }, "An architectural gap exists where the Entry API accepts long but does not warn/restrict against the 32-bit serialization limit.");
+        // 3) API Exposure Gap Verification: Assert that Entry constructor throws IllegalArgumentException for mtime beyond the 32-bit limit
+        assertThrows(IllegalArgumentException.class, () -> {
+            new Dirstate.Entry('n', 0100644, 100, post2106Mtime);
+        }, "IllegalArgumentException should be thrown when Entry mtime exceeds the 32-bit unsigned range limit.");
     }
 }

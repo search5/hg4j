@@ -182,8 +182,10 @@ public final class DeltaEngine {
                     targetD = d;
                     int[] currentVCopy = new int[2 * d + 1];
                     java.util.Arrays.fill(currentVCopy, -1);
-                    for (int k2 = -d; k2 <= d; k2 += 2) {
-                        currentVCopy[k2 + d] = v[offset + k2];
+                    for (int k2 = -d; k2 <= d; k2++) {
+                        if (Math.abs(offset + k2) < v.length) {
+                            currentVCopy[k2 + d] = v[offset + k2];
+                        }
                     }
                     history.add(currentVCopy);
                     break;
@@ -194,8 +196,10 @@ public final class DeltaEngine {
             }
             int[] currentVCopy = new int[2 * d + 1];
             java.util.Arrays.fill(currentVCopy, -1);
-            for (int k2 = -d; k2 <= d; k2 += 2) {
-                currentVCopy[k2 + d] = v[offset + k2];
+            for (int k2 = -d; k2 <= d; k2++) {
+                if (Math.abs(offset + k2) < v.length) {
+                    currentVCopy[k2 + d] = v[offset + k2];
+                }
             }
             history.add(currentVCopy);
         }

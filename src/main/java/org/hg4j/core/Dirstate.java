@@ -39,6 +39,16 @@ public class Dirstate {
     }
 
     public record Entry(char state, int mode, int size, long time, int nanos) {
+        public Entry {
+            // Mercurial dirstate-v1 stores mtime as unsigned 32-bit integer.
+            // Valid range: 0 to 4294967295 (year 2106). Values beyond this will be truncated on serialization.
+            if (time < 0 || time > 0xFFFFFFFFL) {
+                throw new IllegalArgumentException(
+                    "mtime " + time + " exceeds unsigned 32-bit range (dirstate-v1 limitation). " +
+                    "Maximum supported: 4294967295 (2106-02-07). Use dirstate-v2 for post-2106 timestamps.");
+            }
+        }
+
         public Entry(char state, int mode, int size, long time) {
             this(state, mode, size, time, 0);
         }

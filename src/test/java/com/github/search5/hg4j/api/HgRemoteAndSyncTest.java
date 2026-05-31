@@ -91,8 +91,8 @@ public class HgRemoteAndSyncTest {
         File fncacheFile = new File(destRepo.getStoreDir(), "fncache");
         assertTrue(fncacheFile.exists());
         List<String> fncachePaths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
-        assertTrue(fncachePaths.contains(com.github.search5.hg4j.core.NodeIdUtil.encodeFnameBasic("README.MD") + ".i"));
-        assertTrue(fncachePaths.contains(com.github.search5.hg4j.core.NodeIdUtil.encodeFnameBasic("한글_파일.txt") + ".i"));
+        assertTrue(fncachePaths.contains("data/README.MD.i"));
+        assertTrue(fncachePaths.contains("data/한글_파일.txt.i"));
     }
 
     @Test

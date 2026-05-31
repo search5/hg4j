@@ -106,6 +106,9 @@ public class PhaseRoots {
 
         while (!queue.isEmpty()) {
             NodeId curr = queue.poll();
+            if (curr == null || curr.isNull()) {
+                continue;
+            }
             Phase currPhase = rootsMap.get(curr);
 
             if (currPhase != null) {
@@ -134,6 +137,9 @@ public class PhaseRoots {
      */
     public Phase getPhase(NodeId node, Revlog changelog) throws IOException {
         return getPhase(node, n -> {
+            if (n == null || n.isNull()) {
+                return new NodeId[0];
+            }
             int rev = changelog.findRevision(n.getBytes());
             if (rev == -1) return new NodeId[0];
             Revlog.IndexRecord rec = changelog.getIndexRecord(rev);

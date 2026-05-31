@@ -271,7 +271,7 @@ public class CommitCommand {
                             long diskTime = diskFile.lastModified() / 1000;
                             Dirstate.Entry dEntry = dirstate.getEntries().get(path);
                             if (dEntry != null) {
-                                if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
+                                if (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime) {
                                     // Changed if size or mtime differs
                                     changed = true;
                                 } else if (diskTime >= txStartSec - 1) {
@@ -373,9 +373,8 @@ public class CommitCommand {
                             newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
                             filesModified.add(path);
 
-                            // Register only .i file paths in fncache
-                            String rawPath = NodeIdUtil.encodeFnameBasic(path);
-                            fncachePaths.add(rawPath + ".i");
+                            // Register only .i file paths in fncache (raw logical path as per native Mercurial specs)
+                            fncachePaths.add("data/" + path + ".i");
                         } else {
                             // File has not changed in working directory
                             String hexP1 = manifestP1.get(path);

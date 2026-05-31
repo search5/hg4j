@@ -20,6 +20,7 @@ public class RevlogIndex {
 
     private final File idxFile;
     private final Map<ByteBuffer, Integer> nodeMap = new HashMap<>();
+    private final java.util.TreeMap<String, byte[]> hexNodeMap = new java.util.TreeMap<>();
     private final Map<Integer, SoftReference<Revlog.IndexRecord>> recordCache = new HashMap<>();
     private final Map<Integer, Revlog.IndexRecord> addedRecords = new HashMap<>();
     private boolean inline = false;
@@ -77,6 +78,7 @@ public class RevlogIndex {
     private synchronized void loadIndex() throws IOException {
         if (!idxFile.exists()) return;
         nodeMap.clear();
+        hexNodeMap.clear();
         recordCache.clear();
         addedRecords.clear();
         revisionCount = 0;
@@ -118,6 +120,7 @@ public class RevlogIndex {
 
                 byte[] clippedNode = Arrays.copyOf(nodeId, 20);
                 nodeMap.put(ByteBuffer.wrap(clippedNode), revisionCount);
+                hexNodeMap.put(NodeIdUtil.toHex(clippedNode), clippedNode);
 
                 addFileOffset(currentPos);
 
@@ -163,6 +166,7 @@ public class RevlogIndex {
 
                 byte[] clippedNode = Arrays.copyOf(nodeId, 20);
                 nodeMap.put(ByteBuffer.wrap(clippedNode), revisionCount);
+                hexNodeMap.put(NodeIdUtil.toHex(clippedNode), clippedNode);
 
                 addFileOffset(currentPos);
 
@@ -186,6 +190,7 @@ public class RevlogIndex {
      */
     public synchronized void clearCache() throws IOException {
         nodeMap.clear();
+        hexNodeMap.clear();
         recordCache.clear();
         addedRecords.clear();
         revisionCount = 0;
@@ -273,13 +278,6 @@ public class RevlogIndex {
             return rev;
         }
         
-        // Also scan addedRecords in memory if not indexed yet
-        for (Revlog.IndexRecord rec : addedRecords.values()) {
-            byte[] clippedRecNode = Arrays.copyOf(rec.getNodeId(), 20);
-            if (Arrays.equals(clippedNode, clippedRecNode)) {
-                return rec.getRevision();
-            }
-        }
         return -1;
     }
 
@@ -314,10 +312,26 @@ public class RevlogIndex {
         
         byte[] clippedNode = Arrays.copyOf(record.getNodeId(), 20);
         nodeMap.put(ByteBuffer.wrap(clippedNode), rev);
+        hexNodeMap.put(NodeIdUtil.toHex(clippedNode), clippedNode);
         recordCache.put(rev, new SoftReference<>(record));
         
         if (idxFile.exists()) {
             this.lastKnownSize = idxFile.length();
         }
+    }
+
+    /**
+     * Resolves a prefix hex string to a collection of matching 20-byte node IDs.
+     * Extremely fast using an in-memory TreeMap lookup (O(log N)).
+     */
+    public synchronized java.util.List<byte[]> findByHexPrefix(String prefix) {
+        checkAndUpdate();
+        if (prefix == null || prefix.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        String lowerPrefix = prefix.toLowerCase(java.util.Locale.ROOT);
+        String endPrefix = lowerPrefix + "\uffff";
+        java.util.SortedMap<String, byte[]> subMap = hexNodeMap.subMap(lowerPrefix, endPrefix);
+        return new java.util.ArrayList<>(subMap.values());
     }
 }

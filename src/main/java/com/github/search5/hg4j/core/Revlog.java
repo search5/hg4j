@@ -62,7 +62,9 @@ public class Revlog {
         this.useZstd = useZstd;
     }
 
-
+    public synchronized RevlogIndex getIndex() {
+        return index;
+    }
 
     public synchronized int getRevisionCount() {
         return index.getRevisionCount();

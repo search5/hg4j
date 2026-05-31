@@ -89,7 +89,7 @@ public final class NodeIdUtil {
             String part = parts[p];
             if (part.isEmpty()) continue;
 
-            // Check Windows reserved names
+            // Check Windows reserved names (case-insensitive)
             String baseName = part;
             int dotIdx = part.indexOf('.');
             if (dotIdx != -1) {
@@ -222,18 +222,14 @@ public final class NodeIdUtil {
             }
         } catch (NumberFormatException ignored) {}
 
-        byte[] matchNode = null;
-        for (int i = 0; i < changelog.getRevisionCount(); i++) {
-            byte[] node = changelog.getIndexRecord(i).getNodeId();
-            String hex = toHex(node);
-            if (hex.startsWith(revStr.toLowerCase())) {
-                if (matchNode != null) {
-                    throw new IOException("Ambiguous revision identifier: " + revStr);
-                }
-                matchNode = node;
-            }
+        java.util.List<byte[]> matches = changelog.getIndex().findByHexPrefix(revStr);
+        if (matches == null || matches.isEmpty()) {
+            return null;
         }
-        return matchNode;
+        if (matches.size() > 1) {
+            throw new IOException("Ambiguous revision identifier: " + revStr);
+        }
+        return matches.get(0);
     }
 
     public static byte[] computeNodeId(byte[] content, byte[] p1, byte[] p2) {

@@ -252,20 +252,20 @@ public class HgConcurrentAndHookTest {
         assertFalse(cachedLines.isEmpty());
 
         // Standard hg store path for data (Verify rigorous hex-escaped encoding spec)
-        boolean foundKoreanEncoded = false;
-        boolean foundChineseEncoded = false;
+        boolean foundKoreanRaw = false;
+        boolean foundChineseRaw = false;
         for (String line : cachedLines) {
-            if (line.contains("data/") && line.contains("~ed") && line.contains("~85")) {
-                foundKoreanEncoded = true;
+            if (line.contains("data/") && line.contains(koreanFile)) {
+                foundKoreanRaw = true;
             }
-            if (line.contains("data/") && line.contains("~e6") && line.contains("~b5")) {
-                foundChineseEncoded = true;
+            if (line.contains("data/") && line.contains(chineseFile)) {
+                foundChineseRaw = true;
             }
         }
         
-        // Assert that they are securely hex-escaped and rigorously verified
-        assertTrue(foundKoreanEncoded, "Korean non-ASCII filename must be rigorously hex-escaped in fncache");
-        assertTrue(foundChineseEncoded, "Chinese non-ASCII filename must be rigorously hex-escaped in fncache");
+        // Assert that they are stored as raw logical paths and rigorously verified
+        assertTrue(foundKoreanRaw, "Korean non-ASCII filename must be stored as raw logical path in fncache");
+        assertTrue(foundChineseRaw, "Chinese non-ASCII filename must be stored as raw logical path in fncache");
 
         hg.close();
     }

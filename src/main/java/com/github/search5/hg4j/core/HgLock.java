@@ -252,6 +252,27 @@ public class HgLock implements AutoCloseable {
         }
     }
 
+    /**
+     * Forcefully releases the lock on both JVM and file system levels,
+     * ignoring any thread ownership and reentrancy states.
+     */
+    public void forceUnlock() throws IOException {
+        if (lockFile == null) {
+            return;
+        }
+        String absPath = lockFile.getAbsolutePath();
+        synchronized (JVM_ACTIVE_LOCKS) {
+            try {
+                Files.deleteIfExists(lockFile.toPath());
+            } finally {
+                JVM_ACTIVE_LOCKS.remove(absPath);
+                acquiredJvmLock = false;
+                acquiredFileLock = false;
+                isReentrant = false;
+            }
+        }
+    }
+
     @Override
     public void close() throws IOException {
         if (lockFile == null) {
@@ -260,17 +281,21 @@ public class HgLock implements AutoCloseable {
         String absPath = lockFile.getAbsolutePath();
         synchronized (JVM_ACTIVE_LOCKS) {
             LockInfo info = JVM_ACTIVE_LOCKS.get(absPath);
-            if (info != null && info.thread == Thread.currentThread()) {
+            if (info != null) {
+                // Relaxed thread ownership guard: allow close() even if called from another thread
                 info.count--;
-                if (info.count > 0) {
+                if (info.count > 0 && info.thread == Thread.currentThread()) {
                     return; // Keep lock active since other levels of reentrant scopes still own it
                 }
                 try {
-                    if (acquiredFileLock && !isReentrant) {
+                    if (acquiredFileLock) {
                         Files.deleteIfExists(lockFile.toPath());
                     }
                 } finally {
                     JVM_ACTIVE_LOCKS.remove(absPath);
+                    acquiredJvmLock = false;
+                    acquiredFileLock = false;
+                    isReentrant = false;
                 }
             }
         }

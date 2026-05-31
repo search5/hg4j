@@ -21,6 +21,7 @@ public class HgRepository implements Repository {
     private boolean defaultDirstateV2 = false;
     private boolean useZstdCompression = false;
     private StoreEngine storeEngine = new DefaultFileStoreEngine();
+    private Dirstate cachedDirstate = null;
 
     public synchronized void setStoreEngine(StoreEngine storeEngine) {
         if (storeEngine != null) {
@@ -93,23 +94,27 @@ public class HgRepository implements Repository {
      * @throws IOException if loading fails
      */
     public synchronized Dirstate getDirstate() throws IOException {
+        Dirstate oldDirstate = this.cachedDirstate;
         Dirstate dirstate = null;
         try {
             dirstate = storeEngine.getDirstate(this);
+            this.cachedDirstate = dirstate;
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "Failed to read dirstate file, attempting rebuild", e);
-            dirstate = new Dirstate();
+            Dirstate rebuilt = new Dirstate();
             try {
-                rebuildDirstateFromManifest(dirstate);
+                rebuildDirstateFromManifest(rebuilt, oldDirstate);
+                this.cachedDirstate = rebuilt;
+                dirstate = rebuilt;
             } catch (IOException ex) {
                 LOGGER.log(Level.SEVERE, "Failed to dynamically rebuild dirstate from manifest", ex);
-                throw new IOException("Failed to read dirstate and failed to rebuild from manifest", ex);
+                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Failed to read dirstate and failed to rebuild from manifest", ex);
             }
         }
         return dirstate;
     }
 
-    private void rebuildDirstateFromManifest(Dirstate dirstate) throws IOException {
+    private void rebuildDirstateFromManifest(Dirstate dirstate, Dirstate sourceDirstate) throws IOException {
         File clIdx = new File(storeDir, "00changelog.i");
         File clDat = new File(storeDir, "00changelog.d");
         
@@ -129,11 +134,14 @@ public class HgRepository implements Repository {
         dirstate.setParents(parentNode, new byte[20]);
         
         // BUG-07: Extract existing copyMap and non-normal state info in advance (GC protection)
-        Map<String, String> originalCopyMap = new HashMap<>(dirstate.getCopyMap());
+        Map<String, String> originalCopyMap = new HashMap<>();
         Map<String, Character> originalStates = new HashMap<>();
-        for (Map.Entry<String, Dirstate.Entry> ent : dirstate.getEntries().entrySet()) {
-            if (ent.getValue().getState() != 'n') {
-                originalStates.put(ent.getKey(), ent.getValue().getState());
+        if (sourceDirstate != null) {
+            originalCopyMap.putAll(sourceDirstate.getCopyMap());
+            for (Map.Entry<String, Dirstate.Entry> ent : sourceDirstate.getEntries().entrySet()) {
+                if (ent.getValue().getState() != 'n') {
+                    originalStates.put(ent.getKey(), ent.getValue().getState());
+                }
             }
         }
         
@@ -177,6 +185,7 @@ public class HgRepository implements Repository {
         }
         dirstate.setV2(defaultDirstateV2);
         storeEngine.writeDirstate(this, dirstate);
+        this.cachedDirstate = dirstate;
     }
 
     private final java.util.Map<File, Revlog> revlogCache = new java.util.LinkedHashMap<>(16, 0.75f, true) {

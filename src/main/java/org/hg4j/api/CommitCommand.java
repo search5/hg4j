@@ -530,6 +530,7 @@ public class CommitCommand {
                         Files.deleteIfExists(file.toPath());
                     } catch (Exception ignored) {
                         LOGGER.log(Level.WARNING, "Failed to delete size-0 file during rollback: " + file, ignored);
+                        t.addSuppressed(ignored);
                     }
                 } else {
                     try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
@@ -537,6 +538,7 @@ public class CommitCommand {
                         outChan.force(true);
                     } catch (Exception ignored) {
                         LOGGER.log(Level.WARNING, "Failed to truncate file during rollback: " + file, ignored);
+                        t.addSuppressed(ignored);
                     }
                 }
             }
@@ -547,12 +549,14 @@ public class CommitCommand {
                     SafeFileIO.writeAtomic(fncacheFile, fncacheBackup);
                 } catch (Exception ignored) {
                     LOGGER.log(Level.WARNING, "Failed to restore fncache backup during rollback", ignored);
+                    t.addSuppressed(ignored);
                 }
             } else {
                 try {
                     Files.deleteIfExists(fncacheFile.toPath());
                 } catch (Exception ignored) {
                     LOGGER.log(Level.WARNING, "Failed to delete fncache during rollback", ignored);
+                    t.addSuppressed(ignored);
                 }
             }
  
@@ -588,12 +592,14 @@ public class CommitCommand {
                     SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
                 } catch (Exception ignored) {
                     LOGGER.log(Level.WARNING, "Failed to restore dirstate backup during rollback", ignored);
+                    t.addSuppressed(ignored);
                 }
             } else {
                 try {
                     Files.deleteIfExists(dirstateFile.toPath());
                 } catch (Exception ignored) {
                     LOGGER.log(Level.WARNING, "Failed to delete dirstate during rollback", ignored);
+                    t.addSuppressed(ignored);
                 }
             }
             // Cleanup journal and backup files on failure after restore
@@ -603,6 +609,7 @@ public class CommitCommand {
                 Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
             } catch (Exception ignored) {
                 LOGGER.log(Level.WARNING, "Failed to clean up journal/backups after rollback", ignored);
+                t.addSuppressed(ignored);
             }
             repository.clearRevlogCache();
             throw t;

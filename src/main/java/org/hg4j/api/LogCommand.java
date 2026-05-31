@@ -85,7 +85,7 @@ public class LogCommand {
                 LOGGER.log(Level.WARNING, "Warning: Malformed commit text at revision {0}: invalid manifest hex length", rev);
                 continue;
             }
-            byte[] manifestNodeId = fromHex(manifestHex);
+            byte[] manifestNodeId = org.hg4j.core.NodeIdUtil.fromHex(manifestHex);
 
             int secondNewline = text.indexOf('\n', firstNewline + 1);
             if (secondNewline == -1) {
@@ -183,16 +183,5 @@ public class LogCommand {
         return commits;
     }
 
-    private static byte[] fromHex(String hex) {
-        if (hex == null || hex.length() % 2 != 0) {
-            return new byte[0];
-        }
-        int len = hex.length();
-        byte[] data = new byte[len / 2];
-        for (int i = 0; i < len; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
-                    + Character.digit(hex.charAt(i + 1), 16));
-        }
-        return data;
-    }
+
 }

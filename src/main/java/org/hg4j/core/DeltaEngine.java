@@ -181,6 +181,7 @@ public final class DeltaEngine {
                 if (x >= n && y >= m) {
                     targetD = d;
                     int[] currentVCopy = new int[2 * d + 1];
+                    java.util.Arrays.fill(currentVCopy, -1);
                     for (int k2 = -d; k2 <= d; k2 += 2) {
                         currentVCopy[k2 + d] = v[offset + k2];
                     }
@@ -192,6 +193,7 @@ public final class DeltaEngine {
                 break;
             }
             int[] currentVCopy = new int[2 * d + 1];
+            java.util.Arrays.fill(currentVCopy, -1);
             for (int k2 = -d; k2 <= d; k2 += 2) {
                 currentVCopy[k2 + d] = v[offset + k2];
             }

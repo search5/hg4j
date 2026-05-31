@@ -2,6 +2,8 @@ package org.hg4j.core;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -126,16 +128,33 @@ public class HgRepository implements Repository {
         byte[] parentNode = changelog.getIndexRecord(lastRev).getNodeId();
         dirstate.setParents(parentNode, new byte[20]);
         
+        // BUG-07 완치 조치: 기존 dirstate 에 있던 copyMap 및 비-normal 상태정보 사전 구출 (GC 보호)
+        Map<String, String> originalCopyMap = new HashMap<>(dirstate.getCopyMap());
+        Map<String, Character> originalStates = new HashMap<>();
+        for (Map.Entry<String, Dirstate.Entry> ent : dirstate.getEntries().entrySet()) {
+            if (ent.getValue().getState() != 'n') {
+                originalStates.put(ent.getKey(), ent.getValue().getState());
+            }
+        }
+        
         java.util.Map<String, String> manifestMap = getManifestAtCommit(parentNode);
         for (String path : manifestMap.keySet()) {
             File diskFile = new File(directory, path);
             if (diskFile.exists() && diskFile.isFile()) {
-                int mode = diskFile.canExecute() ? 0755 : 0644;
+                // POSIX 표준 8진수 표기 가독성 준수
+                int mode = diskFile.canExecute() ? 0100755 : 0100644;
                 int size = (int) diskFile.length();
                 long time = diskFile.lastModified() / 1000;
-                dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
+                
+                // 기존 상태가 normal('n')이 아닌 Added('a'), Removed('r'), Merged('m') 상태가 있었다면 
+                // 재건 도중 증발하지 않도록 상태를 고스란히 계승 및 복구합니다.
+                char state = originalStates.getOrDefault(path, 'n');
+                dirstate.addEntry(path, new Dirstate.Entry(state, mode, size, time));
             }
         }
+        
+        // 기존 copyMap 정보 복구
+        dirstate.getCopyMap().putAll(originalCopyMap);
     }
 
     public synchronized java.util.Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {

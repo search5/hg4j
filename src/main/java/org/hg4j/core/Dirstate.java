@@ -232,6 +232,9 @@ public class Dirstate {
                 buf.put((byte) entry.getState());
                 buf.putInt(entry.getMode());
                 buf.putInt(entry.getSize());
+                // BUG-05 완치 주석: 자바의 2의 보수 부호 확장 특성 상, 64비트 mtime을 & 0xFFFFFFFFL로 마스킹하여 32비트 int로 
+                // 강제 캐스팅(downcast)하더라도, 복원 시 다시 0xFFFFFFFFL과의 비트 논리곱을 통해 복구하면 2038년~2106년 범위의 
+                // unsigned 32비트 시간 정보가 비트 유실 없이 무손실로 고스란히 보존 및 복원됩니다.
                 buf.putInt((int) (entry.getTime() & 0xFFFFFFFFL)); // Mask safely to 32-bit for serialization
                 buf.putInt(pathBytes.length);
                 out.write(buf.array());

@@ -219,3 +219,11 @@ signing {
     required { gradle.taskGraph.hasTask("publish") || gradle.taskGraph.hasTask("publishToMavenLocal") }
     sign publishing.publications.mavenJava
 }
+
+// Gradle 9 암시적 태스크 종속성 경고 및 충돌 방지 설정
+tasks.withType(PublishToMavenRepository).configureEach {
+    mustRunAfter(tasks.withType(Sign))
+}
+tasks.withType(PublishToMavenLocal).configureEach {
+    mustRunAfter(tasks.withType(Sign))
+}

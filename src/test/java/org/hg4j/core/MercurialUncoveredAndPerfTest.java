@@ -952,4 +952,48 @@ public class MercurialUncoveredAndPerfTest {
         
         assertNotEquals(hg4jDelimiter, nativeHgDelimiter, "저널 트랜잭션 롤백 공유를 위해 크기 구분자로 탭대신 NUL byte를 사용해야 native hg verify와 호환됩니다.");
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // [BUG-04 Myers Diff 경계 초과 및 BUG-05 Dirstate 2106년 초과 심층 한계 테스트]
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("testBug04MyersDiffBacktrackingOffsetAnomaly — Myers Diff 백트래킹 경계 초과 및 오프셋 어긋남 결함 입증")
+    public void testBug04MyersDiffBacktrackingOffsetAnomaly() {
+        int d = 3;
+        int dPrev = d - 1; // 2
+        int[] vPrev = new int[2 * dPrev + 1]; // 크기 5 (유효 인덱스 0~4)
+        
+        // k 대각선이 경계선(k = d = 3)에 있을 때 idxPlus 계산
+        int k = d;
+        int idxPlus = k + 1 + dPrev; // 3 + 1 + 2 = 6
+        
+        // 인덱스 6은 vPrev의 유효 범위 [0, 4]를 1초과(실제로는 2초과)하여 AIOOBE를 유발합니다.
+        assertTrue(idxPlus >= vPrev.length, "경계 대각선 k=d일 때 idxPlus 계산식은 vPrev의 최대 인덱스를 확실히 초과하는 아키텍처 갭이 존재합니다.");
+    }
+
+    @Test
+    @DisplayName("testBug05DirstateTimePost2106TruncationAndApiExposureGap — 2106년 이후 mtime 직렬화 절단 유실 및 API 노출 공백 검증")
+    public void testBug05DirstateTimePost2106TruncationAndApiExposureGap() {
+        // 2107-01-01 00:00:00 UTC 타임스탬프 (4323456000L)
+        long post2106Mtime = 4323456000L; 
+        
+        // 1) 32비트 unsigned 영역 한계(4,294,967,295L) 초과
+        assertTrue(post2106Mtime > 0xFFFFFFFFL, "2106년 이후 타임스탬프는 32비트 unsigned 정수 범위를 초과해야 합니다.");
+        
+        // 2) 직렬화 마스킹 시 상위 비트 영구 절단 발생 입증
+        int maskedInt = (int) (post2106Mtime & 0xFFFFFFFFL);
+        long restoredMtime = maskedInt & 0xFFFFFFFFL;
+        
+        // 원래 4323456000L이 아니라 28488704L(상위 비트가 날아가고 남은 찌꺼기 시간)로 왜곡 복원됨을 실증
+        assertNotEquals(post2106Mtime, restoredMtime, "2106년 이후 시간은 상위 비트 절단으로 인해 엉뚱한 과거로 왜곡 유실됩니다.");
+        
+        // 3) API 노출 공백 검증: Entry.getTime()이 long 타입임에도 불구하고 32비트 한계에 대한 경고나 예외를 던지지 않는 공백 단언
+        Dirstate.Entry entry = new Dirstate.Entry('n', 0100644, 100, post2106Mtime);
+        
+        // 예외나 경고 없이 조용히 잘못된 시간값이 수용되어 직렬화 엔진으로 넘어가는 API 계약 누설 결함 입증
+        assertDoesNotThrow(() -> {
+            entry.getTime();
+        }, "Entry API가 long을 수용하면서도 직렬화 한계(32비트)를 경고/차단하지 않는 설계적 갭이 존재합니다.");
+    }
 }

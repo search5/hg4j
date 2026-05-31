@@ -693,11 +693,11 @@ public class HgRemoteClientTest {
 
     @Test
     public void testHttpV2ClientServerIntegrationAndNegotiation() throws Exception {
-        // 1. 가상의 HTTP 서버를 임시 포트에 띄워서 클라이언트 요청 수신 및 HgWireServer 중계 검증
+        // 1. Start a mock HTTP server on an ephemeral port to verify receiving client requests and routing to HgWireServer
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         int port = server.getAddress().getPort();
         
-        // Mock HgRepository 생성
+        // Create a mock HgRepository
         File tempStore = Files.createTempDirectory("hg4j_store").toFile();
         tempStore.deleteOnExit();
         HgRepository repository = new HgRepository(tempStore);
@@ -708,12 +708,12 @@ public class HgRemoteClientTest {
             public void handle(HttpExchange exchange) throws IOException {
                 String acceptHeader = exchange.getRequestHeaders().getFirst("Accept");
                 
-                // Assert HTTP V2 Accept 규격 준수 여부
+                // Assert compliance with the HTTP V2 Accept specification
                 assertEquals("application/mercurial-x-api-v2", acceptHeader);
 
                 ByteArrayOutputStream responseBody = new ByteArrayOutputStream();
                 try (InputStream in = exchange.getRequestBody()) {
-                    // 서버 측 handleHttpV2Connection 동작 호출 검증
+                    // Verify the execution of handleHttpV2Connection on the server side
                     wireServer.handleHttpV2Connection("heads", acceptHeader, in, responseBody);
                 }
 
@@ -729,12 +729,12 @@ public class HgRemoteClientTest {
         server.start();
 
         try {
-            // 2. HTTP V2 클라이언트 생성 및 연동 호출
+            // 2. Create an HTTP V2 client and invoke integration calls
             HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + port);
             client.setV2(true);
             assertTrue(client.isV2());
 
-            // getHeads() 호출 시 내부적으로 /api/v2/heads 로 요청 전송
+            // When getHeads() is called, it internally sends a request to /api/v2/heads
             List<String> heads = client.getHeads();
             assertNotNull(heads);
             assertTrue(heads.isEmpty() || heads.size() >= 0);

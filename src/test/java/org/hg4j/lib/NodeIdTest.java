@@ -6,7 +6,7 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * TDD 1단계: NodeId 값 타입의 불변 캡슐화, 포맷 정밀 검증 및 예외 상황 단위 테스트
+ * Unit tests verifying NodeId value type immutability, encapsulation, format, and exception handling.
  */
 public class NodeIdTest {
 
@@ -17,12 +17,12 @@ public class NodeIdTest {
 
         NodeId nodeId = new NodeId(raw);
 
-        // 불변성 보장 확인 (방어적 복사 검증)
+        // Ensure immutability (verify defensive copying)
         raw[0] = 0x00;
         assertNotEquals((byte) 0x00, nodeId.getBytes()[0]);
         assertEquals((byte) 0xAB, nodeId.getBytes()[0]);
 
-        // getBytes() 복사본 불변성 검증
+        // Verify immutability of getBytes() copy
         byte[] extracted = nodeId.getBytes();
         extracted[0] = 0x00;
         assertEquals((byte) 0xAB, nodeId.getBytes()[0]);
@@ -46,10 +46,10 @@ public class NodeIdTest {
 
     @Test
     public void testInvalidHexStrings() {
-        // 길이 위배
+        // Length violation
         assertThrows(IllegalArgumentException.class, () -> NodeId.fromHex("abc"));
         assertThrows(IllegalArgumentException.class, () -> NodeId.fromHex(null));
-        // 문자셋 위배 (16진수 아님)
+        // Character set violation (not hexadecimal)
         assertThrows(IllegalArgumentException.class, () -> NodeId.fromHex("abcdef0123456789abcdef0123456789abcdef0g"));
     }
 

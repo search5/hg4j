@@ -7,7 +7,7 @@ import java.io.IOException;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * HgLockException의 생성자 및 상속 관계를 검증하는 테스트.
+ * Tests to verify the constructor and inheritance structure of HgLockException.
  */
 public class HgLockExceptionTest {
 
@@ -48,7 +48,7 @@ public class HgLockExceptionTest {
 
     @Test
     public void testExceptionIsIOException() {
-        // HgLockException은 IOException을 extends하므로 IOException으로 캐치 가능해야 함
+        // HgLockException extends IOException, so it must be catchable as an IOException
         boolean caught = false;
         try {
             throw new HgLockException("IO 테스트");

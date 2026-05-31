@@ -662,14 +662,15 @@ public class RevlogTest {
 
         assertArrayEquals(target, applied);
 
-        // Myers Diff는 중간의 "Line 3\n"을 중복으로 저장하지 않아야 하므로,
-        // 기존 단일 헝크 대비 델타 크기가 훨씬 줄어들어야 합니다.
-        // 기존 단일 헝크: start=7, end=28, length=32 -> 12 + 32 = 44 bytes
-        // Myers Diff 멀티 헝크:
+        // Since Myers Diff should not redundantly store the unchanged "Line 3\n" in the middle,
+        // the delta size must be significantly smaller than that of a single hunk approach.
+        // Traditional single hunk: start=7, end=28, length=32 -> 12 + 32 = 44 bytes
+        // Myers Diff multi-hunk:
         // Hunk 1: start=7, end=14, length=16 ("Line 2 Modified\n") -> 12 + 16 = 28 bytes
         // Hunk 2: start=21, end=28, length=16 ("Line 4 Modified\n") -> 12 + 16 = 28 bytes
-        // 총 약 56 바이트로 헝크 오버헤드(12바이트)를 감안해도, 더 복잡한 대형 파일에서는 극적인 차이를 보입니다.
-        // 여기서는 정상 적용(LCS 및 Myers Diff) 여부와 오차 없는 복원을 우선 검증합니다.
+        // Total is about 56 bytes. Although hunk overhead (12 bytes) is considered, 
+        // it shows a substantial difference in larger and more complex files.
+        // Here, we verify the correct application (LCS and Myers Diff) and error-free restoration.
         
         byte[] complexBase = ("Lorem ipsum dolor sit amet,\n" +
                 "consectetur adipiscing elit.\n" +
@@ -693,9 +694,9 @@ public class RevlogTest {
         byte[] complexApplied = Revlog.applyDelta(complexBase, complexDelta);
         assertArrayEquals(complexTarget, complexApplied);
 
-        // 중복 구간이 유지되었으므로, 단일 헝크 방식보다 델타 바이트 수가 작아야 함을 검증
-        // 단일 헝크 방식 델타는 변경 시작인 "Sed do..." 부터 "quis nostrud..." 까지를 통째로 교체하므로
-        // "ut labore et dolore magna aliqua.\nUt enim ad minim veniam,\n" 등의 큰 텍스트를 중복 포함함.
+        // Verify that the delta byte count is smaller than the single hunk approach because duplicated blocks are preserved.
+        // A single hunk delta replaces everything from the start of the change "Sed do..." to "quis nostrud..." entirely,
+        // which redundantly includes large unchanged segments like "ut labore et dolore magna aliqua.\nUt enim ad minim veniam,\n".
         int singleHunkLength = Revlog.createSimpleDelta(complexBase, complexTarget).length;
         assertTrue(complexDelta.length < singleHunkLength, 
                 "Myers Delta size (" + complexDelta.length + ") should be smaller than simple delta (" + singleHunkLength + ")");
@@ -709,18 +710,18 @@ public class RevlogTest {
         Revlog revlog = new Revlog(idxFile, datFile);
         byte[] pNode = new byte[20];
 
-        // 1. 초기 쓰기 및 Mmap 기반 읽기 검증
+        // 1. Verify initial write and Mmap-based read
         byte[] content1 = "First large content chunk for testing mmap performance.\n".repeat(100).getBytes(StandardCharsets.UTF_8);
         byte[] node1 = revlog.appendRevision(content1, -1, -1, pNode, pNode, 0);
 
         byte[] readContent1 = revlog.getRevisionContent(0);
         assertArrayEquals(content1, readContent1);
 
-        // 2. 쓰기 추가 발생 시 Mmap 캐시 무효화 및 갱신 검증
+        // 2. Verify Mmap cache invalidation and update when an additional write occurs
         byte[] content2 = "Second large content chunk, appended later.\n".repeat(50).getBytes(StandardCharsets.UTF_8);
         revlog.appendRevision(content2, 0, -1, node1, pNode, 1);
 
-        // 이전 캐시를 비우고 다시 읽어도 최신 크기로 자동 리매핑되어 정상 조회가 되어야 함
+        // Even after clearing the previous cache, reloading should automatically remap to the latest size and read successfully
         revlog.clearCache();
         byte[] readContent2 = revlog.getRevisionContent(1);
         assertArrayEquals(content2, readContent2);

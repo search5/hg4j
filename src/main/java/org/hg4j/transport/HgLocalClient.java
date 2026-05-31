@@ -10,8 +10,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 로컬 파일시스템에 있는 Mercurial 저장소와의 연결을 제공하는 Pure Java Transport.
- * native hg 서브프로세스를 호출하지 않고 원격 저장소를 직접 파싱 및 병합합니다.
+ * Pure Java transport that provides a connection to a Mercurial repository on the local filesystem.
+ * Directly parses and merges the remote repository without invoking a native hg subprocess.
  */
 public class HgLocalClient implements HgRemoteConnection {
 
@@ -343,6 +343,6 @@ public class HgLocalClient implements HgRemoteConnection {
 
     @Override
     public void close() {
-        // 리소스 해제 불필요
+        // No resource release required
     }
 }

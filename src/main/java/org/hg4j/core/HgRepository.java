@@ -128,7 +128,7 @@ public class HgRepository implements Repository {
         byte[] parentNode = changelog.getIndexRecord(lastRev).getNodeId();
         dirstate.setParents(parentNode, new byte[20]);
         
-        // BUG-07 완치 조치: 기존 dirstate 에 있던 copyMap 및 비-normal 상태정보 사전 구출 (GC 보호)
+        // BUG-07: Extract existing copyMap and non-normal state info in advance (GC protection)
         Map<String, String> originalCopyMap = new HashMap<>(dirstate.getCopyMap());
         Map<String, Character> originalStates = new HashMap<>();
         for (Map.Entry<String, Dirstate.Entry> ent : dirstate.getEntries().entrySet()) {
@@ -141,19 +141,19 @@ public class HgRepository implements Repository {
         for (String path : manifestMap.keySet()) {
             File diskFile = new File(directory, path);
             if (diskFile.exists() && diskFile.isFile()) {
-                // POSIX 표준 8진수 표기 가독성 준수
+                // Follow POSIX standard octal notation for readability
                 int mode = diskFile.canExecute() ? 0100755 : 0100644;
                 int size = (int) diskFile.length();
                 long time = diskFile.lastModified() / 1000;
                 
-                // 기존 상태가 normal('n')이 아닌 Added('a'), Removed('r'), Merged('m') 상태가 있었다면 
-                // 재건 도중 증발하지 않도록 상태를 고스란히 계승 및 복구합니다.
+                // If the previous state was not normal ('n') but Added ('a'), Removed ('r'), or Merged ('m'),
+                // inherit and restore the state to prevent it from being lost during reconstruction.
                 char state = originalStates.getOrDefault(path, 'n');
                 dirstate.addEntry(path, new Dirstate.Entry(state, mode, size, time));
             }
         }
         
-        // 기존 copyMap 정보 복구
+        // Restore original copyMap information
         dirstate.getCopyMap().putAll(originalCopyMap);
     }
 
@@ -246,7 +246,7 @@ public class HgRepository implements Repository {
                         try {
                             ignorePatterns.add(java.util.regex.Pattern.compile(regex));
                         } catch (java.util.regex.PatternSyntaxException e) {
-                            // 무효 패턴 건너뜀
+                            // Skip invalid pattern
                         }
                     }
                 } else {
@@ -257,7 +257,7 @@ public class HgRepository implements Repository {
                     try {
                         ignorePatterns.add(java.util.regex.Pattern.compile(regex));
                     } catch (java.util.regex.PatternSyntaxException e) {
-                        // 무효 패턴 건너뜀
+                        // Skip invalid pattern
                     }
                 }
             }

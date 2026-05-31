@@ -19,8 +19,8 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * org.hg4j.transport 패키지 내 HgSshClient 전용 심층 테스트.
- * Apache MINA SSHD 임베디드 서버를 이용하여 SSH stdio 프로토콜을 검증합니다.
+ * Detailed unit tests for HgSshClient in the org.hg4j.transport package.
+ * Validates the SSH stdio protocol using an embedded Apache MINA SSHD server.
  */
 @DisplayName("HgSshClient 심층 테스트 (transport 패키지)")
 public class HgSshClientTransportTest {
@@ -53,13 +53,13 @@ public class HgSshClientTransportTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // URL 파싱 테스트
+    // URL Parsing Tests
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("SSH URL 파싱 - 사용자명+호스트+포트+경로 분리")
     public void testParseSshUrl_fullUrl_parsedCorrectly() {
-        // 예외 없이 생성되면 파싱 성공
+        // Successful parsing is indicated by instantiation without exception
         assertDoesNotThrow(() -> new HgSshClient("ssh://admin@myserver.com:2222/path/to/repo"));
     }
 
@@ -92,12 +92,12 @@ public class HgSshClientTransportTest {
     @Test
     @DisplayName("포트 번호가 숫자 아닌 경우 → 기본 포트 22 사용")
     public void testParseSshUrl_invalidPortNumber_fallbackToDefault() {
-        // 포트가 비숫자이면 기본 22로 폴백. 예외 없음.
+        // Fallback to default port 22 if the port is non-numeric. No exception expected.
         assertDoesNotThrow(() -> new HgSshClient("ssh://user@host:abc/repo"));
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // setPrivateKey 설정 테스트
+    // setPrivateKey Configuration Tests
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
@@ -115,7 +115,7 @@ public class HgSshClientTransportTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // 임베디드 SSH 서버를 통한 통합 테스트
+    // Integration Tests via Embedded SSH Server
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
@@ -229,15 +229,15 @@ public class HgSshClientTransportTest {
         String url = "ssh://hg4juser@127.0.0.1:" + port + "/test/repo";
         HgSshClient client = new HgSshClient(url);
         client.setPassword("hg4jpass");
-        client.getCapabilities(); // 연결 수립
+        client.getCapabilities(); // Establish connection
         assertDoesNotThrow(() -> {
             client.close();
-            client.close(); // 이중 close
+            client.close(); // Double close
         });
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // 임베디드 Mercurial stdio 모의 커맨드
+    // Embedded Mercurial stdio Mock Command
     // ─────────────────────────────────────────────────────────────────────
 
     private static class FullFeaturedMockHgCommand implements Command, Runnable {
@@ -280,7 +280,7 @@ public class HgSshClientTransportTest {
                     return;
                 }
 
-                // Mercurial stdio 프로토콜: 먼저 capabilities 헤더 출력
+                // Mercurial stdio protocol: Print the capabilities header first
                 out.write("capabilities: heads getbundle changegroup\n".getBytes(StandardCharsets.UTF_8));
                 out.flush();
 
@@ -292,12 +292,12 @@ public class HgSshClientTransportTest {
                     line = line.trim();
 
                     if ("heads".equals(line)) {
-                        // 40자 해시 응답
+                        // 40-character hash response
                         out.write("0000000000000000000000000000000000000000\n".getBytes(StandardCharsets.UTF_8));
                         out.flush();
 
                     } else if (line.startsWith("changegroup") || line.startsWith("getbundle")) {
-                        // 인수 줄 소비 (빈 줄 만날 때까지)
+                        // Consume argument lines (until an empty line is encountered)
                         String argLine;
                         while ((argLine = reader.readLine()) != null && !argLine.trim().isEmpty()) {
                             // consume args
@@ -307,13 +307,13 @@ public class HgSshClientTransportTest {
                         out.flush();
 
                     } else if (line.startsWith("unbundle")) {
-                        // push: 인수 소비 후 OK 응답
+                        // push: Consume arguments, then return OK response
                         String argLine;
                         while ((argLine = reader.readLine()) != null && !argLine.trim().isEmpty()) {
                             // consume args
                         }
-                        // 번들 데이터 읽기 (실제로는 무시)
-                        // 텍스트 응답
+                        // Read bundle data (ignored in practice)
+                        // Text response
                         out.write("push ok\n".getBytes(StandardCharsets.UTF_8));
                         out.flush();
 
@@ -353,7 +353,7 @@ public class HgSshClientTransportTest {
     @Test
     @DisplayName("SSH chunk size EOF 시 HgProtocolException 발생")
     public void testReadBinaryResponse_eofInSize_throwsProtocolException() throws Exception {
-        byte[] incompleteSize = new byte[]{0, 0, 1}; // 4바이트 미만
+        byte[] incompleteSize = new byte[]{0, 0, 1}; // Less than 4 bytes
         HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
         
         java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
@@ -375,7 +375,7 @@ public class HgSshClientTransportTest {
     @Test
     @DisplayName("SSH 음수 chunk size 시 HgProtocolException 발생")
     public void testReadBinaryResponse_negativeSize_throwsProtocolException() throws Exception {
-        byte[] negativeSize = new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0x9C}; // 음수
+        byte[] negativeSize = new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0x9C}; // Negative value
         HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
         
         java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
@@ -397,7 +397,7 @@ public class HgSshClientTransportTest {
     @Test
     @DisplayName("SSH chunk payload EOF 시 HgProtocolException 발생")
     public void testReadBinaryResponse_eofInPayload_throwsProtocolException() throws Exception {
-        byte[] incompletePayload = new byte[]{0, 0, 0, 10, 1, 2, 3}; // 10바이트 명시했으나 3바이트만 제공
+        byte[] incompletePayload = new byte[]{0, 0, 0, 10, 1, 2, 3}; // Specifying 10 bytes but providing only 3 bytes
         HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
         
         java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
@@ -419,29 +419,29 @@ public class HgSshClientTransportTest {
     @Test
     @DisplayName("Repository.open() 팩토리 메소드 기능 및 예외 정밀 검증")
     public void testRepositoryOpenStaticMethod() throws Exception {
-        // Null 인자
+        // Null argument
         assertThrows(IllegalArgumentException.class, () -> org.hg4j.core.Repository.open(null));
         
-        // 존재하지 않는 디렉터리
+        // Non-existent directory
         File nonExistent = new File(System.getProperty("java.io.tmpdir"), "non_existent_hg_repo_test_" + System.currentTimeMillis());
         assertThrows(org.hg4j.errors.HgRepositoryNotFoundException.class, () -> org.hg4j.core.Repository.open(nonExistent));
         
-        // 정상적인 저장소 오픈 검증
+        // Verify opening a valid repository
         java.nio.file.Path tempPath = Files.createTempDirectory("hg4j_repo_open_static_test_");
         File tempDir = tempPath.toFile();
         try {
-            // 초기화
+            // Initialization
             org.hg4j.core.Repository repo = org.hg4j.api.Hg.init().setDirectory(tempDir).call();
             assertNotNull(repo);
             repo.close();
             
-            // static open 호출
+            // Call static open
             try (org.hg4j.core.Repository opened = org.hg4j.core.Repository.open(tempDir)) {
                 assertNotNull(opened);
                 assertEquals(tempDir.getCanonicalPath(), opened.getDirectory().getCanonicalPath());
             }
         } finally {
-            // 삭제
+            // Deletion
             File[] files = tempDir.listFiles();
             if (files != null) {
                 for (File f : files) {

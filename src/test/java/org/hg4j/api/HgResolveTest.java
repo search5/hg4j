@@ -19,7 +19,7 @@ public class HgResolveTest {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
         
         try (Hg hg = Hg.wrap(repo)) {
-            // ResolveCommand를 기동하여 unresolved 상태 마킹
+            // Run ResolveCommand and mark as unresolved status
             Map<String, Boolean> states = hg.resolve()
                     .setFile("conflict.txt")
                     .markUnresolved(true)

@@ -634,7 +634,7 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     @Override
     public void close() {
-        // HTTP 커넥션은 메서드 레벨에서 차단 및 닫기 완료됨
+        // HTTP connections are managed and closed at the method level
     }
 
     public static class CborDecoder {

@@ -13,7 +13,7 @@ import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@DisplayName("RevlogIndex — 인덱스 관리 및 파싱 단위 테스트")
+@DisplayName("RevlogIndex — Index Management and Parsing Unit Tests")
 public class RevlogIndexTest {
 
     @TempDir
@@ -54,7 +54,7 @@ public class RevlogIndexTest {
     }
 
     @Test
-    @DisplayName("인덱스 파일이 존재하지 않는 경우 빈 인덱스로 로드됨")
+    @DisplayName("Loads as empty index when index file does not exist")
     void testLoadIndex_nonExistentFile() throws IOException {
         File file = new File(tempDir.toFile(), "non_existent.i");
         RevlogIndex index = new RevlogIndex(file);
@@ -62,7 +62,7 @@ public class RevlogIndexTest {
     }
 
     @Test
-    @DisplayName("인덱스 파일 크기가 0인 경우 빈 인덱스로 로드됨")
+    @DisplayName("Loads as empty index when index file size is 0")
     void testLoadIndex_emptyFile() throws IOException {
         File file = createTempFile(".i");
         assertTrue(file.createNewFile());
@@ -72,7 +72,7 @@ public class RevlogIndexTest {
     }
 
     @Test
-    @DisplayName("인덱스 파일 크기가 64바이트보다 작으면 IOException 발생")
+    @DisplayName("Throws IOException if index file size is less than 64 bytes")
     void testLoadIndex_invalidShortFile() throws IOException {
         File file = createTempFile(".i");
         try (FileOutputStream out = new FileOutputStream(file)) {
@@ -83,7 +83,7 @@ public class RevlogIndexTest {
     }
 
     @Test
-    @DisplayName("단일 레코드(버전 1, inline 아님) 올바르게 파싱됨")
+    @DisplayName("Correctly parses a single record (version 1, not inline)")
     void testLoadIndex_validSingleRecord() throws IOException {
         File file = createTempFile(".i");
         byte[] mockNodeId = new byte[20];
@@ -109,15 +109,15 @@ public class RevlogIndexTest {
         assertEquals(0, rec.getBaseRev());
         assertEquals(5, rec.getLinkRev());
         assertEquals(-1, rec.getParent1());
-        assertEquals(-1, rec.getParent2()); // IndexRecord 내 생성자에서 parents가 null이면 어떻게 처리되는지 봐야겠지만...
-        // 잠시만, IndexRecord 생성자 내부의 NodeID 등은 Arrays.copyOf로 자르는 로직이 있습니다.
-        // NodeID가 잘 들어있는지 확인해봅시다.
+        assertEquals(-1, rec.getParent2()); // Need to see how parents are handled if they are null in the IndexRecord constructor, but...
+        // Wait, there is logic in the IndexRecord constructor that clips the NodeID using Arrays.copyOf.
+        // Let's verify if NodeID is correctly populated.
         byte[] clippedNode = Arrays.copyOf(rec.getNodeId(), 20);
         assertArrayEquals(mockNodeId, clippedNode);
     }
 
     @Test
-    @DisplayName("멀티 레코드 올바르게 파싱됨")
+    @DisplayName("Correctly parses multiple records")
     void testLoadIndex_validMultipleRecords() throws IOException {
         File file = createTempFile(".i");
         byte[] node0 = new byte[20]; node0[0] = 0x0A;
@@ -146,7 +146,7 @@ public class RevlogIndexTest {
     }
 
     @Test
-    @DisplayName("인라인 플래그가 설정된 경우 인라인 데이터를 스킵하며 파싱")
+    @DisplayName("Parses by skipping inline data when the inline flag is set")
     void testLoadIndex_inlineSkip() throws IOException {
         File file = createTempFile(".i");
         byte[] node0 = new byte[20]; node0[0] = 0x0A;
@@ -181,7 +181,7 @@ public class RevlogIndexTest {
     }
 
     @Test
-    @DisplayName("findRevision으로 올바른 리비전 검색")
+    @DisplayName("Search for correct revision using findRevision")
     void testFindRevision() throws IOException {
         File file = createTempFile(".i");
         byte[] node0 = new byte[20]; node0[0] = 0x0A;
@@ -206,7 +206,7 @@ public class RevlogIndexTest {
     }
 
     @Test
-    @DisplayName("addRecord로 메모리 상에 신규 레코드 추가")
+    @DisplayName("Add a new record in memory using addRecord")
     void testAddRecord() throws IOException {
         File file = createTempFile(".i");
         RevlogIndex index = new RevlogIndex(file);

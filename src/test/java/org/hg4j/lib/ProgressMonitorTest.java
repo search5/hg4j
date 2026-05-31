@@ -7,11 +7,11 @@ import java.io.StringWriter;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@DisplayName("ProgressMonitor — 작업 진행도 모니터링 단위 테스트")
+@DisplayName("ProgressMonitor — Unit tests for progress monitoring")
 public class ProgressMonitorTest {
 
     @Test
-    @DisplayName("NullProgressMonitor는 어떠한 예외 없이 작동함")
+    @DisplayName("NullProgressMonitor operates without throwing any exceptions")
     void testNullProgressMonitor() {
         ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
         assertDoesNotThrow(() -> {
@@ -23,51 +23,51 @@ public class ProgressMonitorTest {
     }
 
     @Test
-    @DisplayName("TextProgressMonitor가 스트림(Writer)에 진행 상태를 정확히 직렬화하여 기록하는지 검증")
+    @DisplayName("Verify that TextProgressMonitor correctly serializes and writes progress status to a stream (Writer)")
     void testTextProgressMonitor_tracking() {
         StringWriter writer = new StringWriter();
         TextProgressMonitor monitor = new TextProgressMonitor(writer);
 
-        // 1. 작업 시작 (확정 크기 100)
+        // 1. Start task (defined size 100)
         monitor.start("Merge Task", 100);
         String output = writer.toString();
-        assertTrue(output.contains("Merge Task: start (total 100)"), "실제 출력: " + output);
+        assertTrue(output.contains("Merge Task: start (total 100)"), "Actual output: " + output);
 
-        // 2. 진행 업데이트
+        // 2. Update progress
         monitor.update(20);
         output = writer.toString();
-        assertTrue(output.contains("Merge Task: 20 / 100"), "실제 출력: " + output);
+        assertTrue(output.contains("Merge Task: 20 / 100"), "Actual output: " + output);
 
-        // 3. 누적 업데이트
+        // 3. Cumulative update
         monitor.update(30);
         output = writer.toString();
-        assertTrue(output.contains("Merge Task: 50 / 100"), "실제 출력: " + output);
+        assertTrue(output.contains("Merge Task: 50 / 100"), "Actual output: " + output);
 
-        // 4. 작업 종료
+        // 4. End task
         monitor.end();
         output = writer.toString();
-        assertTrue(output.contains("Merge Task: completed"), "실제 출력: " + output);
+        assertTrue(output.contains("Merge Task: completed"), "Actual output: " + output);
     }
 
     @Test
-    @DisplayName("TextProgressMonitor 진행 크기를 알 수 없는 작업(UNKNOWN) 상태 검증")
+    @DisplayName("Verify TextProgressMonitor status with an UNKNOWN total size task")
     void testTextProgressMonitor_unknownTotal() {
         StringWriter writer = new StringWriter();
         TextProgressMonitor monitor = new TextProgressMonitor(writer);
 
         monitor.start("Clone Task", ProgressMonitor.UNKNOWN);
         String output = writer.toString();
-        assertTrue(output.contains("Clone Task: start"), "실제 출력: " + output);
-        assertFalse(output.contains("total"), "실제 출력: " + output);
+        assertTrue(output.contains("Clone Task: start"), "Actual output: " + output);
+        assertFalse(output.contains("total"), "Actual output: " + output);
 
         monitor.update(15);
         output = writer.toString();
-        assertTrue(output.contains("Clone Task: 15"), "실제 출력: " + output);
-        assertFalse(output.contains("/"), "실제 출력: " + output);
+        assertTrue(output.contains("Clone Task: 15"), "Actual output: " + output);
+        assertFalse(output.contains("/"), "Actual output: " + output);
     }
 
     @Test
-    @DisplayName("ProgressMonitor 취소(Cancel) 상태 제어 기능 검증")
+    @DisplayName("Verify ProgressMonitor cancellation state control functionality")
     void testTextProgressMonitor_cancellation() {
         TextProgressMonitor monitor = new TextProgressMonitor(new StringWriter());
         assertFalse(monitor.isCancelled());

@@ -10,7 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * JGit의 UploadPack/ReceivePack에 대응하는 Mercurial 서버측 Wire Protocol 프로세서입니다.
+ * Mercurial server-side Wire Protocol processor, corresponding to JGit's UploadPack/ReceivePack.
  */
 public class HgWireServer {
     private final HgRepository repository;
@@ -20,9 +20,9 @@ public class HgWireServer {
     }
 
     /**
-     * 클라이언트로부터 들어오는 serve --stdio 명령 파이프라인을 중계합니다.
-     * 클라이언트가 'capabilities'를 요청하면 서버 사양을 전송하고, 
-     * 'unbundle'을 보내면 push 데이터를 파싱해 트랜잭션으로 저장소에 병합합니다.
+     * Mediates the serve --stdio command pipeline coming from the client.
+     * When the client requests 'capabilities', it transmits server specifications.
+     * When the client sends 'unbundle', it parses the push data and merges it into the repository.
      */
     public void handleConnection(InputStream in, OutputStream out) throws IOException {
         BufferedReader reader = new BufferedReader(new InputStreamReader(in));
@@ -44,7 +44,7 @@ public class HgWireServer {
         }
         
         if ("capabilities".equals(command)) {
-            // 서버 측 지원 스펙 다운스트림 전송 (압축 협상 및 bundle2 활성화 포함)
+            // Transmit server-side supported specifications downstream (including compression negotiation and bundle2 enablement)
             String caps = "capabilities: lookup changegroup=01,02,03 getbundle bundle2=HG20 compression=GZ,BZ,ZS exp-ssh-v2-0003\n";
             out.write(caps.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
@@ -53,7 +53,7 @@ public class HgWireServer {
             out.write(heads.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
         } else if (command != null && command.startsWith("unbundle")) {
-            // Push 수신 처리 (JGit의 ReceivePack 등가)
+            // Process incoming push (JGit's ReceivePack equivalent)
             processIncomingPush(in, out);
         }
     }
@@ -157,13 +157,13 @@ public class HgWireServer {
     }
 
     /**
-     * HTTP V2 프로토콜 요청(api/v2/<cmd>)을 중계 및 처리하는 전용 엔드포인트 핸들러입니다.
+     * Dedicated endpoint handler that mediates and processes HTTP V2 protocol requests (api/v2/<cmd>).
      *
-     * @param cmd 호출된 커맨드 이름 (예: "capabilities", "heads", "unbundle" 등)
-     * @param acceptHeader 클라이언트로부터 유입된 HTTP Accept 헤더
-     * @param in HTTP 요청 본문 입력 스트림
-     * @param out HTTP 응답 본문 출력 스트림
-     * @throws IOException I/O 오류 발생 시
+     * @param cmd The name of the command invoked (e.g., "capabilities", "heads", "unbundle")
+     * @param acceptHeader The HTTP Accept header received from the client
+     * @param in The HTTP request body input stream
+     * @param out The HTTP response body output stream
+     * @throws IOException If an I/O error occurs
      */
     public void handleHttpV2Connection(String cmd, String acceptHeader, InputStream in, OutputStream out) throws IOException {
         if (cmd == null || cmd.isEmpty()) {

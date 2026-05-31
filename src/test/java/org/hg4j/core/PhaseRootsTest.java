@@ -17,7 +17,7 @@ import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@DisplayName("PhaseRoots — Phase 메타데이터 제어 단위 테스트")
+@DisplayName("PhaseRoots — Unit tests for Phase metadata control")
 public class PhaseRootsTest {
 
     @TempDir
@@ -33,13 +33,13 @@ public class PhaseRootsTest {
         return file;
     }
 
-    // 부모 조회를 위한 헬퍼 맵 기반 함수
+    // Map-based helper function for parent lookup
     private Function<NodeId, NodeId[]> createParentLookup(Map<NodeId, NodeId[]> parentMap) {
         return node -> parentMap.getOrDefault(node, new NodeId[0]);
     }
 
     @Test
-    @DisplayName("파일이 없는 경우 모든 노드는 기본적으로 PUBLIC")
+    @DisplayName("All nodes are PUBLIC by default if the file does not exist")
     void testGetPhase_noFile() throws IOException {
         File file = new File(tempDir.toFile(), "non_existent_phaseroots");
         PhaseRoots phaseRoots = new PhaseRoots(file);
@@ -49,7 +49,7 @@ public class PhaseRootsTest {
     }
 
     @Test
-    @DisplayName("올바른 phaseroots 파일 파싱 및 직접 지정 노드 Phase 검증")
+    @DisplayName("Verify parsing of a valid phaseroots file and directly specified node phases")
     void testGetPhase_directRoots() throws IOException {
         String hexDraft = "1".repeat(40);
         String hexSecret = "2".repeat(40);
@@ -65,7 +65,7 @@ public class PhaseRootsTest {
     }
 
     @Test
-    @DisplayName("계층 구조 상에서 조상의 Phase가 자식으로 올바르게 전파되는지 검증")
+    @DisplayName("Verify that the phase of an ancestor is correctly propagated to its children in the hierarchy")
     void testGetPhase_inheritance() throws IOException {
         NodeId nRoot = NodeId.fromHex("0".repeat(40));     // Public Root
         NodeId nDraftRoot = NodeId.fromHex("1".repeat(40)); // Draft Root
@@ -74,7 +74,7 @@ public class PhaseRootsTest {
         NodeId nSecretChild = NodeId.fromHex("b".repeat(40)); // Child of Secret Root
         NodeId nMergeChild = NodeId.fromHex("c".repeat(40)); // Merge Child (Draft Parent + Secret Parent)
 
-        // 부모 관계 정의
+        // Define parent relationships
         Map<NodeId, NodeId[]> parents = new HashMap<>();
         parents.put(nDraftChild, new NodeId[]{nDraftRoot});
         parents.put(nSecretChild, new NodeId[]{nSecretRoot});
@@ -86,21 +86,21 @@ public class PhaseRootsTest {
         PhaseRoots phaseRoots = new PhaseRoots(file);
         Function<NodeId, NodeId[]> lookup = createParentLookup(parents);
 
-        // 1. 조상이 없는 순수 노드는 PUBLIC
+        // 1. A node with no ancestors is PUBLIC
         assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase(nRoot, lookup));
 
-        // 2. Draft Root의 자손은 DRAFT 상속
+        // 2. Descendants of a Draft Root inherit DRAFT
         assertEquals(PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(nDraftChild, lookup));
 
-        // 3. Secret Root의 자손은 SECRET 상속
+        // 3. Descendants of a Secret Root inherit SECRET
         assertEquals(PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nSecretChild, lookup));
 
-        // 4. Draft 부모와 Secret 부모를 모두 둔 자식은 더 엄격한 SECRET 상속
+        // 4. A child with both Draft and Secret parents inherits the more restrictive SECRET phase
         assertEquals(PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nMergeChild, lookup));
     }
 
     @Test
-    @DisplayName("setPhase로 Phase 변경 시 메모리 갱신 및 파일 직렬화 확인")
+    @DisplayName("Verify memory update and file serialization when Phase is changed via setPhase")
     void testSetPhase_andSerialization() throws IOException {
         File file = createTempFile("");
         PhaseRoots phaseRoots = new PhaseRoots(file);
@@ -108,29 +108,29 @@ public class PhaseRootsTest {
         NodeId n1 = NodeId.fromHex("1".repeat(40));
         NodeId n2 = NodeId.fromHex("2".repeat(40));
 
-        // 최초 상태는 PUBLIC
+        // Initial state is PUBLIC
         assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase(n1, n -> new NodeId[0]));
 
-        // Phase 갱신
+        // Update Phase
         phaseRoots.setPhase(n1, PhaseRoots.Phase.DRAFT, n -> new NodeId[0]);
         phaseRoots.setPhase(n2, PhaseRoots.Phase.SECRET, n -> new NodeId[0]);
 
         assertEquals(PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(n1, n -> new NodeId[0]));
         assertEquals(PhaseRoots.Phase.SECRET, phaseRoots.getPhase(n2, n -> new NodeId[0]));
 
-        // 파일 쓰기 동기화 검증을 위해 새로운 인스턴스로 다시 로드
+        // Reload with a new instance to verify file write synchronization
         PhaseRoots reloaded = new PhaseRoots(file);
         assertEquals(PhaseRoots.Phase.DRAFT, reloaded.getPhase(n1, n -> new NodeId[0]));
         assertEquals(PhaseRoots.Phase.SECRET, reloaded.getPhase(n2, n -> new NodeId[0]));
 
-        // 파일 텍스트 콘텐츠에 올바른 문자열 형식으로 저장되었는지 검증
+        // Verify that the data is saved in the correct string format in the file's text content
         String savedContent = Files.readString(file.toPath(), StandardCharsets.UTF_8);
         assertTrue(savedContent.contains("1 " + n1.toHex()));
         assertTrue(savedContent.contains("2 " + n2.toHex()));
     }
 
     @Test
-    @DisplayName("Revlog 인스턴스를 활용한 getPhase 및 setPhase 및 isPublic/isDraft/isSecret 검증")
+    @DisplayName("Verify getPhase, setPhase, and isPublic/isDraft/isSecret using a Revlog instance")
     void testRevlogOverloads() throws Exception {
         File clIdx = tempDir.resolve("00changelog.i").toFile();
         File clDat = tempDir.resolve("00changelog.d").toFile();
@@ -145,24 +145,24 @@ public class PhaseRootsTest {
         
         NodeId n1 = NodeId.fromHex("3".repeat(40));
         
-        // 1. getPhase(Revlog) 검증
+        // 1. Verify getPhase(Revlog)
         assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase(n1, changelog));
         assertTrue(phaseRoots.isPublic(n1, changelog));
         assertFalse(phaseRoots.isDraft(n1, changelog));
         assertFalse(phaseRoots.isSecret(n1, changelog));
         
-        // 2. setPhase(Revlog) 검증
+        // 2. Verify setPhase(Revlog)
         phaseRoots.setPhase(n1, PhaseRoots.Phase.DRAFT, changelog);
         assertEquals(PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(n1, changelog));
         assertFalse(phaseRoots.isPublic(n1, changelog));
         assertTrue(phaseRoots.isDraft(n1, changelog));
         assertFalse(phaseRoots.isSecret(n1, changelog));
         
-        // null / empty node 검증
+        // Verify null / empty node
         assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase((NodeId) null, n -> new NodeId[0]));
         phaseRoots.setPhase(null, PhaseRoots.Phase.SECRET, n -> new NodeId[0]);
         
-        // 헬퍼 메서드 (Function) 검증
+        // Verify helper methods (Function)
         assertTrue(phaseRoots.isDraft(n1, n -> new NodeId[0]));
         assertFalse(phaseRoots.isPublic(n1, n -> new NodeId[0]));
         assertFalse(phaseRoots.isSecret(n1, n -> new NodeId[0]));

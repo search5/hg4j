@@ -19,11 +19,11 @@ public class Hg implements AutoCloseable {
     }
 
     /**
-     * SCM 자바 훅을 동적으로 등록합니다.
+     * Dynamically registers SCM Java hooks.
      *
-     * @param type 훅의 실행 시점 종류
-     * @param hook 훅 동작을 구현한 HgHook 인스턴스
-     * @return 자기 자신 (Chaining 지원)
+     * @param type The execution phase of the hook
+     * @param hook The HgHook instance containing the hook logic
+     * @return The current instance (for method chaining)
      */
     public Hg registerHook(HgHookType type, HgHook hook) {
         if (type != null && hook != null) {
@@ -33,15 +33,15 @@ public class Hg implements AutoCloseable {
     }
 
     /**
-     * 특정 시점에 등록된 모든 자바 훅 리스트를 반환합니다.
+     * Returns the list of all registered Java hooks for a specific phase.
      */
     public java.util.List<HgHook> getHooks(HgHookType type) {
         return hooks.getOrDefault(type, java.util.Collections.emptyList());
     }
     
     /**
-     * 복합 연산 시퀀스(예: status 후 commit)의 완벽한 100% 스레드 및 프로세스 원자적 실행을 보증합니다.
-     * 실행되는 동안 리포지토리의 store 락과 working copy 락을 독점 획득하여 동시 쓰기 경쟁을 완벽 차단합니다.
+     * Provides atomic execution of complex operation sequences (e.g., status followed by commit) across threads and processes.
+     * Acquires exclusive store and working copy locks to prevent concurrent write contention during execution.
      */
     public void runTransaction(Runnable action) throws Exception {
         try (org.hg4j.core.HgLock storeLock = repository.lockStore();

@@ -11,7 +11,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 특정 리비전에서의 전체 파일 구조(디렉터리 트리) 목록을 반환하는 명령입니다.
+ * Command to list the entire file structure (directory tree) at a specific revision.
  */
 public class TreeCommand {
     private final HgRepository repository;

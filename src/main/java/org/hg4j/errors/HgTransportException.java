@@ -1,8 +1,8 @@
 package org.hg4j.errors;
 
 /**
- * 네트워크 및 와이어 프로토콜 제어 오류의 기반 예외 클래스.
- * HTTP/SSH transport 계층에서 발생하는 모든 예외의 상위 클래스.
+ * Base exception class for network and wire protocol control errors.
+ * Parent class for all exceptions occurring in the HTTP/SSH transport layer.
  */
 public class HgTransportException extends java.io.IOException {
     private static final long serialVersionUID = 1L;
@@ -10,8 +10,8 @@ public class HgTransportException extends java.io.IOException {
     private final String remoteUrl;
 
     /**
-     * @param remoteUrl 연결 대상 원격 저장소 URL
-     * @param message   오류 설명
+     * @param remoteUrl Remote repository URL
+     * @param message   Error description
      */
     public HgTransportException(String remoteUrl, String message) {
         super("Transport error for '" + remoteUrl + "': " + message);
@@ -19,16 +19,16 @@ public class HgTransportException extends java.io.IOException {
     }
 
     /**
-     * @param remoteUrl 연결 대상 원격 저장소 URL
-     * @param message   오류 설명
-     * @param cause     원인 예외
+     * @param remoteUrl Remote repository URL
+     * @param message   Error description
+     * @param cause     The causing exception
      */
     public HgTransportException(String remoteUrl, String message, Throwable cause) {
         super("Transport error for '" + remoteUrl + "': " + message, cause);
         this.remoteUrl = remoteUrl;
     }
 
-    /** 원격 저장소 URL을 반환합니다. */
+    /** Returns the remote repository URL. */
     public String getRemoteUrl() {
         return remoteUrl;
     }

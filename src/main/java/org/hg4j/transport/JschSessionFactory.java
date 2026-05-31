@@ -4,7 +4,7 @@ import com.jcraft.jsch.*;
 import java.io.File;
 
 /**
- * JSch 라이브러리를 사용하여 추상화된 SshSession을 반환하는 기본 SshSessionFactory 구현체입니다.
+ * Default SshSessionFactory implementation that returns an abstracted SshSession using the JSch library.
  */
 public class JschSessionFactory implements SshSessionFactory {
     @Override
@@ -39,7 +39,7 @@ public class JschSessionFactory implements SshSessionFactory {
             session.setConfig("StrictHostKeyChecking", "no");
         }
         
-        // JSch가 ECDH 등 일부 최신 key exchange 수행 중 Bouncy Castle과의 예외(ArrayIndexOutOfBoundsException)를 방지하도록 호환성 높은 kex 알고리즘 목록을 강제 지정함
+        // Forces a highly compatible list of key exchange (KEX) algorithms to prevent exceptions (e.g., ArrayIndexOutOfBoundsException) with Bouncy Castle during certain modern key exchanges like ECDH.
         session.setConfig("kex", "ecdh-sha2-nistp256,ecdh-sha2-nistp384,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256");
         
         return new JschSshSession(session);

@@ -14,19 +14,19 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * CatCommand, UpdateCommand, PushCommand, CloneCommand의 커버리지를 높이기 위한 테스트.
- * 각 명령어의 예외 경로 및 엣지 케이스를 검증한다.
+ * Test to increase coverage for CatCommand, UpdateCommand, PushCommand, and CloneCommand.
+ * Validates exception paths and edge cases for each command.
  */
 public class CatUpdateClonePushCoverageTest {
 
     // ─────────────────────────────────────────────
-    // CatCommand 커버리지
+    // CatCommand Coverage
     // ─────────────────────────────────────────────
 
     @Test
     public void testCatCommandFileNotSpecified(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        // file 없이 call() → IllegalStateException
+        // Calling call() without specifying a file → IllegalStateException
         CatCommand cat = new CatCommand(repo);
         assertThrows(IllegalStateException.class, cat::call);
     }
@@ -34,7 +34,7 @@ public class CatUpdateClonePushCoverageTest {
     @Test
     public void testCatCommandEmptyRepository(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        // 빈 리포지토리에서 파일 조회 → IOException (Unable to resolve revision)
+        // Querying a file in an empty repository → IOException (Unable to resolve revision)
         CatCommand cat = new CatCommand(repo).setFile("some.txt");
         assertThrows(IOException.class, cat::call);
     }
@@ -44,13 +44,13 @@ public class CatUpdateClonePushCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
-        // 파일 하나 커밋
+        // Commit a single file
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Hello Cat\n");
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("커밋1").call();
 
-        // 리포지토리에 없는 파일 조회 → IOException
+        // Querying a file not present in the repository → IOException
         CatCommand cat = new CatCommand(repo).setFile("nonexistent.txt");
         assertThrows(IOException.class, cat::call);
     }
@@ -60,13 +60,13 @@ public class CatUpdateClonePushCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
-        // 파일 하나 커밋
+        // Commit a single file
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Hello Cat Command\n");
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("커밋1").call();
 
-        // CatCommand로 내용 조회
+        // Retrieve content using CatCommand
         byte[] content = new CatCommand(repo).setFile("a.txt").call();
         assertNotNull(content);
         assertEquals("Hello Cat Command\n", new String(content));
@@ -77,7 +77,7 @@ public class CatUpdateClonePushCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
-        // 두 커밋
+        // Two commits
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Initial content\n");
         new AddCommand(repo).call();
@@ -86,11 +86,11 @@ public class CatUpdateClonePushCoverageTest {
         Files.writeString(f1.toPath(), "Updated content\n");
         new CommitCommand(repo).setMessage("커밋2").call();
 
-        // 리비전 0에서의 내용 조회
+        // Retrieve content at revision 0
         byte[] content0 = new CatCommand(repo).setFile("a.txt").setRevision("0").call();
         assertEquals("Initial content\n", new String(content0));
 
-        // 리비전 1에서의 내용 조회
+        // Retrieve content at revision 1
         byte[] content1 = new CatCommand(repo).setFile("a.txt").setRevision("1").call();
         assertEquals("Updated content\n", new String(content1));
     }
@@ -113,8 +113,8 @@ public class CatUpdateClonePushCoverageTest {
 
     @Test
     public void testCatCommandAmbiguousRevision(@TempDir Path tempDir) throws Exception {
-        // 두 커밋의 hex가 동일한 접두사를 가진 경우를 인위적으로 만들기 어려우므로
-        // 잘못된 리비전 ID 테스트로 대체
+        // Since it is difficult to artificially create a case where two commits have the same hex prefix,
+        // it is substituted with an invalid revision ID test.
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
@@ -123,7 +123,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("커밋").call();
 
-        // 존재하지 않는 hex 접두사 → IOException (null 반환 후)
+        // Non-existent hex prefix → IOException (after returning null)
         CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision("ffffffff");
         assertThrows(IOException.class, cat::call);
     }
@@ -132,7 +132,7 @@ public class CatUpdateClonePushCoverageTest {
     public void testCatCommandSetRevisionNodeIdNull(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision((org.hg4j.lib.NodeId) null);
-        // 리비전이 null이면 null로 셋팅되고 빈 리포지토리에서 call() 시 리비전 해석 실패로 예외 발생
+        // If the revision is null, it is set to null, and calling call() on an empty repository throws an exception due to failure in resolving the revision.
         assertThrows(IOException.class, cat::call);
     }
 
@@ -146,7 +146,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("커밋").call();
 
-        // 40자리 존재하지 않는 hex nodeId를 주면 해석되지 않아 Unable to resolve revision 예외가 발생함
+        // Providing a non-existent 40-character hex nodeId fails to resolve and throws an "Unable to resolve revision" exception.
         String nonExistent40Hex = "f".repeat(40);
         CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision(nonExistent40Hex);
         org.hg4j.errors.HgRevisionNotFoundException ex = assertThrows(org.hg4j.errors.HgRevisionNotFoundException.class, cat::call);
@@ -174,7 +174,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("커밋").call();
 
-        // 매니페스트에는 등록되었으나, 실제 파일로그 파일(.i)을 강제로 삭제
+        // Registered in the manifest, but forcefully delete the actual filelog file (.i)
         File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "a.txt");
         assertTrue(flIdx.exists());
         assertTrue(flIdx.delete());
@@ -185,13 +185,13 @@ public class CatUpdateClonePushCoverageTest {
     }
 
     // ─────────────────────────────────────────────
-    // UpdateCommand 커버리지 추가 경로
+    // Additional Test Paths for UpdateCommand Coverage
     // ─────────────────────────────────────────────
 
     @Test
     public void testUpdateCommandEmptyRepository(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        // 빈 리포지토리에서 update → IOException (Repository is empty)
+        // Update in an empty repository → IOException (Repository is empty)
         UpdateCommand update = new UpdateCommand(repo);
         assertThrows(IOException.class, update::call);
     }
@@ -206,7 +206,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("커밋").call();
 
-        // 존재하지 않는 리비전
+        // Non-existent revision
         assertThrows(IOException.class, () ->
                 new UpdateCommand(repo).setRevision("invalid_xyz_456").call());
     }
@@ -216,7 +216,7 @@ public class CatUpdateClonePushCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
-        // 커밋 0: a.txt, b.txt 모두 있음
+        // Commit 0: both a.txt and b.txt exist
         File f1 = new File(repoDir, "a.txt");
         File f2 = new File(repoDir, "b.txt");
         Files.writeString(f1.toPath(), "file a\n");
@@ -224,27 +224,27 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("두 파일 커밋").call();
 
-        // 커밋 1: b.txt 삭제
+        // Commit 1: b.txt deleted
         new RemoveCommand(repo).setFile("b.txt").call();
         new CommitCommand(repo).setMessage("b.txt 삭제").call();
 
         assertTrue(f1.exists());
         assertFalse(f2.exists());
 
-        // 커밋 0으로 업데이트 → b.txt 복원
+        // Update to commit 0 → b.txt restored
         new UpdateCommand(repo).setRevision("0").setForce(true).call();
         assertTrue(f1.exists());
         assertTrue(f2.exists());
         assertEquals("file b\n", Files.readString(f2.toPath()));
 
-        // 다시 커밋 1로 업데이트 → b.txt 삭제
+        // Update to commit 1 again → b.txt deleted
         new UpdateCommand(repo).setRevision("1").setForce(true).call();
         assertTrue(f1.exists());
         assertFalse(f2.exists());
     }
 
     // ─────────────────────────────────────────────
-    // PushCommand 커버리지 추가 경로
+    // Additional Test Paths for PushCommand Coverage
     // ─────────────────────────────────────────────
 
     @Test
@@ -259,20 +259,20 @@ public class CatUpdateClonePushCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
-        // 커밋 두 개를 준비하고 PushCommand의 번들 직렬화를 내부적으로 검증
-        // (실제 push는 네트워크가 필요하지만, 번들 구성 코드는 실행 가능)
+        // Prepare two commits and internally validate bundle serialization of PushCommand
+        // (Actual push requires network, but the bundle construction code can be executed)
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "content push\n");
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("push test 커밋").call();
 
-        // destination 없이 호출 → IllegalStateException (네트워크 없이 검증)
+        // Calling without destination → IllegalStateException (verification without network)
         assertThrows(IllegalStateException.class, () ->
                 new PushCommand(repo).call());
     }
 
     // ─────────────────────────────────────────────
-    // CloneCommand 커버리지 추가 경로
+    // Additional Test Paths for CloneCommand Coverage
     // ─────────────────────────────────────────────
 
     @Test
@@ -291,7 +291,7 @@ public class CatUpdateClonePushCoverageTest {
 
     @Test
     public void testCloneCommandDestinationNotEmpty(@TempDir Path tempDir) throws Exception {
-        // 이미 비어있지 않은 디렉터리를 지정 → IOException
+        // Specifying a non-empty directory → IOException
         File destDir = tempDir.toFile();
         Files.writeString(destDir.toPath().resolve("existing_file.txt"), "already here");
 
@@ -427,7 +427,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         byte[] commitNode = new CommitCommand(repo).setMessage("커밋").call();
 
-        // NodeId 객체로 setRevision을 호출하여 null이 아닌 분기 실행
+        // Call setRevision with a NodeId object to execute the non-null branch
         org.hg4j.lib.NodeId nodeIdObj = new org.hg4j.lib.NodeId(commitNode);
         byte[] content = new CatCommand(repo).setFile("a.txt").setRevision(nodeIdObj).call();
         assertEquals("NodeId test content\n", new String(content));
@@ -443,12 +443,12 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("커밋").call();
 
-        // getManifestAtCommit을 오버라이드하여 존재하지 않는 file version hex를 반환하게 만듦
+        // Override getManifestAtCommit to return a non-existent file version hex
         HgRepository spyRepo = new HgRepository(repoDir) {
             @Override
             public java.util.Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
                 java.util.Map<String, String> fakeMap = new java.util.HashMap<>();
-                fakeMap.put("a.txt", "1".repeat(40)); // 존재하지 않는 40자리 hex
+                fakeMap.put("a.txt", "1".repeat(40)); // Non-existent 40-character hex
                 return fakeMap;
             }
         };
@@ -468,7 +468,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(repo).call();
         byte[] commitNode = new CommitCommand(repo).setMessage("신규 커밋").call();
 
-        // 새로 생성된 커밋의 페이즈가 draft인지 검증
+        // Verify that the phase of the newly created commit is draft
         org.hg4j.core.PhaseRoots phaseRoots = repo.getPhaseRoots();
         org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(commitNode);
         
@@ -481,7 +481,7 @@ public class CatUpdateClonePushCoverageTest {
 
     @Test
     public void testPushBlocksSecretPhaseCommits(@TempDir Path tempDir) throws Exception {
-        // 1. remote 저장소 초기화 및 첫 커밋 생성
+        // 1. Initialize remote repository and create the first commit
         File remoteDir = tempDir.resolve("remote").toFile();
         HgRepository remoteRepo = Hg.init().setDirectory(remoteDir).call();
         File rf = new File(remoteDir, "base.txt");
@@ -489,7 +489,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(remoteRepo).call();
         new CommitCommand(remoteRepo).setMessage("Base commit").call();
 
-        // 2. remote 저장소를 local 디렉토리로 clone하여 완벽한 연관 관계 형성
+        // 2. Clone remote repository to local directory to establish the repository association
         File localDir = tempDir.resolve("local").toFile();
         Hg.cloneRepository().setSource(remoteDir.getAbsolutePath()).setDirectory(localDir).call();
         
@@ -499,7 +499,7 @@ public class CatUpdateClonePushCoverageTest {
         new AddCommand(localRepo).call();
         byte[] commitNode = new CommitCommand(localRepo).setMessage("Secret commit").call();
 
-        // 3. local의 신규 커밋을 SECRET 페이즈로 강제 변경
+        // 3. Force change the local new commit's phase to SECRET
         org.hg4j.core.PhaseRoots phaseRoots = localRepo.getPhaseRoots();
         org.hg4j.lib.NodeId nodeId = new org.hg4j.lib.NodeId(commitNode);
         
@@ -510,7 +510,7 @@ public class CatUpdateClonePushCoverageTest {
         phaseRoots.setPhase(nodeId, org.hg4j.core.PhaseRoots.Phase.SECRET, cl);
         assertEquals(org.hg4j.core.PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nodeId, cl));
 
-        // 4. push 호출 시 예외 발생 검증
+        // 4. Verify that an exception is thrown when push is called
         PushCommand push = new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath());
         org.hg4j.errors.HgValidationException ex = assertThrows(org.hg4j.errors.HgValidationException.class, push::call);
         assertTrue(ex.getMessage().contains("push includes secret commit"));

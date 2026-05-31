@@ -233,7 +233,7 @@ public class HgSshClient implements HgRemoteConnection {
             }
         }
 
-        // v2 upgrade 시도 (기본적으로 비활성화, 필요시 JVM 옵션 -Dhg4j.ssh.v2.enabled=true로 활성화 가능)
+        // Attempt to upgrade to v2 (disabled by default, can be enabled using JVM option -Dhg4j.ssh.v2.enabled=true if necessary)
         if (Boolean.getBoolean("hg4j.ssh.v2.enabled") && capabilities.contains("exp-ssh-v2-0003")) {
             String token = java.util.UUID.randomUUID().toString().replace("-", "");
             writeLine("upgrade " + token + " proto=exp-ssh-v2-0003");
@@ -252,8 +252,8 @@ public class HgSshClient implements HgRemoteConnection {
                     }
                 }
             } else {
-                // upgrade 거절 시: 이미 upgradeResponse(거절 한 줄)를 다 읽었으므로 스트림이 정상적입니다.
-                // 만약 스트림에 잔여 버퍼 데이터가 있다면 sleep 없이 즉시 skip 처리합니다.
+                // If upgrade is rejected: Since we have already read the upgradeResponse (a single rejection line), the stream remains in a valid state.
+                // If there is residual data in the buffer, skip it immediately without sleeping.
                 int avail = in.available();
                 if (avail > 0) {
                     in.skip(avail);

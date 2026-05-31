@@ -11,9 +11,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Revlog의 인덱스 (.i) 파일을 관리하고 파싱하는 책임을 가지는 클래스.
- * 대형 저장소에서 수백만 리비전이 있어도 힙 메모리 압박이 없도록
- * 각 리비전의 파일 물리 오프셋만 long 배열로 들고 있으며, IndexRecord는 SoftReference 캐시로 필요시 디스크에서 Lazy loading합니다.
+ * Class responsible for managing and parsing the index (.i) file of a revlog.
+ * To prevent heap memory pressure even with millions of revisions in large repositories,
+ * only the physical file offset of each revision is maintained in a long array,
+ * while IndexRecord is lazily loaded from the disk as needed via a SoftReference cache.
  */
 public class RevlogIndex {
 
@@ -26,7 +27,7 @@ public class RevlogIndex {
     private long lastKnownSize = 0;
     private long lastCheckedTime = 0;
 
-    // 디스크에 있는 각 리비전의 실제 파일 물리 오프셋
+    // Physical file offset of each revision on disk
     private long[] fileOffsets = new long[1024];
 
     public RevlogIndex(File idxFile) throws IOException {
@@ -45,26 +46,26 @@ public class RevlogIndex {
 
     private synchronized void checkAndUpdate() {
         if (!idxFile.exists()) {
-            // 디스크 파일이 없을 때는 메모리에 기입 중인 addedRecords와 nodeMap이 보존되어야 하므로 캐시를 지우지 않고 그대로 리턴합니다.
+            // When the disk file does not exist, in-memory addedRecords and nodeMap must be preserved, so return without clearing the cache.
             return;
         }
         long now = System.currentTimeMillis();
         if (now < lastCheckedTime + 200) {
-            // 시간 기반 Throttling: 200ms 이내의 빈번한 호출 시 디스크 조회를 전면 스킵
+            // Time-based throttling: Skip disk lookups for frequent calls within 200ms
             return;
         }
         lastCheckedTime = now;
 
         long currentSize = idxFile.length();
         if (currentSize != lastKnownSize) {
-            // 로컬 쓰기 트랜잭션 중에는 addedRecords가 채워지므로, addedRecords가 비어있을 때만 캐시를 재설정하여 트랜잭션 일관성을 완벽히 보호
+            // During local write transactions, addedRecords is populated. Reset the cache only when addedRecords is empty to maintain transaction consistency.
             if (addedRecords.isEmpty()) {
                 try {
                     if (currentSize > lastKnownSize && lastKnownSize > 0) {
-                        // Incremental Update: 파일이 커진 경우에는 무효화하지 않고 증분 파싱
+                        // Incremental Update: If the file has grown, parse incrementally without invalidating the cache
                         loadIndexIncremental(lastKnownSize);
                     } else {
-                        // 파일이 작아졌거나 최초 로드 시에는 전체 무효화 후 새로 로드
+                        // If the file has shrunk or upon initial load, invalidate the entire cache and reload
                         clearCache();
                     }
                 } catch (IOException ignored) {
@@ -181,7 +182,7 @@ public class RevlogIndex {
     }
 
     /**
-     * 물리 디스크 데이터 변경 시(Rebase/GC 등) 메모리 캐시 상태를 완전 동기화하기 위한 캐시 무효화.
+     * Invalidates the cache to synchronize the in-memory cache state with physical disk changes (e.g., Rebase/GC).
      */
     public synchronized void clearCache() throws IOException {
         nodeMap.clear();
@@ -297,9 +298,9 @@ public class RevlogIndex {
                 Revlog.IndexRecord prev = getIndexRecord(rev - 1);
                 physicalIndexOffset = getFileOffset(rev - 1) + 64 + prev.getCompLen();
             } else {
-                // non-inline 경로: 인덱스 파일(.i)에는 오직 64바이트짜리 인덱스 레코드들이 연달아 기입되므로
-                // 인덱스 파일 내에서의 물리 오프셋은 정확히 rev * 64바이트가 됩니다.
-                // (주의: 이는 데이터 파일(.d)의 물리 데이터 오프셋이 아니며, 오직 인덱스 파일(.i)의 lazy load seek 전용 오프셋입니다!)
+                // Non-inline path: Since only 64-byte index records are written sequentially in the index file (.i),
+                // the physical offset within the index file is rev * 64 bytes.
+                // (Note: This is the offset within the index file (.i) used for lazy loading, not the physical data offset in the data file (.d).)
                 physicalIndexOffset = (long) rev * 64;
             }
         }

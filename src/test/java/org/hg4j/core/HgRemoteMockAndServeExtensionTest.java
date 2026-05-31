@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class HgRemoteMockAndServeExtensionTest {
 
     // ==========================================
-    // 1. HTTP Mock 갭 검증 시나리오
+    // 1. HTTP Mock Gap Verification Scenarios
     // ==========================================
 
     @Test
@@ -310,7 +310,7 @@ public class HgRemoteMockAndServeExtensionTest {
     }
 
     // ==========================================
-    // 2. SSH Mock 추가 시나리오 검증
+    // 2. SSH Mock Additional Scenarios Verification
     // ==========================================
 
     @Test
@@ -459,7 +459,7 @@ public class HgRemoteMockAndServeExtensionTest {
 
 
     // ==========================================
-    // 3. Native hg serve 확장 E2E 검증 시나리오
+    // 3. Native hg serve Extended E2E Verification Scenarios
     // ==========================================
 
 
@@ -571,7 +571,7 @@ public class HgRemoteMockAndServeExtensionTest {
 
         try {
             // ==========================================
-            // 검증 1: Clone 검증 및 내용 일치 확인
+            // Verification 1: Clone Verification and Content Matching Check
             // ==========================================
             File cloneRepoDir = tempDir.resolve("clone_repo").toFile();
             HgRepository cloneRepo = Hg.cloneRepository()
@@ -585,7 +585,7 @@ public class HgRemoteMockAndServeExtensionTest {
             assertEquals("Content A\n", Files.readString(clonedA.toPath(), StandardCharsets.UTF_8));
 
             // ==========================================
-            // 검증 2: Pull 후 hg4j log == native hg log 필드 단위 비교
+            // Verification 2: hg4j log == native hg log field-by-field comparison after Pull
             // ==========================================
             File pullRepoDir = tempDir.resolve("pull_repo").toFile();
             HgRepository pullRepo = Hg.init().setDirectory(pullRepoDir).call();
@@ -614,7 +614,7 @@ public class HgRemoteMockAndServeExtensionTest {
             }
 
             // ==========================================
-            // 검증 3: 브랜치/태그/북마크 포함 저장소 pull → 메타데이터 정합성
+            // Verification 3: Pull repository with branch/tag/bookmark -> Metadata consistency
             // ==========================================
             // Branch check
             assertEquals("default", pullRepo.getBranch(), "Pull repo active branch should be default");
@@ -626,7 +626,7 @@ public class HgRemoteMockAndServeExtensionTest {
             assertTrue(tagsContent.contains("v1.0.0"), ".hgtags should contain tagged version v1.0.0");
 
             // ==========================================
-            // 검증 4: Merge Commit pull 후 Parent 2개 정확히 파싱
+            // Verification 4: Correctly parse 2 parents after Merge Commit pull
             // ==========================================
             File clIdx = new File(pullRepoDir, ".hg/store/00changelog.i");
             File clDat = new File(pullRepoDir, ".hg/store/00changelog.d");
@@ -649,7 +649,7 @@ public class HgRemoteMockAndServeExtensionTest {
             assertTrue(mergeRec.getParent2() >= 0, "Merge commit Parent 2 must be valid (not -1)");
 
             // ==========================================
-            // 검증 5: Push 후 native hg verify & cat 확인
+            // Verification 5: Verify and cat check in native hg after Push
             // ==========================================
             File testPushFile = new File(cloneRepoDir, "pushed_file.txt");
             Files.writeString(testPushFile.toPath(), "Pushed Content\n", StandardCharsets.UTF_8);

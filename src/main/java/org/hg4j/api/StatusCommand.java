@@ -37,7 +37,7 @@ public class StatusCommand {
         File dirstateFile = new File(repository.getHgDir(), "dirstate");
         long dirstateMtime = dirstateFile.exists() ? dirstateFile.lastModified() / 1000 : 0;
 
-        // Fast Path: treeFilter가 없거나 ALL인 경우 (고성능 dirstate 기반 경로)
+        // Fast Path: When treeFilter is null or ALL (dirstate-based path)
         if (treeFilter == null || treeFilter == org.hg4j.core.HgTreeFilter.ALL) {
             Map<String, Dirstate.Entry> tracked = dirstate.getEntries();
             List<String> trackedKeys = new ArrayList<>(tracked.keySet());
@@ -89,7 +89,7 @@ public class StatusCommand {
                 }
             }
 
-            // Untracked 수집
+            // Collect untracked files
             List<String> physicalFiles = repository.scanWorkingCopy();
             List<String> untrackedList = new ArrayList<>();
             for (String path : physicalFiles) {
@@ -105,7 +105,7 @@ public class StatusCommand {
             return status;
         }
 
-        // Slow Path: TreeWalk 경유 (경로 필터 등이 지정된 경우)
+        // Slow Path: Via TreeWalk (when filters are specified)
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);

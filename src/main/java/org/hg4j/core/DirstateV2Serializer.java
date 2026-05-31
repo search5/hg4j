@@ -148,7 +148,7 @@ public class DirstateV2Serializer {
         byte[] rawDataBlock = dataBlock.toByteArray();
 
         // 4. Assemble final binary bytes (100% native Mercurial format - no 12-byte header)
-        int nodesOffset = 0; // 0번 오프셋부터 바로 노드 배열 시작
+        int nodesOffset = 0; // The node array starts immediately at offset 0
         int dataOffset = nodeCount * DirstateV2Node.NODE_SIZE;
         int totalSize = dataOffset + rawDataBlock.length;
 

@@ -49,7 +49,7 @@ public class Bundle2Parser {
             throw new org.hg4j.errors.HgCorruptDataException("Unsupported bundle magic: " + magicStr + ". Expected HG20.");
         }
 
-        // 2. Stream Level Parameters Size (공식 스펙상 2바이트 unsigned short)
+        // 2. Stream Level Parameters Size (unsigned short 2-byte in official spec)
         int paramsSize = dis.readUnsignedShort();
         String compression = null;
         if (paramsSize > 0) {

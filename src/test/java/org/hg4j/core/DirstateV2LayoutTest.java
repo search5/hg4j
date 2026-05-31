@@ -7,17 +7,17 @@ import java.nio.ByteOrder;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * TDD 1단계: dirstate-v2 고성능 바이너리 노드 레이아웃의 필드 정밀 맵핑 및 제어 단위 테스트
+ * Unit tests for field mapping and verification of the dirstate-v2 binary node layout.
  */
 public class DirstateV2LayoutTest {
 
     @Test
     public void testSingleNodeParsingAndModification() {
-        // Given: 44바이트의 dirstate-v2 노드 바이너리 데이터 준비
+        // Given: Prepare 44 bytes of dirstate-v2 node binary data
         byte[] buffer = new byte[44];
         ByteBuffer wrapper = ByteBuffer.wrap(buffer).order(ByteOrder.BIG_ENDIAN);
 
-        // 노드 필드 정보 기입 (Offset 기반 정밀 바이너리 라이팅 - Native Mercurial 사양 정렬)
+        // Write node field information (Offset-based binary writing aligned with Mercurial native specifications)
         wrapper.putInt(0, 10);              // children_start: index 10
         wrapper.putInt(4, 2);               // children_count: 2
         wrapper.putInt(8, 20);              // descendants_with_entry: 20
@@ -32,10 +32,10 @@ public class DirstateV2LayoutTest {
         wrapper.putInt(38, 600);            // copy_source_offset: 600
         wrapper.putShort(42, (short) 5);    // copy_source_len: 5 bytes
 
-        // When: DirstateV2Node 구조체 매퍼 바인딩
+        // When: Bind DirstateV2Node structure mapper
         DirstateV2Node node = new DirstateV2Node(buffer, 0);
 
-        // Then: 바이너리 해독 값에 대한 엄격한 필드 정밀성 단언
+        // Then: Assert decoded binary values against expected fields
         assertEquals('n', node.getState());
         assertEquals((short) 0x3B, node.getFlags());
         assertEquals(0100755, node.getMode()); // executable
@@ -52,7 +52,7 @@ public class DirstateV2LayoutTest {
         assertEquals(15, node.getTrackedDescendants());
         assertEquals(999, node.getMtimeNanoseconds());
 
-        // When: Java API를 이용해 노드 정보 수정
+        // When: Modify node information using the Java API
         node.setState('a');                 // 'a' (added) -> WDIR_TRACKED (0x01)
         node.setMode(0644);                 // 0644 (normal file) -> flags = 0x01
         node.setSize(9999);
@@ -68,7 +68,7 @@ public class DirstateV2LayoutTest {
         node.setTrackedDescendants(35);
         node.setMtimeNanoseconds(888);
 
-        // Then: 원본 바이트 버퍼에 실시간 및 정합하게 반영되었는지 교차 검증 (Native Mercurial 사양 정렬)
+        // Then: Cross-verify that modifications are correctly reflected in the original byte buffer based on Mercurial native specifications
         assertEquals(30, wrapper.getInt(0));
         assertEquals(4, wrapper.getInt(4));
         assertEquals(40, wrapper.getInt(8));

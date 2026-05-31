@@ -9,7 +9,7 @@ import java.util.*;
 import java.util.function.Function;
 
 /**
- * Mercurial의 Phase 메타데이터 (.hg/phaseroots)를 관리하고 파싱하는 클래스.
+ * Class responsible for managing and parsing Mercurial Phase metadata (.hg/phaseroots).
  */
 public class PhaseRoots {
 
@@ -63,7 +63,7 @@ public class PhaseRoots {
                     NodeId node = NodeId.fromHex(parts[1]);
                     rootsMap.put(node, phase);
                 } catch (IllegalArgumentException e) {
-                    // 잘못된 라인은 스킵하거나 무시 (유연한 복구)
+                    // Skip or ignore invalid lines (resilient recovery)
                 }
             }
         }
@@ -83,20 +83,20 @@ public class PhaseRoots {
     }
 
     /**
-     * 특정 노드의 Phase를 확인합니다 (함수형 인터페이스 기반, FS 격리 테스트 지원).
+     * Checks the Phase of a specific node (functional interface based, supports FS-isolated testing).
      */
     public synchronized Phase getPhase(NodeId node, Function<NodeId, NodeId[]> parentLookup) {
         if (node == null || node.isNull()) {
             return Phase.PUBLIC;
         }
 
-        // 1. 직접 정의된 경계선(Root) 조회
+        // 1. Query the directly defined boundary (Root)
         Phase direct = rootsMap.get(node);
         if (direct != null) {
             return direct;
         }
 
-        // 2. 조상 탐색 (BFS)
+        // 2. Ancestor search (BFS)
         Queue<NodeId> queue = new LinkedList<>();
         Set<NodeId> visited = new HashSet<>();
         queue.add(node);
@@ -112,7 +112,7 @@ public class PhaseRoots {
                 if (currPhase.getValue() > highestPhase.getValue()) {
                     highestPhase = currPhase;
                 }
-                // 부모 탐색을 더 이상 올라가지 않음 (경계선에 도달했으므로)
+                // Stop traversing up parents (reached the boundary)
                 continue;
             }
 
@@ -130,7 +130,7 @@ public class PhaseRoots {
     }
 
     /**
-     * 특정 노드의 Phase를 확인합니다 (Changelog Revlog 의존).
+     * Checks the Phase of a specific node (dependent on Changelog Revlog).
      */
     public Phase getPhase(NodeId node, Revlog changelog) throws IOException {
         return getPhase(node, n -> {
@@ -152,7 +152,7 @@ public class PhaseRoots {
     }
 
     /**
-     * 특정 노드의 Phase를 업데이트하고 파일에 즉시 동기화합니다 (함수형 인터페이스 기반).
+     * Updates the Phase of a specific node and synchronizes it to the file immediately (functional interface based).
      */
     public synchronized void setPhase(NodeId node, Phase phase, Function<NodeId, NodeId[]> parentLookup) throws IOException {
         if (node == null || node.isNull()) {
@@ -168,7 +168,7 @@ public class PhaseRoots {
     }
 
     /**
-     * 특정 노드의 Phase를 업데이트하고 파일에 즉시 동기화합니다 (Changelog Revlog 의존).
+     * Updates the Phase of a specific node and synchronizes it to the file immediately (dependent on Changelog Revlog).
      */
     public void setPhase(NodeId node, Phase phase, Revlog changelog) throws IOException {
         setPhase(node, phase, n -> {

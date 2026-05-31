@@ -1,24 +1,24 @@
 package org.hg4j.errors;
 
 /**
- * 해시 또는 리비전 번호로 조회 시 해당 리비전을 찾지 못할 때 발생하는 예외.
+ * Exception thrown when a revision is not found by hash or revision number.
  */
 public class HgRevisionNotFoundException extends java.io.IOException {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 노드 ID(hex 문자열)로 생성합니다.
+     * Creates an instance with a node ID (hex string).
      *
-     * @param nodeId 40자 16진수 노드 ID 문자열
+     * @param nodeId 40-character hexadecimal node ID string
      */
     public HgRevisionNotFoundException(String nodeId) {
         super("Revision not found for node ID: " + nodeId);
     }
 
     /**
-     * 리비전 번호로 생성합니다.
+     * Creates an instance with a revision number.
      *
-     * @param revNumber 조회에 실패한 리비전 번호
+     * @param revNumber The revision number that failed to look up
      */
     public HgRevisionNotFoundException(int revNumber) {
         super("Revision not found for revision number: " + revNumber);

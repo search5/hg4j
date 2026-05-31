@@ -9,14 +9,14 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * org.hg4j.transport 패키지의 HgRemoteConnectionFactory, HgRemoteConnection 인터페이스,
- * HgRemoteClient에 대한 단위 테스트.
+ * Unit tests for HgRemoteConnectionFactory, the HgRemoteConnection interface,
+ * and HgRemoteClient in the org.hg4j.transport package.
  */
 @DisplayName("HgRemoteConnectionFactory 및 transport 패키지 테스트")
 public class HgRemoteConnectionFactoryTest {
 
     // ─────────────────────────────────────────────────────────────
-    // HgRemoteConnectionFactory 테스트
+    // HgRemoteConnectionFactory Tests
     // ─────────────────────────────────────────────────────────────
 
     @Test
@@ -58,17 +58,17 @@ public class HgRemoteConnectionFactoryTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // HgRemoteClient 세부 동작 테스트
+    // HgRemoteClient Detailed Behavior Tests
     // ─────────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("URL 후행 슬래시 정규화 확인")
     public void testHgRemoteClient_trailingSlashNormalization() throws IOException {
-        // 후행 슬래시 있는 URL로 생성 시 정상 객체 반환
+        // Instantiating with a trailing slash URL returns a valid instance
         HgRemoteClient clientWithSlash = new HgRemoteClient("http://example.com/repo/");
         assertNotNull(clientWithSlash);
 
-        // 후행 슬래시 없는 URL
+        // URL without a trailing slash
         HgRemoteClient clientNoSlash = new HgRemoteClient("http://example.com/repo");
         assertNotNull(clientNoSlash);
     }
@@ -133,7 +133,7 @@ public class HgRemoteConnectionFactoryTest {
     @DisplayName("null proxy 설정 시 무시됨 (NPE 없음)")
     public void testHgRemoteClient_setNullProxy_ignored() {
         HgRemoteClient client = new HgRemoteClient("http://example.com/repo");
-        // null 프록시는 무시되어야 하며 예외 없이 동작해야 함
+        // The null proxy should be ignored and operate without throwing exceptions
         assertDoesNotThrow(() -> client.setProxy(null));
     }
 
@@ -154,12 +154,12 @@ public class HgRemoteConnectionFactoryTest {
     public void testHgRemoteClient_httpsWithForceTls_noSecurityException() {
         HgRemoteClient client = new HgRemoteClient("https://example.com/repo");
         client.setForceTls(true);
-        // SecurityException은 아니어야 함. 네트워크 없으므로 IOException 계열만 허용
+        // Should not throw SecurityException. Since there is no network, only IOException is expected.
         assertThrows(IOException.class, () -> client.getCapabilities());
     }
 
     // ─────────────────────────────────────────────────────────────
-    // HgSshClient 단위 테스트 (패키지 레벨 검증)
+    // HgSshClient Unit Tests (Package-level Verification)
     // ─────────────────────────────────────────────────────────────
 
     @Test
@@ -225,7 +225,7 @@ public class HgRemoteConnectionFactoryTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // TransportProtocol 플러그인 추상화 테스트
+    // TransportProtocol Plugin Abstraction Tests
     // ─────────────────────────────────────────────────────────────
 
     @Test
@@ -278,11 +278,11 @@ public class HgRemoteConnectionFactoryTest {
             }
         };
 
-        // 1. 등록 검증
+        // 1. Verify registration
         HgRemoteConnectionFactory.register(customProto);
         assertTrue(HgRemoteConnectionFactory.getRegisteredProtocols().contains(customProto));
 
-        // 2. 생성 검증
+        // 2. Verify instance creation
         HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection("custom://my-custom-repo");
         assertNotNull(conn);
         java.util.List<String> caps = conn.getCapabilities();

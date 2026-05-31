@@ -13,14 +13,14 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * HgRemoteClient 내부 MercurialChunkedInputStream 클래스와
- * unwrapResponseStream 동작에 대한 심층 단위 테스트.
+ * Comprehensive unit tests for the internal MercurialChunkedInputStream class
+ * of HgRemoteClient and the behavior of unwrapResponseStream.
  */
 @DisplayName("MercurialChunkedInputStream 및 응답 스트림 래핑 테스트")
 public class HgRemoteClientStreamTest {
 
     // ─────────────────────────────────────────────────────────────────────
-    // 헬퍼: MercurialChunkedInputStream 인스턴스 생성 (리플렉션)
+    // Helper: Instantiating MercurialChunkedInputStream (Reflection)
     // ─────────────────────────────────────────────────────────────────────
 
     private InputStream createChunkedStream(byte[] rawBytes) throws Exception {
@@ -40,13 +40,13 @@ public class HgRemoteClientStreamTest {
             out.write(len & 0xFF);
             out.write(chunk);
         }
-        // 터미널 청크: 길이 0
+        // Terminal chunk: length 0
         out.write(new byte[]{0, 0, 0, 0});
         return out.toByteArray();
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // 정상 동작 테스트
+    // Successful Operation Tests
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
@@ -97,7 +97,7 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("빈 스트림(터미널 청크만 존재) → 즉시 -1 반환")
     public void testChunked_emptyStream_returnsEof() throws Exception {
-        // 터미널 청크만
+        // Terminal chunk only
         InputStream stream = createChunkedStream(new byte[]{0, 0, 0, 0});
         assertEquals(-1, stream.read());
     }
@@ -108,10 +108,10 @@ public class HgRemoteClientStreamTest {
         byte[] payload = buildChunkedPayload("X".getBytes(StandardCharsets.US_ASCII));
         InputStream stream = createChunkedStream(payload);
 
-        // 전부 읽어 EOF
+        // Read all to reach EOF
         while (stream.read() != -1) {}
 
-        // 추가 read() 모두 -1
+        // Subsequent read() calls should return -1
         assertEquals(-1, stream.read());
         assertEquals(-1, stream.read(new byte[4], 0, 4));
     }
@@ -119,11 +119,11 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("청크 길이 4바이트가 부분적으로 도착하는 경우 정상 처리")
     public void testChunked_partialLengthHeader_handledCorrectly() throws Exception {
-        // 청크 길이 = 3, 데이터 = 'A','B','C', 터미널
+        // Chunk length = 3, data = 'A','B','C', terminal chunk
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(new byte[]{0, 0, 0, 3}); // 길이
-        out.write(new byte[]{'A', 'B', 'C'}); // 데이터
-        out.write(new byte[]{0, 0, 0, 0}); // 터미널
+        out.write(new byte[]{0, 0, 0, 3}); // Length
+        out.write(new byte[]{'A', 'B', 'C'}); // Data
+        out.write(new byte[]{0, 0, 0, 0}); // Terminal chunk
 
         InputStream stream = createChunkedStream(out.toByteArray());
         ByteArrayOutputStream result = new ByteArrayOutputStream();
@@ -136,13 +136,13 @@ public class HgRemoteClientStreamTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // 오류 케이스 테스트
+    // Error Case Tests
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("음수 청크 길이 → IOException 발생")
     public void testChunked_negativeChunkLength_throwsIOException() throws Exception {
-        // 0x80000001 = -2147483647 (음수 int)
+        // 0x80000001 = -2147483647 (negative int)
         byte[] raw = new byte[]{(byte) 0x80, 0x00, 0x00, 0x01};
         InputStream stream = createChunkedStream(raw);
         assertThrows(IOException.class, () -> stream.read());
@@ -151,7 +151,7 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("청크 길이 헤더 중간에 EOF → IOException 발생")
     public void testChunked_eofMidLengthHeader_throwsIOException() throws Exception {
-        // 4바이트 중 2바이트만 제공
+        // Providing only 2 bytes out of 4
         InputStream stream = createChunkedStream(new byte[]{0, 0});
         assertThrows(IOException.class, () -> stream.read());
     }
@@ -159,20 +159,21 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("청크 페이로드 중간에 EOF → IOException 발생 (배열 read)")
     public void testChunked_eofMidPayload_readArray_throwsIOException() throws Exception {
-        // 길이 = 5라고 선언했지만 실제 데이터 3바이트만 있음
-        // ByteArrayInputStream은 배열 read 시 가용 데이터만큼 부분 반환하므로
-        // IOException은 남은 2바이트를 읽으려는 두 번째 호출에서 발생
+        // Declared length = 5, but only 3 bytes of actual data are present.
+        // Since ByteArrayInputStream returns partial data up to the available bytes
+        // during an array read, IOException occurs on the second read call when
+        // attempting to read the remaining 2 bytes.
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(new byte[]{0, 0, 0, 5}); // 길이 5 선언
+        out.write(new byte[]{0, 0, 0, 5}); // Declared length = 5
         out.write(new byte[]{'A', 'B', 'C'}); // 데이터 3바이트만
         InputStream stream = createChunkedStream(out.toByteArray());
 
         assertThrows(IOException.class, () -> {
             byte[] buf = new byte[10];
-            // 반복 읽기: 첫 번째 호출은 3바이트 반환, 두 번째에서 IOException 발생
+            // Repeated read: first call returns 3 bytes, second call throws IOException.
             int count;
             while ((count = stream.read(buf, 0, 10)) != -1) {
-                // 루프 계속 - IOException이 발생할 때까지
+                // Continue loop until IOException is thrown
             }
         });
     }
@@ -180,26 +181,26 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("청크 페이로드 중간에 EOF → IOException 발생 (단바이트 read)")
     public void testChunked_eofMidPayload_readByte_throwsIOException() throws Exception {
-        // 길이 = 3이지만 1바이트만 있음
+        // Length = 3, but only 1 byte of actual data is present
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(new byte[]{0, 0, 0, 3});
-        out.write(new byte[]{'X'}); // 데이터 1바이트만
+        out.write(new byte[]{'X'}); // Only 1 byte of data
         InputStream stream = createChunkedStream(out.toByteArray());
 
-        // 첫 바이트는 정상 읽힘
+        // The first byte is successfully read.
         assertEquals('X', stream.read());
-        // 두 번째 바이트에서 EOF 에러
+        // EOF error occurs on the second byte
         assertThrows(IOException.class, () -> stream.read());
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // HTTP 로컬 서버 이용한 통합 테스트 (mercurial-0.1 및 0.2 응답 처리)
+    // Integration Tests using a Local HTTP Server (Processing mercurial-0.1 & 0.2 responses)
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("mercurial-0.1 응답에서 zlib 압축 감지 동작 확인")
     public void testHgRemoteClient_mercurial01_capabilities_viaLocalServer() throws Exception {
-        // com.sun.net.httpserver 이용하여 로컬 서버 구성
+        // Configure a local server using com.sun.net.httpserver
         com.sun.net.httpserver.HttpServer server =
                 com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
 
@@ -234,15 +235,15 @@ public class HgRemoteClientStreamTest {
                 com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
 
         server.createContext("/", exchange -> {
-            // mercurial-0.2 응답 형식:
-            // 1. 압축 이름 길이 (1 byte)
-            // 2. 압축 이름 ("none")
-            // 3. 청크 프레임 (4바이트 길이 + 데이터 + 종료 4바이트 0)
+            // mercurial-0.2 response format:
+            // 1. Compression name length (1 byte)
+            // 2. Compression name ("none")
+            // 3. Chunk frame (4-byte length + data + terminal 4-byte 0)
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             String compName = "none";
-            body.write(compName.length()); // 압축 이름 길이
+            body.write(compName.length()); // Compression name length
             body.write(compName.getBytes(StandardCharsets.US_ASCII));
-            // 청크 데이터
+            // Chunk data
             String data = "lookup getbundle\n";
             byte[] dataBytes = data.getBytes(StandardCharsets.UTF_8);
             body.write((dataBytes.length >> 24) & 0xFF);
@@ -250,7 +251,7 @@ public class HgRemoteClientStreamTest {
             body.write((dataBytes.length >> 8) & 0xFF);
             body.write(dataBytes.length & 0xFF);
             body.write(dataBytes);
-            // 터미널 청크
+            // Terminal chunk
             body.write(new byte[]{0, 0, 0, 0});
 
             byte[] respBytes = body.toByteArray();
@@ -376,10 +377,10 @@ public class HgRemoteClientStreamTest {
                 com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             ByteArrayOutputStream body = new ByteArrayOutputStream();
-            String compName = "lz4"; // 지원하지 않는 압축
+            String compName = "lz4"; // Unsupported compression
             body.write(compName.length());
             body.write(compName.getBytes(StandardCharsets.US_ASCII));
-            body.write(new byte[]{0, 0, 0, 0}); // 터미널
+            body.write(new byte[]{0, 0, 0, 0}); // Terminal chunk
 
             byte[] respBytes = body.toByteArray();
             exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.2");

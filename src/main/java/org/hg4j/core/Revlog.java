@@ -22,7 +22,7 @@ public class Revlog {
     private boolean inline = false;
     private boolean useZstd = false;
 
-    // 인메모리 LRU 리비전 컨텐트 캐시 (최대 100개)
+    // In-memory LRU revision content cache (max 100 entries)
     private final java.util.Map<Integer, byte[]> contentCache = new java.util.LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(java.util.Map.Entry<Integer, byte[]> eldest) {
@@ -73,8 +73,7 @@ public class Revlog {
     }
 
     /**
-     * 캐시 일관성 유지를 위해 인메모리 콘텐츠 캐시와 인덱스를 완전히 비우고 디스크 상태를 리로드합니다.
-     * (개선 권고 4번: 캐시 무효화 정책 완비)
+     * Completely clears the in-memory content cache and index, and reloads the disk state to maintain cache consistency.
      */
     public synchronized void clearCache() {
         contentCache.clear();

@@ -8,16 +8,16 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Revlog 델타 알고리즘을 전담하는 컴포넌트 (SRP 분리).
+ * Component dedicated to the revlog delta algorithm (SRP separation).
  *
- * <p>책임:
+ * <p>Responsibilities:
  * <ul>
- *   <li>{@link #applyDelta(byte[], byte[])} — 기본 텍스트에 델타를 적용하여 새 텍스트를 복원</li>
- *   <li>{@link #createDelta(byte[], byte[])} — LCS 기반 멀티-hunk 델타 생성</li>
- *   <li>{@link #createSimpleDelta(byte[], byte[])} — prefix/suffix 매칭 기반 단순 델타 생성</li>
+ *   <li>{@link #applyDelta(byte[], byte[])} — Applies a delta to a base text to restore the new text</li>
+ *   <li>{@link #createDelta(byte[], byte[])} — Generates an LCS-based multi-hunk delta</li>
+ *   <li>{@link #createSimpleDelta(byte[], byte[])} — Generates a simple delta based on prefix/suffix matching</li>
  * </ul>
  *
- * <p>이 클래스는 상태를 갖지 않으며 모든 메서드는 정적입니다.
+ * <p>This class is stateless and all methods are static.
  */
 public final class DeltaEngine {
 
@@ -28,14 +28,14 @@ public final class DeltaEngine {
     // ─────────────────────────────────────────────────────────────────────
 
     /**
-     * 기본 텍스트에 Mercurial 형식의 델타를 적용하여 새 텍스트를 반환합니다.
+     * Applies a Mercurial-formatted delta to a base text and returns the new text.
      *
-     * <p>델타 hunk 형식: {@code [start(4B)][end(4B)][length(4B)][data(length bytes)]}
+     * <p>Delta hunk format: {@code [start(4B)][end(4B)][length(4B)][data(length bytes)]}
      *
-     * @param baseText 기본(이전) 텍스트
-     * @param delta    적용할 델타 바이트 배열
-     * @return 델타 적용 결과 텍스트
-     * @throws IOException 델타 포맷이 잘못된 경우
+     * @param baseText The base (previous) text
+     * @param delta    The delta byte array to apply
+     * @return The text after applying the delta
+     * @throws IOException If the delta format is invalid
      */
     public static byte[] applyDelta(byte[] baseText, byte[] delta) throws IOException {
         ByteBuffer buf = ByteBuffer.wrap(delta);
@@ -76,12 +76,12 @@ public final class DeltaEngine {
     // ─────────────────────────────────────────────────────────────────────
 
     /**
-     * prefix/suffix 매칭 방식의 단순 단일-hunk 델타를 생성합니다.
-     * 검증 비교 또는 대형 파일 폴백 용도로 사용됩니다.
+     * Generates a simple single-hunk delta using prefix/suffix matching.
+     * Used for validation comparison or large file fallback.
      *
-     * @param baseText 기본(이전) 텍스트
-     * @param newText  새 텍스트
-     * @return 단일 hunk 델타 바이트 배열
+     * @param baseText The base (previous) text
+     * @param newText  The new text
+     * @return A single-hunk delta byte array
      */
     public static byte[] createSimpleDelta(byte[] baseText, byte[] newText) {
         int prefixLen = 0;
@@ -120,17 +120,17 @@ public final class DeltaEngine {
     // ─────────────────────────────────────────────────────────────────────
 
     /**
-     * LCS(최장 공통 부분수열) 라인 diff 알고리즘을 사용하여 최적화된 멀티-hunk 델타를 생성합니다.
-     * 파일 크기가 커서 O(N*M) DP 연산이 너무 비싼 경우 {@link #createSimpleDelta}로 폴백합니다.
+     * Generates an optimized multi-hunk delta using the LCS (Longest Common Subsequence) line diff algorithm.
+     * Falls back to {@link #createSimpleDelta} if the file size is too large and O(N*M) DP computation is too expensive.
      *
-     * @param baseText 기본(이전) 텍스트
-     * @param newText  새 텍스트
-     * @return 멀티-hunk 델타 바이트 배열
+     * @param baseText The base (previous) text
+     * @param newText  The new text
+     * @return A multi-hunk delta byte array
      */
     public static byte[] createDelta(byte[] baseText, byte[] newText) {
         if (baseText == null || baseText.length == 0) {
             if (newText == null || newText.length == 0) {
-                return new byte[12]; // 빈 hunk: start=0, end=0, length=0
+                return new byte[12]; // Empty hunk: start=0, end=0, length=0
             }
             ByteBuffer buf = ByteBuffer.allocate(12 + newText.length);
             buf.putInt(0);
@@ -153,7 +153,7 @@ public final class DeltaEngine {
         int n = baseLines.size();
         int m = newLines.size();
 
-        // O(N*M) 대신 Myers Diff O(ND) 탐색
+        // Myers Diff O(ND) search instead of O(N*M)
         int max = n + m;
         int offset = max;
         int[] v = new int[2 * max + 1];
@@ -258,7 +258,7 @@ public final class DeltaEngine {
             currY--;
         }
 
-        // 변경 구간을 hunk로 직렬화
+        // Serialize the changed segments into hunks
         ByteArrayOutputStream deltaOut = new ByteArrayOutputStream();
         int b = 0, g = 0;
         while (b < n || g < m) {
@@ -310,12 +310,12 @@ public final class DeltaEngine {
 
         byte[] multiHunkDelta = deltaOut.toByteArray();
         byte[] simpleDelta = createSimpleDelta(baseText, newText);
-        // 단순 델타가 더 작으면 폴백
+        // Fallback if the simple delta is smaller
         return (multiHunkDelta.length <= simpleDelta.length) ? multiHunkDelta : simpleDelta;
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // 내부 헬퍼
+    // Internal Helper
     // ─────────────────────────────────────────────────────────────────────
 
     private static class Line {

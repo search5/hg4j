@@ -149,7 +149,7 @@ public class CommitCommand {
             fileSizes.put(mfDat, mfDatLen);
 
             if (!skipLockAndJournal) {
-                // 경로는 .hg/ 기준 상대 경로 (실제 hg journal 포맷)
+                // Path is relative to the .hg directory (standard hg journal format)
                 appendToJournal(journalFile, "store/00changelog.i\t" + clIdxLen);
                 appendToJournal(journalFile, "store/00changelog.d\t" + clDatLen);
                 appendToJournal(journalFile, "store/00manifest.i\t" + mfIdxLen);
@@ -216,7 +216,7 @@ public class CommitCommand {
             }
 
             // 3. Process dirstate entries and write filelogs
-            // M-2: racy-hg 조건 판정을 위해 트랜잭션 시작 시각 기록 (epoch seconds)
+            // M-2: Record transaction start time in epoch seconds for racy-hg check
             final long txStartSec = System.currentTimeMillis() / 1000;
             Map<String, String> newManifest = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
             List<String> filesModified = new ArrayList<>();
@@ -272,10 +272,10 @@ public class CommitCommand {
                             Dirstate.Entry dEntry = dirstate.getEntries().get(path);
                             if (dEntry != null) {
                                 if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
-                                    // 크기나 mtime이 다르면 명확히 변경됨
+                                    // Changed if size or mtime differs
                                     changed = true;
                                 } else if (diskTime >= txStartSec - 1) {
-                                    // M-2: racy-hg 판정 (1초 경계선 허용한계 반영)
+                                    // M-2: racy-hg check (accounting for 1-second resolution)
                                     File flIdx = getFilelogIndex(repository.getStoreDir(), path);
                                     File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                                     if (flIdx.exists()) {
@@ -347,7 +347,7 @@ public class CommitCommand {
                                 }
                             }
 
-                            // Copy-Rename Track "Writer" 통합
+                            // Integrates Copy-Rename Track "Writer"
                             String originalPath = dirstate.getCopyMap().get(path);
                             java.util.Map<String, String> copyMeta = null;
 
@@ -373,7 +373,7 @@ public class CommitCommand {
                             newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
                             filesModified.add(path);
 
-                            // fncache에는 .i 파일 경로만 등록
+                            // Register only .i file paths in fncache
                             String rawPath = NodeIdUtil.encodeFnameBasic(path);
                             fncachePaths.add(rawPath + ".i");
                         } else {

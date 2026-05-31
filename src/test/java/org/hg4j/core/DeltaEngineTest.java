@@ -9,18 +9,18 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Phase 15: DeltaEngine 단위 테스트.
- * applyDelta / createDelta / createSimpleDelta 알고리즘을 독립적으로 검증합니다.
+ * Unit tests for DeltaEngine.
+ * Independently verifies the algorithms for applyDelta, createDelta, and createSimpleDelta.
  */
-@DisplayName("DeltaEngine — 델타 알고리즘 단위 테스트")
+@DisplayName("DeltaEngine — Delta Algorithm Unit Tests")
 public class DeltaEngineTest {
 
     // ─────────────────────────────────────────────────────────────
-    // applyDelta 테스트
+    // applyDelta Tests
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("빈 기본 텍스트에 삽입 델타 적용")
+    @DisplayName("Apply insertion delta to empty base text")
     void testApplyDelta_insertIntoEmpty() throws IOException {
         byte[] base = new byte[0];
         // 델타: start=0, end=0, length=5, data="Hello"
@@ -30,17 +30,17 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("기본 텍스트 앞부분 교체")
+    @DisplayName("Replace prefix section of base text")
     void testApplyDelta_replacePrefixSection() throws IOException {
         byte[] base = "Hello World".getBytes(StandardCharsets.UTF_8);
-        // "Hello"(0~5) → "Hi"로 교체
+        // Replace "Hello" (0~5) with "Hi"
         byte[] delta = buildDelta(0, 5, "Hi".getBytes(StandardCharsets.UTF_8));
         byte[] result = DeltaEngine.applyDelta(base, delta);
         assertArrayEquals("Hi World".getBytes(StandardCharsets.UTF_8), result);
     }
 
     @Test
-    @DisplayName("빈 델타 → 기본 텍스트 그대로 반환")
+    @DisplayName("Empty delta -> return base text as is")
     void testApplyDelta_emptyDelta_returnsCopy() throws IOException {
         byte[] base = "unchanged".getBytes(StandardCharsets.UTF_8);
         byte[] result = DeltaEngine.applyDelta(base, new byte[0]);
@@ -48,24 +48,24 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("잘린 델타 헤더 → IOException 발생")
+    @DisplayName("Truncated delta header -> throw IOException")
     void testApplyDelta_truncatedHeader_throwsIOException() {
         byte[] base = "data".getBytes(StandardCharsets.UTF_8);
-        byte[] badDelta = new byte[]{0, 0, 0, 5}; // 12바이트 미만
+        byte[] badDelta = new byte[]{0, 0, 0, 5}; // Less than 12 bytes
         assertThrows(IOException.class, () -> DeltaEngine.applyDelta(base, badDelta));
     }
 
     @Test
-    @DisplayName("잘린 델타 데이터 → IOException 발생")
+    @DisplayName("Truncated delta data -> throw IOException")
     void testApplyDelta_truncatedData_throwsIOException() {
         byte[] base = "data".getBytes(StandardCharsets.UTF_8);
-        // 헤더: start=0, end=0, length=100 (실제 데이터 없음)
+        // Header: start=0, end=0, length=100 (no actual data)
         byte[] badDelta = buildDeltaHeaderOnly(0, 0, 100);
         assertThrows(IOException.class, () -> DeltaEngine.applyDelta(base, badDelta));
     }
 
     @Test
-    @DisplayName("잘못된 오프셋 범위 → IOException 발생")
+    @DisplayName("Invalid offset range -> throw IOException")
     void testApplyDelta_invalidOffsets_throwsIOException() {
         byte[] base = "data".getBytes(StandardCharsets.UTF_8);
         // start > baseText.length
@@ -74,11 +74,11 @@ public class DeltaEngineTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // createDelta 테스트 (createDelta → applyDelta 왕복)
+    // createDelta Tests (createDelta -> applyDelta Round-trip)
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("createDelta → applyDelta 왕복: 짧은 텍스트")
+    @DisplayName("createDelta -> applyDelta round-trip: short text")
     void testCreateAndApplyDelta_shortText() throws IOException {
         byte[] base = "Hello World".getBytes(StandardCharsets.UTF_8);
         byte[] target = "Hello hg4j!".getBytes(StandardCharsets.UTF_8);
@@ -89,7 +89,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("createDelta → applyDelta 왕복: 긴 텍스트")
+    @DisplayName("createDelta -> applyDelta round-trip: long text")
     void testCreateAndApplyDelta_longText() throws IOException {
         StringBuilder sb1 = new StringBuilder();
         StringBuilder sb2 = new StringBuilder();
@@ -106,7 +106,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("createDelta → applyDelta 왕복: 빈 base → 새 내용")
+    @DisplayName("createDelta -> applyDelta round-trip: empty base -> new content")
     void testCreateAndApplyDelta_emptyBase() throws IOException {
         byte[] base = new byte[0];
         byte[] target = "Brand new content".getBytes(StandardCharsets.UTF_8);
@@ -117,7 +117,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("createDelta → applyDelta 왕복: 내용 삭제")
+    @DisplayName("createDelta -> applyDelta round-trip: delete content")
     void testCreateAndApplyDelta_deleteContent() throws IOException {
         byte[] base = "Line 1\nLine 2\nLine 3\n".getBytes(StandardCharsets.UTF_8);
         byte[] target = "Line 1\nLine 3\n".getBytes(StandardCharsets.UTF_8);
@@ -128,7 +128,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("동일한 내용 → 델타 적용 후 동일 결과")
+    @DisplayName("Identical content -> identical result after applying delta")
     void testCreateAndApplyDelta_identical() throws IOException {
         byte[] content = "Same content unchanged".getBytes(StandardCharsets.UTF_8);
         byte[] delta = DeltaEngine.createDelta(content, content);
@@ -137,11 +137,11 @@ public class DeltaEngineTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // createSimpleDelta 테스트
+    // createSimpleDelta Tests
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("createSimpleDelta → applyDelta 왕복")
+    @DisplayName("createSimpleDelta -> applyDelta round-trip")
     void testCreateSimpleDelta_roundTrip() throws IOException {
         byte[] base = "base content here".getBytes(StandardCharsets.UTF_8);
         byte[] target = "base modified here".getBytes(StandardCharsets.UTF_8);
@@ -152,7 +152,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("createSimpleDelta: 빈 base → 새 내용")
+    @DisplayName("createSimpleDelta: empty base -> new content")
     void testCreateSimpleDelta_emptyBase() throws IOException {
         byte[] base = new byte[0];
         byte[] target = "new content".getBytes(StandardCharsets.UTF_8);
@@ -163,7 +163,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("createSimpleDelta: 완전히 다른 내용")
+    @DisplayName("createSimpleDelta: completely different content")
     void testCreateSimpleDelta_completelyDifferent() throws IOException {
         byte[] base = "AAAAAAAAAA".getBytes(StandardCharsets.UTF_8);
         byte[] target = "BBBBBBBBBB".getBytes(StandardCharsets.UTF_8);
@@ -174,7 +174,7 @@ public class DeltaEngineTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // 헬퍼 메서드
+    // Helper Methods
     // ─────────────────────────────────────────────────────────────
 
     private byte[] buildDelta(int start, int end, byte[] data) {
@@ -195,7 +195,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("Line 내부 클래스 equals / hashCode 정합성 테스트")
+    @DisplayName("Line inner class equals / hashCode consistency test")
     public void testLineEqualsAndHashCode() throws Exception {
         java.util.List<?> lines = (java.util.List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
                 .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
@@ -221,7 +221,7 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("createDelta 엣지 케이스: base null / empty 및 target null / empty")
+    @DisplayName("createDelta edge cases: base null/empty and target null/empty")
     public void testCreateDeltaEdgeCases() throws Exception {
         // 1. base null / target null
         byte[] d1 = DeltaEngine.createDelta(null, null);

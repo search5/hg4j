@@ -124,11 +124,11 @@ public class HgSshClientTest {
         };
 
         try {
-            // 1. 주입 검증
+            // 1. Verify injection
             HgSshClient.setSshSessionFactory(mockFactory);
             assertEquals(mockFactory, HgSshClient.getSshSessionFactory());
 
-            // 2. 실행 검증 (openSession이 정확한 파라미터로 호출되는지)
+            // 2. Verify execution (check if createSession is invoked with correct parameters)
             String sshUrl = "ssh://mockuser:mockpass@127.0.0.1:" + customPort + "/test/repo";
             HgSshClient client = new HgSshClient(sshUrl);
             
@@ -142,7 +142,7 @@ public class HgSshClientTest {
 
             assertTrue(openSessionCalled[0], "SshSessionFactory's createSession must be actively invoked");
         } finally {
-            // 3. 복원
+            // 3. Restore
             HgSshClient.setSshSessionFactory(originalFactory);
         }
     }

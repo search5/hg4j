@@ -148,7 +148,7 @@ public class PushCommand {
                     return "No changesets to push (remote is up-to-date)";
                 }
 
-                // Phase Check: 만약 푸시 대상 커밋 중 secret 페이즈가 있다면 푸시 차단 (E-4 Phases workflow)
+                // Phase Check: Block push if any target commit is in secret phase (E-4 Phases workflow)
                 org.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
                 for (int r = startRev; r < count; r++) {
                     byte[] nodeBytes = changelog.getIndexRecord(r).getNodeId();

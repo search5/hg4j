@@ -15,7 +15,7 @@ public class HgRemoteConnectionFactory {
     private static final List<TransportProtocol> protocols = new CopyOnWriteArrayList<>();
 
     static {
-        // 기본 프로토콜 등록
+        // Register default protocols
         protocols.add(new TransportProtocol() {
             @Override
             public boolean canHandle(String url) {
@@ -60,10 +60,10 @@ public class HgRemoteConnectionFactory {
     }
 
     /**
-     * 새로운 Transport 프로토콜을 레지스트리에 등록합니다.
-     * 사용자 정의 프로토콜이 기본 프로토콜보다 우선되도록 가장 처음에 등록됩니다.
+     * Registers a new TransportProtocol with the registry.
+     * Custom protocols are registered at the beginning of the list so they take precedence over default protocols.
      *
-     * @param protocol 등록할 TransportProtocol 인스턴스
+     * @param protocol The TransportProtocol instance to register
      */
     public static void register(TransportProtocol protocol) {
         if (protocol != null) {
@@ -72,7 +72,7 @@ public class HgRemoteConnectionFactory {
     }
 
     /**
-     * 등록된 모든 TransportProtocol 리스트를 반환합니다.
+     * Returns an unmodifiable list of all registered TransportProtocols.
      */
     public static List<TransportProtocol> getRegisteredProtocols() {
         return java.util.Collections.unmodifiableList(protocols);
@@ -96,7 +96,7 @@ public class HgRemoteConnectionFactory {
             }
         }
 
-        // 기본 fallback: HTTP 클라이언트
+        // Default fallback: HTTP client
         return new HgRemoteClient(url);
     }
 }

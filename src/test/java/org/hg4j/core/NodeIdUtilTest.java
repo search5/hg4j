@@ -56,13 +56,13 @@ public class NodeIdUtilTest {
 
     @Test
     public void testEncodeFnameWithExtensionsAndStorePrefix() {
-        // 이미 스토어 접두사를 가질 때 data/ 중복 추가 방지 검증
+        // Verify prevention of duplicate data/ prefix addition when it already has a store prefix
         String metaPath = "meta/testdir/00manifest.i";
         String encodedMeta = NodeIdUtil.encodeFname(metaPath);
         assertTrue(encodedMeta.startsWith("meta/"));
         assertFalse(encodedMeta.startsWith("data/meta/"));
 
-        // 확장자가 있는 긴 경로에 대해 하이브리드 인코딩 검증
+        // Verify hybrid encoding for long paths with extensions
         String dirPath = "a/".repeat(55) + "longdir";
         String fileName = "test.txt.i";
         String longPath = dirPath + "/" + fileName;

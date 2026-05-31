@@ -9,39 +9,39 @@ import java.util.zip.Inflater;
 import com.github.luben.zstd.Zstd;
 
 /**
- * Revlog 데이터 압축 및 해제를 전담하는 컴포넌트 (SRP 분리).
+ * Component dedicated to revlog data compression and decompression (SRP separation).
  *
- * <p>지원 형식:
+ * <p>Supported formats:
  * <ul>
- *   <li><b>'x' (0x78)</b> — zlib deflate 압축</li>
- *   <li><b>'u'</b> — 비압축 (uncompressed, prefix byte 포함)</li>
- *   <li><b>기타</b> — raw fallback (비압축 헤더 없음)</li>
+ *   <li><b>'x' (0x78)</b> — zlib deflate compression</li>
+ *   <li><b>'u'</b> — uncompressed (includes prefix byte)</li>
+ *   <li><b>Other</b> — raw fallback (no uncompressed header)</li>
  * </ul>
  *
- * <p>이 클래스는 상태를 갖지 않으며 모든 메서드는 정적입니다.
+ * <p>This class is stateless and all methods are static.
  */
 public final class DeltaCodec {
 
     private DeltaCodec() {}
 
     /**
-     * 주어진 데이터를 압축합니다.
+     * Compresses the given data.
      *
-     * @param data 압축할 원본 데이터
-     * @return 압축된 hunk 바이트 배열 (기본 zlib deflate)
+     * @param data The raw data to compress
+     * @return The compressed hunk byte array (default zlib deflate)
      */
     public static byte[] compress(byte[] data) throws IOException {
         return compress(data, false);
     }
 
     /**
-     * 주어진 데이터를 압축합니다. useZstd가 true인 경우 Zstd 압축 방식을 사용합니다.
-     * 압축 후 크기가 원본보다 작으면 압축 결과를 반환하고,
-     * 그렇지 않으면 {@code 'u'} 접두 바이트를 붙인 비압축 형식으로 반환합니다.
+     * Compresses the given data. Uses Zstd compression if useZstd is true.
+     * If the compressed size is smaller than the original, returns the compressed result;
+     * otherwise, returns the data in an uncompressed format with a {@code 'u'} prefix byte.
      *
-     * @param data 압축할 원본 데이터
-     * @param useZstd Zstd 압축 사용 여부
-     * @return 압축된 hunk 바이트 배열
+     * @param data The raw data to compress
+     * @param useZstd Whether to use Zstd compression
+     * @return The compressed hunk byte array
      */
     public static byte[] compress(byte[] data, boolean useZstd) throws IOException {
         if (data == null || data.length == 0) {
@@ -53,7 +53,7 @@ public final class DeltaCodec {
             if (compressed.length < data.length) {
                 return compressed;
             } else {
-                // 비압축 형식: 'u' + 원본 데이터
+                // Uncompressed format: 'u' + raw data
                 byte[] uncompressed = new byte[data.length + 1];
                 uncompressed[0] = 'u';
                 System.arraycopy(data, 0, uncompressed, 1, data.length);
@@ -80,7 +80,7 @@ public final class DeltaCodec {
         if (compressed.length < data.length) {
             return compressed;
         } else {
-            // 비압축 형식: 'u' + 원본 데이터
+            // Uncompressed format: 'u' + raw data
             byte[] uncompressed = new byte[data.length + 1];
             uncompressed[0] = 'u';
             System.arraycopy(data, 0, uncompressed, 1, data.length);
@@ -89,12 +89,12 @@ public final class DeltaCodec {
     }
 
     /**
-     * 압축된 hunk를 해제합니다.
+     * Decompresses the compressed hunk.
      *
-     * @param hunk        압축된 바이트 배열 (revlog에서 읽은 raw hunk)
-     * @param uncompLen   기대되는 비압축 크기 (힌트 용도)
-     * @return 해제된 원본 데이터
-     * @throws IOException 압축 해제 실패 시
+     * @param hunk        The compressed byte array (raw hunk read from revlog)
+     * @param uncompLen   The expected uncompressed size (used as a hint)
+     * @return The decompressed raw data
+     * @throws IOException If decompression fails
      */
     public static byte[] decompress(byte[] hunk, int uncompLen) throws IOException {
         if (hunk == null || hunk.length == 0 || uncompLen == 0) {
@@ -116,24 +116,24 @@ public final class DeltaCodec {
             Zstd.decompress(dest, hunk);
             return dest;
         } else if (type == 'u') {
-            // 'u' 접두 바이트 이후가 실제 데이터
+            // The actual data follows the 'u' prefix byte
             return Arrays.copyOfRange(hunk, 1, hunk.length);
         } else {
-            // raw fallback — 헤더 없음, 전체를 반환
+            // raw fallback - no header, return the entire array
             return hunk;
         }
     }
 
     /**
-     * zlib 스트림을 해제합니다.
-     * Mercurial 특유의 오프셋 변형('x' 접두 바이트 포함 여부)을 자동으로 감지합니다.
+     * Decompresses the zlib stream.
+     * Automatically detects Mercurial-specific offset variations (presence of 'x' prefix byte).
      */
     private static byte[] decompressZlib(byte[] hunk, int uncompLen) throws IOException {
         Inflater inflater = new Inflater();
 
-        // zlib 헤더 위치 자동 감지:
-        // 1) 시작부터 zlib 헤더인지
-        // 2) index 1부터 zlib 헤더인지 (앞에 'x' prefix byte가 붙은 경우)
+        // Automatically detect zlib header position:
+        // 1) Whether the zlib header starts from index 0
+        // 2) Whether the zlib header starts from index 1 (when prepended with an 'x' prefix byte)
         boolean zlibFromStart = false;
         boolean zlibFromIndex1 = false;
 

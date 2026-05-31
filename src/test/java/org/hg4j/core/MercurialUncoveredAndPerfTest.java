@@ -12,51 +12,51 @@ import java.util.*;
 import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-@DisplayName("Mercurial 미커버 명세 및 30대 필수 테스트케이스 종합 검증 슈트")
+@DisplayName("Mercurial Uncovered Specification and Comprehensive Test Suite")
 public class MercurialUncoveredAndPerfTest {
 
     // ─────────────────────────────────────────────────────────────
-    // [호환성 테스트 1] Dirstate V2 copyMap 실제 이진 직렬화/역직렬화 검증 테스트
+    // [Compatibility Test 1] Dirstate V2 copyMap Binary Serialization and Deserialization Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Dirstate V2 copyMap 실제 이진 직렬화 및 바이트 수준 파리티 검증")
+    @DisplayName("Dirstate V2 copyMap binary serialization and byte-level parity verification")
     public void testDirstateV2CopyMapSerializationParity() throws IOException {
         Dirstate dirstate = new Dirstate();
         dirstate.addEntry("new_file.txt", new Dirstate.Entry('n', 0100644, 100, 1000));
         dirstate.getCopyMap().put("new_file.txt", "old_file.txt");
 
-        // Dirstate V2 포맷 직렬화 수행
+        // Perform serialization in Dirstate V2 format
         byte[] serializedBytes = DirstateV2Serializer.serialize(dirstate);
         assertNotNull(serializedBytes);
         assertTrue(serializedBytes.length >= DirstateV2Node.NODE_SIZE);
 
-        // 첫 번째 노드 복사본 메타데이터 바이트 파싱 검증
+        // Parse and verify first node copy metadata bytes
         ByteBuffer buf = ByteBuffer.wrap(serializedBytes).order(ByteOrder.BIG_ENDIAN);
         DirstateV2Node node = new DirstateV2Node(buf, 0);
 
         int copySourceLen = node.getCopySourceLen();
         int copySourceOffset = node.getCopySourceOffset();
 
-        // native hg 스펙 규격: 복사본 원본 파일명("old_file.txt")의 길이 12바이트 및 오프셋 정상 주입 확인
-        assertEquals(12, copySourceLen, "Dirstate V2 복사 이력 원본명 길이 정보가 12여야 합니다.");
-        assertTrue(copySourceOffset > 0, "Dirstate V2 복사 이력 데이터 영역 오프셋 정보가 지정되어야 합니다.");
+        // native hg specification: verify length (12 bytes) and offset injection for copy source filename ("old_file.txt")
+        assertEquals(12, copySourceLen, "Dirstate V2 copy source name length must be 12.");
+        assertTrue(copySourceOffset > 0, "Dirstate V2 copy history data offset must be specified.");
 
-        // 데이터 블록에서 복사본 이름 파싱 대조
+        // Parse and compare copy source name from data block
         byte[] oldFileBytes = new byte[copySourceLen];
         buf.position(copySourceOffset);
         buf.get(oldFileBytes);
         String restoredCopySource = new String(oldFileBytes, StandardCharsets.UTF_8);
-        assertEquals("old_file.txt", restoredCopySource, "직렬화된 바이너리 데이터 블록 내에서 복사 원본명이 완벽히 복원되어야 합니다.");
+        assertEquals("old_file.txt", restoredCopySource, "The copy source name must be restored correctly within the serialized binary data block.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [호환성 테스트 2] Dirstate V2 mtime 나노초 정밀도 실제 무손실 바이트 검증 테스트
+    // [Compatibility Test 2] Dirstate V2 mtime Nanosecond Resolution Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Dirstate V2 mtime 나노초 정밀 타임스탬프 이진 복원 검증")
+    @DisplayName("Dirstate V2 mtime nanosecond resolution timestamp binary recovery verification")
     public void testDirstateV2MtimeNanosecondsResolutionParity() throws IOException {
         Dirstate dirstate = new Dirstate();
-        // 123456789 나노초 정밀도가 주입된 Entry 생성
+        // Create Entry with 123456789 nanosecond resolution
         Dirstate.Entry entry = new Dirstate.Entry('n', 0100644, 100, 1000, 123456789);
         dirstate.addEntry("file.txt", entry);
 
@@ -66,62 +66,62 @@ public class MercurialUncoveredAndPerfTest {
         ByteBuffer buf = ByteBuffer.wrap(serializedBytes).order(ByteOrder.BIG_ENDIAN);
         DirstateV2Node node = new DirstateV2Node(buf, 0);
 
-        // 하드코딩 0이 아니라 native hg 호환 규격인 123456789 나노초가 바이너리 상에 정확히 안착되는지 확인
-        assertEquals(123456789, node.getMtimeNanoseconds(), "Dirstate V2 직렬화 시 나노초 정밀도 필드가 무손실로 복원되어야 합니다.");
+        // Verify that 123456789 nanoseconds compatible with native hg is correctly populated in the binary
+        assertEquals(123456789, node.getMtimeNanoseconds(), "Dirstate V2 nanosecond resolution field must be restored correctly during serialization.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [호환성 격차 테스트 3] SSH Stdio V2 direct write 프레임 누수 경계 검증 테스트
+    // [Compatibility Gap Test 3] SSH Stdio V2 Direct Write Frame Leak Boundary Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("SSH V2 와이어 프로토콜 5바이트 프레임 헤더 누락 호환성 격차 체크")
+    @DisplayName("SSH V2 wire protocol 5-byte framing header omission compatibility gap check")
     public void testSshV2ProtocolFrameLeakVerification() {
-        // exp-ssh-v2-0003 규격: 모든 패킷은 [Channel ID(1B)][Length(4B)][Payload]의 5바이트 헤더를 동반해야 함
+        // exp-ssh-v2-0003 specification: all packets must be accompanied by a 5-byte header of [Channel ID(1B)][Length(4B)][Payload]
         boolean isSshV2Active = true;
         byte[] payload = "heads\n".getBytes(StandardCharsets.UTF_8);
 
-        // 현재 hg4j 클라이언트 엔진은 SSH V2 협상 시에도 V2 헤더 패킹 로직이 부재하여 raw write를 날리는 격차가 있음
+        // Currently, the hg4j client engine lacks V2 header packing logic during SSH V2 negotiation, resulting in raw writes
         boolean hasV2FramingHeader = false; 
 
         if (isSshV2Active) {
-            assertFalse(hasV2FramingHeader, "native hg SSH V2 규격이 요구하는 5바이트 헤더 패킹 부재로 인한 raw write 호환성 격차가 식별됩니다.");
+            assertFalse(hasV2FramingHeader, "Raw write compatibility gap identified due to the absence of the 5-byte header packing required by the native hg SSH V2 specification.");
         }
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [호환성 격차 테스트 4] CBOR 기반 HTTP Wire Protocol V2 API 미구현 경계 검증 테스트
+    // [Compatibility Gap Test 4] CBOR-based HTTP Wire Protocol V2 API Omission Boundary Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("HTTP Wire V2 CBOR 미디어 타입 및 API 미구현 호환성 격차 체크")
+    @DisplayName("HTTP Wire V2 CBOR media type and API omission compatibility gap check")
     public void testHttpV2CborFrameDetectionGap() {
         List<String> supportedMediaTypes = Arrays.asList("application/mercurial-0.1", "application/mercurial-0.2");
         String requiredV2CborType = "application/mercurial-x-api-v2";
 
         boolean supportsHttpV2CBOR = supportedMediaTypes.contains(requiredV2CborType);
         
-        // 현재 hg4j HTTP 전송부는 V1 전용 사양으로 고정되어 있음
-        assertFalse(supportsHttpV2CBOR, "HTTP Wire V2 CBOR 미디어 타입을 미지원하여 최신 native hg 서버 연동 시 V1 폴백이 강제되는 호환성 격차가 감지됩니다.");
+        // Currently, the hg4j HTTP transport is fixed to the V1-only specification
+        assertFalse(supportsHttpV2CBOR, "A compatibility gap is detected where V1 fallback is forced when connecting to recent native hg servers due to the lack of support for HTTP Wire V2 CBOR media type.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [호환성 격차 테스트 5] GPG OS pubring.kbx 로컬 키체인 연동 미구현 경계 검증 테스트
+    // [Compatibility Gap Test 5] GPG OS Local pubring.kbx Keychain Integration Omission Boundary Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("GPG OS 로컬 pubring.kbx 신뢰 키링 연동 미지원 격차 체크")
+    @DisplayName("GPG OS local pubring.kbx trusted keyring integration unsupported gap check")
     public void testGpgOSKeyringIntegrationMissing() {
         File kbxFile = new File(System.getProperty("user.home"), ".gnupg/pubring.kbx");
         
-        // 현재 hg4j의 PGP 모듈은 인메모리 키 주입에만 의존하며 OS 로컬 키링(.kbx)을 파싱/로드하는 자동화 엔진이 부재함
+        // Currently, hg4j's PGP module relies only on in-memory key injection, lacking an automated engine to parse/load OS local keyrings (.kbx)
         boolean isKbxKeyringIntegrated = false; 
 
-        assertFalse(isKbxKeyringIntegrated, "OS GPG 키체인(.kbx)과의 자동 신뢰 연동 엔진이 배제된 호환성 제약 상태임이 입증됩니다.");
+        assertFalse(isKbxKeyringIntegrated, "Demonstrates the compatibility constraint where automated trust integration with the OS GPG keychain (.kbx) is absent.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 6] [Perf-1] 수백만 리비전 힙 OOM 및 Lazy-loading 성능 벤치마크 테스트
+    // [Perf-1] Millions of Revisions Heap and Lazy-loading Performance Benchmark Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Perf-1 — 50만 리비전 Lazy-loading 및 SoftReference 메모리 스트레스 벤치마크")
+    @DisplayName("Perf-1 — 500k revision lazy-loading and SoftReference memory benchmark")
     public void testPerf1MillionsRevisionMemoryStress() throws Exception {
         int revCount = 500000;
         long[] virtualFileOffsets = new long[revCount];
@@ -145,16 +145,16 @@ public class MercurialUncoveredAndPerfTest {
         }
         
         long elapsedMs = (System.nanoTime() - start) / 1000000;
-        System.out.println("[Perf-1] 1만 번 무작위 lazy-load 및 soft-ref 적재 소요 시간: " + elapsedMs + "ms");
+        System.out.println("[Perf-1] Time taken for 10k random lazy-load and soft-ref loads: " + elapsedMs + "ms");
         
-        assertTrue(elapsedMs < 500, "Lazy load seek 벤치마크는 500ms 이내에 가벼운 풋프린트로 통과해야 합니다.");
+        assertTrue(elapsedMs < 500, "Lazy load seek benchmark should complete within 500ms.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 7] [Perf-2] LCS 및 Myers Diff 다중 스레드 병렬 LCS 스트레스 테스트
+    // [Perf-2] LCS and Myers Diff Multi-threaded Parallel LCS Benchmark Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Perf-2 — 8대 병렬 스레드 고밀도 Myers Diff LCS 연산 스트레스 벤치마크")
+    @DisplayName("Perf-2 — 8 parallel threads Myers Diff LCS computation concurrency benchmark")
     public void testPerf2MyersDiffConcurrencyStress() throws Exception {
         byte[] baseText = "Line Prefix Data\n".repeat(1000).getBytes(StandardCharsets.UTF_8);
         byte[] newText = "Line Prefix Data\n".repeat(500).concat("Modified Hunk Line\n").concat("Line Prefix Data\n".repeat(500)).getBytes(StandardCharsets.UTF_8);
@@ -177,16 +177,16 @@ public class MercurialUncoveredAndPerfTest {
 
         executor.shutdown();
         long elapsedMs = (System.nanoTime() - start) / 1000000;
-        System.out.println("[Perf-2] 병렬 8스레드 Myers Diff 200회 중복 연산 소요 시간: " + elapsedMs + "ms");
+        System.out.println("[Perf-2] Time taken for 8 parallel threads to perform 200 Myers Diff operations: " + elapsedMs + "ms");
         
-        assertTrue(elapsedMs < 3000, "병렬 Myers Diff 스트레스 테스트는 3초 이내로 완료되어야 합니다.");
+        assertTrue(elapsedMs < 3000, "Parallel Myers Diff benchmark should complete within 3 seconds.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 8] [Perf-3] 하이브리드 wlock/lock 고밀도 동시성 경합 성능 테스트
+    // [Perf-3] Hybrid wlock/lock Concurrency Contention Performance Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Perf-3 — 10대 병렬 스레드 하이브리드 락킹 안전성 및 OS FileLock 충돌 경합 벤치마크")
+    @DisplayName("Perf-3 — 10 parallel threads hybrid locking stability and OS FileLock conflict benchmark")
     public void testPerf3LockingCongestionPerformance() throws Exception {
         File tempDir = Files.createTempDirectory("hg4j_locking_perf_").toFile();
         File targetFile = new File(tempDir, "dirstate_perf.txt");
@@ -212,19 +212,19 @@ public class MercurialUncoveredAndPerfTest {
 
         executor.shutdown();
         long elapsedMs = (System.nanoTime() - start) / 1000000;
-        System.out.println("[Perf-3] 병렬 10스레드 하이브리드 락킹 파일 원자적 쓰기 소요 시간: " + elapsedMs + "ms");
+        System.out.println("[Perf-3] Time taken for 10 parallel threads to perform atomic write with hybrid locking: " + elapsedMs + "ms");
 
         targetFile.delete();
         tempDir.delete();
 
-        assertTrue(elapsedMs < 2500, "하이브리드 락킹 경합 벤치마크는 2.5초 이내에 성사되어야 합니다.");
+        assertTrue(elapsedMs < 2500, "Hybrid locking contention benchmark should complete within 2.5 seconds.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 9] [Perf-4] 인라인 -> 아웃라인 10MB 임계치 돌파 스위칭 전환 벤치마크 테스트
+    // [Perf-4] Inline to Outline 10MB Threshold Store Switching Benchmark Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Perf-4 — 인라인 파일 10MB 스케일 오버헤드 감지 및 비인라인 전환 연산 벤치마크")
+    @DisplayName("Perf-4 — Inline file 10MB scale detection and non-inline store switching benchmark")
     public void testPerf4InlineToOutlineStoreConversion() {
         long inlineLimit = 10 * 1024 * 1024; 
         long virtualDataSize = 12 * 1024 * 1024; 
@@ -234,16 +234,16 @@ public class MercurialUncoveredAndPerfTest {
         
         assertTrue(convertToOutline);
         long elapsedNs = System.nanoTime() - start;
-        System.out.println("[Perf-4] 비인라인 자동 스토어 스위칭 감지 연산 속도: " + elapsedNs + "ns");
+        System.out.println("[Perf-4] Speed of automatic store switching detection: " + elapsedNs + "ns");
         
-        assertTrue(elapsedNs / 1000000 < 50, "스토어 전환 모니터링 연산은 50ms 미만이어야 합니다.");
+        assertTrue(elapsedNs / 1000000 < 50, "Store switching monitoring operation must take less than 50ms.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 10] [Perf-5] 1만 개 fncache 초장기 경로 해싱 연산 지연 벤치마크 테스트
+    // [Perf-5] fncache Long Path Hashing Latency Benchmark Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Perf-5 — 5천 개 초장기 깊이 윈도우 비호환 경로 해싱 속도 벤치마크")
+    @DisplayName("Perf-5 — 5k long path depth hashing speed benchmark")
     public void testPerf5FncachePathHashingLatency() throws Exception {
         List<String> superLongPaths = new ArrayList<>();
         String baseDir = "very/deep/path/to/some/excessively/long/nested/directory/structure/that/goes/on/and/on/";
@@ -259,31 +259,31 @@ public class MercurialUncoveredAndPerfTest {
         });
 
         long elapsedMs = (System.nanoTime() - start) / 1000000;
-        System.out.println("[Perf-5] 초장기 경로 5,000개 dh/ 해싱 완료 소요 시간: " + elapsedMs + "ms");
+        System.out.println("[Perf-5] Time taken to hash 5,000 long paths: " + elapsedMs + "ms");
         
-        assertTrue(elapsedMs < 1500, "5,000개 초장기 fncache 경로 해싱 벤치마크는 1.5초 이내에 즉각 완수되어야 합니다.");
+        assertTrue(elapsedMs < 1500, "5k long path fncache hashing benchmark should complete within 1.5 seconds.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 11] [Spec-6] Generaldelta 압축 스키마 및 델타 체인 복원 테스트
+    // [Spec-6] Generaldelta Compression Scheme and Delta Chain Restoration Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Spec-6 — Generaldelta 포맷 플래그 및 최적 baseRev 복원 기법 검증")
+    @DisplayName("Spec-6 — Generaldelta format flags and optimal baseRev restoration verification")
     public void testGeneraldeltaChainCompression() {
         int flags = 0x0002;
         int rev = 5;
         int baseRev = 2; 
         
         boolean isGeneralDelta = (flags & 0x0002) != 0;
-        assertTrue(isGeneralDelta, "인덱스 포맷 플래그가 Generaldelta(0x0002)를 정상 탑재하고 있습니다.");
-        assertTrue(baseRev < rev - 1, "Generaldelta는 순차 부모가 아닌 더 최적의 이전 base 리비전을 지칭할 수 있습니다.");
+        assertTrue(isGeneralDelta, "Index format flags should indicate Generaldelta (0x0002).");
+        assertTrue(baseRev < rev - 1, "Generaldelta can refer to a more optimal prior base revision rather than sequential parents.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 12] [Spec-7] Phase Roots (Public, Draft, Secret) 라이프사이클 변이 테스트
+    // [Spec-7] Phase Roots (Public, Draft, Secret) Lifecycle Transition Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Spec-7 — Mercurial 고유 Phase (Public -> Draft -> Secret) 전이 무결성 검증")
+    @DisplayName("Spec-7 — Mercurial phase (Public -> Draft -> Secret) transition integrity verification")
     public void testPhaseRootsLifecycle() {
         int phasePublic = 0;
         int phaseDraft = 1;
@@ -295,45 +295,45 @@ public class MercurialUncoveredAndPerfTest {
             currentPhase = phasePublic;
         }
 
-        assertEquals(phasePublic, currentPhase, "원격 서버로 네트워크 전송 시 커밋 Phase가 Public으로 정상 변이됩니다.");
+        assertEquals(phasePublic, currentPhase, "Commit phase should transition to Public when pushing to a remote server.");
         
         int secretCommit = phaseSecret;
         boolean allowedToPushSecret = (secretCommit != phaseSecret);
-        assertFalse(allowedToPushSecret, "Secret으로 지정된 비밀 커밋은 push/pull 전송이 철저하게 은폐 차단됩니다.");
+        assertFalse(allowedToPushSecret, "Commits marked as Secret must be restricted from being pushed or pulled.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 13] [Spec-8] fncache 파일 이스케이프 및 유니코드 UTF-8 이중 언어 보존 테스트
+    // [Spec-8] fncache File Escaping and Unicode UTF-8 Multilingual Preservation Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Spec-8 — 비ASCII 한글/중국어 파일명 및 Windows 예약어(con/aux) fncache 디스크 인코딩 완벽 매핑 검증")
+    @DisplayName("Spec-8 — Non-ASCII multilingual filenames and Windows reserved words (con/aux) fncache disk encoding mapping verification")
     public void testFncacheFilenameEscapeAndRestore() {
         String auxPath = "aux.c";
         String encodedAux = NodeIdUtil.encodeFname(auxPath);
-        assertTrue(encodedAux.contains("au~78"), "Windows 예약어 aux가 au~78로 올바르게 store 이스케이프 됩니다.");
+        assertTrue(encodedAux.contains("au~78"), "Windows reserved word aux must be escaped correctly as au~78 in the store.");
 
         String koreanPath = "한글저장소/파일.txt";
         String encodedKorean = NodeIdUtil.encodeFname(koreanPath);
         assertNotNull(encodedKorean);
-        assertTrue(encodedKorean.startsWith("data/"), "다국어 파일명 역시 디스크 세이프하게 data/ 접두사를 장착합니다.");
+        assertTrue(encodedKorean.startsWith("data/"), "Multilingual filenames must also have a disk-safe data/ prefix.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 14] [Spec-9] Bundle2 Multipart 스트림 파이프 프레임 식별 테스트
+    // [Spec-9] Bundle2 Multipart Stream Framing Verification Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Spec-9 — Bundle2 와이어 규격 ('HG20') 매직 및 Multipart 파트 파싱 경계 검증")
+    @DisplayName("Spec-9 — Bundle2 wire specification ('HG20') magic and multipart part parsing boundary verification")
     public void testBundle2MultipartFraming() {
         byte[] bundle2Header = "HG20\0\0".getBytes(StandardCharsets.UTF_8);
         String magic = new String(bundle2Header, 0, 4, StandardCharsets.UTF_8);
-        assertEquals("HG20", magic, "Mercurial Bundle2 스트림 수신을 위한 'HG20' 매직 시그니처가 정확히 판독됩니다.");
+        assertEquals("HG20", magic, "Mercurial Bundle2 'HG20' magic signature must be read correctly.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [기존 테스트 15] [Spec-10] Dirstate V2 Docket 및 이진 트리 분할 로딩 테스트
+    // [Spec-10] Dirstate V2 Docket and Binary Tree Split Loading Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Spec-10 — Dirstate V2 Docket 32바이트 P1/P2 NodeID 및 분할 데이터 파일 UID 파싱 검증")
+    @DisplayName("Spec-10 — Dirstate V2 Docket 32-byte P1/P2 NodeID and split data file UID parsing verification")
     public void testDirstateV2DocketSplitting() {
         byte[] mockDocket = new byte[80];
         byte[] p1Bytes = new byte[32];
@@ -343,32 +343,32 @@ public class MercurialUncoveredAndPerfTest {
         byte[] extractedP1 = new byte[32];
         System.arraycopy(mockDocket, 12, extractedP1, 0, 32);
         
-        assertArrayEquals(p1Bytes, extractedP1, "Dirstate V2 Docket 헤더로부터 부모 P1 NodeID 정보가 정상 추출됩니다.");
+        assertArrayEquals(p1Bytes, extractedP1, "P1 NodeID must be extracted correctly from the Dirstate V2 Docket header.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 16] Revlog Inline -> Non-Inline 임계점 분할 자동 검증
+    // [New Verification Test 16] Revlog Inline -> Non-Inline Threshold Splitting Automatic Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Revlog 인라인에서 비인라인 분할 64KB 임계점 감지 검증")
+    @DisplayName("Revlog inline to non-inline split 64KB threshold detection verification")
     public void testInlineToOutlineAutoThreshold() throws IOException {
         long inlineLimit = 64 * 1024; // 64KB
-        long currentRecordSize = 70000; // 임계 초과
+        long currentRecordSize = 70000; // Over threshold
         
         boolean splitRequired = currentRecordSize > inlineLimit;
-        assertTrue(splitRequired, "데이터 크기가 64KB를 초과할 경우 인라인 파일로그 분리가 요구되어야 합니다.");
+        assertTrue(splitRequired, "Inline file splitting should be required when data size exceeds 64KB.");
         
-        // 원자 분할 모킹
+        // Mock atomic split
         File tempDir = Files.createTempDirectory("hg4j_revlog_").toFile();
         File inlineFile = new File(tempDir, "rev.i");
         File outlineData = new File(tempDir, "rev.d");
         
-        Files.write(inlineFile.toPath(), new byte[100]); // 가상 인덱스
+        Files.write(inlineFile.toPath(), new byte[100]); // Virtual index
         if (splitRequired) {
-            Files.write(outlineData.toPath(), new byte[(int)currentRecordSize]); // 가상 데이터 분할 기입
+            Files.write(outlineData.toPath(), new byte[(int)currentRecordSize]); // Virtual data split write
         }
         
-        assertTrue(inlineFile.exists() && outlineData.exists(), "임계점 도달 시 인덱스와 데이터 파일이 별도로 존재해야 합니다.");
+        assertTrue(inlineFile.exists() && outlineData.exists(), "Index and data files should exist separately when the threshold is reached.");
         
         inlineFile.delete();
         outlineData.delete();
@@ -376,47 +376,47 @@ public class MercurialUncoveredAndPerfTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 17] Generaldelta 최적 압축 체인 검증
+    // [New Verification Test 17] Generaldelta Optimal Compression Chain Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Generaldelta 하에서의 parent 1/2 최적 압축 체인 빌드 검증")
+    @DisplayName("Verification of optimal parent 1/2 compression chain build under Generaldelta")
     public void testGeneraldeltaTargetChain() {
         int rev = 10;
         int p1 = 8;
         int p2 = 9;
         
-        // 직전 리비전(9) 대신 더 유사도가 높은 8(p1)을 델타 압축 baseRev로 설정
+        // Set 8(p1), which has higher similarity, as delta compression baseRev instead of the immediate prior revision (9)
         int bestBase = p1; 
         
-        assertTrue(bestBase == p1 || bestBase == p2, "Generaldelta는 최적의 부모 base를 델타 기점으로 삼을 수 있어야 합니다.");
-        assertTrue(bestBase < rev, "압축 기점 리비전은 항상 현재 리비전보다 과거여야 합니다.");
+        assertTrue(bestBase == p1 || bestBase == p2, "Generaldelta must be able to use the optimal parent base as the delta starting point.");
+        assertTrue(bestBase < rev, "The compression base revision must always be older than the current revision.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 18] Zlib / Zstd 다중 압축 상호운용성 및 정합성 테스트
+    // [New Verification Test 18] Zlib / Zstd Multi-compression Interoperability and Consistency Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Zlib 및 Zstd 다중 압축 방식의 상호 디코딩 무결성 검증")
+    @DisplayName("Cross-decoding integrity verification of Zlib and Zstd compression schemes")
     public void testZlibZstdCrossCompatibility() {
         String originalText = "Mercurial Enterprise Compression Parity Verification Content";
         byte[] originalBytes = originalText.getBytes(StandardCharsets.UTF_8);
         
-        // Zlib & Zstd 디스크 서명 헤더 모킹
+        // Mock Zlib & Zstd disk signature headers
         byte zlibHeader = 'x'; 
         byte zstdHeader = 0x28; 
         
-        // 두 압축 서명 판독 및 해제 파리티 정합성이 100% 만족함을 단언
-        assertNotEquals(zlibHeader, zstdHeader, "Zlib와 Zstd 압축 시그니처 바이트는 구별되어야 합니다.");
+        // Assert that both compression signature reading and decompression parity matches
+        assertNotEquals(zlibHeader, zstdHeader, "Zlib and Zstd compression signature bytes must be distinct.");
         
-        byte[] restoredBytes = originalBytes.clone(); // 역압축 모킹
-        assertArrayEquals(originalBytes, restoredBytes, "압축 라이프사이클을 통과한 원문 바이트는 한 바이트도 변하지 않아야 합니다.");
+        byte[] restoredBytes = originalBytes.clone(); // Mock decompression
+        assertArrayEquals(originalBytes, restoredBytes, "Original bytes must remain unchanged after passing through the compression lifecycle.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 19] Censored 리비전 보안 읽기 제한 및 예외 격발 테스트
+    // [New Verification Test 19] Censored Revision Secure Read Restriction and Exception Trigger Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Censored 보안 필터링 적용 리비전에 대한 읽기 차단 검증")
+    @DisplayName("Verification of reading restriction for censored security-filtered revisions")
     public void testCensoredRevisionReadRestriction() {
         int revision = 3;
         boolean isCensored = true; 
@@ -427,14 +427,14 @@ public class MercurialUncoveredAndPerfTest {
             }
         });
         
-        assertTrue(ex.getMessage().contains("censored"), "Censored 리비전 조회 시 보안 예외가 트리거되어야 합니다.");
+        assertTrue(ex.getMessage().contains("censored"), "A security exception must be triggered when retrieving a censored revision.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 20] Revlog 파일 손상 시 비정상 오프셋 파싱 Crash 방어 테스트
+    // [New Verification Test 20] Crash Protection on Invalid Offset Parsing under Corrupted Revlog File
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Revlog 인덱스 파일 훼손에 따른 잘못된 오프셋 접근의 예외 방어 검증")
+    @DisplayName("Exception defense verification of invalid offset access due to corrupted revlog index file")
     public void testCorruptedRevlogOffsetRecovery() {
         long invalidPhysicalOffset = -9999L; 
         
@@ -444,39 +444,39 @@ public class MercurialUncoveredAndPerfTest {
             }
         });
         
-        assertTrue(ex.getMessage().contains("Invalid revlog offset"), "음수 혹은 유효하지 않은 오프셋 유입 시 안전하게 방어 예외가 발생해야 합니다.");
+        assertTrue(ex.getMessage().contains("Invalid revlog offset"), "A defensive exception must be safely thrown when a negative or invalid offset is supplied.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 21] Dirstate V1 <-> V2 양방향 마이그레이션 정합성 테스트
+    // [New Verification Test 21] Dirstate V1 <-> V2 Bidirectional Migration Consistency Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Dirstate V1에서 V2 및 역방향 포맷 변환 정합성 검증")
+    @DisplayName("Dirstate V1 to V2 and reverse format conversion consistency verification")
     public void testDirstateV1ToV2Migration() {
         Map<String, String> dirstateV1 = new HashMap<>();
         dirstateV1.put("src/main.c", "clean");
         dirstateV1.put("src/utils.h", "modified");
         
-        // V1 -> V2 이진 Serialize 모킹
+        // Mock V1 -> V2 binary serialization
         Map<String, String> dirstateV2 = new HashMap<>(dirstateV1);
         
-        // V2 -> V1 복원 모킹
+        // Mock V2 -> V1 restoration
         Map<String, String> restoredV1 = new HashMap<>(dirstateV2);
         
-        assertEquals(dirstateV1.size(), restoredV1.size(), "양방향 포맷 마이그레이션 후 파일 목록 크기가 유지되어야 합니다.");
-        assertEquals(dirstateV1.get("src/utils.h"), restoredV1.get("src/utils.h"), "양방향 마이그레이션 후 파일의 세부 상태 정보가 파리티 일치해야 합니다.");
+        assertEquals(dirstateV1.size(), restoredV1.size(), "File list size must be preserved after bidirectional format migration.");
+        assertEquals(dirstateV1.get("src/utils.h"), restoredV1.get("src/utils.h"), "Detailed file state information parity must match after bidirectional migration.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 22] Dirstate V2 copyMap 직렬화/역직렬화 검증 테스트
+    // [New Verification Test 22] Dirstate V2 copyMap Serialization and Reading Verification Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Dirstate V2 copyMap 복사이력 메타데이터 직렬화 및 판독 검증")
+    @DisplayName("Dirstate V2 copyMap copy history metadata serialization and reading verification")
     public void testDirstateV2CopyMapDeSerialization() {
         Map<String, String> copyMap = new ConcurrentHashMap<>();
         copyMap.put("new_file.txt", "old_file.txt");
         
-        // 직렬화 바이트 스트림 모킹
+        // Mock serialization byte stream
         ByteBuffer buf = ByteBuffer.allocate(100);
         byte[] sourceBytes = copyMap.get("new_file.txt").getBytes(StandardCharsets.UTF_8);
         buf.putInt(sourceBytes.length); // copySourceLen
@@ -488,30 +488,30 @@ public class MercurialUncoveredAndPerfTest {
         buf.get(readBytes);
         String decodedSource = new String(readBytes, StandardCharsets.UTF_8);
         
-        assertEquals("old_file.txt", decodedSource, "Dirstate V2 copyMap 직렬화 역직렬화 결과가 무결하게 판독되어야 합니다.");
+        assertEquals("old_file.txt", decodedSource, "Dirstate V2 copyMap serialization and deserialization results must be read successfully.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 23] Dirstate V2 mtime 나노초 정밀 타임스탬프 변화 감지 테스트
+    // [New Verification Test 23] Dirstate V2 mtime Nanosecond Resolution Timestamp Change Detection Test
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Dirstate V2 4바이트 나노초 타임스탬프를 통한 초고속 찰나의 파일 수정 식별")
+    @DisplayName("Identification of instantaneous file modification through Dirstate V2 4-byte nanosecond timestamp")
     public void testDirstateV2MtimeNanosecondsResolution() {
         long baseMtimeMs = System.currentTimeMillis();
         int nanoTime1 = 100500;
-        int nanoTime2 = 100900; // 동일 밀리초 내의 상이한 나노초
+        int nanoTime2 = 100900; // Different nanoseconds within the same millisecond
         
-        assertNotEquals(nanoTime1, nanoTime2, "상이한 나노초 타임스탬프는 다르게 감지되어야 합니다.");
+        assertNotEquals(nanoTime1, nanoTime2, "Different nanosecond timestamps must be detected as distinct.");
         
-        boolean isModified = true; // 찰나의 변동 포착
-        assertTrue(isModified, "밀리초 수준이 같더라도 나노초 필드가 다르면 modified 상태로 갱신 식별되어야 합니다.");
+        boolean isModified = true; // Capture instantaneous change
+        assertTrue(isModified, "Files should be identified as modified if the nanoseconds field differs, even if the millisecond level is the same.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 24] Dirstate V2 Docket 손상 시 V1 Fallback 안정성 테스트
+    // [New Verification Test 24] Dirstate V1 Fallback Stability on Dirstate V2 Docket Corruption
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Dirstate V2 Docket 매직 바이트 훼손 시 V1 사양 자동 폴백 작동 검증")
+    @DisplayName("Dirstate V2 Docket magic byte corruption automatic V1 specification fallback verification")
     public void testDirstateV1FallbackOnCorruptedDocket() {
         byte[] badDocketMagic = "BAD_MAGIC_XX".getBytes(StandardCharsets.UTF_8);
         boolean isV2MagicValid = new String(badDocketMagic).startsWith("dirstate-v2");
@@ -521,33 +521,33 @@ public class MercurialUncoveredAndPerfTest {
             fallbackMode = "V1"; 
         }
         
-        assertEquals("V1", fallbackMode, "Docket 매직 서명 검증 실패 시 Dirstate는 안전하게 V1 flat 모드로 폴백 기입되어야 합니다.");
+        assertEquals("V1", fallbackMode, "Dirstate must safely fallback to V1 flat mode upon Docket magic signature verification failure.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 25] 파일 시스템 대소문자 감도(Sensitivity)에 따른 경로 매핑 및 충돌 검증
+    // [New Verification Test 25] Path Mapping and Collision Verification based on File System Case Sensitivity
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Case-insensitive OS에서의 대소문자 상이 파일 경로 충돌 방어 기법 검증")
+    @DisplayName("Case-insensitive OS path collision prevention mechanism verification")
     public void testCaseInsensitiveCollisionOnCaseSensitiveFS() {
         String file1 = "README.txt";
         String file2 = "readme.txt";
         
-        boolean isCaseSensitiveFS = false; // macOS/Windows 모킹
+        boolean isCaseSensitiveFS = false; // macOS/Windows mock
         boolean collisionDetected = false;
         
         if (!isCaseSensitiveFS) {
             collisionDetected = file1.equalsIgnoreCase(file2);
         }
         
-        assertTrue(collisionDetected, "대소문자 미구분 OS 환경에서는 파일명 충돌 경고가 사전에 식별 포착되어야 합니다.");
+        assertTrue(collisionDetected, "Filenames collision warning must be identified beforehand in a case-insensitive OS environment.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 26] .hgignore 정규식 및 글로브 패턴 매칭 검증
+    // [New Verification Test 26] .hgignore Regular Expression and Glob Pattern Matching Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName(".hgignore 복합 syntax(regexp / glob) 패턴 매칭 필터링 검증")
+    @DisplayName(".hgignore complex syntax (regexp / glob) pattern matching and filtering verification")
     public void testHgIgnoreRegexpGlobPatterns() {
         // glob: *.log
         // regexp: ^temp/.*\.tmp$
@@ -557,21 +557,21 @@ public class MercurialUncoveredAndPerfTest {
         boolean match1 = targetFile1.endsWith(".log");
         boolean match2 = targetFile2.matches("^temp/.*\\.tmp$");
         
-        assertTrue(match1, "glob: *.log 무시 규칙이 정상 매칭 식별되어야 합니다.");
-        assertTrue(match2, "regexp: ^temp/.*\\.tmp$ 무시 규칙이 정상 매칭 식별되어야 합니다.");
+        assertTrue(match1, "glob: *.log ignore rule must be matched and identified correctly.");
+        assertTrue(match2, "regexp: ^temp/.*\\.tmp$ ignore rule must be matched and identified correctly.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 27] fncache 중복 폴더 meta/ 접두사 기입 방지 및 해시 매핑 방어
+    // [New Verification Test 27] Prevention of Duplicate meta/ Folder Prefix Injection in fncache and Hash Mapping Protection
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("fncache 파일 경로 인코딩 시 meta/data/ 중복 접두사 부착 방지 정밀 검증")
+    @DisplayName("Verification of preventing duplicate meta/data/ prefix attachment during fncache file path encoding")
     public void testFncacheDupFolderMetaEncodingPrevention() {
         String inputPath = "meta/data/long_nested_path.i";
         String encoded = NodeIdUtil.encodeFname(inputPath);
         
         assertNotNull(encoded);
-        // meta/data/ 가 중복해서 붙지 않고 깔끔한 단일 prefix 형태만 존재해야 함
+        // meta/data/ should not be duplicated, and only a clean single prefix should exist
         int dataCount = 0;
         int index = encoded.indexOf("data/");
         while (index != -1) {
@@ -579,37 +579,37 @@ public class MercurialUncoveredAndPerfTest {
             index = encoded.indexOf("data/", index + 1);
         }
         
-        assertTrue(dataCount <= 1, "인코딩 결과물 내에 data/ 접두사가 다중 중복 패킹되지 않아야 합니다.");
+        assertTrue(dataCount <= 1, "The data/ prefix must not be redundantly packed in the encoding output.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 28] fncache 디스크 유실 시 전체 스토어 스캐닝을 통한 자동 Rebuild 복구
+    // [New Verification Test 28] fncache Automatic Rebuild Recovery via Full Store Scanning on Disk Loss
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("fncache 파일 유실 시 디렉토리 전수 역스캔을 통한 fncache 복구율 100% 검증")
+    @DisplayName("Verification of fncache recovery via full directory reverse scanning upon fncache file loss")
     public void testFncacheRebuildRecovery() throws IOException {
         List<String> actualStoreFiles = List.of("data/file1.i", "data/dir/file2.i", "dh/hash1.i");
         
-        // fncache 파일 유실 시뮬레이션
+        // Mock fncache file loss
         boolean fncacheLost = true;
         List<String> rebuiltFncache = new ArrayList<>();
         
         if (fncacheLost) {
-            // 스토어 전수 스캔 및 fncache 복구엔진 구동
+            // Run full store scan and fncache recovery engine
             for (String file : actualStoreFiles) {
                 rebuiltFncache.add(file);
             }
         }
         
-        assertEquals(actualStoreFiles.size(), rebuiltFncache.size(), "스토어 역스캔 복원 후의 파일 수가 오차 없이 원문과 일치해야 합니다.");
-        assertTrue(rebuiltFncache.contains("data/dir/file2.i"), "중첩 경로의 물리 파일로그가 유실 없이 스캔 수집되어야 합니다.");
+        assertEquals(actualStoreFiles.size(), rebuiltFncache.size(), "The number of files after reverse store scan recovery must match the original exactly.");
+        assertTrue(rebuiltFncache.contains("data/dir/file2.i"), "Physical filelogs in nested paths must be scanned and collected without data loss.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 29] 다중 프로세스 간 OS 수준 FileLock 타임아웃 획득 실패 검증
+    // [New Verification Test 29] OS-level FileLock Timeout Acquisition Failure Verification among Multiple Processes
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("다중 프로세스 OS FileLock 충돌 시 무한 대기 차단 및 락 타임아웃 격발 검증")
+    @DisplayName("Infinite wait blocking and lock timeout trigger verification on multi-process OS FileLock collision")
     public void testMultiProcessFileLockTimeout() {
         boolean otherProcessHoldsLock = true;
         long lockTimeoutMs = 100;
@@ -624,14 +624,14 @@ public class MercurialUncoveredAndPerfTest {
             }
         });
         
-        assertTrue(ex.getMessage().contains("Failed to acquire exclusive lock"), "락 소유 실패 시 정상적으로 타임아웃 예외가 격발되어야 합니다.");
+        assertTrue(ex.getMessage().contains("Failed to acquire exclusive lock"), "A timeout exception must be triggered normally upon locking failure.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 30] Stale Lock 좀비 락 파일 감지 및 강제 해제 무결성 검증
+    // [New Verification Test 30] Stale Lock Detection and Forced Release Integrity Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("종료되지 않은 Stale wlock 파일 감지 및 수동 클리어 복구 검증")
+    @DisplayName("Verification of stale wlock file detection and manual cleanup recovery")
     public void testStaleLockFileForceCleanup() throws IOException {
         File tempDir = Files.createTempDirectory("hg4j_stale_").toFile();
         File staleWLock = new File(tempDir, "wlock");
@@ -639,21 +639,21 @@ public class MercurialUncoveredAndPerfTest {
         Files.write(staleWLock.toPath(), "mockPid".getBytes(StandardCharsets.UTF_8));
         assertTrue(staleWLock.exists());
         
-        // 좀비 락 강제 수동 정리 API 격발 모킹
+        // Mock triggering manual stale lock cleanup API
         boolean forceCleanupRequested = true;
         if (forceCleanupRequested) {
             staleWLock.delete();
         }
         
-        assertFalse(staleWLock.exists(), "강제 락 정리 프로세스 이후 wlock 파일이 완전 소거되어 다음 쓰기가 허용되어야 합니다.");
+        assertFalse(staleWLock.exists(), "The wlock file must be completely cleared after the forced lock cleanup process to allow subsequent writes.");
         tempDir.delete();
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 31] 단독 기입 트랜잭션 진행 중 캐시 무효화 바이패스 무결성 검증
+    // [New Verification Test 31] Cache Invalidation Bypass Integrity Verification during Single Write Transaction
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("AddedRecords 로컬 버퍼 트랜잭션 도중 디스크 캐시 무효화 Bypass 보증")
+    @DisplayName("AddedRecords local buffer transaction disk cache invalidation bypass guarantee")
     public void testLocalTransactionCacheBypass() {
         List<String> addedRecords = new ArrayList<>();
         addedRecords.add("Rev10-Metadata");
@@ -662,47 +662,47 @@ public class MercurialUncoveredAndPerfTest {
         boolean cacheInvalidationBypassed = false;
         
         if (transactionRunning) {
-            // 캐시 강제 무효화 연산을 바이패스함
+            // Bypass forced cache invalidation operation
             cacheInvalidationBypassed = true;
         }
         
-        assertTrue(cacheInvalidationBypassed, "로컬 트랜잭션 진행 중에는 메모리 무결성 수호를 위해 캐시 갱신 연산이 바이패스되어야 합니다.");
+        assertTrue(cacheInvalidationBypassed, "The cache update operation must be bypassed during a local transaction to preserve memory integrity.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 32] 트랜잭션 장애 주입 저널 롤백 무결성 검증
+    // [New Verification Test 32] Transaction Fault Injection Journal Rollback Integrity Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("커밋 중간 고장 유발에 따른 store/journal undo 백업본 100% 롤백 검증")
+    @DisplayName("Verification of store/journal undo backup rollback upon mid-commit failure")
     public void testJournalRollbackCrashRecovery() throws IOException {
         File tempDir = Files.createTempDirectory("hg4j_rollback_").toFile();
         File revlogFile = new File(tempDir, "revlog.i");
         File journalFile = new File(tempDir, "journal");
         
-        // 초기 정상 상태
-        Files.write(revlogFile.toPath(), new byte[100]); // 100바이트
+        // Initial normal state
+        Files.write(revlogFile.toPath(), new byte[100]); // 100 bytes
         
-        // 트랜잭션 시작 - 저널 기록 (장애 백업용 원본 크기 100)
+        // Start transaction - journal write (original size 100 for fault backup)
         Files.write(journalFile.toPath(), "revlog.i\n100".getBytes(StandardCharsets.UTF_8));
         
-        // 쓰기 도중 디스크 풀 혹은 IO 에러 장애 유입 시뮬레이션
-        Files.write(revlogFile.toPath(), new byte[250]); // 250바이트로 커진 상태에서 중단 에러
+        // Simulate disk full or IO error fault during write
+        Files.write(revlogFile.toPath(), new byte[250]); // Stopped due to error after growing to 250 bytes
         boolean commitFailed = true;
         
-        // 롤백 복구 모킹 격발
+        // Trigger mock rollback recovery
         if (commitFailed && journalFile.exists()) {
             List<String> journalLines = Files.readAllLines(journalFile.toPath());
             String targetFile = journalLines.get(0);
             int originalSize = Integer.parseInt(journalLines.get(1));
             
-            // 물리 크기 원복
+            // Restore physical size
             try (java.nio.channels.FileChannel outChan = java.nio.channels.FileChannel.open(revlogFile.toPath(), 
                     java.nio.file.StandardOpenOption.WRITE)) {
                 outChan.truncate(originalSize);
             }
         }
         
-        assertEquals(100, revlogFile.length(), "장애 복구 완료 후 리비전 인덱스 파일 크기는 롤백 이전 상태인 100바이트로 복원되어야 합니다.");
+        assertEquals(100, revlogFile.length(), "The revision index file size must be restored to 100 bytes, which is the pre-rollback state, after recovery.");
         
         revlogFile.delete();
         journalFile.delete();
@@ -710,10 +710,10 @@ public class MercurialUncoveredAndPerfTest {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 33] SSH stdio V2 에러 프레임 감지 및 네트워크 예외 격리 검증
+    // [New Verification Test 33] SSH stdio V2 Error Frame Detection and Network Exception Isolation Verification
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("SSH Stdio V2 에러 채널(Channel 2) 패킷 수신 시의 즉각 예외 전파 검증")
+    @DisplayName("Immediate exception propagation upon receiving SSH Stdio V2 error channel (Channel 2) packet")
     public void testSshErrorFramePropagation() {
         byte channelId = 2; // SSH V2 StdErr Channel
         byte[] payload = "Remote: store directory corrupted!".getBytes(StandardCharsets.UTF_8);
@@ -724,14 +724,14 @@ public class MercurialUncoveredAndPerfTest {
             }
         });
         
-        assertTrue(ex.getMessage().contains("corrupted"), "SSH 에러 채널 감지 즉시 접속 무한 루프 차단 및 예외가 격발되어야 합니다.");
+        assertTrue(ex.getMessage().contains("corrupted"), "An exception must be triggered immediately upon SSH error channel detection to prevent infinite connection loops.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [신규 보강 테스트 34] Phase Roots (Public/Draft/Secret) 기반 커밋 푸시 차단 검증
+    // [New Verification Test 34] Commit Push Restriction based on Phase Roots (Public/Draft/Secret)
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("Secret Phase 리비전의 원격 Push 전송 완벽 격리 및 은폐 검증")
+    @DisplayName("Verification of complete segregation of Secret phase revisions from remote push transmissions")
     public void testPhaseRootsTransmissionSegregation() {
         int phaseSecret = 2;
         int phaseDraft = 1;
@@ -749,17 +749,17 @@ public class MercurialUncoveredAndPerfTest {
             }
         }
         
-        assertEquals(1, pushPayload.size(), "푸시 전송 명단에는 Secret 리비전이 완벽하게 차단되어 1개만 탑재되어야 합니다.");
-        assertEquals(100, pushPayload.get(0), "Draft 리비전(100)만 정상적으로 푸시 대상으로 식별 전송되어야 합니다.");
+        assertEquals(1, pushPayload.size(), "Only one revision must be included in the push list as the Secret revision is restricted.");
+        assertEquals(100, pushPayload.get(0), "Only the Draft revision (100) should be identified and sent for pushing.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [BUG-04 및 BUG-08 버그 타격 감정 전용 테스트]
+    // [Bug Verification Tests for BUG-04 and BUG-08]
     // ─────────────────────────────────────────────────────────────
     @Test
-    @DisplayName("BUG-04 — Myers Diff 백트래킹 diagonal 인덱스 경계 초과 AIOOBE 방어 검증")
+    @DisplayName("BUG-04 — Myers Diff backtracking diagonal index out-of-bounds AIOOBE defense verification")
     public void testBug04MyersDiffBacktrackingBoundary() {
-        // 완전히 이질적인 대형 난수 텍스트를 흘려보내 복잡한 LCS 백트래킹 연산 유도
+        // Stream complex random texts to trigger complex LCS backtracking computations
         StringBuilder sb1 = new StringBuilder();
         StringBuilder sb2 = new StringBuilder();
         Random r = new Random(104);
@@ -771,15 +771,15 @@ public class MercurialUncoveredAndPerfTest {
         byte[] base = sb1.toString().getBytes(StandardCharsets.UTF_8);
         byte[] target = sb2.toString().getBytes(StandardCharsets.UTF_8);
         
-        // 백트래킹 diagonal 연산 중 ArrayIndexOutOfBoundsException이 절대 격발하지 않고 무사 완수됨을 단언
+        // Assert that ArrayIndexOutOfBoundsException is not thrown during backtracking diagonal computation
         assertDoesNotThrow(() -> {
             byte[] delta = DeltaEngine.createDelta(base, target);
             assertNotNull(delta);
-        }, "LCS 백트래킹 diagonal 경계 계산 중 AIOOBE 예외가 터져선 안 됩니다.");
+        }, "AIOOBE exception must not be thrown during LCS backtracking diagonal boundary computation.");
     }
 
     @Test
-    @DisplayName("BUG-08 — encodeFname() 초장기 경로 dh/ 해싱 시 native hg 규격(dh/<sha1>) Parity 검증")
+    @DisplayName("BUG-08 — encodeFname() long path dh/ hashing native hg specification (dh/<sha1>) parity verification")
     public void testBug08EncodeFnameDhPatternNativeParity() {
         String superLongDir = "data/very/deep/" + "nested/".repeat(30);
         String filename = superLongDir + "my_file.txt";
@@ -787,28 +787,28 @@ public class MercurialUncoveredAndPerfTest {
         String encoded = NodeIdUtil.encodeFname(filename);
         assertNotNull(encoded);
         
-        // native hg 스펙상 255바이트 초과 경로는 dh/ 접두사와 단일 40자 sha1 해시만 존재해야 함.
-        // 만약 dh/<hash>_<suffix> 등 불필요한 suffix가 부착되면 native hg와 리포지토리를 공유할 때 (interop) 파일을 읽어오지 못함.
+        // According to the native hg specification, paths exceeding 255 bytes must only consist of the dh/ prefix and a single 40-character sha1 hash.
+        // If an unnecessary suffix like dh/<hash>_<suffix> is attached, the file cannot be read when sharing the repository with native hg (interop).
         if (encoded.startsWith("dh/")) {
             String hashPart = encoded.substring(3);
-            // suffix 구분 기호인 '_'가 존재하지 않고 오직 순수한 sha1 hex(40자)만 남겨져 있는지 단언 검증
-            // (참고: hg4j 고유의 suffix 부착 설계 적용 시 assertion warning 단언)
+            // Verify that the suffix delimiter '_' is absent and only the pure sha1 hex (40 characters) remains.
+            // (Note: Assertion warning if hg4j-specific suffix design is applied)
             boolean hasSuffix = hashPart.contains("_");
             if (hasSuffix) {
-                System.out.println("[Warning] NodeIdUtil.encodeFname이 hg4j 고유의 dh/<hash>_<suffix> 하이브리드 포맷을 사용하여 native hg 와의 바이너리 호환성(Parity) 격차 경계가 감지되었습니다.");
+                System.out.println("[Warning] NodeIdUtil.encodeFname is using a hybrid dh/<hash>_<suffix> format, indicating a binary compatibility gap with native hg.");
             }
-            assertTrue(encoded.startsWith("dh/"), "초장기 경로는 반드시 dh/ 접두사 구조를 품어야 합니다.");
+            assertTrue(encoded.startsWith("dh/"), "Long paths must begin with the dh/ prefix structure.");
         }
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [BUG-04, 05, 07, 12, 13 완치 정밀 검증 단위 테스트 세트]
+    // [Verification Test Suite for Fixed Bugs: BUG-04, 05, 07, 12, 13]
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("testMyersDiffBacktrackingPathParity — Myers Diff 백트래킹 복원 무결성 검증 (BUG-04 완치)")
+    @DisplayName("testMyersDiffBacktrackingPathParity — Myers Diff backtracking restoration integrity verification (Fixed BUG-04)")
     public void testMyersDiffBacktrackingPathParity() throws Exception {
-        // simpleDelta 폴백을 완벽히 차단하기 위해 중간에 거대한 공통 블록(50KB)을 2개 배치
+        // Place two large common blocks (50KB) in the middle to prevent simpleDelta fallback
         String largeCommon1 = "Common-Block-1-".repeat(3000) + "\n";
         String largeCommon2 = "Common-Block-2-".repeat(3000) + "\n";
         
@@ -831,30 +831,30 @@ public class MercurialUncoveredAndPerfTest {
         
         byte[] delta = DeltaEngine.createDelta(base, target);
         
-        // simpleDelta(약 100KB)가 아닌 multiHunkDelta(약 150바이트 미만)가 반환되었는지 단언 검증하여 폴백 여부 확인
+        // Verify that multiHunkDelta (less than 150 bytes) is returned instead of simpleDelta (approx. 100KB)
         assertTrue(delta.length < 1000, "Delta size should be very small (multi-hunk) and must not fall back to simpleDelta: size=" + delta.length);
         
         byte[] restored = DeltaEngine.applyDelta(base, delta);
-        assertArrayEquals(target, restored, "델타 적용 후 복원된 텍스트가 타겟 텍스트와 완벽히 일치해야 합니다.");
+        assertArrayEquals(target, restored, "Restored text after applying delta must match the target text exactly.");
     }
 
     @Test
-    @DisplayName("testDirstateV2MtimeYear2038Parity — 2038년 이후 unsigned 32비트 mtime 무손실 복원 검증 (BUG-05 완치)")
+    @DisplayName("testDirstateV2MtimeYear2038Parity — Unsigned 32-bit mtime post-2038 restoration verification (Fixed BUG-05)")
     public void testDirstateV2MtimeYear2038Parity() {
         long year2040Mtime = 2208988800L; // 2040-01-01 00:00:00 UTC
         int maskedInt = (int) (year2040Mtime & 0xFFFFFFFFL);
         long restoredMtime = maskedInt & 0xFFFFFFFFL;
-        assertEquals(year2040Mtime, restoredMtime, "2038년 이후 mtime 역시 무손실로 32비트 unsigned 복원되어야 합니다.");
+        assertEquals(year2040Mtime, restoredMtime, "mtime post-2038 must also be restored correctly as a 32-bit unsigned integer.");
     }
 
     @Test
-    @DisplayName("testRebuildDirstateManifestLossPrevention — Dirstate 비상 재건 시 copyMap 및 상태 보존 검증 (BUG-07 완치)")
+    @DisplayName("testRebuildDirstateManifestLossPrevention — copyMap and state preservation verification during Dirstate emergency rebuild (Fixed BUG-07)")
     public void testRebuildDirstateManifestLossPrevention() throws Exception {
         Dirstate dirstate = new Dirstate();
         dirstate.addEntry("file1.txt", new Dirstate.Entry('a', 0100644, 100, 1000));
         dirstate.getCopyMap().put("file1.txt", "source_file.txt");
         
-        // 상태 구출 로직 시뮬레이션
+        // Simulate state rescue logic
         Map<String, String> originalCopyMap = new HashMap<>(dirstate.getCopyMap());
         Map<String, Character> originalStates = new HashMap<>();
         for (Map.Entry<String, Dirstate.Entry> ent : dirstate.getEntries().entrySet()) {
@@ -863,14 +863,14 @@ public class MercurialUncoveredAndPerfTest {
             }
         }
         
-        // 임의의 재건 진행 (normal 상태가 아닌 원본 보존 검증)
+        // Perform arbitrary rebuild (verify original state preservation instead of 'normal')
         char state = originalStates.getOrDefault("file1.txt", 'n');
-        assertEquals('a', state, "재건 과정에서 Added('a') 상태가 유실 없이 계승되어야 합니다.");
-        assertEquals("source_file.txt", originalCopyMap.get("file1.txt"), "copyMap 정보 역시 안전하게 보존되어야 합니다.");
+        assertEquals('a', state, "Added ('a') state must be preserved without loss during rebuild.");
+        assertEquals("source_file.txt", originalCopyMap.get("file1.txt"), "copyMap information must also be safely preserved.");
     }
 
     @Test
-    @DisplayName("testLogCommandFromHexRefactoringParity — LogCommand 내 NodeIdUtil.fromHex 리팩토링 검증 (BUG-12 완치)")
+    @DisplayName("testLogCommandFromHexRefactoringParity — NodeIdUtil.fromHex refactoring verification in LogCommand (Fixed BUG-12)")
     public void testLogCommandFromHexRefactoringParity() {
         String hex = "2b17691a24d773c2c5cbe83842c2d43e264627de";
         byte[] expected = org.hg4j.core.NodeIdUtil.fromHex(hex);
@@ -879,7 +879,7 @@ public class MercurialUncoveredAndPerfTest {
     }
 
     @Test
-    @DisplayName("testCommitCommandRollbackMultipleFaultIgnoredProtection — 롤백 2차 예외 suppression 누적 검증 (BUG-13 완치)")
+    @DisplayName("testCommitCommandRollbackMultipleFaultIgnoredProtection — Rollback secondary exception suppression accumulation verification (Fixed BUG-13)")
     public void testCommitCommandRollbackMultipleFaultIgnoredProtection() {
         Exception primary = new Exception("Primary commit failure");
         Exception secondary = new IOException("Secondary rollback IO failure");
@@ -887,113 +887,113 @@ public class MercurialUncoveredAndPerfTest {
         primary.addSuppressed(secondary);
         
         Throwable[] suppressed = primary.getSuppressed();
-        assertEquals(1, suppressed.length, "2차 예외가 suppressed 예외로 정상적으로 추가되어야 합니다.");
+        assertEquals(1, suppressed.length, "Secondary exception must be added normally as a suppressed exception.");
         assertEquals(secondary, suppressed[0]);
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [Native Mercurial 상호 운용성(Interop) 정밀 진단 격차 체크 테스트 세트]
+    // [Native Mercurial Interoperability (Interop) Gap Diagnostic Test Suite]
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("Interop-C-2 — HTTP Remote Client의 heads 응답 스페이스 구분 파싱 스펙 격차 체크")
+    @DisplayName("Interop-C-2 — HTTP Remote Client heads response space delimiter parsing specification gap check")
     public void testHttpRemoteClientGetHeadsResponseParsingParity() {
         String mockHeadsResponse = "2b17691a24d773c2c5cbe83842c2d43e264627de 8e4b789124d773c2c5cbe83842c2d43e264627aa\n";
         
-        // hg4j의 HTTP getHeads가 전통적으로 split("\n")을 사용하여 노드 ID를 1개의 복합 원소로 잘못 처리하는 격차 체크
+        // Verify the gap where hg4j's HTTP getHeads traditionally used split("\n"), erroneously treating node IDs as a single composite element
         String[] rawLines = mockHeadsResponse.split("\\n");
         assertEquals(1, rawLines.length);
         
-        // 올바른 native hg 스페이스 딜리미터 스플릿 파이프라인
+        // Correct native hg space delimiter split pipeline
         String[] cleanHeads = mockHeadsResponse.trim().split("\\s+");
-        assertEquals(2, cleanHeads.length, "HTTP heads 응답은 개행이 아닌 공백 기준으로 스플릿해야 올바른 상호운용성이 성립됩니다.");
+        assertEquals(2, cleanHeads.length, "HTTP heads response must be split based on whitespace, not newlines, to ensure proper interoperability.");
     }
 
     @Test
-    @DisplayName("Interop-H-1 — Bundle2 파서의 스트림 파라미터 2바이트 필드폭 스펙 격차 체크")
+    @DisplayName("Interop-H-1 — Bundle2 parser stream parameter 2-byte field width specification gap check")
     public void testBundle2ParserParamsSizeByteWidthMismatch() throws IOException {
-        // HG20 스펙: params_size는 2바이트 Big-Endian unsigned short
-        // 만약 서버가 14바이트 파라미터를 보낼 때 (0x00 0x0E)
+        // HG20 Specification: params_size is a 2-byte Big-Endian unsigned short
+        // If the server sends a 14-byte parameter (0x00 0x0E)
         byte[] mockHG20Header = new byte[] { 0x00, 0x0E }; // params_size = 14
         
         java.io.DataInputStream dis = new java.io.DataInputStream(new java.io.ByteArrayInputStream(mockHG20Header));
         
-        // 현재 1바이트 읽기 시 paramsSize = 0 (0x00)
+        // Currently, reading 1 byte yields paramsSize = 0 (0x00)
         int readAsByte = dis.readUnsignedByte();
-        assertEquals(0, readAsByte, "1바이트로 읽을 경우 paramsSize가 0으로 왜곡되어 압축 파라미터 감지 누수가 일어납니다.");
+        assertEquals(0, readAsByte, "Reading as 1 byte yields paramsSize as 0, which misses compression parameter detection.");
         
-        // 올바른 native hg 2바이트 읽기
+        // Correct native hg 2-byte read
         dis = new java.io.DataInputStream(new java.io.ByteArrayInputStream(mockHG20Header));
         int readAsShort = dis.readUnsignedShort();
-        assertEquals(14, readAsShort, "Mercurial Bundle2 스펙에 맞춰 2바이트(readUnsignedShort)로 파싱해야만 갭이 예방됩니다.");
+        assertEquals(14, readAsShort, "Parsing as 2-byte (readUnsignedShort) aligned with Mercurial Bundle2 specification prevents this gap.");
     }
 
     @Test
-    @DisplayName("Interop-H-3 — CommitCommand의 복사 추적(copyrev) 원본 파일 NodeID 조회 검증")
+    @DisplayName("Interop-H-3 — CommitCommand copy history (copyrev) origin file NodeID lookup verification")
     public void testCommitCommandCopyrevOriginNodeIdLookupMismatch() {
         String originalPath = "src/original.txt";
-        // 복사 대상인 신설 파일의 parent 1 node ID (보통 all-zero)
+        // Parent 1 node ID of the newly created file to be copied (typically all-zero)
         String p1NodeId = "0000000000000000000000000000000000000000";
         
-        // 올바른 native hg 사양: 복사 원본 originalPath의 실제 부모 커밋 내 NodeID를 조회해야 함
+        // Correct native hg specification: actual parent commit's NodeID of originalPath must be looked up
         String mockSourceHex = "2b17691a24d773c2c5cbe83842c2d43e264627de";
         
-        // hg4j 구버전 결함: copyrev에 p1NodeId(all-zero)를 그대로 매핑해 복사 히스토리가 증발하는 격차
-        assertNotEquals(p1NodeId, mockSourceHex, "copyrev는 목적지 parent가 아닌 복사 원본 파일의 원천 NodeID를 매핑해야 상호운용성 verify를 통과합니다.");
+        // Old hg4j defect: copyrev is mapped to p1NodeId (all-zero), which loses the copy history
+        assertNotEquals(p1NodeId, mockSourceHex, "copyrev must map to the source file's original NodeID, not the destination parent, to pass interoperability verification.");
     }
 
     @Test
-    @DisplayName("Interop-M-2 — Journal 복구용 크기 구분자 NUL byte 호환성 격차 체크")
+    @DisplayName("Interop-M-2 — Journal recovery size delimiter NUL byte compatibility gap check")
     public void testJournalFormatDelimiterMismatch() {
-        // hg4j 내부 포맷 구분자: '\t'
+        // hg4j internal format delimiter: '\t'
         char hg4jDelimiter = '\t';
-        // Native Mercurial 저널 규격 구분자: '\0'
+        // Native Mercurial journal specification delimiter: '\0'
         char nativeHgDelimiter = '\0';
         
-        assertNotEquals(hg4jDelimiter, nativeHgDelimiter, "저널 트랜잭션 롤백 공유를 위해 크기 구분자로 탭대신 NUL byte를 사용해야 native hg verify와 호환됩니다.");
+        assertNotEquals(hg4jDelimiter, nativeHgDelimiter, "A NUL byte instead of a tab must be used as the size delimiter for journal transaction rollback sharing to be compatible with native hg verification.");
     }
 
     // ─────────────────────────────────────────────────────────────
-    // [BUG-04 Myers Diff 경계 초과 및 BUG-05 Dirstate 2106년 초과 심층 한계 테스트]
+    // [Deep Limit Tests for BUG-04 Myers Diff Boundary and BUG-05 Dirstate Post-2106]
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("testBug04MyersDiffBacktrackingOffsetAnomaly — Myers Diff 백트래킹 경계 초과 및 오프셋 어긋남 결함 입증")
+    @DisplayName("testBug04MyersDiffBacktrackingOffsetAnomaly — Myers Diff backtracking boundary violation and offset mismatch defect verification")
     public void testBug04MyersDiffBacktrackingOffsetAnomaly() {
         int d = 3;
         int dPrev = d - 1; // 2
-        int[] vPrev = new int[2 * dPrev + 1]; // 크기 5 (유효 인덱스 0~4)
+        int[] vPrev = new int[2 * dPrev + 1]; // Size 5 (valid index 0~4)
         
-        // k 대각선이 경계선(k = d = 3)에 있을 때 idxPlus 계산
+        // Compute idxPlus when the k diagonal is on the boundary (k = d = 3)
         int k = d;
         int idxPlus = k + 1 + dPrev; // 3 + 1 + 2 = 6
         
-        // 인덱스 6은 vPrev의 유효 범위 [0, 4]를 1초과(실제로는 2초과)하여 AIOOBE를 유발합니다.
-        assertTrue(idxPlus >= vPrev.length, "경계 대각선 k=d일 때 idxPlus 계산식은 vPrev의 최대 인덱스를 확실히 초과하는 아키텍처 갭이 존재합니다.");
+        // Index 6 exceeds the valid range [0, 4] of vPrev, causing an AIOOBE
+        assertTrue(idxPlus >= vPrev.length, "The idxPlus formula when the boundary diagonal k=d exceeds the maximum index of vPrev, representing an architectural gap.");
     }
 
     @Test
-    @DisplayName("testBug05DirstateTimePost2106TruncationAndApiExposureGap — 2106년 이후 mtime 직렬화 절단 유실 및 API 노출 공백 검증")
+    @DisplayName("testBug05DirstateTimePost2106TruncationAndApiExposureGap — mtime serialization truncation loss and API exposure gap verification post-2106")
     public void testBug05DirstateTimePost2106TruncationAndApiExposureGap() {
-        // 2107-01-01 00:00:00 UTC 타임스탬프 (4323456000L)
+        // 2107-01-01 00:00:00 UTC timestamp (4323456000L)
         long post2106Mtime = 4323456000L; 
         
-        // 1) 32비트 unsigned 영역 한계(4,294,967,295L) 초과
-        assertTrue(post2106Mtime > 0xFFFFFFFFL, "2106년 이후 타임스탬프는 32비트 unsigned 정수 범위를 초과해야 합니다.");
+        // 1) Exceed the 32-bit unsigned limit (4,294,967,295L)
+        assertTrue(post2106Mtime > 0xFFFFFFFFL, "Timestamps post-2106 must exceed the 32-bit unsigned integer range.");
         
-        // 2) 직렬화 마스킹 시 상위 비트 영구 절단 발생 입증
+        // 2) Verify permanent truncation of upper bits during serialization masking
         int maskedInt = (int) (post2106Mtime & 0xFFFFFFFFL);
         long restoredMtime = maskedInt & 0xFFFFFFFFL;
         
-        // 원래 4323456000L이 아니라 28488704L(상위 비트가 날아가고 남은 찌꺼기 시간)로 왜곡 복원됨을 실증
-        assertNotEquals(post2106Mtime, restoredMtime, "2106년 이후 시간은 상위 비트 절단으로 인해 엉뚱한 과거로 왜곡 유실됩니다.");
+        // Demonstrates that it is restored incorrectly as 28488704L instead of 4323456000L due to upper bit truncation
+        assertNotEquals(post2106Mtime, restoredMtime, "Timestamps post-2106 are lost and corrupted to a past date due to upper bit truncation.");
         
-        // 3) API 노출 공백 검증: Entry.getTime()이 long 타입임에도 불구하고 32비트 한계에 대한 경고나 예외를 던지지 않는 공백 단언
+        // 3) API Exposure Gap Verification: Assert that Entry.getTime() accepts long but does not throw warnings or exceptions for the 32-bit limit
         Dirstate.Entry entry = new Dirstate.Entry('n', 0100644, 100, post2106Mtime);
         
-        // 예외나 경고 없이 조용히 잘못된 시간값이 수용되어 직렬화 엔진으로 넘어가는 API 계약 누설 결함 입증
+        // Proves the API contract leak defect where the incorrect time value is accepted silently without warnings/exceptions
         assertDoesNotThrow(() -> {
             entry.getTime();
-        }, "Entry API가 long을 수용하면서도 직렬화 한계(32비트)를 경고/차단하지 않는 설계적 갭이 존재합니다.");
+        }, "An architectural gap exists where the Entry API accepts long but does not warn/restrict against the 32-bit serialization limit.");
     }
 }

@@ -6,7 +6,7 @@ import java.io.OutputStream;
 import java.io.IOException;
 
 /**
- * JSch 라이브러리의 Session 및 ChannelExec을 SshSession 추상 인터페이스로 감싸는 어댑터 구현체입니다.
+ * Adapter implementation wrapping JSch library's Session and ChannelExec with the SshSession abstract interface.
  */
 public class JschSshSession implements SshSession {
     private final Session session;
@@ -31,7 +31,7 @@ public class JschSshSession implements SshSession {
             throw new IllegalStateException("SSH Session is not connected");
         }
         channel = (ChannelExec) session.openChannel("exec");
-        channel.setAgentForwarding(true); // SSH Agent forwarding 활성화
+        channel.setAgentForwarding(true); // Enable SSH Agent forwarding
         channel.setCommand(command);
         this.in = channel.getInputStream();
         this.out = channel.getOutputStream();

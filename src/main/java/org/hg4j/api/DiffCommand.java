@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 두 리비전 사이의 변경 사항(Diff)을 계산하여 각 파일별 Unified Diff 차이점을 제공하는 명령입니다.
+ * Command to compute differences (diff) between two revisions and provide Unified Diff format per file.
  */
 public class DiffCommand {
     private final HgRepository repository;

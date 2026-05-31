@@ -157,38 +157,38 @@ public class Dirstate {
         }
         byte[] bytes = Files.readAllBytes(file.toPath());
 
-        // dirstate-v2 docket magic bytes 감지 (정식 12바이트 스펙)
+        // Detect dirstate-v2 docket magic bytes (official 12-byte specification)
         if (bytes.length >= 12) {
             String magicStr = new String(bytes, 0, 12, StandardCharsets.US_ASCII);
             if ("dirstate-v2\n".equals(magicStr)) {
                 ByteBuffer docketBuf = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
 
-                // parents (오프셋 12에서 32바이트, 오프셋 44에서 32바이트)
+                // parents (32 bytes at offset 12, 32 bytes at offset 44)
                 byte[] p1_32 = new byte[32];
                 byte[] p2_32 = new byte[32];
                 docketBuf.position(12);
                 docketBuf.get(p1_32);
                 docketBuf.get(p2_32);
 
-                // parents의 유효 노드 ID는 앞 20바이트임
+                // The valid Node ID of the parents is the first 20 bytes
                 byte[] p1 = new byte[20];
                 byte[] p2 = new byte[20];
                 System.arraycopy(p1_32, 0, p1, 0, 20);
                 System.arraycopy(p2_32, 0, p2, 0, 20);
 
-                // data_length (오프셋 120에서 4바이트 int)
+                // data_length (4-byte int at offset 120)
                 int dataLength = docketBuf.getInt(120);
 
-                // uid_size (오프셋 124에서 1바이트)
+                // uid_size (1 byte at offset 124)
                 int uidSize = docketBuf.get(124) & 0xFF;
 
-                // uid (오프셋 125부터 uidSize 바이트)
+                // uid (uidSize bytes starting from offset 125)
                 byte[] uidBytes = new byte[uidSize];
                 docketBuf.position(125);
                 docketBuf.get(uidBytes);
                 String uid = new String(uidBytes, StandardCharsets.US_ASCII);
 
-                // .hg/dirstate.d.<uid> 데이터 파일 로드
+                // Load .hg/dirstate.d.<uid> data file
                 File dataFile = new File(file.getParentFile(), "dirstate.d." + uid);
                 if (!dataFile.exists()) {
                     throw new org.hg4j.errors.HgCorruptDataException("Dirstate-v2 data file not found for uid: " + uid);
@@ -232,9 +232,9 @@ public class Dirstate {
                 buf.put((byte) entry.getState());
                 buf.putInt(entry.getMode());
                 buf.putInt(entry.getSize());
-                // BUG-05 완치 주석: 자바의 2의 보수 부호 확장 특성 상, 64비트 mtime을 & 0xFFFFFFFFL로 마스킹하여 32비트 int로 
-                // 강제 캐스팅(downcast)하더라도, 복원 시 다시 0xFFFFFFFFL과의 비트 논리곱을 통해 복구하면 2038년~2106년 범위의 
-                // unsigned 32비트 시간 정보가 비트 유실 없이 무손실로 고스란히 보존 및 복원됩니다.
+                // BUG-05: Due to Java's two's complement sign extension, even if the 64-bit mtime is masked with & 0xFFFFFFFFL 
+                // and cast to a 32-bit int, masking it again with & 0xFFFFFFFFL during restoration ensures that the unsigned 32-bit 
+                // time information in the 2038-2106 range is preserved and restored without data loss.
                 buf.putInt((int) (entry.getTime() & 0xFFFFFFFFL)); // Mask safely to 32-bit for serialization
                 buf.putInt(pathBytes.length);
                 out.write(buf.array());
@@ -253,8 +253,8 @@ public class Dirstate {
         }
 
         if (isV2) {
-            // W-LEAK: 쓰기 전에 기존의 docket 파일(`.hg/dirstate`)이 존재한다면,
-            // 그것을 읽어 old uid를 확인해야 한다!
+            // W-LEAK: If the existing docket file (`.hg/dirstate`) is present before writing,
+            // read it to determine the old uid.
             String oldUid = null;
             if (file.exists()) {
                 try {
@@ -271,40 +271,40 @@ public class Dirstate {
                         }
                     }
                 } catch (Exception ignored) {
-                    // 예전 파일이 손상되었거나 파싱할 수 없는 상태라면 무시
+                    // Ignore if the old file is corrupt or cannot be parsed
                 }
             }
 
-            // 1. 데이터 파일 내용 직렬화
+            // 1. Serialize data file content
             byte[] dataBytes = DirstateV2Serializer.serialize(this);
 
-            // 2. 고유 UID 생성 (임의의 UUID 형태)
+            // 2. Generate a unique UID (in the form of a random UUID)
             String uid = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16);
 
-            // 3. 데이터 파일 .hg/dirstate.d.<uid> 쓰기
+            // 3. Write data file .hg/dirstate.d.<uid>
             File dataFile = new File(file.getParentFile(), "dirstate.d." + uid);
             SafeFileIO.writeAtomic(dataFile, dataBytes);
 
-            // 4. Docket 바이트 조립
+            // 4. Assemble Docket bytes
             byte[] uidBytes = uid.getBytes(StandardCharsets.US_ASCII);
             int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
             ByteBuffer docketBuf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
 
-            // Magic (12바이트): "dirstate-v2\n"
+            // Magic (12 bytes): "dirstate-v2\n"
             byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
             docketBuf.put(v2Magic);
 
-            // P1 (32바이트, 20바이트 해시 + 12바이트 0패딩)
+            // P1 (32 bytes, 20-byte hash + 12-byte zero padding)
             byte[] p1_32 = new byte[32];
             System.arraycopy(parent1.getBytes(), 0, p1_32, 0, 20);
             docketBuf.put(p1_32);
 
-            // P2 (32바이트, 20바이트 해시 + 12바이트 0패딩)
+            // P2 (32 bytes, 20-byte hash + 12-byte zero padding)
             byte[] p2_32 = new byte[32];
             System.arraycopy(parent2.getBytes(), 0, p2_32, 0, 20);
             docketBuf.put(p2_32);
 
-            // Tree Metadata (44바이트): root_nodes (start=0 [4B] + count=rootCount [4B]) + nodes_with_entry_count [4B] + nodes_with_copy_source_count [4B] + 28바이트 0패딩
+            // Tree Metadata (44 bytes): root_nodes (start=0 [4B] + count=rootCount [4B]) + nodes_with_entry_count [4B] + nodes_with_copy_source_count [4B] + 28-byte zero padding
             java.util.Set<String> rootSegments = new java.util.HashSet<>();
             for (String path : entries.keySet()) {
                 int slashIdx = path.indexOf('/');
@@ -325,19 +325,19 @@ public class Dirstate {
 
             docketBuf.put(treeMetadataBytes);
 
-            // Data length (4바이트 int)
+            // Data length (4-byte int)
             docketBuf.putInt(dataBytes.length);
 
-            // UID Size (1바이트)
+            // UID Size (1 byte)
             docketBuf.put((byte) uidBytes.length);
 
-            // UID (가변)
+            // UID (variable)
             docketBuf.put(uidBytes);
 
-            // 5. Docket 파일 쓰기
+            // 5. Write Docket file
             SafeFileIO.writeAtomic(file, docketBuf.array());
 
-            // 6. W-LEAK: 예전 데이터 파일 삭제
+            // 6. W-LEAK: Delete the old data file
             if (oldUid != null && !oldUid.equals(uid)) {
                 File oldDataFile = new File(file.getParentFile(), "dirstate.d." + oldUid);
                 Files.deleteIfExists(oldDataFile.toPath());
@@ -345,7 +345,7 @@ public class Dirstate {
             return;
         }
 
-        // v1 쓰기
+        // v1 write
         byte[] bytes = serialize();
         SafeFileIO.writeAtomic(file, bytes);
     }

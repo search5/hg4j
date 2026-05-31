@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * TDD 검증: Concurrent Read 안전성, 신규 훅 4종 발화, Lazy Walk, 그리고 RevFilter 연동 테스트 스위트
+ * TDD Verification: Test suite for concurrent read safety, triggering of 4 new hook types, lazy walk, and RevFilter integration
  */
 public class HgConcurrentAndHookTest {
 
@@ -85,7 +85,7 @@ public class HgConcurrentAndHookTest {
     public void testNewHooksTriggered() throws Exception {
         File repoDir = new File(tempDir, "hooks_repo");
         
-        // 1. 저장소 초기화 및 기본 커밋 생성
+        // 1. Initialize repository and create a baseline commit
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
         
@@ -94,7 +94,7 @@ public class HgConcurrentAndHookTest {
         hg.add().addFile("file1.txt").call();
         byte[] firstCommit = hg.commit().setAuthor("tester").setMessage("First Commit").call();
 
-        // 2. 훅 등록 카운터
+        // 2. Hook registration counters
         AtomicInteger postUpdateTriggerCount = new AtomicInteger(0);
         AtomicInteger postMergeTriggerCount = new AtomicInteger(0);
         AtomicInteger postGraftTriggerCount = new AtomicInteger(0);
@@ -121,26 +121,26 @@ public class HgConcurrentAndHookTest {
             return true;
         });
 
-        // 3. POST_UPDATE 훅 검증
+        // 3. Verify POST_UPDATE hook
         hg.update().setRevision(org.hg4j.core.NodeIdUtil.toHex(firstCommit)).setForce(true).call();
         assertEquals(1, postUpdateTriggerCount.get());
 
-        // 4. 나머지 훅은 등록 메소드 및 예외상황/완료시 동작 여부만 검증하여 테스트 견고화
-        // GraftCommand 훅 직접 격리 호출
+        // 4. Verify remaining hooks for registration methods and behavior during exceptions/completion
+        // Call GraftCommand hook directly in isolation
         GraftCommand graftCmd = hg.graft().setSource(org.hg4j.core.NodeIdUtil.toHex(firstCommit));
         try {
             graftCmd.call();
         } catch (Exception ignored) {
         }
         
-        // RebaseCommand 훅 직접 격리 호출
+        // Call RebaseCommand hook directly in isolation
         RebaseCommand rebaseCmd = hg.rebase().setSource(firstCommit).setTarget(firstCommit);
         try {
             rebaseCmd.call();
         } catch (Exception ignored) {
         }
 
-        // MergeCommand 훅 직접 격리 호출
+        // Call MergeCommand hook directly in isolation
         MergeCommand mergeCmd = hg.merge().setNodeId(firstCommit);
         try {
             mergeCmd.call();
@@ -163,7 +163,7 @@ public class HgConcurrentAndHookTest {
         }
         hg.commit().setAuthor("lazy_tester").setMessage("Lazy Commit").call();
 
-        // 1. ManifestWalk Lazy Streaming 검증
+        // 1. Verify ManifestWalk Lazy Streaming
         ManifestWalk manifestWalk = hg.walkManifest("tip");
         java.util.Iterator<ManifestWalk.Entry> manifestIt = manifestWalk.lazyEntries();
         int countManifest = 0;
@@ -174,7 +174,7 @@ public class HgConcurrentAndHookTest {
         }
         assertTrue(countManifest >= 3);
 
-        // 2. WorkingDirWalk Lazy Streaming 검증
+        // 2. Verify WorkingDirWalk Lazy Streaming
         WorkingDirWalk workingDirWalk = hg.walkWorkingDir();
         java.util.Iterator<WorkingDirWalk.Entry> workingIt = workingDirWalk.lazyEntries();
         int countWorking = 0;
@@ -305,7 +305,7 @@ public class HgConcurrentAndHookTest {
 
     @Test
     public void testRealHttpRoundtrip() throws Exception {
-        // 1. 진짜 changegroup bundle 데이터 준비
+        // 1. Prepare changegroup bundle data
         File srcDir = new File(tempDir, "src_repo_http_" + System.nanoTime());
         HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
         Hg srcHg = Hg.wrap(srcRepo);
@@ -353,7 +353,7 @@ public class HgConcurrentAndHookTest {
             assertFalse(heads.isEmpty());
             assertEquals(commitNodeHex, heads.get(0));
             
-            // FetchCommand 실제 연동 구동 및 진짜 로컬 적용 검증
+            // Verify FetchCommand execution and local application
             File destDir = new File(tempDir, "dest_repo_http_" + System.nanoTime());
             HgRepository destRepo = Hg.init().setDirectory(destDir).call();
             
@@ -375,7 +375,7 @@ public class HgConcurrentAndHookTest {
 
     @Test
     public void testRealSshRoundtrip() throws Exception {
-        // 1. 진짜 changegroup bundle 데이터 준비
+        // 1. Prepare changegroup bundle data
         File srcDir = new File(tempDir, "src_repo_ssh_" + System.nanoTime());
         HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
         Hg srcHg = Hg.wrap(srcRepo);
@@ -490,7 +490,7 @@ public class HgConcurrentAndHookTest {
             List<String> heads = client.getHeads();
             assertEquals(commitNodeHex, heads.get(0));
             
-            // FetchCommand 실제 연동 구동 및 진짜 로컬 적용 검증 (SSH)
+            // Verify FetchCommand execution and local application (SSH)
             File destDir = new File(tempDir, "dest_repo_ssh_" + System.nanoTime());
             HgRepository destRepo = Hg.init().setDirectory(destDir).call();
             
@@ -526,7 +526,7 @@ public class HgConcurrentAndHookTest {
 
     @Test
     public void testNativeMercurialLocalBundleInteroperability() throws Exception {
-        // 1. 진짜 Mercurial 로컬 저장소를 준비하고 커밋 생성
+        // 1. Prepare Mercurial local repository and create a commit
         File nativeRepoDir = new File(tempDir, "native_repo");
         assertTrue(nativeRepoDir.mkdir());
         
@@ -550,8 +550,8 @@ public class HgConcurrentAndHookTest {
                 .start();
         assertEquals(0, commitProc.waitFor());
         
-        // 2. 진짜 native hg 명령어를 사용해 디스크에 원시 바이너리 bundle 파일(.hg) 생성!
-        // --type none-v1 옵션을 통해 압축 없는 표준 HG10UN bundle1 포맷을 완벽히 강제하여 파싱 안정성을 100% 확보함
+        // 2. Create a raw binary bundle file (.hg) on disk using the native hg command.
+        // The --type none-v1 option is used to enforce the uncompressed HG10UN bundle1 format to ensure parser stability.
         File bundleFile = new File(tempDir, "interop.hg");
         Process bundleProc = new ProcessBuilder("hg", "bundle", "--type", "none-v1", "--all", bundleFile.getAbsolutePath())
                 .directory(nativeRepoDir)
@@ -561,14 +561,14 @@ public class HgConcurrentAndHookTest {
 
 
         
-        // 3. 자바 hg4j 라이브러리(destRepo)가 이 진짜 native hg가 생성한 바이너리 번들을 로드하여 로컬에 완벽히 이식하는 상호운용 실증 검증!
+        // 3. Interoperability verification: load the binary bundle generated by native hg and import it into the local repository using the hg4j library.
         File destDir = new File(tempDir, "dest_interop_local");
         HgRepository destRepo = Hg.init().setDirectory(destDir).call();
         
         // 번들 파일을 읽어들임
         byte[] bundleBytes = java.nio.file.Files.readAllBytes(bundleFile.toPath());
         
-        // 진짜 native hg 번들을 로컬 리포지토리에 이식 완료
+        // Import the native hg bundle into the local repository
         byte[] changegroupBytes = bundleBytes;
         String cgVersion = "01";
         
@@ -604,7 +604,7 @@ public class HgConcurrentAndHookTest {
         List<byte[]> results = fetch.applyBundle(bundle);
         assertFalse(results.isEmpty());
         
-        // 4. 로컬 리포지토리에 native mercurial의 리비전이 성공적으로 적재 및 데이터 무결성 복원되었는지 실증 검증
+        // 4. Verify that the native Mercurial revision has been imported and its data integrity is restored in the local repository
         File clIdx = new File(destRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(destRepo.getStoreDir(), "00changelog.d");
         Revlog destCl = destRepo.getRevlog(clIdx, clDat);
@@ -627,7 +627,7 @@ public class HgConcurrentAndHookTest {
         hg.add().addFile("a.txt").call();
         byte[] commitNode = hg.commit().setAuthor("tester").setMessage("First").call();
 
-        // 1. PRE_UPDATE Hook 거부 검증
+        // 1. Verify PRE_UPDATE Hook rejection
         hg.registerHook(HgHookType.PRE_UPDATE, ctx -> {
             assertEquals(repo, ctx.get("repository"));
             assertEquals("0", ctx.get("targetRevision"));
@@ -638,7 +638,7 @@ public class HgConcurrentAndHookTest {
             hg.update().setRevision("0").call();
         });
 
-        // 2. PRE_MERGE Hook 거부 검증
+        // 2. Verify PRE_MERGE Hook rejection
         hg.registerHook(HgHookType.PRE_MERGE, ctx -> {
             assertEquals(repo, ctx.get("repository"));
             assertArrayEquals(commitNode, (byte[]) ctx.get("targetNodeId"));
@@ -649,7 +649,7 @@ public class HgConcurrentAndHookTest {
             hg.merge().setNodeId(commitNode).call();
         });
 
-        // 3. PRE_REBASE Hook 거부 검증
+        // 3. Verify PRE_REBASE Hook rejection
         hg.registerHook(HgHookType.PRE_REBASE, ctx -> {
             assertEquals(repo, ctx.get("repository"));
             assertArrayEquals(commitNode, (byte[]) ctx.get("sourceNode"));

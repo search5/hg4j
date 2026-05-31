@@ -46,7 +46,7 @@ public final class SafeFileIO {
             executeAtomicMove(file, data, parent);
         } else {
             // Fail-safe defense: Acquire exclusive OS file-level lock on dedicated .lock file
-            // 동일 JVM 프로세스 내에서 다중 스레드가 동일 파일 lock() 진입 시 OverlappingFileLockException 예외 방지를 위해 synchronized 바인딩
+            // Bind with synchronized to prevent OverlappingFileLockException when multiple threads in the same JVM process try to call lock() on the same file
             synchronized (SafeFileIO.class) {
                 File lockFile = new File(parent, file.getName() + ".lock");
                 try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(lockFile, "rw");

@@ -106,7 +106,7 @@ public final class NodeIdUtil {
                 int b = bytes[i] & 0xff;
                 char c = (char) b;
                 
-                // Windows 예약어 마지막 문자 처리: 예약어의 마지막 문자는 ~hex로 치환 (예: aux -> au~78)
+                // Handle the last character of a Windows reserved name: The last character of the reserved name is replaced with ~hex (e.g., aux -> au~78)
                 if (i == reservedCharIdx) {
                     partSb.append(String.format("~%02x", b));
                     continue;

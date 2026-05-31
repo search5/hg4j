@@ -1,7 +1,7 @@
 package org.hg4j.errors;
 
 /**
- * 잘못된 경로이거나 손상된 Mercurial 저장소를 찾을 수 없을 때 발생하는 예외.
+ * Exception thrown when a Mercurial repository cannot be found due to an invalid path or corruption.
  */
 public class HgRepositoryNotFoundException extends java.io.IOException {
     private static final long serialVersionUID = 1L;
@@ -9,7 +9,7 @@ public class HgRepositoryNotFoundException extends java.io.IOException {
     private final String path;
 
     /**
-     * @param path 존재하지 않거나 손상된 저장소 경로
+     * @param path Path to the missing or corrupt repository
      */
     public HgRepositoryNotFoundException(String path) {
         super("Mercurial repository not found at path: " + path);
@@ -17,15 +17,15 @@ public class HgRepositoryNotFoundException extends java.io.IOException {
     }
 
     /**
-     * @param path  존재하지 않거나 손상된 저장소 경로
-     * @param cause 원인 예외
+     * @param path  Path to the missing or corrupt repository
+     * @param cause The causing exception
      */
     public HgRepositoryNotFoundException(String path, Throwable cause) {
         super("Mercurial repository not found at path: " + path, cause);
         this.path = path;
     }
 
-    /** 저장소 경로를 반환합니다. */
+    /** Returns the repository path. */
     public String getPath() {
         return path;
     }

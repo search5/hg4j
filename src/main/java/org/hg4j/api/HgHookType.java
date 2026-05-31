@@ -1,86 +1,86 @@
 package org.hg4j.api;
 
 /**
- * Mercurial SCM 훅의 종류를 정의하는 열거형입니다.
+ * Enum defining the types of Mercurial SCM hooks.
  */
 public enum HgHookType {
     /**
-     * 커밋 트랜잭션 수행 전 검증 훅 (검증 실패 시 커밋 취소 가능)
+     * Validation hook executed before a commit transaction (aborting allows canceling the commit)
      */
     PRE_COMMIT,
     
     /**
-     * 커밋 완료 후 후처리 훅
+     * Post-processing hook executed after a commit is completed
      */
     POST_COMMIT,
     
     /**
-     * 원격 푸시 전 동작하는 훅 (푸시 취소 가능)
+     * Hook executed before a remote push (aborting allows canceling the push)
      */
     PRE_PUSH,
     
     /**
-     * 푸시 완료 후 동작하는 훅
+     * Hook executed after a push is completed
      */
     POST_PUSH,
 
     /**
-     * Graft(체리픽) 완료 후 동작하는 훅
+     * Hook executed after a graft (cherry-pick) is completed
      */
     POST_GRAFT,
 
     /**
-     * Rebase 완료 후 동작하는 훅
+     * Hook executed after a rebase is completed
      */
     POST_REBASE,
 
     /**
-     * Merge 완료 후 동작하는 훅
+     * Hook executed after a merge is completed
      */
     POST_MERGE,
 
     /**
-     * Update(체크아웃) 완료 후 동작하는 훅
+     * Hook executed after an update (checkout) is completed
      */
     POST_UPDATE,
 
     /**
-     * Merge 실행 전 검증 훅 (거부 가능)
+     * Validation hook executed before a merge (can be rejected)
      */
     PRE_MERGE,
 
     /**
-     * Update 실행 전 검증 훅 (거부 가능)
+     * Validation hook executed before an update (can be rejected)
      */
     PRE_UPDATE,
 
     /**
-     * Rebase 실행 전 검증 훅 (거부 가능)
+     * Validation hook executed before a rebase (can be rejected)
      */
     PRE_REBASE,
 
     /**
-     * Strip 완료 후 동작하는 훅
+     * Hook executed after a strip is completed
      */
     POST_STRIP,
 
     /**
-     * Amend 완료 후 동작하는 훅
+     * Hook executed after an amend is completed
      */
     POST_AMEND,
 
     /**
-     * Tag 생성 전 검증 훅 (거부 가능)
+     * Validation hook executed before tag creation (can be rejected)
      */
     PRE_TAG,
 
     /**
-     * Tag 생성 후 동작하는 훅
+     * Hook executed after tag creation
      */
     POST_TAG,
 
     /**
-     * Changegroup 수신 완료 후 동작하는 훅
+     * Hook executed after a changegroup is received
      */
     CHANGEGROUP
 }

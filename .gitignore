@@ -1,0 +1,34 @@
+# Gradle temporary files
+.gradle/
+build/
+
+# IDE configurations
+.serena/
+.sdkmanrc
+
+# Temporary markdown reports and essential test lists
+mercurial_required_essential_testcases.md
+mercurial_uncovered_specs_and_perf_tests.md
+mercurial_bug_review_report.md
+mercurial_compatibility_spec_report.md
+mercurial_spec_analysis_report.md
+mercurial_spec_deep_analysis_report.md
+hg_compat_audit.md
+potential_issues_report.md
+code_review.md
+code_review2.md
+production_verification_report.md
+alpha_to_beta_road_to_production.md
+jgit_gap_analysis.md
+scalability_and_format_roadmap.md
+KNOWLEDGE_BASE_INDEX.md
+AGENTS.md
+ROADMAP.md
+task.md
+walkthrough.md
+implementation_plan.md
+interop_test_plan.md
+
+# Scratch directory
+scratch/
+bin/

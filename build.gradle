@@ -3,9 +3,10 @@ plugins {
     id 'jacoco'
     id 'maven-publish'
     id 'org.owasp.dependencycheck' version '9.0.9'
+    id 'org.asciidoctor.jvm.convert' version '4.0.2'
 }
 
-group = 'org.hg4j'
+group = 'io.github.search5.hg4j'
 version = '1.0.0'
 
 repositories {
@@ -113,27 +114,27 @@ jacocoTestCoverageVerification {
         rule {
             element = 'CLASS'
             includes = [
-                'org.hg4j.core.Dirstate',
-                'org.hg4j.core.NodeIdUtil',
-                'org.hg4j.core.SafeFileIO',
-                'org.hg4j.core.Merge3',
-                'org.hg4j.core.Bundle2Parser',
-                'org.hg4j.core.ChangegroupParser',
-                'org.hg4j.api.AddCommand',
-                'org.hg4j.api.BookmarkCommand',
-                'org.hg4j.api.BranchCommand',
-                'org.hg4j.api.InitCommand',
-                'org.hg4j.api.LogCommand',
-                'org.hg4j.api.RemoveCommand',
-                'org.hg4j.api.RevertCommand',
-                'org.hg4j.api.ShelveCommand',
-                'org.hg4j.api.StatusCommand',
-                'org.hg4j.api.TagCommand',
-                'org.hg4j.api.PushCommand',
-                'org.hg4j.api.CatCommand',
-                'org.hg4j.api.DiffCommand',
-                'org.hg4j.api.TreeCommand',
-                'org.hg4j.api.UpdateCommand',
+                'io.github.search5.hg4j.core.Dirstate',
+                'io.github.search5.hg4j.core.NodeIdUtil',
+                'io.github.search5.hg4j.core.SafeFileIO',
+                'io.github.search5.hg4j.core.Merge3',
+                'io.github.search5.hg4j.core.Bundle2Parser',
+                'io.github.search5.hg4j.core.ChangegroupParser',
+                'io.github.search5.hg4j.api.AddCommand',
+                'io.github.search5.hg4j.api.BookmarkCommand',
+                'io.github.search5.hg4j.api.BranchCommand',
+                'io.github.search5.hg4j.api.InitCommand',
+                'io.github.search5.hg4j.api.LogCommand',
+                'io.github.search5.hg4j.api.RemoveCommand',
+                'io.github.search5.hg4j.api.RevertCommand',
+                'io.github.search5.hg4j.api.ShelveCommand',
+                'io.github.search5.hg4j.api.StatusCommand',
+                'io.github.search5.hg4j.api.TagCommand',
+                'io.github.search5.hg4j.api.PushCommand',
+                'io.github.search5.hg4j.api.CatCommand',
+                'io.github.search5.hg4j.api.DiffCommand',
+                'io.github.search5.hg4j.api.TreeCommand',
+                'io.github.search5.hg4j.api.UpdateCommand',
             ]
             limit {
                 minimum = 0.90
@@ -152,4 +153,44 @@ dependencyCheck {
 
 compileJava {
     exclude 'module-info.java'
+}
+
+// 2번: Javadoc 다국어(영문/국문) 빌드 설정
+javadoc {
+    failOnError = false
+    options {
+        encoding = 'UTF-8'
+        docEncoding = 'UTF-8'
+        charSet = 'UTF-8'
+        locale = 'en_US' // 기본 영어 로케일 설정
+        addStringOption('Xdoclint:none', '-quiet')
+    }
+}
+
+task javadocKo(type: Javadoc) {
+    source = sourceSets.main.allJava
+    classpath = sourceSets.main.compileClasspath
+    destinationDir = file("${buildDir}/docs/javadoc-ko")
+    failOnError = false
+    options {
+        encoding = 'UTF-8'
+        docEncoding = 'UTF-8'
+        charSet = 'UTF-8'
+        locale = 'ko_KR' // 한국어 로케일 설정
+        addStringOption('Xdoclint:none', '-quiet')
+    }
+}
+
+// 1번: Asciidoctor 다국어 문서화 태스크 설정
+asciidoctor {
+    sourceDir  file('src/docs/asciidoc')
+    sources {
+        include '**/index.adoc'
+    }
+    outputDir file('build/docs/asciidoc')
+    options doctype: 'book'
+    attributes 'source-highlighter': 'coderay',
+               'toc': 'left',
+               'icons': 'font',
+               'sectnums': ''
 }

@@ -63,7 +63,7 @@ public class HgWireServer {
              com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
             
             // 1. Parse incoming changegroup bundle from stream
-            com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.core.ChangegroupParser.parseBundle(in);
+            com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(in);
             
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
@@ -78,14 +78,14 @@ public class HgWireServer {
 
             // 1a. Apply Changelog
             Revlog changelog = repository.getRevlog(clIdx, clDat);
-            for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+            for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                 int rev = changelog.getRevisionCount();
                 changelog.appendChangeGroupEntry(entry, rev);
             }
 
             // 1b. Apply Manifest
             if (bundle.manifestGroups != null && !bundle.manifestGroups.isEmpty()) {
-                for (com.github.search5.hg4j.core.ChangegroupParser.ManifestGroup mg : bundle.manifestGroups) {
+                for (com.github.search5.hg4j.bundle.ChangegroupParser.ManifestGroup mg : bundle.manifestGroups) {
                     File mIdx, mDat;
                     if (mg.path == null || mg.path.isEmpty()) {
                         mIdx = mfIdx;
@@ -99,7 +99,7 @@ public class HgWireServer {
                         mIdx.getParentFile().mkdirs();
                     }
                     Revlog subManifest = (mIdx == mfIdx) ? repository.getManifestRevlog() : repository.getRevlog(mIdx, mDat);
-                    for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : mg.entries) {
+                    for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : mg.entries) {
                         int linkRev = changelog.findRevision(entry.cs);
                         if (linkRev == -1) {
                             throw new com.github.search5.hg4j.errors.HgCorruptDataException("Missing link commit for manifest");
@@ -109,7 +109,7 @@ public class HgWireServer {
                 }
             } else if (bundle.manifestEntries != null) {
                 Revlog manifest = repository.getManifestRevlog();
-                for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+                for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
                         throw new com.github.search5.hg4j.errors.HgCorruptDataException("Missing link commit for manifest");
@@ -119,7 +119,7 @@ public class HgWireServer {
             }
 
             // 1c. Apply Filelogs
-            for (com.github.search5.hg4j.core.ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+            for (com.github.search5.hg4j.bundle.ChangegroupParser.FileGroup fg : bundle.fileGroups) {
                 String path = fg.path;
                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
@@ -129,7 +129,7 @@ public class HgWireServer {
                 flIdx.getParentFile().mkdirs();
                 
                 Revlog filelog = repository.getRevlog(flIdx, flDat);
-                for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
                         throw new com.github.search5.hg4j.errors.HgCorruptDataException("Missing link commit for filelog: " + path);

@@ -163,7 +163,7 @@ public class ImportCommand {
             System.arraycopy(parent, 0, p1Normalized, 0, Math.min(parent.length, 20));
         }
 
-        com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry = new com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry();
+        com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
         entry.node = NodeIdUtil.computeNodeId(changelogTextBytes, p1Normalized, new byte[20]);
         byte[] entryNode20 = new byte[20];
         System.arraycopy(entry.node, 0, entryNode20, 0, 20);

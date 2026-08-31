@@ -1,7 +1,9 @@
 package com.github.search5.hg4j.api;
+import com.github.search5.hg4j.bundle.Bundle2Parser;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
 
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.ChangegroupParser;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;

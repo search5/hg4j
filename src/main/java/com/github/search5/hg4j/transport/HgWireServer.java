@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.transport;
 
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.api.CommitCommand;
@@ -59,8 +59,8 @@ public class HgWireServer {
     }
 
     private void processIncomingPush(InputStream in, OutputStream out) throws IOException {
-        try (com.github.search5.hg4j.core.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
+        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
+             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
             
             // 1. Parse incoming changegroup bundle from stream
             com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(in);

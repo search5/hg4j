@@ -1,8 +1,8 @@
 package com.github.search5.hg4j.api;
 
-import com.github.search5.hg4j.core.HgLock;
+import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.obsolete.HgObsMarker;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.errors.HgLockException;

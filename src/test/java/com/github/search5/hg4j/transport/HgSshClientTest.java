@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.transport;
 
 import org.apache.sshd.server.SshServer;
 import com.github.search5.hg4j.transport.HgSshClient;

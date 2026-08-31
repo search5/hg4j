@@ -3,8 +3,8 @@ package com.github.search5.hg4j.api;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import com.github.search5.hg4j.dirstate.Dirstate;
-import com.github.search5.hg4j.core.HgLock;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.util.SafeFileIO;
@@ -616,7 +616,7 @@ public class CommitCommand {
         }
     }
 
-    private byte[] getFileRevisionContent(com.github.search5.hg4j.core.HgRepository repository, String path, String nodeHex) throws IOException {
+    private byte[] getFileRevisionContent(com.github.search5.hg4j.lib.HgRepository repository, String path, String nodeHex) throws IOException {
         File flIdx = getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {

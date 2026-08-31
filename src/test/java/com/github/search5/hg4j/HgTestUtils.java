@@ -2,7 +2,7 @@ package com.github.search5.hg4j;
 import com.github.search5.hg4j.bundle.Bundle2Parser;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.NodeIdUtil;

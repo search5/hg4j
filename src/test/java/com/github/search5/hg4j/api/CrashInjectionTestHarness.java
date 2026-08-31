@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.api;
 
-import com.github.search5.hg4j.core.*;
+import com.github.search5.hg4j.lib.HgRepository;
 import java.io.*;
 import java.nio.file.*;
 import static org.junit.jupiter.api.Assertions.*;

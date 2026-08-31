@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.treewalk;
 
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;

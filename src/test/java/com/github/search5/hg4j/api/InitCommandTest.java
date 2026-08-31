@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.api;
 
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -103,7 +103,7 @@ public class InitCommandTest {
 
     @Test
     public void testHgConstructorCoverage() throws Exception {
-        java.lang.reflect.Constructor<Hg> constructor = Hg.class.getDeclaredConstructor(com.github.search5.hg4j.core.HgRepository.class);
+        java.lang.reflect.Constructor<Hg> constructor = Hg.class.getDeclaredConstructor(com.github.search5.hg4j.lib.HgRepository.class);
         assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()));
         constructor.setAccessible(true);
         HgRepository fakeRepo = new HgRepository(new File("."));

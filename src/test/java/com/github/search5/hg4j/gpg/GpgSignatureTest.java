@@ -2,7 +2,7 @@ package com.github.search5.hg4j.gpg;
 import com.github.search5.hg4j.api.*;
 
 import com.github.search5.hg4j.gpg.GpgSignature;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

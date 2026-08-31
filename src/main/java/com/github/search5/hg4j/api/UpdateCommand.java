@@ -1,8 +1,8 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
-import com.github.search5.hg4j.core.HgLock;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.errors.HgLockException;
@@ -238,11 +238,11 @@ public class UpdateCommand {
                         }
                         
                         File subDir = new File(repository.getDirectory(), subEntry.getPath());
-                        com.github.search5.hg4j.core.HgRepository subRepo;
+                        com.github.search5.hg4j.lib.HgRepository subRepo;
                         if (!new File(subDir, ".hg").exists()) {
                             subRepo = Hg.init().setDirectory(subDir).call();
                         } else {
-                            subRepo = new com.github.search5.hg4j.core.HgRepository(subDir);
+                            subRepo = new com.github.search5.hg4j.lib.HgRepository(subDir);
                         }
 
                         try (Hg hgSub = Hg.wrap(subRepo)) {

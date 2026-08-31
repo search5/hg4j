@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.api;
 
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.errors.HgLockException;
@@ -174,8 +174,8 @@ public class ImportCommand {
         entry.deltabase = new byte[20];
         entry.delta = Revlog.createDelta(new byte[0], changelogTextBytes);
 
-        try (com.github.search5.hg4j.core.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
+        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
+             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
             changelog.appendChangeGroupEntry(entry, linkRev);
 
             com.github.search5.hg4j.dirstate.Dirstate d = repository.getDirstate();

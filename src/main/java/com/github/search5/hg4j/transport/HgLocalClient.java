@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.transport;
 
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.errors.HgLockException;
 

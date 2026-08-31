@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
@@ -29,7 +29,7 @@ public class AddCommand {
     }
 
     public void call() throws IOException, HgLockException {
-        try (com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
+        try (com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
             Dirstate dirstate = repository.getDirstate();
 
             List<String> filesToAdd = new ArrayList<>(files);

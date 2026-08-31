@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.merge.Merge3;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
@@ -208,8 +208,8 @@ public class MergeCommand {
 
     public MergeResult call() throws IOException, HgLockException {
         repository.clearRevlogCache();
-        try (com.github.search5.hg4j.core.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
+        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
+             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
             
             // PRE_MERGE hooks trigger
             if (!preMergeHooks.isEmpty()) {

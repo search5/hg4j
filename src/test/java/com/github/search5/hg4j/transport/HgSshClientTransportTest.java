@@ -420,23 +420,23 @@ public class HgSshClientTransportTest {
     @DisplayName("Repository.open() 팩토리 메소드 기능 및 예외 정밀 검증")
     public void testRepositoryOpenStaticMethod() throws Exception {
         // Null argument
-        assertThrows(IllegalArgumentException.class, () -> com.github.search5.hg4j.core.Repository.open(null));
+        assertThrows(IllegalArgumentException.class, () -> com.github.search5.hg4j.lib.Repository.open(null));
         
         // Non-existent directory
         File nonExistent = new File(System.getProperty("java.io.tmpdir"), "non_existent_hg_repo_test_" + System.currentTimeMillis());
-        assertThrows(com.github.search5.hg4j.errors.HgRepositoryNotFoundException.class, () -> com.github.search5.hg4j.core.Repository.open(nonExistent));
+        assertThrows(com.github.search5.hg4j.errors.HgRepositoryNotFoundException.class, () -> com.github.search5.hg4j.lib.Repository.open(nonExistent));
         
         // Verify opening a valid repository
         java.nio.file.Path tempPath = Files.createTempDirectory("hg4j_repo_open_static_test_");
         File tempDir = tempPath.toFile();
         try {
             // Initialization
-            com.github.search5.hg4j.core.Repository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(tempDir).call();
+            com.github.search5.hg4j.lib.Repository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(tempDir).call();
             assertNotNull(repo);
             repo.close();
             
             // Call static open
-            try (com.github.search5.hg4j.core.Repository opened = com.github.search5.hg4j.core.Repository.open(tempDir)) {
+            try (com.github.search5.hg4j.lib.Repository opened = com.github.search5.hg4j.lib.Repository.open(tempDir)) {
                 assertNotNull(opened);
                 assertEquals(tempDir.getCanonicalPath(), opened.getDirectory().getCanonicalPath());
             }

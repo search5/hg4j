@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.errors.HgCorruptDataException;
 import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
@@ -211,7 +211,7 @@ public class HgPorcelainAndExceptionsTest {
     @Test
     public void testHgOpenRequiresValidationAndWrap(@TempDir java.nio.file.Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("requires_val_repo").toFile();
-        com.github.search5.hg4j.core.HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        com.github.search5.hg4j.lib.HgRepository repo = Hg.init().setDirectory(repoDir).call();
         
         // 1. wrap() verify
         try (Hg hg = Hg.wrap(repo)) {
@@ -237,7 +237,7 @@ public class HgPorcelainAndExceptionsTest {
     @Test
     public void testJavaScmHookSystemIntegration(@TempDir java.nio.file.Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("hook_test_repo").toFile();
-        com.github.search5.hg4j.core.HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        com.github.search5.hg4j.lib.HgRepository repo = Hg.init().setDirectory(repoDir).call();
         
         try (Hg hg = Hg.wrap(repo)) {
             // 1. PRE_COMMIT hook 등록하여 커밋 트랜잭션을 거부하는지 확인
@@ -274,7 +274,7 @@ public class HgPorcelainAndExceptionsTest {
     public void testDynamicZstdCompressionIntegration(@TempDir java.nio.file.Path tempDir) throws Exception {
         // 1. Zstd 압축이 활성화된 저장소 초기화
         File zstdRepoDir = tempDir.resolve("zstd_repo").toFile();
-        com.github.search5.hg4j.core.HgRepository zstdRepo = Hg.init()
+        com.github.search5.hg4j.lib.HgRepository zstdRepo = Hg.init()
                 .setDirectory(zstdRepoDir)
                 .setUseZstd(true)
                 .call();
@@ -306,7 +306,7 @@ public class HgPorcelainAndExceptionsTest {
 
         // 4. 일반 저장소(Zstd 비활성화)와 대조 검증
         File normalRepoDir = tempDir.resolve("normal_repo").toFile();
-        com.github.search5.hg4j.core.HgRepository normalRepo = Hg.init()
+        com.github.search5.hg4j.lib.HgRepository normalRepo = Hg.init()
                 .setDirectory(normalRepoDir)
                 .setUseZstd(false)
                 .call();

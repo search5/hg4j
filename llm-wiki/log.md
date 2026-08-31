@@ -111,3 +111,9 @@
 - `AGENTS.md`에 `implementation-plan.md`와 `decisions/*.md`의 역할 차이(전자는
   실행용 일회성 스냅샷, 후자는 계속 유지되는 진실 소스) 명시. `index.md`에 "실제
   작업 시작 시 이 문서부터 보라"는 안내 추가. **문서만 작성, 코드 변경 없음.**
+
+## [2026-08-31] 리팩토링 진행 | Track A 패키지 구조 재정렬 (Phase 0 ~ 12) 완료 및 검증
+- Phase 0 ~ Phase 12의 순차적 리팩토링을 완수하여 JGit 패키지 구조 정합성 요건을 완전히 달성.
+- **Phase 0** (HgLockException 단일화), **Phase 1** (dirstate 패키지 신설), **Phase 2** (merge 패키지 신설), **Phase 3** (util 패키지 신설), **Phase 4** (submodule 패키지 신설), **Phase 5** (phase 패키지 신설), **Phase 6** (obsolete 패키지 신설), **Phase 7** (revset 패키지 신설), **Phase 8** (bundle 패키지 신설), **Phase 9** (lfs 및 gpg 패키지 신설), **Phase 10** (storage 및 diff 패키지 신설), **Phase 11** (HgTreeFilter를 treewalk로 이동), **Phase 12** (core 잔여 클래스를 lib, transport, errors로 완전히 분산 및 core 디렉터리 삭제) 완수.
+- 각 단계마다 FQCN 치환, build.gradle Jacoco 대상 갱신, 상호 의존성 임포트 누락 보완을 정밀하게 처리하여 로컬 Git 커밋으로 고착화.
+- 전체 클린 빌드 및 JUnit 테스트, Jacoco 커버리지 게이트 검증을 완전히 통과(BUILD SUCCESSFUL)하여 무결성 확인 및 원격 origin/main 브랜치에 최종 푸시 완료.

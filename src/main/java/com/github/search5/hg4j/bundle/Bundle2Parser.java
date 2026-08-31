@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.bundle;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;

@@ -75,10 +75,10 @@ public class IncomingCommand {
             byte[] bundleBytes = client.getChangegroup(java.util.Collections.emptyList());
             if (bundleBytes != null && bundleBytes.length > 0) {
                 try (java.io.ByteArrayInputStream bin = new java.io.ByteArrayInputStream(bundleBytes)) {
-                    com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.core.ChangegroupParser.parseBundle(bin);
+                    com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(bin);
                     if (bundle != null && bundle.changelogEntries != null) {
                         byte[] currentBase = new byte[0];
-                        for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                        for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                             byte[] clContent;
                             try {
                                 clContent = com.github.search5.hg4j.core.DeltaEngine.applyDelta(currentBase, entry.delta);

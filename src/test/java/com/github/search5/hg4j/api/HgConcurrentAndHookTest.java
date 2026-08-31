@@ -1,4 +1,6 @@
 package com.github.search5.hg4j.api;
+import com.github.search5.hg4j.bundle.Bundle2Parser;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
@@ -316,7 +318,7 @@ public class HgConcurrentAndHookTest {
         byte[] commitNode = srcHg.commit().setAuthor("tester").setMessage("Initial HTTP").call();
         String commitNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
         
-        com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
+        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
         byte[] realCgBytes = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
@@ -386,7 +388,7 @@ public class HgConcurrentAndHookTest {
         byte[] commitNode = srcHg.commit().setAuthor("tester").setMessage("Initial SSH").call();
         String commitNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
         
-        com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
+        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
         byte[] realCgBytes = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
 
         SshServer sshd = SshServer.setUpDefaultServer();
@@ -573,7 +575,7 @@ public class HgConcurrentAndHookTest {
         String cgVersion = "01";
         
         if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
-            com.github.search5.hg4j.core.Bundle2Parser.ExtractedBundle2 ext = com.github.search5.hg4j.core.Bundle2Parser.extractChangegroupDetailed(new java.io.ByteArrayInputStream(bundleBytes));
+            com.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 ext = com.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(new java.io.ByteArrayInputStream(bundleBytes));
             changegroupBytes = ext.changegroupBytes;
             cgVersion = ext.cgVersion;
         } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
@@ -599,7 +601,7 @@ public class HgConcurrentAndHookTest {
             cgVersion = "01";
         }
         
-        com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.core.ChangegroupParser.parseBundle(new java.io.ByteArrayInputStream(changegroupBytes), cgVersion);
+        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(new java.io.ByteArrayInputStream(changegroupBytes), cgVersion);
         FetchCommand fetch = new FetchCommand(destRepo);
         List<byte[]> results = fetch.applyBundle(bundle);
         assertFalse(results.isEmpty());

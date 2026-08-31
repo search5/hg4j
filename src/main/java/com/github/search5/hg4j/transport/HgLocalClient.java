@@ -123,7 +123,7 @@ public class HgLocalClient implements HgRemoteConnection {
         }
 
         // Build bundle
-        com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = new com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle();
+        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle();
         bundle.changelogEntries = new ArrayList<>();
         bundle.manifestEntries = new ArrayList<>();
         bundle.fileGroups = new ArrayList<>();
@@ -131,7 +131,7 @@ public class HgLocalClient implements HgRemoteConnection {
         // 1a. Pack Changelogs
         for (int r = startRev; r < count; r++) {
             Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
-            com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry clEntry = new com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry();
+            com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry clEntry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
             clEntry.node = clRec.getNodeId();
             clEntry.p1 = (clRec.getParent1() != -1) ? changelog.getIndexRecord(clRec.getParent1()).getNodeId() : new byte[20];
             clEntry.p2 = (clRec.getParent2() != -1) ? changelog.getIndexRecord(clRec.getParent2()).getNodeId() : new byte[20];
@@ -164,7 +164,7 @@ public class HgLocalClient implements HgRemoteConnection {
             if (mfRev == -1) continue;
 
             Revlog.IndexRecord mfRec = manifest.getIndexRecord(mfRev);
-            com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry mfEntry = new com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry();
+            com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry mfEntry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
             mfEntry.node = mfRec.getNodeId();
             mfEntry.p1 = (mfRec.getParent1() != -1) ? manifest.getIndexRecord(mfRec.getParent1()).getNodeId() : new byte[20];
             mfEntry.p2 = (mfRec.getParent2() != -1) ? manifest.getIndexRecord(mfRec.getParent2()).getNodeId() : new byte[20];
@@ -186,12 +186,12 @@ public class HgLocalClient implements HgRemoteConnection {
             if (!flIdx.exists()) continue;
 
             Revlog fl = remoteRepo.getRevlog(flIdx, flDat);
-            List<com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
+            List<com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
 
             for (int i = 0; i < fl.getRevisionCount(); i++) {
                 Revlog.IndexRecord flRec = fl.getIndexRecord(i);
                 if (flRec.getLinkRev() >= startRev) {
-                    com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry flEntry = new com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry();
+                    com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry flEntry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
                     flEntry.node = flRec.getNodeId();
                     flEntry.p1 = (flRec.getParent1() != -1) ? fl.getIndexRecord(flRec.getParent1()).getNodeId() : new byte[20];
                     flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
@@ -208,7 +208,7 @@ public class HgLocalClient implements HgRemoteConnection {
             }
 
             if (!flEntries.isEmpty()) {
-                com.github.search5.hg4j.core.ChangegroupParser.FileGroup fg = new com.github.search5.hg4j.core.ChangegroupParser.FileGroup();
+                com.github.search5.hg4j.bundle.ChangegroupParser.FileGroup fg = new com.github.search5.hg4j.bundle.ChangegroupParser.FileGroup();
                 fg.path = path;
                 fg.entries = flEntries;
                 bundle.fileGroups.add(fg);
@@ -220,19 +220,19 @@ public class HgLocalClient implements HgRemoteConnection {
         try (java.io.DataOutputStream dos = new java.io.DataOutputStream(baos)) {
             dos.write("HG10UN".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
 
-            for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+            for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                 writeEntryChunk(dos, entry);
             }
             writeTerminalChunk(dos);
 
-            for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+            for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
                 writeEntryChunk(dos, entry);
             }
             writeTerminalChunk(dos);
 
-            for (com.github.search5.hg4j.core.ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+            for (com.github.search5.hg4j.bundle.ChangegroupParser.FileGroup fg : bundle.fileGroups) {
                 writePathChunk(dos, fg.path);
-                for (com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
                     writeEntryChunk(dos, entry);
                 }
                 writeTerminalChunk(dos);
@@ -266,8 +266,8 @@ public class HgLocalClient implements HgRemoteConnection {
         }
 
         try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(changegroupBytes)) {
-            com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = 
-                    com.github.search5.hg4j.core.ChangegroupParser.parseBundle(bais, cgVersion);
+            com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = 
+                    com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(bais, cgVersion);
 
             // Apply bundle natively to remoteRepo using transactional API of PullCommand
             com.github.search5.hg4j.api.PullCommand pullApi = new com.github.search5.hg4j.api.PullCommand(remoteRepo);
@@ -284,7 +284,7 @@ public class HgLocalClient implements HgRemoteConnection {
         }
     }
 
-    private void writeEntryChunk(java.io.DataOutputStream dos, com.github.search5.hg4j.core.ChangegroupParser.ChangeGroupEntry entry) throws IOException {
+    private void writeEntryChunk(java.io.DataOutputStream dos, com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry) throws IOException {
         int totalLen = 4 + 80 + entry.delta.length;
         dos.writeInt(totalLen);
         dos.write(entry.node);

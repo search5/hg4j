@@ -2,7 +2,7 @@ package com.github.search5.hg4j.api;
 
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import com.github.search5.hg4j.core.ChangegroupParser;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgLock;
 import com.github.search5.hg4j.transport.HgRemoteConnection;
@@ -195,7 +195,7 @@ public class FetchCommand {
             byte[] changegroupBytes = bundleBytes;
             String cgVersion = "01";
             if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
-                com.github.search5.hg4j.core.Bundle2Parser.ExtractedBundle2 ext = com.github.search5.hg4j.core.Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
+                com.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 ext = com.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
                 changegroupBytes = ext.changegroupBytes;
                 cgVersion = ext.cgVersion;
             } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {

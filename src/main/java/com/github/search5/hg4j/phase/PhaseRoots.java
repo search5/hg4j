@@ -1,4 +1,5 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.phase;
+import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.util.SafeFileIO;
 

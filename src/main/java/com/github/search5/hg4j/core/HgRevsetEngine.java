@@ -1,4 +1,5 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.phase.PhaseRoots;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.util.SafeFileIO;
 
@@ -504,11 +505,11 @@ public final class HgRevsetEngine {
 
     private List<Integer> evaluatePublic(Revlog changelog, int totalRevs) throws IOException {
         List<Integer> res = new ArrayList<>();
-        com.github.search5.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
+        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
         for (int i = 0; i < totalRevs; i++) {
             byte[] node = changelog.getIndexRecord(i).getNodeId();
-            com.github.search5.hg4j.core.PhaseRoots.Phase phase = phaseRoots.getPhase(new com.github.search5.hg4j.lib.NodeId(node), changelog);
-            if (phase == com.github.search5.hg4j.core.PhaseRoots.Phase.PUBLIC) {
+            com.github.search5.hg4j.phase.PhaseRoots.Phase phase = phaseRoots.getPhase(new com.github.search5.hg4j.lib.NodeId(node), changelog);
+            if (phase == com.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC) {
                 res.add(i);
             }
         }
@@ -517,11 +518,11 @@ public final class HgRevsetEngine {
 
     private List<Integer> evaluateSecret(Revlog changelog, int totalRevs) throws IOException {
         List<Integer> res = new ArrayList<>();
-        com.github.search5.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
+        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
         for (int i = 0; i < totalRevs; i++) {
             byte[] node = changelog.getIndexRecord(i).getNodeId();
-            com.github.search5.hg4j.core.PhaseRoots.Phase phase = phaseRoots.getPhase(new com.github.search5.hg4j.lib.NodeId(node), changelog);
-            if (phase == com.github.search5.hg4j.core.PhaseRoots.Phase.SECRET) {
+            com.github.search5.hg4j.phase.PhaseRoots.Phase phase = phaseRoots.getPhase(new com.github.search5.hg4j.lib.NodeId(node), changelog);
+            if (phase == com.github.search5.hg4j.phase.PhaseRoots.Phase.SECRET) {
                 res.add(i);
             }
         }

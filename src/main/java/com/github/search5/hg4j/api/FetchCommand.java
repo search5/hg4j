@@ -265,11 +265,11 @@ public class FetchCommand {
                 }
 
                 // Phases Sync
-                com.github.search5.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
+                com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
                 java.util.Map<String, String> remotePhases = client.listKeys("phases");
                 for (byte[] nodeBytes : results) {
                     com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
-                    phaseRoots.setPhase(nodeId, com.github.search5.hg4j.core.PhaseRoots.Phase.DRAFT, localChangelog);
+                    phaseRoots.setPhase(nodeId, com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, localChangelog);
                 }
                 if (remotePhases != null && !remotePhases.isEmpty()) {
                     for (java.util.Map.Entry<String, String> entry : remotePhases.entrySet()) {
@@ -277,7 +277,7 @@ public class FetchCommand {
                         int phaseVal = Integer.parseInt(entry.getValue().trim());
                         byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
                         if (localChangelog.findRevision(nodeBytes) != -1) {
-                            com.github.search5.hg4j.core.PhaseRoots.Phase p = com.github.search5.hg4j.core.PhaseRoots.Phase.fromValue(phaseVal);
+                            com.github.search5.hg4j.phase.PhaseRoots.Phase p = com.github.search5.hg4j.phase.PhaseRoots.Phase.fromValue(phaseVal);
                             phaseRoots.setPhase(new com.github.search5.hg4j.lib.NodeId(nodeBytes), p, localChangelog);
                         }
                     }

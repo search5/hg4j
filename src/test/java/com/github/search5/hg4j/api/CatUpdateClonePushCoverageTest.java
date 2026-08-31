@@ -469,14 +469,14 @@ public class CatUpdateClonePushCoverageTest {
         byte[] commitNode = new CommitCommand(repo).setMessage("신규 커밋").call();
 
         // Verify that the phase of the newly created commit is draft
-        com.github.search5.hg4j.core.PhaseRoots phaseRoots = repo.getPhaseRoots();
+        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repo.getPhaseRoots();
         com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(commitNode);
         
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = repo.getRevlog(clIdx, clDat);
 
-        assertEquals(com.github.search5.hg4j.core.PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(nodeId, cl));
+        assertEquals(com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(nodeId, cl));
     }
 
     @Test
@@ -500,15 +500,15 @@ public class CatUpdateClonePushCoverageTest {
         byte[] commitNode = new CommitCommand(localRepo).setMessage("Secret commit").call();
 
         // 3. Force change the local new commit's phase to SECRET
-        com.github.search5.hg4j.core.PhaseRoots phaseRoots = localRepo.getPhaseRoots();
+        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = localRepo.getPhaseRoots();
         com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(commitNode);
         
         File clIdx = new File(localRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(localRepo.getStoreDir(), "00changelog.d");
         Revlog cl = localRepo.getRevlog(clIdx, clDat);
         
-        phaseRoots.setPhase(nodeId, com.github.search5.hg4j.core.PhaseRoots.Phase.SECRET, cl);
-        assertEquals(com.github.search5.hg4j.core.PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nodeId, cl));
+        phaseRoots.setPhase(nodeId, com.github.search5.hg4j.phase.PhaseRoots.Phase.SECRET, cl);
+        assertEquals(com.github.search5.hg4j.phase.PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nodeId, cl));
 
         // 4. Verify that an exception is thrown when push is called
         PushCommand push = new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath());

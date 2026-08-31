@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
-import com.github.search5.hg4j.core.HgObsMarker;
-import com.github.search5.hg4j.core.HgObsolescenceParser;
+import com.github.search5.hg4j.obsolete.HgObsMarker;
+import com.github.search5.hg4j.obsolete.HgObsolescenceParser;
 import com.github.search5.hg4j.core.HgRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

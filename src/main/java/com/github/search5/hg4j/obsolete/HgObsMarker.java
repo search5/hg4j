@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.obsolete;
 
 import java.util.Arrays;
 import java.util.List;

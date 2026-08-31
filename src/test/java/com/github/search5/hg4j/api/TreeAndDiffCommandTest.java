@@ -260,7 +260,7 @@ public class TreeAndDiffCommandTest {
         new CommitCommand(repo).setMessage("Rev 1").call();
 
         // Apply treeFilter: includes "src/" prefix only
-        com.github.search5.hg4j.core.HgTreeFilter filter = com.github.search5.hg4j.core.HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
+        com.github.search5.hg4j.treewalk.HgTreeFilter filter = com.github.search5.hg4j.treewalk.HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
 
         List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo)
                 .setOldRevision(0)

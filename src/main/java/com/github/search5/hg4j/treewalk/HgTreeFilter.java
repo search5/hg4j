@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.treewalk;
 
 import java.util.Collection;
 import java.util.HashSet;

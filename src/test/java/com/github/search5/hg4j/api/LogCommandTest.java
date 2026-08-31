@@ -150,7 +150,7 @@ public class LogCommandTest {
         assertEquals(2, commitsAll.size());
 
         // With filter (only "src/"): should only return Commit 0
-        com.github.search5.hg4j.core.HgTreeFilter filter = com.github.search5.hg4j.core.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
+        com.github.search5.hg4j.treewalk.HgTreeFilter filter = com.github.search5.hg4j.treewalk.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
         List<HgCommit> commitsFiltered = new LogCommand(repo).setTreeFilter(filter).call();
 
         assertEquals(1, commitsFiltered.size());

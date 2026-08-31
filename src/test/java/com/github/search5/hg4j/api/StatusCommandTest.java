@@ -92,7 +92,7 @@ public class StatusCommandTest {
         assertEquals(2, stAll.getUntracked().size());
 
         // Status with filter (only "src/")
-        com.github.search5.hg4j.core.HgTreeFilter filter = com.github.search5.hg4j.core.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
+        com.github.search5.hg4j.treewalk.HgTreeFilter filter = com.github.search5.hg4j.treewalk.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
         Status stFiltered = new StatusCommand(repo).setTreeFilter(filter).call();
 
         assertEquals(1, stFiltered.getUntracked().size());
@@ -141,10 +141,10 @@ public class StatusCommandTest {
         Files.writeString(f5.toPath(), "untracked content");
 
         // 2. Fast Path로 Status 호출 (treeFilter == ALL)
-        Status fastStatus = new StatusCommand(repo).setTreeFilter(com.github.search5.hg4j.core.HgTreeFilter.ALL).call();
+        Status fastStatus = new StatusCommand(repo).setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter.ALL).call();
 
         // 3. Slow Path로 Status 호출 (custom filter를 써서 treeFilter == ALL 조건 우회)
-        com.github.search5.hg4j.core.HgTreeFilter customFilter = new com.github.search5.hg4j.core.HgTreeFilter() {
+        com.github.search5.hg4j.treewalk.HgTreeFilter customFilter = new com.github.search5.hg4j.treewalk.HgTreeFilter() {
             @Override
             public boolean accept(String path) {
                 return true;

@@ -24,7 +24,7 @@ public class UpdateCommand {
     private final HgRepository repository;
     private String targetRevision;
     private boolean force = false;
-    private com.github.search5.hg4j.core.HgTreeFilter treeFilter = com.github.search5.hg4j.core.HgTreeFilter.ALL;
+    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
     private final java.util.List<HgHook> preUpdateHooks = new java.util.ArrayList<>();
     private final java.util.List<HgHook> postUpdateHooks = new java.util.ArrayList<>();
 
@@ -46,7 +46,7 @@ public class UpdateCommand {
         return this;
     }
 
-    public UpdateCommand setTreeFilter(com.github.search5.hg4j.core.HgTreeFilter treeFilter) {
+    public UpdateCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }

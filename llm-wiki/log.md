@@ -342,3 +342,58 @@
   B-4/B-5 섹션 신설 및 Track C 표 갱신. `index.md`에 신규 decisions 문서 3건 등록.
   **문서만 작성, 코드 변경 없음 — 실제 구현은 각 Track B 문서의 단계별 계획을 따라
   착수해야 함.**
+
+## [2026-09-01] Wire protocol v2 전면 재구현 + 커버리지 감사 중 발견한 진짜 버그들 + 백로그 확정
+- 이전 B-2 작업(위 항목)의 "capabilities 포맷 정정, 스텁 위임"은 검증해보니 근본적으로
+  부족했음이 드러남 — 사용자가 "V2 서버를 어떻게든 띄워서 검증해줘"라고 지시.
+  Mercurial 6.0(wireprotov2server.py가 남아있는 마지막 릴리스 — 6.1부터 완전 제거
+  확인)을 Docker로 직접 빌드해 실행, hg4j↔실제 hg 양방향으로 clone까지 검증하는 과정
+  에서 이전 구현이 **사실상 전부 가짜**였음을 확인: 실제 v2는 `X-HgUpgrade-1`/
+  `X-HgProto-1` capabilities 발견 핸드셰이크 + 8바이트 바이너리 프레임 프로토콜 +
+  `changesetdata`/`manifestdata`/`filesdata` 등 12개 전용 명령을 쓰는데, hg4j는
+  핸드셰이크·프레이밍 없이 존재하지도 않는 `changegroup`/`getbundle`/`unbundle`
+  명령을 평면 HTTP+CBOR로 흉내내고 있었음. 게다가 실제 hg는 CBOR 맵 키까지 전부
+  byte-string으로 인코딩하는데 Jackson의 CBOR 모듈은 이 구조를 낼 수 없어서, 이
+  프로토콜 전용 최소 CBOR 코덱(`Cbor`)을 새로 작성. `transport.wireprotov2` 패키지
+  (`Wire2Frame`/`Cbor`/`Wire2Transport`/`Wire2Commands`) 신설, `HgRemoteClientV2`/
+  `HgWireServer` 전면 재작성. 실제 hg 6.0 클라이언트 → hg4j 서버 clone 성공 + `hg
+  verify` 통과, hg4j 클라이언트 → 실제 hg 6.0 서버 clone 시 노드 해시 완전 일치까지
+  확인. 상세: [[wireprotocol-v2-support-plan]].
+- 커버리지 95% 목표 작업(사용자 지시) 중 `SummaryCommand`용 interop 테스트를 작성하다가
+  두 가지 진짜 버그를 추가로 발견·수정: (1) `HgRepository.getPhaseRoots()`가
+  `.hg/phaseroots`를 읽고 썼는데 실제 hg는 `.hg/store/phaseroots`를 쓴다 —
+  share-safe 저장소에서 phase 정보가 실제 hg에 전혀 안 보이던 문제(`StripCommand`도
+  같은 버그). (2) `BookmarkCommand`가 `-r` 없이(암묵적으로 현재 작업 사본 부모를
+  대상으로) 새 bookmark를 만들 때 실제 hg처럼 자동으로 active로 만들지 않았음.
+- 같은 커버리지 작업 중 `ChangegroupParser`의 cg2/cg3 델타 헤더 필드 순서 버그(실제
+  구조체는 `node,p1,p2,deltabase,cs`인데 `node,p1,p2,cs,deltabase`로 읽어서 changelog
+  그룹에서 deltabase가 항상 자기 자신의 node와 같아지던 버그)와 `Bundle2Parser`의
+  스트림 파라미터 크기(2바이트가 아니라 실제로는 4바이트)/파트 헤더 파라미터 파싱
+  (키/값 교차가 아니라 실제로는 길이 쌍을 먼저 다 읽고 그다음 바이트를 읽는 2단계
+  구조) 버그도 실제 `hg bundle` 결과물로 발견·수정.
+- `NodeIdUtil.encodeFname`(fncache/store 경로 인코딩)을 `mercurial/store.py`의
+  `_pathencode`/`_hashencode` 실제 알고리즘대로 전면 재작성 — Windows `COM#`/`LPT#`
+  예약어의 잘못된 글자를 이스케이프하던 버그, 긴 경로(120바이트 초과) 해싱 방식이
+  실제 hg에 없는 방식(255바이트 초과 시 디렉터리 없는 형태로 전환)이었던 버그를
+  발견·수정. 7개 까다로운 파일명으로 실제 hg 온디스크 레이아웃과 바이트 단위 일치
+  검증.
+- Changelog extra 필드: hg4j가 항상 "branch:default"를 썼는데 실제 hg는 default
+  브랜치일 때 이 필드를 아예 안 써서, 동일 내용의 default 브랜치 커밋이라도 hg4j와
+  실제 hg의 노드 해시가 달라지던 버그 발견·수정. 콜론을 이스케이프하는(실제 hg엔
+  없는) 가짜 extra-key 인코딩도 제거.
+- Track C 나머지 항목(merge state v2 `.hg/merge/state2`, hgrc `%include`/`%unset`,
+  fncache 인코딩 감사, sparse checkout `.hg/sparse` 파싱, 누락된 코어 포셀린 명령
+  9종)을 전부 구현하고 실제 hg CLI로 검증 완료 — Track B/C가 사실상 전부 마무리됨.
+- `mercurial-spec-compliance-requirement.md` gap table을 이번 세션 결과로 전면
+  갱신하고, 남은 진짜 gap 8개를 "남은 백로그" 섹션으로 명시적으로 확정(ResolveCommand의
+  state2 미연결, HgRemoteClient의 v1→v2 자동 업그레이드 미작동, 최신 실제 Mercurial
+  서버와의 라이브 통신 검증 미착수, Revlog v2 일반/persistent-nodemap 보류, Dirstate
+  v2 바이트 레이아웃 미검증, Censor 미구현, cg3 트리매니페스트/censor 깊은 부분
+  미확인, histedit journal 미적용). `implementation-plan.md`의 낡은 Track C 표는
+  제거하고 위 문서를 가리키도록 정리(실행 계획과 현황판이 따로 갱신되며 어긋나는 것을
+  방지).
+- 커버리지 95% 목표 작업은 진행 중 사용자 요청으로 중단(커밋·푸시 우선) — 아직 미달
+  상태인 클래스: `BookmarkCommand`/`CommitCommand`/`FetchCommand`/`MergeCommand`/
+  `PushCommand`/`HgObsolescenceParser`/`MergeState`/`SparseConfig`/`HgRcConfig`,
+  그리고 새로 만든 wireprotocol v2 스택 전체(`HgWireServer`/`Wire2Commands`/`Cbor`
+  등). 이어서 진행할지는 다음 세션에서 사용자 확인.

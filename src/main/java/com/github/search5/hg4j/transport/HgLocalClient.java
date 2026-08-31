@@ -2,6 +2,7 @@ package com.github.search5.hg4j.transport;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -243,7 +244,7 @@ public class HgLocalClient implements HgRemoteConnection {
     }
 
     @Override
-    public String push(byte[] bundleBytes, List<String> heads) throws IOException {
+    public String push(byte[] bundleBytes, List<String> heads) throws IOException, HgLockException {
         if (bundleBytes == null || bundleBytes.length == 0) {
             return "no changes found";
         }

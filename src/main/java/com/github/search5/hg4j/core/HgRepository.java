@@ -2,6 +2,7 @@ package com.github.search5.hg4j.core;
 
 import java.io.File;
 import java.io.IOException;
+import com.github.search5.hg4j.errors.HgLockException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
@@ -435,7 +436,7 @@ public class HgRepository implements Repository {
             if (t instanceof RuntimeException) {
                 throw (RuntimeException) t;
             }
-            throw new HgLockException("Failed to perform auto-rollback after lock acquisition", t);
+            throw new HgLockException("lock", "Failed to perform auto-rollback after lock acquisition", t);
         }
         return lock;
     }

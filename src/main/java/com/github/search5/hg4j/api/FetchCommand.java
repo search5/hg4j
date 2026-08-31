@@ -14,6 +14,7 @@ import com.github.search5.hg4j.core.SafeFileIO;
 import com.github.search5.hg4j.lib.ProgressMonitor;
 import com.github.search5.hg4j.lib.NullProgressMonitor;
 import com.github.search5.hg4j.transport.CredentialsProvider;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -66,7 +67,7 @@ public class FetchCommand {
         return this;
     }
 
-    public List<byte[]> call() throws IOException {
+    public List<byte[]> call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");
         }
@@ -291,7 +292,7 @@ public class FetchCommand {
         }
     }
 
-    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException {
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
         List<byte[]> importedCommits = new ArrayList<>();
         if (bundle.changelogEntries.isEmpty()) {
             return importedCommits;

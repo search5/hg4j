@@ -2,6 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.Dirstate;
 import com.github.search5.hg4j.core.HgLock;
+import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
@@ -81,7 +82,7 @@ public class RebaseCommand {
         return this;
     }
 
-    public byte[] call() throws IOException {
+    public byte[] call() throws IOException, HgLockException {
         repository.clearRevlogCache();
         if (sourceNode == null || targetNode == null) {
             throw new IllegalStateException("Source and Target nodes must be specified for rebase.");
@@ -506,7 +507,7 @@ public class RebaseCommand {
         }
     }
 
-    private byte[] cherryPickBackup(BackupCommit backup, byte[] newParentNode, Map<java.nio.ByteBuffer, byte[]> nodeMapping) throws IOException {
+    private byte[] cherryPickBackup(BackupCommit backup, byte[] newParentNode, Map<java.nio.ByteBuffer, byte[]> nodeMapping) throws IOException, HgLockException {
         // 1. Temporarily checkout the new parent node to prepare files
         checkoutNode(newParentNode);
 

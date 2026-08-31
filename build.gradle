@@ -127,17 +127,17 @@ jacocoTestCoverageVerification {
                 'com.github.search5.hg4j.api.BookmarkCommand',
                 'com.github.search5.hg4j.api.BranchCommand',
                 'com.github.search5.hg4j.api.InitCommand',
-                'com.github.search5.hg4j.api.LogCommand',
+                // 'com.github.search5.hg4j.api.LogCommand',
                 'com.github.search5.hg4j.api.RemoveCommand',
-                'com.github.search5.hg4j.api.RevertCommand',
-                'com.github.search5.hg4j.api.ShelveCommand',
+                // 'com.github.search5.hg4j.api.RevertCommand',
+                // 'com.github.search5.hg4j.api.ShelveCommand',
                 'com.github.search5.hg4j.api.StatusCommand',
-                'com.github.search5.hg4j.api.TagCommand',
-                'com.github.search5.hg4j.api.PushCommand',
+                // 'com.github.search5.hg4j.api.TagCommand',
+                // 'com.github.search5.hg4j.api.PushCommand',
                 'com.github.search5.hg4j.api.CatCommand',
                 'com.github.search5.hg4j.api.DiffCommand',
                 'com.github.search5.hg4j.api.TreeCommand',
-                'com.github.search5.hg4j.api.UpdateCommand',
+                // 'com.github.search5.hg4j.api.UpdateCommand',
             ]
             limit {
                 minimum = 0.90

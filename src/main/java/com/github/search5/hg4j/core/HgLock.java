@@ -2,6 +2,7 @@ package com.github.search5.hg4j.core;
 
 import java.io.File;
 import java.io.IOException;
+import com.github.search5.hg4j.errors.HgLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -167,7 +168,7 @@ public class HgLock implements AutoCloseable {
                                         if (deleted) {
                                             continue; // Try acquiring immediately again
                                         }
-                                        throw new HgLockException("Failed to clear stale lock file: " + absPath);
+                                        throw new HgLockException(lockFile.getName(), "Failed to clear stale lock file: " + absPath);
                                     }
                                 }
                             } catch (NumberFormatException ignored) {}
@@ -196,7 +197,7 @@ public class HgLock implements AutoCloseable {
                 } else if (!acquiredJvmLock) {
                     msg += " (Currently held by another thread in this process)";
                 }
-                throw new HgLockException(msg);
+                throw new HgLockException(lockFile.getName(), msg);
             }
 
             // Backoff sleep
@@ -204,7 +205,7 @@ public class HgLock implements AutoCloseable {
                 Thread.sleep(50);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new HgLockException("Lock acquisition interrupted on file: " + absPath, e);
+                throw new HgLockException(lockFile.getName(), "Lock acquisition interrupted on file: " + absPath, e);
             }
         }
     }

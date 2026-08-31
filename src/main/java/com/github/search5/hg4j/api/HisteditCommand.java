@@ -5,6 +5,7 @@ import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Dirstate;
 import com.github.search5.hg4j.core.SafeFileIO;
+import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.lib.NodeId;
 import java.io.File;
 import java.io.IOException;
@@ -44,7 +45,7 @@ public class HisteditCommand implements AutoCloseable {
         return this;
     }
 
-    public void call() throws IOException {
+    public void call() throws IOException, HgLockException {
         if (rules.isEmpty()) {
             return;
         }

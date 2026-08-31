@@ -2,6 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -56,7 +57,7 @@ public class TagCommand {
         return this;
     }
 
-    public Map<String, String> call() throws IOException {
+    public Map<String, String> call() throws IOException, HgLockException {
         File tagsFile = new File(repository.getDirectory(), ".hgtags");
 
         if (tagName != null && !tagName.isEmpty()) {

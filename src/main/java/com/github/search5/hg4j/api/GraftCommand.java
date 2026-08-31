@@ -4,6 +4,7 @@ import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Dirstate;
+import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -42,7 +43,7 @@ public class GraftCommand {
      * @return hex node ID of the newly grafted commit
      * @throws IOException if history traversal or file write fails
      */
-    public String call() throws IOException {
+    public String call() throws IOException, HgLockException {
         if (sourceRevision == null || sourceRevision.isEmpty()) {
             throw new IllegalArgumentException("Source revision must be specified for graft");
         }

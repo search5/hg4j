@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.lfs;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

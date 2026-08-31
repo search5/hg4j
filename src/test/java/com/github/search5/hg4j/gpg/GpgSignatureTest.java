@@ -1,6 +1,7 @@
-package com.github.search5.hg4j.api;
+package com.github.search5.hg4j.gpg;
+import com.github.search5.hg4j.api.*;
 
-import com.github.search5.hg4j.core.GpgSignature;
+import com.github.search5.hg4j.gpg.GpgSignature;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
 import org.junit.jupiter.api.Test;

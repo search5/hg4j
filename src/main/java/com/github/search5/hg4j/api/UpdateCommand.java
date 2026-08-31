@@ -230,9 +230,9 @@ public class UpdateCommand {
                 try {
                     byte[] hgsubBytes = Files.readAllBytes(hgsubFile.toPath());
                     byte[] hgsubstateBytes = Files.readAllBytes(hgsubstateFile.toPath());
-                    java.util.Map<String, com.github.search5.hg4j.core.HgSubrepoEntry> subrepos = com.github.search5.hg4j.core.HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
+                    java.util.Map<String, com.github.search5.hg4j.submodule.HgSubrepoEntry> subrepos = com.github.search5.hg4j.submodule.HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
                     
-                    for (com.github.search5.hg4j.core.HgSubrepoEntry subEntry : subrepos.values()) {
+                    for (com.github.search5.hg4j.submodule.HgSubrepoEntry subEntry : subrepos.values()) {
                         if (subEntry.isGit()) {
                             continue; // Skip Git subrepos
                         }

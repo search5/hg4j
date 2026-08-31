@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.submodule;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.util.SafeFileIO;
 

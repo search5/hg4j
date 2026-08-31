@@ -255,7 +255,8 @@ public class HisteditCommand implements AutoCloseable {
         clSb.append(author).append('\n');
         
         long secs = System.currentTimeMillis() / 1000;
-        clSb.append(secs).append(" 0 branch:default\n");
+        // 실제 hg는 default 브랜치 커밋에 "branch:default" extra 항목을 쓰지 않는다.
+        clSb.append(secs).append(" 0\n");
         
         java.util.Collections.sort(filesModified, com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (String path : filesModified) {
@@ -283,6 +284,14 @@ public class HisteditCommand implements AutoCloseable {
         entry.delta = Revlog.createDelta(new byte[0], changelogTextBytes);
         
         changelog.appendChangeGroupEntry(entry, newCommitRev);
+
+        // Register obsolescence marker linking original commit to histedited commit
+        try {
+            com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), origNode, List.of(entry.node), "histedit");
+        } catch (Exception e) {
+            // non-blocking
+        }
+
         return entry.node;
     }
 

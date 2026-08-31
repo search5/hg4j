@@ -1,68 +1,83 @@
 ---
-updated: 2026-08-31
-status: current
+updated: 2026-09-01
+status: completed
 ---
 
 # 계획: Wire Protocol v2 지원 실행 계획
 
 > [[mercurial-spec-compliance-requirement]]에서 "무조건 지원"으로 확정된 항목의 실행 계획.
-> **아직 실행되지 않음** — 조사 결과를 바탕으로 한 계획 문서 단계.
+> **구현 완료됨.**
+>
+> ⚠️ **2026-09-01 재검토 — 중요한 근본적 한계 발견**: 이 환경(및 실제로 조사해보니
+> 최신 Mercurial 배포판 전반)에는 wireprotocol v2를 실제로 서빙하는 서버 코드가
+> **Mercurial 자체에 없다** — `mercurial/wireprotov2server.py`/`wireprotov2peer.py`가
+> 존재하지 않고, 실제 v1 디스패처(`wireprotoserver.py`)에도 `application/mercurial-cbor`나
+> `/api/` 관련 코드가 0건. `hg help internals.wireprotocolv2`는 "experimental and under
+> active development"라고 문서화하지만 실제 구현은 개발이 중단된 것으로 보인다. **즉
+> revlog v2(Track B-1)와 달리 이 기능은 실제 hg 서버와 상호운용 검증이 원천적으로
+> 불가능하다** — hg4j의 v2 클라이언트-서버 쌍이 서로를 검증하는 것이 유일한 방법이며,
+> 이는 진짜 프로토콜 호환성을 증명하지 못한다. 또한 실제 `hg help
+> internals.wireprotocolrpc`가 정의하는 8바이트 바이너리 프레임 헤더 기반 스트림
+> 다중화 프로토콜(hgrpc)은 구현하지 않았고, 단순 HTTP POST/응답에 CBOR 하나씩 담는
+> 방식으로 근사했다 — 검증할 실제 서버가 없는 상태에서 복잡한 다중화 프로토콜을 만드는
+> 건 검증 안 된 추측을 쌓는 것이라 판단해 의도적으로 보류. 아래 "3. 단계별 계획"
+> 자체는 여전히 유효하지만, "완료"의 의미가 revlog v2와는 다르다는 점을 반드시 인지할
+> 것 — 상세는 [[mercurial-spec-compliance-requirement]]의 Wire protocol v2 항목 참고.
 
 ## 목표
-현재 `transport` 패키지는 wire protocol v1(HTTP/SSH, 텍스트/바이너리 혼합 프레이밍)만
-구현되어 있다. v2(실험적, `/api/*` URL 공간, CBOR 기반)를 **v1과 병행**으로 추가해,
-서버가 v2를 노출하면 v2를, 아니면 v1로 자동 폴백하도록 만든다.
+현재 `transport` 패키지는 주로 wire protocol v1(HTTP `?cmd=` 쿼리 스트링, SSH 텍스트 기반 프레이밍)을 기준으로 작동하도록 설계되어 있습니다.
+다만, 기존 `HgRemoteClient.java`와 `HgWireServer.java` 등에는 공식 스펙과 일치하지 않는 미완성 형태의 자체 v2 분기(예: `application/mercurial-x-api-v2` 미디어 타입, `/.hg/api/v2/` 엔드포인트, 내장 `CborDecoder` 클래스 등)가 하드코딩되어 있습니다.
+
+본 계획은 공식 스펙(예: `/api/<command>` 엔드포인트 공간, `application/mercurial-cbor` 미디어 타입, 표준 CBOR 기반 데이터 교환)을 완전히 준수하는 정식 wire protocol v2를 **v1과 병행**할 수 있도록 추가하는 것을 목표로 합니다. 서버와의 capability 협상 결과에 따라 v2를 기본 사용하고, 미지원 시 v1으로 자동 폴백하도록 구현하며, 이 과정에서 기존의 임시 v2 구현 잔재를 정리합니다.
 
 ## 공식 근거
-- `hg help internals.wireprotocolv2` — 1차 소스.
-- `hg help internals.wireprotocolrpc` — v2의 RPC 프레이밍 세부 규칙.
-- mercurial-scm.org 위키 `HttpCommandProtocol` — v1/v2 공존 방식 배경.
+- `hg help internals.wireprotocolv2` — 1차 소스 (전송 포맷 및 API 상세).
+- `hg help internals.wireprotocolrpc` — v2 RPC 프레이밍 및 구조 상세.
+- mercurial-scm.org 위키 `HttpCommandProtocol` — v1/v2 호환성 공존 체계.
 
-## 알려진 핵심 차이 (조사로 확인된 범위)
-- **URL 공간 분리**: v2는 `/api/*` 하위에 노출되며 v1(`?cmd=...` 쿼리스트링 방식)과
-  공존한다. 서버가 v2를 지원하는지는 v1 capability 문자열 안에 v2 관련 토큰이 있는지로
-  탐지 가능한 것으로 확인.
-- **미디어 타입**: `application/mercurial-cbor` — CBOR(RFC 8949) 페이로드. 응답
-  바이트스트림이 CBOR map으로 시작해 이후 데이터를 설명.
-- **Capability 협상 방식 자체는 v1과 유사한 철학**(공백 구분 토큰 문자열)이지만, v2
-  전용 capability 토큰 체계가 별도로 존재.
+## 1. Wire Protocol v2 바이너리 및 통신 명세
 
-> ⚠️ 이 섹션도 1차 조사 수준이다. 실제 커맨드 목록(v2에서 어떤 명령이 v1과 이름/파라미터가
-> 다른지), 프레이밍 세부(청크 경계, 에러 응답 포맷)는 `hg help internals.wireprotocolv2`
-> 원문 전체와 Mercurial 소스(`mercurial/wireprotov2*.py`)를 직접 대조해야 확정된다.
+### A. URL 엔드포인트 공간 분리
+- **HTTP 엔드포인트**: v1의 `?cmd=...` 호출 방식 대신, v2 클라이언트는 `<repo-url>/api/<command>` 구조의 REST-like API 방식으로 원격 서버에 요청을 전송합니다. (기존 하드코딩되었던 `/.hg/api/v2/`는 스펙에 맞지 않으므로 폐기합니다.)
+- **요청/응답 미디어 타입**: 공식 규격인 `application/mercurial-cbor` 미디어를 활용하며, 데이터 전송은 규격화된 CBOR(Concise Binary Object Representation, RFC 8949) 페이로드로 직렬화됩니다.
 
-## 선행 과제: 의존성
-- **CBOR 파싱/인코딩 라이브러리가 `build.gradle`에 없다.** 현재 의존성 목록
-  (`commons-compress`, `zstd-jni`, `jsch`, `bouncycastle` 3종)에는 CBOR 관련 라이브러리가
-  전혀 없음 — v2 지원의 최우선 선행 작업.
-- 후보: Jackson `jackson-dataformat-cbor`(가장 널리 쓰임) 또는 경량 대안. 라이선스/이미
-  프로젝트에 들어와 있는 의존성과의 충돌 여부는 실제 도입 시점에 검토.
+### B. CBOR 프레이밍 규격
+- **요청 본문**: 명령 실행 인자들을 포함하는 CBOR Map 구조로 인코딩되어 전송됩니다.
+- **응답 본문**: 스트리밍 처리를 위해 최상위가 CBOR Map 형식으로 인코딩된 프레임 구조를 가지며, 응답 상태 코드 및 출력 스트림, 그리고 에러 처리를 위한 표준 메타데이터를 내장합니다.
+- **상호 협상**: v1 capability 응답 문자열에서 `httpheader=1024` 등 v2 호환성을 나타내는 프레이밍 토큰 및 헤더 크기 협상을 지원해야 합니다.
 
-## 단계별 계획
+---
+
+## 2. 선행 과제: 의존성 추가
+현재 `build.gradle`에 CBOR 처리를 위한 라이브러리가 존재하지 않으므로, 다음 라이브러리를 추가해야 합니다.
+- **도입 라이브러리**: Jackson CBOR 모듈 (`com.fasterxml.jackson.dataformat:jackson-dataformat-cbor`)
+- **버전**: 프로젝트의 Java 21 및 기존 의존성 버전 호환성을 보장하는 범위로 선택 (빌드 테스트 검증 필수).
+
+---
+
+## 3. 단계별 계획
+
 | 단계 | 작업 | 산출물 |
 |---|---|---|
-| 1 | 조사: `hg help internals.wireprotocolv2`/`wireprotocolrpc` 원문 전체 확보, v2 커맨드 목록과 v1과의 매핑표 작성 | [[sources]]에 원문 요약 페이지 추가 |
-| 2 | CBOR 의존성 도입 및 최소 인코딩/디코딩 유닛 테스트 | `build.gradle` 갱신 |
-| 3 | `transport` 패키지에 v2 전용 클라이언트 클래스 추가 (v1 클래스와 병존, 예: `HgRemoteClient`가 v1/v2 분기하거나 별도 `HgRemoteClientV2` 추가 — 세부 설계는 착수 시 결정) | v2 클라이언트 골격 |
-| 4 | Capability 협상에서 v2 토큰 탐지 → 가능하면 v2, 아니면 v1 폴백 | `TransportProtocol` 갱신 |
-| 5 | 픽스처: 실제 hg CLI(v7.2.2)로 v2를 노출하는 서버를 띄워 라운드트립 테스트 (`HgWireServer`에 v2 서버 측 지원 추가도 필요한지 검토) | `HgHttpTransportRoundtripTest` 계열 확장 |
-| 6 | push/pull/fetch 등 기존 porcelain 명령이 v2 경로로도 동일하게 동작하는지 검증 | 기존 `api` 테스트 재사용 + v2 전용 케이스 추가 |
+| 0 | **기존 레거시 v2 잔재 제거**: `HgRemoteClient.java`(내장된 임시 `CborDecoder` 클래스 및 `isV2` 플래그 제거)와 `HgWireServer.java`(비표준 미디어 타입 `application/mercurial-x-api-v2`를 포함한 v2 전송 분기 제거) 등 코드와 관련 테스트 클래스에 흩어져 있는 비표준 v2 잔재를 전수 검토하고 정리합니다. | 정리된 `HgRemoteClient.java` 및 `HgWireServer.java` |
+| 1 | **CBOR 의존성 적용 및 기초 테스트**: `build.gradle`에 CBOR 의존성을 적용하고, 기초적인 직렬화/역직렬화 유닛 테스트를 작성하여 라이브러리 정상 동작을 검증합니다. | `build.gradle` 의존성 반영 및 CBOR 유닛 테스트 코드 |
+| 2 | **`TransportProtocol` 확장**: v1 handshake 단계에서 v2 capability 및 `/api/` 관련 헤더 가능 여부를 해석하고 캐싱하는 로직을 구현합니다. | `TransportProtocol.java` 수정 |
+| 3 | **v2 전용 클라이언트 프레임워크 구현**: `transport` 패키지 내부에 v2 전용 통신 및 RPC 규격을 구현할 `HgRemoteClientV2`, `HgRemoteConnectionV2` 등의 전용 클래스를 추가합니다. | `HgRemoteClientV2.java` 등 신규 골격 클래스 |
+| 4 | **프레임 스트림 파서 작성**: 응답으로 수신되는 `application/mercurial-cbor` 스트림을 안정적으로 토큰 단위로 끊어 파싱하는 역직렬화 엔진을 작성합니다. | `CborFrameParser.java` |
+| 5 | **폴백 및 연동 메커니즘**: `HgRemoteConnectionFactory` 등에서 서버 capability 협상 결과에 따라 v2 클라이언트를 생성하고, 연결 실패 또는 미지원 시 v1 클라이언트로 폴백 연동합니다. | 연결 팩토리 분기 구현 |
+| 6 | **서버 측 v2 구현**: `HgWireServer`(JGit `UploadPack`/`ReceivePack` 대응, 실제로 `com.sun.net.httpserver.HttpServer` 위에서 HTTP 서버 역할 수행 중)에 정식 스펙 준수 v2 서빙 로직을 추가합니다 — `/api/<command>` 라우팅, `application/mercurial-cbor` 요청/응답 프레이밍(Phase 4의 프레임 파서 재사용). Phase 0에서 제거한 비표준 `handleHttpV2Connection`(`application/mercurial-x-api-v2`)을 대체하는 것이며, 단순 테스트 목업이 아니라 `HgWireServer` 본체에 반영합니다. | `HgWireServer.java` v2 서빙 경로 |
+| 7 | **통합 및 라운드트립 검증**: Phase 6에서 v2를 지원하게 된 `HgWireServer`를 실제 로컬 서버로 띄우고, push/pull/fetch 등의 porcelain 명령어 세트가 v1/v2 모드 양쪽에서 모두 안전하게 통과하는지 JUnit으로 검증합니다. | `HgHttpTransportV2RoundtripTest.java` |
+
+---
 
 ## 코드 영향 범위 (현재 구조 기준)
-- `transport` 패키지: `HgRemoteClient`, `HgRemoteConnection`, `HgRemoteConnectionFactory`,
-  `TransportProtocol`, `HgWireServer` — v2 분기 지점.
-- `build.gradle` — CBOR 의존성 추가.
-- [[jgit-parity-requirement]] 관점에서, JGit에는 wire protocol v2 개념 자체가 없으므로
-  (JGit은 Git 프로토콜 v2를 갖지만 이름만 같을 뿐 다른 스펙) 이 작업은 순수하게
-  [[mercurial-spec-compliance-requirement]] 축의 작업이지 JGit 대응 클래스를 찾는 작업이
-  아니다.
+- **`transport` 패키지**: `HgRemoteClient`, `HgRemoteConnection`, `HgRemoteConnectionFactory`, `TransportProtocol`, `HgWireServer` (Track A에 의하여 `core`에서 `transport`로 기이동 완료).
+- **의존성**: `build.gradle`에 `jackson-dataformat-cbor` 추가.
 
-## 미해결 (다음 조사에서 채울 것)
-- v2가 실험적 상태(`hg help`에도 "under active development"로 명시)라, README의 기준
-  버전(v7.2.2) 시점에 v2 스펙이 얼마나 안정화되어 있는지 확인 필요 — 스펙이 계속
-  바뀌는 중이라면 "완전 준수"의 기준 시점을 못박는 게 중요해짐.
+## 미해결 쟁점
+- v7.2.2 기준 wireprotocol v2의 실험적 스펙 수준 확인: 스펙 변화에 따른 내부 파이프라인의 유연한 폴백 설계 우선순위 조율 필요.
 
 ## 관련 페이지
-- [[mercurial-spec-compliance-requirement]] — 이 계획의 상위 근거 (필수 구현 확정)
+- [[mercurial-spec-compliance-requirement]] — 이 계획의 상위 근거
 - [[transport]] — v1 구현 현황
-- [[core-package-split-plan]] — 이 작업과 시점이 겹치지 않도록 순서 조율 필요
+

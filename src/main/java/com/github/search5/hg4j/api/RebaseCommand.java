@@ -164,6 +164,12 @@ public class RebaseCommand {
             byte[] currentBaseNode = targetNode;
             for (BackupCommit backup : backupsToRebase) {
                 byte[] rebasedNode = cherryPickBackup(backup, currentBaseNode, nodeMapping);
+                // Register obsolescence marker linking original commit to rebased commit
+                try {
+                    com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), backup.originalNode, List.of(rebasedNode), "rebase");
+                } catch (Exception e) {
+                    // non-blocking
+                }
                 nodeMapping.put(java.nio.ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), rebasedNode);
                 currentBaseNode = rebasedNode;
             }

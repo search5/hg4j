@@ -25,14 +25,11 @@ status: current
 > "동일한 네이밍/구조"는 패키지 구조 정합성에 대한 것이며, 클래스명 접두어 제거를
 > 요구하지 않는 것으로 확정.
 
-## 참고: `HgLockException`이 두 패키지에 존재 (의도된 레이어링, 그러나 부채)
-`core.HgLockException`(레거시, `IOException` 상속 — [[checked-exception-conversion]] 이전
-방식으로 추정)과 `errors.HgLockException`(`HgException` 상속, checked exception 계층
-정식 멤버)이 동시에 존재한다. `errors.HgLockException`의 Javadoc이 스스로 "기존
-`core.HgLockException`에 대응하는 도메인 예외 레이어 래퍼"라고 명시하고 있어 **우연한
-충돌이 아니라 의도된 어댑터 관계**임을 확인. 다만 같은 개념에 예외 타입이 두 개 존재하는
-것 자체는 기술 부채이므로, `core` 패키지 분리 시 `core.HgLockException`을 완전히 제거하고
-`errors.HgLockException`으로 일원화할지 검토 대상 — [[core-package-split-plan]] 참고.
+## 해결됨: 과거 `HgLockException` 이원화 (2026-08-31 Phase 0에서 정리 완료)
+한때 `core.HgLockException`(레거시, `IOException` 상속)과 `errors.HgLockException`
+(`HgException` 상속, checked exception 계층 정식 멤버)이 동시에 존재했으나,
+[[core-package-split-plan]] Phase 0에서 모든 참조를 `errors.HgLockException`으로
+통일하고 `core` 판은 삭제했다. 현재는 `errors.HgLockException` 하나만 존재.
 
 ## 상위 클래스 코드 위치
 `src/main/java/com/github/search5/hg4j/errors/`

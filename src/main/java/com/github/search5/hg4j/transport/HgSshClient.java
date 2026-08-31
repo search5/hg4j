@@ -503,6 +503,20 @@ public class HgSshClient implements HgRemoteConnection {
     }
 
     @Override
+    public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
+        ensureConnected();
+        writeLine("pushkey");
+        writeLine("namespace " + namespace);
+        writeLine("key " + key);
+        writeLine("old " + (oldVal != null ? oldVal : ""));
+        writeLine("new " + (newVal != null ? newVal : ""));
+        writeLine("");
+
+        String resp = readLine().trim();
+        return "1".equals(resp) || "true".equalsIgnoreCase(resp) || resp.isEmpty();
+    }
+
+    @Override
     public synchronized void close() {
         if (sshSession != null) {
             try {

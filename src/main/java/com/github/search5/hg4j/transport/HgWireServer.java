@@ -148,59 +148,104 @@ public class HgWireServer {
             String response = "0\nno errors\n";
             out.write(response.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
-            
         } catch (Exception e) {
             String errResponse = "1\n" + e.getMessage() + "\n";
             out.write(errResponse.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
         }
     }
+    /**
+     * Real hg's capability-discovery handshake response, sent from the root URL
+     * ({@code /?cmd=capabilities}) when the request carries {@code X-HgUpgrade-1}/
+     * {@code X-HgProto-1} headers (checked by the caller) — {@code {apibase, apis:
+     * {<namespace>: {commands, framingmediatypes}}, v1capabilities}}, verified against a real
+     * Mercurial 6.0 server (the last release with a working wireprotocol v2 implementation).
+     *
+     * @param v1CapabilitiesLine the same string the v1 {@code capabilities} command would return,
+     *                           embedded verbatim as {@code v1capabilities}
+     */
+    public void handleCapabilitiesDiscovery(String v1CapabilitiesLine, OutputStream out) throws IOException {
+        java.util.Map<String, Object> apis = new java.util.LinkedHashMap<>();
+        apis.put(com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.NAMESPACE,
+                com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.namespaceDescriptor());
+
+        java.util.Map<String, Object> descriptor = new java.util.LinkedHashMap<>();
+        descriptor.put("apibase", "api/");
+        descriptor.put("apis", apis);
+        descriptor.put("v1capabilities", v1CapabilitiesLine == null ? "" : v1CapabilitiesLine);
+
+        out.write(com.github.search5.hg4j.transport.wireprotov2.Cbor.encode(descriptor));
+        out.flush();
+    }
 
     /**
-     * Dedicated endpoint handler that mediates and processes HTTP V2 protocol requests (api/v2/<cmd>).
+     * Real hg's per-command wireprotocol v2 HTTP handler, serving
+     * {@code POST /api/<namespace>/<ro|rw>/<command>}: reads the frame-based
+     * {@code application/mercurial-exp-framing-0006} command-request body, dispatches to
+     * {@link com.github.search5.hg4j.transport.wireprotov2.Wire2Commands}, and writes back a
+     * framed {@code {status: ok, ...}} (or {@code error}) response — the real wire shape,
+     * verified against a live Mercurial 6.0 server, replacing the earlier fictional flat
+     * {@code POST /api/<command>} scheme this class used before that verification.
      *
-     * @param cmd The name of the command invoked (e.g., "capabilities", "heads", "unbundle")
-     * @param acceptHeader The HTTP Accept header received from the client
-     * @param in The HTTP request body input stream
-     * @param out The HTTP response body output stream
-     * @throws IOException If an I/O error occurs
+     * @param permission the {@code ro}/{@code rw} URL segment; the caller is responsible for
+     *                   authenticating/authorizing it (real hg maps {@code ro}→pull, {@code rw}→push)
+     * @param urlCommand the command name from the URL, which must match the frame's own command name
      */
-    public void handleHttpV2Connection(String cmd, String acceptHeader, InputStream in, OutputStream out) throws IOException {
-        if (cmd == null || cmd.isEmpty()) {
-            throw new IllegalArgumentException("HTTP V2 Command cannot be null or empty");
+    public void handleWire2Request(String permission, String urlCommand, InputStream in, OutputStream out) throws IOException {
+        boolean isMultirequest = "multirequest".equals(urlCommand);
+        java.util.List<com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.ParsedCommandRequest> commands =
+                com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.readAllCommandRequests(in);
+
+        java.io.ByteArrayOutputStream combined = new java.io.ByteArrayOutputStream();
+        if (!commands.isEmpty()) {
+            // 실제 hg는 응답 스트림 전체에 stream-settings 프레임을 딱 한 번만 보낸다 —
+            // multirequest로 여러 명령을 한 번에 처리할 때도 명령마다 다시 보내지 않는다
+            // (real Mercurial 6.0 서버의 heads+known 배치 clone 요청으로 직접 확인, 2026-09-01).
+            combined.write(com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.buildStreamSettingsFrame(commands.get(0).requestId));
         }
+        for (com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.ParsedCommandRequest cmd : commands) {
+            if (!isMultirequest && !cmd.name.equals(urlCommand)) {
+                combined.write(com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.buildCommandErrorResponse(
+                        cmd.requestId, "command in frame must match command in URL"));
+                continue;
+            }
+            try {
+                java.util.List<Object> responseObjects = dispatchWire2Command(cmd.name, cmd.args);
+                combined.write(com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.buildCommandResponseFrames(cmd.requestId, responseObjects));
+            } catch (com.github.search5.hg4j.errors.HgProtocolException e) {
+                combined.write(com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.buildCommandErrorResponse(cmd.requestId, e.getMessage()));
+            } catch (Exception e) {
+                combined.write(com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.buildCommandErrorResponse(cmd.requestId, String.valueOf(e.getMessage())));
+            }
+        }
+        out.write(combined.toByteArray());
+        out.flush();
+    }
 
-        // HTTP V2에서는 'application/mercurial-x-api-v2' 헤더 협상이 충족되어야 합니다.
-        boolean isV2Mediated = acceptHeader != null && acceptHeader.contains("application/mercurial-x-api-v2");
-
-        if ("capabilities".equalsIgnoreCase(cmd)) {
-            // V2 용 capabilities는 V2 전용 규격으로 인코딩하여 반환합니다.
-            String caps = "capabilities: lookup changegroup=01,02,03 getbundle bundle2=HG20 compression=GZ,BZ,ZS exp-ssh-v2-0003\n";
-            if (isV2Mediated) {
-                out.write(("application/mercurial-x-api-v2\n" + caps).getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            } else {
-                out.write(caps.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            }
-            out.flush();
-        } else if ("heads".equalsIgnoreCase(cmd)) {
-            String heads = getRepositoryHeads();
-            if (isV2Mediated) {
-                out.write("application/mercurial-x-api-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            }
-            out.write(heads.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            out.flush();
-        } else if ("unbundle".equalsIgnoreCase(cmd)) {
-            if (isV2Mediated) {
-                out.write("application/mercurial-x-api-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            }
-            processIncomingPush(in, out);
-        } else {
-            if (isV2Mediated) {
-                out.write("application/mercurial-x-api-v2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            }
-            String defaultResp = "0\nno errors\n";
-            out.write(defaultResp.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            out.flush();
+    private java.util.List<Object> dispatchWire2Command(String command, java.util.Map<String, Object> args) throws IOException {
+        switch (command) {
+            case "capabilities":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.capabilities();
+            case "heads":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.heads(repository);
+            case "known":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.known(repository, args);
+            case "listkeys":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.listkeys(repository, args);
+            case "lookup":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.lookup(repository, args);
+            case "pushkey":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.pushkey(repository, args);
+            case "branchmap":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.branchmap(repository);
+            case "changesetdata":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.changesetdata(repository, args);
+            case "manifestdata":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.manifestdata(repository, args);
+            case "filesdata":
+                return com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.filesdata(repository, args);
+            default:
+                throw new com.github.search5.hg4j.errors.HgProtocolException("wireprotov2", "unsupported wire protocol v2 command: " + command);
         }
     }
 

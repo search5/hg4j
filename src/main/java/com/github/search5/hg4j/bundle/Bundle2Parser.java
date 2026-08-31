@@ -49,8 +49,11 @@ public class Bundle2Parser {
             throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unsupported bundle magic: " + magicStr + ". Expected HG20.");
         }
 
-        // 2. Stream Level Parameters Size (unsigned short 2-byte in official spec)
-        int paramsSize = dis.readUnsignedShort();
+        // 2. Stream Level Parameters Size — 실제 스펙(mercurial/bundle2.py의
+        // _fstreamparamsize = '>i')은 4바이트 부호 있는 정수다. 2바이트로 읽으면 실제
+        // hg가 만든 번들(예: 기본 bzip2 압축이 적용된 `hg bundle` 출력)의 스트림 파라미터를
+        // 잘못 파싱해 EOFException으로 깨진다(2026-09-01 발견·수정).
+        int paramsSize = dis.readInt();
         String compression = null;
         if (paramsSize > 0) {
             byte[] paramBytes = new byte[paramsSize];
@@ -112,18 +115,26 @@ public class Bundle2Parser {
             
             boolean isChangegroup = "CHANGEGROUP".equalsIgnoreCase(partName);
             int paramCount = mandatoryCount + advisoryCount;
-            
-            // Parse part parameters to search for 'version'
+
+            // 실제 스펙(mercurial/bundle2.py): 파라미터는 "먼저 (keylen,vallen) 쌍
+            // paramCount개를 전부 읽고, 그 다음에 실제 key/value 바이트들을 순서대로
+            // 읽는" 구조다 — key/value를 매 파라미터마다 번갈아 읽는 구조가 아니다
+            // (2026-09-01 발견·수정 — 이전 코드는 파라미터가 하나라도 있으면 실제 hg가
+            // 만든 번들에서 ArrayIndexOutOfBoundsException으로 깨졌다).
+            int[] keyLens = new int[paramCount];
+            int[] valLens = new int[paramCount];
             for (int i = 0; i < paramCount; i++) {
-                int paramNameLen = headerBlock[cursor++] & 0xFF;
-                String paramName = new String(headerBlock, cursor, paramNameLen, java.nio.charset.StandardCharsets.US_ASCII);
-                cursor += paramNameLen;
-                
-                int paramValLen = headerBlock[cursor++] & 0xFF;
-                byte[] paramValBytes = new byte[paramValLen];
-                System.arraycopy(headerBlock, cursor, paramValBytes, 0, paramValLen);
-                cursor += paramValLen;
-                
+                keyLens[i] = headerBlock[cursor++] & 0xFF;
+                valLens[i] = headerBlock[cursor++] & 0xFF;
+            }
+            for (int i = 0; i < paramCount; i++) {
+                String paramName = new String(headerBlock, cursor, keyLens[i], java.nio.charset.StandardCharsets.US_ASCII);
+                cursor += keyLens[i];
+
+                byte[] paramValBytes = new byte[valLens[i]];
+                System.arraycopy(headerBlock, cursor, paramValBytes, 0, valLens[i]);
+                cursor += valLens[i];
+
                 if (isChangegroup && "version".equalsIgnoreCase(paramName)) {
                     extractedVersion = new String(paramValBytes, java.nio.charset.StandardCharsets.US_ASCII).trim();
                 }

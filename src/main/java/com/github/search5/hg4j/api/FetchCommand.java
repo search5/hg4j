@@ -103,6 +103,10 @@ public class FetchCommand {
                 }
             }
             if (upToDate && !remoteHeads.isEmpty() && count > 0) {
+                // 새 changeset이 없어도 bookmark/phase는 원격에서 이미 변경됐을 수 있으므로
+                // 반드시 동기화한다 — 예전에는 여기서 그냥 리턴해버려서 "새 커밋 없이
+                // bookmark만 이동한 pull"이 조용히 무시됐다(2026-09-01 발견·수정).
+                syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
                 monitor.end();
                 return new ArrayList<>();
             }
@@ -188,6 +192,7 @@ public class FetchCommand {
             monitor.update(1);
 
             if (bundleBytes == null || bundleBytes.length == 0) {
+                syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
                 monitor.end();
                 return new ArrayList<>();
             }
@@ -226,69 +231,53 @@ public class FetchCommand {
             ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
             List<byte[]> results = applyBundle(bundle);
 
-            try {
-                // Bookmarks Sync
-                java.util.Map<String, String> remoteBookmarks = client.listKeys("bookmarks");
-                if (remoteBookmarks != null && !remoteBookmarks.isEmpty()) {
-                    File bkFile = new File(repository.getHgDir(), "bookmarks");
-                    java.util.Map<String, String> localBookmarks = new java.util.LinkedHashMap<>();
-                    if (bkFile.exists()) {
-                        List<String> bkLines = Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8);
-                        for (String line : bkLines) {
-                            line = line.trim();
-                            if (line.isEmpty()) continue;
-                            int spaceIdx = line.indexOf(' ');
-                            if (spaceIdx != -1) {
-                                String node = line.substring(0, spaceIdx).trim();
-                                String name = line.substring(spaceIdx + 1).trim();
-                                localBookmarks.put(name, node);
-                            }
-                        }
-                    }
-                    boolean modifiedBookmarks = false;
-                    for (java.util.Map.Entry<String, String> entry : remoteBookmarks.entrySet()) {
-                        String name = entry.getKey();
-                        String hexNode = entry.getValue();
-                        byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
-                        if (localChangelog.findRevision(nodeBytes) != -1) {
-                            localBookmarks.put(name, hexNode.substring(0, 40));
-                            modifiedBookmarks = true;
-                        }
-                    }
-                    if (modifiedBookmarks) {
-                        StringBuilder sb = new StringBuilder();
-                        for (java.util.Map.Entry<String, String> entry : localBookmarks.entrySet()) {
-                            sb.append(entry.getValue()).append(" ").append(entry.getKey()).append("\n");
-                        }
-                        SafeFileIO.writeStringAtomic(bkFile, sb.toString());
-                    }
-                }
-
-                // Phases Sync
-                com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
-                java.util.Map<String, String> remotePhases = client.listKeys("phases");
-                for (byte[] nodeBytes : results) {
-                    com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
-                    phaseRoots.setPhase(nodeId, com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, localChangelog);
-                }
-                if (remotePhases != null && !remotePhases.isEmpty()) {
-                    for (java.util.Map.Entry<String, String> entry : remotePhases.entrySet()) {
-                        String hexNode = entry.getKey();
-                        int phaseVal = Integer.parseInt(entry.getValue().trim());
-                        byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
-                        if (localChangelog.findRevision(nodeBytes) != -1) {
-                            com.github.search5.hg4j.phase.PhaseRoots.Phase p = com.github.search5.hg4j.phase.PhaseRoots.Phase.fromValue(phaseVal);
-                            phaseRoots.setPhase(new com.github.search5.hg4j.lib.NodeId(nodeBytes), p, localChangelog);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Failed to synchronize remote bookmarks or phases during fetch", e);
-            }
+            syncBookmarksAndPhases(client, localChangelog, results);
 
             monitor.update(1);
             monitor.end();
             return results;
+        }
+    }
+
+    /**
+     * bookmark/phase 원격 동기화. 새 changeset이 있든 없든(예: bookmark만 이동하고 새
+     * 커밋은 없는 pull) 항상 호출돼야 한다 — 예전에는 "새로 받아올 changegroup이 없음"
+     * 조기 리턴 경로들이 이 동기화 자체를 건너뛰어서, 커밋 없이 bookmark만 이동한
+     * 원격을 pull해도 로컬에 전혀 반영이 안 되는 버그가 있었다(2026-09-01 발견·수정,
+     * Track B-3).
+     *
+     * @param newCommits 이번 fetch로 새로 받아온 커밋(phase를 draft로 표시하는 데 사용).
+     *                   새 커밋이 없으면 빈 리스트.
+     */
+    private void syncBookmarksAndPhases(HgRemoteConnection client, Revlog localChangelog, List<byte[]> newCommits) {
+        try {
+            // Bookmarks Sync — ancestor(fast-forward) 인지 진짜 divergence인지 구분하는
+            // 공용 병합 로직(BookmarkCommand.mergeFromRemote)에 위임한다. 예전에는 여기서
+            // "원격이 가리키는 노드를 로컬이 갖고 있으면 무조건 덮어쓰기"만 해서 로컬의
+            // 독자적인 bookmark 이동을 조용히 잃어버릴 수 있었다(2026-09-01 수정).
+            java.util.Map<String, String> remoteBookmarks = client.listKeys("bookmarks");
+            BookmarkCommand.mergeFromRemote(repository, remoteBookmarks, null);
+
+            // Phases Sync
+            com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
+            java.util.Map<String, String> remotePhases = client.listKeys("phases");
+            for (byte[] nodeBytes : newCommits) {
+                com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
+                phaseRoots.setPhase(nodeId, com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, localChangelog);
+            }
+            if (remotePhases != null && !remotePhases.isEmpty()) {
+                for (java.util.Map.Entry<String, String> entry : remotePhases.entrySet()) {
+                    String hexNode = entry.getKey();
+                    int phaseVal = Integer.parseInt(entry.getValue().trim());
+                    byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
+                    if (localChangelog.findRevision(nodeBytes) != -1) {
+                        com.github.search5.hg4j.phase.PhaseRoots.Phase p = com.github.search5.hg4j.phase.PhaseRoots.Phase.fromValue(phaseVal);
+                        phaseRoots.setPhase(new com.github.search5.hg4j.lib.NodeId(nodeBytes), p, localChangelog);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to synchronize remote bookmarks or phases during fetch", e);
         }
     }
 
@@ -447,6 +436,17 @@ public class FetchCommand {
                 Files.deleteIfExists(new File(repository.getDirectory(), ".hg/dirstate.backup").toPath());
                 Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
             } catch (Exception ignored) {}
+
+            // hg rollback으로 이번 pull을 되돌릴 수 있도록 undo 정보를 남긴다. 예전에는
+            // CommitCommand만 undo 정보를 썼기 때문에 pull 직후에는 rollback이 아예 동작하지
+            // 않았다(가장 흔한 실사용 시나리오인데도) — 2026-09-01 수정, Track B-4.
+            if (!fileSizes.isEmpty()) {
+                try {
+                    CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup);
+                } catch (Exception e) {
+                    LOGGER.log(Level.WARNING, "Failed to write undo info for rollback after pull", e);
+                }
+            }
 
             return importedCommits;
 

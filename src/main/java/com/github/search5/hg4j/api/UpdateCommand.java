@@ -223,6 +223,22 @@ public class UpdateCommand {
             dirstate.setParents(targetNodeId, new byte[20]);
             repository.writeDirstate(dirstate);
 
+            // 4a. Update active bookmark based on targetNodeId (Auto-Switch)
+            BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
+            java.util.Map<String, String> allBookmarks = bookmarkCmd.call();
+            String targetHex = NodeIdUtil.toHex(targetNodeId);
+            java.util.List<String> matchingBookmarks = new java.util.ArrayList<>();
+            for (java.util.Map.Entry<String, String> entry : allBookmarks.entrySet()) {
+                if (entry.getValue().equals(targetHex)) {
+                    matchingBookmarks.add(entry.getKey());
+                }
+            }
+            if (matchingBookmarks.size() == 1) {
+                bookmarkCmd.setBookmarkName(matchingBookmarks.get(0)).setActive(true).call();
+            } else {
+                bookmarkCmd.setActive(true).setBookmarkName(null).call();
+            }
+
             // 5. Recursive Subrepo Checkout (JGit-like subrepository checkout support)
             File hgsubFile = new File(repository.getDirectory(), ".hgsub");
             File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");

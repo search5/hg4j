@@ -1,63 +1,158 @@
-# llm-wiki 스키마 (hg4j 전용)
+# llm-wiki schema (hg4j-specific)
 
-이 문서는 `llm-wiki/` 디렉터리 자체의 작성 규칙을 정의한다. Karpathy의 "LLM Wiki" 패턴
-(RAG 대신 컴파일형 위키를 누적)을 hg4j 라이브러리 저장소에 맞게 적용한 것이다.
+**IMPORTANT: every rule in this document — especially section 8 and the new section 9 below —
+is MANDATORY, not advisory. Any agent (Claude, Gemini, Codex, or otherwise) working in this
+repository MUST follow them exactly. Producing text that merely sounds like compliance
+without the concrete evidence these rules demand does NOT satisfy them.**
 
-## 왜 이 구조인가
-- hg4j는 Jira 티켓 기반 프로젝트가 아니라 **단일 오픈소스 라이브러리**이므로,
-  megabird의 `llm-wiki/<티켓ID>/` 구조 대신 **개념/모듈/결정** 축으로 나눈다.
-- 목표는 "다음에 이 코드를 보는 에이전트(또는 사람)가 원본 소스를 다시 전부 읽지 않고
-  이 위키만으로 방향을 잡을 수 있게" 하는 것.
+This document defines the authoring rules for the `llm-wiki/` directory itself. It adapts
+Karpathy's "LLM Wiki" pattern (an accumulating compiled wiki, as opposed to RAG) to the hg4j
+library repository.
 
-## 디렉터리 구조
+## Why this structure
+
+- hg4j is not a Jira-ticket-driven project but a **single open-source library**, so instead of
+  megabird's `llm-wiki/<ticket-id>/` structure, this wiki is split along **concept / module /
+  decision** axes.
+- The goal: "the next agent (or human) looking at this code should be able to orient itself
+  from this wiki alone, without re-reading the entire original source."
+
+## Directory structure
+
 ```
 llm-wiki/
-├── AGENTS.md      # 이 파일 — 위키 자체의 스키마/작성 규칙
-├── index.md       # 전체 페이지 카탈로그 (필수 진입점, 항상 먼저 읽는다)
-├── log.md         # 시간순 작업 이력
-├── implementation-plan.md  # 다른 에이전트(예: Gemini)에게 넘기는 실행용 마스터 계획서
-├── concepts/      # Mercurial 도메인 개념 (revlog, dirstate, bundle2, revset ...)
-├── modules/       # com.github.search5.hg4j.* 패키지별 구조 설명
-├── decisions/     # 아키텍처 결정 기록 (ADR 스타일) — "왜 이렇게 했는가"
-└── sources/       # git log/이슈 등 원본 조사를 요약한 스냅샷
+├── AGENTS.md      # this file — the wiki's own schema/authoring rules
+├── index.md       # full page catalog (mandatory entry point, always read first)
+├── log.md         # chronological work history
+├── implementation-plan.md  # self-contained master plan handed off to another agent (e.g. Gemini)
+├── concepts/      # Mercurial domain concepts (revlog, dirstate, bundle2, revset, ...)
+├── modules/       # structural notes per com.github.search5.hg4j.* package
+├── decisions/     # architecture decision records (ADR-style) — "why this was done"
+└── sources/       # summarized snapshots of raw research (git log, issues, etc.)
 ```
 
-## `implementation-plan.md`와 `decisions/*.md`의 차이
-- `decisions/*.md`: 각 결정의 **배경/근거**를 담는다 (왜 이렇게 하기로 했는가, 대안은
-  무엇이었는가). Claude(이 위키를 유지하는 에이전트)를 위한 지식 컴파일.
-- `implementation-plan.md`: 여러 `decisions/*.md`에 흩어진 "아직 실행 안 된 것"을
-  **하나로 통합해 실행 순서/체크리스트/명령어까지 구체화**한 문서. **이 대화 맥락이
-  없는 외부 에이전트(Gemini 등)에게 그대로 넘겨도 작업이 가능하도록** 자기완결적으로
-  쓴다 — 배경 설명은 최소화하고 참고 링크로 대체, 대신 "무엇을, 어떤 순서로, 어떻게
-  검증하며" 하는지는 생략 없이 적는다.
-- 실행이 끝나면 `implementation-plan.md`가 아니라 **원본 `decisions/*.md`와
-  `modules/*.md`를 갱신**한다 — 실행 계획서는 일회성 스냅샷이고, decisions/modules가
-  계속 유지되는 진실 소스다.
+## `implementation-plan.md` vs `decisions/*.md`
 
-## 작성 규칙
-1. **index.md를 항상 먼저 읽는다.** 위키 전체를 순회하지 않는다.
-2. 새 페이지를 추가하면 반드시 `index.md`에 한 줄 카탈로그 항목을 추가한다.
-3. 페이지 간 참조는 `[[페이지명]]` 위키링크 스타일 또는 상대경로 마크다운 링크로 남긴다.
-4. 코드가 바뀌어 페이지 내용이 틀어지면(모순 발생) 즉시 수정하고, 무엇이 왜 바뀌었는지
-   `log.md`에 한 줄 남긴다. 오래된 정보를 방치하지 않는다.
-5. **decisions/** 페이지는 "무엇을 했는가"가 아니라 "왜 그 결정을 했는가"에 집중한다
-   (대안이 있었다면 왜 기각했는지 포함).
-6. 각 페이지 상단에 YAML 프론트매터로 최소 메타데이터를 남긴다:
+- `decisions/*.md`: holds the **background/rationale** for each decision (why it was done this
+  way, what the alternatives were). This is a knowledge compilation for Claude (the agent that
+  maintains this wiki).
+- `implementation-plan.md`: consolidates the "not yet executed" items scattered across multiple
+  `decisions/*.md` files into **one concrete execution order, checklist, and set of commands**.
+  It must be written self-containedly enough **to hand off as-is to an external agent with no
+  conversation context (e.g. Gemini)** — minimize background explanation (replace it with
+  reference links), but spell out "what, in what order, and how it's verified" without
+  omission.
+- Once execution is finished, do **not** keep updating `implementation-plan.md` — update the
+  original `decisions/*.md` and `modules/*.md` instead. The execution plan is a one-time
+  snapshot; decisions/modules are the continuously maintained source of truth.
+
+## Authoring rules
+
+1. **Always read `index.md` first.** Do not traverse the whole wiki.
+2. Adding a new page requires adding a one-line catalog entry to `index.md`.
+3. Cross-page references use `[[page-name]]` wikilink style or relative markdown links.
+4. When code changes make a page's content wrong (a contradiction), fix it immediately and
+   leave a one-line note in `log.md` about what changed and why. Do not leave stale information
+   in place.
+5. **`decisions/`** pages focus on "why this decision was made," not "what was done" (including
+   why alternatives, if any, were rejected).
+6. Every page starts with minimal YAML frontmatter:
    ```yaml
    ---
    updated: YYYY-MM-DD
-   status: current | stale | superseded-by:[[다른페이지]]
+   status: current | stale | superseded-by:[[other-page]]
    ---
    ```
+7. **Search/audit rigor rule**: when searching the codebase (grep, etc.) or performing an audit,
+   do not arbitrarily drop or add a trailing dot (`.`) or a specific extension format on file
+   names. For example, to find a config/journal file with no extension (like `journal`), search
+   for the bare string without a dot. Do not jump to "this feature is not implemented at all"
+   based solely on a simple tool lookup — cross-check the actual coupling points and logic flow
+   between related components to guarantee the audit is trustworthy.
+8. **No speculation, no invented hypotheses (empirical verification is mandatory)**: when
+   analyzing, planning, or implementing code, never dress up speculative information or
+   imagined byte/offset specs as if they were fact.
+   - Binary format details, UUID placement, padding, and similar specifics must be verified
+     byte-for-byte against the actual official internals documentation or actual C/Python
+     source (hexdump-level empirical verification) with zero discrepancy before being treated
+     as settled.
+   - Do not jump to conclusions from a single source diff — use `git status` etc. to fully
+     analyze every organic change across the whole scope of the work.
+   - Never mix unconfirmed speculation into an answer as if it were fact, and never paper over
+     gaps with deceptive tests written just to look green; when evidence is insufficient, state
+     the limitation explicitly and stick to facts only.
+   - **No firing off a build (Gradle/tests) before static completeness is verified**: do not
+     rely on a sloppy build's failure output to patch compile errors reactively. Before editing,
+     verify 100% in the code itself — inheritance structure, import conditions, brace pairing —
+     for the target file.
+   - **Full 1:N dependency check**: when changing a class or utility, don't stop at the file
+     itself — use `grep_search` to enumerate every caller class and test class that uses it, and
+     fully analyze the impact before making the change.
+   - **Recovery/teardown design takes top priority**: when designing transactions, write
+     commands, or lock-related operations, build in — as the highest priority — the guarantee
+     that any temporary file/state on disk or in memory is fully restored and cleaned up if the
+     method exits early via an exception or an early `return`.
+   - **No fake mocked tests**: it is strictly forbidden to fake a real SCM spec check or wire
+     protocol behavior with a fake mock HTTP server or blind dummy-data responses just to make
+     the test result look green because the real check is inconvenient. Tests must verify
+     correctness at the level of the actual revision graph or actual binary byte stream.
+   - **No catch-and-swallow**: on a communication or I/O exception, it is forbidden to
+     irresponsibly patch over it by quietly swallowing it in a `try-catch` (or logging and
+     ignoring it) to fake a successful outcome. Exceptions must propagate (be rethrown)
+     accurately to the upper business layer.
+   - **Mandatory full self-critique pass before declaring completion**: before answering that an
+     implementation is complete, you must write out, inside your thinking, a self-checklist
+     covering every Java file you changed and the impact on storage/disk, and interrogate and
+     critique it.
+   - **Written-out verification ("no brainless coding")**: before firing off a tool to run
+     changed code, you must explicitly declare, inside your thinking, in complete sentences, the
+     impact analysis the change causes (list of dependent classes and call paths). You may not
+     lean on running a tool while the analysis is still "roughly" done in your head.
+   - **Eliminate the deceptive-green-test syndrome**: do not settle for a bare "tests passed"
+     message — you must prove, inside your thinking, exactly which clause of the actual
+     Mercurial spec document the final implemented code matches, one-to-one.
+   - **Record deliberate leaks and trade-offs**: if you decided to ignore or work around a
+     specific exception-handling case or an indirect impact because of business complexity, do
+     not hide it — honestly state, both in the wiki and in your thinking, the scope of what you
+     worked around and the risk, so the next session is informed.
 
-## 3가지 핵심 작업 (Karpathy 패턴 차용)
-- **수집(Ingest)**: 새로운 커밋/이슈/설계 논의를 읽고 관련 concepts/modules/decisions 페이지를
-  갱신한다. 완전히 새 개념이면 새 페이지를 만든다.
-- **질의(Query)**: "X는 어떻게 동작하나?" 류의 질문에는 위키를 먼저 검색하고, 위키에 없으면
-  코드를 읽어 답한 뒤 그 답을 새 페이지(또는 기존 페이지 보강)로 저장한다.
-- **검증(Lint)**: 주기적으로 index.md의 링크가 실제 파일과 일치하는지, 코드 경로/클래스명이
-  리팩토링으로 바뀌지 않았는지 확인한다 (예: `HgRepository` 같은 클래스명이 바뀌면 즉시 갱신).
+9. **CRITICAL — completion claims require evidence, not narrative. (Added after an external
+   agent, when asked why it kept failing to follow guidance, produced a long dramatic
+   self-reflection essay about its own "nature" instead of changing anything — that response is
+   itself the failure mode this rule exists to shut down. A model cannot fix its behavior by
+   narrating about its behavior; behavior is only fixed by removing its ability to self-certify
+   success without evidence.)**
+   - **Never declare a task "done" from prose alone.** Every completion claim must be backed by
+     attached, checkable evidence: a diff, a command's actual output, or an actual response
+     captured from a running process. No evidence, no "done" — no matter how confident or
+     detailed the prose is.
+   - **Do not answer "why did this fail" with a self-reflection essay.** When asked why
+     something broke or why a rule wasn't followed, the only acceptable answer format is: (a)
+     the specific wrong assumption or skipped step, (b) the diff that fixes it, (c) the
+     command/output that proves the fix. A narrative about "carelessness," "haste," or the
+     model's "nature" changes nothing and must not be produced. If you don't know, say "unknown,
+     here is what I checked and did not find" — nothing else.
+   - **A green test suite is not sufficient on its own.** A mocked test proves the mock was
+     satisfied, not that real behavior is correct — this is exactly what rule 8's "no fake
+     mocked tests" already demands; rule 9 makes explicit that no amount of apologetic prose may
+     substitute for that same empirical check.
+   - **If a rule genuinely cannot be honestly satisfied, state the concrete blocker** — the
+     specific missing evidence or the specific obstacle — never an apology or a promise to "try
+     harder" in its place.
 
-## 이 위키가 다루지 않는 것
-- CLAUDE.md에 이미 있는 전역 규칙(언어, Python 작업 규칙, DB 로그 기록 방식 등)은 중복 기록하지 않는다.
-- git으로 추적 가능한 사실(커밋 히스토리, blame)은 원문 그대로 복사하지 않고 **해석/요약**만 남긴다.
+## The 3 core tasks (borrowed from the Karpathy pattern)
+
+- **Ingest**: read new commits/issues/design discussions and update the relevant
+  concepts/modules/decisions pages. If it's a wholly new concept, create a new page.
+- **Query**: for "how does X work?"-style questions, search the wiki first; if it's not there,
+  read the code, answer, and save that answer as a new page (or an addition to an existing one).
+- **Lint**: periodically check that `index.md`'s links still match real files, and that
+  code paths/class names haven't drifted out of date due to refactoring (e.g. if a class name
+  like `HgRepository` changes, update immediately).
+
+## What this wiki does not cover
+
+- Global rules already in CLAUDE.md (language, Python work rules, DB logging conventions, etc.)
+  are not duplicated here.
+- Facts already trackable via git (commit history, blame) are not copied verbatim — only
+  interpretation/summary is kept here.

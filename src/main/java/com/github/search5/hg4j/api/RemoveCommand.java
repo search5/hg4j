@@ -32,70 +32,105 @@ public class RemoveCommand {
         return this;
     }
 
+    private void appendToJournal(File journal, String entry) throws IOException {
+        java.nio.file.Files.write(journal.toPath(), (entry + "\n").getBytes(), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+    }
+
     public boolean call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");
         }
 
+        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+        File journalFile = new File(repository.getStoreDir(), "journal");
+
         try (HgLock wlock = repository.lockWorkingCopy();
              HgLock storeLock = repository.lockStore()) {
 
-            Dirstate dirstate = repository.getDirstate();
-            Dirstate.Entry entry = dirstate.getEntries().get(file);
-
-            if (entry == null) {
-                throw new com.github.search5.hg4j.errors.HgValidationException("File is not tracked: " + file);
+            // Create physical journal and backups for Crash Resilience
+            Files.deleteIfExists(journalFile.toPath());
+            if (dirstateFile.exists()) {
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                appendToJournal(journalFile, "dirstate");
             }
 
-            if (!force) {
-                char state = entry.getState();
-                if (state == 'a') {
-                    throw new com.github.search5.hg4j.errors.HgValidationException("File has uncommitted changes (added): " + file + ". Use force to remove.");
-                } else if (state == 'n' || state == 'm') {
-                    File diskFile = new File(repository.getDirectory(), file);
-                    if (diskFile.exists() && diskFile.isFile()) {
-                        long diskSize = diskFile.length();
-                        long diskTime = diskFile.lastModified() / 1000;
-                        boolean isDirty = entry.getSize() != diskSize || entry.getTime() != diskTime;
-                        if (!isDirty) {
-                            // Racy-hg check: content level comparison
-                            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), file);
-                            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                            if (flIdx.exists()) {
-                                try {
-                                    com.github.search5.hg4j.storage.Revlog filelog = repository.getRevlog(flIdx, flDat);
-                                    if (filelog.getRevisionCount() > 0) {
-                                        byte[] fileContent = Files.readAllBytes(diskFile.toPath());
-                                        byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                        if (!java.util.Arrays.equals(fileContent, lastContent)) {
-                                            isDirty = true;
+            try {
+                Dirstate dirstate = repository.getDirstate();
+                Dirstate.Entry entry = dirstate.getEntries().get(file);
+
+                if (entry == null) {
+                    throw new com.github.search5.hg4j.errors.HgValidationException("File is not tracked: " + file);
+                }
+
+                if (!force) {
+                    char state = entry.getState();
+                    if (state == 'a') {
+                        throw new com.github.search5.hg4j.errors.HgValidationException("File has uncommitted changes (added): " + file + ". Use force to remove.");
+                    } else if (state == 'n' || state == 'm') {
+                        File diskFile = new File(repository.getDirectory(), file);
+                        if (diskFile.exists() && diskFile.isFile()) {
+                            long diskSize = diskFile.length();
+                            long diskTime = diskFile.lastModified() / 1000;
+                            boolean isDirty = entry.getSize() != diskSize || entry.getTime() != diskTime;
+                            if (!isDirty) {
+                                // Racy-hg check: content level comparison
+                                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), file);
+                                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                                if (flIdx.exists()) {
+                                    try {
+                                        com.github.search5.hg4j.storage.Revlog filelog = repository.getRevlog(flIdx, flDat);
+                                        if (filelog.getRevisionCount() > 0) {
+                                            byte[] fileContent = Files.readAllBytes(diskFile.toPath());
+                                            byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
+                                            if (!java.util.Arrays.equals(fileContent, lastContent)) {
+                                                isDirty = true;
+                                            }
                                         }
-                                    }
-                                } catch (Exception ignored) {}
+                                    } catch (Exception ignored) {}
+                                }
                             }
-                        }
-                        if (isDirty) {
-                            throw new com.github.search5.hg4j.errors.HgValidationException("File has uncommitted changes (modified): " + file + ". Use force to remove.");
+                            if (isDirty) {
+                                throw new com.github.search5.hg4j.errors.HgValidationException("File has uncommitted changes (modified): " + file + ". Use force to remove.");
+                            }
                         }
                     }
                 }
-            }
 
-            File diskFile = new File(repository.getDirectory(), file);
-            if (diskFile.exists() && diskFile.isFile()) {
-                Files.delete(diskFile.toPath());
-            }
+                File diskFile = new File(repository.getDirectory(), file);
+                if (diskFile.exists() && diskFile.isFile()) {
+                    Files.delete(diskFile.toPath());
+                }
 
-            if (entry.getState() == 'a') {
-                // If it was newly added, we just untrack it completely
-                dirstate.removeEntry(file);
-            } else {
-                // Mark as removed for the next commit
-                dirstate.addEntry(file, new Dirstate.Entry('r', 0, 0, 0));
-            }
+                if (entry.getState() == 'a') {
+                    // If it was newly added, we just untrack it completely
+                    dirstate.removeEntry(file);
+                } else {
+                    // Mark as removed for the next commit
+                    dirstate.addEntry(file, new Dirstate.Entry('r', 0, 0, 0));
+                }
 
-            repository.writeDirstate(dirstate);
-            return true;
+                repository.writeDirstate(dirstate);
+
+                // Clean up crash backups on success
+                Files.deleteIfExists(journalFile.toPath());
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.deleteIfExists(dirstateBackupFile.toPath());
+
+                return true;
+            } catch (Exception e) {
+                // Restore dirstate on failure
+                if (dirstateBackup != null) {
+                    try {
+                        com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                    } catch (Exception ignored) {}
+                }
+                try {
+                    Files.deleteIfExists(journalFile.toPath());
+                } catch (Exception ignored) {}
+                throw e;
+            }
         }
     }
 }

@@ -15,6 +15,63 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class HgRepositoryTest {
 
+    /**
+     * 실제 {@code hg} CLI(Mercurial 7.2)로
+     * {@code hg --config format.exp-use-changelog-v2=enable-unstable-format-and-corrupt-my-data init}
+     * 후 커밋해서 얻은 실제 {@code .hg/store/requires} 내용 (RevlogV2ParserTest의 픽스처와 동일 저장소).
+     * v2 관련 requirement는 {@code .hg/requires}가 아니라 {@code .hg/store/requires}에
+     * 기록된다는 것까지 실측으로 확인됐다 — 반드시 두 파일 다 읽어야 한다.
+     */
+    @Test
+    public void testLoadRequiresRecognizesRealChangelogV2Requirement(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        File hgDir = new File(repoDir, ".hg");
+        File storeDir = new File(hgDir, "store");
+        storeDir.mkdirs();
+        Files.writeString(new File(hgDir, "requires").toPath(), "share-safe\n");
+        Files.writeString(new File(storeDir, "requires").toPath(),
+                "dotencode\nexp-changelog-v2\nfncache\ngeneraldelta\nrevlog-compression-zstd\nrevlogv1\nsparserevlog\nstore\n");
+
+        try (HgRepository repo = new HgRepository(repoDir)) {
+            assertTrue(repo.isChangelogV2(), "exp-changelog-v2가 .hg/store/requires에서 인식되어야 함");
+            assertFalse(repo.isRevlogV2());
+            assertFalse(repo.isPersistentNodemap());
+        }
+    }
+
+    @Test
+    public void testLoadRequiresRecognizesRevlogV2AndPersistentNodemap(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        File hgDir = new File(repoDir, ".hg");
+        File storeDir = new File(hgDir, "store");
+        storeDir.mkdirs();
+        Files.writeString(new File(storeDir, "requires").toPath(),
+                "exp-revlogv2.2\npersistent-nodemap\nfncache\nstore\n");
+
+        try (HgRepository repo = new HgRepository(repoDir)) {
+            assertTrue(repo.isRevlogV2());
+            assertTrue(repo.isPersistentNodemap());
+            assertFalse(repo.isChangelogV2());
+        }
+    }
+
+    @Test
+    public void testHgrcPathsAliasResolution(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        File hgDir = new File(repoDir, ".hg");
+        hgDir.mkdirs();
+        
+        // Write [paths] default alias to hgrc
+        String hgrcContent = "[paths]\ndefault = http://example.com/repo\nother-path = ssh://hg@example.com/repo2\n";
+        Files.writeString(new File(hgDir, "hgrc").toPath(), hgrcContent);
+
+        try (HgRepository repo = new HgRepository(repoDir)) {
+            assertEquals("http://example.com/repo", repo.getConfig().getPath("default"));
+            assertEquals("ssh://hg@example.com/repo2", repo.getConfig().getPath("other-path"));
+            assertNull(repo.getConfig().getPath("non-existent"));
+        }
+    }
+
     @Test
     public void testBranchReadException(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();

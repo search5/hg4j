@@ -68,19 +68,33 @@ public class PullCommand {
     }
 
     public List<byte[]> call() throws IOException, HgLockException {
-        if (sourceUrl == null || sourceUrl.isEmpty()) {
+        // 실제 hg 스펙(hg help urls): 소스를 안 주면 paths.default를 쓴다 — 가장 흔한
+        // 실사용 형태("그냥 hg pull")인데 2026-09-01 이전에는 여기서 무조건 예외를
+        // 던져서 지원이 안 됐다.
+        String effectiveSource = sourceUrl;
+        if (effectiveSource == null || effectiveSource.isEmpty()) {
+            effectiveSource = repository.getConfig().getPath("default");
+        }
+        if (effectiveSource == null || effectiveSource.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");
+        }
+
+        String resolvedUrl = effectiveSource;
+        if (!effectiveSource.contains("://")) {
+            String configPath = repository.getConfig().getPath(effectiveSource);
+            if (configPath != null) {
+                resolvedUrl = configPath;
+            }
         }
 
         // 1. Delegate core metadata network fetching and database store sync to FetchCommand
         FetchCommand fetchCmd = new FetchCommand(repository);
         fetchCmd.setTreeFilter(this.treeFilter);
         fetchCmd.setProgressMonitor(this.monitor);
-        fetchCmd.setSource(this.sourceUrl);
+        fetchCmd.setSource(resolvedUrl);
         if (this.credentialsProvider != null) {
             fetchCmd.setCredentialsProvider(this.credentialsProvider);
         }
-
         List<byte[]> results = fetchCmd.call();
 
         // 2. PullCommand exclusive: automatically advance working directory dirstate parent if it was empty
@@ -92,6 +106,12 @@ public class PullCommand {
                 repository.writeDirstate(dirstate);
             }
         }
+
+        // 3. bookmark 동기화는 위 1단계의 FetchCommand.call() 안에서
+        // BookmarkCommand.mergeFromRemote()로 이미 처리된다(ancestor 기반 fast-forward/
+        // 진짜 divergence 구분 포함). 여기서 다시 하면 이미 병합이 끝난 상태를 대상으로
+        // 안전하지 않은 하드코딩된 "@default" 분기 로직이 중복 실행되는 문제가 있어
+        // 제거함(2026-09-01).
 
         return results;
     }

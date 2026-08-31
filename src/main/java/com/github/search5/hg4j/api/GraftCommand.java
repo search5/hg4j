@@ -123,6 +123,13 @@ public class GraftCommand {
 
             byte[] newCommitNode = commitCmd.call();
 
+            // Register obsolescence marker linking original commit to grafted commit
+            try {
+                com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), origNode, java.util.List.of(newCommitNode), "graft");
+            } catch (Exception e) {
+                // non-blocking
+            }
+
             // POST_GRAFT hooks trigger
             java.util.Map<String, Object> ctx = new java.util.HashMap<>();
             ctx.put("sourceRevision", sourceRevision);

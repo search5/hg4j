@@ -646,7 +646,9 @@ public class RevlogTest {
         assertEquals("data/au~78", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("aux"));
         assertEquals("data/au~78.i", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("aux.i"));
         assertEquals("data/_c_o_n", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("CON"));
-        assertEquals("data/com~35", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("com5"));
+        // 실제 hg(mercurial.store._pathencode)로 검증(2026-09-01): com1..9/lpt1..9 예약어는
+        // 끝의 숫자가 아니라 항상 세 번째 글자(m/t)를 이스케이프한다 — "com5" -> "co~6d5".
+        assertEquals("data/co~6d5", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("com5"));
         assertEquals("data/test space", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("test space"));
         assertEquals("data/~2ehello world", com.github.search5.hg4j.util.NodeIdUtil.encodeFname(".hello world"));
         

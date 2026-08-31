@@ -548,17 +548,14 @@ public class CommitCommandTest {
 
     @Test
     public void testFindUnescapedColonEdgeCases() {
-        // null input
+        // 실제 hg(mercurial.changelog.decodeextra)는 콜론을 전혀 이스케이프하지 않고
+        // 그냥 첫 번째 콜론에서 key:value를 나눈다(Python str.split(':', 1)) —
+        // "이스케이프된 콜론"이라는 개념 자체가 없다(2026-09-01 실제 hg로 확인).
         assertEquals(-1, CommitCommand.findUnescapedColon(null));
-        // empty input
         assertEquals(-1, CommitCommand.findUnescapedColon(""));
-        // no colon
         assertEquals(-1, CommitCommand.findUnescapedColon("nocolonhere"));
-        // escaped colon
-        assertEquals(-1, CommitCommand.findUnescapedColon("escaped\\:colon"));
-        // escaped backslash followed by colon
+        assertEquals(8, CommitCommand.findUnescapedColon("escaped\\:colon"));
         assertEquals(9, CommitCommand.findUnescapedColon("escaped\\\\:colon"));
-        // multiple colons
         assertEquals(3, CommitCommand.findUnescapedColon("abc:def:ghi"));
     }
 
@@ -572,8 +569,8 @@ public class CommitCommandTest {
         assertEquals("abc\\", CommitCommand.decodeExtraKey("abc\\"));
         // unescaped normal character after backslash
         assertEquals("abc\\x", CommitCommand.decodeExtraKey("abc\\x"));
-        // escaped values
-        assertEquals("a\nb\rc\0d:e\\f", CommitCommand.decodeExtraKey("a\\nb\\rc\\0d\\:e\\\\f"));
+        // 실제 hg는 콜론을 이스케이프하지 않으므로 "\:"의 백슬래시는 그대로 남는다.
+        assertEquals("a\nb\rc\0d\\:e\\f", CommitCommand.decodeExtraKey("a\\nb\\rc\\0d\\:e\\\\f"));
     }
 
     @Test

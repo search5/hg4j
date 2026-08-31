@@ -54,25 +54,59 @@ public final class RenameCommand {
         }
 
         // 1. Lock repository for working directory changes
+        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+        File journalFile = new File(repository.getStoreDir(), "journal");
+
         try (HgLock lock = repository.lockWorkingCopy()) {
-            // 2. Perform physical move
-            destFile.getParentFile().mkdirs();
-            Files.move(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            // Create physical journal and backups for Crash Resilience
+            Files.deleteIfExists(journalFile.toPath());
+            if (dirstateFile.exists()) {
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                appendToJournal(journalFile, "dirstate");
+            }
 
-            // 3. Update dirstate copy map and state entries
-            Dirstate dirstate = repository.getDirstate();
-            
-            // Source: marked as removed ('r')
-            dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
-            
-            // Target: marked as added ('a')
-            int mode = destFile.canExecute() ? 0755 : 0644;
-            dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, (int) destFile.length(), destFile.lastModified() / 1000));
-            
-            // Register Copy-rename linkage in copyMap
-            dirstate.addCopy(targetPath, sourcePath);
+            try {
+                // 2. Perform physical move
+                destFile.getParentFile().mkdirs();
+                Files.move(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
-            repository.writeDirstate(dirstate);
+                // 3. Update dirstate copy map and state entries
+                Dirstate dirstate = repository.getDirstate();
+                
+                // Source: marked as removed ('r')
+                dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
+                
+                // Target: marked as added ('a')
+                int mode = destFile.canExecute() ? 0755 : 0644;
+                dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, (int) destFile.length(), destFile.lastModified() / 1000));
+                
+                // Register Copy-rename linkage in copyMap
+                dirstate.addCopy(targetPath, sourcePath);
+
+                repository.writeDirstate(dirstate);
+
+                // Clean up crash backups on success
+                Files.deleteIfExists(journalFile.toPath());
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.deleteIfExists(dirstateBackupFile.toPath());
+            } catch (Exception e) {
+                // Restore dirstate on failure
+                if (dirstateBackup != null) {
+                    try {
+                        com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                    } catch (Exception ignored) {}
+                }
+                try {
+                    Files.deleteIfExists(journalFile.toPath());
+                } catch (Exception ignored) {}
+                throw e;
+            }
         }
+    }
+
+    private void appendToJournal(File journal, String entry) throws IOException {
+        java.nio.file.Files.write(journal.toPath(), (entry + "\n").getBytes(), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
     }
 }

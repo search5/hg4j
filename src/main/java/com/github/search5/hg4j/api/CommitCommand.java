@@ -435,10 +435,14 @@ public class CommitCommand {
             int offsetSeconds = forcedOffset != null ? forcedOffset : -java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
             clSb.append(secs).append(" ").append(offsetSeconds);
             String branchName = repository.getBranch();
-            if (branchName == null || branchName.isEmpty()) {
-                branchName = "default";
+            // 실제 hg(changelog.add)는 branch extra 항목을 default/빈 브랜치일 때는 아예
+            // 쓰지 않는다 — 항상 "branch:default"를 남기면 기본 브랜치 커밋의 changelog
+            // 원문 바이트가 실제 hg와 달라져 동일 내용이라도 노드 해시가 어긋난다
+            // (2026-09-01 실제 hg로 확인: 기본 브랜치 커밋의 3번째 줄은 "초 tz"뿐이고
+            // "branch:" 문구가 전혀 없다).
+            if (branchName != null && !branchName.isEmpty() && !"default".equals(branchName)) {
+                clSb.append(" ").append("branch:").append(encodeExtraKey(branchName));
             }
-            clSb.append(" ").append("branch:").append(encodeExtraKey(branchName));
             clSb.append('\n');
             java.util.Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
             for (String path : filesModified) {
@@ -514,6 +518,22 @@ public class CommitCommand {
                 }
             }
 
+            // 활성 북마크가 존재하면 해당 북마크를 새로운 커밋 노드로 전진시킨다.
+            BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
+            String active = bookmarkCmd.getActiveBookmark();
+            if (active != null) {
+                            bookmarkCmd.setBookmarkName(active)
+                           .setRevision(NodeIdUtil.toHex(commitNode))
+                           .call();
+            }
+
+            // 4b. Write undo info for rollback support
+            try {
+                writeUndoInfo(repository, fileSizes, dirstateBackup);
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "Failed to write undo info for rollback", e);
+            }
+ 
             return commitNode;
         } catch (Exception t) {
             if (skipLockAndJournal) {
@@ -669,27 +689,24 @@ public class CommitCommand {
         return new File(storeDir, encoded);
     }
 
+    /**
+     * Locates the key/value separator inside one already-decoded {@code "key:value"} extra
+     * item. Real hg (mercurial/changelog.py {@code decodeextra}) never escapes {@code :} —
+     * it splits on the first literal colon ({@code str.split(b':', 1)}) — so this is just that.
+     */
     public static int findUnescapedColon(String s) {
-        if (s == null) return -1;
-        for (int i = 0; i < s.length(); i++) {
-            if (s.charAt(i) == ':') {
-                int backslashCount = 0;
-                int j = i - 1;
-                while (j >= 0 && s.charAt(j) == '\\') {
-                    backslashCount++;
-                    j--;
-                }
-                if (backslashCount % 2 == 0) {
-                    return i;
-                }
-            }
-        }
-        return -1;
+        return s == null ? -1 : s.indexOf(':');
     }
 
+    /**
+     * Mirrors real hg's {@code changelog._string_escape}: only {@code \}, newline, CR and NUL
+     * are escaped. A literal {@code :} is deliberately left untouched (real hg splits
+     * {@code "key:value"} on the first colon only, so an embedded colon in the value never
+     * needs escaping — escaping it here would produce bytes real hg does not write).
+     */
     public static String encodeExtraKey(String s) {
         if (s == null) return "";
-        return s.replace("\\", "\\\\").replace(":", "\\:").replace("\n", "\\n").replace("\r", "\\r").replace("\0", "\\0");
+        return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\0", "\\0");
     }
 
     public static String decodeExtraKey(String s) {
@@ -707,9 +724,6 @@ public class CommitCommand {
                     i++;
                 } else if (next == 'n') {
                     sb.append('\n');
-                    i++;
-                } else if (next == ':') {
-                    sb.append(':');
                     i++;
                 } else if (next == '\\') {
                     sb.append('\\');
@@ -729,6 +743,48 @@ public class CommitCommand {
                 java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
         try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
             fc.force(true);
+        }
+    }
+
+    public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup) throws IOException {
+        File undoFile = new File(repository.getStoreDir(), "undo");
+        File undoBackupFiles = new File(repository.getStoreDir(), "undo.backup.files");
+        File undoDirstate = new File(repository.getDirectory(), ".hg/undo.backup.dirstate");
+        File undoBookmarks = new File(repository.getDirectory(), ".hg/undo.backup.bookmarks");
+
+        // Clean previous undo files
+        Files.deleteIfExists(undoFile.toPath());
+        Files.deleteIfExists(undoBackupFiles.toPath());
+        Files.deleteIfExists(undoDirstate.toPath());
+        Files.deleteIfExists(undoBookmarks.toPath());
+
+        // 1. Write undo file (list of store files and original sizes)
+        StringBuilder sbUndo = new StringBuilder();
+        StringBuilder sbFiles = new StringBuilder();
+        File storeDir = repository.getStoreDir();
+
+        for (Map.Entry<File, Long> entry : fileSizes.entrySet()) {
+            File f = entry.getKey();
+            long size = entry.getValue();
+            
+            // Get path relative to the store directory
+            String relPath = storeDir.toPath().relativize(f.toPath()).toString();
+            sbUndo.append(relPath).append("\t").append(size).append("\n");
+            sbFiles.append(relPath).append("\n");
+        }
+
+        SafeFileIO.writeStringAtomic(undoFile, sbUndo.toString());
+        SafeFileIO.writeStringAtomic(undoBackupFiles, sbFiles.toString());
+
+        // 2. Backup dirstate
+        if (dirstateBackup != null) {
+            SafeFileIO.writeAtomic(undoDirstate, dirstateBackup);
+        }
+
+        // 3. Backup bookmarks
+        File bookmarksFile = new File(repository.getDirectory(), ".hg/bookmarks");
+        if (bookmarksFile.exists()) {
+            Files.copy(bookmarksFile.toPath(), undoBookmarks.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
     }
 }

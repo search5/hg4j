@@ -1,44 +1,39 @@
 package com.github.search5.hg4j.obsolete;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * FM1(version=1) obsstore 포맷 파싱 검증. 실제 hg CLI로 생성한 진짜 obsstore 바이트를 쓰는
+ * 회귀 검증은 {@link HgObsolescenceRealHgInteropTest} 참고 — 여기서는 파서 자체의 정상/오류
+ * 경로를 {@link HgObsMarker#writeMarker}(FM1 스펙 그대로 구현됨)로 만든 데이터로 검증한다.
+ */
 public class HgObsolescenceTest {
 
     @Test
-    public void testObsstoreParsingSuccess() throws IOException {
-        // Create custom obsstore mock binary buffer
+    public void testObsstoreParsingSuccess(@TempDir Path tempDir) throws IOException {
         byte[] predecessor = new byte[20];
         predecessor[0] = 0x12;
         predecessor[19] = 0x34;
 
         byte[] successor1 = new byte[20];
         successor1[0] = 0x56;
-
         byte[] successor2 = new byte[20];
         successor2[0] = 0x78;
 
-        String metadataStr = "user\0tester\0note\0evolve test\0";
-        byte[] metaBytes = metadataStr.getBytes(StandardCharsets.UTF_8);
+        File storeDir = tempDir.toFile();
+        HgObsMarker.writeMarker(storeDir, predecessor, List.of(successor1, successor2), "evolve-test");
 
-        ByteBuffer buffer = ByteBuffer.allocate(20 + 1 + 40 + 1 + 2 + metaBytes.length).order(ByteOrder.BIG_ENDIAN);
-        buffer.put(predecessor);
-        buffer.put((byte) 2); // successorsCount
-        buffer.put(successor1);
-        buffer.put(successor2);
-        buffer.put((byte) 0x01); // flags
-        buffer.putShort((short) metaBytes.length); // metaLen
-        buffer.put(metaBytes);
-
-        List<HgObsMarker> markers = HgObsolescenceParser.parse(buffer.array());
+        byte[] raw = Files.readAllBytes(new File(storeDir, "obsstore").toPath());
+        List<HgObsMarker> markers = HgObsolescenceParser.parse(raw);
         assertNotNull(markers);
         assertEquals(1, markers.size());
 
@@ -47,14 +42,36 @@ public class HgObsolescenceTest {
         assertEquals(2, marker.getSuccessors().size());
         assertArrayEquals(successor1, marker.getSuccessors().get(0));
         assertArrayEquals(successor2, marker.getSuccessors().get(1));
-        assertEquals(0x01, marker.getFlags());
-        assertEquals("tester", marker.getMetadata().get("user"));
-        assertEquals("evolve test", marker.getMetadata().get("note"));
+        assertEquals("hg4j", marker.getMetadata().get("user"));
+        assertEquals("evolve-test", marker.getMetadata().get("operation"));
 
         // Equals/HashCode coverage
-        HgObsMarker clone = new HgObsMarker(predecessor, List.of(successor1, successor2), 0x01, marker.getMetadata());
+        HgObsMarker clone = new HgObsMarker(predecessor, List.of(successor1, successor2), marker.getFlags(), marker.getMetadata());
         assertEquals(clone, marker);
         assertEquals(clone.hashCode(), marker.hashCode());
+    }
+
+    @Test
+    public void testObsstoreParsingMultipleMarkersAppended(@TempDir Path tempDir) throws IOException {
+        File storeDir = tempDir.toFile();
+        byte[] p1 = new byte[20];
+        p1[0] = 1;
+        byte[] s1 = new byte[20];
+        s1[0] = 2;
+        byte[] p2 = new byte[20];
+        p2[0] = 3;
+
+        HgObsMarker.writeMarker(storeDir, p1, List.of(s1), "amend");
+        HgObsMarker.writeMarker(storeDir, p2, List.of(), "prune"); // successor 0개 (prune)
+
+        byte[] raw = Files.readAllBytes(new File(storeDir, "obsstore").toPath());
+        List<HgObsMarker> markers = HgObsolescenceParser.parse(raw);
+        assertEquals(2, markers.size());
+        assertArrayEquals(p1, markers.get(0).getPredecessor());
+        assertEquals(1, markers.get(0).getSuccessors().size());
+        assertArrayEquals(p2, markers.get(1).getPredecessor());
+        assertEquals(0, markers.get(1).getSuccessors().size());
+        assertEquals("prune", markers.get(1).getMetadata().get("operation"));
     }
 
     @Test
@@ -64,20 +81,17 @@ public class HgObsolescenceTest {
     }
 
     @Test
-    public void testObsstoreParsingCorruptSegmentsThrows() {
-        // Less than 20 bytes for predecessor
-        byte[] badBytes = new byte[10];
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class, () -> {
-            HgObsolescenceParser.parse(badBytes);
-        });
+    public void testObsstoreParsingUnsupportedVersionThrows() {
+        byte[] badVersion = new byte[]{0x00, 0x00, 0x00, 0x00, 0x00}; // version byte 0 = FM0, 미지원
+        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+                () -> HgObsolescenceParser.parse(badVersion));
+    }
 
-        // Missing successors bytes
-        ByteBuffer buffer = ByteBuffer.allocate(22).order(ByteOrder.BIG_ENDIAN);
-        buffer.put(new byte[20]);
-        buffer.put((byte) 5); // count is 5, but buffer ends immediately
-
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class, () -> {
-            HgObsolescenceParser.parse(buffer.array());
-        });
+    @Test
+    public void testObsstoreParsingTruncatedThrows() {
+        // 버전 바이트만 있고 고정 헤더(19바이트)가 다 안 옴
+        byte[] badBytes = new byte[]{0x01, 0x00, 0x00};
+        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+                () -> HgObsolescenceParser.parse(badBytes));
     }
 }

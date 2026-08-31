@@ -22,7 +22,11 @@ public class HgRemoteClient implements HgRemoteConnection {
     private String password;
     private boolean forceTls = false;
     private java.net.Proxy proxy = java.net.Proxy.NO_PROXY;
-    private boolean isV2 = false;
+    
+    private int maxHttpHeaderLimit = 1024; // 기본 1024바이트 제한
+    private boolean supportsV2 = false;
+    private boolean hasNegotiated = false;
+    private HgRemoteClientV2 delegate = null;
 
     public HgRemoteClient(String url) {
         if (url.endsWith("/")) {
@@ -30,6 +34,37 @@ public class HgRemoteClient implements HgRemoteConnection {
         } else {
             this.baseUrl = url;
         }
+    }
+
+    /**
+     * V2 API handshake 및 header limit 협상을 분석한다.
+     */
+    public boolean negotiateV2(List<String> capabilities) {
+        if (capabilities == null) return false;
+        for (String cap : capabilities) {
+            if (cap.startsWith("httpheader=")) {
+                try {
+                    this.maxHttpHeaderLimit = Integer.parseInt(cap.substring("httpheader=".length()).trim());
+                } catch (NumberFormatException ignored) {}
+            }
+            if ("http-v2".equalsIgnoreCase(cap) || "api-v2".equalsIgnoreCase(cap) || cap.startsWith("http-v2")) {
+                this.supportsV2 = true;
+            }
+        }
+        if (this.supportsV2 && this.delegate == null) {
+            this.delegate = new HgRemoteClientV2(this.baseUrl);
+            this.delegate.setTimeouts(this.connectTimeout, this.readTimeout);
+            if (this.username != null && this.password != null) {
+                this.delegate.setCredentials(this.username, this.password);
+            }
+            this.delegate.setForceTls(this.forceTls);
+            this.delegate.setProxy(this.proxy);
+        }
+        return this.supportsV2;
+    }
+
+    public int getMaxHttpHeaderLimit() {
+        return maxHttpHeaderLimit;
     }
 
     public void setTimeouts(int connectTimeout, int readTimeout) {
@@ -70,97 +105,40 @@ public class HgRemoteClient implements HgRemoteConnection {
      * Executes the 'capabilities' command on the remote server.
      */
     public List<String> getCapabilities() throws IOException {
+        if (delegate != null) {
+            return delegate.getCapabilities();
+        }
         byte[] bytes = executeGetBinary("capabilities");
         List<String> caps = new ArrayList<>();
-        if (isV2) {
-            try {
-                Object cbor = new CborDecoder(bytes).readValue();
-                if (cbor instanceof java.util.Map) {
-                    @SuppressWarnings("unchecked")
-                    java.util.Map<Object, Object> map = (java.util.Map<Object, Object>) cbor;
-                    Object capsObj = map.get("capabilities");
-                    if (capsObj instanceof java.util.List) {
-                        for (Object cap : (java.util.List<?>) capsObj) {
-                            caps.add(String.valueOf(cap));
-                        }
-                    } else if (map.get("commands") instanceof java.util.Map) {
-                        @SuppressWarnings("unchecked")
-                        java.util.Map<Object, Object> cmds = (java.util.Map<Object, Object>) map.get("commands");
-                        for (Object cmd : cmds.keySet()) {
-                            caps.add(String.valueOf(cmd));
-                        }
-                    }
-                } else if (cbor instanceof java.util.List) {
-                    for (Object cap : (java.util.List<?>) cbor) {
-                        caps.add(String.valueOf(cap));
-                    }
-                }
-            } catch (Exception e) {
-                String resp = new String(bytes, StandardCharsets.UTF_8);
-                if (!resp.trim().isEmpty()) {
-                    for (String cap : resp.split("\\s+")) {
-                        caps.add(cap.trim());
-                    }
-                }
-            }
-        } else {
-            String resp = new String(bytes, StandardCharsets.UTF_8);
-            if (resp != null && !resp.trim().isEmpty()) {
-                for (String cap : resp.split("\\s+")) {
-                    String clean = cap.trim();
-                    caps.add(clean);
-                    if ("http-v2".equalsIgnoreCase(clean) || "api-v2".equalsIgnoreCase(clean) || clean.startsWith("http-v2")) {
-                        this.isV2 = true;
-                    }
-                }
+        String resp = new String(bytes, StandardCharsets.UTF_8);
+        if (resp != null && !resp.trim().isEmpty()) {
+            for (String cap : resp.split("\\s+")) {
+                String clean = cap.trim();
+                caps.add(clean);
             }
         }
+        if (!hasNegotiated) {
+            hasNegotiated = true;
+            negotiateV2(caps);
+        }
         return caps;
-    }
-
-    public boolean isV2() {
-        return isV2;
-    }
-
-    public void setV2(boolean isV2) {
-        this.isV2 = isV2;
     }
 
     /**
      * Executes the 'heads' command on the remote server.
      */
     public List<String> getHeads() throws IOException {
+        if (delegate != null) {
+            return delegate.getHeads();
+        }
         byte[] bytes = executeGetBinary("heads");
         List<String> heads = new ArrayList<>();
-        if (isV2) {
-            try {
-                Object cbor = new CborDecoder(bytes).readValue();
-                if (cbor instanceof java.util.List) {
-                    for (Object item : (java.util.List<?>) cbor) {
-                        if (item instanceof byte[]) {
-                            heads.add(NodeIdUtil.toHex((byte[]) item));
-                        } else {
-                            heads.add(String.valueOf(item));
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                String resp = new String(bytes, StandardCharsets.UTF_8);
-                if (!resp.trim().isEmpty()) {
-                    for (String head : resp.split("\\s+")) {
-                        String clean = head.trim();
-                        if (!clean.isEmpty()) heads.add(clean);
-                    }
-                }
-            }
-        } else {
-            String resp = new String(bytes, StandardCharsets.UTF_8);
-            if (resp != null && !resp.trim().isEmpty()) {
-                for (String head : resp.split("\\s+")) {
-                    String clean = head.trim();
-                    if (!clean.isEmpty()) {
-                        heads.add(clean);
-                    }
+        String resp = new String(bytes, StandardCharsets.UTF_8);
+        if (resp != null && !resp.trim().isEmpty()) {
+            for (String head : resp.split("\\s+")) {
+                String clean = head.trim();
+                if (!clean.isEmpty()) {
+                    heads.add(clean);
                 }
             }
         }
@@ -171,6 +149,9 @@ public class HgRemoteClient implements HgRemoteConnection {
      * Downloads a changegroup bundle for specified head revisions.
      */
     public byte[] getChangegroup(List<String> roots) throws IOException {
+        if (delegate != null) {
+            return delegate.getChangegroup(roots);
+        }
         java.util.Map<String, String> params = new java.util.HashMap<>();
         if (roots != null && !roots.isEmpty()) {
             StringBuilder sb = new StringBuilder();
@@ -194,6 +175,9 @@ public class HgRemoteClient implements HgRemoteConnection {
      * @throws IOException if execution fails
      */
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException {
+        if (delegate != null) {
+            return delegate.getBundle(common, heads, bundleCaps);
+        }
         java.util.Map<String, String> params = new java.util.HashMap<>();
         
         if (common != null && !common.isEmpty()) {
@@ -224,7 +208,12 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     private byte[] executeGetBinary(String cmd) throws IOException {
-        String fullUrl = isV2 ? (baseUrl + "/.hg/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
+        String fullUrl = baseUrl;
+        if (cmd.contains("?")) {
+            fullUrl += "?cmd=" + cmd.substring(0, cmd.indexOf("?")) + "&" + cmd.substring(cmd.indexOf("?") + 1);
+        } else {
+            fullUrl += "?cmd=" + cmd;
+        }
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
@@ -241,11 +230,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
-        if (isV2) {
-            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2");
-        } else {
-            conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
-        }
+        conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;
@@ -293,7 +278,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     private byte[] executePostBinary(String cmd, java.util.Map<String, String> params) throws IOException {
-        String fullUrl = isV2 ? (baseUrl + "/.hg/api/v2/" + cmd) : (baseUrl + "?cmd=" + cmd);
+        String fullUrl = baseUrl + "?cmd=" + cmd;
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
@@ -311,13 +296,8 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
         conn.setDoOutput(true);
-        if (isV2) {
-            conn.setRequestProperty("Accept", "application/mercurial-x-api-v2");
-            conn.setRequestProperty("Content-Type", "application/mercurial-x-api-v2");
-        } else {
-            conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
-            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-        }
+        conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
+        conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;
@@ -326,22 +306,16 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
 
         byte[] postData;
-        if (isV2) {
-            CborEncoder encoder = new CborEncoder();
-            encoder.writeValue(params);
-            postData = encoder.build();
-        } else {
-            StringBuilder bodyBuilder = new StringBuilder();
-            for (java.util.Map.Entry<String, String> entry : params.entrySet()) {
-                if (bodyBuilder.length() > 0) {
-                    bodyBuilder.append("&");
-                }
-                bodyBuilder.append(java.net.URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8));
-                bodyBuilder.append("=");
-                bodyBuilder.append(java.net.URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8));
+        StringBuilder bodyBuilder = new StringBuilder();
+        for (java.util.Map.Entry<String, String> entry : params.entrySet()) {
+            if (bodyBuilder.length() > 0) {
+                bodyBuilder.append("&");
             }
-            postData = bodyBuilder.toString().getBytes(StandardCharsets.UTF_8);
+            bodyBuilder.append(java.net.URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8));
+            bodyBuilder.append("=");
+            bodyBuilder.append(java.net.URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8));
         }
+        postData = bodyBuilder.toString().getBytes(StandardCharsets.UTF_8);
         conn.setRequestProperty("Content-Length", String.valueOf(postData.length));
 
         try (java.io.OutputStream os = conn.getOutputStream()) {
@@ -515,7 +489,18 @@ public class HgRemoteClient implements HgRemoteConnection {
      * @return the remote server response output string
      * @throws IOException if network or push execution fails
      */
+    /**
+     * Pushes a changegroup bundle to the remote repository using the 'unbundle' command.
+     *
+     * @param bundleBytes the binary changegroup bundle payload
+     * @param heads the local heads being pushed
+     * @return the remote server response output string
+     * @throws IOException if network or push execution fails
+     */
     public String push(byte[] bundleBytes, List<String> heads) throws IOException {
+        if (delegate != null) {
+            return delegate.push(bundleBytes, heads);
+        }
         String fullUrl = baseUrl + "?cmd=unbundle";
         if (heads != null && !heads.isEmpty()) {
             fullUrl += "&heads=" + String.join("+", heads);
@@ -581,27 +566,10 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     @Override
     public java.util.Map<String, String> listKeys(String namespace) throws IOException {
-        java.util.Map<String, String> params = new java.util.HashMap<>();
-        params.put("namespace", namespace);
-        
-        byte[] bytes;
-        if (isV2) {
-            bytes = executePostBinary("listkeys", params);
-            try {
-                Object cbor = new CborDecoder(bytes).readValue();
-                if (cbor instanceof java.util.Map) {
-                    java.util.Map<String, String> result = new java.util.HashMap<>();
-                    @SuppressWarnings("unchecked")
-                    java.util.Map<Object, Object> rawMap = (java.util.Map<Object, Object>) cbor;
-                    for (java.util.Map.Entry<Object, Object> entry : rawMap.entrySet()) {
-                        result.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-                    }
-                    return result;
-                }
-            } catch (Exception ignored) {}
+        if (delegate != null) {
+            return delegate.listKeys(namespace);
         }
-        
-        // Fallback to GET for V1 / V2 failure
+        // Fallback to GET for V1
         String resp = executeGet("listkeys?namespace=" + namespace);
         java.util.Map<String, String> map = new java.util.HashMap<>();
         if (resp != null && !resp.trim().isEmpty()) {
@@ -633,151 +601,22 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     @Override
+    public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
+        if (delegate != null) {
+            return delegate.pushkey(namespace, key, oldVal, newVal);
+        }
+        java.util.Map<String, String> params = new java.util.HashMap<>();
+        params.put("namespace", namespace);
+        params.put("key", key);
+        params.put("old", oldVal != null ? oldVal : "");
+        params.put("new", newVal != null ? newVal : "");
+        byte[] bytes = executePostBinary("pushkey", params);
+        String resp = new String(bytes, StandardCharsets.UTF_8).trim();
+        return "1".equals(resp) || "true".equalsIgnoreCase(resp) || resp.isEmpty();
+    }
+
+    @Override
     public void close() {
         // HTTP connections are managed and closed at the method level
-    }
-
-    public static class CborDecoder {
-        private final byte[] data;
-        private int ptr = 0;
-
-        public CborDecoder(byte[] data) {
-            this.data = data;
-        }
-
-        public Object readValue() throws IOException {
-            if (ptr >= data.length) {
-                throw new IOException("Unexpected end of CBOR payload");
-            }
-            int b = data[ptr++] & 0xFF;
-            int type = b >> 5;
-            int val = b & 0x1F;
-
-            long len = 0;
-            if (val < 24) {
-                len = val;
-            } else if (val == 24) {
-                len = data[ptr++] & 0xFF;
-            } else if (val == 25) {
-                len = ((data[ptr++] & 0xFF) << 8) | (data[ptr++] & 0xFF);
-            } else if (val == 26) {
-                len = ((long)(data[ptr++] & 0xFF) << 24) | ((data[ptr++] & 0xFF) << 16) 
-                    | ((data[ptr++] & 0xFF) << 8) | (data[ptr++] & 0xFF);
-            } else if (val == 27) {
-                len = 0;
-                for (int i = 0; i < 8; i++) {
-                    len = (len << 8) | (data[ptr++] & 0xFF);
-                }
-            }
-
-            switch (type) {
-                case 0: // Unsigned integer
-                    return len;
-                case 1: // Negative integer
-                    return -1 - len;
-                case 2: // Byte string
-                    byte[] bstr = new byte[(int) len];
-                    System.arraycopy(data, ptr, bstr, 0, (int) len);
-                    ptr += len;
-                    return bstr;
-                case 3: // Text string
-                    byte[] tstr = new byte[(int) len];
-                    System.arraycopy(data, ptr, tstr, 0, (int) len);
-                    ptr += len;
-                    return new String(tstr, StandardCharsets.UTF_8);
-                case 4: // Array
-                    java.util.List<Object> list = new java.util.ArrayList<>();
-                    for (int i = 0; i < len; i++) {
-                        list.add(readValue());
-                    }
-                    return list;
-                case 5: // Map
-                    java.util.Map<Object, Object> map = new java.util.HashMap<>();
-                    for (int i = 0; i < len; i++) {
-                        Object k = readValue();
-                        Object v = readValue();
-                        map.put(k, v);
-                    }
-                    return map;
-                case 7: // Simple/Float/Special
-                    if (val == 20) return Boolean.FALSE;
-                    if (val == 21) return Boolean.TRUE;
-                    if (val == 22) return null;
-                    return null;
-                default:
-                    throw new IOException("Unsupported CBOR major type: " + type);
-            }
-        }
-    }
-
-    public static class CborEncoder {
-        private final java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-
-        public byte[] build() {
-            return out.toByteArray();
-        }
-
-        public void writeValue(Object obj) throws IOException {
-            if (obj == null) {
-                out.write(0xF6); // null
-            } else if (obj instanceof Boolean) {
-                out.write(((Boolean) obj) ? 0xF5 : 0xF4);
-            } else if (obj instanceof Integer || obj instanceof Long) {
-                long val = ((Number) obj).longValue();
-                if (val >= 0) {
-                    writeHeader(0, val);
-                } else {
-                    writeHeader(1, -1 - val);
-                }
-            } else if (obj instanceof byte[]) {
-                byte[] bstr = (byte[]) obj;
-                writeHeader(2, bstr.length);
-                out.write(bstr);
-            } else if (obj instanceof String) {
-                byte[] tstr = ((String) obj).getBytes(StandardCharsets.UTF_8);
-                writeHeader(3, tstr.length);
-                out.write(tstr);
-            } else if (obj instanceof java.util.List) {
-                java.util.List<?> list = (java.util.List<?>) obj;
-                writeHeader(4, list.size());
-                for (Object item : list) {
-                    writeValue(item);
-                }
-            } else if (obj instanceof java.util.Map) {
-                java.util.Map<?, ?> map = (java.util.Map<?, ?>) obj;
-                writeHeader(5, map.size());
-                for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
-                    writeValue(entry.getKey());
-                    writeValue(entry.getValue());
-                }
-            } else {
-                throw new IOException("Unsupported object type for CBOR encoding: " + obj.getClass());
-            }
-        }
-
-        private void writeHeader(int type, long val) {
-            int major = type << 5;
-            if (val < 24) {
-                out.write(major | (int) val);
-            } else if (val <= 0xFF) {
-                out.write(major | 24);
-                out.write((int) val);
-            } else if (val <= 0xFFFF) {
-                out.write(major | 25);
-                out.write((int) (val >> 8) & 0xFF);
-                out.write((int) val & 0xFF);
-            } else if (val <= 0xFFFFFFFFL) {
-                out.write(major | 26);
-                out.write((int) (val >> 24) & 0xFF);
-                out.write((int) (val >> 16) & 0xFF);
-                out.write((int) (val >> 8) & 0xFF);
-                out.write((int) val & 0xFF);
-            } else {
-                out.write(major | 27);
-                for (int i = 7; i >= 0; i--) {
-                    out.write((int) (val >> (i * 8)) & 0xFF);
-                }
-            }
-        }
     }
 }

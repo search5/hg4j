@@ -2,7 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
 
 import java.io.File;
@@ -41,7 +41,7 @@ public class StatusCommand {
         if (treeFilter == null || treeFilter == com.github.search5.hg4j.core.HgTreeFilter.ALL) {
             Map<String, Dirstate.Entry> tracked = dirstate.getEntries();
             List<String> trackedKeys = new ArrayList<>(tracked.keySet());
-            trackedKeys.sort(com.github.search5.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR);
+            trackedKeys.sort(com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
 
             for (String path : trackedKeys) {
                 Dirstate.Entry dEntry = tracked.get(path);
@@ -97,7 +97,7 @@ public class StatusCommand {
                     untrackedList.add(path);
                 }
             }
-            untrackedList.sort(com.github.search5.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR);
+            untrackedList.sort(com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
             for (String path : untrackedList) {
                 status.getUntracked().add(path);
             }

@@ -53,7 +53,7 @@ public class HgLocalClient implements HgRemoteConnection {
         List<String> heads = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             if (!isParent[i]) {
-                heads.add(com.github.search5.hg4j.core.NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
+                heads.add(com.github.search5.hg4j.util.NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
             }
         }
         return heads;
@@ -95,7 +95,7 @@ public class HgLocalClient implements HgRemoteConnection {
         if (!validCommon.isEmpty()) {
             boolean[] commonKnown = new boolean[count];
             for (String c : validCommon) {
-                int rev = changelog.findRevision(com.github.search5.hg4j.core.NodeIdUtil.fromHex(c));
+                int rev = changelog.findRevision(com.github.search5.hg4j.util.NodeIdUtil.fromHex(c));
                 if (rev != -1) {
                     commonKnown[rev] = true;
                 }
@@ -159,7 +159,7 @@ public class HgLocalClient implements HgRemoteConnection {
                 affectedFiles.add(line);
             }
 
-            byte[] mfNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(clLines[0].trim().substring(0, 40));
+            byte[] mfNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(clLines[0].trim().substring(0, 40));
             int mfRev = manifest.findRevision(mfNode);
             if (mfRev == -1) continue;
 
@@ -334,7 +334,7 @@ public class HgLocalClient implements HgRemoteConnection {
                     com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
                     com.github.search5.hg4j.core.PhaseRoots.Phase phase = phaseRoots.getPhase(nodeId, cl);
                     if (phase != com.github.search5.hg4j.core.PhaseRoots.Phase.PUBLIC) {
-                        map.put(com.github.search5.hg4j.core.NodeIdUtil.toHex(nodeBytes), String.valueOf(phase.getValue()));
+                        map.put(com.github.search5.hg4j.util.NodeIdUtil.toHex(nodeBytes), String.valueOf(phase.getValue()));
                     }
                 }
             }

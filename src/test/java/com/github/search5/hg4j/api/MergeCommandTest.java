@@ -416,8 +416,8 @@ public class MergeCommandTest {
         byte[] yoursCommitContent = new Revlog(new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d")).getRevisionContent(1);
         String yoursClText = new String(yoursCommitContent, java.nio.charset.StandardCharsets.UTF_8);
         String yoursMfLine = yoursClText.split("\n")[0].trim();
-        byte[] yoursMfNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(yoursMfLine);
-        int yoursMfRev = com.github.search5.hg4j.core.NodeIdUtil.findRevisionByNodeId(mfRevlog, yoursMfNode);
+        byte[] yoursMfNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(yoursMfLine);
+        int yoursMfRev = com.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(mfRevlog, yoursMfNode);
         byte[] yoursMfContent = mfRevlog.getRevisionContent(yoursMfRev);
         String yoursMfText = new String(yoursMfContent, java.nio.charset.StandardCharsets.UTF_8);
         System.out.println("YOURS MANIFEST LOG: " + yoursMfText);

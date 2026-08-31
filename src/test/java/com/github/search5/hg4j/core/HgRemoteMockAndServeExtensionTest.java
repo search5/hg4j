@@ -1,9 +1,11 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 
 import com.github.search5.hg4j.api.*;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.errors.HgAuthException;
 import com.github.search5.hg4j.errors.HgCorruptDataException;

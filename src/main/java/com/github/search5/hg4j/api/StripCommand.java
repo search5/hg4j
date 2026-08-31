@@ -2,7 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
@@ -41,7 +41,7 @@ public class StripCommand {
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        byte[] nodeBytes = com.github.search5.hg4j.core.NodeIdUtil.resolveRevision(changelog, revision);
+        byte[] nodeBytes = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, revision);
         if (nodeBytes == null) {
             throw new IOException("Strip target revision not found: " + revision);
         }
@@ -104,7 +104,7 @@ public class StripCommand {
             }
             
             // Write back updated fncache atomically
-            com.github.search5.hg4j.core.SafeFileIO.writeLinesAtomic(fncacheFile, updatedFncachePaths);
+            com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(fncacheFile, updatedFncachePaths);
 
             // 2. Truncate Core Changelog and Manifest
             truncateRevlog(clIdx, clDat, keepCount);
@@ -122,7 +122,7 @@ public class StripCommand {
                     String[] parts = line.trim().split("\\s+", 2);
                     if (parts.length == 2) {
                         String hexNode = parts[0];
-                        byte[] node = com.github.search5.hg4j.core.NodeIdUtil.fromHex(hexNode);
+                        byte[] node = com.github.search5.hg4j.util.NodeIdUtil.fromHex(hexNode);
                         int rev = changelog.findRevision(node);
                         if (rev != -1 && rev < targetRev) {
                             updatedBLines.add(line);
@@ -132,7 +132,7 @@ public class StripCommand {
                 if (updatedBLines.isEmpty()) {
                     bookmarksFile.delete();
                 } else {
-                    com.github.search5.hg4j.core.SafeFileIO.writeLinesAtomic(bookmarksFile, updatedBLines);
+                    com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(bookmarksFile, updatedBLines);
                 }
             }
 
@@ -146,7 +146,7 @@ public class StripCommand {
                     String[] parts = line.trim().split("\\s+", 2);
                     if (parts.length == 2) {
                         String hexNode = parts[1];
-                        byte[] node = com.github.search5.hg4j.core.NodeIdUtil.fromHex(hexNode);
+                        byte[] node = com.github.search5.hg4j.util.NodeIdUtil.fromHex(hexNode);
                         int rev = changelog.findRevision(node);
                         if (rev != -1 && rev < targetRev) {
                             updatedPLines.add(line);
@@ -156,7 +156,7 @@ public class StripCommand {
                 if (updatedPLines.isEmpty()) {
                     phaserootsFile.delete();
                 } else {
-                    com.github.search5.hg4j.core.SafeFileIO.writeLinesAtomic(phaserootsFile, updatedPLines);
+                    com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(phaserootsFile, updatedPLines);
                 }
             }
 

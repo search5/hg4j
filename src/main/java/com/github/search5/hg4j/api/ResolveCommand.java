@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.SafeFileIO;
+import com.github.search5.hg4j.util.SafeFileIO;
 
 import java.io.File;
 import java.io.IOException;
@@ -116,10 +116,10 @@ public final class ResolveCommand {
             try {
                 com.github.search5.hg4j.dirstate.Dirstate dirstate = repository.getDirstate();
                 if (dirstate.getParent1() != null) {
-                    p1 = com.github.search5.hg4j.core.NodeIdUtil.toHex(dirstate.getParent1());
+                    p1 = com.github.search5.hg4j.util.NodeIdUtil.toHex(dirstate.getParent1());
                 }
                 if (dirstate.getParent2() != null) {
-                    p2 = com.github.search5.hg4j.core.NodeIdUtil.toHex(dirstate.getParent2());
+                    p2 = com.github.search5.hg4j.util.NodeIdUtil.toHex(dirstate.getParent2());
                 }
             } catch (Exception ignored) {}
 

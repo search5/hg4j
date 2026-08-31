@@ -3,7 +3,7 @@ package com.github.search5.hg4j;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.ChangegroupParser;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.api.CommitCommand;
 import java.io.File;
 import java.io.IOException;

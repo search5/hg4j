@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
 
 import java.io.File;
@@ -143,18 +143,18 @@ public class DiffCommand {
 
             if (!inOld && inNew) {
                 // ADDED
-                byte[] newContent = getFileContent(path, com.github.search5.hg4j.core.NodeIdUtil.toHex(newNode));
+                byte[] newContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(newNode));
                 String diffText = generateUnifiedDiff(path, new byte[0], newContent);
                 diffs.add(new DiffEntry(path, ChangeType.ADD, diffText));
             } else if (inOld && !inNew) {
                 // DELETED
-                byte[] oldContent = getFileContent(path, com.github.search5.hg4j.core.NodeIdUtil.toHex(oldNode));
+                byte[] oldContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(oldNode));
                 String diffText = generateUnifiedDiff(path, oldContent, new byte[0]);
                 diffs.add(new DiffEntry(path, ChangeType.DELETE, diffText));
             } else if (inOld && inNew && !java.util.Arrays.equals(oldNode, newNode)) {
                 // MODIFIED
-                byte[] oldContent = getFileContent(path, com.github.search5.hg4j.core.NodeIdUtil.toHex(oldNode));
-                byte[] newContent = getFileContent(path, com.github.search5.hg4j.core.NodeIdUtil.toHex(newNode));
+                byte[] oldContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(oldNode));
+                byte[] newContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(newNode));
                 String diffText = generateUnifiedDiff(path, oldContent, newContent);
                 diffs.add(new DiffEntry(path, ChangeType.MODIFY, diffText));
             }

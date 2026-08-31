@@ -86,7 +86,7 @@ public class GcCommand {
         // 3. Rebuild fncache with atomic file IO
         File fncacheFile = new File(storeDir, "fncache");
         if (!validStorePaths.isEmpty()) {
-            com.github.search5.hg4j.core.SafeFileIO.writeLinesAtomic(fncacheFile, new java.util.ArrayList<>(validStorePaths));
+            com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(fncacheFile, new java.util.ArrayList<>(validStorePaths));
         }
 
         // 4. Request JVM level defragmentation

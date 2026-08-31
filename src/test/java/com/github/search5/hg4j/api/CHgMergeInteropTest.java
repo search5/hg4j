@@ -75,7 +75,7 @@ public class CHgMergeInteropTest {
                 .call();
 
         // native hg로 merge commit의 parents 검증
-        String mergeNodeHex = com.github.search5.hg4j.core.NodeIdUtil.toHex(mergeCommitNode);
+        String mergeNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(mergeCommitNode);
         String nativeParents = HgTestUtils.hg(repoDir, "log", "-r", mergeNodeHex, "--template", "{p1node}:{p2node}");
         String[] parents = nativeParents.split(":");
 

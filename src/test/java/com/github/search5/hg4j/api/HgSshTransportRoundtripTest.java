@@ -2,9 +2,9 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.ChangegroupParser;
-import com.github.search5.hg4j.core.SafeFileIO;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.core.Revlog;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.errors.HgAuthException;
 import com.github.search5.hg4j.errors.HgProtocolException;
 import com.github.search5.hg4j.transport.HgSshClient;

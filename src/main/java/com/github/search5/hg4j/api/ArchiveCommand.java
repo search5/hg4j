@@ -2,7 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -52,7 +52,7 @@ public class ArchiveCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        byte[] node = com.github.search5.hg4j.core.NodeIdUtil.resolveRevision(changelog, revision);
+        byte[] node = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, revision);
         if (node == null) {
             throw new IOException("Archive target revision not found: " + revision);
         }
@@ -93,7 +93,7 @@ public class ArchiveCommand {
 
     private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
         java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.core.NodeIdUtil.isAllZero(commitNode)) {
+        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -106,7 +106,7 @@ public class ArchiveCommand {
         if (lines.length == 0) return manifestMap;
 
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);

@@ -1,4 +1,6 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -636,18 +638,18 @@ public class RevlogTest {
 
     @Test
     public void testEncodeFname() {
-        assertEquals("data/test", com.github.search5.hg4j.core.NodeIdUtil.encodeFname("test"));
-        assertEquals("data/~2etest", com.github.search5.hg4j.core.NodeIdUtil.encodeFname(".test"));
-        assertEquals("data/test__with__underscores", com.github.search5.hg4j.core.NodeIdUtil.encodeFname("test_with_underscores"));
-        assertEquals("data/au~78", com.github.search5.hg4j.core.NodeIdUtil.encodeFname("aux"));
-        assertEquals("data/au~78.i", com.github.search5.hg4j.core.NodeIdUtil.encodeFname("aux.i"));
-        assertEquals("data/_c_o_n", com.github.search5.hg4j.core.NodeIdUtil.encodeFname("CON"));
-        assertEquals("data/com~35", com.github.search5.hg4j.core.NodeIdUtil.encodeFname("com5"));
-        assertEquals("data/test space", com.github.search5.hg4j.core.NodeIdUtil.encodeFname("test space"));
-        assertEquals("data/~2ehello world", com.github.search5.hg4j.core.NodeIdUtil.encodeFname(".hello world"));
+        assertEquals("data/test", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("test"));
+        assertEquals("data/~2etest", com.github.search5.hg4j.util.NodeIdUtil.encodeFname(".test"));
+        assertEquals("data/test__with__underscores", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("test_with_underscores"));
+        assertEquals("data/au~78", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("aux"));
+        assertEquals("data/au~78.i", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("aux.i"));
+        assertEquals("data/_c_o_n", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("CON"));
+        assertEquals("data/com~35", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("com5"));
+        assertEquals("data/test space", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("test space"));
+        assertEquals("data/~2ehello world", com.github.search5.hg4j.util.NodeIdUtil.encodeFname(".hello world"));
         
         // Non-ASCII Korean encoding verification
-        String encodedKorean = com.github.search5.hg4j.core.NodeIdUtil.encodeFname("안녕");
+        String encodedKorean = com.github.search5.hg4j.util.NodeIdUtil.encodeFname("안녕");
         assertTrue(encodedKorean.contains("~"));
         assertFalse(encodedKorean.contains("%"));
     }

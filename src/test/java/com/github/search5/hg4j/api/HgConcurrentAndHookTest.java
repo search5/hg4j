@@ -122,12 +122,12 @@ public class HgConcurrentAndHookTest {
         });
 
         // 3. Verify POST_UPDATE hook
-        hg.update().setRevision(com.github.search5.hg4j.core.NodeIdUtil.toHex(firstCommit)).setForce(true).call();
+        hg.update().setRevision(com.github.search5.hg4j.util.NodeIdUtil.toHex(firstCommit)).setForce(true).call();
         assertEquals(1, postUpdateTriggerCount.get());
 
         // 4. Verify remaining hooks for registration methods and behavior during exceptions/completion
         // Call GraftCommand hook directly in isolation
-        GraftCommand graftCmd = hg.graft().setSource(com.github.search5.hg4j.core.NodeIdUtil.toHex(firstCommit));
+        GraftCommand graftCmd = hg.graft().setSource(com.github.search5.hg4j.util.NodeIdUtil.toHex(firstCommit));
         try {
             graftCmd.call();
         } catch (Exception ignored) {
@@ -314,7 +314,7 @@ public class HgConcurrentAndHookTest {
         Files.writeString(dummyFile.toPath(), "Hello HTTP Real Bundle");
         srcHg.add().addFile("test.txt").call();
         byte[] commitNode = srcHg.commit().setAuthor("tester").setMessage("Initial HTTP").call();
-        String commitNodeHex = com.github.search5.hg4j.core.NodeIdUtil.toHex(commitNode);
+        String commitNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
         
         com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
         byte[] realCgBytes = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
@@ -384,7 +384,7 @@ public class HgConcurrentAndHookTest {
         Files.writeString(dummyFile.toPath(), "Hello SSH Real Bundle");
         srcHg.add().addFile("test.txt").call();
         byte[] commitNode = srcHg.commit().setAuthor("tester").setMessage("Initial SSH").call();
-        String commitNodeHex = com.github.search5.hg4j.core.NodeIdUtil.toHex(commitNode);
+        String commitNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
         
         com.github.search5.hg4j.core.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
         byte[] realCgBytes = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);

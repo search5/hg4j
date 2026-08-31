@@ -2,7 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
@@ -56,7 +56,7 @@ public class GraftCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        byte[] origNode = com.github.search5.hg4j.core.NodeIdUtil.resolveRevision(changelog, sourceRevision);
+        byte[] origNode = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, sourceRevision);
         if (origNode == null) {
             throw new IOException("Graft source revision not found: " + sourceRevision);
         }
@@ -142,7 +142,7 @@ public class GraftCommand {
 
     private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
         java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.core.NodeIdUtil.isAllZero(commitNode)) {
+        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -155,7 +155,7 @@ public class GraftCommand {
         if (lines.length == 0) return manifestMap;
 
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);

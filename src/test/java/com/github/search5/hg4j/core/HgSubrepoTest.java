@@ -1,4 +1,6 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 
 import org.junit.jupiter.api.Test;
 
@@ -95,7 +97,7 @@ public class HgSubrepoTest {
             java.nio.file.Files.writeString(subFile.toPath(), "Subrepo Payload Content");
             hgChild.add().addFile("sub.txt").call();
             byte[] childCommitNode = hgChild.commit().setMessage("Initial child commit").call();
-            String childCommitHex = com.github.search5.hg4j.core.NodeIdUtil.toHex(childCommitNode);
+            String childCommitHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(childCommitNode);
 
             // 2. Initialize parent repo
             com.github.search5.hg4j.core.HgRepository parentRepo = com.github.search5.hg4j.api.Hg.init().setDirectory(parentDir).call();
@@ -123,7 +125,7 @@ public class HgSubrepoTest {
                 assertFalse(new java.io.File(checkedOutSubDir, "sub.txt").exists(), "Subrepo file should be deleted on empty update");
 
                 // 4. Update back to parent commit: this must trigger subrepo checkout!
-                hgParent.update().setRevision(com.github.search5.hg4j.core.NodeIdUtil.toHex(parentCommitNode)).setForce(true).call();
+                hgParent.update().setRevision(com.github.search5.hg4j.util.NodeIdUtil.toHex(parentCommitNode)).setForce(true).call();
 
                 // 5. Assert child file has been recursively checked out in the subpath
                 java.io.File checkedOutSubFile = new java.io.File(checkedOutSubDir, "sub.txt");

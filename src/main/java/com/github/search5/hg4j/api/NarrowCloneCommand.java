@@ -65,7 +65,7 @@ public final class NarrowCloneCommand {
         File requiresFile = new File(repo.getHgDir(), "requires");
         List<String> requirements = new ArrayList<>(Files.readAllLines(requiresFile.toPath(), java.nio.charset.StandardCharsets.UTF_8));
         requirements.add("narrowspec");
-        com.github.search5.hg4j.core.SafeFileIO.writeLinesAtomic(requiresFile, requirements);
+        com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(requiresFile, requirements);
 
         // 3. Establish pull with TreeFilter integration (emulates narrow clone segment mapping)
         HgTreeFilter pathFilter = HgTreeFilter.createPathPrefixFilter(includePaths, excludePaths);
@@ -81,7 +81,7 @@ public final class NarrowCloneCommand {
         for (String ex : excludePaths) {
             sb.append(ex).append("\n");
         }
-        com.github.search5.hg4j.core.SafeFileIO.writeStringAtomic(narrowSpecFile, sb.toString());
+        com.github.search5.hg4j.util.SafeFileIO.writeStringAtomic(narrowSpecFile, sb.toString());
 
         // Perform the standard SCM clone/pull
         hg.pull().setSource(sourceUrl).setTreeFilter(pathFilter).call();

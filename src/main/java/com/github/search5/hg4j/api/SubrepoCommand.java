@@ -1,6 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -48,7 +49,7 @@ public class SubrepoCommand {
      *
      * @throws IOException if subrepo parsing or network cloning fails
      */
-    public void call() throws IOException {
+    public void call() throws IOException, HgLockException {
         if (action == null) {
             throw new IllegalArgumentException("Action must be set for SubrepoCommand (add/init/update)");
         }

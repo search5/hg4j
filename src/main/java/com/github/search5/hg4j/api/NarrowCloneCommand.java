@@ -2,6 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.HgTreeFilter;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
@@ -51,7 +52,7 @@ public final class NarrowCloneCommand {
      * @return cloned repository facade
      * @throws IOException if network or sparse file writing fails
      */
-    public Hg call() throws IOException {
+    public Hg call() throws IOException, HgLockException {
         if (sourceUrl == null || directory == null) {
             throw new IllegalStateException("Source URL and directory must be specified.");
         }

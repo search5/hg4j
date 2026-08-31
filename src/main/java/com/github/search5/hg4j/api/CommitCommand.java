@@ -8,6 +8,7 @@ import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.SafeFileIO;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
@@ -88,7 +89,7 @@ public class CommitCommand {
         return this;
     }
 
-    public byte[] call() throws IOException {
+    public byte[] call() throws IOException, HgLockException {
         if (message == null || message.isEmpty()) {
             throw new IllegalStateException("Commit message must be specified.");
         }

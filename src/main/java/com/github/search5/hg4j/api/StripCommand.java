@@ -4,6 +4,7 @@ import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Dirstate;
+import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -31,7 +32,7 @@ public class StripCommand {
      *
      * @throws IOException if truncation or workspace restoration fails
      */
-    public void call() throws IOException {
+    public void call() throws IOException, HgLockException {
         if (revision == null || revision.isEmpty()) {
             throw new IllegalArgumentException("Target revision must be specified for strip rollback");
         }

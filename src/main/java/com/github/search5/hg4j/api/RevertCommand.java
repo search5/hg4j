@@ -5,6 +5,7 @@ import com.github.search5.hg4j.core.HgLock;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
@@ -33,7 +34,7 @@ public class RevertCommand {
         return this;
     }
 
-    public boolean call() throws IOException {
+    public boolean call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");
         }

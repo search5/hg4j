@@ -2,6 +2,7 @@ package com.github.search5.hg4j.core;
 
 import java.io.File;
 import java.io.IOException;
+import com.github.search5.hg4j.errors.HgLockException;
 
 /**
  * Interface representing a Mercurial repository.

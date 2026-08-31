@@ -1,8 +1,8 @@
 package com.github.search5.hg4j.core;
 
 import org.junit.jupiter.api.Test;
-
-import java.io.IOException;
+import com.github.search5.hg4j.errors.HgLockException;
+import com.github.search5.hg4j.errors.HgException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -13,25 +13,25 @@ public class HgLockExceptionTest {
 
     @Test
     public void testMessageConstructor() {
-        HgLockException ex = new HgLockException("락 획득 실패");
-        assertEquals("락 획득 실패", ex.getMessage());
+        HgLockException ex = new HgLockException("lock", "락 획득 실패");
+        assertTrue(ex.getMessage().contains("락 획득 실패"));
         assertNull(ex.getCause());
-        assertInstanceOf(IOException.class, ex);
+        assertInstanceOf(HgException.class, ex);
     }
 
     @Test
     public void testMessageAndCauseConstructor() {
         RuntimeException cause = new RuntimeException("원인 예외");
-        HgLockException ex = new HgLockException("락 획득 실패", cause);
-        assertEquals("락 획득 실패", ex.getMessage());
+        HgLockException ex = new HgLockException("lock", "락 획득 실패", cause);
+        assertTrue(ex.getMessage().contains("락 획득 실패"));
         assertSame(cause, ex.getCause());
-        assertInstanceOf(IOException.class, ex);
+        assertInstanceOf(HgException.class, ex);
     }
 
     @Test
     public void testThrowAndCatch() {
         assertThrows(HgLockException.class, () -> {
-            throw new HgLockException("테스트 예외");
+            throw new HgLockException("lock", "테스트 예외");
         });
     }
 
@@ -41,21 +41,21 @@ public class HgLockExceptionTest {
             try {
                 throw new RuntimeException("내부 오류");
             } catch (RuntimeException e) {
-                throw new HgLockException("래핑된 오류", e);
+                throw new HgLockException("lock", "래핑된 오류", e);
             }
         });
     }
 
     @Test
-    public void testExceptionIsIOException() {
-        // HgLockException extends IOException, so it must be catchable as an IOException
+    public void testExceptionIsHgException() {
         boolean caught = false;
         try {
-            throw new HgLockException("IO 테스트");
-        } catch (IOException e) {
+            throw new HgLockException("lock", "IO 테스트");
+        } catch (HgException e) {
             caught = true;
-            assertEquals("IO 테스트", e.getMessage());
+            assertTrue(e.getMessage().contains("IO 테스트"));
         }
         assertTrue(caught);
     }
 }
+

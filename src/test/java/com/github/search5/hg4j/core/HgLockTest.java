@@ -2,6 +2,7 @@ package com.github.search5.hg4j.core;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.nio.file.Path;

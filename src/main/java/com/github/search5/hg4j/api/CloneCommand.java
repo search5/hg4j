@@ -6,6 +6,7 @@ import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.lib.ProgressMonitor;
 import com.github.search5.hg4j.lib.NullProgressMonitor;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
@@ -42,7 +43,7 @@ public class CloneCommand {
         return this;
     }
 
-    public HgRepository call() throws IOException {
+    public HgRepository call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");
         }

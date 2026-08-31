@@ -7,6 +7,7 @@ import com.github.search5.hg4j.transport.HgRemoteConnectionFactory;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -51,7 +52,7 @@ public class PushCommand {
         return this;
     }
 
-    public String call() throws IOException {
+    public String call() throws IOException, HgLockException {
         if (destinationUrl == null || destinationUrl.isEmpty()) {
             throw new IllegalStateException("Remote destination URL must be specified.");
         }

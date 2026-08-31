@@ -5,6 +5,7 @@ import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Merge3;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
@@ -205,7 +206,7 @@ public class MergeCommand {
         return new MergeBase(virtualManifest, virtualFileContents);
     }
 
-    public MergeResult call() throws IOException {
+    public MergeResult call() throws IOException, HgLockException {
         repository.clearRevlogCache();
         try (com.github.search5.hg4j.core.HgLock storeLock = repository.lockStore();
              com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {

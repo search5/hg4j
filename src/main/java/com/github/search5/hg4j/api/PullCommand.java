@@ -11,6 +11,7 @@ import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.SafeFileIO;
+import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.lib.ProgressMonitor;
 import com.github.search5.hg4j.lib.NullProgressMonitor;
 import com.github.search5.hg4j.transport.CredentialsProvider;
@@ -66,7 +67,7 @@ public class PullCommand {
         return this;
     }
 
-    public List<byte[]> call() throws IOException {
+    public List<byte[]> call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");
         }
@@ -95,7 +96,7 @@ public class PullCommand {
         return results;
     }
 
-    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException {
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
         FetchCommand fetchCmd = new FetchCommand(repository);
         fetchCmd.setTreeFilter(this.treeFilter);
         fetchCmd.setProgressMonitor(this.monitor);

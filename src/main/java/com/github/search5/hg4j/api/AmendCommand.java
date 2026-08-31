@@ -5,6 +5,7 @@ import com.github.search5.hg4j.core.HgObsMarker;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.SafeFileIO;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -47,7 +48,7 @@ public final class AmendCommand {
      * @return NodeId byte array of the new amended commit
      * @throws IOException if commit or obsstore serialization fails
      */
-    public byte[] call() throws IOException {
+    public byte[] call() throws IOException, HgLockException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         

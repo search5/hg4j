@@ -3,6 +3,7 @@ package com.github.search5.hg4j.transport;
 import java.io.IOException;
 import java.util.List;
 import com.github.search5.hg4j.errors.HgAuthException;
+import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.errors.HgProtocolException;
 
 /**
@@ -34,7 +35,7 @@ public interface HgRemoteConnection extends java.io.Closeable {
     /**
      * Pushes a changegroup bundle to the remote repository.
      */
-    String push(byte[] bundleBytes, List<String> heads) throws IOException, HgAuthException, HgProtocolException;
+    String push(byte[] bundleBytes, List<String> heads) throws IOException, HgAuthException, HgProtocolException, HgLockException;
 
     /**
      * Queries remote keys/values for the given namespace (e.g. "bookmarks", "phases").

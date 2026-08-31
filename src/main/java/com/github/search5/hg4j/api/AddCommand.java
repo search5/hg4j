@@ -2,6 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
@@ -27,7 +28,7 @@ public class AddCommand {
         return this;
     }
 
-    public void call() throws IOException {
+    public void call() throws IOException, HgLockException {
         try (com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
             Dirstate dirstate = repository.getDirstate();
 

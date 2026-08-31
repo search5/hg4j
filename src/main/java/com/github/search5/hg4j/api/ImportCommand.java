@@ -3,6 +3,7 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
 import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -29,7 +30,7 @@ public class ImportCommand {
      *
      * @throws IOException if patch parsing or commit writing fails
      */
-    public void call() throws IOException {
+    public void call() throws IOException, HgLockException {
         if (patchText == null || patchText.isEmpty()) {
             throw new IllegalArgumentException("Patch content must not be null or empty for import");
         }

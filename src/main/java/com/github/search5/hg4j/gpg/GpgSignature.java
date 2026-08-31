@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.gpg;
 
 import org.bouncycastle.bcpg.ArmoredOutputStream;
 import org.bouncycastle.bcpg.HashAlgorithmTags;

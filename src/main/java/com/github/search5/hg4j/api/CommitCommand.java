@@ -41,9 +41,9 @@ public class CommitCommand {
     
     private final List<HgHook> preCommitHooks = new ArrayList<>();
     private final List<HgHook> postCommitHooks = new ArrayList<>();
-    private com.github.search5.hg4j.core.GpgSignature gpgSignature;
+    private com.github.search5.hg4j.gpg.GpgSignature gpgSignature;
 
-    public CommitCommand setGpgSignature(com.github.search5.hg4j.core.GpgSignature gpgSignature) {
+    public CommitCommand setGpgSignature(com.github.search5.hg4j.gpg.GpgSignature gpgSignature) {
         this.gpgSignature = gpgSignature;
         return this;
     }

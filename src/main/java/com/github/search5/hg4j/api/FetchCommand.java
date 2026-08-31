@@ -3,7 +3,7 @@ package com.github.search5.hg4j.api;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import com.github.search5.hg4j.core.ChangegroupParser;
-import com.github.search5.hg4j.core.Dirstate;
+import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgLock;
 import com.github.search5.hg4j.transport.HgRemoteConnection;
 import com.github.search5.hg4j.transport.HgRemoteConnectionFactory;

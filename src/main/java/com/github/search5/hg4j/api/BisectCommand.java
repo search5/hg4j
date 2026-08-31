@@ -79,7 +79,7 @@ public class BisectCommand {
         }
 
         // Update working directory parent to checkout the mid-node automatically
-        com.github.search5.hg4j.core.Dirstate d = repository.getDirstate();
+        com.github.search5.hg4j.dirstate.Dirstate d = repository.getDirstate();
         d.setParents(midNode, new byte[20]);
         repository.writeDirstate(d);
         repository.clearRevlogCache();

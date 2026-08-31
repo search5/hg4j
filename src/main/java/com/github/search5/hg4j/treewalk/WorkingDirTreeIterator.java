@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.treewalk;
 
-import com.github.search5.hg4j.core.Dirstate;
+import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
 import java.io.File;
 import java.io.IOException;

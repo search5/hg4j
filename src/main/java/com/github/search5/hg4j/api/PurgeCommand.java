@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.Dirstate;
+import com.github.search5.hg4j.dirstate.Dirstate;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;

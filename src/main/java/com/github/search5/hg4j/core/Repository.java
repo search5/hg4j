@@ -1,4 +1,5 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.dirstate.Dirstate;
 
 import java.io.File;
 import java.io.IOException;

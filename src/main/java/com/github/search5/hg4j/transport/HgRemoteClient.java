@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 
 /**
  * Client for communicating with remote Mercurial repositories using the HTTP Wire Protocol v1.

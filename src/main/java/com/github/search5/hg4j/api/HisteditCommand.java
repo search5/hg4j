@@ -2,9 +2,9 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.dirstate.Dirstate;
-import com.github.search5.hg4j.core.SafeFileIO;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.lib.NodeId;
 import java.io.File;
@@ -156,7 +156,7 @@ public class HisteditCommand implements AutoCloseable {
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
         // 1. Get original manifest and changed files
-        byte[] origNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(originalCommitHex);
+        byte[] origNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(originalCommitHex);
         int origRev = changelog.findRevision(origNode);
         if (origRev == -1) {
             throw new IOException("Original commit not found: " + originalCommitHex);
@@ -214,14 +214,14 @@ public class HisteditCommand implements AutoCloseable {
             String parentFileHexAndFlag = newManifest.get(path);
             if (parentFileHexAndFlag != null) {
                 String parentFileHex = parentFileHexAndFlag.substring(0, 40);
-                p1FileNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(parentFileHex);
-                parent1FileRev = com.github.search5.hg4j.core.NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
+                p1FileNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(parentFileHex);
+                parent1FileRev = com.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
             }
             
             int newCommitRev = changelog.getRevisionCount();
             byte[] newFileNode = filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], newCommitRev);
             
-            newManifest.put(path, com.github.search5.hg4j.core.NodeIdUtil.toHex(newFileNode) + flag);
+            newManifest.put(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(newFileNode) + flag);
         }
         
         // 4. Serialize and append new manifest revision
@@ -233,14 +233,14 @@ public class HisteditCommand implements AutoCloseable {
         
         int parent1ManifestRev = -1;
         byte[] p1ManifestNode = new byte[20];
-        if (parent != null && !com.github.search5.hg4j.core.NodeIdUtil.isAllZero(parent)) {
+        if (parent != null && !com.github.search5.hg4j.util.NodeIdUtil.isAllZero(parent)) {
             int pRev = changelog.findRevision(parent);
             if (pRev != -1) {
                 byte[] pContent = changelog.getRevisionContent(pRev);
                 String pText = new String(pContent, StandardCharsets.UTF_8);
                 String[] pLines = pText.split("\n");
                 if (pLines.length > 0) {
-                    p1ManifestNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(pLines[0].trim());
+                    p1ManifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(pLines[0].trim());
                     parent1ManifestRev = manifestRevlog.findRevision(p1ManifestNode);
                 }
             }
@@ -251,13 +251,13 @@ public class HisteditCommand implements AutoCloseable {
         
         // 5. Serialize and append new changelog (commit) revision
         StringBuilder clSb = new StringBuilder();
-        clSb.append(com.github.search5.hg4j.core.NodeIdUtil.toHex(manifestNode)).append('\n');
+        clSb.append(com.github.search5.hg4j.util.NodeIdUtil.toHex(manifestNode)).append('\n');
         clSb.append(author).append('\n');
         
         long secs = System.currentTimeMillis() / 1000;
         clSb.append(secs).append(" 0 branch:default\n");
         
-        java.util.Collections.sort(filesModified, com.github.search5.hg4j.core.NodeIdUtil.UTF8_STRING_COMPARATOR);
+        java.util.Collections.sort(filesModified, com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (String path : filesModified) {
             clSb.append(path).append('\n');
         }
@@ -288,7 +288,7 @@ public class HisteditCommand implements AutoCloseable {
 
     private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
         java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.core.NodeIdUtil.isAllZero(commitNode)) {
+        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -301,7 +301,7 @@ public class HisteditCommand implements AutoCloseable {
         if (lines.length == 0) return manifestMap;
         
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.core.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);

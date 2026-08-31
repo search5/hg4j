@@ -55,8 +55,8 @@ public class LogCommand {
 
         java.util.Set<Integer> allowedRevs = null;
         if (followAncestors && startRev != null) {
-            byte[] resolvedNode = com.github.search5.hg4j.core.NodeIdUtil.resolveRevision(changelog, startRev);
-            int startRevNum = com.github.search5.hg4j.core.NodeIdUtil.findRevisionByNodeId(changelog, resolvedNode);
+            byte[] resolvedNode = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, startRev);
+            int startRevNum = com.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(changelog, resolvedNode);
             if (startRevNum != -1) {
                 com.github.search5.hg4j.revwalk.ChangesetGraph graph = new com.github.search5.hg4j.revwalk.ChangesetGraph(changelog);
                 allowedRevs = graph.getAllAncestors(startRevNum);
@@ -85,7 +85,7 @@ public class LogCommand {
                 LOGGER.log(Level.WARNING, "Warning: Malformed commit text at revision {0}: invalid manifest hex length", rev);
                 continue;
             }
-            byte[] manifestNodeId = com.github.search5.hg4j.core.NodeIdUtil.fromHex(manifestHex);
+            byte[] manifestNodeId = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
 
             int secondNewline = text.indexOf('\n', firstNewline + 1);
             if (secondNewline == -1) {

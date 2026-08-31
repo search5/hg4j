@@ -2,7 +2,7 @@ package com.github.search5.hg4j.transport;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.core.Revlog;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.api.CommitCommand;
 import java.io.*;
 import java.nio.file.Files;
@@ -140,7 +140,7 @@ public class HgWireServer {
 
             // Write back fncache
             if (!fncachePaths.isEmpty()) {
-                com.github.search5.hg4j.core.SafeFileIO.writeLinesAtomic(fncacheFile, new java.util.ArrayList<>(fncachePaths));
+                com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(fncacheFile, new java.util.ArrayList<>(fncachePaths));
             }
 
             // Clear cache and write response

@@ -1,4 +1,6 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.dirstate.DirstateV2Node;
 import com.github.search5.hg4j.dirstate.DirstateV2Serializer;
@@ -876,7 +878,7 @@ public class MercurialUncoveredAndPerfTest {
     @DisplayName("testLogCommandFromHexRefactoringParity — NodeIdUtil.fromHex refactoring verification in LogCommand (Fixed BUG-12)")
     public void testLogCommandFromHexRefactoringParity() {
         String hex = "2b17691a24d773c2c5cbe83842c2d43e264627de";
-        byte[] expected = com.github.search5.hg4j.core.NodeIdUtil.fromHex(hex);
+        byte[] expected = com.github.search5.hg4j.util.NodeIdUtil.fromHex(hex);
         assertNotNull(expected);
         assertEquals(20, expected.length);
     }

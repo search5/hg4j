@@ -1,4 +1,5 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.util;
+import com.github.search5.hg4j.core.Revlog;
 
 import java.io.IOException;
 

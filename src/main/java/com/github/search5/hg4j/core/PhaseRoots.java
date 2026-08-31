@@ -1,4 +1,6 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 
 import com.github.search5.hg4j.lib.NodeId;
 import java.io.File;

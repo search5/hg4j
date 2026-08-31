@@ -35,7 +35,7 @@ public class ManifestWalk {
         }
 
         public String getNodeIdHex() {
-            return com.github.search5.hg4j.core.NodeIdUtil.toHex(nodeId);
+            return com.github.search5.hg4j.util.NodeIdUtil.toHex(nodeId);
         }
 
         public boolean isExecutable() {

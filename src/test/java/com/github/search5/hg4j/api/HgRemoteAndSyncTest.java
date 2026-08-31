@@ -3,7 +3,7 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.core.ChangegroupParser;
 import com.github.search5.hg4j.transport.HgRemoteClient;
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.NodeIdUtil;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.core.Revlog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

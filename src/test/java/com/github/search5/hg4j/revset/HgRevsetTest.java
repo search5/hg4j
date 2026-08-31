@@ -20,7 +20,7 @@ public class HgRevsetTest {
     @Test
     public void testRevsetEngineValidation() throws Exception {
         // 1. Initialize repository
-        com.github.search5.hg4j.core.HgRepository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(tempDir).call();
+        com.github.search5.hg4j.lib.HgRepository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(tempDir).call();
         
         try (com.github.search5.hg4j.api.Hg hg = com.github.search5.hg4j.api.Hg.wrap(repo)) {
             // Write some revisions

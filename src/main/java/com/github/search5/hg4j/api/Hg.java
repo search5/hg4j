@@ -11,10 +11,10 @@ package com.github.search5.hg4j.api;
  */
 public class Hg implements AutoCloseable {
     
-    private final com.github.search5.hg4j.core.HgRepository repository;
+    private final com.github.search5.hg4j.lib.HgRepository repository;
     private final java.util.Map<HgHookType, java.util.List<HgHook>> hooks = new java.util.concurrent.ConcurrentHashMap<>();
     
-    private Hg(com.github.search5.hg4j.core.HgRepository repository) {
+    private Hg(com.github.search5.hg4j.lib.HgRepository repository) {
         this.repository = repository;
     }
 
@@ -44,19 +44,19 @@ public class Hg implements AutoCloseable {
      * Acquires exclusive store and working copy locks to prevent concurrent write contention during execution.
      */
     public void runTransaction(Runnable action) throws Exception {
-        try (com.github.search5.hg4j.core.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
+        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
+             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
             action.run();
         }
     }
 
     /**
-     * Wraps an existing {@link com.github.search5.hg4j.core.HgRepository} instance into the {@link Hg} facade.
+     * Wraps an existing {@link com.github.search5.hg4j.lib.HgRepository} instance into the {@link Hg} facade.
      * 
      * @param repository the repository instance to wrap
      * @return the {@link Hg} facade instance
      */
-    public static Hg wrap(com.github.search5.hg4j.core.HgRepository repository) {
+    public static Hg wrap(com.github.search5.hg4j.lib.HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
         }
@@ -118,7 +118,7 @@ public class Hg implements AutoCloseable {
             }
         }
 
-        return new Hg(new com.github.search5.hg4j.core.HgRepository(directory));
+        return new Hg(new com.github.search5.hg4j.lib.HgRepository(directory));
     }
 
     /**
@@ -139,7 +139,7 @@ public class Hg implements AutoCloseable {
         return new CloneCommand();
     }
 
-    public com.github.search5.hg4j.core.HgRepository getRepository() {
+    public com.github.search5.hg4j.lib.HgRepository getRepository() {
         return this.repository;
     }
 
@@ -366,8 +366,8 @@ public class Hg implements AutoCloseable {
      * 2. User global hgrc (~/.hgrc or ~/mercurial.ini)
      * 3. Local repository hgrc (.hg/hgrc)
      */
-    public com.github.search5.hg4j.core.HgRcConfig config() {
-        com.github.search5.hg4j.core.HgRcConfig cfg = new com.github.search5.hg4j.core.HgRcConfig();
+    public com.github.search5.hg4j.lib.HgRcConfig config() {
+        com.github.search5.hg4j.lib.HgRcConfig cfg = new com.github.search5.hg4j.lib.HgRcConfig();
         try {
             // 1. System-wide configuration
             java.io.File systemHgrc = new java.io.File("/etc/mercurial/hgrc");

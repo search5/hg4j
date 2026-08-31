@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.api;
 
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.dirstate.Dirstate;
@@ -55,8 +55,8 @@ public class StripCommand {
         int keepCount = targetRev;
         byte[] rollbackParent = (keepCount > 0) ? changelog.getIndexRecord(keepCount - 1).getNodeId() : new byte[20];
 
-        try (com.github.search5.hg4j.core.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
+        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
+             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
             
             // 1. Truncate / delete individual file revlogs whose linkRev >= targetRev
             File fncacheFile = new File(repository.getStoreDir(), "fncache");

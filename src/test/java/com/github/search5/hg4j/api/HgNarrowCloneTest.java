@@ -20,7 +20,7 @@ public class HgNarrowCloneTest {
         File destRepoDir = new File(tempDir, "narrow_repo");
         
         // 1. Initialize source repository and write files in different dirs
-        com.github.search5.hg4j.core.HgRepository srcRepo = Hg.init().setDirectory(srcRepoDir).call();
+        com.github.search5.hg4j.lib.HgRepository srcRepo = Hg.init().setDirectory(srcRepoDir).call();
         try (Hg hgSrc = Hg.wrap(srcRepo)) {
             File f1 = new File(srcRepoDir, "src/main/A.java");
             f1.getParentFile().mkdirs();

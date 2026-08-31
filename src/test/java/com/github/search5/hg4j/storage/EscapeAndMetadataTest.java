@@ -73,7 +73,7 @@ public class EscapeAndMetadataTest {
     public void testGcCommandWithMetadataFiles(@TempDir Path tempDir) throws Exception {
         // 1. 임시 리포지토리 생성
         File repoDir = tempDir.resolve("repo").toFile();
-        com.github.search5.hg4j.core.HgRepository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(repoDir).call();
+        com.github.search5.hg4j.lib.HgRepository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(repoDir).call();
 
         // 2. 메타데이터(복사 등)를 가지는 파일의 Revlog 생성 및 리비전 추가
         File idxFile = new File(repo.getStoreDir(), "data/test.i");

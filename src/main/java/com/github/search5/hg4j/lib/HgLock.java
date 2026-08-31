@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.lib;
 
 import java.io.File;
 import java.io.IOException;

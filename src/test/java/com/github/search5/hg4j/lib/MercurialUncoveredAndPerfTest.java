@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.lib;
 import com.github.search5.hg4j.diff.DeltaEngine;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.bundle.Bundle2Parser;

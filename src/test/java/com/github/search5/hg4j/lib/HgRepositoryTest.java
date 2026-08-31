@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.lib;
 import com.github.search5.hg4j.dirstate.Dirstate;
 
 import org.junit.jupiter.api.Test;

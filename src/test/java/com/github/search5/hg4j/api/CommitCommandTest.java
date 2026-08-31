@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -460,7 +460,7 @@ public class CommitCommandTest {
 
         // 3. Open repository again, and trigger rollback via store lock acquisition
         try (HgRepository crashedRepo = new HgRepository(repoDir)) {
-            try (com.github.search5.hg4j.core.HgLock lock = crashedRepo.lockStore()) {
+            try (com.github.search5.hg4j.lib.HgLock lock = crashedRepo.lockStore()) {
                 // lockStore() will trigger checkAndPerformAutoRollback
             }
         }

@@ -91,7 +91,7 @@ public class HgSubrepoTest {
         assertTrue(childDir.mkdirs());
 
         // 1. Initialize and build child subrepo history
-        com.github.search5.hg4j.core.HgRepository childRepo = com.github.search5.hg4j.api.Hg.init().setDirectory(childDir).call();
+        com.github.search5.hg4j.lib.HgRepository childRepo = com.github.search5.hg4j.api.Hg.init().setDirectory(childDir).call();
         try (com.github.search5.hg4j.api.Hg hgChild = com.github.search5.hg4j.api.Hg.wrap(childRepo)) {
             java.io.File subFile = new java.io.File(childDir, "sub.txt");
             java.nio.file.Files.writeString(subFile.toPath(), "Subrepo Payload Content");
@@ -100,7 +100,7 @@ public class HgSubrepoTest {
             String childCommitHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(childCommitNode);
 
             // 2. Initialize parent repo
-            com.github.search5.hg4j.core.HgRepository parentRepo = com.github.search5.hg4j.api.Hg.init().setDirectory(parentDir).call();
+            com.github.search5.hg4j.lib.HgRepository parentRepo = com.github.search5.hg4j.api.Hg.init().setDirectory(parentDir).call();
             try (com.github.search5.hg4j.api.Hg hgParent = com.github.search5.hg4j.api.Hg.wrap(parentRepo)) {
                 // Commit revision 0: initial baseline commit with nothing inside (to serve as an empty state checkout)
                 java.io.File initFile = new java.io.File(parentDir, "init.txt");

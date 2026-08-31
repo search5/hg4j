@@ -1,5 +1,5 @@
 package com.github.search5.hg4j.api;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import java.io.File;
 import java.io.IOException;

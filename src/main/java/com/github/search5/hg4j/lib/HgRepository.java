@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.lib;
 import com.github.search5.hg4j.storage.DefaultFileStoreEngine;
 import com.github.search5.hg4j.storage.StoreEngine;
 import com.github.search5.hg4j.storage.Revlog;

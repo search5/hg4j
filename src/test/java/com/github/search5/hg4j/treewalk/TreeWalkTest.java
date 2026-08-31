@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.treewalk;
 
 import com.github.search5.hg4j.api.Hg;
-import com.github.search5.hg4j.core.HgRepository;
+import com.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

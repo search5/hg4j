@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.merge;
 
 import java.util.ArrayList;
 import java.util.List;

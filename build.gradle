@@ -120,7 +120,7 @@ jacocoTestCoverageVerification {
                 'com.github.search5.hg4j.dirstate.Dirstate',
                 'com.github.search5.hg4j.core.NodeIdUtil',
                 'com.github.search5.hg4j.core.SafeFileIO',
-                'com.github.search5.hg4j.core.Merge3',
+                'com.github.search5.hg4j.merge.Merge3',
                 'com.github.search5.hg4j.core.Bundle2Parser',
                 'com.github.search5.hg4j.core.ChangegroupParser',
                 'com.github.search5.hg4j.api.AddCommand',

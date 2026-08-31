@@ -63,7 +63,7 @@ public class RemoveCommand {
                             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                             if (flIdx.exists()) {
                                 try {
-                                    com.github.search5.hg4j.core.Revlog filelog = repository.getRevlog(flIdx, flDat);
+                                    com.github.search5.hg4j.storage.Revlog filelog = repository.getRevlog(flIdx, flDat);
                                     if (filelog.getRevisionCount() > 0) {
                                         byte[] fileContent = Files.readAllBytes(diskFile.toPath());
                                         byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);

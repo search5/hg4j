@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.revwalk;
 
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import java.util.Collection;
 import java.util.List;
 

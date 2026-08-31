@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.api;
 
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import java.io.*;
 import java.util.Random;
 

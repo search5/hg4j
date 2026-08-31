@@ -5,7 +5,7 @@ import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgLock;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.DataOutputStream;

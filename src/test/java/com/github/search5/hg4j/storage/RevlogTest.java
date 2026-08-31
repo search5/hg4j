@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.storage;
 import com.github.search5.hg4j.bundle.Bundle2Parser;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.NodeIdUtil;

@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.revwalk;
 
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 
 /**
  * 반환할 리비전의 최대 개수를 제약하는 필터.

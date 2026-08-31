@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.revwalk;
 
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 
 /**
  * 특정 RevFilter의 부정(NOT) 논리 조합을 나타내는 필터.

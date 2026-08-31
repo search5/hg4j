@@ -1,7 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.transport.HgRemoteConnection;
 import com.github.search5.hg4j.transport.HgRemoteConnectionFactory;
@@ -81,7 +81,7 @@ public class IncomingCommand {
                         for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                             byte[] clContent;
                             try {
-                                clContent = com.github.search5.hg4j.core.DeltaEngine.applyDelta(currentBase, entry.delta);
+                                clContent = com.github.search5.hg4j.diff.DeltaEngine.applyDelta(currentBase, entry.delta);
                             } catch (Exception e) {
                                 // Fallback if applyDelta fails, use delta as raw text
                                 clContent = entry.delta;

@@ -324,7 +324,7 @@ public class HgLocalClient implements HgRemoteConnection {
                 }
             }
         } else if ("phases".equals(namespace)) {
-            com.github.search5.hg4j.core.PhaseRoots phaseRoots = remoteRepo.getPhaseRoots();
+            com.github.search5.hg4j.phase.PhaseRoots phaseRoots = remoteRepo.getPhaseRoots();
             File clIdx = new File(remoteRepo.getStoreDir(), "00changelog.i");
             File clDat = new File(remoteRepo.getStoreDir(), "00changelog.d");
             if (clIdx.exists()) {
@@ -332,8 +332,8 @@ public class HgLocalClient implements HgRemoteConnection {
                 for (int i = 0; i < cl.getRevisionCount(); i++) {
                     byte[] nodeBytes = cl.getIndexRecord(i).getNodeId();
                     com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
-                    com.github.search5.hg4j.core.PhaseRoots.Phase phase = phaseRoots.getPhase(nodeId, cl);
-                    if (phase != com.github.search5.hg4j.core.PhaseRoots.Phase.PUBLIC) {
+                    com.github.search5.hg4j.phase.PhaseRoots.Phase phase = phaseRoots.getPhase(nodeId, cl);
+                    if (phase != com.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC) {
                         map.put(com.github.search5.hg4j.util.NodeIdUtil.toHex(nodeBytes), String.valueOf(phase.getValue()));
                     }
                 }

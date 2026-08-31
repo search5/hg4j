@@ -481,8 +481,8 @@ public class CommitCommand {
 
             // 6.5. Update Phase for the new commit (all new commits default to DRAFT)
             try {
-                com.github.search5.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
-                phaseRoots.setPhase(new com.github.search5.hg4j.lib.NodeId(commitNode), com.github.search5.hg4j.core.PhaseRoots.Phase.DRAFT, changelog);
+                com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
+                phaseRoots.setPhase(new com.github.search5.hg4j.lib.NodeId(commitNode), com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, changelog);
             } catch (Exception e) {
                 LOGGER.log(Level.WARNING, "Failed to set phase for new commit node", e);
             }

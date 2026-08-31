@@ -150,7 +150,7 @@ public class PushCommand {
                 }
 
                 // Phase Check: Block push if any target commit is in secret phase (E-4 Phases workflow)
-                com.github.search5.hg4j.core.PhaseRoots phaseRoots = repository.getPhaseRoots();
+                com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
                 for (int r = startRev; r < count; r++) {
                     byte[] nodeBytes = changelog.getIndexRecord(r).getNodeId();
                     com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);

@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-31
+updated: 2026-09-01
 status: current
 audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에이전트)
 ---
@@ -265,35 +265,40 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
   검증) 및 `HgRepositoryTest`의 requires 인식 테스트 통과, 전체 스위트
   `./gradlew clean test jacocoTestCoverageVerification` BUILD SUCCESSFUL(직접 실행 확인).
 
-## B-2. Wireprotocol v2 지원 (2026-09-01 재검토·수정 완료 — 단, 근본적 검증 한계 있음)
-- **상태**: ✅ CBOR 의존성(Jackson) 추가, `HgRemoteClientV2`/`CborFrameParser`/
-  `HgWireServer` v2 서빙 구현. **2026-09-01 재검토에서 두 가지를 발견·수정**:
-  1. 이 환경(및 사실상 최신 Mercurial 전반)에는 **wireprotocol v2를 실제로 서빙하는
-     서버 코드가 Mercurial 자체에 없다** — `mercurial/wireprotov2server.py`가 존재하지
-     않고, 실제 v1 디스패처(`wireprotoserver.py`)에도 `application/mercurial-cbor`나
-     `/api/` 코드가 0건. `hg help internals.wireprotocolv2`가 "experimental and under
-     active development"라고 문서화해뒀지만 실제 구현은 개발이 중단된 것으로 보임.
-     **따라서 revlog v2(B-1)와 달리 이 기능은 실제 hg 서버와 상호운용 검증이 원천적으로
-     불가능하다** — hg4j의 v2 클라이언트/서버 쌍끼리 자기 자신을 검증하는 것이 유일한
-     방법.
-  2. 그럼에도 유일하게 존재하는 근거 문서(`hg help internals.wireprotocolv2`)와 대조한
-     결과 실제 구현이 스펙과 어긋난 부분을 발견해 정정: `capabilities` 응답이 v1 스타일
-     평면 리스트(`{"capabilities":[...]}`)였는데, 실제 스펙은 중첩 맵
-     (`{"commands": {<name>: {"args":..., "permissions":...}}, "framingmediatypes":[...]}`)
-     — 정정 완료. 서버 측 `changegroup`/`getbundle`/`listkeys`/`pushkey`가 전부 스텁이라
-     뭘 요청해도 `{"status":0}`만 돌려주고 있었음 — `HgLocalClient`(이미 검증된 구현체)에
-     위임하도록 수정해 실제로 동작하게 함.
-  3. **알려진 한계(의도적으로 미해결)**: 실제 `hg help internals.wireprotocolrpc`(hgrpc)
-     스펙은 8바이트 바이너리 프레임 헤더(24비트 length + 16비트 request ID + 8비트
-     stream ID + 8비트 stream flags + 4비트 type + 4비트 flags)로 여러 요청/스트림을
-     하나의 파이프에 다중화하는 프로토콜을 정의한다. hg4j는 이 프레임 봉투 없이 단순
-     "HTTP POST에 CBOR 하나, 응답도 CBOR 하나"로 근사했다 — 실제 hgrpc 프로토콜의 정식
-     구현은 아니다. 검증할 실제 서버가 없는 상태에서 복잡한 다중화 프로토콜을 만드는 건
-     검증 안 된 추측을 쌓는 것이라 판단해 보류함.
-- **검증**: `HgHttpTransportV2RoundtripTest`에 capabilities/heads뿐 아니라
-  `getbundle`(실제 changegroup 바이트 전송·파싱)과 `listkeys`/`pushkey`(실제 bookmark
-  조회·갱신)까지 실제로 동작하는지 검증하는 테스트 추가 — 이전엔 이 커맨드들이 테스트조차
-  안 돼 있어서 스텁 상태가 안 들켰음.
+## B-2. Wireprotocol v2 지원 (2026-09-01 전면 재구현 완료 — 실제 hg 6.0으로 양방향 검증)
+- **상태**: ✅ **이전(2026-09-01 초반) 구현은 검증해보니 사실상 전부 가짜였다** — 존재
+  하지도 않는 `/api/<command>` 평면 HTTP+CBOR 스킴, v2에 없는 `changegroup`/`getbundle`/
+  `unbundle` 명령, 그리고 결정적으로 Jackson의 CBOR 모듈로는 애초에 만들 수 없는
+  구조(실제 hg는 맵 키를 포함해 거의 모든 문자열을 CBOR **byte-string**으로 인코딩하는데
+  Jackson은 필드명을 항상 text-string으로만 쓴다).
+- **어떻게 검증했나**: 이 환경의 실제 hg(7.2)에는 wireprotocol v2 서버 코드 자체가 없다
+  (`mercurial/wireprotov2server.py` 부재 확인 — 6.1부터 완전히 제거됨). 이 프로토콜이
+  실제로 동작했던 **마지막 버전인 Mercurial 6.0**을 Docker로 직접 빌드해 띄우고, 두
+  방향 모두 실제로 검증:
+  1. hg4j 클라이언트(`HgRemoteClientV2`) → 실제 hg 6.0 서버: capabilities 발견
+     핸드셰이크(`X-HgUpgrade-1`/`X-HgProto-1`), heads/known/listkeys/lookup/pushkey/
+     branchmap, 그리고 `changesetdata`+`manifestdata`+`filesdata`로부터 전체 clone을
+     재구성해 노드 해시가 실제 서버와 정확히 일치함을 확인.
+  2. 실제 hg 6.0 클라이언트(`hg --config experimental.httppeer.advertise-v2=true
+     clone`) → hg4j의 `HgWireServer`: 완전한 clone 성공 + `hg verify` 통과(무결성
+     이상 없음).
+- **새로 만든 것**: `transport.wireprotov2` 패키지 — `Wire2Frame`(8바이트 헤더: 24비트
+  length + 16비트 request id + 8비트 stream id + 8비트 stream flags + 4비트 type +
+  4비트 flags, `mercurial/wireprotoframing.py` 실측), `Cbor`(byte-string 전용
+  커스텀 CBOR 인코더/디코더, Jackson 대체), `Wire2Transport`(capabilities 발견 응답
+  조립, 프레임 청킹, multirequest 배치 지원), `Wire2Commands`(실제 명령 집합:
+  `capabilities`/`heads`/`known`/`listkeys`/`lookup`/`pushkey`/`branchmap`/
+  `changesetdata`/`manifestdata`/`filesdata` — `filedata`(단일 파일 변형)와
+  `rawstorefiledata`는 미구현, push/unbundle에 해당하는 명령은 실제 v2 자체에 없음).
+  manifestdata/filesdata는 델타 또는 전체 텍스트 중 서버가 자유롭게 선택해 보낼 수
+  있다는 점(`revlog.emitrevisions` 휴리스틱)까지 확인해 클라이언트가 양쪽 다 처리하도록
+  구현.
+- **알려진 구조적 한계**: 이 프로토콜 자체가 실제 Mercurial에서 6.1부터 완전히 폐기됐다
+  — 아무리 정확히 구현해도 현재 실제로 배포되는 hg 서버 중 이걸 쓰는 것은 사실상 없다.
+- **연결 안 된 부분(백로그)**: `HgRemoteClient`(v1)의 자동 v2 업그레이드 감지 로직이
+  실제 v1 capabilities에는 없는 가짜 `"http-v2"` 플래그를 찾도록 되어 있어 절대
+  트리거되지 않는다 — v2를 쓰려면 `HgRemoteClientV2`를 직접 생성해야 한다. 상세는
+  `mercurial-spec-compliance-requirement.md`의 "남은 백로그" 참고.
 
 ## B-3. Bookmark 완전 지원 (2026-09-01 완료 — 실제 hg CLI 상호운용 검증 + 심각한 버그 2건 발견·수정)
 - **상태**: ✅ commit 자동 전진, update 활성화/비활성화, pull/push 동기화 전부 구현·
@@ -345,31 +350,22 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 
 ---
 
-# Track C — 검증 백로그 (우선순위는 사용자 확인 후 진행)
+# Track C — 검증 백로그 (2026-09-01 대부분 완료)
 
-아래는 `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`의 gap table에서
-"확인 필요"로 남아있는 항목들입니다. **Revlog v2/Wireprotocol v2와 달리 아직 "반드시
-지금 구현하라"는 명시적 지시는 없었습니다** — "완전 준수"라는 큰 방향에는 포함되지만,
-착수 순서는 사용자에게 먼저 확인받으세요.
+이 표에 있던 항목들(fncache 인코딩, changelog extra 필드/다중 부모, changegroup
+cg1/cg2/cg3 헤더 구조, sparse checkout, hgrc `%include`/`%unset`, 누락된 코어 포셀린
+명령 9종, `[paths]` 별칭 연결)은 **전부 2026-09-01 세션에 실제 hg CLI/서버 대조 검증까지
+완료됐습니다.** 각 항목의 상세 내용과 발견된 버그는 `llm-wiki/decisions/
+mercurial-spec-compliance-requirement.md`의 gap table에 반영돼 있습니다 — 이 문서에는
+더 이상 중복해서 표를 유지하지 않습니다(실행 계획과 스펙 준수 현황판이 따로 놀면
+둘 다 낡기 쉬우므로, 최신 상태는 항상 그 문서 한 곳만 봅니다).
 
-| 항목 | 확인할 것 | 관련 클래스 |
-|---|---|---|
-| requires 파일 커버리지 | `HgRepository.loadRequires()`가 인식하는 requirement 문자열 목록을 최신 Mercurial 것과 대조 | `lib.HgRepository`(Track A 완료 후) |
-| fncache 인코딩 | 최근 수정 이력(`56b1988`)이 있었던 영역 — 회귀 여부 재확인 | `storage.StoreEngine`, `storage.DefaultFileStoreEngine` |
-| Changelog extra 필드/다중 부모 인코딩 | 실제 hg 저장소와 바이트 단위 비교 | `storage.Revlog`, `api.CommitCommand`/`LogCommand` |
-| Changegroup cg1/cg2/cg3 버전별 차이 | 트리매니페스트/censor 지원 여부까지 커버하는지 | `bundle.ChangegroupParser` |
-| Bundle1(레거시 `HG10UN/GZ/BZ`) | 미구현으로 추정 — 실제 필요 여부(구버전 서버 호환용) 사용자 확인 | 신규 클래스 필요 시 `bundle` 패키지 |
-| Censor(민감정보 삭제) | 미구현으로 추정 — 구현 범위/우선순위 사용자 확인 | 신규 기능 |
-| Sparse checkout 설정 파일(`.hg/sparse`) | 파싱 로직 존재 여부 확인 | `treewalk.SparsePathFilter` |
-| hgrc `%include`/`%unset` 등 세부 지시자 | 커버리지 확인 | `lib.HgRcConfig`(Track A 완료 후) |
-| Merge state `state2` 업그레이드 | **확인됨(2026-08-31)**: `ResolveCommand`가 레거시 v1 `.hg/merge/state`만 쓰고 최신 `state2`는 안 씀 — 재개 자체는 되므로 우선순위 낮음, `state2`로 확장할지 결정 | `api.ResolveCommand` |
-| 누락된 코어 포셀린 명령 (`forget`/`backout`/`addremove`/`verify`/`root`/`summary`/`tip`/`parents`) | **확인됨(2026-08-31)**: 대응 클래스/`Hg` 파사드 메서드 전무. 어떤 것부터 추가할지, 라이브러리 성격상 필요 없는 것(`root`/`tip`처럼 다른 API로 대체 가능한 것)은 뭘 제외할지 사용자 확인 필요 | 신규 `XxxCommand` 클래스들 |
-| `[paths]` 별칭이 pull/push에 연결 안 됨 | **확인됨(2026-08-31)**: `HgRcConfig.getPath()`로 읽기는 가능하나 `PullCommand`/`PushCommand`가 호출을 안 해서 "default" 같은 별칭 사용 불가 — 라이브러리 사용 맥락상 필요한 기능인지 사용자 확인(CLI 편의 기능 성격이 강함) | `api.PullCommand`, `api.PushCommand`, `lib.HgRcConfig` |
-
-각 항목을 조사한 뒤에는 해당 내용을 `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`
-의 gap table에 반영해서 "확인 필요" 표시를 "✅ 확인됨" 또는 "❌ 미구현, 구현 필요"로
-갱신하세요 — 이 문서(implementation-plan.md)가 아니라 그 문서를 갱신하는 것이 맞습니다
-(이 문서는 실행 계획, 그 문서는 스펙 준수 현황판).
+**아직 남은 것 — `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`의
+"남은 백로그" 섹션**(8개 항목: `ResolveCommand`의 state2 미연결, `HgRemoteClient`의
+v1→v2 자동 업그레이드 미작동, 최신 실제 Mercurial 서버와의 라이브 통신 검증 미착수,
+Revlog v2 일반/persistent-nodemap 보류, Dirstate v2 바이트 레이아웃 미검증, Censor
+미구현, cg3 트리매니페스트/censor 깊은 부분 미확인, histedit journal 미적용)을 참고
+하세요. 우선순위는 사용자 확인 후 진행합니다.
 
 ---
 

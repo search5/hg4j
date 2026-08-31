@@ -18,13 +18,13 @@ public class LogCommand {
     private final HgRepository repository;
     private boolean followAncestors = false;
     private String startRev = null;
-    private com.github.search5.hg4j.core.HgTreeFilter treeFilter = com.github.search5.hg4j.core.HgTreeFilter.ALL;
+    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
 
     public LogCommand(HgRepository repository) {
         this.repository = repository;
     }
 
-    public LogCommand setTreeFilter(com.github.search5.hg4j.core.HgTreeFilter treeFilter) {
+    public LogCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }
@@ -164,7 +164,7 @@ public class LogCommand {
                 message = text.substring(thirdNewline + 1);
             }
 
-            if (treeFilter != null && treeFilter != com.github.search5.hg4j.core.HgTreeFilter.ALL) {
+            if (treeFilter != null && treeFilter != com.github.search5.hg4j.treewalk.HgTreeFilter.ALL) {
                 boolean matched = false;
                 for (String file : files) {
                     if (treeFilter.accept(file)) {

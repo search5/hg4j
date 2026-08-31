@@ -16,13 +16,13 @@ import java.util.Map;
  */
 public class StatusCommand {
     private final HgRepository repository;
-    private com.github.search5.hg4j.core.HgTreeFilter treeFilter = com.github.search5.hg4j.core.HgTreeFilter.ALL;
+    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
 
     public StatusCommand(HgRepository repository) {
         this.repository = repository;
     }
 
-    public StatusCommand setTreeFilter(com.github.search5.hg4j.core.HgTreeFilter treeFilter) {
+    public StatusCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }
@@ -38,7 +38,7 @@ public class StatusCommand {
         long dirstateMtime = dirstateFile.exists() ? dirstateFile.lastModified() / 1000 : 0;
 
         // Fast Path: When treeFilter is null or ALL (dirstate-based path)
-        if (treeFilter == null || treeFilter == com.github.search5.hg4j.core.HgTreeFilter.ALL) {
+        if (treeFilter == null || treeFilter == com.github.search5.hg4j.treewalk.HgTreeFilter.ALL) {
             Map<String, Dirstate.Entry> tracked = dirstate.getEntries();
             List<String> trackedKeys = new ArrayList<>(tracked.keySet());
             trackedKeys.sort(com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);

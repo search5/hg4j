@@ -36,7 +36,7 @@ public class PullCommand {
     private final HgRepository repository;
     private String sourceUrl;
     private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
-    private com.github.search5.hg4j.core.HgTreeFilter treeFilter = com.github.search5.hg4j.core.HgTreeFilter.ALL;
+    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
     private CredentialsProvider credentialsProvider;
 
     public PullCommand(HgRepository repository) {
@@ -48,7 +48,7 @@ public class PullCommand {
         return this;
     }
 
-    public PullCommand setTreeFilter(com.github.search5.hg4j.core.HgTreeFilter treeFilter) {
+    public PullCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }

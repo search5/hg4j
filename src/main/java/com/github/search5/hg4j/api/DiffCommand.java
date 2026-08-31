@@ -21,9 +21,9 @@ public class DiffCommand {
     private final HgRepository repository;
     private int oldRevision = -2; // -2 means not set (defaults to newRevision's parent)
     private int newRevision = -1; // -1 defaults to tip
-    private com.github.search5.hg4j.core.HgTreeFilter treeFilter = com.github.search5.hg4j.core.HgTreeFilter.ALL;
+    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
 
-    public DiffCommand setTreeFilter(com.github.search5.hg4j.core.HgTreeFilter treeFilter) {
+    public DiffCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }

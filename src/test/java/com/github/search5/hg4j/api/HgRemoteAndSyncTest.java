@@ -1000,7 +1000,7 @@ public class HgRemoteAndSyncTest {
         new AddCommand(repo).call();
         byte[] feat = new CommitCommand(repo).setMessage("feature branch commit").call();
 
-        com.github.search5.hg4j.core.Dirstate ds = repo.getDirstate();
+        com.github.search5.hg4j.dirstate.Dirstate ds = repo.getDirstate();
         ds.setParents(base, new byte[20]);
         repo.writeDirstate(ds);
 

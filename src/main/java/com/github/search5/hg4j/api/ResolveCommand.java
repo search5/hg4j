@@ -114,7 +114,7 @@ public final class ResolveCommand {
             String p1 = "0000000000000000000000000000000000000000";
             String p2 = "0000000000000000000000000000000000000000";
             try {
-                com.github.search5.hg4j.core.Dirstate dirstate = repository.getDirstate();
+                com.github.search5.hg4j.dirstate.Dirstate dirstate = repository.getDirstate();
                 if (dirstate.getParent1() != null) {
                     p1 = com.github.search5.hg4j.core.NodeIdUtil.toHex(dirstate.getParent1());
                 }

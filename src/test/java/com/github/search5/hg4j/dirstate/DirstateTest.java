@@ -1,4 +1,5 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.dirstate;
+import com.github.search5.hg4j.core.HgRepository;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

@@ -108,7 +108,7 @@ public class SubrepoCommand {
                     // For dummy in-memory SCM update verification: sync parent Dirstate of subrepository
                     try (Hg hg = Hg.open(subrepoDir)) {
                         HgRepository subRepo = hg.getRepository();
-                        com.github.search5.hg4j.core.Dirstate d = subRepo.getDirstate();
+                        com.github.search5.hg4j.dirstate.Dirstate d = subRepo.getDirstate();
                         d.setParents(com.github.search5.hg4j.core.NodeIdUtil.fromHex(rev), new byte[20]);
                         subRepo.writeDirstate(d);
                     }

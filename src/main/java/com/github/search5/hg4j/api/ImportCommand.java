@@ -178,7 +178,7 @@ public class ImportCommand {
              com.github.search5.hg4j.core.HgLock wlock = repository.lockWorkingCopy()) {
             changelog.appendChangeGroupEntry(entry, linkRev);
 
-            com.github.search5.hg4j.core.Dirstate d = repository.getDirstate();
+            com.github.search5.hg4j.dirstate.Dirstate d = repository.getDirstate();
             d.setParents(entry.node, new byte[20]);
             repository.writeDirstate(d);
             repository.clearRevlogCache();

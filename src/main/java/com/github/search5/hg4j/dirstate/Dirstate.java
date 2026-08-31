@@ -1,4 +1,6 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.dirstate;
+
+import com.github.search5.hg4j.core.SafeFileIO;
 
 import com.github.search5.hg4j.lib.NodeId;
 import java.io.ByteArrayOutputStream;

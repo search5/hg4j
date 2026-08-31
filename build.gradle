@@ -117,7 +117,7 @@ jacocoTestCoverageVerification {
         rule {
             element = 'CLASS'
             includes = [
-                'com.github.search5.hg4j.core.Dirstate',
+                'com.github.search5.hg4j.dirstate.Dirstate',
                 'com.github.search5.hg4j.core.NodeIdUtil',
                 'com.github.search5.hg4j.core.SafeFileIO',
                 'com.github.search5.hg4j.core.Merge3',

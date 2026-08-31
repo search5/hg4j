@@ -1,4 +1,7 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.dirstate.Dirstate;
+import com.github.search5.hg4j.dirstate.DirstateV2Node;
+import com.github.search5.hg4j.dirstate.DirstateV2Serializer;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

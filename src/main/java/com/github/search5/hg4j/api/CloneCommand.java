@@ -3,7 +3,7 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.lib.ProgressMonitor;
 import com.github.search5.hg4j.lib.NullProgressMonitor;
 import com.github.search5.hg4j.errors.HgLockException;

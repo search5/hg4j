@@ -4,7 +4,7 @@ import com.github.search5.hg4j.bundle.ChangegroupParser;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.lib.NodeId;
 import com.github.search5.hg4j.revwalk.*;
 import com.github.search5.hg4j.treewalk.ManifestWalk;

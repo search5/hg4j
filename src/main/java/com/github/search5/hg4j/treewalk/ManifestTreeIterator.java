@@ -2,7 +2,7 @@ package com.github.search5.hg4j.treewalk;
 
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;

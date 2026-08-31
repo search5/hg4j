@@ -8,7 +8,7 @@ import com.sun.net.httpserver.HttpServer;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.SafeFileIO;
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.errors.HgAuthException;
 import com.github.search5.hg4j.errors.HgProtocolException;

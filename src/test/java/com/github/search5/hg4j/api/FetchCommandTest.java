@@ -6,7 +6,7 @@ import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import com.github.search5.hg4j.transport.UsernamePasswordCredentialsProvider;

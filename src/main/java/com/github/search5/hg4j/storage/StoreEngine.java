@@ -1,4 +1,6 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.storage;
+import com.github.search5.hg4j.core.Repository;
+import com.github.search5.hg4j.core.HgRepository;
 import com.github.search5.hg4j.dirstate.Dirstate;
 
 import java.io.File;

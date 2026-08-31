@@ -1,4 +1,7 @@
 package com.github.search5.hg4j.core;
+import com.github.search5.hg4j.storage.DefaultFileStoreEngine;
+import com.github.search5.hg4j.storage.StoreEngine;
+import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.revset.HgRevsetEngine;
 import com.github.search5.hg4j.phase.PhaseRoots;
 import com.github.search5.hg4j.util.NodeIdUtil;

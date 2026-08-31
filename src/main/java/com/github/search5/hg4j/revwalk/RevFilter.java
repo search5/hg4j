@@ -1,6 +1,6 @@
 package com.github.search5.hg4j.revwalk;
 
-import com.github.search5.hg4j.core.Revlog;
+import com.github.search5.hg4j.storage.Revlog;
 
 /**
  * JGit의 RevFilter에 상응하는 리비전 필터 인터페이스.

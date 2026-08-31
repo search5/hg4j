@@ -1,4 +1,4 @@
-package com.github.search5.hg4j.core;
+package com.github.search5.hg4j.storage;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

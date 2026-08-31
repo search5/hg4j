@@ -35,7 +35,7 @@ public class ExportImportCommandTest {
         // 4. Verify exact recreation of changeset metadata on the destination
         File clIdx = new File(dstRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(dstRepo.getStoreDir(), "00changelog.d");
-        com.github.search5.hg4j.core.Revlog cl = dstRepo.getRevlog(clIdx, clDat);
+        com.github.search5.hg4j.storage.Revlog cl = dstRepo.getRevlog(clIdx, clDat);
         
         assertEquals(1, cl.getRevisionCount());
         String clText = new String(cl.getRevisionContent(0), java.nio.charset.StandardCharsets.UTF_8);

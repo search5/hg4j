@@ -74,7 +74,7 @@ public class LogCommandTest {
 
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        com.github.search5.hg4j.core.Revlog changelog = repo.getRevlog(clIdx, clDat);
+        com.github.search5.hg4j.storage.Revlog changelog = repo.getRevlog(clIdx, clDat);
 
         // 1. Malformed commit: no newline at all
         changelog.appendRevision("NoNewline".getBytes(), -1, -1, new byte[20], new byte[20], 0);

@@ -280,7 +280,7 @@ public class HgConcurrentAndHookTest {
         hg.add().addFile("a.txt").call();
         byte[] c0 = hg.commit().setAuthor("tester or helper").setMessage("First commit with keyword or test").call();
 
-        com.github.search5.hg4j.core.HgRevsetEngine engine = new com.github.search5.hg4j.core.HgRevsetEngine(repo);
+        com.github.search5.hg4j.revset.HgRevsetEngine engine = new com.github.search5.hg4j.revset.HgRevsetEngine(repo);
         
         // 1. Author parameter containing "or" keyword - should not be parsed as logical OR
         List<Integer> res1 = engine.query("author(\"tester or helper\")");

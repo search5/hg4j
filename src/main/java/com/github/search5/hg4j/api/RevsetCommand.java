@@ -42,7 +42,7 @@ public class RevsetCommand {
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
         // 1. Reuse high-performance evaluation engine
-        com.github.search5.hg4j.core.HgRevsetEngine engine = new com.github.search5.hg4j.core.HgRevsetEngine(repository);
+        com.github.search5.hg4j.revset.HgRevsetEngine engine = new com.github.search5.hg4j.revset.HgRevsetEngine(repository);
 
         // Preprocess symbolic revision terms inside queries (e.g. parents(tip) -> parents(<hex>))
         String resolvedExpr = expression;

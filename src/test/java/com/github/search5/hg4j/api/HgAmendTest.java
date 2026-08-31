@@ -55,7 +55,7 @@ public class HgAmendTest {
             assertArrayEquals(obsoleteNode, marker.getPredecessor());
             assertEquals(1, marker.getSuccessors().size());
             assertArrayEquals(amendedNode, marker.getSuccessors().get(0));
-            assertEquals("amend", marker.getMetadata().get("user"));
+            assertEquals("amend", marker.getMetadata().get("operation"));
         }
     }
 }

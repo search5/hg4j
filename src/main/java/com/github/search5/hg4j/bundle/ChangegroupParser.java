@@ -124,11 +124,23 @@ public class ChangegroupParser {
             System.arraycopy(chunk, 0, entry.node, 0, 20);
             System.arraycopy(chunk, 20, entry.p1, 0, 20);
             System.arraycopy(chunk, 40, entry.p2, 0, 20);
-            System.arraycopy(chunk, 60, entry.cs, 0, 20);
 
+            // 실제 스펙(mercurial/changegroup.py): cg1은 node,p1,p2,cs(4필드,
+            // deltabase 없음 — 델타 베이스는 스트림상 "이전 항목"으로 암묵적으로
+            // 결정된다: forcedeltaparentprev=True), cg2/cg3는 node,p1,p2,
+            // deltabase,cs(5필드 — deltabase가 cs보다 앞에 옴)다. 기존 코드는
+            // cg2/cg3에서도 cs를 60바이트 오프셋에서 읽고 deltabase를 80바이트
+            // 오프셋에서 읽었는데, 이는 두 필드의 순서가 뒤바뀐 것이다. changelog
+            // 그룹에서는 cs(linknode)가 자기 자신의 node와 같은 값이므로, 이 버그는
+            // deltabase가 항상 자기 자신의 node와 같아지는 형태로 나타난다
+            // (2026-09-01 발견·수정 — 실제 hg가 만든 번들의 unbundle 시
+            // "Delta base revision not found" 오류로 발견).
             if (headerSize >= 100) {
                 entry.deltabase = new byte[20];
-                System.arraycopy(chunk, 80, entry.deltabase, 0, 20);
+                System.arraycopy(chunk, 60, entry.deltabase, 0, 20);
+                System.arraycopy(chunk, 80, entry.cs, 0, 20);
+            } else {
+                System.arraycopy(chunk, 60, entry.cs, 0, 20);
             }
             if (headerSize >= 102) {
                 entry.flags = ((chunk[100] & 0xFF) << 8) | (chunk[101] & 0xFF);

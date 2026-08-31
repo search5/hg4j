@@ -12,7 +12,7 @@ import java.util.*;
 import java.util.function.Function;
 
 /**
- * Class responsible for managing and parsing Mercurial Phase metadata (.hg/phaseroots).
+ * Class responsible for managing and parsing Mercurial Phase metadata (.hg/store/phaseroots).
  */
 public class PhaseRoots {
 

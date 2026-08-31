@@ -69,27 +69,8 @@ public final class AmendCommand {
         
         byte[] newCommitNode = commitCmd.call();
 
-            // 2. Generate and append obsolescence marker in obsstore
-            File obsstoreFile = new File(repository.getStoreDir(), "obsstore");
-            
-            // Format Evolve V1 obsolescence marker byte array
-            byte[] flags = new byte[1];
-            flags[0] = 0x00; // default flags
-            
-            byte[] metadataBlock = "user\0amend\0".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-
-            ByteBuffer markerBuf = ByteBuffer.allocate(20 + 1 + 20 + 1 + 2 + metadataBlock.length).order(ByteOrder.BIG_ENDIAN);
-            markerBuf.put(obsoleteNode); // predecessor (20B)
-            markerBuf.put((byte) 1);      // successors count (1B)
-            markerBuf.put(newCommitNode); // successor (20B)
-            markerBuf.put((byte) 0x00);   // flags (1B)
-            markerBuf.putShort((short) metadataBlock.length); // metaLen
-            markerBuf.put(metadataBlock);
-
-            try (FileOutputStream out = new FileOutputStream(obsstoreFile, true)) {
-                out.write(markerBuf.array());
-                out.getFD().sync();
-            }
+        // 2. Generate and append obsolescence marker in obsstore
+        HgObsMarker.writeMarker(repository.getStoreDir(), obsoleteNode, List.of(newCommitNode), "amend");
 
             return newCommitNode;
     }

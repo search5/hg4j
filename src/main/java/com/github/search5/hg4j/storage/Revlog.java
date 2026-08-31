@@ -60,9 +60,16 @@ public class Revlog {
 
     public Revlog(File idxFile, File datFile, boolean useZstd) throws IOException {
         this.idxFile = idxFile;
-        this.datFile = datFile;
         this.index = new RevlogIndex(idxFile);
-        this.inline = index.isInline();
+        if (index.isV2()) {
+            // v2는 항상 non-inline이며 실제 데이터 파일은 docket의 UUID로부터 발견된다 —
+            // 생성자로 넘어온 datFile(예: "00changelog.d")은 v2 저장소에는 존재하지 않는다.
+            this.datFile = index.getResolvedDataFile();
+            this.inline = false;
+        } else {
+            this.datFile = datFile;
+            this.inline = index.isInline();
+        }
         this.useZstd = useZstd;
     }
 
@@ -266,6 +273,76 @@ public class Revlog {
         return appendRevision(content, null, parent1, parent2, p1Node, p2Node, linkRev);
     }
 
+    /**
+     * v2(changelog-v2) 저장소에 새 리비전을 append한다. 실제 hg CLI로 생성한 changelog-v2
+     * 픽스처를 hexdump/zstd로 직접 대조해 검증된 레이아웃을 그대로 재현한다 — 각 리비전은
+     * 델타 체인 없이 독립 zstd 프레임(raw, prefix byte 없음)으로 저장된다 (RevlogV2ParserTest,
+     * src/test/resources/fixtures/revlogv2-changelog/README.md 참고).
+     *
+     * <p>changelog-v2만 지원한다. 일반 revlog v2({@code exp-revlogv2.2}, 매니페스트/파일로그)는
+     * 실제 hg 픽스처로 검증할 방법이 이 환경에 없어(영구 nodemap과 마찬가지로 Rust 확장
+     * 필요) 의도적으로 구현하지 않았다 — 검증 안 된 추측으로 파일을 깨뜨리는 것보다
+     * 명시적으로 예외를 던지는 편이 안전하다.</p>
+     */
+    private synchronized byte[] appendRevisionV2(int rev, byte[] processedContent, int parent1, int parent2,
+                                                   byte[] nodeId) throws IOException {
+        if (!index.isChangelogV2()) {
+            throw new UnsupportedOperationException(
+                    "hg4j does not yet support writing to a generic revlog-v2 (non-changelog) revlog; "
+                    + "only reading is supported. See decisions/revlog-v2-support-plan.md.");
+        }
+
+        File resolvedIndexFile = index.getResolvedIndexFile();
+        File resolvedDataFile = index.getResolvedDataFile();
+
+        byte[] dataHunk = DeltaCodec.compress(processedContent, true);
+
+        long offset = resolvedDataFile.exists() ? resolvedDataFile.length() : 0;
+        try (FileOutputStream out = new FileOutputStream(resolvedDataFile, true)) {
+            out.write(dataHunk);
+            out.getFD().sync();
+        }
+
+        long offsetFlags = (rev == 0) ? 0 : ((offset << 16));
+
+        // INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x (96바이트, mercurial/revlogutils/constants.py 실측)
+        ByteBuffer recordBuf = ByteBuffer.allocate(96);
+        recordBuf.putLong(offsetFlags);
+        recordBuf.putInt(dataHunk.length);
+        recordBuf.putInt(processedContent.length);
+        recordBuf.putInt(parent1);
+        recordBuf.putInt(parent2);
+        byte[] node20 = Arrays.copyOf(nodeId, 20);
+        recordBuf.put(node20);
+        recordBuf.put(new byte[12]); // 패딩
+        recordBuf.putLong(0L); // sidedata offset (미지원)
+        recordBuf.putInt(0);   // sidedata comp length
+        // 압축 모드: 실제 hg 픽스처의 압축 모드 바이트는 9(0b1001) — 하위 2비트가
+        // COMP_MODE_DEFAULT(1, docket의 default_compression_header=zstd 사용)를 가리킨다.
+        // COMP_MODE_PLAIN(0)으로 잘못 쓰면 실제 hg가 zstd 바이트를 평문으로 취급해
+        // `hg verify`에서 integrity check failed가 남을 남 뿐 아니라(id는
+        // computeNodeId 시점에 이미 확정되어 있어 hg4j 자체 판독에는 영향 없지만) 실제
+        // hg와의 상호운용성이 깨진다 — 실제 hg CLI로 재현·확인됨.
+        recordBuf.put((byte) 1); // COMP_MODE_DEFAULT
+        recordBuf.putInt(rev); // rank (단순화: 선형 히스토리 가정)
+        recordBuf.put(new byte[23]); // 패딩
+        recordBuf.flip();
+
+        try (FileOutputStream out = new FileOutputStream(resolvedIndexFile, true)) {
+            out.write(recordBuf.array());
+            out.getFD().sync();
+        }
+
+        index.updateV2DocketSizes(resolvedIndexFile.length(), resolvedDataFile.length());
+
+        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
+                rev, rev, parent1, parent2, nodeId));
+
+        byte[] hash = new byte[20];
+        System.arraycopy(nodeId, 0, hash, 0, 20);
+        return hash;
+    }
+
     public synchronized byte[] appendRevision(byte[] content, java.util.Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         int rev = index.getRevisionCount();
@@ -312,6 +389,10 @@ public class Revlog {
 
         byte[] nodeId = new byte[32];
         System.arraycopy(hash, 0, nodeId, 0, 20);
+
+        if (index.isV2()) {
+            return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId);
+        }
 
         // Decide whether to write delta or fulltext
         byte[] rawToWrite = processedContent;
@@ -444,6 +525,14 @@ public class Revlog {
                 content = applyDelta(baseContent, entry.delta);
             }
         } else {
+            // cg1(entry.deltabase == null)은 와이어 포맷 자체에 베이스 필드가 없다. 실제
+            // Mercurial의 cg1 패커(ChangeGroupPacker01)는 forcedeltaparentprev=True로 항상
+            // "이 그룹 스트림에서 바로 직전에 나온 엔트리"를 베이스로 삼는다 — 해당 엔트리의
+            // 실제 DAG 부모(p1)와는 무관한 순전히 위치 기반 규칙이다(mercurial/changegroup.py
+            // 실측, 2026-09-01). hg4j의 자체 changegroup 생성기(HgLocalClient.getBundle())도
+            // 이 규칙에 맞춰 "직전에 패킹한 엔트리"를 베이스로 델타를 만들도록 맞췄다 — 반드시
+            // rev-1(로컬 revlog에 이번에 순서대로 추가되는 직전 리비전)이어야 하며 parent1로
+            // 바꾸면 다중 head(branch) 저장소에서 실제 hg가 만든 cg1 번들 디코딩이 깨진다.
             if (rev == 0) {
                 content = applyDelta(new byte[0], entry.delta);
             } else {

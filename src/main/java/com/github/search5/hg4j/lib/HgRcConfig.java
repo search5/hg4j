@@ -29,36 +29,95 @@ public final class HgRcConfig {
             return;
         }
         String content = Files.readString(file.toPath(), StandardCharsets.UTF_8);
-        parse(content);
+        parse(content, file.getAbsoluteFile().getParentFile());
     }
 
     /**
-     * Parses INI-format configuration string.
+     * Parses INI-format configuration string with no base directory, so a
+     * {@code %include} using a relative path cannot be resolved (mirrors calling
+     * {@link #parse(String, File)} with a {@code null} directory).
      */
     public void parse(String content) {
+        parse(content, null);
+    }
+
+    /**
+     * Parses INI-format configuration content, honoring the real hgrc directives
+     * {@code %include <path>} (loads another config file, resolved relative to
+     * {@code baseDir} when the path isn't absolute; a missing included file is
+     * silently ignored, matching {@code mercurial/config.py}'s {@code read()}/
+     * {@code include()} handling of {@code ENOENT}) and {@code %unset <name>}
+     * (removes a previously set key in the current section). Also supports
+     * indented continuation lines that append to the previous key's value,
+     * joined with {@code "\n"}.
+     *
+     * @param content the raw hgrc text
+     * @param baseDir directory that relative {@code %include} paths are resolved against, or
+     *                 {@code null} if unknown (relative includes are then skipped)
+     */
+    public void parse(String content, File baseDir) {
         if (content == null || content.isEmpty()) {
             return;
         }
 
-        String[] lines = content.split("\n");
-        Map<String, String> currentSection = null;
+        String[] lines = content.split("\n", -1);
+        String currentSection = null;
+        String pendingKey = null;
 
         for (String line : lines) {
+            boolean isContinuation = pendingKey != null && currentSection != null
+                    && !line.isEmpty() && Character.isWhitespace(line.charAt(0)) && !line.trim().isEmpty();
+            if (isContinuation) {
+                String contValue = line.trim();
+                String existing = get(currentSection, pendingKey);
+                set(currentSection, pendingKey, (existing != null ? existing + "\n" : "") + contValue);
+                continue;
+            }
+            pendingKey = null;
+
             String trimmed = line.trim();
             if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith(";")) {
                 continue;
             }
 
-            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                String sectionName = trimmed.substring(1, trimmed.length() - 1).trim().toLowerCase();
-                currentSection = sections.computeIfAbsent(sectionName, k -> new LinkedHashMap<>());
-            } else if (currentSection != null) {
-                int eqIdx = trimmed.indexOf('=');
-                if (eqIdx != -1) {
-                    String key = trimmed.substring(0, eqIdx).trim();
-                    String val = trimmed.substring(eqIdx + 1).trim();
-                    currentSection.put(key, val);
+            if (trimmed.startsWith("%include")) {
+                String includePath = trimmed.substring("%include".length()).trim();
+                if (!includePath.isEmpty()) {
+                    File includeFile = new File(includePath);
+                    if (!includeFile.isAbsolute() && baseDir != null) {
+                        includeFile = new File(baseDir, includePath);
+                    }
+                    if (includeFile.isAbsolute() || baseDir != null) {
+                        try {
+                            load(includeFile);
+                        } catch (IOException ignored) {
+                            // 실제 스펙(mercurial/config.py): ENOENT는 조용히 무시된다.
+                        }
+                    }
                 }
+                continue;
+            }
+
+            if (trimmed.startsWith("%unset")) {
+                String name = trimmed.substring("%unset".length()).trim();
+                if (currentSection != null && !name.isEmpty()) {
+                    set(currentSection, name, null);
+                }
+                continue;
+            }
+
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                currentSection = trimmed.substring(1, trimmed.length() - 1).trim().toLowerCase();
+                sections.computeIfAbsent(currentSection, k -> new LinkedHashMap<>());
+                continue;
+            }
+
+            int eqIdx = trimmed.indexOf('=');
+            if (eqIdx != -1 && currentSection != null) {
+                String key = trimmed.substring(0, eqIdx).trim();
+                String val = trimmed.substring(eqIdx + 1).trim();
+                set(currentSection, key, val);
+                pendingKey = key;
             }
         }
     }

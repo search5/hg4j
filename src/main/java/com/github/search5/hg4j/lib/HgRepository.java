@@ -29,14 +29,25 @@ public class HgRepository implements Repository {
     private final File storeDir;
     private boolean defaultDirstateV2 = false;
     private boolean useZstdCompression = false;
+    // 실제 requirement 문자열은 mercurial/requirements.py에서 실측 확인됨
+    // (CHANGELOGV2_REQUIREMENT/REVLOGV2_REQUIREMENT/NODEMAP_REQUIREMENT).
+    // .hg/requires가 아니라 .hg/store/requires에 기록된다 (share-safe 저장소 기준).
+    private boolean changelogV2 = false;
+    private boolean revlogV2 = false;
+    private boolean persistentNodemap = false;
     private StoreEngine storeEngine = new DefaultFileStoreEngine();
     private Dirstate cachedDirstate = null;
+    private final HgRcConfig config = new HgRcConfig();
 
     public synchronized void setStoreEngine(StoreEngine storeEngine) {
         if (storeEngine != null) {
             this.storeEngine = storeEngine;
             clearRevlogCache();
         }
+    }
+
+    public HgRcConfig getConfig() {
+        return this.config;
     }
 
     public HgRepository(File directory) {
@@ -59,10 +70,28 @@ public class HgRepository implements Repository {
         
         this.storeDir = resolvedStoreDir;
         loadRequires();
+        loadConfig();
+    }
+
+    private void loadConfig() {
+        try {
+            File hgrc = new File(hgDir, "hgrc");
+            if (hgrc.exists() && hgrc.isFile()) {
+                this.config.load(hgrc);
+            }
+        } catch (Exception ignored) {
+            // non-blocking configuration load
+        }
     }
 
     private void loadRequires() {
-        File requiresFile = new File(hgDir, "requires");
+        readRequiresFile(new File(hgDir, "requires"));
+        // share-safe(기본값) 저장소는 store 관련 requirement를 .hg/requires가 아니라
+        // .hg/store/requires에 별도로 기록한다 — 실제 hg CLI(7.2)로 확인됨.
+        readRequiresFile(new File(storeDir, "requires"));
+    }
+
+    private void readRequiresFile(File requiresFile) {
         if (requiresFile.exists() && requiresFile.isFile()) {
             try {
                 java.util.List<String> lines = java.nio.file.Files.readAllLines(requiresFile.toPath());
@@ -70,14 +99,44 @@ public class HgRepository implements Repository {
                     String trimmed = line.trim();
                     if ("dirstate-v2".equals(trimmed)) {
                         this.defaultDirstateV2 = true;
-                    } else if ("revlog-compression=zstd".equals(trimmed)) {
+                    } else if ("revlog-compression-zstd".equals(trimmed)) {
                         this.useZstdCompression = true;
+                    } else if ("exp-changelog-v2".equals(trimmed)) {
+                        this.changelogV2 = true;
+                    } else if ("exp-revlogv2.2".equals(trimmed)) {
+                        this.revlogV2 = true;
+                    } else if ("persistent-nodemap".equals(trimmed)) {
+                        this.persistentNodemap = true;
                     }
                 }
             } catch (Exception ignored) {
                 // Fallback to default v1
             }
         }
+    }
+
+    /** {@code exp-changelog-v2} requirement — changelog가 revlog v2(docket 기반) 포맷임. */
+    public boolean isChangelogV2() {
+        return changelogV2;
+    }
+
+    /**
+     * {@code exp-revlogv2.2} requirement — 매니페스트/파일로그가 일반 revlog v2 포맷임.
+     * hg4j는 아직 읽기/쓰기를 지원하지 않는다(Rust 전용 companion 기능인 fileindex-v1에
+     * 의존해 이 환경에서 실제 hg로 픽스처를 만들 수조차 없었음) — 인식만 하고 있다는
+     * 뜻이며, 이 값이 true인 저장소를 열면 해당 revlog에서 실패할 수 있다.
+     */
+    public boolean isRevlogV2() {
+        return revlogV2;
+    }
+
+    /**
+     * {@code persistent-nodemap} requirement. hg4j는 아직 {@code .n} 트라이 파일을
+     * 읽지 않고 항상 순차 스캔으로 fallback한다(Mercurial 스펙상 유효한 동작이지만
+     * 속도 이점은 없음) — 인식만 하고 있다는 뜻이다.
+     */
+    public boolean isPersistentNodemap() {
+        return persistentNodemap;
     }
 
     public boolean isUseZstdCompression() {
@@ -230,7 +289,11 @@ public class HgRepository implements Repository {
      * @throws IOException if loading fails
      */
     public synchronized PhaseRoots getPhaseRoots() throws IOException {
-        File phaserootsFile = new File(hgDir, "phaseroots");
+        // 실제 hg는 phaseroots를 .hg/phaseroots가 아니라 .hg/store/phaseroots에 저장한다
+        // (share-safe 저장소 기준 real hg CLI 7.2로 직접 확인, 2026-09-01) — .hg/phaseroots를
+        // 쓰면 실제 hg가 phase 정보를 전혀 읽지 못해(항상 public으로 간주) 모든 phase 관련
+        // 상호운용(push/pull phase 동기화, hg phase, hg summary 등)이 깨진다.
+        File phaserootsFile = new File(storeDir, "phaseroots");
         return new PhaseRoots(phaserootsFile);
     }
 

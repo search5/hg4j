@@ -8,6 +8,9 @@ import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.nio.file.Files;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Strip command for truncating/removing changesets and their descendants
@@ -55,9 +58,35 @@ public class StripCommand {
         int keepCount = targetRev;
         byte[] rollbackParent = (keepCount > 0) ? changelog.getIndexRecord(keepCount - 1).getNodeId() : new byte[20];
 
+        java.util.Map<File, Long> fileSizes = new java.util.HashMap<>();
+        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+        File journalFile = new File(repository.getStoreDir(), "journal");
+
         try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
              com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
             
+            // 0. Create physical journal and file size logs
+            Files.deleteIfExists(journalFile.toPath());
+            if (dirstateFile.exists()) {
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                appendToJournal(journalFile, "dirstate");
+            }
+
+            // Save original size of core changelog and manifest
+            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
+            fileSizes.put(clIdx, clIdx.exists() ? clIdx.length() : 0L);
+            fileSizes.put(clDat, clDat.exists() ? clDat.length() : 0L);
+            fileSizes.put(mfIdx, mfIdx.exists() ? mfIdx.length() : 0L);
+            fileSizes.put(mfDat, mfDat.exists() ? mfDat.length() : 0L);
+
+            appendToJournal(journalFile, "store/00changelog.i\t" + fileSizes.get(clIdx));
+            appendToJournal(journalFile, "store/00changelog.d\t" + fileSizes.get(clDat));
+            appendToJournal(journalFile, "store/00manifest.i\t" + fileSizes.get(mfIdx));
+            appendToJournal(journalFile, "store/00manifest.d\t" + fileSizes.get(mfDat));
+
             // 1. Truncate / delete individual file revlogs whose linkRev >= targetRev
             File fncacheFile = new File(repository.getStoreDir(), "fncache");
             java.util.List<String> fncachePaths = fncacheFile.exists() 
@@ -78,6 +107,12 @@ public class StripCommand {
                     File flDat = new File(baseName.substring(0, baseName.length() - 2) + ".d");
                     
                     if (flIdx.exists()) {
+                        fileSizes.put(flIdx, flIdx.length());
+                        fileSizes.put(flDat, flDat.exists() ? flDat.length() : 0L);
+
+                        appendToJournal(journalFile, "store/" + storePath + "\t" + fileSizes.get(flIdx));
+                        appendToJournal(journalFile, "store/" + storePath.substring(0, storePath.length() - 2) + ".d\t" + fileSizes.get(flDat));
+
                         Revlog filelog = repository.getRevlog(flIdx, flDat);
                         int flCount = filelog.getRevisionCount();
                         int flKeepCount = 0;
@@ -108,8 +143,6 @@ public class StripCommand {
 
             // 2. Truncate Core Changelog and Manifest
             truncateRevlog(clIdx, clDat, keepCount);
-            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
             truncateRevlog(mfIdx, mfDat, keepCount);
 
             // 3. Clean bookmarks whose revisions are stripped
@@ -137,7 +170,9 @@ public class StripCommand {
             }
 
             // 4. Clean phase roots whose revisions are stripped
-            File phaserootsFile = new File(repository.getHgDir(), "phaseroots");
+            // 실제 hg는 phaseroots를 .hg/store/phaseroots에 저장한다(.hg/phaseroots가 아님 —
+            // real hg CLI로 확인, 2026-09-01).
+            File phaserootsFile = new File(repository.getStoreDir(), "phaseroots");
             if (phaserootsFile.exists()) {
                 java.util.List<String> pLines = java.nio.file.Files.readAllLines(phaserootsFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
                 java.util.List<String> updatedPLines = new java.util.ArrayList<>();
@@ -166,7 +201,45 @@ public class StripCommand {
             System.arraycopy(rollbackParent, 0, parent20, 0, 20);
             d.setParents(parent20, new byte[20]);
             repository.writeDirstate(d);
+
+            // Register obsolescence marker pruning the stripped commit completely (no successors)
+            try {
+                com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), nodeBytes, java.util.List.of(), "prune");
+            } catch (Exception e) {
+                // non-blocking
+            }
+
             repository.clearRevlogCache();
+
+            // 5. Successful strip complete -> Write undo info for rollback support and clear journal
+            try {
+                CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup);
+            } catch (Exception e) {
+                // non-blocking
+            }
+            Files.deleteIfExists(journalFile.toPath());
+            File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+            Files.deleteIfExists(dirstateBackupFile.toPath());
+
+        } catch (Exception e) {
+            // Transaction Rollback Session on error
+            for (java.util.Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
+                File file = sizeEntry.getKey();
+                long origSize = sizeEntry.getValue();
+                if (origSize == 0) {
+                    Files.deleteIfExists(file.toPath());
+                } else if (file.exists()) {
+                    try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
+                        outChan.truncate(origSize);
+                        outChan.force(true);
+                    }
+                }
+            }
+            if (dirstateBackup != null) {
+                com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+            }
+            Files.deleteIfExists(journalFile.toPath());
+            throw e;
         }
     }
 
@@ -188,6 +261,14 @@ public class StripCommand {
                     rafDat.setLength(targetDatSize);
                 }
             }
+        }
+    }
+
+    private void appendToJournal(File journalFile, String entry) throws IOException {
+        Files.writeString(journalFile.toPath(), entry + "\n", java.nio.charset.StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+            fc.force(true);
         }
     }
 }

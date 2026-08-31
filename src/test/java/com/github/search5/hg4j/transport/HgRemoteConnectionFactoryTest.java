@@ -271,6 +271,11 @@ public class HgRemoteConnectionFactoryTest {
                     }
 
                     @Override
+                    public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
+                        return false;
+                    }
+
+                    @Override
                     public void close() throws IOException {
                         // no-op
                     }

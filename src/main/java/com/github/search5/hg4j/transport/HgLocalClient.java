@@ -129,6 +129,15 @@ public class HgLocalClient implements HgRemoteConnection {
         bundle.fileGroups = new ArrayList<>();
 
         // 1a. Pack Changelogs
+        // cg1은 각 엔트리의 델타를 "실제 DAG 부모(p1)"가 아니라 "이 그룹 스트림에서 바로
+        // 직전에 패킹된 엔트리"를 기준으로 인코딩한다(mercurial/changegroup.py의
+        // ChangeGroupPacker01, forcedeltaparentprev=True 실측, 2026-09-01). 다중 head
+        // 저장소에서 p1 기준으로 델타를 만들면 실제 hg 및 hg4j 자신의 unbundle 로직과도
+        // 어긋나 콘텐츠가 깨진다.
+        // incremental pull(startRev > 0)이면 첫 신규 엔트리의 베이스는 양쪽이 이미 공유하는
+        // 마지막 공통 리비전(startRev-1)의 콘텐츠여야 한다 — 빈 바이트로 리셋하면 수신측의
+        // rev-1 기준 복원과 어긋난다.
+        byte[] prevClContent = (startRev > 0) ? changelog.getRevisionContent(startRev - 1) : new byte[0];
         for (int r = startRev; r < count; r++) {
             Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
             com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry clEntry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
@@ -138,17 +147,29 @@ public class HgLocalClient implements HgRemoteConnection {
             clEntry.cs = clRec.getNodeId();
 
             byte[] content = changelog.getRevisionContent(r);
-            byte[] baseContent = new byte[0];
-            if (clRec.getParent1() != -1) {
-                baseContent = changelog.getRevisionContent(clRec.getParent1());
-            }
-            clEntry.delta = Revlog.createDelta(baseContent, content);
+            clEntry.delta = Revlog.createDelta(prevClContent, content);
             bundle.changelogEntries.add(clEntry);
+            prevClContent = content;
         }
 
         // 1b. Pack Manifests
         Revlog manifest = remoteRepo.getRevlog(mfIdx, mfDat);
         java.util.Set<String> affectedFiles = new java.util.HashSet<>();
+        // incremental pull이면 마지막 공통 changelog 리비전(startRev-1)이 가리키는 manifest
+        // 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다(changelog와 동일한 이유).
+        byte[] prevMfContent = new byte[0];
+        if (startRev > 0) {
+            byte[] prevClRaw = changelog.getRevisionContent(startRev - 1);
+            String prevClText = new String(prevClRaw, java.nio.charset.StandardCharsets.UTF_8);
+            int nl = prevClText.indexOf('\n');
+            if (nl > 0) {
+                byte[] prevMfNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(prevClText.substring(0, nl).trim().substring(0, 40));
+                int prevMfRev = manifest.findRevision(prevMfNode);
+                if (prevMfRev != -1) {
+                    prevMfContent = manifest.getRevisionContent(prevMfRev);
+                }
+            }
+        }
         for (int r = startRev; r < count; r++) {
             byte[] clContent = changelog.getRevisionContent(r);
             String clText = new String(clContent, java.nio.charset.StandardCharsets.UTF_8);
@@ -171,12 +192,9 @@ public class HgLocalClient implements HgRemoteConnection {
             mfEntry.cs = changelog.getIndexRecord(r).getNodeId();
 
             byte[] content = manifest.getRevisionContent(mfRev);
-            byte[] baseContent = new byte[0];
-            if (mfRec.getParent1() != -1) {
-                baseContent = manifest.getRevisionContent(mfRec.getParent1());
-            }
-            mfEntry.delta = Revlog.createDelta(baseContent, content);
+            mfEntry.delta = Revlog.createDelta(prevMfContent, content);
             bundle.manifestEntries.add(mfEntry);
+            prevMfContent = content;
         }
 
         // 1c. Pack Filelogs
@@ -188,6 +206,15 @@ public class HgLocalClient implements HgRemoteConnection {
             Revlog fl = remoteRepo.getRevlog(flIdx, flDat);
             List<com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
 
+            // incremental pull이면 이미 공유된 마지막 filelog 리비전(linkRev < startRev 중 가장
+            // 최근 것)의 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다.
+            byte[] prevFlContent = new byte[0];
+            for (int i = fl.getRevisionCount() - 1; i >= 0; i--) {
+                if (fl.getIndexRecord(i).getLinkRev() < startRev) {
+                    prevFlContent = fl.getRevisionContent(i);
+                    break;
+                }
+            }
             for (int i = 0; i < fl.getRevisionCount(); i++) {
                 Revlog.IndexRecord flRec = fl.getIndexRecord(i);
                 if (flRec.getLinkRev() >= startRev) {
@@ -198,12 +225,9 @@ public class HgLocalClient implements HgRemoteConnection {
                     flEntry.cs = changelog.getIndexRecord(flRec.getLinkRev()).getNodeId();
 
                     byte[] content = fl.getRevisionContent(i);
-                    byte[] baseContent = new byte[0];
-                    if (flRec.getParent1() != -1) {
-                        baseContent = fl.getRevisionContent(flRec.getParent1());
-                    }
-                    flEntry.delta = Revlog.createDelta(baseContent, content);
+                    flEntry.delta = Revlog.createDelta(prevFlContent, content);
                     flEntries.add(flEntry);
+                    prevFlContent = content;
                 }
             }
 
@@ -340,6 +364,38 @@ public class HgLocalClient implements HgRemoteConnection {
             }
         }
         return map;
+    }
+
+    @Override
+    public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
+        if ("bookmarks".equals(namespace)) {
+            File bkFile = new File(remoteRepo.getHgDir(), "bookmarks");
+            java.util.Map<String, String> bks = listKeys("bookmarks");
+            String currentVal = bks.getOrDefault(key, "");
+            if (oldVal == null) oldVal = "";
+            if (newVal == null) newVal = "";
+            
+            if (currentVal.equals(oldVal)) {
+                if (newVal.isEmpty()) {
+                    bks.remove(key);
+                } else {
+                    bks.put(key, newVal);
+                }
+                
+                // Write back bookmarks to file
+                if (bks.isEmpty()) {
+                    if (bkFile.exists()) bkFile.delete();
+                } else {
+                    StringBuilder sb = new StringBuilder();
+                    for (java.util.Map.Entry<String, String> entry : bks.entrySet()) {
+                        sb.append(entry.getValue()).append(" ").append(entry.getKey()).append("\n");
+                    }
+                    com.github.search5.hg4j.util.SafeFileIO.writeStringAtomic(bkFile, sb.toString());
+                }
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override

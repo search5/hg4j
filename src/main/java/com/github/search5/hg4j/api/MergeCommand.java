@@ -3,6 +3,7 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.merge.Merge3;
+import com.github.search5.hg4j.merge.MergeState;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.errors.HgLockException;
@@ -225,10 +226,23 @@ public class MergeCommand {
             }
 
             Dirstate dirstate = repository.getDirstate();
-            com.github.search5.hg4j.lib.NodeId p1CommitNode = dirstate.getParent1Node();
-            if (p1CommitNode == null || p1CommitNode.isNull()) {
-                throw new IllegalStateException("Cannot merge in an empty repository.");
+            File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+            byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+            File journalFile = new File(repository.getStoreDir(), "journal");
+
+            // 0. Set up crash protection backups
+            Files.deleteIfExists(journalFile.toPath());
+            if (dirstateFile.exists()) {
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                appendToJournal(journalFile, "dirstate");
             }
+
+            try {
+                com.github.search5.hg4j.lib.NodeId p1CommitNode = dirstate.getParent1Node();
+                if (p1CommitNode == null || p1CommitNode.isNull()) {
+                    throw new IllegalStateException("Cannot merge in an empty repository.");
+                }
 
             // 1. Load changelog
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
@@ -258,7 +272,15 @@ public class MergeCommand {
                 throw new IllegalArgumentException("Target NodeID or revision index must be specified.");
             }
 
+            MergeState mergeState = new MergeState();
+            mergeState.local = p1CommitNode.getBytes();
+            mergeState.other = p2CommitNode;
+            File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
+
             if (p1Rev == p2Rev) {
+                Files.deleteIfExists(journalFile.toPath());
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.deleteIfExists(dirstateBackupFile.toPath());
                 return new MergeResult(false, Collections.emptyList());
             }
 
@@ -273,6 +295,9 @@ public class MergeCommand {
 
             if (lca.rev == p2Rev) {
                 // Target is already merged (ancestor of P1)
+                Files.deleteIfExists(journalFile.toPath());
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.deleteIfExists(dirstateBackupFile.toPath());
                 return new MergeResult(false, Collections.emptyList());
             }
 
@@ -297,6 +322,12 @@ public class MergeCommand {
                 }
                 dirstate.setParents(new com.github.search5.hg4j.lib.NodeId(p2CommitNode), com.github.search5.hg4j.lib.NodeId.NULL);
                 repository.writeDirstate(dirstate);
+
+                // Clean up crash protection backups
+                Files.deleteIfExists(journalFile.toPath());
+                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+                Files.deleteIfExists(dirstateBackupFile.toPath());
+
                 return new MergeResult(false, Collections.emptyList());
             }
 
@@ -369,12 +400,28 @@ public class MergeCommand {
                         }
                         byte[] mergedBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
                         int mode = getModeFromManifestHex(hP1);
-                        writeFileToWorkingCopy(path, mergedBytes, mode);
 
                         if (mergeRes.isConflicted()) {
                             conflicted = true;
                             conflicts.add(path);
+
+                            // 실제 hg(mergestate.add)와 동일하게 충돌 파일의 병합 전 로컬
+                            // 내용을 .hg/merge/<localkey>에 백업해 둔다 — hg resolve가 이
+                            // 파일을 이용해 :local/:other/:merge3 등으로 재시도할 수 있다.
+                            String localKey = MergeState.getLocalKey(path);
+                            File localBackup = new File(repository.getHgDir(), "merge/" + localKey);
+                            localBackup.getParentFile().mkdirs();
+                            Files.write(localBackup.toPath(), mineContent);
+
+                            byte[] ancestorLinkNode = lca.rev != -1
+                                    ? changelog.getIndexRecord(lca.rev).getNodeId()
+                                    : new byte[20];
+                            mergeState.addMergedFile(path, localKey, path, path, cleanHexOf(hLca), path, cleanHexOf(hP2), flagOf(hP1));
+                            mergeState.stateExtras
+                                    .computeIfAbsent(path, k -> new java.util.LinkedHashMap<>())
+                                    .put("ancestorlinknode", NodeIdUtil.toHex(ancestorLinkNode));
                         }
+                        writeFileToWorkingCopy(path, mergedBytes, mode);
                         dirstate.addEntry(path, new Dirstate.Entry('m', mode, mergedBytes.length, System.currentTimeMillis() / 1000));
                     }
                 }
@@ -383,6 +430,15 @@ public class MergeCommand {
             // 5. Update dirstate parent headers to P1 and P2
             dirstate.setParents(p1CommitNode, new com.github.search5.hg4j.lib.NodeId(p2CommitNode));
             repository.writeDirstate(dirstate);
+
+            // 실제 hg처럼 충돌이 있으면 .hg/merge/state2를 남겨 이후 세션/hg resolve가
+            // 미해결 파일을 이어서 처리할 수 있게 하고, 충돌 없이 끝났으면 이전에 남아있을
+            // 수 있는 병합 상태를 정리한다.
+            if (conflicted) {
+                mergeState.write(mergeStateFile);
+            } else {
+                MergeState.clean(mergeStateFile);
+            }
 
             // POST_MERGE hooks trigger
             java.util.Map<String, Object> ctx = new java.util.HashMap<>();
@@ -397,11 +453,42 @@ public class MergeCommand {
                 }
             }
 
+            // Clean up crash protection backups
+            Files.deleteIfExists(journalFile.toPath());
+            File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+            Files.deleteIfExists(dirstateBackupFile.toPath());
+
             return new MergeResult(conflicted, conflicts);
+        } catch (Exception e) {
+            // Restore dirstate on crash/failure
+            if (dirstateBackup != null) {
+                try {
+                    com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                } catch (Exception ignored) {}
+            }
+            try {
+                Files.deleteIfExists(journalFile.toPath());
+            } catch (Exception ignored) {}
+            throw e;
         }
+      }
     }
 
 
+
+    private static String cleanHexOf(String manifestHex) {
+        if (manifestHex == null) {
+            return MergeState.NULL_HEX;
+        }
+        return manifestHex.length() > 40 ? manifestHex.substring(0, 40) : manifestHex;
+    }
+
+    private static String flagOf(String manifestHex) {
+        if (manifestHex != null && manifestHex.length() > 40) {
+            return String.valueOf(manifestHex.charAt(40));
+        }
+        return "";
+    }
 
     private Map<String, String> loadManifestAtCommit(Revlog changelog, Revlog manifestRevlog, int commitRev) throws IOException {
         byte[] commitNodeId = changelog.getIndexRecord(commitRev).getNodeId();
@@ -471,5 +558,11 @@ public class MergeCommand {
         return list;
     }
 
-
+    private void appendToJournal(File journalFile, String entry) throws IOException {
+        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+            fc.force(true);
+        }
+    }
 }

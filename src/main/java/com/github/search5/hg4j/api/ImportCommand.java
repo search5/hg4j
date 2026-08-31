@@ -147,7 +147,10 @@ public class ImportCommand {
         clSb.append(author).append('\n');
 
         String dateStr = (dateVal != null) ? dateVal : (System.currentTimeMillis() / 1000) + " 0";
-        clSb.append(dateStr).append(" branch:default\n");
+        // 실제 hg는 default 브랜치 커밋에는 "branch:default" extra 항목을 전혀 쓰지 않는다
+        // (changelog.add에서 branch=='default'면 extra에서 제거) — 여기서 이 명령은 항상
+        // 기본 브랜치로 임포트하므로 그 필드를 생략해 실제 hg와 동일한 원문 바이트를 낸다.
+        clSb.append(dateStr).append('\n');
 
         java.util.Collections.sort(filesModified, com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (String path : filesModified) {

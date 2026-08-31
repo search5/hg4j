@@ -43,6 +43,12 @@ public interface HgRemoteConnection extends java.io.Closeable {
     java.util.Map<String, String> listKeys(String namespace) throws IOException, HgAuthException, HgProtocolException;
 
     /**
+     * Executes the 'pushkey' command to update a key/value pair in a remote namespace (e.g. "bookmarks").
+     * Returns true if the remote accepted the update, false otherwise.
+     */
+    boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException;
+
+    /**
      * Executes the 'between' command to query revisions between pairs of nodes.
      */
     default List<String> between(List<String> pairs) throws IOException {

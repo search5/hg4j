@@ -21,13 +21,24 @@ status: current
 ## modules/ — 패키지별 구조 (JGit 패키지 1:1 대응 기준으로 분리)
 | 페이지 | 요약 |
 |---|---|
-| [modules/core.md](modules/core.md) | Plumbing 계층 — HgRepository, Dirstate, Revlog, Bundle2, Revset 엔진 등 (⚠️ 12단계로 분리 예정, 최종적으로 core→lib 병합 — core-package-split-plan 참고) |
 | [modules/api.md](modules/api.md) | Porcelain 계층 — `Hg` 파사드와 40여 개 `XxxCommand` |
 | [modules/transport.md](modules/transport.md) | HTTP/SSH 전송 (JGit `transport` 대응) |
 | [modules/treewalk.md](modules/treewalk.md) | 트리 순회 (JGit `treewalk` 대응) |
 | [modules/revwalk.md](modules/revwalk.md) | 리비전 그래프 순회 (JGit `revwalk` 대응) |
-| [modules/lib.md](modules/lib.md) | NodeId/ProgressMonitor (현재는 범위 축소, core-package-split-plan Phase 12로 잔여 core와 병합 예정) |
+| [modules/lib.md](modules/lib.md) | 저장소 진입점(`HgRepository`)과 NodeId/ProgressMonitor 등 최상위 공통 구조 (Track A 완료, `core` 병합됨) |
 | [modules/errors.md](modules/errors.md) | 예외 계층 (JGit `errors` 대응) |
+| [modules/storage.md](modules/storage.md) | Revlog 저장 엔진(`Revlog`/`RevlogIndex`/`DeltaCodec`/`StoreEngine`) — Track A Phase 10에서 분리 |
+| [modules/diff.md](modules/diff.md) | Revlog 델타 알고리즘(`DeltaEngine`) — Track A Phase 10에서 `storage`와 함께 분리 |
+| [modules/dirstate.md](modules/dirstate.md) | 워킹카피 상태 추적(v1/v2) — Track A Phase 1에서 분리 |
+| [modules/merge.md](modules/merge.md) | 3-way 머지 알고리즘(`Merge3`) — Track A Phase 2에서 분리 |
+| [modules/util.md](modules/util.md) | 공용 유틸(`NodeIdUtil`/`SafeFileIO`) — Track A Phase 3에서 분리 |
+| [modules/submodule.md](modules/submodule.md) | Subrepository(`.hgsub`/`.hgsubstate`) — Track A Phase 4에서 분리 |
+| [modules/phase.md](modules/phase.md) | Phase(draft/public/secret) 메타데이터(`PhaseRoots`) — Track A Phase 5에서 분리 |
+| [modules/obsolete.md](modules/obsolete.md) | Obsolescence marker(`HgObsMarker`/`HgObsolescenceParser`) — Track A Phase 6에서 분리 |
+| [modules/revset.md](modules/revset.md) | Revset 질의 엔진(`HgRevsetEngine`) — Track A Phase 7에서 분리 |
+| [modules/bundle.md](modules/bundle.md) | Bundle2/changegroup 파서 — Track A Phase 8에서 분리 |
+| [modules/lfs.md](modules/lfs.md) | LFS(Large File Storage) — Track A Phase 9에서 분리 |
+| [modules/gpg.md](modules/gpg.md) | 커밋 서명(GPG/OpenPGP) — Track A Phase 9에서 분리 |
 
 ## concepts/ — Mercurial 도메인 개념
 | 페이지 | 요약 |
@@ -44,10 +55,13 @@ status: current
 | [decisions/module-info-disabled.md](decisions/module-info-disabled.md) | JPMS 모듈화 보류(`module-info.java.bak`) |
 | [decisions/checked-exception-conversion.md](decisions/checked-exception-conversion.md) | HgException unchecked → checked 전환(BUG-11) |
 | [decisions/jgit-parity-requirement.md](decisions/jgit-parity-requirement.md) | ⚠️ **향후 개발 필수 요건** — JGit과 동일한 패키지 구조(단, Hg 접두어·Mercurial 고유 개념명은 유지), 현재 격차표 |
-| [decisions/core-package-split-plan.md](decisions/core-package-split-plan.md) | `core` 패키지를 12단계(Phase 0~12)로 나눠 분리·최종 `lib`로 병합하는 실행 계획 (아직 미실행) |
-| [decisions/mercurial-spec-compliance-requirement.md](decisions/mercurial-spec-compliance-requirement.md) | ⚠️ **향후 개발 필수 요건** — Mercurial 공식 스펙(internals 문서) 항목별 완전 준수, 현재 준수 상태표. Revlog v2 · wireprotocol v2 **필수 구현 확정**, Python 확장 시스템은 **범위 밖 확정** |
-| [decisions/revlog-v2-support-plan.md](decisions/revlog-v2-support-plan.md) | Revlog v2(persistent nodemap/sidedata/docket) 추가 지원 실행 계획 (1차 조사, 미실행) |
-| [decisions/wireprotocol-v2-support-plan.md](decisions/wireprotocol-v2-support-plan.md) | wireprotocol v2(cbor 기반) 추가 지원 실행 계획 (1차 조사, 미실행) |
+| [decisions/core-package-split-plan.md](decisions/core-package-split-plan.md) | `core` 패키지를 12단계(Phase 0~12)로 나눠 분리·최종 `lib`로 병합하는 실행 계획 (실행 완료) |
+| [decisions/mercurial-spec-compliance-requirement.md](decisions/mercurial-spec-compliance-requirement.md) | Mercurial 공식 스펙(internals 문서) 항목별 완전 준수, 현재 준수 상태표. **Track B-1~B-5 전부 2026-09-01 구현 완료**(changelog-v2/wireprotocol v2/Bookmark/저널링·rollback/Obsolescence marker) — 실제 hg CLI로 검증하는 과정에서 obsstore 포맷 오류, changegroup(cg1) 델타 베이스 규칙 오류 등 사전 버그 다수 발견·수정. Python 확장 시스템은 **범위 밖 확정** |
+| [decisions/revlog-v2-support-plan.md](decisions/revlog-v2-support-plan.md) | Revlog v2 지원 — ✅ **2026-09-01 changelog-v2 완료**(실제 hg CLI로 읽기/쓰기/`hg verify` 상호운용 검증), 일반 revlog-v2·persistent-nodemap은 이 환경의 Rust 확장 부재로 의도적 보류 |
+| [decisions/wireprotocol-v2-support-plan.md](decisions/wireprotocol-v2-support-plan.md) | wireprotocol v2(cbor 기반) — ✅ **2026-09-01 구현 완료**, 단 실제 Mercurial에 v2 서빙 서버 자체가 없어 상호운용 검증은 원천적으로 불가능(hg4j 자기 검증만 가능) |
+| [decisions/bookmark-full-support-plan.md](decisions/bookmark-full-support-plan.md) | Bookmark commit/update/pull/push 완전 연동 — ✅ **2026-09-01 완료**, 실제 hg CLI 검증 + 데이터 손실 버그 2건 발견·수정 |
+| [decisions/journaling-crash-recovery-plan.md](decisions/journaling-crash-recovery-plan.md) | 트랜잭션 저널링·rollback — ✅ **2026-09-01 완료**, pull 후 rollback이 아예 동작 안 하던 갭 발견·수정 |
+| [decisions/obsolescence-marker-completeness-plan.md](decisions/obsolescence-marker-completeness-plan.md) | Obsolescence marker — ✅ **2026-09-01 완료**, obsstore 바이너리 포맷 자체가 틀렸던 것을 발견해 전면 재작성(실제 hg와 양방향 검증) |
 
 ## sources/ — 원본 조사 스냅샷
 | 페이지 | 요약 |

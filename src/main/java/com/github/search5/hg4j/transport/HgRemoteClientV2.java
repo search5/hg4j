@@ -1,0 +1,499 @@
+package com.github.search5.hg4j.transport;
+
+import com.github.search5.hg4j.bundle.ChangegroupParser;
+import com.github.search5.hg4j.errors.HgAuthException;
+import com.github.search5.hg4j.errors.HgProtocolException;
+import com.github.search5.hg4j.storage.Revlog;
+import com.github.search5.hg4j.transport.wireprotov2.Cbor;
+import com.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
+import com.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
+import com.github.search5.hg4j.util.NodeIdUtil;
+
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Real hg wireprotocol v2 client: capability discovery via the {@code X-HgUpgrade-1}/
+ * {@code X-HgProto-1} handshake, then per-command execution over the frame-based
+ * {@code application/mercurial-exp-framing-0006} transport at
+ * {@code <apibase><namespace>/<ro|rw>/<command>}. Verified end-to-end against a real Mercurial
+ * 6.0 server (the last release with a working v2 implementation — removed entirely in 6.1) using
+ * {@code capabilities}/{@code heads}/{@code known}/{@code listkeys}/{@code lookup}/
+ * {@code pushkey}/{@code branchmap}/{@code changesetdata}/{@code manifestdata}/{@code filesdata}.
+ *
+ * <p>Real v2 has no changegroup/getbundle/unbundle-style bulk-transfer or push command at all —
+ * it is (and, as actually shipped, always was) a read-only, per-object protocol. {@link #getBundle}
+ * therefore reconstructs an equivalent {@code HG10UN} changegroup byte stream — the same format
+ * {@link HgLocalClient#getBundle} produces — from the {@code changesetdata}/{@code manifestdata}/
+ * {@code filesdata} primitives, so the rest of hg4j's pull pipeline
+ * ({@link com.github.search5.hg4j.bundle.ChangegroupParser}, {@code FetchCommand}) works
+ * unchanged regardless of which wire protocol version fetched the data. {@link #push} always
+ * fails — there is nothing on a real v2 server it could call.</p>
+ */
+public class HgRemoteClientV2 implements HgRemoteConnection {
+
+    private final String baseUrl;
+    private int connectTimeout = 10000;
+    private int readTimeout = 30000;
+    private String username;
+    private String password;
+    private boolean forceTls = false;
+    private java.net.Proxy proxy = java.net.Proxy.NO_PROXY;
+
+    private String apibase;
+    private String namespace;
+    private int requestIdCounter = 1;
+
+    public HgRemoteClientV2(String url) {
+        this.baseUrl = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+
+    public void setTimeouts(int connectTimeout, int readTimeout) {
+        this.connectTimeout = connectTimeout;
+        this.readTimeout = readTimeout;
+    }
+
+    public void setCredentials(String username, String password) {
+        this.username = username;
+        this.password = password;
+    }
+
+    @Override
+    public void setCredentialsProvider(CredentialsProvider provider) {
+        if (provider != null) {
+            CredentialItem.Username u = new CredentialItem.Username();
+            CredentialItem.Password p = new CredentialItem.Password();
+            if (provider.get(this.baseUrl, u, p)) {
+                setCredentials(u.getValue(), p.getValue() != null ? new String(p.getValue()) : null);
+            }
+        }
+    }
+
+    public void setForceTls(boolean forceTls) {
+        this.forceTls = forceTls;
+    }
+
+    public void setProxy(java.net.Proxy proxy) {
+        if (proxy != null) {
+            this.proxy = proxy;
+        }
+    }
+
+    private synchronized int nextRequestId() {
+        int id = requestIdCounter;
+        requestIdCounter = (requestIdCounter % 0xFFFF) + 1;
+        return id;
+    }
+
+    /**
+     * Performs the real hg capability-discovery handshake: {@code GET <baseUrl>/?cmd=capabilities}
+     * with {@code X-HgUpgrade-1: exp-http-v2-0003} and {@code X-HgProto-1: cbor}. The server
+     * responds (if {@code experimental.web.apiserver} is enabled) with
+     * {@code {apibase, apis: {<namespace>: {...}}, v1capabilities}} — real hg's actual shape,
+     * not the flat {@code {commands: {...}}} this class used before it was verified against a
+     * live server.
+     */
+    private synchronized void ensureDiscovered() throws IOException {
+        if (namespace != null) {
+            return;
+        }
+        String url = baseUrl + "/?cmd=capabilities";
+        HttpURLConnection conn = openConnection(url, "GET");
+        conn.setRequestProperty("X-HgUpgrade-1", Wire2Commands.NAMESPACE);
+        conn.setRequestProperty("X-HgProto-1", "cbor");
+
+        byte[] body = readResponseBody(conn, url);
+        List<Object> objs = Cbor.decodeAll(body);
+        if (objs.isEmpty()) {
+            throw new HgProtocolException(url, "Empty capabilities discovery response");
+        }
+        Map<String, Object> descriptor = Cbor.asMap(objs.get(0));
+        String discoveredApibase = Cbor.asString(descriptor.get("apibase"));
+        Map<String, Object> apis = Cbor.asMap(descriptor.get("apis"));
+        if (discoveredApibase == null || !apis.containsKey(Wire2Commands.NAMESPACE)) {
+            throw new HgProtocolException(url, "Remote server does not advertise wireprotocol v2 (" + Wire2Commands.NAMESPACE + ")");
+        }
+        this.apibase = discoveredApibase;
+        this.namespace = Wire2Commands.NAMESPACE;
+    }
+
+    private List<Object> executeCommand(String command, Map<String, Object> args, String permission) throws IOException {
+        ensureDiscovered();
+        String url = baseUrl + "/" + apibase + namespace + "/" + permission + "/" + command;
+        byte[] requestBody = Wire2Transport.buildCommandRequest(nextRequestId(), command, args);
+
+        HttpURLConnection conn = openConnection(url, "POST");
+        conn.setRequestProperty("Accept", Wire2Transport.FRAMINGTYPE);
+        conn.setRequestProperty("Content-Type", Wire2Transport.FRAMINGTYPE);
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Length", String.valueOf(requestBody.length));
+        try (java.io.OutputStream os = conn.getOutputStream()) {
+            os.write(requestBody);
+        }
+
+        byte[] responseBody = readResponseBody(conn, url);
+        return Wire2Transport.readCommandResponse(Wire2Transport.toStream(responseBody));
+    }
+
+    private HttpURLConnection openConnection(String url, String method) throws IOException {
+        if (forceTls && !url.toLowerCase().startsWith("https://")) {
+            throw new SecurityException("TLS is enforced but the URL is not secure: " + url);
+        }
+        HttpURLConnection conn = (HttpURLConnection) java.net.URI.create(url).toURL().openConnection(proxy);
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(connectTimeout);
+        conn.setReadTimeout(readTimeout);
+        conn.setUseCaches(false);
+        if (username != null && password != null) {
+            String credentials = username + ":" + password;
+            String encoded = java.util.Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+            conn.setRequestProperty("Authorization", "Basic " + encoded);
+        }
+        return conn;
+    }
+
+    private byte[] readResponseBody(HttpURLConnection conn, String url) throws IOException {
+        int status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
+            throw new HgAuthException(url, username != null ? username : "anonymous");
+        }
+        if (status != HttpURLConnection.HTTP_OK) {
+            throw new HgProtocolException(url, "Remote server returned HTTP " + status + " for URL: " + url);
+        }
+        try (InputStream in = conn.getInputStream()) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    @Override
+    public List<String> getCapabilities() throws IOException {
+        List<Object> resp = executeCommand("capabilities", Map.of(), "ro");
+        List<String> caps = new ArrayList<>();
+        if (!resp.isEmpty()) {
+            Map<String, Object> descriptor = Cbor.asMap(resp.get(0));
+            Map<String, Object> commands = Cbor.asMap(descriptor.get("commands"));
+            caps.addAll(commands.keySet());
+        }
+        return caps;
+    }
+
+    @Override
+    public List<String> getHeads() throws IOException {
+        List<Object> resp = executeCommand("heads", Map.of(), "ro");
+        List<String> heads = new ArrayList<>();
+        if (!resp.isEmpty()) {
+            for (Object n : Cbor.asList(resp.get(0))) {
+                byte[] node = Cbor.asBytes(n);
+                if (node != null) {
+                    heads.add(NodeIdUtil.toHex(node));
+                }
+            }
+        }
+        return heads;
+    }
+
+    @Override
+    public String known(List<String> nodes) throws IOException {
+        List<Object> nodeBytes = new ArrayList<>();
+        if (nodes != null) {
+            for (String hex : nodes) {
+                nodeBytes.add(NodeIdUtil.fromHex(hex));
+            }
+        }
+        List<Object> resp = executeCommand("known", Map.of("nodes", nodeBytes), "ro");
+        if (resp.isEmpty()) {
+            return "";
+        }
+        byte[] result = Cbor.asBytes(resp.get(0));
+        return result != null ? new String(result, StandardCharsets.US_ASCII) : "";
+    }
+
+    @Override
+    public Map<String, String> listKeys(String namespace) throws IOException {
+        List<Object> resp = executeCommand("listkeys", Map.of("namespace", namespace), "ro");
+        Map<String, String> result = new LinkedHashMap<>();
+        if (!resp.isEmpty()) {
+            for (Map.Entry<String, Object> e : Cbor.asMap(resp.get(0)).entrySet()) {
+                result.put(e.getKey(), Cbor.asString(e.getValue()));
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("namespace", namespace);
+        args.put("key", key);
+        args.put("old", oldVal != null ? oldVal : "");
+        args.put("new", newVal != null ? newVal : "");
+        List<Object> resp = executeCommand("pushkey", args, "rw");
+        return !resp.isEmpty() && Boolean.TRUE.equals(resp.get(0));
+    }
+
+    @Override
+    public byte[] getChangegroup(List<String> roots) throws IOException {
+        return getBundle(roots, null, null);
+    }
+
+    @Override
+    public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException {
+        List<String> targetHeads = (heads != null && !heads.isEmpty()) ? heads : getHeads();
+        List<Object> rootBytes = new ArrayList<>();
+        if (common != null) {
+            for (String c : common) {
+                if (c != null && !NULL_HEX.equals(c)) {
+                    rootBytes.add(NodeIdUtil.fromHex(c));
+                }
+            }
+        }
+        List<Object> headBytes = new ArrayList<>();
+        for (String h : targetHeads) {
+            headBytes.add(NodeIdUtil.fromHex(h));
+        }
+        if (headBytes.isEmpty()) {
+            return new byte[0];
+        }
+
+        Map<String, Object> dagRangeSpec = new LinkedHashMap<>();
+        dagRangeSpec.put("type", "changesetdagrange");
+        dagRangeSpec.put("roots", rootBytes);
+        dagRangeSpec.put("heads", headBytes);
+        List<Object> revisions = List.of(dagRangeSpec);
+
+        Map<String, Object> csArgs = new LinkedHashMap<>();
+        csArgs.put("revisions", revisions);
+        csArgs.put("fields", List.of("parents", "revision"));
+        List<Object> csResp = executeCommand("changesetdata", csArgs, "ro");
+        if (csResp.isEmpty()) {
+            return new byte[0];
+        }
+        List<Map<String, Object>> csRecords = Wire2Transport.decodeRecordsWithFollowing(csResp.subList(1, csResp.size()), null);
+        if (csRecords.isEmpty()) {
+            return new byte[0];
+        }
+
+        ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
+        bundle.changelogEntries = new ArrayList<>();
+        bundle.manifestEntries = new ArrayList<>();
+        bundle.fileGroups = new ArrayList<>();
+
+        List<byte[]> manifestNodesInOrder = new ArrayList<>();
+        java.util.LinkedHashSet<String> manifestNodeHexes = new java.util.LinkedHashSet<>();
+        // manifest node hex -> the changeset node that references it (real hg's "linknode" for a
+        // manifest entry — NOT the manifest's own node; matches HgLocalClient.getBundle, where
+        // mfEntry.cs is the referencing changelog node, since a manifest revlog's link points at
+        // the changelog, unlike the changelog itself which links to its own node).
+        Map<String, byte[]> manifestLinkNode = new LinkedHashMap<>();
+        java.util.LinkedHashSet<String> touchedPaths = new java.util.LinkedHashSet<>();
+
+        byte[] prevClContent = new byte[0];
+        for (Map<String, Object> rec : csRecords) {
+            byte[] node = Cbor.asBytes(rec.get("node"));
+            List<Object> parents = Cbor.asList(rec.get("parents"));
+            byte[] revisionText = Cbor.asBytes(rec.get("revision"));
+
+            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+            entry.node = node;
+            entry.p1 = parents.size() > 0 ? Cbor.asBytes(parents.get(0)) : new byte[20];
+            entry.p2 = parents.size() > 1 ? Cbor.asBytes(parents.get(1)) : new byte[20];
+            entry.cs = node;
+            entry.delta = Revlog.createDelta(prevClContent, revisionText);
+            bundle.changelogEntries.add(entry);
+            prevClContent = revisionText;
+
+            String text = new String(revisionText, StandardCharsets.UTF_8);
+            String[] lines = text.split("\n", -1);
+            if (lines.length > 0 && lines[0].length() >= 40) {
+                String manifestHex = lines[0].substring(0, 40);
+                manifestLinkNode.putIfAbsent(manifestHex, node);
+                if (manifestNodeHexes.add(manifestHex)) {
+                    manifestNodesInOrder.add(NodeIdUtil.fromHex(manifestHex));
+                }
+            }
+            for (int i = 3; i < lines.length; i++) {
+                String line = lines[i].trim();
+                if (line.isEmpty()) break;
+                touchedPaths.add(line);
+            }
+        }
+
+        if (!manifestNodesInOrder.isEmpty()) {
+            Map<String, Object> mfArgs = new LinkedHashMap<>();
+            List<Object> mfNodes = new ArrayList<>(manifestNodesInOrder);
+            mfArgs.put("nodes", mfNodes);
+            mfArgs.put("fields", List.of("parents", "revision"));
+            mfArgs.put("tree", "");
+            List<Object> mfResp = executeCommand("manifestdata", mfArgs, "ro");
+            List<Map<String, Object>> mfRecords = Wire2Transport.decodeRecordsWithFollowing(mfResp.subList(1, mfResp.size()), null);
+
+            Map<String, byte[]> fullTextByNodeHex = new LinkedHashMap<>();
+            byte[] prevMfContent = new byte[0];
+            for (Map<String, Object> rec : mfRecords) {
+                byte[] node = Cbor.asBytes(rec.get("node"));
+                List<Object> parents = Cbor.asList(rec.get("parents"));
+                byte[] revisionText = resolveFullText(rec, fullTextByNodeHex);
+                fullTextByNodeHex.put(NodeIdUtil.toHex(node), revisionText);
+
+                ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+                entry.node = node;
+                entry.p1 = parents.size() > 0 ? Cbor.asBytes(parents.get(0)) : new byte[20];
+                entry.p2 = parents.size() > 1 ? Cbor.asBytes(parents.get(1)) : new byte[20];
+                entry.cs = manifestLinkNode.get(NodeIdUtil.toHex(node));
+                entry.delta = Revlog.createDelta(prevMfContent, revisionText);
+                bundle.manifestEntries.add(entry);
+                prevMfContent = revisionText;
+            }
+        }
+
+        if (!touchedPaths.isEmpty()) {
+            Map<String, Object> filesArgs = new LinkedHashMap<>();
+            filesArgs.put("revisions", revisions);
+            filesArgs.put("haveparents", false);
+            filesArgs.put("fields", List.of("parents", "linknode", "revision"));
+            List<Object> filesResp = executeCommand("filesdata", filesArgs, "ro");
+            List<Map<String, Object>> filesRecords = Wire2Transport.decodeRecordsWithFollowing(
+                    filesResp.subList(1, filesResp.size()), r -> r.containsKey("path") && !r.containsKey("node"));
+
+            ChangegroupParser.FileGroup currentGroup = null;
+            byte[] prevFlContent = new byte[0];
+            Map<String, byte[]> fullTextByNodeHex = new LinkedHashMap<>();
+            for (Map<String, Object> rec : filesRecords) {
+                if (rec.containsKey("path") && !rec.containsKey("node")) {
+                    if (currentGroup != null) {
+                        bundle.fileGroups.add(currentGroup);
+                    }
+                    currentGroup = new ChangegroupParser.FileGroup();
+                    currentGroup.path = Cbor.asString(rec.get("path"));
+                    currentGroup.entries = new ArrayList<>();
+                    prevFlContent = new byte[0];
+                    fullTextByNodeHex.clear(); // delta bases are scoped to a single file's revlog
+                    continue;
+                }
+                if (currentGroup == null) {
+                    continue;
+                }
+                byte[] node = Cbor.asBytes(rec.get("node"));
+                List<Object> parents = Cbor.asList(rec.get("parents"));
+                byte[] linknode = Cbor.asBytes(rec.get("linknode"));
+                byte[] revisionText = resolveFullText(rec, fullTextByNodeHex);
+                fullTextByNodeHex.put(NodeIdUtil.toHex(node), revisionText);
+
+                ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+                entry.node = node;
+                entry.p1 = parents.size() > 0 ? Cbor.asBytes(parents.get(0)) : new byte[20];
+                entry.p2 = parents.size() > 1 ? Cbor.asBytes(parents.get(1)) : new byte[20];
+                entry.cs = linknode != null ? linknode : node;
+                entry.delta = Revlog.createDelta(prevFlContent, revisionText);
+                currentGroup.entries.add(entry);
+                prevFlContent = revisionText;
+            }
+            if (currentGroup != null) {
+                bundle.fileGroups.add(currentGroup);
+            }
+        }
+
+        return serializeHg10un(bundle);
+    }
+
+    /**
+     * Resolves a {@code manifestdata}/{@code filesdata} record's revision content. Real hg's
+     * {@code emitrevisions} storage-layer helper is free to send either the full text (under the
+     * {@code revision} field) or, for storage efficiency, a delta against another node already
+     * in this same response batch (under {@code delta}, with the base node in
+     * {@code deltabasenode}) — {@code changesetdata} never does this (changelog revisions are
+     * always sent in full), but manifest/file revisions routinely do. {@code fullTextByNodeHex}
+     * accumulates every already-resolved full text in this batch so a delta's base can be found.
+     */
+    private static byte[] resolveFullText(Map<String, Object> rec, Map<String, byte[]> fullTextByNodeHex) throws IOException {
+        byte[] revision = Cbor.asBytes(rec.get("revision"));
+        if (revision != null) {
+            return revision;
+        }
+        byte[] delta = Cbor.asBytes(rec.get("delta"));
+        byte[] baseNode = Cbor.asBytes(rec.get("deltabasenode"));
+        if (delta == null || baseNode == null) {
+            throw new HgProtocolException("wireprotov2", "revision record has neither 'revision' nor 'delta'+'deltabasenode': " + rec.keySet());
+        }
+        byte[] baseText = fullTextByNodeHex.get(NodeIdUtil.toHex(baseNode));
+        if (baseText == null) {
+            throw new HgProtocolException("wireprotov2", "delta base " + NodeIdUtil.toHex(baseNode) + " not found among already-fetched revisions in this batch");
+        }
+        return Revlog.applyDelta(baseText, delta);
+    }
+
+    private static final String NULL_HEX = "0000000000000000000000000000000000000000";
+
+    private static byte[] serializeHg10un(ChangegroupParser.ChangegroupBundle bundle) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (DataOutputStream dos = new DataOutputStream(baos)) {
+            dos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                writeEntryChunk(dos, entry);
+            }
+            writeTerminalChunk(dos);
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+                writeEntryChunk(dos, entry);
+            }
+            writeTerminalChunk(dos);
+            for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+                writePathChunk(dos, fg.path);
+                for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                    writeEntryChunk(dos, entry);
+                }
+                writeTerminalChunk(dos);
+            }
+            writeTerminalChunk(dos);
+        }
+        return baos.toByteArray();
+    }
+
+    private static void writeEntryChunk(DataOutputStream dos, ChangegroupParser.ChangeGroupEntry entry) throws IOException {
+        int totalLen = 4 + 80 + entry.delta.length;
+        dos.writeInt(totalLen);
+        dos.write(entry.node);
+        dos.write(entry.p1);
+        dos.write(entry.p2);
+        dos.write(entry.cs);
+        dos.write(entry.delta);
+    }
+
+    private static void writePathChunk(DataOutputStream dos, String path) throws IOException {
+        byte[] pathBytes = path.getBytes(StandardCharsets.UTF_8);
+        dos.writeInt(4 + pathBytes.length);
+        dos.write(pathBytes);
+    }
+
+    private static void writeTerminalChunk(DataOutputStream dos) throws IOException {
+        dos.writeInt(0);
+    }
+
+    @Override
+    public String push(byte[] bundleBytes, List<String> heads) throws IOException {
+        throw new HgProtocolException(baseUrl,
+                "Real Mercurial wireprotocol v2 has no push/unbundle command (it is read-only, "
+                        + "as actually shipped through Mercurial 6.0 before the protocol was removed); "
+                        + "use a v1 (bundle2) remote to push.");
+    }
+
+    @Override
+    public void close() throws IOException {
+        // HTTP connections managed per-request; nothing to release.
+    }
+}

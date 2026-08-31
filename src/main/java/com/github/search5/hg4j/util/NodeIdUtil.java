@@ -69,131 +69,207 @@ public final class NodeIdUtil {
         return revlog.findRevision(nodeId);
     }
 
-    /**
-     * Encodes a file path to its Mercurial store path format using basic encoding (equivalent to store.py:_encodefname).
-     * Used specifically for registrations inside the fncache file.
-     */
-    public static String encodeFnameBasic(String relPath) {
-        if (relPath == null || relPath.isEmpty()) {
-            return relPath;
-        }
-        boolean startsWithStorePrefix = relPath.startsWith("data/") || relPath.startsWith("meta/");
-        String[] parts = relPath.split("/");
-        StringBuilder encodedPath = new StringBuilder();
-        if (!startsWithStorePrefix) {
-            encodedPath.append("data/");
-        }
-        for (int p = 0; p < parts.length; p++) {
-            if (p > 0) {
-                encodedPath.append("/");
-            }
-            String part = parts[p];
-            if (part.isEmpty()) continue;
+    private static final String WINDOWS_SPECIAL_CHARS = "\\:*?\"<>|";
+    private static final int STORE_MAX_PATH_LEN = 120;
+    private static final int STORE_DIR_PREFIX_LEN = 8;
+    private static final int STORE_MAX_SHORT_DIRS_LEN = 8 * (STORE_DIR_PREFIX_LEN + 1) - 4; // 68
 
-            // Check Windows reserved names (case-insensitive)
-            String baseName = part;
-            int dotIdx = part.indexOf('.');
-            if (dotIdx != -1) {
-                baseName = part.substring(0, dotIdx);
-            }
-            boolean isReserved = baseName.equals("con") || baseName.equals("prn") || 
-                                 baseName.equals("aux") || baseName.equals("nul") ||
-                                 baseName.matches("com[1-9]") || baseName.matches("lpt[1-9]");
-            int reservedCharIdx = isReserved ? baseName.length() - 1 : -1;
-
-            StringBuilder partSb = new StringBuilder();
-            byte[] bytes = part.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            for (int i = 0; i < bytes.length; i++) {
-                int b = bytes[i] & 0xff;
-                char c = (char) b;
-                
-                // Handle the last character of a Windows reserved name: The last character of the reserved name is replaced with ~hex (e.g., aux -> au~78)
-                if (i == reservedCharIdx) {
-                    partSb.append(String.format("~%02x", b));
-                    continue;
-                }
-
-                if (c == '_') {
-                    partSb.append("__");
-                } else if (c == '~') {
-                    partSb.append("~7e");
-                } else if (c >= 'A' && c <= 'Z') {
-                    partSb.append('_').append(Character.toLowerCase(c));
-                } else if (b < 32 || b >= 127 || c == '"' || c == '*' || c == ':' || 
-                           c == '<' || c == '>' || c == '?' || c == '\\' || c == '|') {
-                    partSb.append(String.format("~%02x", b));
-                } else {
-                    partSb.append(c);
-                }
-            }
-            encodedPath.append(partSb);
+    private static boolean isReservedStoreByte(int b) {
+        if (b <= 31 || b >= 126) {
+            return true;
         }
-        return encodedPath.toString();
+        return WINDOWS_SPECIAL_CHARS.indexOf((char) b) != -1;
     }
 
     /**
-     * Encodes a file path to its final on-disk Mercurial store path format (incorporating dotencode and long path dh/ encoding rules).
+     * Real hg's {@code store._encodedir}: guards against a directory literally ending in
+     * {@code .i}/{@code .d}/{@code .hg} being confused with a revlog file/backup when the store
+     * is scanned, by suffixing such directory names with an extra {@code .hg}.
      */
-    public static String encodeFname(String relPath) {
-        String basic = encodeFnameBasic(relPath);
-        String[] parts = basic.split("/");
-        StringBuilder onDiskPath = new StringBuilder();
-        for (int p = 0; p < parts.length; p++) {
-            if (p > 0) {
-                onDiskPath.append("/");
-            }
-            String part = parts[p];
-            if (part.isEmpty()) continue;
+    private static String encodeDir(String path) {
+        return path.replace(".hg/", ".hg.hg/").replace(".i/", ".i.hg/").replace(".d/", ".d.hg/");
+    }
 
-            if (p == 0 && part.equals("data")) {
-                onDiskPath.append(part);
+    /**
+     * Real hg's {@code store._encodefname} (reversible): uppercase ASCII letters become
+     * {@code _x}, a literal {@code _} doubles, and reserved/control/high bytes become
+     * {@code ~xx}. Operating byte-wise (not char-wise) keeps multi-byte UTF-8 sequences intact —
+     * each of their bytes is {@code >= 126} and gets independently {@code ~xx}-escaped, which is
+     * exactly how real hg round-trips non-ASCII filenames.
+     */
+    private static String encodeFnameBytes(byte[] input) {
+        StringBuilder sb = new StringBuilder(input.length);
+        for (byte raw : input) {
+            int b = raw & 0xFF;
+            if (isReservedStoreByte(b)) {
+                sb.append(String.format("~%02x", b));
+            } else if (b == '_') {
+                sb.append("__");
+            } else if (b >= 'A' && b <= 'Z') {
+                sb.append('_').append((char) (b + 32));
+            } else {
+                sb.append((char) b);
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Real hg's {@code store.lowerencode} (non-reversible, used only inside the long-path hash
+     * scheme): uppercase ASCII letters are simply lowercased (no {@code _} marker), reserved
+     * bytes still become {@code ~xx}.
+     */
+    private static String lowerEncodeBytes(byte[] input) {
+        StringBuilder sb = new StringBuilder(input.length);
+        for (byte raw : input) {
+            int b = raw & 0xFF;
+            if (isReservedStoreByte(b)) {
+                sb.append(String.format("~%02x", b));
+            } else if (b >= 'A' && b <= 'Z') {
+                sb.append((char) (b + 32));
+            } else {
+                sb.append((char) b);
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Real hg's {@code store._auxencode}, applied to already {@code _encodefname}/{@code
+     * lowerencode}-d path components (so a component like Windows-reserved {@code aux} is only
+     * ever recognized in its lowercase form — an originally-uppercase {@code AUX} was already
+     * turned into {@code _a_u_x} by {@link #encodeFnameBytes}, which is not itself reserved,
+     * matching real hg exactly). Escapes a leading {@code .}/space (dotencode), a Windows
+     * reserved device name appearing as the basename before the first {@code .}, and a trailing
+     * {@code .}/space.
+     */
+    private static java.util.List<String> auxEncode(java.util.List<String> parts, boolean dotEncode) {
+        java.util.List<String> result = new java.util.ArrayList<>(parts.size());
+        for (String n : parts) {
+            if (n.isEmpty()) {
+                result.add(n);
                 continue;
             }
-
-            // Dotencode: if a folder/file component starts with '.' or ' ', escape it as ~2e or ~20 (B3 Fixed)
-            if (part.startsWith(".")) {
-                part = "~2e" + part.substring(1);
-            } else if (part.startsWith(" ")) {
-                part = "~20" + part.substring(1);
-            }
-            onDiskPath.append(part);
-        }
-
-        String path = onDiskPath.toString();
-        byte[] pathBytes = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-
-        // Long path optimization: Mercurial hybrid/dh encoding for store paths exceeding 120 bytes (including 'store/' prefix, so pathBytes.length + 6 > 120)
-        if (pathBytes.length + 6 > 120) {
-            String subPath = path.startsWith("data/") ? path.substring(5) : path;
-            int lastSlash = subPath.lastIndexOf('/');
-            
-            String dirPath = lastSlash != -1 ? subPath.substring(0, lastSlash) : "";
-            String fileName = lastSlash != -1 ? subPath.substring(lastSlash + 1) : subPath;
-
-            try {
-                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
-                
-                // If the overall path exceeds 255 bytes, the filename is extremely long, or there is no directory component (dirPath is empty)
-                if (pathBytes.length + 6 > 255 || fileName.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 100 || dirPath.isEmpty()) {
-                    byte[] fullHashBytes = md.digest(subPath.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                    String fullHash = toHex(fullHashBytes);
-                    
-                    String suffix = fileName;
-                    if (suffix.length() > 30) {
-                        suffix = suffix.substring(suffix.length() - 30);
-                    }
-                    return "dh/" + fullHash + "_" + suffix;
-                } else {
-                    // Hybrid encoding: shorten only the directory part
-                    byte[] dirHashBytes = md.digest(dirPath.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                    String dirHash = toHex(dirHashBytes);
-                    return "dh/" + dirHash + "/" + fileName;
+            if (dotEncode && (n.charAt(0) == '.' || n.charAt(0) == ' ')) {
+                n = String.format("~%02x", (int) n.charAt(0)) + n.substring(1);
+            } else {
+                int dot = n.indexOf('.');
+                int l = dot == -1 ? n.length() : dot;
+                boolean winres3 = l == 3 && isWinReserved3(n);
+                boolean winres4 = l == 4 && n.charAt(3) >= '1' && n.charAt(3) <= '9' && isWinReserved4Prefix(n);
+                if (winres3 || winres4) {
+                    // 실제 스펙: 3글자든(aux/con/prn/nul) 4글자(com1..9/lpt1..9)든 항상
+                    // 세 번째 문자(인덱스 2)만 이스케이프한다 — 4글자 이름에서 끝의 숫자를
+                    // 이스케이프하는 것이 아니다.
+                    n = n.substring(0, 2) + String.format("~%02x", (int) n.charAt(2)) + n.substring(3);
                 }
-            } catch (java.security.NoSuchAlgorithmException e) {
-                // Fallback to basic on-disk path if SHA-1 is not available
             }
+            if (!n.isEmpty() && (n.charAt(n.length() - 1) == '.' || n.charAt(n.length() - 1) == ' ')) {
+                char last = n.charAt(n.length() - 1);
+                n = n.substring(0, n.length() - 1) + String.format("~%02x", (int) last);
+            }
+            result.add(n);
         }
-        return path;
+        return result;
+    }
+
+    private static boolean isWinReserved3(String n) {
+        String p = n.substring(0, 3);
+        return p.equals("aux") || p.equals("con") || p.equals("prn") || p.equals("nul");
+    }
+
+    private static boolean isWinReserved4Prefix(String n) {
+        String p = n.substring(0, 3);
+        return p.equals("com") || p.equals("lpt");
+    }
+
+    /**
+     * Real hg's {@code store._hashencode}: the non-reversible fallback used once the default
+     * encoding of a path exceeds {@value #STORE_MAX_PATH_LEN} bytes. Keeps up to
+     * {@value #STORE_DIR_PREFIX_LEN} characters of each lowercased directory component (bounded
+     * overall by {@value #STORE_MAX_SHORT_DIRS_LEN}), appends as much of the (lowercased)
+     * filename as still fits, then the full sha1 of the pre-hash path and the original
+     * extension — so two different long paths practically never collide even though the
+     * human-readable prefix is truncated.
+     */
+    private static String hashEncode(String dirEncodedPath, boolean dotEncode) {
+        String digest = toHex(sha1(dirEncodedPath.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        String afterPrefix = dirEncodedPath.substring(5); // "data/" or "meta/", both 5 bytes
+        String lowered = lowerEncodeBytes(afterPrefix.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.util.List<String> le = new java.util.ArrayList<>(java.util.Arrays.asList(lowered.split("/", -1)));
+        java.util.List<String> parts = auxEncode(le, dotEncode);
+
+        String basename = parts.get(parts.size() - 1);
+        int dotIdx = basename.lastIndexOf('.');
+        String ext = dotIdx != -1 ? basename.substring(dotIdx) : "";
+
+        java.util.List<String> sdirs = new java.util.ArrayList<>();
+        int sdirsLen = 0;
+        for (int i = 0; i < parts.size() - 1; i++) {
+            String p = parts.get(i);
+            String d = p.length() > STORE_DIR_PREFIX_LEN ? p.substring(0, STORE_DIR_PREFIX_LEN) : p;
+            if (!d.isEmpty() && (d.charAt(d.length() - 1) == '.' || d.charAt(d.length() - 1) == ' ')) {
+                d = d.substring(0, d.length() - 1) + "_";
+            }
+            int t;
+            if (sdirsLen == 0) {
+                t = d.length();
+            } else {
+                t = sdirsLen + 1 + d.length();
+                if (t > STORE_MAX_SHORT_DIRS_LEN) {
+                    break;
+                }
+            }
+            sdirs.add(d);
+            sdirsLen = t;
+        }
+        String dirs = String.join("/", sdirs);
+        if (!dirs.isEmpty()) {
+            dirs = dirs + "/";
+        }
+
+        String res = "dh/" + dirs + digest + ext;
+        int spaceLeft = STORE_MAX_PATH_LEN - res.length();
+        if (spaceLeft > 0) {
+            String filler = basename.length() > spaceLeft ? basename.substring(0, spaceLeft) : basename;
+            res = "dh/" + dirs + filler + digest + ext;
+        }
+        return res;
+    }
+
+    private static byte[] sha1(byte[] data) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-1").digest(data);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Encodes a logical filelog/manifest path to its on-disk Mercurial store path, matching real
+     * hg's {@code store._pathencode} (the 'dotencode' scheme — the default requirement since hg
+     * 1.7, and always present in repositories this library creates). Equivalent to
+     * {@code store.py}'s sequence: {@code encodedir}, then {@code _encodefname} + {@code
+     * _auxencode}, falling back to the {@code dh/}-prefixed hashed form of {@link #hashEncode}
+     * once either the raw or the encoded path exceeds {@value #STORE_MAX_PATH_LEN} bytes.
+     */
+    public static String encodeFname(String relPath) {
+        String logicalPath = (relPath.startsWith("data/") || relPath.startsWith("meta/")) ? relPath : "data/" + relPath;
+        String dirEncoded = encodeDir(logicalPath);
+
+        if (logicalPath.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > STORE_MAX_PATH_LEN) {
+            return hashEncode(dirEncoded, true);
+        }
+
+        String ef = encodeFnameBytes(dirEncoded.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.util.List<String> parts = new java.util.ArrayList<>(java.util.Arrays.asList(ef.split("/", -1)));
+        String result = String.join("/", auxEncode(parts, true));
+
+        if (result.length() > STORE_MAX_PATH_LEN) {
+            return hashEncode(dirEncoded, true);
+        }
+        return result;
     }
 
     public static final java.util.Comparator<String> UTF8_STRING_COMPARATOR = (s1, s2) -> {

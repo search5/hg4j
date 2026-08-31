@@ -75,7 +75,7 @@ public class InitCommand {
             requirements.add("dirstate-v2");
         }
         if (useZstd) {
-            requirements.add("revlog-compression=zstd");
+            requirements.add("revlog-compression-zstd");
         }
         
         try {

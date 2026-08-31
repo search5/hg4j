@@ -247,6 +247,10 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
+    public void rollback() throws java.io.IOException {
+        new RollbackCommand(this.repository).call();
+    }
+
     public CatCommand cat() {
         return new CatCommand(this.repository);
     }
@@ -357,6 +361,51 @@ public class Hg implements AutoCloseable {
 
     public StripCommand strip() {
         return new StripCommand(this.repository);
+    }
+
+    public VerifyCommand verify() {
+        return new VerifyCommand(this.repository);
+    }
+
+    public RootCommand root() {
+        return new RootCommand(this.repository);
+    }
+
+    public TipCommand tip() {
+        return new TipCommand(this.repository);
+    }
+
+    public ParentsCommand parents() {
+        return new ParentsCommand(this.repository);
+    }
+
+    public SummaryCommand summary() {
+        return new SummaryCommand(this.repository);
+    }
+
+    public ForgetCommand forget() {
+        return new ForgetCommand(this.repository);
+    }
+
+    public AddremoveCommand addremove() {
+        return new AddremoveCommand(this.repository);
+    }
+
+    public BackoutCommand backout() {
+        return new BackoutCommand(this.repository);
+    }
+
+    public UnbundleCommand unbundle() {
+        return new UnbundleCommand(this.repository);
+    }
+
+    /**
+     * Resolves the effective {@code .hg/sparse} rules (including {@code %include}-referenced
+     * profiles tracked at {@code changelogRev}) into an include/exclude pattern set, matching
+     * real hg's {@code sparse.patternsforrev}. See {@link com.github.search5.hg4j.treewalk.SparseConfig}.
+     */
+    public com.github.search5.hg4j.treewalk.SparseConfig sparseConfig(int changelogRev) throws java.io.IOException {
+        return com.github.search5.hg4j.treewalk.SparseConfig.resolveForRevision(this.repository, changelogRev);
     }
 
     /**

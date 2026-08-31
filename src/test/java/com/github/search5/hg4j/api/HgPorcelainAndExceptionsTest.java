@@ -7,6 +7,9 @@ import com.github.search5.hg4j.errors.HgCorruptDataException;
 import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.HgTestUtils;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -326,5 +329,48 @@ public class HgPorcelainAndExceptionsTest {
             byte[] content = fl.getRevisionContent(0);
             assertEquals("Simple text", new String(content, java.nio.charset.StandardCharsets.UTF_8));
         }
+    }
+
+    /**
+     * 실제 hg CLI 상호운용 검증. {@link HgTestUtils#hg}는 zstd를 강제로 끄는 설정
+     * (`format.usezstd=false`)을 항상 주입해서 zstd 경로를 절대 건드리지 않으므로
+     * 여기서는 직접 ProcessBuilder로 실제 hg를 호출한다.
+     *
+     * <p>2026-09-01에 발견된 실제 버그를 회귀 방지한다: {@code InitCommand}/
+     * {@code HgRepository}가 requirement 문자열로 {@code revlog-compression=zstd}
+     * (등호)를 쓰고 있었는데, 실제 Mercurial(`mercurial/requirements.py`)이 요구하는
+     * 문자열은 {@code revlog-compression-zstd}(하이픈)다. 등호 버전으로 만든 저장소는
+     * 실제 `hg`가 {@code abort: repository requires features unknown to this
+     * Mercurial: revlog-compression=zstd}로 완전히 거부했다(재현 확인됨).</p>
+     */
+    @Test
+    @Tag("interop")
+    public void testZstdRepoIsReadableByRealHgCli(@TempDir java.nio.file.Path tempDir) throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping.");
+
+        File repoDir = tempDir.resolve("real_zstd_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).setUseZstd(true).call();
+
+        String requiresContent = Files.readString(new File(repo.getHgDir(), "requires").toPath());
+        assertTrue(requiresContent.contains("revlog-compression-zstd"),
+                "requires 파일은 실제 Mercurial 문자열(하이픈)을 써야 함: " + requiresContent);
+
+        try (Hg hg = Hg.wrap(repo)) {
+            File f = new File(repoDir, "a.txt");
+            Files.writeString(f.toPath(), "content written by hg4j with zstd enabled");
+            hg.add().addFile("a.txt").call();
+            byte[] node = hg.commit().setAuthor("Tester").setMessage("zstd interop commit").call();
+            assertNotNull(node);
+        }
+
+        // format.usezstd을 강제하지 않는 실제 hg 프로세스로 직접 검증 (HgTestUtils.hg는 zstd를 항상 끄므로 사용 불가)
+        ProcessBuilder pb = new ProcessBuilder("hg", "verify");
+        pb.directory(repoDir);
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String output = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        int exit = p.waitFor();
+        assertEquals(0, exit, "실제 hg verify가 zstd 저장소를 정상으로 인식해야 함: " + output);
+        assertFalse(output.contains("unknown to this Mercurial"), "unknown requirement 오류가 없어야 함: " + output);
     }
 }

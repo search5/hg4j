@@ -22,6 +22,7 @@ import java.util.List;
  * Compiles a dynamic binary changegroup bundle of new revisions and transfers it securely.
  */
 public class PushCommand {
+    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(PushCommand.class.getName());
 
     private final HgRepository repository;
     private String destinationUrl;
@@ -53,14 +54,32 @@ public class PushCommand {
     }
 
     public String call() throws IOException, HgLockException {
-        if (destinationUrl == null || destinationUrl.isEmpty()) {
+        // 실제 hg 스펙(hg help urls): 목적지를 안 주면 paths.default-push를 우선 쓰고,
+        // 없으면 paths.default로 폴백한다 — 2026-09-01 이전에는 여기서 무조건 예외를
+        // 던져서 "그냥 hg push" 형태가 지원이 안 됐다.
+        String effectiveDest = destinationUrl;
+        if (effectiveDest == null || effectiveDest.isEmpty()) {
+            effectiveDest = repository.getConfig().getPath("default-push");
+            if (effectiveDest == null || effectiveDest.isEmpty()) {
+                effectiveDest = repository.getConfig().getPath("default");
+            }
+        }
+        if (effectiveDest == null || effectiveDest.isEmpty()) {
             throw new IllegalStateException("Remote destination URL must be specified.");
+        }
+
+        String resolvedUrl = effectiveDest;
+        if (!effectiveDest.contains("://")) {
+            String configPath = repository.getConfig().getPath(effectiveDest);
+            if (configPath != null) {
+                resolvedUrl = configPath;
+            }
         }
 
         // PRE_PUSH hooks trigger
         if (!prePushHooks.isEmpty()) {
             java.util.Map<String, Object> ctx = new java.util.HashMap<>();
-            ctx.put("destinationUrl", destinationUrl);
+            ctx.put("destinationUrl", resolvedUrl);
             ctx.put("repository", repository);
             for (HgHook hook : prePushHooks) {
                 if (!hook.run(ctx)) {
@@ -69,7 +88,7 @@ public class PushCommand {
             }
         }
 
-        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(destinationUrl)) {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(resolvedUrl)) {
             List<String> remoteHeads = client.getHeads();
 
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
@@ -287,10 +306,27 @@ public class PushCommand {
                 // 3. Dispatch bundle to remote destination
                 String response = client.push(baos.toByteArray(), remoteHeads);
 
+                // 3a. Sync local bookmarks to remote utilizing pushkey protocol
+                try {
+                    java.util.Map<String, String> localBks = new BookmarkCommand(repository).call();
+                    java.util.Map<String, String> remoteBks = client.listKeys("bookmarks");
+                    for (java.util.Map.Entry<String, String> entry : localBks.entrySet()) {
+                        String name = entry.getKey();
+                        String localHex = entry.getValue();
+                        String remoteHex = remoteBks != null ? remoteBks.getOrDefault(name, "") : "";
+                        if (!localHex.equals(remoteHex)) {
+                            client.pushkey("bookmarks", name, remoteHex, localHex);
+                        }
+                    }
+                } catch (Exception e) {
+                    // 북마크 푸시 실패 시 비차단 경고 처리
+                    LOGGER.log(java.util.logging.Level.WARNING, "Failed to push bookmarks to remote: " + e.getMessage(), e);
+                }
+
                 // POST_PUSH hooks trigger
                 if (!postPushHooks.isEmpty()) {
                     java.util.Map<String, Object> ctx = new java.util.HashMap<>();
-                    ctx.put("destinationUrl", destinationUrl);
+                    ctx.put("destinationUrl", resolvedUrl);
                     ctx.put("response", response);
                     ctx.put("repository", repository);
                     for (HgHook hook : postPushHooks) {

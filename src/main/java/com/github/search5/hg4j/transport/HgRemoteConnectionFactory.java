@@ -36,7 +36,7 @@ public class HgRemoteConnectionFactory {
                 return new HgLocalClient(url);
             }
         });
-        protocols.add(new TransportProtocol() {
+         protocols.add(new TransportProtocol() {
             @Override
             public boolean canHandle(String url) {
                 return url.startsWith("http://") || url.startsWith("https://");

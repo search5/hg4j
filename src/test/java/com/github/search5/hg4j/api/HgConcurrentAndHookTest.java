@@ -349,7 +349,7 @@ public class HgConcurrentAndHookTest {
             com.github.search5.hg4j.transport.HgRemoteClient client = new com.github.search5.hg4j.transport.HgRemoteClient(httpUrl);
             
             List<String> caps = client.getCapabilities();
-            assertTrue(caps.contains("heads") || caps.isEmpty() || client.isV2() || !caps.isEmpty());
+            assertTrue(caps.contains("heads") || caps.isEmpty() || !caps.isEmpty());
             
             List<String> heads = client.getHeads();
             assertFalse(heads.isEmpty());

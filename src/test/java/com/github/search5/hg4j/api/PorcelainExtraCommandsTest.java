@@ -53,12 +53,15 @@ public class PorcelainExtraCommandsTest {
         assertFalse(untracked.exists(), "Purge should delete untracked files");
 
         // 5. Test Phase Roots
+        // 실제 hg CLI로 확인(2026-09-01): 새로 커밋된 리비전의 기본 phase는 draft(1)다 —
+        // public(0)이 아니다. (phaseroots가 .hg/store/phaseroots가 아니라 .hg/phaseroots에
+        // 잘못 쓰여지던 버그 때문에 이 값이 항상 0으로만 보이던 것이 이전의 잘못된 기대치였다.)
         int ph = new PhaseCommand(repo).setRevision("tip").call();
-        assertEquals(0, ph, "Default phase should be public (0)");
+        assertEquals(1, ph, "Default phase should be draft (1)");
 
-        int setPh = new PhaseCommand(repo).setRevision("tip").setPhase(1).call();
-        assertEquals(1, setPh);
-        assertEquals(1, new PhaseCommand(repo).setRevision("tip").call());
+        int setPh = new PhaseCommand(repo).setRevision("tip").setPhase(0).call();
+        assertEquals(0, setPh);
+        assertEquals(0, new PhaseCommand(repo).setRevision("tip").call());
 
         // 6. Test Revset expression
         List<String> revsAll = new RevsetCommand(repo).setExpression("all()").call();

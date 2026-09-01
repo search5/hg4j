@@ -360,12 +360,25 @@ mercurial-spec-compliance-requirement.md`의 gap table에 반영돼 있습니다
 더 이상 중복해서 표를 유지하지 않습니다(실행 계획과 스펙 준수 현황판이 따로 놀면
 둘 다 낡기 쉬우므로, 최신 상태는 항상 그 문서 한 곳만 봅니다).
 
-**아직 남은 것 — `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`의
-"남은 백로그" 섹션**(8개 항목: `ResolveCommand`의 state2 미연결, `HgRemoteClient`의
-v1→v2 자동 업그레이드 미작동, 최신 실제 Mercurial 서버와의 라이브 통신 검증 미착수,
-Revlog v2 일반/persistent-nodemap 보류, Dirstate v2 바이트 레이아웃 미검증, Censor
-미구현, cg3 트리매니페스트/censor 깊은 부분 미확인, histedit journal 미적용)을 참고
-하세요. 우선순위는 사용자 확인 후 진행합니다.
+**그 뒤로 백로그 항목 대부분도 마저 완료됐습니다** — `ResolveCommand`의 state2 연결,
+`HgRemoteClient`의 v1→v2 자동 업그레이드, 최신 실제 Mercurial(6.0) 서버와의 라이브
+통신 검증(v1 pull+push), Dirstate v2 정확한 바이트 레이아웃(재작성 중 진짜 버그
+3건 발견), Censor 구현(+ changegroup 전송 경로의 censored 플래그 소실 버그 발견·수정),
+histedit journal, Clonebundles(클라이언트+**서버 측 전부**) 전부 실제 hg CLI/서버
+대조 검증까지 완료됐습니다.
+
+**진짜 남은 것 — `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`의
+"남은 백로그" 섹션**을 참고하세요:
+1. **트리매니페스트(treemanifest) 읽기 지원** — 조사 결과 미구현으로 확정. hg4j의
+   매니페스트 파싱이 flat 구조만 가정해서, treemanifest 저장소를 열면 여러 명령이
+   조용히 잘못된 결과를 낼 수 있음. 구현 범위가 큼(재귀적 파싱 + 소비하는 모든 명령
+   배선).
+2. **Revlog v2 일반(매니페스트/파일로그) + persistent-nodemap** — 이 환경의 hg가
+   Rust 확장 없이는 저장소를 못 만들어서 계속 보류.
+
+그 외에 **코드 커버리지 95% 목표는 아직 미달**입니다(METHOD 95.3%/CLASS 100%는
+달성, LINE 91.6%/BRANCH 74.7%/INSTRUCTION 91.5%는 미달) — 상세 및 아직 손 안 댄
+저커버리지 클래스 목록은 [[test-coverage-95-percent-initiative]] 참고.
 
 ---
 

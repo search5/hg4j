@@ -212,8 +212,14 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    /체크아웃 등 매니페스트를 쓰는 모든 명령이 조용히 잘못된 결과를 낼 위험이 크다.
    구현 범위가 크다(재귀적 디렉터리 매니페스트 해석 + 이를 소비하는 모든 명령 배선) —
    이번 세션 범위 밖으로 남기고 별도 백로그 항목으로 분리.
-9. **Clonebundles (대용량 클론 오프로딩) — 아예 미구현.** 사용자 지시(2026-09-01)로
-   신규 추가, TDD로 진행 예정. 상세 계획은 아래 "Clonebundles 실행 계획" 절 참고.
+9. ~~**Clonebundles (대용량 클론 오프로딩) — 아예 미구현.**~~ — ✅ **완료(2026-09-01)**.
+   클라이언트(발견·매니페스트 파싱·다운로드·적용·`FetchCommand`/`CloneCommand` 자동
+   배선)와 **서버 측(`Wire1Commands`의 조건부 capability 광고 + `?cmd=clonebundles`
+   핸들러)까지 전부 구현·검증 완료** — 처음엔 서버 측(8~9번)을 사용자 요청으로 보류
+   했었으나, "JGit식 재구성" 작업(`HgHttpWireServer`/`HgSshWireServer` 신설) 중 같은
+   세션에서 마저 구현됐다(`HgHttpWireServerTest#serverAdvertisesAndServesClonebundlesOnceTheManifestFileExists`
+   로 확인: `.hg/clonebundles.manifest` 파일이 없으면 capability 미광고, 생기면 광고 +
+   내용 그대로 서빙). 상세 계획과 경위는 아래 "Clonebundles 실행 계획" 절 참고.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.
@@ -318,10 +324,9 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
 
 ### 진행 현황 (2026-09-01)
 
-클라이언트 측 1~7번 중 1~5번 완료(TDD, 아래), 6~7번(실제 clone 진입점에 자동
-연결)은 **아직 미착수** — 지금은 독립적으로 호출 가능한 프리미티브 상태이고,
-`hg.clone()` 같은 상위 API가 이를 자동으로 타는 배선은 남아있다. 서버 측 8~9번도
-미착수.
+**클라이언트 1~7번, 서버 8~9번 전부 완료.** 서버 측(8~9번)은 최초엔 사용자 요청으로
+보류했었으나, 이후 "JGit식 재구성"(`HgHttpWireServer`/`HgSshWireServer` 신설) 작업
+중 같은 세션에서 마저 구현됐다 — 아래 목록 참고.
 
 - ✅ `ClonebundlesManifest`(신규, `com.github.search5.hg4j.bundle`) — 매니페스트
   파서(`parse`) + hg4j가 실제로 소화 가능한 BUNDLESPEC만 남기는 필터
@@ -363,8 +368,16 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
   6.0 컨테이너를 대상으로 `CloneCommand` 전체 흐름(캡ability 감지 → 매니페스트
   조회 → 실제 hg가 만든 진짜 번들 다운로드 → 적용 → 워킹카피 체크아웃)이 완전히
   자동으로 동작함을 종단간 검증 — 별도로 시작한 disposable 컨테이너 기준.
-- ⬜ **8~9번(서버 측, `HgWireServer`가 clonebundles를 광고하는 저장소 역할)은
-  사용자 요청으로 보류 — 나중에 다시 논의하기로 함(2026-09-01).**
+- ✅ **8~9번 완료(서버 측 — `Wire1Commands`가 clonebundles를 광고·서빙하는 저장소
+  역할)**. 처음엔 사용자 요청으로 보류했었으나, "JGit식 재구성" 작업(아래 log.md의
+  [2026-09-01] "JGit식 재구성 + 갭 표 백로그 4건" 항목)에서 별도로 제시된
+  `HgWireServer` 6개 갭 표의 5번 항목으로 다시 다뤄져 같은 세션에 마저 구현됐다:
+  `Wire1Commands.capabilitiesString(repo)`가 `.hg/clonebundles.manifest` 파일 존재
+  여부로 `"clonebundles"` capability 토큰을 조건부 광고(파일 없으면 미광고 — 실제
+  hg의 확장 활성화 조건과 동일한 효과), `clonebundles(repo)` 커맨드가 `?cmd=clonebundles`
+  요청에 파일 내용을 그대로 반환. `HgHttpWireServerTest#serverAdvertisesAndServesClonebundlesOnceTheManifestFileExists`
+  로 종단간 검증(매니페스트 파일이 생기기 전/후 실제 `HgRemoteClient`로 capability
+  광고 여부와 응답 내용이 정확히 바뀌는지 확인) — 2026-09-01 재확인, GREEN.
 
 ## 커버리지 95% 작업 중 추가로 발견·수정한 버그 (2026-09-01)
 빌드 게이트(`jacocoTestCoverageVerification`)를 다시 90% 이상으로 통과시키는 작업 중

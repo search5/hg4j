@@ -132,19 +132,31 @@ public final class Wire1Commands {
         return Wire1Response.bytes(sb.toString().getBytes(StandardCharsets.US_ASCII));
     }
 
-    /** Real hg's response is {@code "1 <hex>\n"} on success, {@code "0 <error>\n"} on failure. */
+    /**
+     * Real hg's response is {@code "1 <hex>\n"} on success, {@code "0 <error>\n"} on failure --
+     * and {@code <error>} is whatever message the underlying lookup failure actually produced
+     * ({@code mercurial/wireprotov1server.py}'s {@code lookup()} catches any exception from {@code
+     * repo.lookup()} and reports {@code stringutil.forcebytestr(inst)} verbatim), not a single
+     * hardcoded string: a genuinely missing revision raises a different error than an ambiguous
+     * short hex prefix (real hg's {@code revlog.py} raises the distinct {@code
+     * AmbiguousPrefixLookupError} for the latter), and real hg's response text differs
+     * accordingly.
+     */
     public static Wire1Response lookup(HgRepository repo, Map<String, String> args) throws IOException {
         String key = args.get("key");
         Revlog changelog = Wire2Commands.changelog(repo);
         byte[] node;
+        String failureMessage;
         try {
             node = NodeIdUtil.resolveRevision(changelog, key);
+            failureMessage = "unknown revision '" + key + "'";
         } catch (Exception e) {
             node = null;
+            failureMessage = e.getMessage();
         }
         String line = node != null
                 ? "1 " + NodeIdUtil.toHex(node) + "\n"
-                : "0 unknown revision '" + key + "'\n";
+                : "0 " + failureMessage + "\n";
         return Wire1Response.bytes(line.getBytes(StandardCharsets.UTF_8));
     }
 

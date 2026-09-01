@@ -7,15 +7,24 @@ import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 import com.github.luben.zstd.Zstd;
+import com.github.luben.zstd.ZstdException;
 import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * Component dedicated to revlog data compression and decompression (SRP separation).
  *
- * <p>Supported formats:
+ * <p>Supported formats, matching real Mercurial's revlog compression-header bytes
+ * (see {@code mercurial/interfaces/compression.py} and {@code mercurial/revlog.py}
+ * {@code Revlog.compress()}/{@code decompress()}):
  * <ul>
- *   <li><b>'x' (0x78)</b> — zlib deflate compression</li>
- *   <li><b>'u'</b> — uncompressed (includes prefix byte)</li>
+ *   <li><b>'x' (0x78)</b> — zlib deflate compression (REVLOG_COMP_ZLIB). The header byte
+ *       doubles as the zlib stream's own CMF byte, so the hunk itself IS the zlib stream.</li>
+ *   <li><b>0x00</b> — REVLOG_COMP_NONE: raw data, returned verbatim (including the leading
+ *       0x00 byte). Used only when the uncompressed payload itself happens to start with
+ *       0x00 and compression did not help.</li>
+ *   <li><b>0x28</b> — REVLOG_COMP_ZSTD: Zstd compression. 0x28 is also the first byte of
+ *       Zstd's own frame magic number, so the hunk itself IS the Zstd frame.</li>
+ *   <li><b>'u'</b> — uncompressed (includes prefix byte, stripped on decompress)</li>
  *   <li><b>Other</b> — raw fallback (no uncompressed header)</li>
  * </ul>
  *
@@ -104,18 +113,18 @@ public final class DeltaCodec {
 
         byte type = hunk[0];
 
-        if (type == 'x' || type == (byte) 0x78) {
+        if (type == 'x') {
             return decompressZlib(hunk, uncompLen);
-        } else if (type == 0x00 && hunk.length >= 5 && hunk[1] == 0x28 && hunk[2] == (byte) 0xB5 && hunk[3] == 0x2F && hunk[4] == (byte) 0xFD) {
-            // Mercurial V2/Zstd standard: 0x00 prefix + Zstd magic (28 B5 2F FD)
-            byte[] dest = new byte[uncompLen];
-            byte[] rawZstd = Arrays.copyOfRange(hunk, 1, hunk.length);
-            Zstd.decompress(dest, rawZstd);
-            return dest;
-        } else if (hunk.length >= 4 && hunk[0] == 0x28 && hunk[1] == (byte) 0xB5 && hunk[2] == 0x2F && hunk[3] == (byte) 0xFD) { // Zstd magic raw fallback
-            byte[] dest = new byte[uncompLen];
-            Zstd.decompress(dest, hunk);
-            return dest;
+        } else if (type == 0x00) {
+            // REVLOG_COMP_NONE: raw data, returned verbatim (including this leading 0x00
+            // byte). Real hg never prepends 0x00 in front of an actual Zstd frame or any
+            // other compressed payload — see mercurial/revlog.py Revlog.decompress():
+            // `elif t == b'\0': return data`.
+            return hunk;
+        } else if (type == 0x28) {
+            // REVLOG_COMP_ZSTD: 0x28 is also the first byte of Zstd's own frame magic
+            // number, so the hunk itself is the Zstd frame — decode it directly.
+            return decompressZstd(hunk, uncompLen);
         } else if (type == 'u') {
             // The actual data follows the 'u' prefix byte
             return Arrays.copyOfRange(hunk, 1, hunk.length);
@@ -123,6 +132,27 @@ public final class DeltaCodec {
             // raw fallback - no header, return the entire array
             return hunk;
         }
+    }
+
+    /**
+     * Decompresses a Zstd-compressed revlog hunk (header byte {@code 0x28}).
+     *
+     * <p>zstd-jni's {@code Zstd.decompress} can either return an error code (testable via
+     * {@link Zstd#isError(long)}) or throw an unchecked {@link ZstdException} for malformed
+     * or truncated input, depending on where the failure occurs. Both are normalized here into
+     * {@link HgCorruptDataException}, matching how {@link #decompressZlib} reports zlib errors.
+     */
+    private static byte[] decompressZstd(byte[] hunk, int uncompLen) throws HgCorruptDataException {
+        byte[] dest = new byte[uncompLen];
+        try {
+            long result = Zstd.decompress(dest, hunk);
+            if (Zstd.isError(result)) {
+                throw new HgCorruptDataException("Failed to decompress zstd revlog hunk: " + Zstd.getErrorName(result));
+            }
+        } catch (ZstdException e) {
+            throw new HgCorruptDataException("Failed to decompress zstd revlog hunk", e);
+        }
+        return dest;
     }
 
     /**
@@ -169,7 +199,11 @@ public final class DeltaCodec {
             while (!inflater.finished()) {
                 int count = inflater.inflate(buf);
                 if (count == 0 && inflater.needsInput()) {
-                    break;
+                    // Ran out of input before the stream (and its trailer) finished decoding:
+                    // an incomplete/truncated zlib stream. Real hg's zlib.decompress() raises
+                    // zlib.error("Error -5 ... incomplete or truncated stream") in this case
+                    // rather than silently returning a partial result, so mirror that here.
+                    throw new HgCorruptDataException("Truncated or incomplete zlib revlog hunk");
                 }
                 out.write(buf, 0, count);
             }

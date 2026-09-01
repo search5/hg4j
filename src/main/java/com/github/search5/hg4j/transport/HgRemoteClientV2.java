@@ -318,7 +318,87 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         Map<String, byte[]> manifestLinkNode = new LinkedHashMap<>();
         LinkedHashSet<String> touchedPaths = new LinkedHashSet<>();
 
+        // Incremental pull (rootBytes non-empty): the changesetdagrange query above deliberately
+        // excludes ancestors of `common` (real hg's discovery.outgoing() semantics, see
+        // resolvenodes()/changesetdagrange in mercurial/wireprotov2server.py), so csRecords starts
+        // with the FIRST genuinely new changeset. But the receiving side
+        // (Revlog.appendChangeGroupEntry's cg1 branch) decodes each new revlog entry's delta
+        // purely positionally -- against whatever already physically occupies the immediately
+        // preceding slot in that same revlog (matching real hg's cg1 packer,
+        // forcedeltaparentprev=True) -- and for the very first new changelog/manifest/file entry
+        // of an incremental pull, that preceding slot holds the common root the client already
+        // has. Seeding the delta chains below with an empty array (as before) made the very first
+        // decoded delta produce garbage on any second/incremental pull, tripping the SHA-1
+        // node-hash check in Revlog.appendChangeGroupEntry with HgCorruptDataException. Fetch that
+        // root's own full text for the changelog, its manifest, and every file it already tracks
+        // straight from the server instead -- since it's common, both sides already agree on its
+        // bytes and hash -- and use those as the seeds.
         byte[] prevClContent = new byte[0];
+        byte[] rootManifestSeed = new byte[0];
+        Map<String, byte[]> rootFileContentByPath = new LinkedHashMap<>();
+        if (!rootBytes.isEmpty()) {
+            byte[] rootNode = (byte[]) rootBytes.get(0);
+            Map<String, Object> rootSpec = new LinkedHashMap<>();
+            rootSpec.put("type", "changesetexplicit");
+            rootSpec.put("nodes", List.of((Object) rootNode));
+            List<Object> rootRevisions = List.of(rootSpec);
+
+            Map<String, Object> rootCsArgs = new LinkedHashMap<>();
+            rootCsArgs.put("revisions", rootRevisions);
+            rootCsArgs.put("fields", List.of("revision"));
+            List<Object> rootCsResp = executeCommand("changesetdata", rootCsArgs, "ro");
+            List<Map<String, Object>> rootCsRecords = rootCsResp.isEmpty() ? List.of()
+                    : Wire2Transport.decodeRecordsWithFollowing(rootCsResp.subList(1, rootCsResp.size()), null);
+            byte[] rootClText = rootCsRecords.isEmpty() ? null : Cbor.asBytes(rootCsRecords.get(0).get("revision"));
+            if (rootClText == null) {
+                throw new HgProtocolException("wireprotov2", "could not fetch fulltext of common root "
+                        + NodeIdUtil.toHex(rootNode) + " needed to seed incremental changegroup delta chain");
+            }
+            prevClContent = rootClText;
+
+            String rootClAsText = new String(rootClText, StandardCharsets.UTF_8);
+            int nl = rootClAsText.indexOf('\n');
+            if (nl >= 40) {
+                byte[] rootManifestNode = NodeIdUtil.fromHex(rootClAsText.substring(0, 40));
+                Map<String, Object> rootMfArgs = new LinkedHashMap<>();
+                rootMfArgs.put("nodes", List.of((Object) rootManifestNode));
+                rootMfArgs.put("fields", List.of("revision"));
+                rootMfArgs.put("tree", "");
+                List<Object> rootMfResp = executeCommand("manifestdata", rootMfArgs, "ro");
+                List<Map<String, Object>> rootMfRecords = rootMfResp.isEmpty() ? List.of()
+                        : Wire2Transport.decodeRecordsWithFollowing(rootMfResp.subList(1, rootMfResp.size()), null);
+                if (!rootMfRecords.isEmpty()) {
+                    byte[] rmf = Cbor.asBytes(rootMfRecords.get(0).get("revision"));
+                    if (rmf != null) {
+                        rootManifestSeed = rmf;
+                    }
+                }
+            }
+
+            Map<String, Object> rootFilesArgs = new LinkedHashMap<>();
+            rootFilesArgs.put("revisions", rootRevisions);
+            rootFilesArgs.put("haveparents", false);
+            rootFilesArgs.put("fields", List.of("revision"));
+            List<Object> rootFilesResp = executeCommand("filesdata", rootFilesArgs, "ro");
+            if (!rootFilesResp.isEmpty()) {
+                List<Map<String, Object>> rootFilesRecords = Wire2Transport.decodeRecordsWithFollowing(
+                        rootFilesResp.subList(1, rootFilesResp.size()), r -> r.containsKey("path") && !r.containsKey("node"));
+                String currentPath = null;
+                for (Map<String, Object> rec : rootFilesRecords) {
+                    if (rec.containsKey("path") && !rec.containsKey("node")) {
+                        currentPath = Cbor.asString(rec.get("path"));
+                        continue;
+                    }
+                    if (currentPath == null) {
+                        continue;
+                    }
+                    byte[] revisionText = Cbor.asBytes(rec.get("revision"));
+                    if (revisionText != null) {
+                        rootFileContentByPath.put(currentPath, revisionText);
+                    }
+                }
+            }
+        }
         for (Map<String, Object> rec : csRecords) {
             byte[] node = Cbor.asBytes(rec.get("node"));
             List<Object> parents = Cbor.asList(rec.get("parents"));
@@ -359,7 +439,7 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
             List<Map<String, Object>> mfRecords = Wire2Transport.decodeRecordsWithFollowing(mfResp.subList(1, mfResp.size()), null);
 
             Map<String, byte[]> fullTextByNodeHex = new LinkedHashMap<>();
-            byte[] prevMfContent = new byte[0];
+            byte[] prevMfContent = rootManifestSeed;
             for (Map<String, Object> rec : mfRecords) {
                 byte[] node = Cbor.asBytes(rec.get("node"));
                 List<Object> parents = Cbor.asList(rec.get("parents"));
@@ -397,7 +477,12 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
                     currentGroup = new ChangegroupParser.FileGroup();
                     currentGroup.path = Cbor.asString(rec.get("path"));
                     currentGroup.entries = new ArrayList<>();
-                    prevFlContent = new byte[0];
+                    // Incremental pull: if this file already had a revision as of the common root,
+                    // seed with that fulltext (fetched above into rootFileContentByPath) instead of
+                    // an empty array -- same positional cg1 delta-base rule as the changelog/
+                    // manifest seeding above. A path absent from that map is genuinely new as of
+                    // this pull, so an empty array is correct for it.
+                    prevFlContent = rootFileContentByPath.getOrDefault(currentGroup.path, new byte[0]);
                     fullTextByNodeHex.clear(); // delta bases are scoped to a single file's revlog
                     continue;
                 }

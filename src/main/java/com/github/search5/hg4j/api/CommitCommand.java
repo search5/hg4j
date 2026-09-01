@@ -132,6 +132,11 @@ public class CommitCommand {
         Map<File, Long> fileSizes = new HashMap<>();
         File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
         byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+        // N-2: snapshot the dirstate-v2 data file this backup's docket references (if any), so a
+        // rollback can restore it too -- see the matching restore-site comment for why this is
+        // needed (Dirstate.write()'s own "W-LEAK" cleanup deletes the previous uid's data file as
+        // soon as it writes a new docket, which would otherwise orphan dirstateBackup on rollback).
+        byte[] dirstateV2DataBackup = captureDirstateV2DataBackup(dirstateFile, dirstateBackup);
         File fncacheFile = new File(repository.getStoreDir(), "fncache");
         byte[] fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
         File journalFile = new File(repository.getStoreDir(), "journal");
@@ -644,6 +649,20 @@ public class CommitCommand {
                                 File newDirstateDataFile = new File(dirstateFile.getParentFile(), "dirstate." + currentUid);
                                 Files.deleteIfExists(newDirstateDataFile.toPath());
                             }
+
+                            // Dirstate.write()'s own "W-LEAK" cleanup already deleted the
+                            // *previous* uid's ".hg/dirstate.<uid>" data file the moment this
+                            // (now-failing) transaction wrote its new docket. Restoring
+                            // dirstateBackup's docket bytes below would then point at a data
+                            // file that no longer exists, leaving a dirstate-v2 repository that
+                            // fails to even load. Restore that data file from the snapshot taken
+                            // before the transaction started, if it's missing.
+                            if (oldUid != null && dirstateV2DataBackup != null) {
+                                File oldDataFile = new File(dirstateFile.getParentFile(), "dirstate." + oldUid);
+                                if (!oldDataFile.exists()) {
+                                    SafeFileIO.writeAtomic(oldDataFile, dirstateV2DataBackup);
+                                }
+                            }
                         }
                     }
                     SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
@@ -670,6 +689,32 @@ public class CommitCommand {
             }
             repository.clearRevlogCache();
             throw t;
+        }
+    }
+
+    /**
+     * Reads the ".hg/dirstate.&lt;uid&gt;" data file that a captured dirstate-v2 docket snapshot
+     * ({@code docketBytes}) references, so it can be restored alongside the docket on rollback.
+     * Best-effort: any parsing/read failure (v1 dirstate, corrupt/short bytes, missing file)
+     * simply yields {@code null}.
+     */
+    private static byte[] captureDirstateV2DataBackup(File dirstateFile, byte[] docketBytes) {
+        if (docketBytes == null || docketBytes.length < 125) {
+            return null;
+        }
+        try {
+            if (!new String(docketBytes, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
+                return null;
+            }
+            int uidSize = docketBytes[124] & 0xFF;
+            if (docketBytes.length < 125 + uidSize) {
+                return null;
+            }
+            String uid = new String(docketBytes, 125, uidSize, StandardCharsets.US_ASCII);
+            File dataFile = new File(dirstateFile.getParentFile(), "dirstate." + uid);
+            return dataFile.exists() ? Files.readAllBytes(dataFile.toPath()) : null;
+        } catch (Exception e) {
+            return null;
         }
     }
 

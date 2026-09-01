@@ -221,7 +221,17 @@ public class ShelveCommand {
                         } else {
                             content = Files.readAllBytes(file.toPath());
                         }
-                        shelvedFiles.add(new ShelvedFile(path, entry.getState(), content, entry.getMode()));
+                        // Bug fix: dirstate's mode field for a symlink is written by
+                        // AddCommand/CommitCommand as a plain 0644/0755 (derived from
+                        // File.canExecute(), which follows the link), never the 0120000
+                        // symlink sentinel that performUnshelve()/revertToLatestCommit()
+                        // check for. Trusting entry.getMode() here silently shelved
+                        // symlinks as plain files, so unshelve recreated them as a regular
+                        // file containing the target path as text instead of a real
+                        // symlink. Derive the mode from the on-disk link type we already
+                        // detected instead.
+                        int mode = isSym ? 0120000 : entry.getMode();
+                        shelvedFiles.add(new ShelvedFile(path, entry.getState(), content, mode));
                     }
                 } else if (entry.getState() == 'r') {
                     shelvedFiles.add(new ShelvedFile(path, 'r', new byte[0], entry.getMode()));
@@ -247,7 +257,9 @@ public class ShelveCommand {
                             modified = baseline == null || !Arrays.equals(content, baseline);
                         }
                         if (modified) {
-                            shelvedFiles.add(new ShelvedFile(path, 'n', content, entry.getMode()));
+                            // Same symlink-mode fix as above for the 'a'/'m' branch.
+                            int mode = isSym ? 0120000 : entry.getMode();
+                            shelvedFiles.add(new ShelvedFile(path, 'n', content, mode));
                         }
                     }
                 }

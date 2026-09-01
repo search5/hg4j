@@ -175,7 +175,7 @@ public final class Wire2Transport {
                     break;
                 }
             } else if (frame.typeId == Wire2Frame.TYPE_ERROR_RESPONSE) {
-                throw new HgProtocolException("wireprotov2", "Protocol-level error: " + new String(frame.payload, StandardCharsets.UTF_8));
+                throw new HgProtocolException("wireprotov2", "Protocol-level error: " + decodeErrorFrameMessage(frame.payload));
             }
             // STREAM_SETTINGS / SENDER_PROTOCOL_SETTINGS / TEXT_OUTPUT / PROGRESS frames: ignored.
         }
@@ -191,6 +191,41 @@ public final class Wire2Transport {
             throw new HgProtocolException("wireprotov2", "Remote command error: " + Cbor.asString(error.get("message")));
         }
         return objs.subList(1, objs.size());
+    }
+
+    /**
+     * Decodes an ERROR_RESPONSE frame's CBOR payload -- {@code {type: ..., message: [{msg: ...}, ...]}}
+     * per real hg's {@code wireprotoframing.createerrorframe}/{@code _onerrorresponseframe} (verified
+     * against Mercurial 6.0 source: the peer decodes the payload as a CBOR map and reads its
+     * {@code message} field, an atom list, for the human-readable text) -- into the concatenated
+     * {@code msg} text of each atom. Falls back to a best-effort raw-bytes decode if the payload
+     * isn't the expected shape, so a malformed/unexpected error frame still surfaces some text
+     * instead of throwing a second, more confusing exception out of this error path.
+     */
+    private static String decodeErrorFrameMessage(byte[] payload) {
+        try {
+            List<Object> objs = Cbor.decodeAll(payload);
+            if (!objs.isEmpty()) {
+                Map<String, Object> body = Cbor.asMap(objs.get(0));
+                List<Object> atoms = Cbor.asList(body.get("message"));
+                StringBuilder sb = new StringBuilder();
+                for (Object atom : atoms) {
+                    Object msg = Cbor.asMap(atom).get("msg");
+                    if (msg != null) {
+                        if (sb.length() > 0) {
+                            sb.append(' ');
+                        }
+                        sb.append(Cbor.asString(msg));
+                    }
+                }
+                if (sb.length() > 0) {
+                    return sb.toString();
+                }
+            }
+        } catch (RuntimeException malformed) {
+            // fall through to the raw-bytes fallback below
+        }
+        return new String(payload, StandardCharsets.UTF_8);
     }
 
     private static Map<String, Object> statusOk() {

@@ -9,6 +9,13 @@ plugins {
     id 'signing'
 }
 
+// 여러 에이전트/터미널이 같은 체크아웃에서 동시에 빌드를 돌릴 때 build/ 산출물(컴파일된
+// 클래스, jacoco exec/report)이 서로 덮어써지는 것을 막기 위한 탈출구. 지정 안 하면
+// 평소처럼 build/ 그대로 쓴다. 사용 예: ./gradlew -PagentBuildDir=/tmp/agent1-build ...
+if (project.hasProperty('agentBuildDir')) {
+    layout.buildDirectory.set(file(agentBuildDir))
+}
+
 group = 'io.github.search5.hg4j'
 version = '1.0.0'
 

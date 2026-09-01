@@ -50,16 +50,29 @@ public class SparsePathFilter implements PathFilter {
             char c = glob.charAt(i);
             if (c == '*') {
                 if (i + 1 < len && glob.charAt(i + 1) == '*') {
-                    sb.append(".*");
                     i++; // skip next '*'
                     if (i + 1 < len && glob.charAt(i + 1) == '/') {
-                        i++; // skip next '/' if any to avoid double slashes
+                        // "**/" bordering a path separator must only match whole
+                        // path segments (zero or more), matching Mercurial's own
+                        // glob-to-regex translation (mercurial/match.py _globre:
+                        // "a/**/b" -> "a/(?:.*/)?b"). A bare ".*" here would let
+                        // the following literal fuse mid-segment (e.g. wrongly
+                        // matching "a/xb" for glob "a/**/b"), which real hg does
+                        // not do (verified against `hg debugsparse`).
+                        sb.append("(?:.*/)?");
+                        i++; // skip next '/', it's absorbed into the group above
+                    } else {
+                        sb.append(".*");
                     }
                 } else {
                     sb.append("[^/]*");
                 }
             } else if (c == '?') {
-                sb.append("[^/]");
+                // A single '?' matches any one character, including '/', matching
+                // Mercurial's own translation (_globre('?') == '.'); verified
+                // against `hg debugsparse` that "a?b" keeps "a/b" in the sparse
+                // checkout.
+                sb.append(".");
             } else if (c == '.' || c == '\\' || c == '+' || c == '^' || c == '$' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == '|') {
                 sb.append('\\').append(c);
             } else {

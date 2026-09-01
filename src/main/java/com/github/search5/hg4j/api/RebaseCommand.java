@@ -59,6 +59,14 @@ public class RebaseCommand {
         byte[] rawManifestContent;
         Map<String, FileBackupInfo> fileBackups = new HashMap<>();
         Map<String, byte[]> fileContents = new HashMap<>();
+        // Manifest flag ("x" executable, "l" symlink, or "") for each path in fileContents --
+        // without this, cherryPickBackup can only guess a file's mode from whatever the
+        // filesystem already had at that path (e.g. inherited unchanged from the new parent's
+        // checkout), silently dropping the exec bit or symlink-ness of a file that is newly
+        // added or newly flagged by the very revision being cherry-picked (verified against
+        // real hg 7.2: `hg rebase` preserves a newly-added executable script's mode and a
+        // newly-added symlink's target).
+        Map<String, String> fileFlags = new HashMap<>();
     }
 
     private static class FileBackupInfo {
@@ -174,7 +182,31 @@ public class RebaseCommand {
             // Map to track original nodes to rebased/restored nodes for parent updates
             Map<ByteBuffer, byte[]> nodeMapping = new HashMap<>();
 
-            // 4. Cherry-pick each backed up commit onto the target/new parent
+            // 4. Restore the non-descendant independent branch commits physically preserving
+            // original nodeId *before* cherry-picking, since targetNode itself may be one of
+            // these independent commits (e.g. an unrelated branch committed after the rebase
+            // source): stripRevisionsFrom(minOrigRev) physically truncates the store for every
+            // revision >= minOrigRev, target included, so target must already be back in the
+            // store before the cherry-pick loop below tries to check it out as the new base.
+            // A commit classified here can never depend on a to-rebase commit's new node: any
+            // commit whose parent is a to-rebase commit is itself a descendant of the source and
+            // so would have been classified into revisionsToRebase (and thus backupsToRebase)
+            // instead -- so restoring this list first, in original-revision order, is always safe.
+            for (BackupCommit backup : backupsToRestore) {
+                byte[] p1 = backup.parent1Node;
+                byte[] p2 = backup.parent2Node;
+
+                byte[] mappedP1 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(p1, 20)));
+                if (mappedP1 != null) p1 = mappedP1;
+
+                byte[] mappedP2 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(p2, 20)));
+                if (mappedP2 != null) p2 = mappedP2;
+
+                byte[] restoredNode = restoreBackup(backup, p1, p2, nodeMapping);
+                nodeMapping.put(ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), restoredNode);
+            }
+
+            // 5. Cherry-pick each backed up commit onto the target/new parent
             byte[] currentBaseNode = targetNode;
             for (BackupCommit backup : backupsToRebase) {
                 byte[] rebasedNode = cherryPickBackup(backup, currentBaseNode, nodeMapping);
@@ -186,21 +218,6 @@ public class RebaseCommand {
                 }
                 nodeMapping.put(ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), rebasedNode);
                 currentBaseNode = rebasedNode;
-            }
-
-            // 5. Restore the non-descendant independent branch commits physically preserving original nodeId
-            for (BackupCommit backup : backupsToRestore) {
-                byte[] p1 = backup.parent1Node;
-                byte[] p2 = backup.parent2Node;
-                
-                byte[] mappedP1 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(p1, 20)));
-                if (mappedP1 != null) p1 = mappedP1;
-                
-                byte[] mappedP2 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(p2, 20)));
-                if (mappedP2 != null) p2 = mappedP2;
-
-                byte[] restoredNode = restoreBackup(backup, p1, p2, nodeMapping);
-                nodeMapping.put(ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), restoredNode);
             }
 
             // 6. Checkout the final rebased state
@@ -402,6 +419,7 @@ public class RebaseCommand {
                 String path = line.substring(0, nullIdx);
                 String nodeWithFlags = line.substring(nullIdx + 1).trim();
                 String hexNode = nodeWithFlags.substring(0, 40);
+                String flag = nodeWithFlags.length() > 40 ? nodeWithFlags.substring(40) : "";
 
                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
@@ -410,6 +428,7 @@ public class RebaseCommand {
                 int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
                 byte[] fileContent = filelog.getRevisionContent(fileRev);
                 backup.fileContents.put(path, fileContent);
+                backup.fileFlags.put(path, flag);
 
                 Revlog.IndexRecord flRec = filelog.getIndexRecord(fileRev);
                 
@@ -536,12 +555,36 @@ public class RebaseCommand {
         for (Map.Entry<String, byte[]> entry : backup.fileContents.entrySet()) {
             String path = entry.getKey();
             byte[] fileContent = entry.getValue();
+            // Manifest flag ("x"/"l"/"") for this path -- previously ignored here, which meant a
+            // file newly made executable or newly turned into a symlink by the very revision
+            // being cherry-picked silently lost that mode (a plain Files.write always produces a
+            // non-executable regular file), and if the path was *already* checked out as a
+            // symlink inherited unchanged from newParentNode, Files.write would silently follow
+            // that symlink and clobber whatever it pointed at instead of replacing the symlink.
+            // Verified against real hg 7.2: `hg rebase` preserves a newly-added executable
+            // script's mode and a newly-added symlink's target unchanged.
+            String flag = backup.fileFlags.getOrDefault(path, "");
+            boolean symlink = flag.contains("l");
+            boolean executable = flag.contains("x");
 
             File diskFile = new File(repository.getDirectory(), path);
             diskFile.getParentFile().mkdirs();
-            Files.write(diskFile.toPath(), fileContent);
+            if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                Files.delete(diskFile.toPath());
+            }
+            if (symlink) {
+                String target = new String(fileContent, StandardCharsets.UTF_8).trim();
+                try {
+                    Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
+                } catch (Exception e) {
+                    Files.write(diskFile.toPath(), fileContent);
+                }
+            } else {
+                Files.write(diskFile.toPath(), fileContent);
+                diskFile.setExecutable(executable, false);
+            }
 
-            int mode = diskFile.canExecute() ? 0755 : 0644;
+            int mode = symlink ? 0120000 : (executable ? 0755 : 0644);
             dirstate.addEntry(path, new Dirstate.Entry('n', mode, fileContent.length, diskFile.lastModified() / 1000));
         }
 

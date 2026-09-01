@@ -1,5 +1,53 @@
 # 작업 로그
 
+## [2026-09-02] 커버리지 95% 이니셔티브 라운드 2 | 44개 클래스 TDD, 실제 버그 21건 발견·19건 수정
+- 사용자 지시: "미커버 instruction 수 큰 순서부터 TDD로 작업 진행해줘. 여러 에이전트가
+  동시에 돌아도 되는데 gradle 출력 디렉터리는 따로 지정해야 해." 라운드 1에서 겪은
+  병렬 gradle 충돌 사고(2026-09-01 기록)를 근본적으로 막기 위해 `build.gradle`에
+  `agentBuildDir` 프로젝트 프로퍼티를 신설(`-PagentBuildDir=...
+  --project-cache-dir=...`로 완전 격리된 빌드 산출물 디렉터리 지정 가능), 각 에이전트에
+  `./gradlew --stop` 절대 금지 지시.
+- 미커버 instruction 수 큰 순서로 5개 배치(총 44개 클래스, 배치당 8~9개 에이전트 병렬)를
+  순서대로 실행: 배치1(`ShelveCommand`/`HgRevsetEngine`/`HgRemoteClient`/
+  `FetchCommand`/`CommitCommand`/`MergeCommand`/`Revlog`/`HgRepository`), 배치2
+  (`IncomingCommand`/`ManifestTreeIterator`/`Wire2Transport`/`HgHttpWireServer`/
+  `HisteditCommand`/`Cbor`/`StripCommand`/`GpgSignature`/`HgRemoteClientV2` 버그
+  전담수정), 배치3(`OutgoingCommand`/`HgLock`/`VerifyCommand`/`PhaseRoots`/
+  `Wire1Commands`/`NodeIdUtil`/`HgLocalClient`/`TreeWalk`/`CloneCommand`), 배치4
+  (`UpdateCommand`/`GraftCommand`/`RevFilter`/`SparseConfig`/`SparsePathFilter`/
+  `MergeState`/`ExportCommand`/`DirstateV2Parser`/`BisectCommand`), 배치5
+  (`RebaseCommand`/`AnnotateCommand`/`RevsetCommand`/`ChangesetGraph`/`DeltaCodec`/
+  `HgObsolescenceParser`/`HgRcConfig`/`GcCommand`/`DiffCommand`). 세션 중간에 계정
+  rate limit에 걸려 5개 에이전트가 중단됐다가 리셋 후 전부 재개해 마무리.
+- 전체 회귀 `clean test jacocoTestReport jacocoTestCoverageVerification`(1670 tests,
+  실패/에러 0, skipped 8, BUILD SUCCESSFUL) 기준 INSTRUCTION 91.5%→**97.10%**,
+  LINE 91.6%→**97.05%**, METHOD 95.3%→**97.84%**, CLASS 100%→**100%**, BRANCH
+  74.7%→**86.40%**(아직 미달, 대부분 문서화된 방어적 죽은 코드).
+- 항상 real hg 7.2(CLI + Python 소스) 대조 검증하며 진행하는 과정에서 실제 버그
+  **21건**을 발견, **19건**을 TDD로 즉시 수정(데이터 손상/크래시급 다수 포함):
+  `CommitCommand`(dirstate-v2 롤백이 GC된 데이터 파일을 가리켜 저장소 손상),
+  `Revlog`(`appendRawRevision`이 inline 플래그 무시), `StripCommand`
+  (`FileChannel.truncate`로 파일을 못 키워 롤백이 무효 — 데이터 손실 위험),
+  `HgRemoteClientV2`(증분 pull이 빈 델타 베이스로 changelog/manifest/filelog 손상),
+  `GraftCommand`/`RebaseCommand`(신규 파일이 dirstate 미갱신으로 커밋 누락, 파일
+  삭제 시 크래시, exec/symlink 플래그 소실), `DeltaCodec`(가짜 압축 포맷 오처리,
+  truncated zlib이 조용히 부분 데이터 반환), `GcCommand`(0-리비전 revlog 압축 크래시),
+  `HgRevsetEngine`(작은따옴표 리터럴 매칭 안 됨, sort/limit 콤마분리 오류),
+  `Wire1Commands`(lookup의 ambiguous-prefix 에러 뭉갬), `Wire2Transport`
+  (ERROR_RESPONSE 프레임 CBOR 미디코딩), `SparsePathFilter`(`?`/`**` glob 시맨틱
+  오류), `HgObsolescenceParser`(FLAG_USING_SHA256 비트 오류), `BisectCommand`
+  (DAG 분기 시 후보선택 알고리즘 오류), `IncomingCommand`/`OutgoingCommand`
+  (summary가 마지막 줄이 아니라 설명 첫 줄이어야 함), `ExportCommand`(부모를
+  rev-1로 가정, 실제 DAG 부모 아님), `VerifyCommand`(빈 저장소 오탐/매니페스트
+  누락 미검출), `HisteditCommand`(fold/roll 5건), `ShelveCommand`(symlink 모드
+  미보존), `HgLock`(double-close가 다른 락 오염), `HgHttpWireServer`(v2 파싱 에러
+  삼켜짐). 미수정 2건은 범위 밖으로 백로그화([[mercurial-spec-compliance-requirement]]
+  항목 8/10 참고: `HgRemoteClientV2`의 treemanifest 서브디렉터리 미fetch,
+  `AddCommand`/`HgRepository`의 깨진 symlink 처리).
+- 상세 클래스별 전후 커버리지 수치, 배치 구성, 겪은 이슈(에이전트가 백그라운드
+  모니터를 걸어두고 대기 루프에 빠지는 패턴 반복 등)는
+  [[test-coverage-95-percent-initiative]] "라운드 2" 절 참고. 커밋 `a8b9d96`.
+
 ## [2026-09-01] 검토·수정 완료 | Track B-2/B-3/B-4/B-5 전수 검토 (실제 hg CLI 상호운용 검증)
 - 사용자 지시: "Track B-2, B-3, B-4, B-5를 모두 조사해서 잘못된 부분을 모두 TDD 기반으로
   수정 작업 해줘." Gemini가 이미 구현해둔 코드를 실제 hg CLI 대조로 하나씩 검증하고,

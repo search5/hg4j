@@ -1,6 +1,6 @@
 ---
-updated: 2026-09-01
-status: partial (scope reduced by user mid-flight; not resumed)
+updated: 2026-09-02
+status: round 2 complete — INSTRUCTION/LINE/METHOD/CLASS at or near 95%+, BRANCH still below (86.4%, mostly documented dead code)
 ---
 
 # 결정: JaCoCo 커버리지 95% 상향 — 1라운드 결과와 남은 갭
@@ -110,3 +110,103 @@ jacocoTestReport`를 같은 작업 디렉터리에서 동시에 돌렸다가:
 교훈: 같은 git 작업 디렉터리를 공유하는 여러 에이전트가 gradle을 동시에 돌리면 절대
 안 된다. 이후 라운드부터는 에이전트를 순차 처리(한 명 끝나고 검증한 뒤 다음 에이전트
 재개)로 전환해 문제없이 마무리했다.
+
+## 라운드 2 (2026-09-02) — `agentBuildDir` 격리로 병렬 처리 재개, 44개 클래스 완주
+
+라운드 1에서 겪은 gradle 충돌 사고를 근본적으로 해결하기 위해 `build.gradle`에
+`agentBuildDir` 프로젝트 프로퍼티를 추가했다(지정 시 `layout.buildDirectory`를
+그 경로로 바꿔치기). 각 에이전트가 `-PagentBuildDir=/tmp/agent-<name>/build
+--project-cache-dir=/tmp/agent-<name>/cache`로 완전히 격리된 빌드 산출물 디렉터리를
+쓰게 하고, `./gradlew --stop`은 절대 호출하지 말라고 매 에이전트에게 명시적으로
+지시했다 — 이 방식으로 8~9개 에이전트를 동시에 돌려도 라운드 1의 사고가 재발하지
+않았다(단, 개별 에이전트가 "모니터를 걸어두고 기다리겠다"며 진행을 멈추는 패턴이
+반복 발생해, 그때마다 "포그라운드로 직접 실행하고 즉시 결과를 보고하라"고 재촉해야
+했다 — 비동기 백그라운드 대기 루프에 스스로 빠지는 경향이 있음을 기록해둔다).
+
+### 최종 결과 (전체 회귀, 1670개 테스트, 실패/에러 0, skipped 8)
+
+`./gradlew clean test jacocoTestReport jacocoTestCoverageVerification` 기준
+(BUILD SUCCESSFUL, 2m17s):
+
+| 지표 | 라운드 1 후 | 라운드 2 후 | 95% 도달? |
+|---|---|---|---|
+| INSTRUCTION | 91.5% | **97.10%** (62853/64730) | ✅ |
+| LINE | 91.6% | **97.05%** (13214/13615) | ✅ |
+| BRANCH | 74.7% | **86.40%** (6575/7610) | ❌ (근접, 대부분 방어적 죽은 코드) |
+| METHOD | 95.3% | **97.84%** (1311/1340) | ✅ |
+| CLASS | 100% | **100%** (201/201) | ✅ |
+
+`jacocoTestCoverageVerification`(BUNDLE 70% 최소, 핵심 클래스 90% 최소)도 통과.
+
+### 작업한 44개 클래스 (5개 배치, 미커버 instruction 수 큰 순서)
+
+배치1: `ShelveCommand`, `HgRevsetEngine`, `HgRemoteClient`, `FetchCommand`,
+`CommitCommand`, `MergeCommand`, `Revlog`, `HgRepository`.
+배치2: `IncomingCommand`, `ManifestTreeIterator`, `Wire2Transport`,
+`HgHttpWireServer`, `HisteditCommand`, `Cbor`/`Cbor$Reader`, `StripCommand`,
+`GpgSignature`, `HgRemoteClientV2`(전담 버그 수정).
+배치3: `OutgoingCommand`, `HgLock`, `VerifyCommand`, `PhaseRoots`,
+`Wire1Commands`, `NodeIdUtil`, `HgLocalClient`, `TreeWalk`, `CloneCommand`.
+배치4: `UpdateCommand`, `GraftCommand`, `RevFilter`, `SparseConfig`,
+`SparsePathFilter`, `MergeState`, `ExportCommand`, `DirstateV2Parser`,
+`BisectCommand`.
+배치5: `RebaseCommand`, `AnnotateCommand`, `RevsetCommand`, `ChangesetGraph`,
+`DeltaCodec`, `HgObsolescenceParser`, `HgRcConfig`, `GcCommand`, `DiffCommand`.
+
+대부분 90%대 후반~100% INSTRUCTION에 도달했다(예: `TreeWalk`/`RevFilter`/
+`ChangesetGraph`/`ExportCommand` 100%, `VerifyCommand` 전 지표 100%). 남은
+소소한 갭은 각 에이전트가 개별적으로 "실제 발생 불가능한 방어 코드"라고 판단·기록한
+것들이다(예: JVM이 보장하는 `SHA-1` 알고리즘의 `NoSuchAlgorithmException` catch,
+호출부에서 이미 non-null이 보장된 값의 재검사 등) — 상세 사유는 각 커버리지 테스트
+클래스의 커밋 시점 코드 리뷰 기록/PR 설명에 남아있다.
+
+### 실제 버그 21건 발견, 19건 수정 (커밋 `a8b9d96` 참고)
+
+TDD로 커버리지를 채우는 과정에서, 항상 real hg 7.2(CLI + Python 소스)와 대조
+검증하며 다음 실제 버그들을 발견했다:
+
+- **데이터 손상/크래시급**: `CommitCommand`(dirstate-v2 롤백이 이미 GC된 데이터
+  파일을 가리켜 저장소 손상), `Revlog`(`appendRawRevision`이 inline 플래그 무시,
+  기존 inline revlog 손상), `StripCommand`(`FileChannel.truncate`로는 파일을 다시
+  늘릴 수 없어 strip 실패 시 롤백이 사실상 무효 — 데이터 손실 위험),
+  `HgRemoteClientV2`(증분 pull이 changelog/manifest/filelog를 빈 델타 베이스로
+  손상), `GraftCommand`/`RebaseCommand`(새로 추가된 파일이 dirstate 미갱신으로
+  커밋에서 통째로 누락, 파일 삭제 시 크래시, exec/symlink 플래그 소실),
+  `DeltaCodec`(존재하지 않는 압축 포맷 오처리, truncated zlib 스트림이 조용히 부분
+  데이터 반환), `GcCommand`(0-리비전 revlog 압축 시 크래시), `RebaseCommand`(target이
+  strip 범위에 속하면 크래시).
+- **명세 불일치**: `HgRevsetEngine`(작은따옴표 리터럴 매칭 안 됨, `sort()`/`limit()`
+  콤마 분리 오류), `Wire1Commands`(`lookup()`이 ambiguous-prefix 에러를 뭉갬),
+  `Wire2Transport`(ERROR_RESPONSE 프레임을 CBOR 디코딩 안 하고 그냥 텍스트로 처리),
+  `SparsePathFilter`(`?`가 `/`를 제외, `**`가 디렉터리 경계 무시), `HgObsolescenceParser`
+  (`FLAG_USING_SHA256` 비트값 오류), `BisectCommand`(DAG 분기 시 후보 선택 알고리즘이
+  틀림, good==bad 미검증), `IncomingCommand`/`OutgoingCommand`(summary가 마지막
+  줄이 아니라 설명 첫 줄이어야 함), `ExportCommand`(부모를 `rev-1`로 가정, 실제 DAG
+  부모 아님), `VerifyCommand`(빈 저장소 오탐, 매니페스트 누락 미검출),
+  `HisteditCommand`(fold/roll 5건 — 그룹 첫 멤버가 아닌 마지막 멤버 기준으로 처리),
+  `ShelveCommand`(symlink 모드 미보존), `HgLock`(double-close가 다른 락을 오염),
+  `HgHttpWireServer`(v2 파싱 에러가 헤더 먼저 전송돼 삼켜짐).
+
+미수정·문서화만 한 2건(범위 밖):
+- `HgRemoteClientV2`가 루트 매니페스트만 fetch하고 서브디렉터리 tree는 안 가져옴 —
+  진짜 treemanifest를 쓰는 제3자 real hg 서버와 연동 시 서브디렉터리 데이터 누락
+  가능(hg4j 자체 저장소는 treemanifest 미사용이라 영향 없음, wireprotocol v2는
+  hg 6.1부터 제거돼 실질 노출면도 좁음).
+- `AddCommand`/`HgRepository`가 깨진(타겟 없는) symlink를 `File.isFile()`/
+  `.exists()`로 체크해서 조용히 건너뛰거나 거부함 — 실제 hg는 깨진 symlink도
+  정상 추적함. 수정 자체는 작은 범위(`Files.isSymbolicLink()` 체크 추가)로 예상되나
+  아직 미착수.
+
+### 남은 BRANCH 갭(86.4%)에 대해
+
+INSTRUCTION/LINE/METHOD/CLASS는 사실상 목표를 달성했지만 BRANCH는 아직 95%에
+못 미친다. 이번 라운드에서 다룬 44개 클래스 각각의 잔여 미커버 분기는 전부
+개별적으로 "실제 발생 불가능/방어적 죽은 코드"로 판단·기록됐다(예: JCA가 보장하는
+알고리즘의 예외 처리, 호출부에서 이미 보장된 non-null 재검사, 도달 불가능한 switch
+default 분기 등). 나머지 격차는 **이 44개 밖의, 아직 손대지 않은 클래스들**에서
+온다 — 전체 재스캔(2026-09-02) 기준 미커버 instruction 20개 이상인 클래스가 여전히
+다수 남아 있다(`CommitCommand`/`FetchCommand`/`Revlog` 등은 이미 작업했지만 100%까지
+안 밀어붙인 잔여분, `RebaseCommand`/`AnnotateCommand`/`RevsetCommand`/
+`ChangesetGraph`/`DeltaCodec`/`HgObsolescenceParser`/`HgRcConfig`/`GcCommand`/
+`DiffCommand`는 라운드 2 배치5로 이미 처리됨). 이어서 진행하려면 동일한 방식(미커버
+instruction 수 큰 순서, `agentBuildDir` 격리, 실제 hg 대조 검증)으로 계속하면 된다.

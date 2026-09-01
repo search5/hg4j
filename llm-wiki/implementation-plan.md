@@ -372,13 +372,19 @@ histedit journal, Clonebundles(클라이언트+**서버 측 전부**) 전부 실
 1. **트리매니페스트(treemanifest) 읽기 지원** — 조사 결과 미구현으로 확정. hg4j의
    매니페스트 파싱이 flat 구조만 가정해서, treemanifest 저장소를 열면 여러 명령이
    조용히 잘못된 결과를 낼 수 있음. 구현 범위가 큼(재귀적 파싱 + 소비하는 모든 명령
-   배선).
+   배선). `HgRemoteClientV2`의 wireprotocol v2 클라이언트가 서브디렉터리 tree를
+   전혀 fetch 안 하는 것도 같은 미구현의 한 증상(2026-09-02 추가 확인).
 2. **Revlog v2 일반(매니페스트/파일로그) + persistent-nodemap** — 이 환경의 hg가
    Rust 확장 없이는 저장소를 못 만들어서 계속 보류.
+3. **깨진(dangling) symlink가 `AddCommand`/`HgRepository`에서 조용히 누락·거부됨**
+   (2026-09-02 신규 발견) — `File.isFile()`/`.exists()`가 심볼릭 링크를 따라가서
+   판단하는 게 원인. 수정 범위는 작을 것으로 예상되나 아직 미착수.
 
-그 외에 **코드 커버리지 95% 목표는 아직 미달**입니다(METHOD 95.3%/CLASS 100%는
-달성, LINE 91.6%/BRANCH 74.7%/INSTRUCTION 91.5%는 미달) — 상세 및 아직 손 안 댄
-저커버리지 클래스 목록은 [[test-coverage-95-percent-initiative]] 참고.
+**코드 커버리지 95% 목표**: 2026-09-02 라운드 2(미커버 instruction 수 큰 순서로 44개
+클래스 TDD, 실제 버그 21건 발견·19건 수정)를 거쳐 전체 회귀 기준 INSTRUCTION
+**97.10%**/LINE **97.05%**/METHOD **97.84%**/CLASS **100%** 전부 달성, BRANCH만
+**86.40%**로 아직 미달(대부분 방어적 죽은 코드로 문서화됨, 나머지 격차는 이 44개
+밖의 미착수 클래스들에서 옴). 상세는 [[test-coverage-95-percent-initiative]] 참고.
 
 ---
 

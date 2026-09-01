@@ -212,6 +212,15 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    /체크아웃 등 매니페스트를 쓰는 모든 명령이 조용히 잘못된 결과를 낼 위험이 크다.
    구현 범위가 크다(재귀적 디렉터리 매니페스트 해석 + 이를 소비하는 모든 명령 배선) —
    이번 세션 범위 밖으로 남기고 별도 백로그 항목으로 분리.
+   - **(2026-09-02 추가 확인)** 같은 미구현의 구체적 증상 하나를 커버리지 작업 중
+     `HgRemoteClientV2`에서 발견: `getBundle()`이 wireprotocol v2 서버에 항상
+     `"tree": ""`(루트 매니페스트)만 요청하고 서브디렉터리별 `tree=<dir>` 재귀 fetch를
+     전혀 하지 않는다. `"tree": ""` 자체는 정상 요청이지만(hg4j 자체 저장소는 전부
+     flat 매니페스트라 문제 없음), 진짜 treemanifest를 쓰는 제3자 real hg 서버와
+     연동한다면 서브디렉터리 매니페스트/파일 데이터가 통째로 누락된다. 수정하려면
+     재귀적 `tree=<dir>` fetch로 cg3 `ManifestGroup`을 조립해야 하는데, 이는 위
+     항목 자체의 구현 범위와 동일해 별도 항목으로 분리하지 않고 여기 종속시킨다.
+     wireprotocol v2는 hg 6.1부터 제거돼 실질 노출면은 좁다.
 9. ~~**Clonebundles (대용량 클론 오프로딩) — 아예 미구현.**~~ — ✅ **완료(2026-09-01)**.
    클라이언트(발견·매니페스트 파싱·다운로드·적용·`FetchCommand`/`CloneCommand` 자동
    배선)와 **서버 측(`Wire1Commands`의 조건부 capability 광고 + `?cmd=clonebundles`
@@ -220,6 +229,17 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    세션에서 마저 구현됐다(`HgHttpWireServerTest#serverAdvertisesAndServesClonebundlesOnceTheManifestFileExists`
    로 확인: `.hg/clonebundles.manifest` 파일이 없으면 capability 미광고, 생기면 광고 +
    내용 그대로 서빙). 상세 계획과 경위는 아래 "Clonebundles 실행 계획" 절 참고.
+10. **깨진(dangling) symlink가 `AddCommand`/`HgRepository`에서 조용히 누락·거부됨**
+    (2026-09-02, 커버리지 95% 이니셔티브 라운드2 중 `UpdateCommand` 담당 에이전트가
+    부수적으로 발견, 미착수). `HgRepository.scanDirectory()`와 `AddCommand.call()`의
+    명시적 경로 처리 둘 다 `File.isFile()`/`.exists()`로 파일 존재를 판단하는데, 이
+    메서드들은 심볼릭 링크를 **따라가서** 판단하므로 타겟이 존재하지 않는 (깨진)
+    symlink는 `false`를 반환한다 — 결과적으로 전체 저장소 `hg add`(스캔)는 깨진
+    symlink를 조용히 건너뛰고, 특정 경로를 지정한 `hg add <path>`는 아예 거부한다.
+    실제 hg 7.2로 확인: `ln -s missing-target.txt link.txt; hg add` → `A link.txt`
+    (정상 추가, 이후 커밋/업데이트해도 타겟 경로가 그대로 보존됨). 수정 범위는 작을
+    것으로 예상(두 체크 지점에 `Files.isSymbolicLink()` 분기 추가 정도) — 아직
+    미착수.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.
@@ -458,8 +478,23 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
 4건 모두 RED(실패하는 테스트로 버그 재현) 확인 후 수정해 GREEN 전환, 관련 기존
 테스트 전체 재실행으로 회귀 없음 확인.
 
+## 커버리지 95% 이니셔티브 라운드 2 — 44개 클래스 TDD, 실제 버그 21건 발견 (2026-09-02)
+
+`agentBuildDir` 빌드 격리(위 "라운드 1" 사고 이후 도입)로 병렬 에이전트를 5개 배치에
+걸쳐 안전하게 돌려, 미커버 JaCoCo instruction 수가 큰 순서로 44개 클래스를 전수
+TDD 처리했다. 전체 회귀 기준 INSTRUCTION 97.10%/LINE 97.05%/METHOD 97.84%/CLASS
+100%까지 끌어올렸고(BRANCH는 86.40%로 아직 미달, 대부분 방어적 죽은 코드), 그 과정에서
+실제 hg 7.2 대조 검증을 통해 진짜 버그 21건을 발견해 19건을 즉시 수정했다(데이터
+손상/크래시급 다수 포함 — `CommitCommand`의 dirstate-v2 롤백 손상, `Revlog`의
+`appendRawRevision` inline 무시, `StripCommand`의 무효 롤백, `HgRemoteClientV2`의
+증분 pull 손상, `GraftCommand`/`RebaseCommand`의 신규 파일 누락·exec/symlink 소실
+등). 위 항목 8("트리매니페스트")과 10("깨진 symlink")은 이 라운드에서 새로 발견해
+백로그에 추가한 것이다. 전체 버그 목록, 클래스별 전후 커버리지 수치, 배치 구성은
+[[test-coverage-95-percent-initiative]]에 상세 기록. 커밋 `a8b9d96`.
+
 ## 관련 페이지
 - [[jgit-parity-requirement]] — 구조/네이밍 요건 (이 문서와는 독립적인 축)
+- [[test-coverage-95-percent-initiative]] — 커버리지 작업 라운드별 상세 결과/버그 목록
 - [[revlog]], [[dirstate]], [[bundle2-changegroup]], [[revset]] — 이미 조사된 스펙 영역 상세
 - [[core]], [[transport]] — 관련 구현 클래스 위치
 - [[sources]] — 향후 원문 스냅샷을 추가할 위치

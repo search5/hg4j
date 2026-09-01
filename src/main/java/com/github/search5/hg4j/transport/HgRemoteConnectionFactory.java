@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Collections;
 
 /**
  * Factory class to dynamically instantiate the appropriate remote connection
@@ -75,7 +76,7 @@ public class HgRemoteConnectionFactory {
      * Returns an unmodifiable list of all registered TransportProtocols.
      */
     public static List<TransportProtocol> getRegisteredProtocols() {
-        return java.util.Collections.unmodifiableList(protocols);
+        return Collections.unmodifiableList(protocols);
     }
 
     /**

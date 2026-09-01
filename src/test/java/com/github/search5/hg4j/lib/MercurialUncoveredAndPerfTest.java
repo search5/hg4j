@@ -20,6 +20,11 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.lang.ref.SoftReference;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 
 @DisplayName("Mercurial Uncovered Specification and Comprehensive Test Suite")
 public class MercurialUncoveredAndPerfTest {
@@ -138,18 +143,18 @@ public class MercurialUncoveredAndPerfTest {
             virtualFileOffsets[i] = (long) i * 64; 
         }
 
-        Map<Integer, java.lang.ref.SoftReference<String>> mockCache = new HashMap<>();
+        Map<Integer, SoftReference<String>> mockCache = new HashMap<>();
         long start = System.nanoTime();
         
         for (int i = 0; i < 10000; i++) {
             int randomRev = ThreadLocalRandom.current().nextInt(revCount);
             long fileOffset = virtualFileOffsets[randomRev];
             
-            java.lang.ref.SoftReference<String> ref = mockCache.get(randomRev);
+            SoftReference<String> ref = mockCache.get(randomRev);
             String val = (ref != null) ? ref.get() : null;
             if (val == null) {
                 val = "IndexRecord-Data-At-" + fileOffset;
-                mockCache.put(randomRev, new java.lang.ref.SoftReference<>(val));
+                mockCache.put(randomRev, new SoftReference<>(val));
             }
         }
         
@@ -705,8 +710,8 @@ public class MercurialUncoveredAndPerfTest {
             int originalSize = Integer.parseInt(journalLines.get(1));
             
             // Restore physical size
-            try (java.nio.channels.FileChannel outChan = java.nio.channels.FileChannel.open(revlogFile.toPath(), 
-                    java.nio.file.StandardOpenOption.WRITE)) {
+            try (FileChannel outChan = FileChannel.open(revlogFile.toPath(), 
+                    StandardOpenOption.WRITE)) {
                 outChan.truncate(originalSize);
             }
         }
@@ -882,7 +887,7 @@ public class MercurialUncoveredAndPerfTest {
     @DisplayName("testLogCommandFromHexRefactoringParity — NodeIdUtil.fromHex refactoring verification in LogCommand (Fixed BUG-12)")
     public void testLogCommandFromHexRefactoringParity() {
         String hex = "2b17691a24d773c2c5cbe83842c2d43e264627de";
-        byte[] expected = com.github.search5.hg4j.util.NodeIdUtil.fromHex(hex);
+        byte[] expected = NodeIdUtil.fromHex(hex);
         assertNotNull(expected);
         assertEquals(20, expected.length);
     }
@@ -925,14 +930,14 @@ public class MercurialUncoveredAndPerfTest {
         // If the server sends a 14-byte parameter (0x00 0x0E)
         byte[] mockHG20Header = new byte[] { 0x00, 0x0E }; // params_size = 14
         
-        java.io.DataInputStream dis = new java.io.DataInputStream(new java.io.ByteArrayInputStream(mockHG20Header));
+        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(mockHG20Header));
         
         // Currently, reading 1 byte yields paramsSize = 0 (0x00)
         int readAsByte = dis.readUnsignedByte();
         assertEquals(0, readAsByte, "Reading as 1 byte yields paramsSize as 0, which misses compression parameter detection.");
         
         // Correct native hg 2-byte read
-        dis = new java.io.DataInputStream(new java.io.ByteArrayInputStream(mockHG20Header));
+        dis = new DataInputStream(new ByteArrayInputStream(mockHG20Header));
         int readAsShort = dis.readUnsignedShort();
         assertEquals(14, readAsShort, "Parsing as 2-byte (readUnsignedShort) aligned with Mercurial Bundle2 specification prevents this gap.");
     }

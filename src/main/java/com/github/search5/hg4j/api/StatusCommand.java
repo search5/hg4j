@@ -10,19 +10,27 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
+import com.github.search5.hg4j.treewalk.ManifestWalk;
+import com.github.search5.hg4j.treewalk.TreeWalk;
+import com.github.search5.hg4j.treewalk.WorkingDirTreeIterator;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.Arrays;
 
 /**
  * Computes differences between working directory, dirstate, and parent commits.
  */
 public class StatusCommand {
     private final HgRepository repository;
-    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
+    private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
     public StatusCommand(HgRepository repository) {
         this.repository = repository;
     }
 
-    public StatusCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
+    public StatusCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }
@@ -38,10 +46,10 @@ public class StatusCommand {
         long dirstateMtime = dirstateFile.exists() ? dirstateFile.lastModified() / 1000 : 0;
 
         // Fast Path: When treeFilter is null or ALL (dirstate-based path)
-        if (treeFilter == null || treeFilter == com.github.search5.hg4j.treewalk.HgTreeFilter.ALL) {
+        if (treeFilter == null || treeFilter == HgTreeFilter.ALL) {
             Map<String, Dirstate.Entry> tracked = dirstate.getEntries();
             List<String> trackedKeys = new ArrayList<>(tracked.keySet());
-            trackedKeys.sort(com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
+            trackedKeys.sort(NodeIdUtil.UTF8_STRING_COMPARATOR);
 
             for (String path : trackedKeys) {
                 Dirstate.Entry dEntry = tracked.get(path);
@@ -53,32 +61,28 @@ public class StatusCommand {
                     status.getRemoved().add(path);
                 } else if (state == 'n' || state == 'm') {
                     File diskFile = new File(repoDir, path);
-                    if (!diskFile.exists() || !diskFile.isFile()) {
+                    boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
+                    if ((!isSymlink && (!diskFile.exists() || !diskFile.isFile()))) {
                         status.getRemoved().add(path);
                     } else {
-                        long diskSize = diskFile.length();
+                        long diskSize = effectiveSize(diskFile, isSymlink);
                         long diskTime = diskFile.lastModified() / 1000;
                         if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
                             status.getModified().add(path);
                         } else {
                             boolean isRacyModified = false;
                             if (diskTime == dirstateMtime) {
-                                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-                                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                                if (flIdx.exists()) {
-                                    try {
-                                        Revlog filelog = repository.getRevlog(flIdx, flDat);
-                                        if (filelog.getRevisionCount() > 0) {
-                                            byte[] fileContent = java.nio.file.Files.readAllBytes(diskFile.toPath());
-                                            byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                            if (!java.util.Arrays.equals(fileContent, lastContent)) {
-                                                isRacyModified = true;
-                                            }
+                                try {
+                                    byte[] parentContent = getParentCommitFileContent(dirstate, path);
+                                    if (parentContent != null) {
+                                        byte[] fileContent = effectiveContent(diskFile, isSymlink);
+                                        if (!Arrays.equals(fileContent, parentContent)) {
+                                            isRacyModified = true;
                                         }
-                                    } catch (Exception ignored) {}
-                                }
+                                    }
+                                } catch (Exception ignored) {}
                             }
-                            
+
                             if (isRacyModified) {
                                 status.getModified().add(path);
                             } else {
@@ -97,7 +101,7 @@ public class StatusCommand {
                     untrackedList.add(path);
                 }
             }
-            untrackedList.sort(com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
+            untrackedList.sort(NodeIdUtil.UTF8_STRING_COMPARATOR);
             for (String path : untrackedList) {
                 status.getUntracked().add(path);
             }
@@ -120,9 +124,9 @@ public class StatusCommand {
             }
         }
 
-        com.github.search5.hg4j.treewalk.TreeWalk tw = new com.github.search5.hg4j.treewalk.TreeWalk();
-        tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, parentRev));
-        tw.addTree(new com.github.search5.hg4j.treewalk.WorkingDirTreeIterator(repository));
+        TreeWalk tw = new TreeWalk();
+        tw.addTree(new ManifestTreeIterator(repository, parentRev));
+        tw.addTree(new WorkingDirTreeIterator(repository));
 
         tw.reset();
         while (tw.next()) {
@@ -148,34 +152,30 @@ public class StatusCommand {
                     status.getRemoved().add(path);
                 } else if (workingState == 'n' || workingState == 'm') {
                     File diskFile = new File(repoDir, path);
-                    if (!diskFile.exists() || !diskFile.isFile()) {
+                    boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
+                    if (!isSymlink && (!diskFile.exists() || !diskFile.isFile())) {
                         status.getRemoved().add(path);
                     } else {
                         Dirstate.Entry dEntry = dirstate.getEntries().get(path);
                         if (dEntry != null) {
-                            long diskSize = diskFile.length();
+                            long diskSize = effectiveSize(diskFile, isSymlink);
                             long diskTime = diskFile.lastModified() / 1000;
                             if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
                                 status.getModified().add(path);
                             } else {
                                 boolean isRacyModified = false;
                                 if (diskTime == dirstateMtime) {
-                                    File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-                                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                                    if (flIdx.exists()) {
-                                        try {
-                                            Revlog filelog = repository.getRevlog(flIdx, flDat);
-                                            if (filelog.getRevisionCount() > 0) {
-                                                byte[] fileContent = java.nio.file.Files.readAllBytes(diskFile.toPath());
-                                                byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                                if (!java.util.Arrays.equals(fileContent, lastContent)) {
-                                                    isRacyModified = true;
-                                                }
+                                    try {
+                                        byte[] parentContent = getParentCommitFileContent(dirstate, path);
+                                        if (parentContent != null) {
+                                            byte[] fileContent = effectiveContent(diskFile, isSymlink);
+                                            if (!Arrays.equals(fileContent, parentContent)) {
+                                                isRacyModified = true;
                                             }
-                                        } catch (Exception ignored) {}
-                                    }
+                                        }
+                                    } catch (Exception ignored) {}
                                 }
-                                
+
                                 if (isRacyModified) {
                                     status.getModified().add(path);
                                 } else {
@@ -191,5 +191,77 @@ public class StatusCommand {
         }
 
         return status;
+    }
+
+    /**
+     * Returns the "effective content" of a working-copy file the way Mercurial itself
+     * represents it: for a symlink this is the UTF-8 bytes of the link target path
+     * (matching {@code os.lstat}/{@code os.readlink} semantics and what is actually
+     * stored in the filelog), never the bytes of whatever the link happens to point at.
+     * A plain {@code File.length()}/{@code Files.readAllBytes()} on a symlink follows it
+     * to the target file instead, which is a different (and unrelated) size/content —
+     * comparing that against the dirstate/filelog entry produces false "modified" results
+     * for any symlink whose target's content size differs from its own path string length.
+     */
+    private static byte[] effectiveContent(File diskFile, boolean isSymlink) throws IOException {
+        if (isSymlink) {
+            return Files.readSymbolicLink(diskFile.toPath()).toString()
+                    .getBytes(StandardCharsets.UTF_8);
+        }
+        return Files.readAllBytes(diskFile.toPath());
+    }
+
+    private static long effectiveSize(File diskFile, boolean isSymlink) throws IOException {
+        if (isSymlink) {
+            return effectiveContent(diskFile, true).length;
+        }
+        return diskFile.length();
+    }
+
+    /**
+     * Returns the content of {@code path} as recorded in the manifest of the working
+     * copy's current parent commit (dirstate parent1), or {@code null} if it cannot be
+     * resolved (no commits yet, or the path is not present at that revision).
+     * <p>
+     * This is deliberately NOT "the file's latest filelog revision" — after {@code
+     * hg update} to a non-tip revision, later revisions still exist in the filelog but
+     * are not what the working copy is currently checked out against, so comparing
+     * against them would produce false "modified" results for untouched files.
+     */
+    private byte[] getParentCommitFileContent(Dirstate dirstate, String path) throws IOException {
+        byte[] p1 = dirstate.getParent1();
+        if (p1 == null || NodeIdUtil.isAllZero(p1)) {
+            return null;
+        }
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        if (!clIdx.exists()) {
+            return null;
+        }
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        int parentRev = changelog.findRevision(p1);
+        if (parentRev == -1) {
+            return null;
+        }
+
+        ManifestWalk mw =
+                new ManifestWalk(repository, String.valueOf(parentRev));
+        while (mw.next()) {
+            ManifestWalk.Entry entry = mw.getEntry();
+            if (entry.getPath().equals(path)) {
+                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                if (!flIdx.exists()) {
+                    return null;
+                }
+                Revlog filelog = repository.getRevlog(flIdx, flDat);
+                int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, entry.getNodeId());
+                if (fileRev == -1) {
+                    return null;
+                }
+                return filelog.getRevisionContent(fileRev);
+            }
+        }
+        return null;
     }
 }

@@ -3,7 +3,6 @@ import com.github.search5.hg4j.bundle.Bundle2Parser;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 
 import com.github.search5.hg4j.lib.HgRepository;
-import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
@@ -25,6 +24,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.HgTestUtils;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 public class HgSshTransportRoundtripTest {
 
@@ -33,14 +36,14 @@ public class HgSshTransportRoundtripTest {
         String url = "ssh://hg4juser@127.0.0.1:22/test/repo";
         try (HgSshClient client = new HgSshClient(url)) {
             // Inject invalid header response in the stream
-            java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+            Field inField = HgSshClient.class.getDeclaredField("in");
             inField.setAccessible(true);
             inField.set(client, new ByteArrayInputStream("invalid response format\n".getBytes(StandardCharsets.UTF_8)));
 
-            java.lang.reflect.Method readCapabilities = HgSshClient.class.getDeclaredMethod("readCapabilities");
+            Method readCapabilities = HgSshClient.class.getDeclaredMethod("readCapabilities");
             readCapabilities.setAccessible(true);
 
-            java.lang.reflect.InvocationTargetException ex = assertThrows(java.lang.reflect.InvocationTargetException.class, () -> {
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class, () -> {
                 readCapabilities.invoke(client);
             });
             assertTrue(ex.getCause() instanceof HgProtocolException);
@@ -51,20 +54,20 @@ public class HgSshTransportRoundtripTest {
     public void testSshAbruptEofDuringChunkRead() throws Exception {
         String url = "ssh://hg4juser@127.0.0.1:22/test/repo";
         try (HgSshClient client = new HgSshClient(url)) {
-            java.lang.reflect.Field connectedField = HgSshClient.class.getDeclaredField("connected");
+            Field connectedField = HgSshClient.class.getDeclaredField("connected");
             connectedField.setAccessible(true);
             connectedField.set(client, true);
 
-            java.lang.reflect.Field capabilitiesField = HgSshClient.class.getDeclaredField("capabilities");
+            Field capabilitiesField = HgSshClient.class.getDeclaredField("capabilities");
             capabilitiesField.setAccessible(true);
             capabilitiesField.set(client, List.of("lookup", "changegroupsubsets", "branchmap", "getbundle"));
 
-            java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+            Field inField = HgSshClient.class.getDeclaredField("in");
             inField.setAccessible(true);
             // Incomplete chunk length simulation (EOF)
             inField.set(client, new ByteArrayInputStream(new byte[]{0, 0}));
 
-            java.lang.reflect.Field outField = HgSshClient.class.getDeclaredField("out");
+            Field outField = HgSshClient.class.getDeclaredField("out");
             outField.setAccessible(true);
             outField.set(client, new ByteArrayOutputStream());
 
@@ -90,8 +93,8 @@ public class HgSshTransportRoundtripTest {
         byte[] c2 = new CommitCommand(srcRepo).setAuthor("Tester <tester@example.com>").setMessage("SSH Second").call();
         
         // 2. Serialize source repo to mock bundle
-        ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
-        byte[] rawCg = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] rawCg = HgTestUtils.serializeBundleToBytes(bundle);
         
         ByteArrayOutputStream serverResponse = new ByteArrayOutputStream();
         // Heads response: c2 + "\n"
@@ -123,19 +126,19 @@ public class HgSshTransportRoundtripTest {
         // 4. Inject reflection mock to HgSshClient
         String url = "ssh://hg4juser@127.0.0.1:22/dummy/path";
         try (HgSshClient client = new HgSshClient(url)) {
-            java.lang.reflect.Field connectedField = HgSshClient.class.getDeclaredField("connected");
+            Field connectedField = HgSshClient.class.getDeclaredField("connected");
             connectedField.setAccessible(true);
             connectedField.set(client, true);
             
-            java.lang.reflect.Field capabilitiesField = HgSshClient.class.getDeclaredField("capabilities");
+            Field capabilitiesField = HgSshClient.class.getDeclaredField("capabilities");
             capabilitiesField.setAccessible(true);
             capabilitiesField.set(client, List.of("lookup", "changegroupsubsets", "branchmap", "getbundle"));
             
-            java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+            Field inField = HgSshClient.class.getDeclaredField("in");
             inField.setAccessible(true);
             inField.set(client, new ByteArrayInputStream(serverResponse.toByteArray()));
             
-            java.lang.reflect.Field outField = HgSshClient.class.getDeclaredField("out");
+            Field outField = HgSshClient.class.getDeclaredField("out");
             outField.setAccessible(true);
             ByteArrayOutputStream clientSentBytes = new ByteArrayOutputStream();
             outField.set(client, clientSentBytes);
@@ -178,29 +181,29 @@ public class HgSshTransportRoundtripTest {
         byte[] c1 = new CommitCommand(localRepo).setAuthor("Tester <tester@example.com>").setMessage("SSH Push Commit").call();
         
         // 2. Serialize local repo bundle bytes
-        ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(localRepo);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(localRepo);
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         bos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
-        bos.write(com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle));
+        bos.write(HgTestUtils.serializeBundleToBytes(bundle));
         byte[] localBundleBytes = bos.toByteArray();
         
         // 3. Inject reflection mock to HgSshClient
         String url = "ssh://hg4juser@127.0.0.1:22/dummy/path";
         try (HgSshClient client = new HgSshClient(url)) {
-            java.lang.reflect.Field connectedField = HgSshClient.class.getDeclaredField("connected");
+            Field connectedField = HgSshClient.class.getDeclaredField("connected");
             connectedField.setAccessible(true);
             connectedField.set(client, true);
             
-            java.lang.reflect.Field capabilitiesField = HgSshClient.class.getDeclaredField("capabilities");
+            Field capabilitiesField = HgSshClient.class.getDeclaredField("capabilities");
             capabilitiesField.setAccessible(true);
             capabilitiesField.set(client, List.of("lookup", "changegroupsubsets", "branchmap", "unbundle"));
             
-            java.lang.reflect.Field inField = HgSshClient.class.getDeclaredField("in");
+            Field inField = HgSshClient.class.getDeclaredField("in");
             inField.setAccessible(true);
             // Inject successful unbundle response matching Mercurial spec (1 line message follows)
             inField.set(client, new ByteArrayInputStream("1\nno errors\n".getBytes(StandardCharsets.UTF_8)));
             
-            java.lang.reflect.Field outField = HgSshClient.class.getDeclaredField("out");
+            Field outField = HgSshClient.class.getDeclaredField("out");
             outField.setAccessible(true);
             ByteArrayOutputStream clientSentBytes = new ByteArrayOutputStream();
             outField.set(client, clientSentBytes);

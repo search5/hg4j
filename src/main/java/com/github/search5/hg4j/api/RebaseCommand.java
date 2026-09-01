@@ -16,6 +16,20 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.obsolete.HgObsMarker;
+import com.github.search5.hg4j.revwalk.ChangesetGraph;
+import com.github.search5.hg4j.treewalk.ManifestWalk;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Porcelain command to rebase revisions on top of another base revision.
@@ -23,13 +37,13 @@ import java.util.Map;
  * Now supports full physical strip of original duplicate history for complete interop fidelity.
  */
 public class RebaseCommand {
-    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(RebaseCommand.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(RebaseCommand.class.getName());
 
     private final HgRepository repository;
     private byte[] sourceNode;
     private byte[] targetNode;
-    private final java.util.List<HgHook> preRebaseHooks = new java.util.ArrayList<>();
-    private final java.util.List<HgHook> postRebaseHooks = new java.util.ArrayList<>();
+    private final List<HgHook> preRebaseHooks = new ArrayList<>();
+    private final List<HgHook> postRebaseHooks = new ArrayList<>();
 
     private static class BackupCommit {
         byte[] originalNode;
@@ -96,11 +110,11 @@ public class RebaseCommand {
         int tgtRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNode);
 
         if (srcRev == -1 || tgtRev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Source or target revision not found in history.");
+            throw new HgRevisionNotFoundException("Source or target revision not found in history.");
         }
 
         // Collect all descendant revisions of source revision (inclusive)
-        com.github.search5.hg4j.revwalk.ChangesetGraph graph = new com.github.search5.hg4j.revwalk.ChangesetGraph(changelog);
+        ChangesetGraph graph = new ChangesetGraph(changelog);
         List<Integer> revisionsToRebase = new ArrayList<>();
         revisionsToRebase.add(srcRev);
         for (int r = srcRev + 1; r < changelog.getRevisionCount(); r++) {
@@ -134,13 +148,13 @@ public class RebaseCommand {
             
             // PRE_REBASE hooks trigger
             if (!preRebaseHooks.isEmpty()) {
-                Map<String, Object> ctx = new java.util.HashMap<>();
+                Map<String, Object> ctx = new HashMap<>();
                 ctx.put("repository", repository);
                 ctx.put("sourceNode", sourceNode);
                 ctx.put("targetNode", targetNode);
                 for (HgHook hook : preRebaseHooks) {
                     if (!hook.run(ctx)) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("Rebase rejected by PRE_REBASE hook");
+                        throw new HgValidationException("Rebase rejected by PRE_REBASE hook");
                     }
                 }
             }
@@ -158,7 +172,7 @@ public class RebaseCommand {
             changelog = repository.getRevlog(clIdx, clDat);
 
             // Map to track original nodes to rebased/restored nodes for parent updates
-            Map<java.nio.ByteBuffer, byte[]> nodeMapping = new HashMap<>();
+            Map<ByteBuffer, byte[]> nodeMapping = new HashMap<>();
 
             // 4. Cherry-pick each backed up commit onto the target/new parent
             byte[] currentBaseNode = targetNode;
@@ -166,11 +180,11 @@ public class RebaseCommand {
                 byte[] rebasedNode = cherryPickBackup(backup, currentBaseNode, nodeMapping);
                 // Register obsolescence marker linking original commit to rebased commit
                 try {
-                    com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), backup.originalNode, List.of(rebasedNode), "rebase");
+                    HgObsMarker.writeMarker(repository.getStoreDir(), backup.originalNode, List.of(rebasedNode), "rebase");
                 } catch (Exception e) {
                     // non-blocking
                 }
-                nodeMapping.put(java.nio.ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), rebasedNode);
+                nodeMapping.put(ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), rebasedNode);
                 currentBaseNode = rebasedNode;
             }
 
@@ -179,14 +193,14 @@ public class RebaseCommand {
                 byte[] p1 = backup.parent1Node;
                 byte[] p2 = backup.parent2Node;
                 
-                byte[] mappedP1 = nodeMapping.get(java.nio.ByteBuffer.wrap(Arrays.copyOf(p1, 20)));
+                byte[] mappedP1 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(p1, 20)));
                 if (mappedP1 != null) p1 = mappedP1;
                 
-                byte[] mappedP2 = nodeMapping.get(java.nio.ByteBuffer.wrap(Arrays.copyOf(p2, 20)));
+                byte[] mappedP2 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(p2, 20)));
                 if (mappedP2 != null) p2 = mappedP2;
 
                 byte[] restoredNode = restoreBackup(backup, p1, p2, nodeMapping);
-                nodeMapping.put(java.nio.ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), restoredNode);
+                nodeMapping.put(ByteBuffer.wrap(Arrays.copyOf(backup.originalNode, 20)), restoredNode);
             }
 
             // 6. Checkout the final rebased state
@@ -197,7 +211,7 @@ public class RebaseCommand {
             deleteDirRecursively(backupDir);
 
             // POST_REBASE hooks trigger
-            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            Map<String, Object> ctx = new HashMap<>();
             ctx.put("sourceNode", sourceNode);
             ctx.put("targetNode", targetNode);
             ctx.put("rebasedTipNode", NodeIdUtil.toHex(currentBaseNode));
@@ -206,7 +220,7 @@ public class RebaseCommand {
                 try {
                     hook.run(ctx);
                 } catch (Exception e) {
-                    LOGGER.log(java.util.logging.Level.WARNING, "Post-rebase hook execution failed", e);
+                    LOGGER.log(Level.WARNING, "Post-rebase hook execution failed", e);
                 }
             }
 
@@ -235,7 +249,7 @@ public class RebaseCommand {
             copyToBackup(fncacheFile, backupDir, backupMapping);
             
             // Collect all unique file paths affected in the rebase range (O(delta) selective backup)
-            java.util.Set<String> affectedFiles = new java.util.HashSet<>();
+            Set<String> affectedFiles = new HashSet<>();
             for (int r = startRev; r < changelog.getRevisionCount(); r++) {
                 byte[] clContent = changelog.getRevisionContent(r);
                 String clText = new String(clContent, StandardCharsets.UTF_8);
@@ -271,7 +285,7 @@ public class RebaseCommand {
         String relPath = repository.getStoreDir().toPath().relativize(sourceFile.toPath()).toString();
         File targetFile = new File(backupDir, relPath);
         targetFile.getParentFile().mkdirs();
-        Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
         backupMapping.put(sourceFile, targetFile);
     }
 
@@ -506,14 +520,14 @@ public class RebaseCommand {
         if (size == 0) {
             Files.deleteIfExists(file.toPath());
         } else {
-            try (java.nio.channels.FileChannel outChan = java.nio.channels.FileChannel.open(file.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+            try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
                 outChan.truncate(size);
                 outChan.force(true);
             }
         }
     }
 
-    private byte[] cherryPickBackup(BackupCommit backup, byte[] newParentNode, Map<java.nio.ByteBuffer, byte[]> nodeMapping) throws IOException, HgLockException {
+    private byte[] cherryPickBackup(BackupCommit backup, byte[] newParentNode, Map<ByteBuffer, byte[]> nodeMapping) throws IOException, HgLockException {
         // 1. Temporarily checkout the new parent node to prepare files
         checkoutNode(newParentNode);
 
@@ -550,7 +564,7 @@ public class RebaseCommand {
         return commitCmd.call();
     }
 
-    private byte[] restoreBackup(BackupCommit backup, byte[] p1Node, byte[] p2Node, Map<java.nio.ByteBuffer, byte[]> nodeMapping) throws IOException {
+    private byte[] restoreBackup(BackupCommit backup, byte[] p1Node, byte[] p2Node, Map<ByteBuffer, byte[]> nodeMapping) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
@@ -601,7 +615,7 @@ public class RebaseCommand {
             }
         }
 
-        byte[] mappedP1 = nodeMapping.get(java.nio.ByteBuffer.wrap(Arrays.copyOf(backup.parent1Node, 20)));
+        byte[] mappedP1 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(backup.parent1Node, 20)));
         if (mappedP1 != null) {
             int rebasedP1Rev = changelog.findRevision(mappedP1);
             if (rebasedP1Rev != -1) {
@@ -611,7 +625,7 @@ public class RebaseCommand {
                 p1MfRev = manifest.findRevision(p1MfNode);
             }
         }
-        byte[] mappedP2 = nodeMapping.get(java.nio.ByteBuffer.wrap(Arrays.copyOf(backup.parent2Node, 20)));
+        byte[] mappedP2 = nodeMapping.get(ByteBuffer.wrap(Arrays.copyOf(backup.parent2Node, 20)));
         if (mappedP2 != null) {
             int rebasedP2Rev = changelog.findRevision(mappedP2);
             if (rebasedP2Rev != -1) {
@@ -640,13 +654,13 @@ public class RebaseCommand {
 
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, manifestNode);
         if (mfRev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Manifest revision not found for node: " + NodeIdUtil.toHex(manifestNode));
+            throw new HgRevisionNotFoundException("Manifest revision not found for node: " + NodeIdUtil.toHex(manifestNode));
         }
 
         Map<String, String> entries = new HashMap<>();
-        com.github.search5.hg4j.treewalk.ManifestWalk mw = new com.github.search5.hg4j.treewalk.ManifestWalk(repository, manifestNode);
+        ManifestWalk mw = new ManifestWalk(repository, manifestNode);
         while (mw.next()) {
-            com.github.search5.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
+            ManifestWalk.Entry entry = mw.getEntry();
             String flag = entry.isExecutable() ? "x" : (entry.isSymlink() ? "l" : "");
             entries.put(entry.getPath(), entry.getNodeIdHex() + flag);
         }
@@ -677,7 +691,7 @@ public class RebaseCommand {
                 mode = 0120000;
                 String target = new String(fileContent, StandardCharsets.UTF_8).trim();
                 try {
-                    Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                    Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
                 } catch (Exception e) {
                     Files.write(diskFile.toPath(), fileContent);
                 }
@@ -730,8 +744,8 @@ public class RebaseCommand {
             
             sb.append("backup ").append(origRel).append("\t").append(backupRel).append("\n");
         }
-        Files.writeString(journalFile.toPath(), sb.toString(), java.nio.charset.StandardCharsets.UTF_8);
-        try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+        Files.writeString(journalFile.toPath(), sb.toString(), StandardCharsets.UTF_8);
+        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
             fc.force(true);
         }
     }
@@ -748,7 +762,7 @@ public class RebaseCommand {
             if (backupCopy.exists()) {
                 try {
                     originalFile.getParentFile().mkdirs();
-                    Files.copy(backupCopy.toPath(), originalFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    Files.copy(backupCopy.toPath(), originalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 } catch (Exception ignored) {}
             } else {
                 try {

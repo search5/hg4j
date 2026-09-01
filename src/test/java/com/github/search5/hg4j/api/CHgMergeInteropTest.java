@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import com.github.search5.hg4j.util.NodeIdUtil;
 
 @Tag("interop")
 public class CHgMergeInteropTest {
@@ -75,7 +76,7 @@ public class CHgMergeInteropTest {
                 .call();
 
         // native hg로 merge commit의 parents 검증
-        String mergeNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(mergeCommitNode);
+        String mergeNodeHex = NodeIdUtil.toHex(mergeCommitNode);
         String nativeParents = HgTestUtils.hg(repoDir, "log", "-r", mergeNodeHex, "--template", "{p1node}:{p2node}");
         String[] parents = nativeParents.split(":");
 

@@ -1,20 +1,21 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.lib.HgRepository;
-import com.github.search5.hg4j.util.SafeFileIO;
+import com.github.search5.hg4j.merge.MergeState;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.util.List;
 
 /**
- * Porcelain command to manage merge conflict states (resolved vs unresolved).
- * Emulates Mercurial's 'hg resolve' command and saves metadata inside .hg/merge/state.
+ * Porcelain command to inspect/update merge conflict resolution state — the read/manage
+ * counterpart of {@link MergeCommand}. Both now operate on the same real on-disk state
+ * ({@code .hg/merge/state2}, via {@link MergeState}), so a conflict left by {@code
+ * MergeCommand} can actually be marked resolved/unresolved here, and the result is visible
+ * to real {@code hg resolve --list} (see {@code MergeStateInteropTest}).
  */
 public final class ResolveCommand {
     private final HgRepository repository;
@@ -51,96 +52,53 @@ public final class ResolveCommand {
     }
 
     /**
-     * Executes conflict resolution status query or update.
+     * Executes conflict resolution status query or update against {@code .hg/merge/state2}.
      *
      * @return map of path to resolution state (true for resolved, false for unresolved)
-     * @throws IOException if merge state file read/write fails
+     * @throws IOException if merge state file read/write fails, or if a resolution update
+     *         was requested while there is no merge in progress (or for a path that is not
+     *         part of it) — matching real hg's refusal to resolve outside a merge.
      */
     public Map<String, Boolean> call() throws IOException {
-        File mergeStateFile = new File(repository.getHgDir(), "merge/state");
-        Map<String, Boolean> states = new LinkedHashMap<>();
+        File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
+        MergeState mergeState = MergeState.read(mergeStateFile);
 
-        // Load existing merge state
-        if (mergeStateFile.exists() && mergeStateFile.isFile()) {
-            String content = Files.readString(mergeStateFile.toPath(), StandardCharsets.UTF_8);
-            String[] lines = content.split("\n");
-            int lineNum = 0;
-            for (String line : lines) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty()) continue;
-                
-                // Skip the first two lines (P1 and P2 node ids) if they are not key-value format
-                if (lineNum < 2 && trimmed.length() == 40 && !trimmed.contains("=")) {
-                    lineNum++;
-                    continue;
-                }
-                
-                int eqIdx = trimmed.indexOf('=');
-                if (eqIdx != -1) {
-                    // Fallback to legacy path=true/false format
-                    String path = trimmed.substring(0, eqIdx).trim();
-                    boolean state = Boolean.parseBoolean(trimmed.substring(eqIdx + 1).trim());
-                    states.put(path, state);
-                } else if (trimmed.startsWith("u ") || trimmed.startsWith("U ")) {
-                    String path = trimmed.substring(2).trim();
-                    states.put(path, false);
-                } else if (trimmed.startsWith("r ") || trimmed.startsWith("R ")) {
-                    String path = trimmed.substring(2).trim();
-                    states.put(path, true);
-                } else {
-                    // Other record types or standalone 40-char hashes not matched above
-                    if (trimmed.length() == 40) {
-                        lineNum++;
-                    }
-                }
+        if (fileToMark != null && (markResolved || markUnresolved)) {
+            if (!mergeState.isActive()) {
+                throw new HgValidationException(
+                        "resolve command not applicable when not merging");
             }
-        }
+            if (!mergeState.hasFile(fileToMark)) {
+                throw new HgValidationException(
+                        fileToMark + " is not part of the current merge, nothing to resolve");
+            }
 
-        // Apply state updates if requested
-        if (fileToMark != null) {
             if (markResolved) {
-                states.put(fileToMark, true);
-            } else if (markUnresolved) {
-                states.put(fileToMark, false);
+                mergeState.markResolved(fileToMark);
+            } else {
+                mergeState.markUnresolved(fileToMark);
             }
-            
-            // Save merge state back to disk
-            File parent = mergeStateFile.getParentFile();
-            if (!parent.exists() && !parent.mkdirs()) {
-                throw new IOException("Failed to create merge state directories");
-            }
+            mergeState.write(mergeStateFile);
 
-            // Extract parents from dirstate for standard compatibility
-            String p1 = "0000000000000000000000000000000000000000";
-            String p2 = "0000000000000000000000000000000000000000";
-            try {
-                com.github.search5.hg4j.dirstate.Dirstate dirstate = repository.getDirstate();
-                if (dirstate.getParent1() != null) {
-                    p1 = com.github.search5.hg4j.util.NodeIdUtil.toHex(dirstate.getParent1());
-                }
-                if (dirstate.getParent2() != null) {
-                    p2 = com.github.search5.hg4j.util.NodeIdUtil.toHex(dirstate.getParent2());
-                }
-            } catch (Exception ignored) {}
-
-            StringBuilder sb = new StringBuilder();
-            sb.append(p1).append("\n");
-            sb.append(p2).append("\n");
-            for (Map.Entry<String, Boolean> entry : states.entrySet()) {
-                String prefix = entry.getValue() ? "r" : "u";
-                sb.append(prefix).append(" ").append(entry.getKey()).append("\n");
-            }
-            SafeFileIO.writeStringAtomic(mergeStateFile, sb.toString());
-            
             if (!list) {
                 Map<String, Boolean> filtered = new LinkedHashMap<>();
-                if (states.containsKey(fileToMark)) {
-                    filtered.put(fileToMark, states.get(fileToMark));
-                }
+                filtered.put(fileToMark, isResolved(mergeState, fileToMark));
                 return filtered;
             }
         }
 
+        Map<String, Boolean> states = new LinkedHashMap<>();
+        for (String path : mergeState.state.keySet()) {
+            states.put(path, isResolved(mergeState, path));
+        }
         return states;
+    }
+
+    private static boolean isResolved(MergeState mergeState, String path) {
+        List<String> fields = mergeState.state.get(path);
+        if (fields == null || fields.isEmpty()) {
+            return false;
+        }
+        return MergeState.RESOLVED.equals(fields.get(0)) || MergeState.RESOLVED_PATH.equals(fields.get(0));
     }
 }

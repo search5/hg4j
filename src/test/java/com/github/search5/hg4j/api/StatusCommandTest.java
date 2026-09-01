@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
+import java.util.List;
 
 public class StatusCommandTest {
 
@@ -92,7 +94,7 @@ public class StatusCommandTest {
         assertEquals(2, stAll.getUntracked().size());
 
         // Status with filter (only "src/")
-        com.github.search5.hg4j.treewalk.HgTreeFilter filter = com.github.search5.hg4j.treewalk.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
+        HgTreeFilter filter = HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
         Status stFiltered = new StatusCommand(repo).setTreeFilter(filter).call();
 
         assertEquals(1, stFiltered.getUntracked().size());
@@ -141,10 +143,10 @@ public class StatusCommandTest {
         Files.writeString(f5.toPath(), "untracked content");
 
         // 2. Fast Path로 Status 호출 (treeFilter == ALL)
-        Status fastStatus = new StatusCommand(repo).setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter.ALL).call();
+        Status fastStatus = new StatusCommand(repo).setTreeFilter(HgTreeFilter.ALL).call();
 
         // 3. Slow Path로 Status 호출 (custom filter를 써서 treeFilter == ALL 조건 우회)
-        com.github.search5.hg4j.treewalk.HgTreeFilter customFilter = new com.github.search5.hg4j.treewalk.HgTreeFilter() {
+        HgTreeFilter customFilter = new HgTreeFilter() {
             @Override
             public boolean accept(String path) {
                 return true;
@@ -165,5 +167,105 @@ public class StatusCommandTest {
         assertTrue(fastStatus.getRemoved().contains("removed.txt"));
         assertTrue(fastStatus.getClean().contains("clean.txt"));
         assertTrue(fastStatus.getUntracked().contains("untracked.txt"));
+    }
+
+    @Test
+    public void detectsPhysicallyDeletedFileStillMarkedNormalAsRemoved(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "gone.txt");
+        Files.writeString(f.toPath(), "will be deleted");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add gone.txt").call();
+
+        assertTrue(f.delete()); // physically deleted without updating dirstate (state stays 'n')
+
+        Status fast = new StatusCommand(repo).call();
+        assertEquals(1, fast.getRemoved().size());
+        assertTrue(fast.getRemoved().contains("gone.txt"));
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();
+        assertEquals(1, slow.getRemoved().size());
+        assertTrue(slow.getRemoved().contains("gone.txt"));
+    }
+
+    @Test
+    public void detectsRacilyModifiedFileWhenSizeAndMtimeMatchButContentDiffers(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "racy.txt");
+        String original = "0123456789";
+        Files.writeString(f.toPath(), original);
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add racy.txt").call();
+
+        // Overwrite with different content of the exact same byte length, then force the
+        // dirstate entry and the dirstate file's own mtime to (falsely) agree with the disk
+        // file's size/mtime, so the cheap size/mtime check alone would call it "clean" and
+        // only the racy-write content comparison against the filelog can catch the change.
+        String rewritten = "9876543210";
+        Files.writeString(f.toPath(), rewritten);
+        long diskTime = f.lastModified() / 1000;
+
+        Dirstate dirstate = repo.getDirstate();
+        Dirstate.Entry entry = dirstate.getEntries().get("racy.txt");
+        dirstate.addEntry("racy.txt", new Dirstate.Entry(entry.getState(), entry.getMode(), rewritten.length(), diskTime));
+        repo.writeDirstate(dirstate);
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        Status fast = new StatusCommand(repo).call();
+        assertTrue(fast.getModified().contains("racy.txt"), "Fast path must detect the racy write via filelog content comparison");
+        assertFalse(fast.getClean().contains("racy.txt"));
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();
+        assertTrue(slow.getModified().contains("racy.txt"), "Slow path must detect the racy write via filelog content comparison");
+        assertFalse(slow.getClean().contains("racy.txt"));
+    }
+
+    @Test
+    public void unchangedSymlinkWhoseTargetContentIsLongerThanItsOwnPathStringIsClean(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // The symlink's own "content" (its target path string, e.g. "target.txt") is much
+        // shorter than the file it points to — this is exactly the mismatch that a
+        // File.length()-based (link-following) size check gets wrong.
+        Files.writeString(new File(repoDir, "target.txt").toPath(),
+                "this is a much longer target file content than the link's own path string");
+        File link = new File(repoDir, "link.txt");
+        Files.createSymbolicLink(link.toPath(), Path.of("target.txt"));
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add symlink").call();
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getClean().contains("link.txt"),
+                "Untouched symlink must be reported clean regardless of its target's content size, got: " + status.getModified());
+        assertFalse(status.getModified().contains("link.txt"));
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status slowStatus = new StatusCommand(repo).setTreeFilter(customFilter).call();
+        assertTrue(slowStatus.getClean().contains("link.txt"));
+    }
+
+    @Test
+    public void symlinkRetargetedToADifferentPathIsReportedModified(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "a");
+        Files.writeString(new File(repoDir, "much-longer-name.txt").toPath(), "b");
+        File link = new File(repoDir, "link.txt");
+        Files.createSymbolicLink(link.toPath(), Path.of("a.txt"));
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add symlink to a.txt").call();
+
+        Files.delete(link.toPath());
+        Files.createSymbolicLink(link.toPath(), Path.of("much-longer-name.txt"));
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getModified().contains("link.txt"),
+                "Symlink re-pointed at a different target must be reported modified, got clean=" + status.getClean());
     }
 }

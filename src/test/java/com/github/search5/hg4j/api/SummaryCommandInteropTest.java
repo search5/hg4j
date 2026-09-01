@@ -14,6 +14,7 @@ import java.io.File;
 import java.nio.file.Files;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.file.Path;
 
 /**
  * {@code hg summary}에 해당하는 {@link SummaryCommand}를 실제 hg CLI(`hg parents`, `hg branch`,
@@ -28,7 +29,7 @@ public class SummaryCommandInteropTest {
     }
 
     @Test
-    public void emptyRepositoryHasNoParentsAndDefaultBranch(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void emptyRepositoryHasNoParentsAndDefaultBranch(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
@@ -41,7 +42,7 @@ public class SummaryCommandInteropTest {
     }
 
     @Test
-    public void singleParentMatchesRealHg(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void singleParentMatchesRealHg(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -66,7 +67,7 @@ public class SummaryCommandInteropTest {
     }
 
     @Test
-    public void activeBookmarkAndStatusCountsMatchRealHg(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void activeBookmarkAndStatusCountsMatchRealHg(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -101,7 +102,7 @@ public class SummaryCommandInteropTest {
     }
 
     @Test
-    public void mergeInProgressReportsTwoParents(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void mergeInProgressReportsTwoParents(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -128,7 +129,7 @@ public class SummaryCommandInteropTest {
     }
 
     @Test
-    public void nonDefaultBranchIsReported(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void nonDefaultBranchIsReported(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);

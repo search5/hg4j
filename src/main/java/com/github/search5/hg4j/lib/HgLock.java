@@ -10,6 +10,8 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.net.InetAddress;
+import java.util.Map;
 
 /**
  * Implements a production-grade lock mechanism perfectly compatible with Mercurial native wlock and lock.
@@ -30,7 +32,7 @@ public class HgLock implements AutoCloseable {
         }
     }
 
-    private static final java.util.Map<String, LockInfo> JVM_ACTIVE_LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<String, LockInfo> JVM_ACTIVE_LOCKS = new ConcurrentHashMap<>();
 
     private final File lockFile;
     private final int timeoutMs;
@@ -222,7 +224,7 @@ public class HgLock implements AutoCloseable {
         }
         if (host == null || host.isEmpty()) {
             try {
-                host = java.net.InetAddress.getLocalHost().getHostName();
+                host = InetAddress.getLocalHost().getHostName();
             } catch (Exception ignored) {
                 host = "localhost";
             }

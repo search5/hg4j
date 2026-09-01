@@ -53,7 +53,7 @@ public class CHgLogTest {
         String[] nativeLines = nativeLog.split("\n");
 
         // 2. Get hg4j log outputs (newest first, i.e. descending rev)
-        List<com.github.search5.hg4j.api.HgCommit> hg4jLog = new LogCommand(repository).call();
+        List<HgCommit> hg4jLog = new LogCommand(repository).call();
 
         // 3. 1:1 Field Level Comparisons
         // 두 출력 모두 newest first이므로 인덱스가 1:1 대응
@@ -63,7 +63,7 @@ public class CHgLogTest {
         for (int i = 0; i < 3; i++) {
             // nativeLines[i] ↔ hg4jLog.get(i) — 둘 다 newest first
             String[] fields = nativeLines[i].split("\\|");
-            com.github.search5.hg4j.api.HgCommit hgCommit = hg4jLog.get(i);
+            HgCommit hgCommit = hg4jLog.get(i);
 
             assertEquals(fields[0], hgCommit.getNodeId().toHex(), "Node ID must match (i=" + i + ")");
             assertEquals(fields[1], hgCommit.getMessage(), "Commit message must match (i=" + i + ")");

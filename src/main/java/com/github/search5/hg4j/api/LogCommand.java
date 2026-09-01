@@ -9,6 +9,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.revwalk.ChangesetGraph;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import java.util.Set;
 
 /**
  * Traverses changelog revlog and retrieves commit history.
@@ -18,13 +23,13 @@ public class LogCommand {
     private final HgRepository repository;
     private boolean followAncestors = false;
     private String startRev = null;
-    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
+    private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
     public LogCommand(HgRepository repository) {
         this.repository = repository;
     }
 
-    public LogCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
+    public LogCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }
@@ -53,12 +58,12 @@ public class LogCommand {
         int totalRevisions = changelog.getRevisionCount();
         List<HgCommit> commits = new ArrayList<>();
 
-        java.util.Set<Integer> allowedRevs = null;
+        Set<Integer> allowedRevs = null;
         if (followAncestors && startRev != null) {
-            byte[] resolvedNode = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, startRev);
-            int startRevNum = com.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(changelog, resolvedNode);
+            byte[] resolvedNode = NodeIdUtil.resolveRevision(changelog, startRev);
+            int startRevNum = NodeIdUtil.findRevisionByNodeId(changelog, resolvedNode);
             if (startRevNum != -1) {
-                com.github.search5.hg4j.revwalk.ChangesetGraph graph = new com.github.search5.hg4j.revwalk.ChangesetGraph(changelog);
+                ChangesetGraph graph = new ChangesetGraph(changelog);
                 allowedRevs = graph.getAllAncestors(startRevNum);
             }
         }
@@ -85,7 +90,7 @@ public class LogCommand {
                 LOGGER.log(Level.WARNING, "Warning: Malformed commit text at revision {0}: invalid manifest hex length", rev);
                 continue;
             }
-            byte[] manifestNodeId = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
+            byte[] manifestNodeId = NodeIdUtil.fromHex(manifestHex);
 
             int secondNewline = text.indexOf('\n', firstNewline + 1);
             if (secondNewline == -1) {
@@ -164,7 +169,7 @@ public class LogCommand {
                 message = text.substring(thirdNewline + 1);
             }
 
-            if (treeFilter != null && treeFilter != com.github.search5.hg4j.treewalk.HgTreeFilter.ALL) {
+            if (treeFilter != null && treeFilter != HgTreeFilter.ALL) {
                 boolean matched = false;
                 for (String file : files) {
                     if (treeFilter.accept(file)) {
@@ -177,7 +182,7 @@ public class LogCommand {
                 }
             }
 
-            commits.add(new HgCommit(rev, new com.github.search5.hg4j.lib.NodeId(nodeId), new com.github.search5.hg4j.lib.NodeId(manifestNodeId), author, timestamp, tzOffset, files, message, branch));
+            commits.add(new HgCommit(rev, new NodeId(nodeId), new NodeId(manifestNodeId), author, timestamp, tzOffset, files, message, branch));
         }
 
         return commits;

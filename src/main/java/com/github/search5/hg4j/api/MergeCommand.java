@@ -13,17 +13,34 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.revwalk.ChangesetGraph;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
+import com.github.search5.hg4j.treewalk.TreeWalk;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Performs a 3-way merge of a target revision into the working copy.
  */
 public class MergeCommand {
-    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(MergeCommand.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(MergeCommand.class.getName());
     private final HgRepository repository;
     private byte[] targetNodeId;
     private int targetRev = -1;
-    private final java.util.List<HgHook> preMergeHooks = new java.util.ArrayList<>();
-    private final java.util.List<HgHook> postMergeHooks = new java.util.ArrayList<>();
+    private final List<HgHook> preMergeHooks = new ArrayList<>();
+    private final List<HgHook> postMergeHooks = new ArrayList<>();
 
 
     public static class MergeResult {
@@ -52,7 +69,7 @@ public class MergeCommand {
         MergeBase(int rev, Map<String, String> manifest) {
             this.rev = rev;
             this.manifest = manifest;
-            this.fileContents = new java.util.HashMap<>();
+            this.fileContents = new HashMap<>();
         }
 
         MergeBase(Map<String, String> manifest, Map<String, byte[]> fileContents) {
@@ -97,7 +114,7 @@ public class MergeCommand {
         return this;
     }
 
-    public MergeCommand setNodeId(com.github.search5.hg4j.lib.NodeId targetNodeId) {
+    public MergeCommand setNodeId(NodeId targetNodeId) {
         this.targetNodeId = targetNodeId != null ? targetNodeId.getBytes() : null;
         return this;
     }
@@ -107,7 +124,7 @@ public class MergeCommand {
         return this;
     }
 
-    private int getModeFromManifestHex(String hex) {
+    int getModeFromManifestHex(String hex) {
         if (hex != null && hex.length() > 40) {
             char flag = hex.charAt(40);
             if (flag == 'x') {
@@ -121,15 +138,15 @@ public class MergeCommand {
 
     private byte[] hashBytes(byte[] bytes) {
         try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
             return md.digest(bytes);
-        } catch (java.security.NoSuchAlgorithmException e) {
+        } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
     }
 
-    private MergeBase getMergeBase(Revlog changelog, Revlog manifestRevlog, int revA, int revB, int depth) throws IOException {
-        com.github.search5.hg4j.revwalk.ChangesetGraph graph = new com.github.search5.hg4j.revwalk.ChangesetGraph(changelog);
+    MergeBase getMergeBase(Revlog changelog, Revlog manifestRevlog, int revA, int revB, int depth) throws IOException {
+        ChangesetGraph graph = new ChangesetGraph(changelog);
         Set<Integer> candidates = graph.getLcaCandidates(revA, revB);
 
         if (candidates.isEmpty()) {
@@ -153,7 +170,7 @@ public class MergeCommand {
         Map<String, String> manifestC2 = loadManifestAtCommit(changelog, manifestRevlog, c2);
 
         Map<String, String> virtualManifest = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-        Map<String, byte[]> virtualFileContents = new java.util.HashMap<>();
+        Map<String, byte[]> virtualFileContents = new HashMap<>();
 
         Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
         allPaths.addAll(virtualBase.manifest.keySet());
@@ -209,18 +226,18 @@ public class MergeCommand {
 
     public MergeResult call() throws IOException, HgLockException {
         repository.clearRevlogCache();
-        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock storeLock = repository.lockStore();
+             HgLock wlock = repository.lockWorkingCopy()) {
             
             // PRE_MERGE hooks trigger
             if (!preMergeHooks.isEmpty()) {
-                Map<String, Object> ctx = new java.util.HashMap<>();
+                Map<String, Object> ctx = new HashMap<>();
                 ctx.put("repository", repository);
                 ctx.put("targetRev", targetRev);
                 ctx.put("targetNodeId", targetNodeId);
                 for (HgHook hook : preMergeHooks) {
                     if (!hook.run(ctx)) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("Merge rejected by PRE_MERGE hook");
+                        throw new HgValidationException("Merge rejected by PRE_MERGE hook");
                     }
                 }
             }
@@ -234,12 +251,12 @@ public class MergeCommand {
             Files.deleteIfExists(journalFile.toPath());
             if (dirstateFile.exists()) {
                 File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 appendToJournal(journalFile, "dirstate");
             }
 
             try {
-                com.github.search5.hg4j.lib.NodeId p1CommitNode = dirstate.getParent1Node();
+                NodeId p1CommitNode = dirstate.getParent1Node();
                 if (p1CommitNode == null || p1CommitNode.isNull()) {
                     throw new IllegalStateException("Cannot merge in an empty repository.");
                 }
@@ -252,7 +269,7 @@ public class MergeCommand {
             // Resolve target revision index and Node ID
             int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
             if (p1Rev == -1) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException(p1CommitNode.toHex());
+                throw new HgRevisionNotFoundException(p1CommitNode.toHex());
             }
 
             int p2Rev = targetRev;
@@ -260,7 +277,7 @@ public class MergeCommand {
             if (p2CommitNode != null) {
                 p2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode);
                 if (p2Rev == -1) {
-                    throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(p2CommitNode));
+                    throw new HgRevisionNotFoundException(NodeIdUtil.toHex(p2CommitNode));
                 }
             } else if (p2Rev != -1) {
                 if (p2Rev < 0 || p2Rev >= changelog.getRevisionCount()) {
@@ -290,7 +307,7 @@ public class MergeCommand {
             // 2. Find Merge Base (LCA)
             MergeBase lca = getMergeBase(changelog, manifestRevlog, p1Rev, p2Rev, 0);
             if (lca.manifest.isEmpty() && lca.rev == -1) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("No common ancestor found between " + p1Rev + " and " + p2Rev);
+                throw new HgRevisionNotFoundException("No common ancestor found between " + p1Rev + " and " + p2Rev);
             }
 
             if (lca.rev == p2Rev) {
@@ -320,8 +337,13 @@ public class MergeCommand {
                     writeFileToWorkingCopy(path, content, mode);
                     dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
                 }
-                dirstate.setParents(new com.github.search5.hg4j.lib.NodeId(p2CommitNode), com.github.search5.hg4j.lib.NodeId.NULL);
+                dirstate.setParents(new NodeId(p2CommitNode), NodeId.NULL);
                 repository.writeDirstate(dirstate);
+
+                // A fast-forward merge is a full single-parent checkout to p2 (equivalent
+                // to `hg update`), not a real two-parent merge, so the working branch must
+                // follow the target — same as UpdateCommand/BisectCommand.
+                repository.setBranch(CommitCommand.getBranchOfRevision(changelog, p2Rev));
 
                 // Clean up crash protection backups
                 Files.deleteIfExists(journalFile.toPath());
@@ -335,10 +357,10 @@ public class MergeCommand {
             Map<String, String> manifestP1 = loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
             Map<String, String> manifestP2 = loadManifestAtCommit(changelog, manifestRevlog, p2Rev);
 
-            com.github.search5.hg4j.treewalk.TreeWalk tw = new com.github.search5.hg4j.treewalk.TreeWalk();
-            tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(lca.rev))); // Tree 0: LCA
-            tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(p1Rev)));   // Tree 1: P1
-            tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(p2Rev)));   // Tree 2: P2
+            TreeWalk tw = new TreeWalk();
+            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(lca.rev))); // Tree 0: LCA
+            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(p1Rev)));   // Tree 1: P1
+            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(p2Rev)));   // Tree 2: P2
 
             List<String> conflicts = new ArrayList<>();
             boolean conflicted = false;
@@ -418,7 +440,7 @@ public class MergeCommand {
                                     : new byte[20];
                             mergeState.addMergedFile(path, localKey, path, path, cleanHexOf(hLca), path, cleanHexOf(hP2), flagOf(hP1));
                             mergeState.stateExtras
-                                    .computeIfAbsent(path, k -> new java.util.LinkedHashMap<>())
+                                    .computeIfAbsent(path, k -> new LinkedHashMap<>())
                                     .put("ancestorlinknode", NodeIdUtil.toHex(ancestorLinkNode));
                         }
                         writeFileToWorkingCopy(path, mergedBytes, mode);
@@ -428,7 +450,7 @@ public class MergeCommand {
             }
 
             // 5. Update dirstate parent headers to P1 and P2
-            dirstate.setParents(p1CommitNode, new com.github.search5.hg4j.lib.NodeId(p2CommitNode));
+            dirstate.setParents(p1CommitNode, new NodeId(p2CommitNode));
             repository.writeDirstate(dirstate);
 
             // 실제 hg처럼 충돌이 있으면 .hg/merge/state2를 남겨 이후 세션/hg resolve가
@@ -441,7 +463,7 @@ public class MergeCommand {
             }
 
             // POST_MERGE hooks trigger
-            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            Map<String, Object> ctx = new HashMap<>();
             ctx.put("conflicted", conflicted);
             ctx.put("conflicts", conflicts);
             ctx.put("repository", repository);
@@ -449,7 +471,7 @@ public class MergeCommand {
                 try {
                     hook.run(ctx);
                 } catch (Exception e) {
-                    LOGGER.log(java.util.logging.Level.WARNING, "Post-merge hook execution failed", e);
+                    LOGGER.log(Level.WARNING, "Post-merge hook execution failed", e);
                 }
             }
 
@@ -463,7 +485,7 @@ public class MergeCommand {
             // Restore dirstate on crash/failure
             if (dirstateBackup != null) {
                 try {
-                    com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                    SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
                 } catch (Exception ignored) {}
             }
             try {
@@ -490,22 +512,22 @@ public class MergeCommand {
         return "";
     }
 
-    private Map<String, String> loadManifestAtCommit(Revlog changelog, Revlog manifestRevlog, int commitRev) throws IOException {
+    Map<String, String> loadManifestAtCommit(Revlog changelog, Revlog manifestRevlog, int commitRev) throws IOException {
         byte[] commitNodeId = changelog.getIndexRecord(commitRev).getNodeId();
         return repository.getManifestAtCommit(commitNodeId);
     }
 
-    private byte[] getFileRevisionContent(String path, String nodeHex) throws IOException {
+    byte[] getFileRevisionContent(String path, String nodeHex) throws IOException {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Filelog index does not exist for: " + path);
+            throw new HgCorruptDataException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         String cleanHex = nodeHex.length() > 40 ? nodeHex.substring(0, 40) : nodeHex;
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(cleanHex));
         if (rev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }
@@ -519,7 +541,7 @@ public class MergeCommand {
         if (mode == 0120000) {
             String target = new String(content, StandardCharsets.UTF_8).trim();
             try {
-                Files.createSymbolicLink(f.toPath(), java.nio.file.Path.of(target));
+                Files.createSymbolicLink(f.toPath(), Path.of(target));
             } catch (Exception e) {
                 // Fallback if symbolic links aren't supported on OS/filesystem without privilege
                 Files.write(f.toPath(), content);
@@ -541,7 +563,7 @@ public class MergeCommand {
         }
     }
 
-    private List<String> readLines(byte[] content) {
+    List<String> readLines(byte[] content) {
         if (content == null || content.length == 0) {
             return new ArrayList<>();
         }
@@ -560,8 +582,8 @@ public class MergeCommand {
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
         Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-        try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
             fc.force(true);
         }
     }

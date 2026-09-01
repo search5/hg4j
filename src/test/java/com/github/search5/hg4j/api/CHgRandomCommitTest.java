@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import org.junit.jupiter.api.Assertions;
 
 @Tag("interop")
 public class CHgRandomCommitTest {
@@ -86,6 +87,6 @@ public class CHgRandomCommitTest {
 
         // Verify repository integrity
         String nativeVerify = HgTestUtils.hg(repoDir, "verify");
-        org.junit.jupiter.api.Assertions.assertFalse(nativeVerify.contains("integrity error"), "Saved repository contains integrity errors!\n" + nativeVerify);
+        Assertions.assertFalse(nativeVerify.contains("integrity error"), "Saved repository contains integrity errors!\n" + nativeVerify);
     }
 }

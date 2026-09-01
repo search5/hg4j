@@ -4,6 +4,7 @@ import com.github.search5.hg4j.dirstate.Dirstate;
 import java.io.File;
 import java.io.IOException;
 import com.github.search5.hg4j.errors.HgLockException;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 
 /**
  * Interface representing a Mercurial repository.
@@ -42,7 +43,7 @@ public interface Repository extends AutoCloseable {
         }
         File hgDir = new File(directory, ".hg");
         if (!hgDir.exists() || !hgDir.isDirectory()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
+            throw new HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
         }
         return new HgRepository(directory);
     }

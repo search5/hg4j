@@ -6,18 +6,37 @@ import java.nio.ByteOrder;
 /**
  * Represents a single fixed-size (44 bytes) node layout in Mercurial dirstate-v2 format.
  * Utilizes a ByteBuffer backing view for high-performance off-heap/on-heap mapping.
+ *
+ * <p>Field offsets and flag bit positions verified byte-for-byte against a real Mercurial 6.0
+ * server (Docker, {@code storage.dirstate-v2.slow-path=allow} pure-Python path — the last
+ * release with a working non-Rust dirstate-v2 implementation) by reading
+ * {@code mercurial/dirstateutils/v2.py}'s {@code NODE = struct.Struct('>LHHLHLLLLHlll')} and
+ * {@code mercurial/pure/parsers.py}'s {@code DIRSTATE_V2_*} bit constants directly, then
+ * cross-checked against a captured real {@code .hg/dirstate}+{@code dirstate.<uuid>} fixture.
+ * An earlier version of this class used entirely different (fictional, never-verified) offsets
+ * and flag bits that happened to round-trip against hg4j's own reader/writer but could not read
+ * or be read by real hg.</p>
  */
 public class DirstateV2Node {
     public static final int NODE_SIZE = 44;
 
-    // Bit flags
+    // Bit flags (mercurial/pure/parsers.py DIRSTATE_V2_*, `flags` is a 16-bit field)
     public static final int WDIR_TRACKED = 1 << 0;
     public static final int P1_TRACKED = 1 << 1;
     public static final int P2_INFO = 1 << 2;
-    public static final int HAS_MODE_AND_SIZE = 1 << 3;
-    public static final int HAS_MTIME = 1 << 4;
-    public static final int MODE_EXEC_PERM = 1 << 5;
-    public static final int MODE_IS_SYMLINK = 1 << 6;
+    public static final int MODE_EXEC_PERM = 1 << 3;
+    public static final int MODE_IS_SYMLINK = 1 << 4;
+    public static final int HAS_MODE_AND_SIZE = 1 << 10;
+    public static final int HAS_MTIME = 1 << 11;
+    // NOTE: mercurial/pure/parsers.py's own DIRSTATE_V2_DIRECTORY constant says `1 << 13`, but
+    // that constant is never actually consulted when parsing (a node is treated as a directory
+    // simply by having none of WDIR_TRACKED/P1_TRACKED/P2_INFO set -- see DirstateV2Parser, which
+    // mirrors real hg's `if not item.any_tracked: continue`). The value that is actually written
+    // to disk for directory placeholder nodes comes from a *different*, locally-redefined
+    // constant of the same name in mercurial/dirstateutils/v2.py, which is `1 << 5` -- confirmed
+    // against a real captured fixture where an intermediate directory node's flags field is
+    // 0x0020 (32). Kept here for documentation; DirstateV2Parser does not need to check it.
+    public static final int DIRECTORY = 1 << 5;
 
     private final ByteBuffer buffer;
     private final int offset;
@@ -125,115 +144,115 @@ public class DirstateV2Node {
     }
 
     public int getPathOffset() {
-        return buffer.getInt(offset + 30);
-    }
-
-    public void setPathOffset(int pathOffset) {
-        buffer.putInt(offset + 30, pathOffset);
-    }
-
-    public short getPathLen() {
-        return buffer.getShort(offset + 34);
-    }
-
-    public void setPathLen(short pathLen) {
-        buffer.putShort(offset + 34, pathLen);
-    }
-
-    public short getBasenameStart() {
-        return buffer.getShort(offset + 36);
-    }
-
-    public void setBasenameStart(short start) {
-        buffer.putShort(offset + 36, start);
-    }
-
-    public int getCopySourceOffset() {
-        return buffer.getInt(offset + 38);
-    }
-
-    public void setCopySourceOffset(int offsetVal) {
-        buffer.putInt(offset + 38, offsetVal);
-    }
-
-    public short getCopySourceLen() {
-        return buffer.getShort(offset + 42);
-    }
-
-    public void setCopySourceLen(short len) {
-        buffer.putShort(offset + 42, len);
-    }
-
-    public int getChildrenStart() {
         return buffer.getInt(offset + 0);
     }
 
-    public void setChildrenStart(int childrenStart) {
-        buffer.putInt(offset + 0, childrenStart);
+    public void setPathOffset(int pathOffset) {
+        buffer.putInt(offset + 0, pathOffset);
     }
 
-    public int getChildrenCount() {
-        return buffer.getInt(offset + 4);
+    public short getPathLen() {
+        return buffer.getShort(offset + 4);
     }
 
-    public void setChildrenCount(int childrenCount) {
-        buffer.putInt(offset + 4, childrenCount);
+    public void setPathLen(short pathLen) {
+        buffer.putShort(offset + 4, pathLen);
     }
 
-    public int getDescendantsWithEntryCount() {
+    public short getBasenameStart() {
+        return buffer.getShort(offset + 6);
+    }
+
+    public void setBasenameStart(short start) {
+        buffer.putShort(offset + 6, start);
+    }
+
+    public int getCopySourceOffset() {
         return buffer.getInt(offset + 8);
     }
 
+    public void setCopySourceOffset(int offsetVal) {
+        buffer.putInt(offset + 8, offsetVal);
+    }
+
+    public short getCopySourceLen() {
+        return buffer.getShort(offset + 12);
+    }
+
+    public void setCopySourceLen(short len) {
+        buffer.putShort(offset + 12, len);
+    }
+
+    public int getChildrenStart() {
+        return buffer.getInt(offset + 14);
+    }
+
+    public void setChildrenStart(int childrenStart) {
+        buffer.putInt(offset + 14, childrenStart);
+    }
+
+    public int getChildrenCount() {
+        return buffer.getInt(offset + 18);
+    }
+
+    public void setChildrenCount(int childrenCount) {
+        buffer.putInt(offset + 18, childrenCount);
+    }
+
+    public int getDescendantsWithEntryCount() {
+        return buffer.getInt(offset + 22);
+    }
+
     public void setDescendantsWithEntryCount(int count) {
-        buffer.putInt(offset + 8, count);
+        buffer.putInt(offset + 22, count);
     }
 
     public int getTrackedDescendants() {
-        return buffer.getInt(offset + 12);
+        return buffer.getInt(offset + 26);
     }
 
     public void setTrackedDescendants(int count) {
-        buffer.putInt(offset + 12, count);
+        buffer.putInt(offset + 26, count);
     }
 
     public short getFlags() {
-        return buffer.getShort(offset + 16);
+        return buffer.getShort(offset + 30);
     }
 
     public void setFlags(short flags) {
-        buffer.putShort(offset + 16, flags);
+        buffer.putShort(offset + 30, flags);
     }
 
     public int getSize() {
         if ((getFlags() & HAS_MODE_AND_SIZE) == 0) {
             return 0;
         }
-        return buffer.getInt(offset + 18);
+        return buffer.getInt(offset + 32);
     }
 
     public void setSize(int size) {
-        buffer.putInt(offset + 18, size);
+        buffer.putInt(offset + 32, size);
     }
 
     public long getMtime() {
         if ((getFlags() & HAS_MTIME) == 0) {
             return 0;
         }
-        return buffer.getInt(offset + 22) & 0xFFFFFFFFL;
+        return buffer.getInt(offset + 36) & 0xFFFFFFFFL;
     }
 
     public void setMtime(long mtime) {
-        buffer.putInt(offset + 22, (int) (mtime & 0xFFFFFFFFL));
+        buffer.putInt(offset + 36, (int) (mtime & 0xFFFFFFFFL));
     }
 
     public int getMtimeNanoseconds() {
         if ((getFlags() & HAS_MTIME) == 0) {
             return 0;
         }
-        return buffer.getInt(offset + 26);
+        return buffer.getInt(offset + 40);
     }
 
     public void setMtimeNanoseconds(int nanos) {
-        buffer.putInt(offset + 26, nanos);
+        buffer.putInt(offset + 40, nanos);
     }
 }

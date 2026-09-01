@@ -9,6 +9,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Porcelain command to perform line-by-line SCM blame (annotate).
@@ -70,7 +74,7 @@ public final class AnnotateCommand {
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Filelog not found for path: " + path);
+            throw new HgRevisionNotFoundException("Filelog not found for path: " + path);
         }
 
         Revlog filelog = repository.getRevlog(flIdx, flDat);
@@ -122,7 +126,7 @@ public final class AnnotateCommand {
             }
 
             int[] matchInPrev = new int[currM];
-            java.util.Arrays.fill(matchInPrev, -1);
+            Arrays.fill(matchInPrev, -1);
 
             int i = prevN, j = currM;
             while (i > 0 || j > 0) {
@@ -159,7 +163,7 @@ public final class AnnotateCommand {
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        java.util.Map<Integer, String> authorCache = new java.util.HashMap<>();
+        Map<Integer, String> authorCache = new HashMap<>();
 
         for (int k = 0; k < prevLines.length; k++) {
             int originFileRev = prevSources.get(k);

@@ -14,6 +14,21 @@ import java.nio.file.Path;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.HgTestUtils;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.gpg.GpgSignature;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.TimeZone;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Assumptions;
 
 public class CommitCommandTest {
 
@@ -40,7 +55,7 @@ public class CommitCommandTest {
             Files.writeString(f2.toPath(), "Hello 2");
             new AddCommand(repo).call();
             
-            assertThrows(com.github.search5.hg4j.errors.HgRevisionNotFoundException.class, () -> {
+            assertThrows(HgRevisionNotFoundException.class, () -> {
                 new CommitCommand(repo).setMessage("Commit 2").call();
             });
         }
@@ -89,7 +104,7 @@ public class CommitCommandTest {
             assertTrue(clText.contains("Initial commit"));
             assertTrue(clText.contains("Tester <test@example.com>"));
             assertTrue(clText.contains("a.txt"));
-            int expectedOffset = -java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
+            int expectedOffset = -TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
             assertTrue(clText.contains(" " + expectedOffset));
 
             // 5. Verify manifest
@@ -269,9 +284,9 @@ public class CommitCommandTest {
             new CommitCommand(repo).setMessage("Commit with non-ASCII and Reserved names").call();
 
             // 3. 서브프로세스로 네이티브 hg verify 구동하여 무결성 정밀 검증
-            org.junit.jupiter.api.Assumptions.assumeTrue(com.github.search5.hg4j.HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg verify integration test.");
+            Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg verify integration test.");
 
-            String output = com.github.search5.hg4j.HgTestUtils.hg(repoDir, "verify");
+            String output = HgTestUtils.hg(repoDir, "verify");
 
             System.out.println("=== hg verify Output ===");
             System.out.println(output);
@@ -371,7 +386,7 @@ public class CommitCommandTest {
             
             // Find list of files in changelog
             String[] lines = clText.split("\n");
-            java.util.List<String> filesInChangelog = new java.util.ArrayList<>();
+            List<String> filesInChangelog = new ArrayList<>();
             boolean inFilesSection = false;
             for (String line : lines) {
                 if (line.isEmpty()) {
@@ -405,7 +420,7 @@ public class CommitCommandTest {
             // 2. Verify fncache contains raw paths as per native hg specifications
             File fncacheFile = new File(repo.getStoreDir(), "fncache");
             assertTrue(fncacheFile.exists());
-            java.util.List<String> fncachePaths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
+            List<String> fncachePaths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
             
             assertTrue(fncachePaths.contains("data/.hgignore.i"));
             // .d 파일은 fncache에 등록되지 않음 (실제 hg 동작과 동일)
@@ -440,13 +455,13 @@ public class CommitCommandTest {
             // 2. Simulate subsequent partial write and Crash (write to journal manual metadata)
             // Let's manually append some garbage to changelog.i mimicking a half-completed commit
             long targetSize = origClIdxLen + 100;
-            Files.write(clIdx.toPath(), new byte[100], java.nio.file.StandardOpenOption.APPEND);
+            Files.write(clIdx.toPath(), new byte[100], StandardOpenOption.APPEND);
             assertEquals(targetSize, clIdx.length());
 
             // Create mock journal simulating dirstate, fncache and changelog.i changes
             // 실제 hg journal 포맷: .hg/ 기준 상대 경로 (store/... 형식)
             journalFile = new File(repo.getStoreDir(), "journal");
-            java.util.List<String> journalEntries = java.util.Arrays.asList(
+            List<String> journalEntries = Arrays.asList(
                 "dirstate",
                 "store/00changelog.i " + origClIdxLen
             );
@@ -460,7 +475,7 @@ public class CommitCommandTest {
 
         // 3. Open repository again, and trigger rollback via store lock acquisition
         try (HgRepository crashedRepo = new HgRepository(repoDir)) {
-            try (com.github.search5.hg4j.lib.HgLock lock = crashedRepo.lockStore()) {
+            try (HgLock lock = crashedRepo.lockStore()) {
                 // lockStore() will trigger checkAndPerformAutoRollback
             }
         }
@@ -480,7 +495,7 @@ public class CommitCommandTest {
 
             // Simulate crash with invalid journal content (causes NumberFormatException on size parse)
             journalFile = new File(repo.getStoreDir(), "journal");
-            java.util.List<String> journalEntries = java.util.Arrays.asList(
+            List<String> journalEntries = Arrays.asList(
                 ".hg/store/00changelog.i NOT_A_NUMBER"
             );
             Files.write(journalFile.toPath(), journalEntries, StandardCharsets.UTF_8);
@@ -529,12 +544,88 @@ public class CommitCommandTest {
             assertTrue(text.contains(" branch:feature-cool-stuff"), "Changelog should contain Mercurial style extra branch info");
 
             // 5. Verify that LogCommand correctly parses the branch name
-            java.util.List<com.github.search5.hg4j.api.HgCommit> logs = new LogCommand(repo).call();
+            List<HgCommit> logs = new LogCommand(repo).call();
             assertEquals(1, logs.size());
-            com.github.search5.hg4j.api.HgCommit entry = logs.get(0);
+            HgCommit entry = logs.get(0);
             assertEquals("feature-cool-stuff", entry.getBranch(), "Parsed branch name must match");
             assertEquals("Developer <dev@example.com>", entry.getAuthor());
             assertEquals("Add cool features", entry.getMessage());
+        }
+    }
+
+    @Test
+    public void closeBranchWritesTheCloseExtraOnTheDefaultBranch(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            new CommitCommand(repo)
+                    .setAuthor("dev <dev@example.com>")
+                    .setMessage("close default")
+                    .setCloseBranch(true)
+                    .call();
+
+            File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+            File clDat = new File(repo.getStoreDir(), "00changelog.d");
+            Revlog clRevlog = new Revlog(clIdx, clDat);
+            String text = new String(clRevlog.getRevisionContent(0), StandardCharsets.UTF_8);
+
+            // Real hg never writes a "branch:" extra for the default branch (see
+            // getBranchOfRevision's javadoc), so a default-branch close commit's extras block must
+            // be exactly " close:1" -- no leading "branch:default" and no '\0' separator.
+            assertTrue(text.contains(" close:1"), "Changelog must record the close extra: " + text);
+            assertFalse(text.contains("branch:"), "Default branch must never be written explicitly");
+
+            assertTrue(CommitCommand.isRevisionClosingBranch(clRevlog, 0));
+        }
+    }
+
+    @Test
+    public void closeBranchCombinedWithANamedBranchWritesBothExtrasSortedAndNullSeparated(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+            repo.setBranch("feature");
+
+            new CommitCommand(repo)
+                    .setAuthor("dev <dev@example.com>")
+                    .setMessage("close feature")
+                    .setCloseBranch(true)
+                    .call();
+
+            File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+            File clDat = new File(repo.getStoreDir(), "00changelog.d");
+            Revlog clRevlog = new Revlog(clIdx, clDat);
+            String text = new String(clRevlog.getRevisionContent(0), StandardCharsets.UTF_8);
+
+            // Real hg's changelog.encodeextra sorts extras by key and joins with '\0' -- "branch"
+            // sorts before "close" alphabetically.
+            assertTrue(text.contains(" branch:feature\0close:1"),
+                    "Extras must be null-separated and sorted (branch before close): " + text);
+
+            assertEquals("feature", CommitCommand.getBranchOfRevision(clRevlog, 0));
+            assertTrue(CommitCommand.isRevisionClosingBranch(clRevlog, 0));
+        }
+    }
+
+    @Test
+    public void regularCommitIsNotReportedAsClosingItsBranch(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            new CommitCommand(repo).setAuthor("dev <dev@example.com>").setMessage("plain").call();
+
+            File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+            File clDat = new File(repo.getStoreDir(), "00changelog.d");
+            Revlog clRevlog = new Revlog(clIdx, clDat);
+            assertFalse(CommitCommand.isRevisionClosingBranch(clRevlog, 0));
         }
     }
 
@@ -596,12 +687,285 @@ public class CommitCommandTest {
             Dirstate d = repo.getDirstate();
             byte[] fakeHash = new byte[20];
             fakeHash[0] = 0x12; // fake SHA-1
-            d.setParents(new com.github.search5.hg4j.lib.NodeId(fakeHash), com.github.search5.hg4j.lib.NodeId.NULL);
+            d.setParents(new NodeId(fakeHash), NodeId.NULL);
             repo.writeDirstate(d);
             
             // 3. Commit should fail with HgRevisionNotFoundException
             CommitCommand commit = new CommitCommand(repo).setMessage("This must fail due to fake parent revision");
-            assertThrows(com.github.search5.hg4j.errors.HgRevisionNotFoundException.class, commit::call);
+            assertThrows(HgRevisionNotFoundException.class, commit::call);
+        }
+    }
+
+    @Test
+    public void testPreCommitHookRejectionAbortsCommit(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            AtomicReference<Map<String, Object>> capturedCtx = new AtomicReference<>();
+            CommitCommand cmd = new CommitCommand(repo)
+                    .setAuthor("dev <dev@example.com>")
+                    .setMessage("should be rejected")
+                    .registerPreCommitHook(ctx -> {
+                        capturedCtx.set(ctx);
+                        return false;
+                    });
+
+            HgValidationException ex = assertThrows(HgValidationException.class, cmd::call);
+            assertTrue(ex.getMessage().contains("Pre-commit hook"));
+            assertNotNull(capturedCtx.get());
+            assertEquals("dev <dev@example.com>", capturedCtx.get().get("author"));
+            assertEquals("should be rejected", capturedCtx.get().get("message"));
+            assertSame(repo, capturedCtx.get().get("repository"));
+
+            // Hook rejection must abort before any storage work happens.
+            File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+            assertFalse(clIdx.exists(), "Changelog must not be created when pre-commit hook rejects");
+        }
+    }
+
+    @Test
+    public void testPreCommitHookApprovalAllowsCommitToProceed(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            AtomicInteger invocations = new AtomicInteger();
+            byte[] commitNode = new CommitCommand(repo)
+                    .setMessage("approved commit")
+                    .registerPreCommitHook(ctx -> {
+                        invocations.incrementAndGet();
+                        return true;
+                    })
+                    .call();
+
+            assertNotNull(commitNode);
+            assertEquals(1, invocations.get());
+        }
+    }
+
+    @Test
+    public void testMultiplePreCommitHooksStopAtFirstRejection(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            List<String> order = new ArrayList<>();
+            CommitCommand cmd = new CommitCommand(repo)
+                    .setMessage("multi-hook")
+                    .registerPreCommitHook(ctx -> { order.add("first"); return true; })
+                    .registerPreCommitHook(ctx -> { order.add("second-rejects"); return false; })
+                    .registerPreCommitHook(ctx -> { order.add("third-never-runs"); return true; });
+
+            assertThrows(HgValidationException.class, cmd::call);
+            assertEquals(Arrays.asList("first", "second-rejects"), order);
+        }
+    }
+
+    @Test
+    public void testPostCommitHookReceivesCommitContext(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            AtomicReference<Map<String, Object>> capturedCtx = new AtomicReference<>();
+            byte[] commitNode = new CommitCommand(repo)
+                    .setAuthor("dev <dev@example.com>")
+                    .setMessage("post hook context")
+                    .registerPostCommitHook(ctx -> {
+                        capturedCtx.set(ctx);
+                        return true;
+                    })
+                    .call();
+
+            assertNotNull(capturedCtx.get());
+            assertEquals("dev <dev@example.com>", capturedCtx.get().get("author"));
+            assertEquals("post hook context", capturedCtx.get().get("message"));
+            assertArrayEquals(commitNode, (byte[]) capturedCtx.get().get("commitNode"));
+            assertSame(repo, capturedCtx.get().get("repository"));
+        }
+    }
+
+    @Test
+    public void testPostCommitHookExceptionDoesNotFailCommit(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            AtomicInteger secondHookInvocations = new AtomicInteger();
+            byte[] commitNode = new CommitCommand(repo)
+                    .setMessage("post hook throws")
+                    .registerPostCommitHook(ctx -> { throw new IOException("hook boom"); })
+                    .registerPostCommitHook(ctx -> {
+                        secondHookInvocations.incrementAndGet();
+                        return true;
+                    })
+                    .call();
+
+            assertNotNull(commitNode);
+            // Despite the first post-commit hook throwing, later hooks still run and the commit
+            // itself succeeds -- post-commit failures are only logged, never propagated.
+            assertEquals(1, secondHookInvocations.get());
+
+            Dirstate dirstate = repo.getDirstate();
+            assertArrayEquals(commitNode, dirstate.getParent1());
+        }
+    }
+
+    @Test
+    public void testGpgSignatureIsStoredInChangelogMetadata(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "content");
+            new AddCommand(repo).call();
+
+            GpgSignature signature = new GpgSignature(
+                    "-----BEGIN PGP SIGNATURE-----\nabc\n-----END PGP SIGNATURE-----", "ABCDEF1234567890");
+            new CommitCommand(repo)
+                    .setMessage("signed commit")
+                    .setGpgSignature(signature)
+                    .call();
+
+            File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+            File clDat = new File(repo.getStoreDir(), "00changelog.d");
+            Revlog clRevlog = new Revlog(clIdx, clDat);
+            Map<String, String> meta = clRevlog.getRevisionMetadata(0);
+
+            assertEquals(signature.toAsciiArmored().replace("\n", "\\n"), meta.get("gpgsig"));
+            assertEquals("ABCDEF1234567890", meta.get("gpgfingerprint"));
+        }
+    }
+
+    @Test
+    public void testSymlinkTrackedFileRecordsLFlagAndTargetPathAsContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File targetFile = new File(repoDir, "target.txt");
+            Files.writeString(targetFile.toPath(), "target content");
+
+            File linkFile = new File(repoDir, "link.txt");
+            Files.createSymbolicLink(linkFile.toPath(), Path.of("target.txt"));
+
+            new AddCommand(repo).call();
+            new CommitCommand(repo).setMessage("symlink commit").call();
+
+            File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
+            File mfDat = new File(repo.getStoreDir(), "00manifest.d");
+            Revlog mfRevlog = new Revlog(mfIdx, mfDat);
+            String mfText = new String(mfRevlog.getRevisionContent(0), StandardCharsets.UTF_8);
+            String linkEntryLine = Arrays.stream(mfText.split("\n"))
+                    .filter(line -> line.startsWith("link.txt\0"))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(linkEntryLine.endsWith("l"), "Symlink manifest entry must carry the 'l' flag: " + linkEntryLine);
+
+            File flIdx = new File(repo.getStoreDir(), "data/link.txt.i");
+            File flDat = new File(repo.getStoreDir(), "data/link.txt.d");
+            Revlog filelog = new Revlog(flIdx, flDat);
+            assertArrayEquals("target.txt".getBytes(StandardCharsets.UTF_8), filelog.getRevisionContent(0));
+
+            Dirstate dirstate = repo.getDirstate();
+            Dirstate.Entry entry = dirstate.getEntries().get("link.txt");
+            assertEquals("target.txt".getBytes(StandardCharsets.UTF_8).length, entry.getSize(),
+                    "Symlink dirstate size must be the length of the link target string, not the resolved file size");
+        }
+    }
+
+    @Test
+    public void testExecutableFileRecordsXFlagInManifestAndDirstate(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File script = new File(repoDir, "run.sh");
+            Files.writeString(script.toPath(), "#!/bin/sh\necho hi\n");
+            assertTrue(script.setExecutable(true, false), "Test setup requires setting the executable bit");
+
+            new AddCommand(repo).call();
+            new CommitCommand(repo).setMessage("executable commit").call();
+
+            File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
+            File mfDat = new File(repo.getStoreDir(), "00manifest.d");
+            Revlog mfRevlog = new Revlog(mfIdx, mfDat);
+            String mfText = new String(mfRevlog.getRevisionContent(0), StandardCharsets.UTF_8);
+            String entryLine = Arrays.stream(mfText.split("\n"))
+                    .filter(line -> line.startsWith("run.sh\0"))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(entryLine.endsWith("x"), "Executable manifest entry must carry the 'x' flag: " + entryLine);
+
+            Dirstate dirstate = repo.getDirstate();
+            Dirstate.Entry entry = dirstate.getEntries().get("run.sh");
+            assertEquals(0755, entry.getMode());
+        }
+    }
+
+    @Test
+    public void testActiveBookmarkAdvancesToNewCommitNode(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "v1");
+            new AddCommand(repo).call();
+            byte[] firstCommit = new CommitCommand(repo).setMessage("Commit 1").call();
+
+            // `hg bookmark NAME` without an explicit -r target makes the new bookmark active,
+            // tracking the current working-copy parent (see BookmarkCommand.call()).
+            Map<String, String> bookmarks = new BookmarkCommand(repo).setBookmarkName("feature").call();
+            assertEquals(NodeIdUtil.toHex(firstCommit), bookmarks.get("feature"));
+            assertEquals("feature", new BookmarkCommand(repo).getActiveBookmark());
+
+            Files.writeString(f1.toPath(), "v2");
+            byte[] secondCommit = new CommitCommand(repo).setMessage("Commit 2").call();
+
+            Map<String, String> bookmarksAfter = new BookmarkCommand(repo).call();
+            assertEquals(NodeIdUtil.toHex(secondCommit), bookmarksAfter.get("feature"),
+                    "Active bookmark must advance to follow the new commit");
+        }
+    }
+
+    @Test
+    public void testRenameCommitRecordsCopyMetadataInFilelog(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File original = new File(repoDir, "orig.txt");
+            Files.writeString(original.toPath(), "original content");
+            new AddCommand(repo).call();
+            new CommitCommand(repo).setMessage("Commit orig").call();
+
+            File flIdxOrig = new File(repo.getStoreDir(), "data/orig.txt.i");
+            File flDatOrig = new File(repo.getStoreDir(), "data/orig.txt.d");
+            Revlog origFilelog = new Revlog(flIdxOrig, flDatOrig);
+            String origHex = NodeIdUtil.toHex(origFilelog.getIndexRecord(0).getNodeId());
+
+            new RenameCommand(repo).setSource("orig.txt").setTarget("renamed.txt").call();
+            new CommitCommand(repo).setMessage("Commit rename").call();
+
+            File flIdx = new File(repo.getStoreDir(), "data/renamed.txt.i");
+            File flDat = new File(repo.getStoreDir(), "data/renamed.txt.d");
+            Revlog filelog = new Revlog(flIdx, flDat);
+            Map<String, String> meta = filelog.getRevisionMetadata(0);
+
+            assertEquals("orig.txt", meta.get("copy"));
+            assertEquals(origHex, meta.get("copyrev"));
+            assertArrayEquals("original content".getBytes(StandardCharsets.UTF_8), filelog.getRevisionContent(0));
+
+            // The source path must be gone from the new manifest -- it was renamed away.
+            File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
+            File mfDat = new File(repo.getStoreDir(), "00manifest.d");
+            Revlog mfRevlog = new Revlog(mfIdx, mfDat);
+            String mfText = new String(mfRevlog.getRevisionContent(1), StandardCharsets.UTF_8);
+            assertFalse(mfText.contains("orig.txt\0"), "Renamed-away source path must not remain in the new manifest");
+            assertTrue(mfText.contains("renamed.txt\0"));
         }
     }
 }

@@ -5,12 +5,15 @@ import java.util.List;
 import com.github.search5.hg4j.errors.HgAuthException;
 import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.errors.HgProtocolException;
+import java.io.Closeable;
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * Common connection interface for remote Mercurial repositories,
  * supporting both HTTP and SSH protocols dynamically.
  */
-public interface HgRemoteConnection extends java.io.Closeable {
+public interface HgRemoteConnection extends Closeable {
 
     /**
      * Executes the 'capabilities' command on the remote server.
@@ -40,7 +43,7 @@ public interface HgRemoteConnection extends java.io.Closeable {
     /**
      * Queries remote keys/values for the given namespace (e.g. "bookmarks", "phases").
      */
-    java.util.Map<String, String> listKeys(String namespace) throws IOException, HgAuthException, HgProtocolException;
+    Map<String, String> listKeys(String namespace) throws IOException, HgAuthException, HgProtocolException;
 
     /**
      * Executes the 'pushkey' command to update a key/value pair in a remote namespace (e.g. "bookmarks").
@@ -52,7 +55,7 @@ public interface HgRemoteConnection extends java.io.Closeable {
      * Executes the 'between' command to query revisions between pairs of nodes.
      */
     default List<String> between(List<String> pairs) throws IOException {
-        return java.util.Collections.emptyList();
+        return Collections.emptyList();
     }
 
     /**

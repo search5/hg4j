@@ -15,6 +15,18 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import java.io.UncheckedIOException;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Represents a local Mercurial repository.
@@ -58,7 +70,7 @@ public class HgRepository implements Repository {
         File sharedpathFile = new File(hgDir, "sharedpath");
         if (sharedpathFile.exists() && sharedpathFile.isFile()) {
             try {
-                String sharedPath = java.nio.file.Files.readString(sharedpathFile.toPath(), java.nio.charset.StandardCharsets.UTF_8).trim();
+                String sharedPath = Files.readString(sharedpathFile.toPath(), StandardCharsets.UTF_8).trim();
                 File sharedHgDir = new File(sharedPath);
                 resolvedStoreDir = new File(sharedHgDir, "store");
             } catch (Exception e) {
@@ -94,7 +106,7 @@ public class HgRepository implements Repository {
     private void readRequiresFile(File requiresFile) {
         if (requiresFile.exists() && requiresFile.isFile()) {
             try {
-                java.util.List<String> lines = java.nio.file.Files.readAllLines(requiresFile.toPath());
+                List<String> lines = Files.readAllLines(requiresFile.toPath());
                 for (String line : lines) {
                     String trimmed = line.trim();
                     if ("dirstate-v2".equals(trimmed)) {
@@ -176,7 +188,7 @@ public class HgRepository implements Repository {
                 dirstate = rebuilt;
             } catch (IOException ex) {
                 LOGGER.log(Level.SEVERE, "Failed to dynamically rebuild dirstate from manifest", ex);
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Failed to read dirstate and failed to rebuild from manifest", ex);
+                throw new HgCorruptDataException("Failed to read dirstate and failed to rebuild from manifest", ex);
             }
         }
         return dirstate;
@@ -213,7 +225,7 @@ public class HgRepository implements Repository {
             }
         }
         
-        java.util.Map<String, String> manifestMap = getManifestAtCommit(parentNode);
+        Map<String, String> manifestMap = getManifestAtCommit(parentNode);
         for (String path : manifestMap.keySet()) {
             File diskFile = new File(directory, path);
             if (diskFile.exists() && diskFile.isFile()) {
@@ -233,7 +245,7 @@ public class HgRepository implements Repository {
         dirstate.getCopyMap().putAll(originalCopyMap);
     }
 
-    public synchronized java.util.Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
+    public synchronized Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
         return storeEngine.getManifestAtCommit(this, commitNodeId);
     }
 
@@ -256,9 +268,9 @@ public class HgRepository implements Repository {
         this.cachedDirstate = dirstate;
     }
 
-    private final java.util.Map<File, Revlog> revlogCache = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+    private final Map<File, Revlog> revlogCache = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(java.util.Map.Entry<File, Revlog> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<File, Revlog> eldest) {
             if (size() > 100) {
                 eldest.getValue().clearCache();
                 return true;
@@ -297,19 +309,19 @@ public class HgRepository implements Repository {
         return new PhaseRoots(phaserootsFile);
     }
 
-    private java.util.List<java.util.regex.Pattern> ignorePatterns = null;
+    private List<Pattern> ignorePatterns = null;
 
     private synchronized void loadIgnorePatterns() {
         if (ignorePatterns != null) {
             return;
         }
-        ignorePatterns = new java.util.ArrayList<>();
+        ignorePatterns = new ArrayList<>();
         File ignoreFile = new File(directory, ".hgignore");
         if (!ignoreFile.exists()) {
             return;
         }
         try {
-            java.util.List<String> lines = java.nio.file.Files.readAllLines(ignoreFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+            List<String> lines = Files.readAllLines(ignoreFile.toPath(), StandardCharsets.UTF_8);
             String syntax = "regexp";
             for (String line : lines) {
                 line = line.trim();
@@ -325,8 +337,8 @@ public class HgRepository implements Repository {
                     for (String expanded : expandBraces(line)) {
                         String regex = globToRegex(expanded);
                         try {
-                            ignorePatterns.add(java.util.regex.Pattern.compile(regex));
-                        } catch (java.util.regex.PatternSyntaxException e) {
+                            ignorePatterns.add(Pattern.compile(regex));
+                        } catch (PatternSyntaxException e) {
                             // Skip invalid pattern
                         }
                     }
@@ -336,8 +348,8 @@ public class HgRepository implements Repository {
                         regex = "(?:" + regex + ")";
                     }
                     try {
-                        ignorePatterns.add(java.util.regex.Pattern.compile(regex));
-                    } catch (java.util.regex.PatternSyntaxException e) {
+                        ignorePatterns.add(Pattern.compile(regex));
+                    } catch (PatternSyntaxException e) {
                         // Skip invalid pattern
                     }
                 }
@@ -347,8 +359,8 @@ public class HgRepository implements Repository {
         }
     }
 
-    private java.util.List<String> expandBraces(String glob) {
-        java.util.List<String> results = new java.util.ArrayList<>();
+    private List<String> expandBraces(String glob) {
+        List<String> results = new ArrayList<>();
         int open = glob.indexOf('{');
         int close = open != -1 ? glob.indexOf('}', open) : -1;
         if (open == -1 || close == -1) {
@@ -386,7 +398,7 @@ public class HgRepository implements Repository {
             } else if (c == '?') {
                 sb.append("[^/]");
             } else if (c == '{' || c == '}') {
-                sb.append(java.util.regex.Pattern.quote(String.valueOf(c)));
+                sb.append(Pattern.quote(String.valueOf(c)));
             } else if (".\\$^+|()[]".indexOf(c) != -1) {
                 sb.append('\\').append(c);
             } else {
@@ -399,7 +411,7 @@ public class HgRepository implements Repository {
 
     public synchronized boolean isIgnored(String relativePath) {
         loadIgnorePatterns();
-        for (java.util.regex.Pattern pattern : ignorePatterns) {
+        for (Pattern pattern : ignorePatterns) {
             if (pattern.matcher(relativePath).find()) {
                 return true;
             }
@@ -407,14 +419,14 @@ public class HgRepository implements Repository {
         return false;
     }
 
-    public synchronized java.util.List<String> scanWorkingCopy() {
+    public synchronized List<String> scanWorkingCopy() {
         ignorePatterns = null;
-        java.util.List<String> result = new java.util.ArrayList<>();
+        List<String> result = new ArrayList<>();
         scanDirectory(directory, directory, result);
         return result;
     }
 
-    private void scanDirectory(File dir, File root, java.util.List<String> result) {
+    private void scanDirectory(File dir, File root, List<String> result) {
         File[] children = dir.listFiles();
         if (children == null) {
             return;
@@ -426,7 +438,7 @@ public class HgRepository implements Repository {
             String rel = root.toURI().relativize(child.toURI()).getPath();
             rel = rel.replace('\\', '/');
             
-            boolean isDir = child.isDirectory() && !java.nio.file.Files.isSymbolicLink(child.toPath());
+            boolean isDir = child.isDirectory() && !Files.isSymbolicLink(child.toPath());
             if (isDir) {
                 if (!rel.endsWith("/")) {
                     rel = rel + "/";
@@ -458,9 +470,9 @@ public class HgRepository implements Repository {
         File branchFile = new File(hgDir, "branch");
         if (branchFile.exists()) {
             try {
-                return java.nio.file.Files.readString(branchFile.toPath(), java.nio.charset.StandardCharsets.UTF_8).trim();
+                return Files.readString(branchFile.toPath(), StandardCharsets.UTF_8).trim();
             } catch (IOException e) {
-                throw new java.io.UncheckedIOException("Failed to read branch file", e);
+                throw new UncheckedIOException("Failed to read branch file", e);
             }
         }
         return "default";
@@ -519,7 +531,7 @@ public class HgRepository implements Repository {
         }
         boolean rollbackSuccess = false;
         try {
-            java.util.List<String> lines = java.nio.file.Files.readAllLines(journalFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+            List<String> lines = Files.readAllLines(journalFile.toPath(), StandardCharsets.UTF_8);
             for (String line : lines) {
                 line = line.trim();
                 if (line.isEmpty()) continue;
@@ -538,26 +550,26 @@ public class HgRepository implements Repository {
                         File backupFile = new File(hgDir, backupRel);
                         if (backupFile.exists()) {
                             originalFile.getParentFile().mkdirs();
-                            java.nio.file.Files.copy(backupFile.toPath(), originalFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                            Files.copy(backupFile.toPath(), originalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                         } else {
-                            java.nio.file.Files.deleteIfExists(originalFile.toPath());
+                            Files.deleteIfExists(originalFile.toPath());
                         }
                     }
                 } else if (line.equals("dirstate")) {
                     File dirstateBackup = new File(hgDir, "dirstate.backup");
                     File dirstateFile = new File(hgDir, "dirstate");
                     if (dirstateBackup.exists()) {
-                        java.nio.file.Files.move(dirstateBackup.toPath(), dirstateFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        Files.move(dirstateBackup.toPath(), dirstateFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     } else {
-                        java.nio.file.Files.deleteIfExists(dirstateFile.toPath());
+                        Files.deleteIfExists(dirstateFile.toPath());
                     }
                 } else if (line.equals("fncache")) {
                     File fncacheBackup = new File(storeDir, "fncache.backup");
                     File fncacheFile = new File(storeDir, "fncache");
                     if (fncacheBackup.exists()) {
-                        java.nio.file.Files.move(fncacheBackup.toPath(), fncacheFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        Files.move(fncacheBackup.toPath(), fncacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     } else {
-                        java.nio.file.Files.deleteIfExists(fncacheFile.toPath());
+                        Files.deleteIfExists(fncacheFile.toPath());
                     }
                 } else {
                     int splitIdx = line.lastIndexOf('\t');
@@ -570,9 +582,9 @@ public class HgRepository implements Repository {
                         File file = new File(hgDir, filePath);
                         if (file.exists()) {
                             if (origSize == 0) {
-                                java.nio.file.Files.deleteIfExists(file.toPath());
+                                Files.deleteIfExists(file.toPath());
                             } else {
-                                try (java.nio.channels.FileChannel outChan = java.nio.channels.FileChannel.open(file.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+                                try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
                                     outChan.truncate(origSize);
                                     outChan.force(true);
                                 }
@@ -587,9 +599,9 @@ public class HgRepository implements Repository {
         }
         if (rollbackSuccess) {
             try {
-                java.nio.file.Files.deleteIfExists(journalFile.toPath());
-                java.nio.file.Files.deleteIfExists(new File(hgDir, "dirstate.backup").toPath());
-                java.nio.file.Files.deleteIfExists(new File(storeDir, "fncache.backup").toPath());
+                Files.deleteIfExists(journalFile.toPath());
+                Files.deleteIfExists(new File(hgDir, "dirstate.backup").toPath());
+                Files.deleteIfExists(new File(storeDir, "fncache.backup").toPath());
                 deleteDirRecursively(new File(storeDir, "rebase-backup"));
             } catch (Exception ignored) {
                 LOGGER.log(Level.WARNING, "Failed to delete rollback backups", ignored);

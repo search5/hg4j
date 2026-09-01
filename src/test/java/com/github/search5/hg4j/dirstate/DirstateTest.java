@@ -14,6 +14,9 @@ import java.util.Arrays;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.lib.NodeId;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 public class DirstateTest {
 
@@ -47,8 +50,8 @@ public class DirstateTest {
     @Test
     public void testDirstateNodeIdParentMethods() {
         Dirstate dirstate = new Dirstate();
-        com.github.search5.hg4j.lib.NodeId n1 = com.github.search5.hg4j.lib.NodeId.fromHex("abcdef0123456789abcdef0123456789abcdef01");
-        com.github.search5.hg4j.lib.NodeId n2 = com.github.search5.hg4j.lib.NodeId.fromHex("1234567890123456789012345678901234567890");
+        NodeId n1 = NodeId.fromHex("abcdef0123456789abcdef0123456789abcdef01");
+        NodeId n2 = NodeId.fromHex("1234567890123456789012345678901234567890");
 
         dirstate.setParents(n1, n2);
         assertEquals(n1, dirstate.getParent1Node());
@@ -155,7 +158,7 @@ public class DirstateTest {
         
         // 2. pathLen is truncated
         byte[] headerOkButTruncatedPath = new byte[40 + 17]; // Header 40 + entry 17 (but path is missing)
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(headerOkButTruncatedPath);
+        ByteBuffer buf = ByteBuffer.wrap(headerOkButTruncatedPath);
         buf.position(40);
         buf.put((byte) 'n'); // state
         buf.putInt(0); // mode
@@ -193,7 +196,7 @@ public class DirstateTest {
             Files.writeString(nestedTmp.toPath(), "nested temp");
             
             // 1. Without .hgignore - all should be found
-            java.util.List<String> files1 = repository.scanWorkingCopy();
+            List<String> files1 = repository.scanWorkingCopy();
             assertTrue(files1.contains("keep.txt"));
             assertTrue(files1.contains("ignore_me.tmp"));
             assertTrue(files1.contains("build/output.class"));
@@ -204,7 +207,7 @@ public class DirstateTest {
             Files.writeString(ignoreFile.toPath(), "syntax: glob\n*.tmp\nbuild/\n");
             
             // Reload ignore patterns (it will load automatically on next isIgnored / scan)
-            java.util.List<String> files2 = repository.scanWorkingCopy();
+            List<String> files2 = repository.scanWorkingCopy();
             assertTrue(files2.contains("keep.txt"));
             assertFalse(files2.contains("ignore_me.tmp"));
             assertFalse(files2.contains("build/output.class"));
@@ -219,12 +222,12 @@ public class DirstateTest {
         File dirstateFile = new File(hgDir, "dirstate");
 
         // Write V2 data file
-        File dataFile = new File(hgDir, "dirstate.d.123456");
+        File dataFile = new File(hgDir, "dirstate.123456");
         Files.write(dataFile.toPath(), new byte[0]);
 
         // Write V2 Docket file (Strict 122+ bytes)
-        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] uidBytes = "123456".getBytes(StandardCharsets.US_ASCII);
         int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
         ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
         buf.put(v2Magic);
@@ -251,12 +254,12 @@ public class DirstateTest {
             File dirstateFile = new File(repository.getHgDir(), "dirstate");
             
             // Write V2 data file
-            File dataFile = new File(repository.getHgDir(), "dirstate.d.123456");
+            File dataFile = new File(repository.getHgDir(), "dirstate.123456");
             Files.write(dataFile.toPath(), new byte[0]);
 
             // Write V2 Docket file (Strict 122+ bytes)
-            byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-            byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
+            byte[] uidBytes = "123456".getBytes(StandardCharsets.US_ASCII);
             int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
             ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
             buf.put(v2Magic);
@@ -320,8 +323,8 @@ public class DirstateTest {
     @Test
     public void testDirstateV2ReadDataFileNotFound(@TempDir Path tempDir) throws IOException {
         File dirstateFile = tempDir.resolve("dirstate").toFile();
-        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        byte[] uidBytes = "missing_uid".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] uidBytes = "missing_uid".getBytes(StandardCharsets.US_ASCII);
         int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
         ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
         buf.put(v2Magic);
@@ -340,11 +343,11 @@ public class DirstateTest {
     @Test
     public void testDirstateV2ReadLengthMismatch(@TempDir Path tempDir) throws IOException {
         File dirstateFile = tempDir.resolve("dirstate").toFile();
-        File dataFile = tempDir.resolve("dirstate.d.bad_len").toFile();
+        File dataFile = tempDir.resolve("dirstate.bad_len").toFile();
         Files.write(dataFile.toPath(), new byte[50]); // actual len is 50
 
-        byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        byte[] uidBytes = "bad_len".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] uidBytes = "bad_len".getBytes(StandardCharsets.US_ASCII);
         int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
         ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
         buf.put(v2Magic);
@@ -377,8 +380,8 @@ public class DirstateTest {
         byte[] uidBytes = new byte[uidSize];
         docketBuf.position(125);
         docketBuf.get(uidBytes);
-        String oldUid = new String(uidBytes, java.nio.charset.StandardCharsets.US_ASCII);
-        File oldDataFile = new File(dirstateFile.getParentFile(), "dirstate.d." + oldUid);
+        String oldUid = new String(uidBytes, StandardCharsets.US_ASCII);
+        File oldDataFile = new File(dirstateFile.getParentFile(), "dirstate." + oldUid);
         assertTrue(oldDataFile.exists());
 
         // 2. Second V2 write (will create second uid datafile and clean up the old one)
@@ -394,8 +397,8 @@ public class DirstateTest {
         byte[] uidBytes2 = new byte[uidSize2];
         docketBuf2.position(125);
         docketBuf2.get(uidBytes2);
-        String newUid = new String(uidBytes2, java.nio.charset.StandardCharsets.US_ASCII);
-        File newDataFile = new File(dirstateFile.getParentFile(), "dirstate.d." + newUid);
+        String newUid = new String(uidBytes2, StandardCharsets.US_ASCII);
+        File newDataFile = new File(dirstateFile.getParentFile(), "dirstate." + newUid);
 
         assertNotEquals(oldUid, newUid);
         assertTrue(newDataFile.exists());

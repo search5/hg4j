@@ -11,6 +11,14 @@ import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
 /**
  * Class responsible for managing and parsing the index (.i) file of a revlog.
@@ -22,7 +30,7 @@ public class RevlogIndex {
 
     private final File idxFile;
     private final Map<ByteBuffer, Integer> nodeMap = new HashMap<>();
-    private final java.util.TreeMap<String, byte[]> hexNodeMap = new java.util.TreeMap<>();
+    private final TreeMap<String, byte[]> hexNodeMap = new TreeMap<>();
     private final Map<Integer, SoftReference<Revlog.IndexRecord>> recordCache = new HashMap<>();
     private final Map<Integer, Revlog.IndexRecord> addedRecords = new HashMap<>();
     private boolean inline = false;
@@ -111,7 +119,7 @@ public class RevlogIndex {
     private static String readAsciiUid(ByteBuffer buf, int size) {
         byte[] b = new byte[size];
         buf.get(b);
-        return new String(b, java.nio.charset.StandardCharsets.US_ASCII);
+        return new String(b, StandardCharsets.US_ASCII);
     }
 
     /** S_OLD_UID = '>BL' (uid 크기 1B + 파일 크기 4B) * count, 이어서 실제 uuid 바이트들. */
@@ -209,7 +217,7 @@ public class RevlogIndex {
 
                 if (rlVersion == MAGIC_REVLOGV2 || rlVersion == MAGIC_CHANGELOGV2) {
                     if (len < V2_HEADER_SIZE) {
-                        throw new com.github.search5.hg4j.errors.HgCorruptDataException("Invalid revlog v2 docket: too short");
+                        throw new HgCorruptDataException("Invalid revlog v2 docket: too short");
                     }
                     this.isV2 = true;
                     this.isChangelogV2 = (rlVersion == MAGIC_CHANGELOGV2);
@@ -257,7 +265,7 @@ public class RevlogIndex {
                     this.resolvedSidedataFile = new File(idxFile.getParentFile(), radix + "-" + sidedataUuid + ".sda");
 
                     if (!resolvedIndexFile.exists()) {
-                        throw new com.github.search5.hg4j.errors.HgCorruptDataException(
+                        throw new HgCorruptDataException(
                                 "Invalid v2 docket: companion index file missing: " + resolvedIndexFile);
                     }
 
@@ -292,7 +300,7 @@ public class RevlogIndex {
             }
 
             if (len < 64) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Invalid revlog index: too short");
+                throw new HgCorruptDataException("Invalid revlog index: too short");
             }
 
             ByteBuffer buf = ByteBuffer.allocate(64);
@@ -313,7 +321,7 @@ public class RevlogIndex {
                     int formatFlags = (int) (offsetFlags >>> 48);
                     int version = (int) ((offsetFlags >>> 32) & 0xFFFF);
                     if (version != 1) {
-                        throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unsupported revlog version: " + version);
+                        throw new HgCorruptDataException("Unsupported revlog version: " + version);
                     }
                     this.inline = (formatFlags & 0x0001) != 0;
                 }
@@ -334,7 +342,7 @@ public class RevlogIndex {
                     int compLen = buf.getInt();
                     nextPos += compLen;
                     if (nextPos > len) {
-                        throw new com.github.search5.hg4j.errors.HgCorruptDataException("Truncated inline revlog data at revision " + revisionCount);
+                        throw new HgCorruptDataException("Truncated inline revlog data at revision " + revisionCount);
                     }
                 }
                 currentPos = nextPos;
@@ -380,7 +388,7 @@ public class RevlogIndex {
                     int compLen = buf.getInt();
                     nextPos += compLen;
                     if (nextPos > len) {
-                        throw new com.github.search5.hg4j.errors.HgCorruptDataException("Truncated inline revlog data at revision " + revisionCount);
+                        throw new HgCorruptDataException("Truncated inline revlog data at revision " + revisionCount);
                     }
                 }
                 currentPos = nextPos;
@@ -602,14 +610,14 @@ public class RevlogIndex {
      * Resolves a prefix hex string to a collection of matching 20-byte node IDs.
      * Extremely fast using an in-memory TreeMap lookup (O(log N)).
      */
-    public synchronized java.util.List<byte[]> findByHexPrefix(String prefix) {
+    public synchronized List<byte[]> findByHexPrefix(String prefix) {
         checkAndUpdate();
         if (prefix == null || prefix.isEmpty()) {
-            return java.util.Collections.emptyList();
+            return Collections.emptyList();
         }
-        String lowerPrefix = prefix.toLowerCase(java.util.Locale.ROOT);
+        String lowerPrefix = prefix.toLowerCase(Locale.ROOT);
         String endPrefix = lowerPrefix + "\uffff";
-        java.util.SortedMap<String, byte[]> subMap = hexNodeMap.subMap(lowerPrefix, endPrefix);
-        return new java.util.ArrayList<>(subMap.values());
+        SortedMap<String, byte[]> subMap = hexNodeMap.subMap(lowerPrefix, endPrefix);
+        return new ArrayList<>(subMap.values());
     }
 }

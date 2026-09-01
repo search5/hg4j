@@ -11,11 +11,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /**
  * Shared frame-assembly/disassembly logic for real hg's wireprotocol v2, used by both the client
  * ({@link com.github.search5.hg4j.transport.HgRemoteClientV2}) and the server side of
- * {@link com.github.search5.hg4j.transport.HgWireServer}. Reproduces the relevant slice of real
+ * {@link com.github.search5.hg4j.transport.HgHttpWireServer}. Reproduces the relevant slice of real
  * hg's {@code mercurial/wireprotoframing.py} — the command-request/response framing, the
  * mandatory identity stream-settings declaration, and the {@code {status: ok|error}} response
  * envelope — verified against a real Mercurial 6.0 server (the last release with a working v2
@@ -113,7 +114,7 @@ public final class Wire2Transport {
 
     /**
      * Builds a command-level error response: a single {@code {status:"error", error:{...}}}
-     * frame. Does not set the stream-begin flag — {@link HgWireServer}, the only caller, always
+     * frame. Does not set the stream-begin flag — {@link com.github.search5.hg4j.transport.HgHttpWireServer}, the only caller, always
      * sends {@link #buildStreamSettingsFrame} first regardless of whether the command that
      * follows succeeds or fails.
      */
@@ -218,7 +219,7 @@ public final class Wire2Transport {
      *                      following-bytes merge attempted
      */
     public static List<Map<String, Object>> decodeRecordsWithFollowing(
-            List<Object> objects, java.util.function.Predicate<Map<String, Object>> isHeaderEntry) {
+            List<Object> objects, Predicate<Map<String, Object>> isHeaderEntry) {
         List<Map<String, Object>> result = new ArrayList<>();
         int i = 0;
         while (i < objects.size()) {

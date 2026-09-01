@@ -17,6 +17,16 @@ import java.util.Arrays;
 import java.util.zip.Deflater;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class RevlogTest {
 
@@ -156,7 +166,7 @@ public class RevlogTest {
         // Write an invalid version (version 2) in a 64-byte record
         ByteBuffer buf = ByteBuffer.allocate(64);
         buf.putInt(0x00020000);
-        java.nio.file.Files.write(idxFile.toPath(), buf.array());
+        Files.write(idxFile.toPath(), buf.array());
 
         assertThrows(IOException.class, () -> new Revlog(idxFile, datFile));
     }
@@ -167,7 +177,7 @@ public class RevlogTest {
         File datFile = tempDir.resolve("short.d").toFile();
 
         // Write only 10 bytes
-        java.nio.file.Files.write(idxFile.toPath(), new byte[10]);
+        Files.write(idxFile.toPath(), new byte[10]);
 
         assertThrows(IOException.class, () -> new Revlog(idxFile, datFile));
     }
@@ -259,7 +269,7 @@ public class RevlogTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(buf0.array());
         out.write(buf1.array());
-        java.nio.file.Files.write(idxFile.toPath(), out.toByteArray());
+        Files.write(idxFile.toPath(), out.toByteArray());
 
         Revlog reader = new Revlog(idxFile, datFile);
         byte[] emptyHunkResult = reader.getRevisionContent(1);
@@ -305,7 +315,7 @@ public class RevlogTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(buf0.array());
         out.write(buf1.array());
-        java.nio.file.Files.write(idxFile.toPath(), out.toByteArray());
+        Files.write(idxFile.toPath(), out.toByteArray());
 
         Revlog reader = new Revlog(idxFile, datFile);
         assertThrows(IOException.class, () -> reader.getRevisionContent(1));
@@ -324,7 +334,7 @@ public class RevlogTest {
         out.reset();
         out.write(buf0.array());
         out.write(buf2.array());
-        java.nio.file.Files.write(idxFile.toPath(), out.toByteArray());
+        Files.write(idxFile.toPath(), out.toByteArray());
         
         Revlog reader2 = new Revlog(idxFile, datFile);
         assertThrows(IOException.class, () -> reader2.getRevisionContent(1));
@@ -342,7 +352,7 @@ public class RevlogTest {
 
         // Overwrite data file with invalid zlib data
         byte[] invalidZlib = new byte[] { 'x', 0, 1, 2, 3 };
-        java.nio.file.Files.write(datFile.toPath(), invalidZlib);
+        Files.write(datFile.toPath(), invalidZlib);
 
         // Mutate index record to match invalidZlib length
         ByteBuffer buf = ByteBuffer.allocate(64);
@@ -354,14 +364,14 @@ public class RevlogTest {
         buf.putInt(-1);
         buf.putInt(-1);
         buf.put(new byte[32]);
-        java.nio.file.Files.write(idxFile.toPath(), buf.array());
+        Files.write(idxFile.toPath(), buf.array());
 
         Revlog reader = new Revlog(idxFile, datFile);
         assertThrows(IOException.class, () -> reader.getRevisionContent(0));
 
         // 2. Data starts with 0 (empty data)
         byte[] emptyHunk = new byte[] { 0 };
-        java.nio.file.Files.write(datFile.toPath(), emptyHunk);
+        Files.write(datFile.toPath(), emptyHunk);
         buf.clear();
         buf.putLong(0x0000000100000000L);
         buf.putInt(1);
@@ -371,7 +381,7 @@ public class RevlogTest {
         buf.putInt(-1);
         buf.putInt(-1);
         buf.put(new byte[32]);
-        java.nio.file.Files.write(idxFile.toPath(), buf.array());
+        Files.write(idxFile.toPath(), buf.array());
 
         Revlog reader2 = new Revlog(idxFile, datFile);
         byte[] empty = reader2.getRevisionContent(0);
@@ -379,7 +389,7 @@ public class RevlogTest {
 
         // 3. Fallback uncompressed (starts with other bytes)
         byte[] rawHunk = new byte[] { 'y', 'e', 's' };
-        java.nio.file.Files.write(datFile.toPath(), rawHunk);
+        Files.write(datFile.toPath(), rawHunk);
         buf.clear();
         buf.putLong(0x0000000100000000L);
         buf.putInt(3);
@@ -389,7 +399,7 @@ public class RevlogTest {
         buf.putInt(-1);
         buf.putInt(-1);
         buf.put(new byte[32]);
-        java.nio.file.Files.write(idxFile.toPath(), buf.array());
+        Files.write(idxFile.toPath(), buf.array());
 
         Revlog reader3 = new Revlog(idxFile, datFile);
         byte[] raw = reader3.getRevisionContent(0);
@@ -466,7 +476,7 @@ public class RevlogTest {
         out.write(rec1.array());
         out.write(zip1);
 
-        java.nio.file.Files.write(idxFile.toPath(), out.toByteArray());
+        Files.write(idxFile.toPath(), out.toByteArray());
 
         Revlog inlineReader = new Revlog(idxFile, new File("/nonexistent"));
         assertEquals(2, inlineReader.getRevisionCount());
@@ -482,7 +492,7 @@ public class RevlogTest {
         // Truncate the file mid-zip1 data
         byte[] truncatedBytes = Arrays.copyOf(out.toByteArray(), out.size() - 5);
         File truncFile = tempDir.resolve("trunc_inline.i").toFile();
-        java.nio.file.Files.write(truncFile.toPath(), truncatedBytes);
+        Files.write(truncFile.toPath(), truncatedBytes);
         assertThrows(IOException.class, () -> new Revlog(truncFile, new File("/nonexistent")));
     }
 
@@ -607,7 +617,7 @@ public class RevlogTest {
         out.write(rec2.array());
         out.write(zip2);
 
-        java.nio.file.Files.write(idxFile.toPath(), out.toByteArray());
+        Files.write(idxFile.toPath(), out.toByteArray());
 
         Revlog reader = new Revlog(idxFile, new File("/nonexistent"));
         assertEquals(3, reader.getRevisionCount());
@@ -640,20 +650,20 @@ public class RevlogTest {
 
     @Test
     public void testEncodeFname() {
-        assertEquals("data/test", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("test"));
-        assertEquals("data/~2etest", com.github.search5.hg4j.util.NodeIdUtil.encodeFname(".test"));
-        assertEquals("data/test__with__underscores", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("test_with_underscores"));
-        assertEquals("data/au~78", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("aux"));
-        assertEquals("data/au~78.i", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("aux.i"));
-        assertEquals("data/_c_o_n", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("CON"));
+        assertEquals("data/test", NodeIdUtil.encodeFname("test"));
+        assertEquals("data/~2etest", NodeIdUtil.encodeFname(".test"));
+        assertEquals("data/test__with__underscores", NodeIdUtil.encodeFname("test_with_underscores"));
+        assertEquals("data/au~78", NodeIdUtil.encodeFname("aux"));
+        assertEquals("data/au~78.i", NodeIdUtil.encodeFname("aux.i"));
+        assertEquals("data/_c_o_n", NodeIdUtil.encodeFname("CON"));
         // 실제 hg(mercurial.store._pathencode)로 검증(2026-09-01): com1..9/lpt1..9 예약어는
         // 끝의 숫자가 아니라 항상 세 번째 글자(m/t)를 이스케이프한다 — "com5" -> "co~6d5".
-        assertEquals("data/co~6d5", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("com5"));
-        assertEquals("data/test space", com.github.search5.hg4j.util.NodeIdUtil.encodeFname("test space"));
-        assertEquals("data/~2ehello world", com.github.search5.hg4j.util.NodeIdUtil.encodeFname(".hello world"));
+        assertEquals("data/co~6d5", NodeIdUtil.encodeFname("com5"));
+        assertEquals("data/test space", NodeIdUtil.encodeFname("test space"));
+        assertEquals("data/~2ehello world", NodeIdUtil.encodeFname(".hello world"));
         
         // Non-ASCII Korean encoding verification
-        String encodedKorean = com.github.search5.hg4j.util.NodeIdUtil.encodeFname("안녕");
+        String encodedKorean = NodeIdUtil.encodeFname("안녕");
         assertTrue(encodedKorean.contains("~"));
         assertFalse(encodedKorean.contains("%"));
     }
@@ -754,7 +764,7 @@ public class RevlogTest {
         datFile.deleteOnExit();
         Revlog revlog = new Revlog(idxFile, datFile);
 
-        java.lang.reflect.Method decompressMethod = Revlog.class.getDeclaredMethod("decompressHunk", byte[].class, Revlog.IndexRecord.class);
+        Method decompressMethod = Revlog.class.getDeclaredMethod("decompressHunk", byte[].class, Revlog.IndexRecord.class);
         decompressMethod.setAccessible(true);
 
         Revlog.IndexRecord dummyRecord = new Revlog.IndexRecord(0, 0L, 0, zlibData.length, uncompressed.length, 0, 0, -1, -1, new byte[20]);
@@ -778,9 +788,9 @@ public class RevlogTest {
         Revlog revlog = new Revlog(idx, dat);
 
         int threadCount = 8;
-        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(threadCount);
-        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.atomic.AtomicInteger failureCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicInteger failureCount = new AtomicInteger(0);
 
         for (int i = 0; i < threadCount; i++) {
             final int index = i;
@@ -798,7 +808,7 @@ public class RevlogTest {
 
         latch.countDown();
         executor.shutdown();
-        boolean finished = executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
+        boolean finished = executor.awaitTermination(5, TimeUnit.SECONDS);
 
         assertTrue(finished);
         assertEquals(0, failureCount.get(), "Concurrent appends had exceptions: " + failureCount.get());
@@ -812,7 +822,7 @@ public class RevlogTest {
         Revlog revlog = new Revlog(idxFile, datFile);
 
         // 1. Parent revision with copy metadata
-        java.util.Map<String, String> metadata = new java.util.HashMap<>();
+        Map<String, String> metadata = new HashMap<>();
         metadata.put("copy", "source.txt");
         metadata.put("copyrev", "0000000000000000000000000000000000000000");
 
@@ -868,7 +878,7 @@ public class RevlogTest {
 
         byte[] childNode = new byte[20];
         try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
             md.update(first);
             md.update(second);
             md.update(rawChildContent);

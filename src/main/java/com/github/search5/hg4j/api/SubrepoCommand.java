@@ -8,6 +8,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.dirstate.Dirstate;
+import com.github.search5.hg4j.util.NodeIdUtil;
 
 /**
  * Subrepo command (submoduleAdd / Init / Update) for Mercurial repositories.
@@ -84,8 +86,9 @@ public class SubrepoCommand {
                     String path = line.substring(0, eq).trim();
                     String url = line.substring(eq + 1).trim();
 
-                    // Find configured revision in .hgsubstate
-                    String rev = "tip";
+                    // Find configured revision in .hgsubstate; null means "no pinned revision"
+                    // (leave the freshly cloned subrepo's own tip dirstate untouched).
+                    String rev = null;
                     for (String stateLine : hgsubstateLines) {
                         if (stateLine.endsWith(" " + path) || stateLine.endsWith("\t" + path)) {
                             rev = stateLine.substring(0, 40).trim();
@@ -105,12 +108,15 @@ public class SubrepoCommand {
                             throw new IOException("Subrepo URL cannot be null or empty for path: " + path);
                         }
                     }
-                    // For dummy in-memory SCM update verification: sync parent Dirstate of subrepository
-                    try (Hg hg = Hg.open(subrepoDir)) {
-                        HgRepository subRepo = hg.getRepository();
-                        com.github.search5.hg4j.dirstate.Dirstate d = subRepo.getDirstate();
-                        d.setParents(com.github.search5.hg4j.util.NodeIdUtil.fromHex(rev), new byte[20]);
-                        subRepo.writeDirstate(d);
+                    // If a revision is pinned in .hgsubstate, point the subrepo's dirstate at it.
+                    // Otherwise leave the freshly cloned/existing subrepo's own dirstate as-is.
+                    if (rev != null) {
+                        try (Hg hg = Hg.open(subrepoDir)) {
+                            HgRepository subRepo = hg.getRepository();
+                            Dirstate d = subRepo.getDirstate();
+                            d.setParents(NodeIdUtil.fromHex(rev), new byte[20]);
+                            subRepo.writeDirstate(d);
+                        }
                     }
                 }
             }

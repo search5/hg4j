@@ -24,6 +24,21 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.HashMap;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.gpg.GpgSignature;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.phase.PhaseRoots;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
+import com.github.search5.hg4j.treewalk.TreeWalk;
+import com.github.search5.hg4j.treewalk.WorkingDirTreeIterator;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.StandardCopyOption;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.TimeZone;
 
 /**
  * Commits tracked changes to the repository history.
@@ -41,10 +56,17 @@ public class CommitCommand {
     
     private final List<HgHook> preCommitHooks = new ArrayList<>();
     private final List<HgHook> postCommitHooks = new ArrayList<>();
-    private com.github.search5.hg4j.gpg.GpgSignature gpgSignature;
+    private GpgSignature gpgSignature;
+    private boolean closeBranch = false;
 
-    public CommitCommand setGpgSignature(com.github.search5.hg4j.gpg.GpgSignature gpgSignature) {
+    public CommitCommand setGpgSignature(GpgSignature gpgSignature) {
         this.gpgSignature = gpgSignature;
+        return this;
+    }
+
+    /** {@code hg commit --close-branch}: marks the new commit as closing the named branch head it becomes. */
+    public CommitCommand setCloseBranch(boolean closeBranch) {
+        this.closeBranch = closeBranch;
         return this;
     }
 
@@ -102,7 +124,7 @@ public class CommitCommand {
             ctx.put("repository", repository);
             for (HgHook hook : preCommitHooks) {
                 if (!hook.run(ctx)) {
-                    throw new com.github.search5.hg4j.errors.HgValidationException("Pre-commit hook execution rejected the commit txn");
+                    throw new HgValidationException("Pre-commit hook execution rejected the commit txn");
                 }
             }
         }
@@ -123,12 +145,12 @@ public class CommitCommand {
                 
                 if (dirstateFile.exists()) {
                     File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                    Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     appendToJournal(journalFile, "dirstate");
                 }
                 if (fncacheFile.exists()) {
                     File fncacheBackupFile = new File(repository.getStoreDir(), "fncache.backup");
-                    Files.copy(fncacheFile.toPath(), fncacheBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    Files.copy(fncacheFile.toPath(), fncacheBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     appendToJournal(journalFile, "fncache");
                 }
             }
@@ -158,8 +180,8 @@ public class CommitCommand {
             }
 
             Dirstate dirstate = repository.getDirstate();
-            com.github.search5.hg4j.lib.NodeId p1CommitNode = dirstate.getParent1Node();
-            com.github.search5.hg4j.lib.NodeId p2CommitNode = dirstate.getParent2Node();
+            NodeId p1CommitNode = dirstate.getParent1Node();
+            NodeId p2CommitNode = dirstate.getParent2Node();
 
             // 1. Load changelog and find parent commit rev index
             Revlog changelog = repository.getRevlog(clIdx, clDat);
@@ -168,7 +190,7 @@ public class CommitCommand {
             if (p1CommitNode != null && !p1CommitNode.isNull()) {
                 parent1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
                 if (parent1Rev == -1) {
-                    throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException(p1CommitNode.toHex());
+                    throw new HgRevisionNotFoundException(p1CommitNode.toHex());
                 }
             }
 
@@ -176,7 +198,7 @@ public class CommitCommand {
             if (p2CommitNode != null && !p2CommitNode.isNull()) {
                 parent2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode.getBytes());
                 if (parent2Rev == -1) {
-                    throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException(p2CommitNode.toHex());
+                    throw new HgRevisionNotFoundException(p2CommitNode.toHex());
                 }
             }
 
@@ -193,7 +215,7 @@ public class CommitCommand {
             int parent1ManifestRev = -1;
             if (parent1Rev != -1) {
                 byte[] p1CommitNodeBytes = p1CommitNode.getBytes();
-                java.util.Map<String, String> mf1 = repository.getManifestAtCommit(p1CommitNodeBytes);
+                Map<String, String> mf1 = repository.getManifestAtCommit(p1CommitNodeBytes);
                 manifestP1.putAll(mf1);
                 byte[] clContent = changelog.getRevisionContent(parent1Rev);
                 p1ManifestNode = extractManifestNode(clContent);
@@ -206,7 +228,7 @@ public class CommitCommand {
             int parent2ManifestRev = -1;
             if (parent2Rev != -1 && p2CommitNode != null && !p2CommitNode.isNull()) {
                 byte[] p2CommitNodeBytes = p2CommitNode.getBytes();
-                java.util.Map<String, String> mf2 = repository.getManifestAtCommit(p2CommitNodeBytes);
+                Map<String, String> mf2 = repository.getManifestAtCommit(p2CommitNodeBytes);
                 manifestP2.putAll(mf2);
                 byte[] clContent = changelog.getRevisionContent(parent2Rev);
                 p2ManifestNode = extractManifestNode(clContent);
@@ -241,10 +263,10 @@ public class CommitCommand {
                 }
             }
 
-            com.github.search5.hg4j.treewalk.TreeWalk tw = new com.github.search5.hg4j.treewalk.TreeWalk();
-            tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(parent1Rev))); // Tree 0: P1
-            tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(parent2Rev))); // Tree 1: P2
-            tw.addTree(new com.github.search5.hg4j.treewalk.WorkingDirTreeIterator(repository));                           // Tree 2: Working Copy
+            TreeWalk tw = new TreeWalk();
+            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent1Rev))); // Tree 0: P1
+            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent2Rev))); // Tree 1: P2
+            tw.addTree(new WorkingDirTreeIterator(repository));                           // Tree 2: Working Copy
 
             tw.reset();
             while (tw.next()) {
@@ -260,7 +282,7 @@ public class CommitCommand {
                     } else if (workingState == 'a' || workingState == 'm' || workingState == 'n') {
                         File diskFile = new File(repository.getDirectory(), path);
                         if (!diskFile.exists() || !diskFile.isFile()) {
-                            throw new com.github.search5.hg4j.errors.HgValidationException("Tracked file not found on disk: " + path);
+                            throw new HgValidationException("Tracked file not found on disk: " + path);
                         }
 
                         // Large file support: safely record 32-bit masked size in dirstate v1
@@ -350,13 +372,13 @@ public class CommitCommand {
 
                             // Integrates Copy-Rename Track "Writer"
                             String originalPath = dirstate.getCopyMap().get(path);
-                            java.util.Map<String, String> copyMeta = null;
+                            Map<String, String> copyMeta = null;
 
                             if (originalPath != null) {
                                 String sourceEntry = manifestP1.get(originalPath);
                                 String hexSource = (sourceEntry != null && sourceEntry.length() >= 40)
                                         ? sourceEntry.substring(0, 40) : "0000000000000000000000000000000000000000";
-                                copyMeta = new java.util.LinkedHashMap<>();
+                                copyMeta = new LinkedHashMap<>();
                                 copyMeta.put("copy", originalPath);
                                 copyMeta.put("copyrev", hexSource);
                             }
@@ -432,7 +454,7 @@ public class CommitCommand {
             clSb.append(NodeIdUtil.toHex(manifestNode)).append('\n');
             clSb.append(author).append('\n');
             long secs = forcedTime != null ? forcedTime : System.currentTimeMillis() / 1000;
-            int offsetSeconds = forcedOffset != null ? forcedOffset : -java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
+            int offsetSeconds = forcedOffset != null ? forcedOffset : -TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
             clSb.append(secs).append(" ").append(offsetSeconds);
             String branchName = repository.getBranch();
             // 실제 hg(changelog.add)는 branch extra 항목을 default/빈 브랜치일 때는 아예
@@ -440,11 +462,20 @@ public class CommitCommand {
             // 원문 바이트가 실제 hg와 달라져 동일 내용이라도 노드 해시가 어긋난다
             // (2026-09-01 실제 hg로 확인: 기본 브랜치 커밋의 3번째 줄은 "초 tz"뿐이고
             // "branch:" 문구가 전혀 없다).
+            // 실제 hg(changelog.encodeextra)는 extra 항목이 여럿이면 키 알파벳순으로 정렬해
+            // '\0'로 join한다 -- "branch"가 "close"보다 앞선다.
+            List<String> extraParts = new ArrayList<>();
             if (branchName != null && !branchName.isEmpty() && !"default".equals(branchName)) {
-                clSb.append(" ").append("branch:").append(encodeExtraKey(branchName));
+                extraParts.add("branch:" + encodeExtraKey(branchName));
+            }
+            if (this.closeBranch) {
+                extraParts.add("close:1");
+            }
+            if (!extraParts.isEmpty()) {
+                clSb.append(" ").append(String.join("\0", extraParts));
             }
             clSb.append('\n');
-            java.util.Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
+            Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
             for (String path : filesModified) {
                 clSb.append(path).append('\n');
             }
@@ -464,7 +495,7 @@ public class CommitCommand {
             byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, parent1Rev, parent2Rev, p1CommitNodeHash, p2CommitNodeHash, newCommitRev);
 
             // 6. Update and save Dirstate
-            dirstate.setParents(new com.github.search5.hg4j.lib.NodeId(commitNode), com.github.search5.hg4j.lib.NodeId.NULL);
+            dirstate.setParents(new NodeId(commitNode), NodeId.NULL);
             
             List<String> pathsToChange = new ArrayList<>(dirstate.getEntries().keySet());
             for (String path : pathsToChange) {
@@ -475,8 +506,14 @@ public class CommitCommand {
                     dirstate.removeEntry(path);
                 } else if (entry.getState() == 'a' || entry.getState() == 'm' || filesModified.contains(path)) {
                     File diskFile = new File(repository.getDirectory(), path);
+                    boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
                     int mode = diskFile.canExecute() ? 0755 : 0644;
-                    int size = (int) diskFile.length();
+                    // A symlink's dirstate "size" must be the length of its own target path
+                    // string (lstat semantics, matching the filelog content recorded above),
+                    // not File.length() which follows the link to whatever it points at.
+                    int size = isSymlink
+                            ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                            : (int) diskFile.length();
                     long time = diskFile.lastModified() / 1000;
                     dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
                 }
@@ -485,8 +522,8 @@ public class CommitCommand {
 
             // 6.5. Update Phase for the new commit (all new commits default to DRAFT)
             try {
-                com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
-                phaseRoots.setPhase(new com.github.search5.hg4j.lib.NodeId(commitNode), com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, changelog);
+                PhaseRoots phaseRoots = repository.getPhaseRoots();
+                phaseRoots.setPhase(new NodeId(commitNode), PhaseRoots.Phase.DRAFT, changelog);
             } catch (Exception e) {
                 LOGGER.log(Level.WARNING, "Failed to set phase for new commit node", e);
             }
@@ -586,7 +623,7 @@ public class CommitCommand {
                     if (dirstateFile.exists()) {
                         byte[] currentBytes = Files.readAllBytes(dirstateFile.toPath());
                         if (currentBytes.length >= 12 && new String(currentBytes, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
-                            java.nio.ByteBuffer currentBuf = java.nio.ByteBuffer.wrap(currentBytes).order(java.nio.ByteOrder.BIG_ENDIAN);
+                            ByteBuffer currentBuf = ByteBuffer.wrap(currentBytes).order(ByteOrder.BIG_ENDIAN);
                             int currentUidSize = currentBuf.get(124) & 0xFF;
                             byte[] currentUidBytes = new byte[currentUidSize];
                             currentBuf.position(125);
@@ -595,7 +632,7 @@ public class CommitCommand {
                             
                             String oldUid = null;
                             if (dirstateBackup.length >= 12 && new String(dirstateBackup, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
-                                java.nio.ByteBuffer oldBuf = java.nio.ByteBuffer.wrap(dirstateBackup).order(java.nio.ByteOrder.BIG_ENDIAN);
+                                ByteBuffer oldBuf = ByteBuffer.wrap(dirstateBackup).order(ByteOrder.BIG_ENDIAN);
                                 int oldUidSize = oldBuf.get(124) & 0xFF;
                                 byte[] oldUidBytes = new byte[oldUidSize];
                                 oldBuf.position(125);
@@ -604,7 +641,7 @@ public class CommitCommand {
                             }
                             
                             if (currentUid != null && !currentUid.equals(oldUid)) {
-                                File newDirstateDataFile = new File(dirstateFile.getParentFile(), "dirstate.d." + currentUid);
+                                File newDirstateDataFile = new File(dirstateFile.getParentFile(), "dirstate." + currentUid);
                                 Files.deleteIfExists(newDirstateDataFile.toPath());
                             }
                         }
@@ -636,16 +673,16 @@ public class CommitCommand {
         }
     }
 
-    private byte[] getFileRevisionContent(com.github.search5.hg4j.lib.HgRepository repository, String path, String nodeHex) throws IOException {
+    private byte[] getFileRevisionContent(HgRepository repository, String path, String nodeHex) throws IOException {
         File flIdx = getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
+            throw new HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(nodeHex.substring(0, 40)));
         if (rev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }
@@ -671,7 +708,7 @@ public class CommitCommand {
                 }
             }
             if (isHexText) {
-                String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
+                String hexNode = new String(clContent, 0, 40, StandardCharsets.UTF_8);
                 mfNode = NodeIdUtil.fromHex(hexNode);
             }
         }
@@ -738,10 +775,53 @@ public class CommitCommand {
         return sb.toString();
     }
 
+    /**
+     * Returns the named branch a changelog revision was committed on, decoded from its
+     * {@code branch:<name>} extra field. Real hg never writes that field for the default
+     * branch ([[decisions/mercurial-spec-compliance-requirement]] — "Changelog 포맷" row),
+     * so its absence means {@code "default"}.
+     */
+    public static String getBranchOfRevision(Revlog changelog, int rev) throws IOException {
+        return parseExtra(changelog, rev).getOrDefault("branch", "default");
+    }
+
+    /** Whether a changelog revision closes its named branch head ({@code hg commit --close-branch}'s {@code close:1} extra). */
+    public static boolean isRevisionClosingBranch(Revlog changelog, int rev) throws IOException {
+        return "1".equals(parseExtra(changelog, rev).get("close"));
+    }
+
+    /** Decodes a changelog revision's extras block (date/tz line's {@code \0}-separated {@code key:value} entries). */
+    private static Map<String, String> parseExtra(Revlog changelog, int rev) throws IOException {
+        Map<String, String> extra = new HashMap<>();
+        byte[] content = changelog.getRevisionContent(rev);
+        String text = new String(content, StandardCharsets.UTF_8);
+        String[] lines = text.split("\n");
+        if (lines.length <= 2) {
+            return extra;
+        }
+        String dateLine = lines[2].trim();
+        int firstSpace = dateLine.indexOf(' ');
+        if (firstSpace == -1) {
+            return extra;
+        }
+        int secondSpace = dateLine.indexOf(' ', firstSpace + 1);
+        String extraPart = (secondSpace != -1) ? dateLine.substring(secondSpace + 1) : null;
+        if (extraPart == null || extraPart.isEmpty()) {
+            return extra;
+        }
+        for (String part : extraPart.split("\0", -1)) {
+            int colonIdx = findUnescapedColon(part);
+            if (colonIdx != -1) {
+                extra.put(decodeExtraKey(part.substring(0, colonIdx)), decodeExtraKey(part.substring(colonIdx + 1)));
+            }
+        }
+        return extra;
+    }
+
     private void appendToJournal(File journalFile, String entry) throws IOException {
         Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-        try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
             fc.force(true);
         }
     }
@@ -784,7 +864,7 @@ public class CommitCommand {
         // 3. Backup bookmarks
         File bookmarksFile = new File(repository.getDirectory(), ".hg/bookmarks");
         if (bookmarksFile.exists()) {
-            Files.copy(bookmarksFile.toPath(), undoBookmarks.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(bookmarksFile.toPath(), undoBookmarks.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
     }
 }

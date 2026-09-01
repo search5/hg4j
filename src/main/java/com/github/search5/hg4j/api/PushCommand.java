@@ -16,13 +16,22 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.phase.PhaseRoots;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Porcelain command to push local commits to a remote Mercurial repository.
  * Compiles a dynamic binary changegroup bundle of new revisions and transfers it securely.
  */
 public class PushCommand {
-    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(PushCommand.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(PushCommand.class.getName());
 
     private final HgRepository repository;
     private String destinationUrl;
@@ -78,12 +87,12 @@ public class PushCommand {
 
         // PRE_PUSH hooks trigger
         if (!prePushHooks.isEmpty()) {
-            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            Map<String, Object> ctx = new HashMap<>();
             ctx.put("destinationUrl", resolvedUrl);
             ctx.put("repository", repository);
             for (HgHook hook : prePushHooks) {
                 if (!hook.run(ctx)) {
-                    throw new com.github.search5.hg4j.errors.HgValidationException("Pre-push hook execution rejected the push action");
+                    throw new HgValidationException("Pre-push hook execution rejected the push action");
                 }
             }
         }
@@ -150,7 +159,7 @@ public class PushCommand {
                         }
                     }
                     if (!hasAnyCommon) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("abort: repository is unrelated");
+                        throw new HgValidationException("abort: repository is unrelated");
                     }
 
                     // Find the first revision not known to remote
@@ -169,12 +178,12 @@ public class PushCommand {
                 }
 
                 // Phase Check: Block push if any target commit is in secret phase (E-4 Phases workflow)
-                com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
+                PhaseRoots phaseRoots = repository.getPhaseRoots();
                 for (int r = startRev; r < count; r++) {
                     byte[] nodeBytes = changelog.getIndexRecord(r).getNodeId();
-                    com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
+                    NodeId nodeId = new NodeId(nodeBytes);
                     if (phaseRoots.isSecret(nodeId, changelog)) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("abort: push includes secret commit: " + nodeId.toHex());
+                        throw new HgValidationException("abort: push includes secret commit: " + nodeId.toHex());
                     }
                 }
 
@@ -204,7 +213,7 @@ public class PushCommand {
 
                 // 1b. Pack Manifests
                 Revlog manifest = repository.getManifestRevlog();
-                java.util.Set<String> affectedFiles = new java.util.HashSet<>();
+                Set<String> affectedFiles = new HashSet<>();
                 for (int r = startRev; r < count; r++) {
                     byte[] clContent = changelog.getRevisionContent(r);
                     String clText = new String(clContent, StandardCharsets.UTF_8);
@@ -256,10 +265,15 @@ public class PushCommand {
                             flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
                             flEntry.cs = changelog.getIndexRecord(flRec.getLinkRev()).getNodeId();
 
-                            byte[] content = fl.getRevisionContent(i);
+                            // Raw (as-stored) content, not getRevisionContent(): a filelog
+                            // revision can be censored (Revlog.REVIDX_ISCENSORED), and bundling
+                            // must transfer its tombstone bytes as-is rather than throwing
+                            // HgCensoredContentException -- real hg's own changegroup packer
+                            // likewise always uses rawdata()/`_chunk()`, never the decoded text.
+                            byte[] content = fl.getRawRevisionContent(i);
                             byte[] baseContent = new byte[0];
                             if (flRec.getParent1() != -1) {
-                                baseContent = fl.getRevisionContent(flRec.getParent1());
+                                baseContent = fl.getRawRevisionContent(flRec.getParent1());
                             }
                             flEntry.delta = Revlog.createDelta(baseContent, content);
                             flEntries.add(flEntry);
@@ -308,9 +322,9 @@ public class PushCommand {
 
                 // 3a. Sync local bookmarks to remote utilizing pushkey protocol
                 try {
-                    java.util.Map<String, String> localBks = new BookmarkCommand(repository).call();
-                    java.util.Map<String, String> remoteBks = client.listKeys("bookmarks");
-                    for (java.util.Map.Entry<String, String> entry : localBks.entrySet()) {
+                    Map<String, String> localBks = new BookmarkCommand(repository).call();
+                    Map<String, String> remoteBks = client.listKeys("bookmarks");
+                    for (Map.Entry<String, String> entry : localBks.entrySet()) {
                         String name = entry.getKey();
                         String localHex = entry.getValue();
                         String remoteHex = remoteBks != null ? remoteBks.getOrDefault(name, "") : "";
@@ -320,12 +334,12 @@ public class PushCommand {
                     }
                 } catch (Exception e) {
                     // 북마크 푸시 실패 시 비차단 경고 처리
-                    LOGGER.log(java.util.logging.Level.WARNING, "Failed to push bookmarks to remote: " + e.getMessage(), e);
+                    LOGGER.log(Level.WARNING, "Failed to push bookmarks to remote: " + e.getMessage(), e);
                 }
 
                 // POST_PUSH hooks trigger
                 if (!postPushHooks.isEmpty()) {
-                    java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+                    Map<String, Object> ctx = new HashMap<>();
                     ctx.put("destinationUrl", resolvedUrl);
                     ctx.put("response", response);
                     ctx.put("repository", repository);

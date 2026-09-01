@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 
 public class WorkingCopySafetyTest {
 
@@ -190,7 +191,7 @@ public class WorkingCopySafetyTest {
         // Let's delete the filelog index to force "Filelog index not found" exception during update
         assertTrue(flIdx.delete());
         UpdateCommand updateCorrupt = new UpdateCommand(repo).setRevision("0").setForce(true);
-        assertThrows(com.github.search5.hg4j.errors.HgRepositoryNotFoundException.class, updateCorrupt::call);
+        assertThrows(HgRepositoryNotFoundException.class, updateCorrupt::call);
 
         // 4. Named branch update test (restore repo state by initializing a new one)
         File repoDirBranch = new File(repoDir, "branch_test_dir");

@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.nio.file.Files;
 
 /**
  * Porcelain command for searching strings or regular expressions across
@@ -67,7 +68,7 @@ public class GrepCommand {
             return results;
         }
 
-        List<String> fncachePaths = java.nio.file.Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
+        List<String> fncachePaths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
         for (String storePath : fncachePaths) {
             if (storePath.endsWith(".i")) {
                 String path = storePath.substring(0, storePath.length() - 2);

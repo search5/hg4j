@@ -15,6 +15,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
 
 public class HgLockTest {
 
@@ -160,7 +162,7 @@ public class HgLockTest {
                 if (Files.isSymbolicLink(lockFile.toPath())) {
                     content = Files.readSymbolicLink(lockFile.toPath()).toString();
                 } else {
-                    content = Files.readString(lockFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+                    content = Files.readString(lockFile.toPath(), StandardCharsets.UTF_8);
                 }
                 assertTrue(content.contains(":"), "Lock file should contain ':' separator");
                 assertTrue(content.contains(String.valueOf(ProcessHandle.current().pid())), "Lock file should contain current PID");
@@ -187,9 +189,9 @@ public class HgLockTest {
         // Write a fake lock pointing to a dead pid (e.g. 999999)
         String fakeLockMetadata = "localhost:999999\n";
         try {
-            Files.createSymbolicLink(lockFile.toPath(), java.nio.file.Path.of("localhost:999999"));
+            Files.createSymbolicLink(lockFile.toPath(), Path.of("localhost:999999"));
         } catch (Exception e) {
-            Files.writeString(lockFile.toPath(), fakeLockMetadata, java.nio.charset.StandardCharsets.UTF_8);
+            Files.writeString(lockFile.toPath(), fakeLockMetadata, StandardCharsets.UTF_8);
         }
         
         // Attempting to acquire should delete the stale lock and succeed
@@ -199,7 +201,7 @@ public class HgLockTest {
             if (Files.isSymbolicLink(lockFile.toPath())) {
                 content = Files.readSymbolicLink(lockFile.toPath()).toString();
             } else {
-                content = Files.readString(lockFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+                content = Files.readString(lockFile.toPath(), StandardCharsets.UTF_8);
             }
             assertTrue(content.contains(String.valueOf(ProcessHandle.current().pid())), "Should now own the lock");
         }
@@ -217,7 +219,7 @@ public class HgLockTest {
                 assertTrue(Files.exists(lockFile.toPath(), LinkOption.NOFOLLOW_LINKS));
                 assertFalse(Files.isSymbolicLink(lockFile.toPath()));
                 
-                String content = Files.readString(lockFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+                String content = Files.readString(lockFile.toPath(), StandardCharsets.UTF_8);
                 assertTrue(content.contains(String.valueOf(ProcessHandle.current().pid())));
                 
                 // Concurrent acquisition check in fallback mode
@@ -247,9 +249,9 @@ public class HgLockTest {
         
         String fakeLockMetadata = differentCaseHost + ":999999\n";
         try {
-            Files.createSymbolicLink(lockFile.toPath(), java.nio.file.Path.of(differentCaseHost + ":999999"));
+            Files.createSymbolicLink(lockFile.toPath(), Path.of(differentCaseHost + ":999999"));
         } catch (Exception e) {
-            Files.writeString(lockFile.toPath(), fakeLockMetadata, java.nio.charset.StandardCharsets.UTF_8);
+            Files.writeString(lockFile.toPath(), fakeLockMetadata, StandardCharsets.UTF_8);
         }
         
         assertThrows(HgLockException.class, () -> {
@@ -266,7 +268,7 @@ public class HgLockTest {
         }
         if (host == null || host.isEmpty()) {
             try {
-                host = java.net.InetAddress.getLocalHost().getHostName();
+                host = InetAddress.getLocalHost().getHostName();
             } catch (Exception ignored) {
                 host = "localhost";
             }

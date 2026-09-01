@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
 
 /**
  * Porcelain command to verify the integrity of the Mercurial repository.
@@ -53,8 +54,8 @@ public final class VerifyCommand {
                     byte[] p2 = (rec.getParent2() != -1) ? changelog.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
                     
                     byte[] computed = NodeIdUtil.computeNodeId(content, p1, p2);
-                    byte[] computed20 = java.util.Arrays.copyOf(computed, 20);
-                    if (!java.util.Arrays.equals(expectedNode, computed20)) {
+                    byte[] computed20 = Arrays.copyOf(computed, 20);
+                    if (!Arrays.equals(expectedNode, computed20)) {
                         errors.add("changelog integrity mismatch at revision " + r + " (expected: " + NodeIdUtil.toHex(expectedNode) + ", computed: " + NodeIdUtil.toHex(computed20) + ")");
                     }
                 } catch (Exception e) {
@@ -78,8 +79,8 @@ public final class VerifyCommand {
                         byte[] p2 = (rec.getParent2() != -1) ? manifest.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
                         
                         byte[] computed = NodeIdUtil.computeNodeId(content, p1, p2);
-                        byte[] computed20 = java.util.Arrays.copyOf(computed, 20);
-                        if (!java.util.Arrays.equals(expectedNode, computed20)) {
+                        byte[] computed20 = Arrays.copyOf(computed, 20);
+                        if (!Arrays.equals(expectedNode, computed20)) {
                             errors.add("manifest integrity mismatch at revision " + r + " (expected: " + NodeIdUtil.toHex(expectedNode) + ", computed: " + NodeIdUtil.toHex(computed20) + ")");
                         }
                     } catch (Exception e) {
@@ -117,8 +118,8 @@ public final class VerifyCommand {
                                 byte[] p1 = (rec.getParent1() != -1) ? filelog.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
                                 byte[] p2 = (rec.getParent2() != -1) ? filelog.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
                                 byte[] computed = NodeIdUtil.computeNodeId(content, p1, p2);
-                                byte[] computed20 = java.util.Arrays.copyOf(computed, 20);
-                                if (!java.util.Arrays.equals(expectedNode, computed20)) {
+                                byte[] computed20 = Arrays.copyOf(computed, 20);
+                                if (!Arrays.equals(expectedNode, computed20)) {
                                     errors.add(rel + "@" + r + ": integrity mismatch (expected: "
                                             + NodeIdUtil.toHex(expectedNode) + ", computed: " + NodeIdUtil.toHex(computed20) + ")");
                                 }

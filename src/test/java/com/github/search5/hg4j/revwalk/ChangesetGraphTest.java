@@ -10,6 +10,9 @@ import java.util.Set;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 
 @DisplayName("ChangesetGraph — Unit tests for DAG operations and LCA calculation (Pure Java)")
 public class ChangesetGraphTest {
@@ -109,8 +112,8 @@ public class ChangesetGraphTest {
         graph.setSortOrder(SortOrder.DEFAULT);
         assertEquals(SortOrder.DEFAULT, graph.getSortOrder());
         
-        java.util.Iterator<Integer> defaultIt = graph.lazyAncestors(3, parentLookup);
-        java.util.List<Integer> defaultList = new java.util.ArrayList<>();
+        Iterator<Integer> defaultIt = graph.lazyAncestors(3, parentLookup);
+        List<Integer> defaultList = new ArrayList<>();
         defaultIt.forEachRemaining(defaultList::add);
         assertFalse(defaultList.isEmpty());
 
@@ -118,8 +121,8 @@ public class ChangesetGraphTest {
         graph.setSortOrder(SortOrder.TOPO);
         assertEquals(SortOrder.TOPO, graph.getSortOrder());
 
-        java.util.Iterator<Integer> topoIt = graph.lazyAncestors(3, parentLookup);
-        java.util.List<Integer> topoList = new java.util.ArrayList<>();
+        Iterator<Integer> topoIt = graph.lazyAncestors(3, parentLookup);
+        List<Integer> topoList = new ArrayList<>();
         topoIt.forEachRemaining(topoList::add);
 
         // Result should be in the form of [3, 2, 1, 0] or [3, 1, 2, 0]

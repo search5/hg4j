@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Porcelain command to perform narrow/sparse clone.
@@ -63,9 +65,9 @@ public final class NarrowCloneCommand {
 
         // 2. Add narrow paths requirements inside .hg/requires to mark as narrow clone
         File requiresFile = new File(repo.getHgDir(), "requires");
-        List<String> requirements = new ArrayList<>(Files.readAllLines(requiresFile.toPath(), java.nio.charset.StandardCharsets.UTF_8));
+        List<String> requirements = new ArrayList<>(Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8));
         requirements.add("narrowspec");
-        com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(requiresFile, requirements);
+        SafeFileIO.writeLinesAtomic(requiresFile, requirements);
 
         // 3. Establish pull with TreeFilter integration (emulates narrow clone segment mapping)
         HgTreeFilter pathFilter = HgTreeFilter.createPathPrefixFilter(includePaths, excludePaths);
@@ -81,7 +83,7 @@ public final class NarrowCloneCommand {
         for (String ex : excludePaths) {
             sb.append(ex).append("\n");
         }
-        com.github.search5.hg4j.util.SafeFileIO.writeStringAtomic(narrowSpecFile, sb.toString());
+        SafeFileIO.writeStringAtomic(narrowSpecFile, sb.toString());
 
         // Perform the standard SCM clone/pull
         hg.pull().setSource(sourceUrl).setTreeFilter(pathFilter).call();

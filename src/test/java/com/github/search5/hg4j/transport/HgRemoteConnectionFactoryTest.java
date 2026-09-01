@@ -7,6 +7,9 @@ import java.io.IOException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.net.Proxy;
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * Unit tests for HgRemoteConnectionFactory, the HgRemoteConnection interface,
@@ -145,7 +148,7 @@ public class HgRemoteConnectionFactoryTest {
             client.setTimeouts(5000, 15000);
             client.setCredentials("admin", "secret");
             client.setForceTls(false);
-            client.setProxy(java.net.Proxy.NO_PROXY);
+            client.setProxy(Proxy.NO_PROXY);
         });
     }
 
@@ -241,33 +244,33 @@ public class HgRemoteConnectionFactoryTest {
             public HgRemoteConnection open(String url) throws IOException {
                 return new HgRemoteConnection() {
                     @Override
-                    public java.util.List<String> getCapabilities() throws IOException {
-                        return java.util.List.of("custom-cap=true");
+                    public List<String> getCapabilities() throws IOException {
+                        return List.of("custom-cap=true");
                     }
 
                     @Override
-                    public java.util.List<String> getHeads() throws IOException {
-                        return java.util.List.of("custom-head");
+                    public List<String> getHeads() throws IOException {
+                        return List.of("custom-head");
                     }
 
                     @Override
-                    public byte[] getChangegroup(java.util.List<String> roots) throws IOException {
+                    public byte[] getChangegroup(List<String> roots) throws IOException {
                         return new byte[0];
                     }
 
                     @Override
-                    public byte[] getBundle(java.util.List<String> common, java.util.List<String> heads, java.util.List<String> bundleCaps) throws IOException {
+                    public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException {
                         return new byte[0];
                     }
 
                     @Override
-                    public String push(byte[] bundleBytes, java.util.List<String> heads) throws IOException {
+                    public String push(byte[] bundleBytes, List<String> heads) throws IOException {
                         return "";
                     }
 
                     @Override
-                    public java.util.Map<String, String> listKeys(String namespace) throws IOException {
-                        return java.util.Collections.emptyMap();
+                    public Map<String, String> listKeys(String namespace) throws IOException {
+                        return Collections.emptyMap();
                     }
 
                     @Override
@@ -290,8 +293,8 @@ public class HgRemoteConnectionFactoryTest {
         // 2. Verify instance creation
         HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection("custom://my-custom-repo");
         assertNotNull(conn);
-        java.util.List<String> caps = conn.getCapabilities();
+        List<String> caps = conn.getCapabilities();
         assertTrue(caps.contains("custom-cap=true"));
-        assertEquals(java.util.List.of("custom-head"), conn.getHeads());
+        assertEquals(List.of("custom-head"), conn.getHeads());
     }
 }

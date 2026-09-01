@@ -9,6 +9,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Porcelain command to move or rename a file or directory inside the repository.
@@ -50,7 +53,7 @@ public final class RenameCommand {
         File destFile = new File(repository.getDirectory(), targetPath);
 
         if (!srcFile.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
+            throw new HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
         }
 
         // 1. Lock repository for working directory changes
@@ -63,7 +66,7 @@ public final class RenameCommand {
             Files.deleteIfExists(journalFile.toPath());
             if (dirstateFile.exists()) {
                 File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 appendToJournal(journalFile, "dirstate");
             }
 
@@ -95,7 +98,7 @@ public final class RenameCommand {
                 // Restore dirstate on failure
                 if (dirstateBackup != null) {
                     try {
-                        com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                        SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
                     } catch (Exception ignored) {}
                 }
                 try {
@@ -107,6 +110,6 @@ public final class RenameCommand {
     }
 
     private void appendToJournal(File journal, String entry) throws IOException {
-        java.nio.file.Files.write(journal.toPath(), (entry + "\n").getBytes(), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        Files.write(journal.toPath(), (entry + "\n").getBytes(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
     }
 }

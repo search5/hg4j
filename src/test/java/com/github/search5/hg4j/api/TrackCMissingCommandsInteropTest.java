@@ -15,6 +15,9 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.util.Arrays;
 
 /**
  * Track C에서 누락됐던 코어 포셀린 명령들(root/tip/parents/forget/addremove/backout/
@@ -49,7 +52,7 @@ public class TrackCMissingCommandsInteropTest {
         byte[] c2 = hg.commit().setAuthor("T").setMessage("c2").call();
 
         byte[] tipNode = new TipCommand(repo).call();
-        assertArrayEquals(java.util.Arrays.copyOf(c2, 20), tipNode);
+        assertArrayEquals(Arrays.copyOf(c2, 20), tipNode);
 
         String nativeTip = HgTestUtils.hg(repoDir, "log", "-r", "tip", "--template", "{node}");
         assertEquals(nativeTip, NodeIdUtil.toHex(tipNode));
@@ -190,7 +193,7 @@ public class TrackCMissingCommandsInteropTest {
     public void testForgetRejectsUntrackedFile(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class,
+        assertThrows(HgValidationException.class,
                 () -> new ForgetCommand(repo).setFile("nope.txt").call());
     }
 
@@ -243,7 +246,7 @@ public class TrackCMissingCommandsInteropTest {
 
         File garbage = tempDir.resolve("garbage.hg").toFile();
         Files.writeString(garbage.toPath(), "not a bundle at all");
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+        assertThrows(HgCorruptDataException.class,
                 () -> new UnbundleCommand(repo).setBundleFile(garbage).call());
     }
 
@@ -308,7 +311,7 @@ public class TrackCMissingCommandsInteropTest {
         hg.add().addFile("a.txt").call();
         hg.commit().setAuthor("T").setMessage("c1").call();
 
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class,
+        assertThrows(HgValidationException.class,
                 () -> new BackoutCommand(repo).setRevision("deadbeef".repeat(5)).setAuthor("T").call());
     }
 
@@ -337,7 +340,7 @@ public class TrackCMissingCommandsInteropTest {
         assertFalse(mergeResult.isConflicted(), "서로 다른 파일을 고친 브랜치는 충돌 없이 병합돼야 함");
         byte[] mergeNode = hg.commit().setAuthor("T").setMessage("merge").call();
 
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class,
+        assertThrows(HgValidationException.class,
                 () -> new BackoutCommand(repo).setRevision(NodeIdUtil.toHex(mergeNode)).setAuthor("T").call());
     }
 

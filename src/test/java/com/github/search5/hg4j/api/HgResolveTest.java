@@ -1,84 +1,103 @@
 package com.github.search5.hg4j.api;
 
+import com.github.search5.hg4j.HgTestUtils;
 import com.github.search5.hg4j.lib.HgRepository;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgValidationException;
+import org.junit.jupiter.api.Assumptions;
 
 public class HgResolveTest {
 
     @TempDir
     File tempDir;
 
-    @Test
-    public void testConflictResolveStateManagement() throws Exception {
+    private byte[] createRealConflict() throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
-        
-        try (Hg hg = Hg.wrap(repo)) {
-            // Run ResolveCommand and mark as unresolved status
-            Map<String, Boolean> states = hg.resolve()
-                    .setFile("conflict.txt")
-                    .markUnresolved(true)
-                    .call();
+        Hg hg = Hg.wrap(repo);
+        File f = new File(tempDir, "conflict.txt");
+        Files.writeString(f.toPath(), "line1\n");
+        hg.add().addFile("conflict.txt").call();
+        hg.commit().setAuthor("T").setMessage("c1").call();
 
-            assertNotNull(states);
-            assertEquals(1, states.size());
-            assertFalse(states.get("conflict.txt")); // unresolved -> false
+        Files.writeString(f.toPath(), "line1-A\n");
+        byte[] other = hg.commit().setAuthor("T").setMessage("c2A").call();
 
-            // mark as resolved
-            Map<String, Boolean> statesResolved = hg.resolve()
-                    .setFile("conflict.txt")
-                    .markResolved(true)
-                    .call();
+        hg.update().setRevision("0").call();
+        Files.writeString(f.toPath(), "line1-B\n");
+        hg.commit().setAuthor("T").setMessage("c2B").call();
 
-            assertTrue(statesResolved.get("conflict.txt")); // resolved -> true
-
-            // Read list
-            Map<String, Boolean> listStates = hg.resolve().list(true).call();
-            assertEquals(1, listStates.size());
-            assertTrue(listStates.get("conflict.txt"));
-        }
+        MergeCommand.MergeResult result = new MergeCommand(repo).setNodeId(other).call();
+        assertTrue(result.isConflicted(), "Setup must actually produce a real conflict");
+        return other;
     }
 
     @Test
-    public void testResolveStateStandardFormattingAndListing() throws Exception {
+    public void listShowsTheConflictedFileAsUnresolved() throws Exception {
+        createRealConflict();
+        HgRepository repo = new HgRepository(tempDir);
+
+        Map<String, Boolean> listStates = new ResolveCommand(repo).list(true).call();
+        assertEquals(1, listStates.size());
+        assertFalse(listStates.get("conflict.txt"));
+    }
+
+    @Test
+    public void markResolvedThenUnresolvedRoundTripsThroughState2() throws Exception {
+        createRealConflict();
+        HgRepository repo = new HgRepository(tempDir);
+
+        Map<String, Boolean> afterResolve = new ResolveCommand(repo)
+                .setFile("conflict.txt").markResolved(true).call();
+        assertEquals(1, afterResolve.size());
+        assertTrue(afterResolve.get("conflict.txt"));
+        assertTrue(new ResolveCommand(repo).list(true).call().get("conflict.txt"));
+
+        Map<String, Boolean> afterUnresolve = new ResolveCommand(repo)
+                .setFile("conflict.txt").markUnresolved(true).call();
+        assertFalse(afterUnresolve.get("conflict.txt"));
+        assertFalse(new ResolveCommand(repo).list(true).call().get("conflict.txt"));
+    }
+
+    @Test
+    public void listReturnsEmptyWhenThereIsNoMergeInProgress() throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
-        
-        try (Hg hg = Hg.wrap(repo)) {
-            // mark unresolved
-            hg.resolve().setFile("a.txt").markUnresolved(true).call();
-            // mark resolved
-            hg.resolve().setFile("b.txt").markResolved(true).call();
+        assertTrue(new ResolveCommand(repo).list(true).call().isEmpty());
+    }
 
-            // verify that file is written standardly (.hg/merge/state)
-            File stateFile = new File(tempDir, ".hg/merge/state");
-            assertTrue(stateFile.exists());
-            
-            String content = java.nio.file.Files.readString(stateFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
-            String[] lines = content.split("\n");
-            
-            // first two lines are parent hex hashes (typically 40 zeros in fresh repo)
-            assertEquals(40, lines[0].length());
-            assertEquals(40, lines[1].length());
-            
-            // remaining lines should be in "u/r path" standard format
-            assertEquals("u a.txt", lines[2]);
-            assertEquals("r b.txt", lines[3]);
+    @Test
+    public void markResolvedThrowsWhenThereIsNoMergeInProgress() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+        assertThrows(HgValidationException.class, () ->
+                new ResolveCommand(repo).setFile("nope.txt").markResolved(true).call());
+    }
 
-            // test list(false) returns only the targeted file's status
-            Map<String, Boolean> targeted = hg.resolve().setFile("a.txt").markResolved(true).list(false).call();
-            assertEquals(1, targeted.size());
-            assertTrue(targeted.get("a.txt"));
+    @Test
+    public void markResolvedThrowsForAFileNotPartOfTheCurrentMerge() throws Exception {
+        createRealConflict();
+        HgRepository repo = new HgRepository(tempDir);
+        assertThrows(HgValidationException.class, () ->
+                new ResolveCommand(repo).setFile("unrelated.txt").markResolved(true).call());
+    }
 
-            // test list(true) returns all states
-            Map<String, Boolean> allStates = hg.resolve().list(true).call();
-            assertEquals(2, allStates.size());
-            assertTrue(allStates.get("a.txt"));
-            assertTrue(allStates.get("b.txt"));
-        }
+    @Tag("interop")
+    @Test
+    public void resolvedStateIsVisibleToRealHgResolveList() throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(),
+                "Native Mercurial (hg) is not installed. Skipping.");
+        createRealConflict();
+        HgRepository repo = new HgRepository(tempDir);
+
+        new ResolveCommand(repo).setFile("conflict.txt").markResolved(true).call();
+
+        String nativeResolveList = HgTestUtils.hg(tempDir, "resolve", "--list");
+        assertEquals("R conflict.txt", nativeResolveList.trim());
     }
 }

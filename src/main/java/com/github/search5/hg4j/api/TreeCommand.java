@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import com.github.search5.hg4j.lib.NodeId;
+import java.util.Map;
 
 /**
  * Command to list the entire file structure (directory tree) at a specific revision.
@@ -31,8 +33,8 @@ public class TreeCommand {
 
         public String getPath() { return path; }
         public String getNodeId() { return nodeId; }
-        public com.github.search5.hg4j.lib.NodeId getNode() {
-            return nodeId != null ? com.github.search5.hg4j.lib.NodeId.fromHex(nodeId) : null;
+        public NodeId getNode() {
+            return nodeId != null ? NodeId.fromHex(nodeId) : null;
         }
         public int getMode() { return mode; }
     }
@@ -51,7 +53,7 @@ public class TreeCommand {
         return this;
     }
 
-    public TreeCommand setNodeId(com.github.search5.hg4j.lib.NodeId nodeId) {
+    public TreeCommand setNodeId(NodeId nodeId) {
         this.nodeId = nodeId != null ? nodeId.getBytes() : null;
         return this;
     }
@@ -81,10 +83,10 @@ public class TreeCommand {
         }
 
         byte[] commitNodeId = changelog.getIndexRecord(targetRev).getNodeId();
-        java.util.Map<String, String> manifestMap = repository.getManifestAtCommit(commitNodeId);
+        Map<String, String> manifestMap = repository.getManifestAtCommit(commitNodeId);
 
         List<TreeEntry> entries = new ArrayList<>();
-        for (java.util.Map.Entry<String, String> entry : manifestMap.entrySet()) {
+        for (Map.Entry<String, String> entry : manifestMap.entrySet()) {
             String path = entry.getKey();
             String hex = entry.getValue();
             

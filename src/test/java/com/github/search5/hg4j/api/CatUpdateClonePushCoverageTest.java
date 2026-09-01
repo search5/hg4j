@@ -12,6 +12,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.phase.PhaseRoots;
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Test to increase coverage for CatCommand, UpdateCommand, PushCommand, and CloneCommand.
@@ -131,7 +141,7 @@ public class CatUpdateClonePushCoverageTest {
     @Test
     public void testCatCommandSetRevisionNodeIdNull(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision((com.github.search5.hg4j.lib.NodeId) null);
+        CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision((NodeId) null);
         // If the revision is null, it is set to null, and calling call() on an empty repository throws an exception due to failure in resolving the revision.
         assertThrows(IOException.class, cat::call);
     }
@@ -149,7 +159,7 @@ public class CatUpdateClonePushCoverageTest {
         // Providing a non-existent 40-character hex nodeId fails to resolve and throws an "Unable to resolve revision" exception.
         String nonExistent40Hex = "f".repeat(40);
         CatCommand cat = new CatCommand(repo).setFile("a.txt").setRevision(nonExistent40Hex);
-        com.github.search5.hg4j.errors.HgRevisionNotFoundException ex = assertThrows(com.github.search5.hg4j.errors.HgRevisionNotFoundException.class, cat::call);
+        HgRevisionNotFoundException ex = assertThrows(HgRevisionNotFoundException.class, cat::call);
         assertTrue(ex.getMessage().contains("Unable to resolve revision"));
     }
 
@@ -180,7 +190,7 @@ public class CatUpdateClonePushCoverageTest {
         assertTrue(flIdx.delete());
 
         CatCommand cat = new CatCommand(repo).setFile("a.txt");
-        com.github.search5.hg4j.errors.HgCorruptDataException ex = assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class, cat::call);
+        HgCorruptDataException ex = assertThrows(HgCorruptDataException.class, cat::call);
         assertTrue(ex.getMessage().contains("Filelog not found"));
     }
 
@@ -335,19 +345,19 @@ public class CatUpdateClonePushCoverageTest {
         byte[] nodeD = new CommitCommand(repo).setMessage("Commit D").call();
 
         // 2. Start Mock HttpServer acting as remote Mercurial server
-        com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(
-            new java.net.InetSocketAddress(0), 0
+        HttpServer server = HttpServer.create(
+            new InetSocketAddress(0), 0
         );
         String nodeDHex = NodeIdUtil.toHex(nodeD);
 
         server.createContext("/", exchange -> {
             String query = exchange.getRequestURI().getQuery();
             if (query != null && query.contains("cmd=heads")) {
-                byte[] response = (nodeDHex + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                byte[] response = (nodeDHex + "\n").getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200, response.length);
                 exchange.getResponseBody().write(response);
             } else if (query != null && query.contains("cmd=unbundle")) {
-                byte[] response = "0\nno errors\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                byte[] response = "0\nno errors\n".getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200, response.length);
                 exchange.getResponseBody().write(response);
             } else {
@@ -387,15 +397,15 @@ public class CatUpdateClonePushCoverageTest {
         new CommitCommand(repo).setMessage("Commit A").call();
 
         // Mock remote heads having a completely unrelated commit hash
-        com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(
-            new java.net.InetSocketAddress(0), 0
+        HttpServer server = HttpServer.create(
+            new InetSocketAddress(0), 0
         );
         String randomHex = "1111222233334444555566667777888899990000";
 
         server.createContext("/", exchange -> {
             String query = exchange.getRequestURI().getQuery();
             if (query != null && query.contains("cmd=heads")) {
-                byte[] response = (randomHex + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                byte[] response = (randomHex + "\n").getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200, response.length);
                 exchange.getResponseBody().write(response);
             } else {
@@ -428,7 +438,7 @@ public class CatUpdateClonePushCoverageTest {
         byte[] commitNode = new CommitCommand(repo).setMessage("커밋").call();
 
         // Call setRevision with a NodeId object to execute the non-null branch
-        com.github.search5.hg4j.lib.NodeId nodeIdObj = new com.github.search5.hg4j.lib.NodeId(commitNode);
+        NodeId nodeIdObj = new NodeId(commitNode);
         byte[] content = new CatCommand(repo).setFile("a.txt").setRevision(nodeIdObj).call();
         assertEquals("NodeId test content\n", new String(content));
     }
@@ -446,15 +456,15 @@ public class CatUpdateClonePushCoverageTest {
         // Override getManifestAtCommit to return a non-existent file version hex
         HgRepository spyRepo = new HgRepository(repoDir) {
             @Override
-            public java.util.Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
-                java.util.Map<String, String> fakeMap = new java.util.HashMap<>();
+            public Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
+                Map<String, String> fakeMap = new HashMap<>();
                 fakeMap.put("a.txt", "1".repeat(40)); // Non-existent 40-character hex
                 return fakeMap;
             }
         };
 
         CatCommand cat = new CatCommand(spyRepo).setFile("a.txt").setRevision("0");
-        com.github.search5.hg4j.errors.HgRevisionNotFoundException ex = assertThrows(com.github.search5.hg4j.errors.HgRevisionNotFoundException.class, cat::call);
+        HgRevisionNotFoundException ex = assertThrows(HgRevisionNotFoundException.class, cat::call);
         assertTrue(ex.getMessage().contains("File version not found in history"));
     }
 
@@ -469,14 +479,14 @@ public class CatUpdateClonePushCoverageTest {
         byte[] commitNode = new CommitCommand(repo).setMessage("신규 커밋").call();
 
         // Verify that the phase of the newly created commit is draft
-        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repo.getPhaseRoots();
-        com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(commitNode);
+        PhaseRoots phaseRoots = repo.getPhaseRoots();
+        NodeId nodeId = new NodeId(commitNode);
         
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = repo.getRevlog(clIdx, clDat);
 
-        assertEquals(com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(nodeId, cl));
+        assertEquals(PhaseRoots.Phase.DRAFT, phaseRoots.getPhase(nodeId, cl));
     }
 
     @Test
@@ -500,19 +510,19 @@ public class CatUpdateClonePushCoverageTest {
         byte[] commitNode = new CommitCommand(localRepo).setMessage("Secret commit").call();
 
         // 3. Force change the local new commit's phase to SECRET
-        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = localRepo.getPhaseRoots();
-        com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(commitNode);
+        PhaseRoots phaseRoots = localRepo.getPhaseRoots();
+        NodeId nodeId = new NodeId(commitNode);
         
         File clIdx = new File(localRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(localRepo.getStoreDir(), "00changelog.d");
         Revlog cl = localRepo.getRevlog(clIdx, clDat);
         
-        phaseRoots.setPhase(nodeId, com.github.search5.hg4j.phase.PhaseRoots.Phase.SECRET, cl);
-        assertEquals(com.github.search5.hg4j.phase.PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nodeId, cl));
+        phaseRoots.setPhase(nodeId, PhaseRoots.Phase.SECRET, cl);
+        assertEquals(PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nodeId, cl));
 
         // 4. Verify that an exception is thrown when push is called
         PushCommand push = new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath());
-        com.github.search5.hg4j.errors.HgValidationException ex = assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, push::call);
+        HgValidationException ex = assertThrows(HgValidationException.class, push::call);
         assertTrue(ex.getMessage().contains("push includes secret commit"));
     }
 }

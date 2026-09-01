@@ -5,6 +5,9 @@ import com.github.search5.hg4j.util.SafeFileIO;
 
 import java.io.File;
 import java.io.IOException;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Initializes a new Mercurial repository.
@@ -37,34 +40,34 @@ public class InitCommand {
         // Try to create the directory if it doesn't exist
         if (!directory.exists()) {
             if (!directory.mkdirs()) {
-                throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Failed to create repository directory: " + directory);
+                throw new HgRepositoryNotFoundException("Failed to create repository directory: " + directory);
             }
         } else if (!directory.isDirectory()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Path exists and is not a directory: " + directory);
+            throw new HgRepositoryNotFoundException("Path exists and is not a directory: " + directory);
         }
 
         File hgDir = new File(directory, ".hg");
         if (hgDir.exists() && !hgDir.isDirectory()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Path exists and is not a directory: " + hgDir);
+            throw new HgRepositoryNotFoundException("Path exists and is not a directory: " + hgDir);
         }
         if (!hgDir.exists()) {
             if (!hgDir.mkdir()) {
-                throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Failed to create .hg directory in: " + directory);
+                throw new HgRepositoryNotFoundException("Failed to create .hg directory in: " + directory);
             }
         }
 
         File storeDir = new File(hgDir, "store");
         if (storeDir.exists() && !storeDir.isDirectory()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Path exists and is not a directory: " + storeDir);
+            throw new HgRepositoryNotFoundException("Path exists and is not a directory: " + storeDir);
         }
         if (!storeDir.exists()) {
             if (!storeDir.mkdir()) {
-                throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Failed to create .hg/store directory");
+                throw new HgRepositoryNotFoundException("Failed to create .hg/store directory");
             }
         }
 
         File requiresFile = new File(hgDir, "requires");
-        java.util.List<String> requirements = new java.util.ArrayList<>(java.util.List.of(
+        List<String> requirements = new ArrayList<>(List.of(
                 "dotencode",
                 "fncache",
                 "generaldelta",
@@ -81,7 +84,7 @@ public class InitCommand {
         try {
             SafeFileIO.writeLinesAtomic(requiresFile, requirements);
         } catch (IOException e) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Failed to write .hg/requires file", e);
+            throw new HgRepositoryNotFoundException("Failed to write .hg/requires file", e);
         }
 
         return new HgRepository(directory);

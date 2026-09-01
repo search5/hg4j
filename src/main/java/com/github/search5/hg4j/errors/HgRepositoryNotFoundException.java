@@ -1,9 +1,11 @@
 package com.github.search5.hg4j.errors;
 
+import java.io.IOException;
+
 /**
  * Exception thrown when a Mercurial repository cannot be found due to an invalid path or corruption.
  */
-public class HgRepositoryNotFoundException extends java.io.IOException {
+public class HgRepositoryNotFoundException extends IOException {
     private static final long serialVersionUID = 1L;
 
     private final String path;

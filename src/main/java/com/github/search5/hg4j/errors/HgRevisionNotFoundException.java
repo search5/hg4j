@@ -1,9 +1,11 @@
 package com.github.search5.hg4j.errors;
 
+import java.io.IOException;
+
 /**
  * Exception thrown when a revision is not found by hash or revision number.
  */
-public class HgRevisionNotFoundException extends java.io.IOException {
+public class HgRevisionNotFoundException extends IOException {
     private static final long serialVersionUID = 1L;
 
     /**

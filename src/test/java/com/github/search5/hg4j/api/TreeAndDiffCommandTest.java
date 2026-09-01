@@ -10,6 +10,8 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
 
 public class TreeAndDiffCommandTest {
 
@@ -157,7 +159,7 @@ public class TreeAndDiffCommandTest {
         new AddCommand(repo).addFile("a.txt").call();
         byte[] revNode = new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Rev 0").call();
 
-        com.github.search5.hg4j.lib.NodeId nodeIdObj = new com.github.search5.hg4j.lib.NodeId(revNode);
+        NodeId nodeIdObj = new NodeId(revNode);
 
         // 1. Test calling setNodeId(com.github.search5.hg4j.lib.NodeId)
         TreeCommand cmd = new TreeCommand(repo).setNodeId(nodeIdObj);
@@ -175,7 +177,7 @@ public class TreeAndDiffCommandTest {
         assertNull(nullEntry.getNode());
 
         // Test calling setNodeId(null)
-        TreeCommand cmdNull = new TreeCommand(repo).setNodeId((com.github.search5.hg4j.lib.NodeId) null);
+        TreeCommand cmdNull = new TreeCommand(repo).setNodeId((NodeId) null);
         assertNotNull(cmdNull.call());
     }
 
@@ -194,8 +196,8 @@ public class TreeAndDiffCommandTest {
         Files.writeString(fa.toPath(), "Line 1 Modified\n");
         byte[] rev1Node = new CommitCommand(repo).setMessage("Rev 1").call();
 
-        com.github.search5.hg4j.lib.NodeId node0 = new com.github.search5.hg4j.lib.NodeId(rev0Node);
-        com.github.search5.hg4j.lib.NodeId node1 = new com.github.search5.hg4j.lib.NodeId(rev1Node);
+        NodeId node0 = new NodeId(rev0Node);
+        NodeId node1 = new NodeId(rev1Node);
 
         // Test setOldRevision(NodeId) and setNewRevision(NodeId)
         DiffCommand diff = new DiffCommand(repo)
@@ -207,8 +209,8 @@ public class TreeAndDiffCommandTest {
 
         // Test setOldRevision(null) and setNewRevision(null)
         DiffCommand diffNull = new DiffCommand(repo)
-                .setOldRevision((com.github.search5.hg4j.lib.NodeId) null)
-                .setNewRevision((com.github.search5.hg4j.lib.NodeId) null);
+                .setOldRevision((NodeId) null)
+                .setNewRevision((NodeId) null);
         assertNotNull(diffNull.call());
 
         // 3. OOM Optimization Guard test (n * m > 2000000)
@@ -260,7 +262,7 @@ public class TreeAndDiffCommandTest {
         new CommitCommand(repo).setMessage("Rev 1").call();
 
         // Apply treeFilter: includes "src/" prefix only
-        com.github.search5.hg4j.treewalk.HgTreeFilter filter = com.github.search5.hg4j.treewalk.HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
+        HgTreeFilter filter = HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
 
         List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo)
                 .setOldRevision(0)

@@ -6,7 +6,6 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.github.search5.hg4j.lib.HgRepository;
-import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
@@ -31,6 +30,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.HgTestUtils;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 
 public class HgHttpTransportRoundtripTest {
 
@@ -104,7 +106,7 @@ public class HgHttpTransportRoundtripTest {
                         os.write(resp);
                     }
                 } else if (query != null && query.contains("cmd=unbundle")) {
-                    try (java.io.InputStream is = exchange.getRequestBody()) {
+                    try (InputStream is = exchange.getRequestBody()) {
                         byte[] body = is.readAllBytes();
                         capturedPushBundle.set(body);
                     }
@@ -207,8 +209,8 @@ public class HgHttpTransportRoundtripTest {
         byte[] c3 = new CommitCommand(srcRepo).setAuthor("Tester <tester@example.com>").setMessage("Third commit").call();
         
         // 2. Serialize source repo to mock bundle
-        ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
-        byte[] rawCg = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] rawCg = HgTestUtils.serializeBundleToBytes(bundle);
         
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         bos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
@@ -264,7 +266,7 @@ public class HgHttpTransportRoundtripTest {
         
         byte[] cgBytes = new byte[pushedData.length - 6];
         System.arraycopy(pushedData, 6, cgBytes, 0, cgBytes.length);
-        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new java.io.ByteArrayInputStream(cgBytes), "01");
+        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(cgBytes), "01");
         
         assertEquals(1, bundle.changelogEntries.size());
         assertArrayEquals(c1, bundle.changelogEntries.get(0).node);

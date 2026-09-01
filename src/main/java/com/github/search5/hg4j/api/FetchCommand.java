@@ -25,6 +25,20 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import com.github.search5.hg4j.bundle.Bundle2Parser;
+import com.github.search5.hg4j.bundle.ClonebundlesManifest;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.phase.PhaseRoots;
+import com.github.search5.hg4j.transport.HgRemoteClient;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.zip.InflaterInputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 
 /**
  * Pure network sync command to fetch changesets from a remote repository.
@@ -36,7 +50,7 @@ public class FetchCommand {
     private final HgRepository repository;
     private String sourceUrl;
     private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
-    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
+    private HgTreeFilter treeFilter = HgTreeFilter.ALL;
     private CredentialsProvider credentialsProvider;
 
     public FetchCommand(HgRepository repository) {
@@ -48,7 +62,7 @@ public class FetchCommand {
         return this;
     }
 
-    public FetchCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
+    public FetchCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }
@@ -79,6 +93,7 @@ public class FetchCommand {
             if (this.credentialsProvider != null) {
                 client.setCredentialsProvider(this.credentialsProvider);
             }
+            List<String> caps = client.getCapabilities();
             List<String> remoteHeads = client.getHeads();
             if (remoteHeads.isEmpty()) {
                 monitor.end();
@@ -88,6 +103,24 @@ public class FetchCommand {
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
             Revlog localChangelog = repository.getRevlog(clIdx, clDat);
+
+            // Clonebundles bypass (real hg's own client algorithm, see
+            // decisions/mercurial-spec-compliance-requirement.md's Clonebundles plan): only
+            // attempted for a genuinely empty local repository (i.e. this call is effectively a
+            // clone, not an incremental pull -- matching real hg, which only tries this during
+            // `clone`) against an HTTP remote that actually advertised the capability. A download
+            // or apply failure here is NOT caught -- real hg deliberately never falls back to a
+            // normal pull on clonebundle failure (see the plan doc for why), so the exception
+            // propagates and fails the whole fetch.
+            List<byte[]> clonebundleImported = null;
+            if (localChangelog.getRevisionCount() == 0 && client instanceof HgRemoteClient httpClient
+                    && httpClient.supportsClonebundles()) {
+                clonebundleImported = tryApplyClonebundle(httpClient);
+                if (clonebundleImported != null) {
+                    repository.clearRevlogCache();
+                    localChangelog = repository.getRevlog(clIdx, clDat);
+                }
+            }
 
             // Calculate proper discovery & early-exit
             List<String> common = new ArrayList<>();
@@ -108,7 +141,7 @@ public class FetchCommand {
                 // bookmark만 이동한 pull"이 조용히 무시됐다(2026-09-01 발견·수정).
                 syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
                 monitor.end();
-                return new ArrayList<>();
+                return mergeClonebundleResults(clonebundleImported, new ArrayList<>());
             }
 
             // Perform true Mercurial Wire Protocol between/known discovery exchange
@@ -172,7 +205,6 @@ public class FetchCommand {
                 }
             }
 
-            List<String> caps = client.getCapabilities();
             boolean supportsGetBundle = caps.contains("getbundle") || caps.stream().anyMatch(c -> c.startsWith("getbundle"));
 
             byte[] bundleBytes;
@@ -194,13 +226,13 @@ public class FetchCommand {
             if (bundleBytes == null || bundleBytes.length == 0) {
                 syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
                 monitor.end();
-                return new ArrayList<>();
+                return mergeClonebundleResults(clonebundleImported, new ArrayList<>());
             }
 
             byte[] changegroupBytes = bundleBytes;
             String cgVersion = "01";
             if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
-                com.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 ext = com.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
+                Bundle2Parser.ExtractedBundle2 ext = Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
                 changegroupBytes = ext.changegroupBytes;
                 cgVersion = ext.cgVersion;
             } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
@@ -209,7 +241,7 @@ public class FetchCommand {
                 if ("UN".equals(comp)) {
                     changegroupBytes = bais.readAllBytes();
                 } else if ("GZ".equals(comp)) {
-                    try (java.util.zip.InflaterInputStream iis = new java.util.zip.InflaterInputStream(bais)) {
+                    try (InflaterInputStream iis = new InflaterInputStream(bais)) {
                         changegroupBytes = iis.readAllBytes();
                     }
                 } else if ("BZ".equals(comp)) {
@@ -218,12 +250,12 @@ public class FetchCommand {
                     bzData[0] = 'B';
                     bzData[1] = 'Z';
                     System.arraycopy(rawData, 0, bzData, 2, rawData.length);
-                    try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream bzis = 
-                                 new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
+                    try (BZip2CompressorInputStream bzis = 
+                                 new BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
                         changegroupBytes = bzis.readAllBytes();
                     }
                 } else {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unsupported bundle1 compression format: HG10" + comp);
+                    throw new HgCorruptDataException("Unsupported bundle1 compression format: HG10" + comp);
                 }
                 cgVersion = "01";
             }
@@ -235,8 +267,58 @@ public class FetchCommand {
 
             monitor.update(1);
             monitor.end();
-            return results;
+            return mergeClonebundleResults(clonebundleImported, results);
         }
+    }
+
+    /**
+     * Merges a clonebundle's imported commits (if any were applied) with whatever the normal
+     * discovery/getbundle path found afterward, oldest-first, so callers that key off {@code
+     * results.get(results.size() - 1)} for "the new tip" (e.g. {@link PullCommand}) still see the
+     * true most recent head, and callers that only check {@code results.isEmpty()} (e.g. {@link
+     * CloneCommand}) correctly see that a clone bootstrapped entirely from a clonebundle did in
+     * fact import commits.
+     */
+    private static List<byte[]> mergeClonebundleResults(List<byte[]> clonebundleImported, List<byte[]> rest) {
+        if (clonebundleImported == null || clonebundleImported.isEmpty()) {
+            return rest;
+        }
+        List<byte[]> merged = new ArrayList<>(clonebundleImported);
+        merged.addAll(rest);
+        return merged;
+    }
+
+    /**
+     * Real hg's Clonebundles client algorithm, minus the final "reconnect and pull the rest"
+     * step (the caller's normal discovery/getbundle logic already does that unconditionally
+     * right after this returns, whether or not a bundle was applied here).
+     *
+     * <ol>
+     * <li>Fetch the manifest ({@code ?cmd=clonebundles}) and parse it.</li>
+     * <li>Filter to entries hg4j can actually consume ({@link
+     * com.github.search5.hg4j.bundle.ClonebundlesManifest#filterSupported}).</li>
+     * <li>If nothing usable remains, do nothing (fall through to a normal full pull below —
+     * this is not a failure, just "no clonebundle available/suitable").</li>
+     * <li>Otherwise take the first remaining entry (real hg does the same absent an explicit
+     * {@code ui.clonebundleprefers} sort configuration) and download+apply it via {@link
+     * ClonebundlesCommand#downloadAndApply}. Any failure here propagates uncaught.</li>
+     * </ol>
+     *
+     * @return the commits imported from the clonebundle if one was applied (possibly empty, if
+     *         the bundle happened to be empty), or {@code null} if no clonebundle was applied at
+     *         all (caller must refresh its {@link Revlog} view only in the non-null case)
+     */
+    private List<byte[]> tryApplyClonebundle(HgRemoteClient httpClient) throws IOException, HgLockException {
+        String manifestText = httpClient.fetchClonebundlesManifest();
+        List<ClonebundlesManifest.Entry> entries =
+                ClonebundlesManifest.filterSupported(
+                        ClonebundlesManifest.parse(manifestText));
+        if (entries.isEmpty()) {
+            return null;
+        }
+        String url = entries.get(0).getUrl();
+        LOGGER.log(Level.INFO, "Bypassing wire protocol for initial clone via clonebundle: {0}", url);
+        return ClonebundlesCommand.downloadAndApply(repository, url);
     }
 
     /**
@@ -255,24 +337,24 @@ public class FetchCommand {
             // 공용 병합 로직(BookmarkCommand.mergeFromRemote)에 위임한다. 예전에는 여기서
             // "원격이 가리키는 노드를 로컬이 갖고 있으면 무조건 덮어쓰기"만 해서 로컬의
             // 독자적인 bookmark 이동을 조용히 잃어버릴 수 있었다(2026-09-01 수정).
-            java.util.Map<String, String> remoteBookmarks = client.listKeys("bookmarks");
+            Map<String, String> remoteBookmarks = client.listKeys("bookmarks");
             BookmarkCommand.mergeFromRemote(repository, remoteBookmarks, null);
 
             // Phases Sync
-            com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
-            java.util.Map<String, String> remotePhases = client.listKeys("phases");
+            PhaseRoots phaseRoots = repository.getPhaseRoots();
+            Map<String, String> remotePhases = client.listKeys("phases");
             for (byte[] nodeBytes : newCommits) {
-                com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
-                phaseRoots.setPhase(nodeId, com.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, localChangelog);
+                NodeId nodeId = new NodeId(nodeBytes);
+                phaseRoots.setPhase(nodeId, PhaseRoots.Phase.DRAFT, localChangelog);
             }
             if (remotePhases != null && !remotePhases.isEmpty()) {
-                for (java.util.Map.Entry<String, String> entry : remotePhases.entrySet()) {
+                for (Map.Entry<String, String> entry : remotePhases.entrySet()) {
                     String hexNode = entry.getKey();
                     int phaseVal = Integer.parseInt(entry.getValue().trim());
                     byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
                     if (localChangelog.findRevision(nodeBytes) != -1) {
-                        com.github.search5.hg4j.phase.PhaseRoots.Phase p = com.github.search5.hg4j.phase.PhaseRoots.Phase.fromValue(phaseVal);
-                        phaseRoots.setPhase(new com.github.search5.hg4j.lib.NodeId(nodeBytes), p, localChangelog);
+                        PhaseRoots.Phase p = PhaseRoots.Phase.fromValue(phaseVal);
+                        phaseRoots.setPhase(new NodeId(nodeBytes), p, localChangelog);
                     }
                 }
             }
@@ -293,7 +375,7 @@ public class FetchCommand {
         byte[] fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
         File journalFile = new File(repository.getStoreDir(), "journal");
 
-        java.util.Map<File, Long> fileSizes = new java.util.HashMap<>();
+        Map<File, Long> fileSizes = new HashMap<>();
 
         try (HgLock storeLock = repository.lockStore();
              HgLock wlock = repository.lockWorkingCopy()) {
@@ -302,12 +384,12 @@ public class FetchCommand {
             
             if (dirstateFile.exists()) {
                 File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 appendToJournal(journalFile, "dirstate");
             }
             if (fncacheFile.exists()) {
                 File fncacheBackupFile = new File(repository.getStoreDir(), "fncache.backup");
-                Files.copy(fncacheFile.toPath(), fncacheBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(fncacheFile.toPath(), fncacheBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 appendToJournal(journalFile, "fncache");
             }
 
@@ -375,7 +457,7 @@ public class FetchCommand {
                     for (ChangegroupParser.ChangeGroupEntry entry : mg.entries) {
                         int linkRev = changelog.findRevision(entry.cs);
                         if (linkRev == -1) {
-                            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
+                            throw new HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
                         }
                         subManifest.appendChangeGroupEntry(entry, linkRev);
                     }
@@ -385,7 +467,7 @@ public class FetchCommand {
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
-                        throw new com.github.search5.hg4j.errors.HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
+                        throw new HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
                     }
                     manifest.appendChangeGroupEntry(entry, linkRev);
                 }
@@ -418,7 +500,7 @@ public class FetchCommand {
                 for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
-                        throw new com.github.search5.hg4j.errors.HgCorruptDataException("Missing link commit for file revision: " + NodeIdUtil.toHex(entry.cs));
+                        throw new HgCorruptDataException("Missing link commit for file revision: " + NodeIdUtil.toHex(entry.cs));
                     }
                     filelog.appendChangeGroupEntry(entry, linkRev);
                 }
@@ -451,7 +533,7 @@ public class FetchCommand {
             return importedCommits;
 
         } catch (Exception t) {
-            for (java.util.Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
+            for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
                 File file = sizeEntry.getKey();
                 long origSize = sizeEntry.getValue();
                 if (origSize == 0) {
@@ -459,7 +541,7 @@ public class FetchCommand {
                         Files.deleteIfExists(file.toPath());
                     } catch (Exception ignored) {}
                 } else {
-                    try (java.nio.channels.FileChannel outChan = java.nio.channels.FileChannel.open(file.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+                    try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
                         outChan.truncate(origSize);
                         outChan.force(true);
                     } catch (Exception ignored) {}
@@ -495,8 +577,8 @@ public class FetchCommand {
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
         Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-        try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
             fc.force(true);
         }
     }

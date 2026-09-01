@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.file.Path;
 
 /**
  * {@code .hg/merge/state2}를 실제 hg CLI와 양방향으로 대조 검증한다: (1) 실제 hg가 남긴
@@ -31,7 +32,7 @@ public class MergeStateInteropTest {
     }
 
     @Test
-    public void readsRealHgProducedState2(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void readsRealHgProducedState2(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgTestUtils.nativeRepo(repoDir, dir -> {
             try {
@@ -73,7 +74,7 @@ public class MergeStateInteropTest {
     }
 
     @Test
-    public void hg4jProducedStateIsReadableByRealHgResolve(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void hg4jProducedStateIsReadableByRealHgResolve(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);

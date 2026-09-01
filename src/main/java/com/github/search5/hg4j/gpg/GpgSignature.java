@@ -14,6 +14,7 @@ import java.security.spec.RSAPublicKeySpec;
 import java.security.interfaces.RSAPrivateKey;
 import java.util.Base64;
 import java.math.BigInteger;
+import java.util.Date;
 
 /**
  * Pure Java SCM commit signing representation providing standard OpenPGP/GPG parity.
@@ -62,7 +63,7 @@ public class GpgSignature {
                 KeyFactory kf = KeyFactory.getInstance("RSA");
                 PublicKey virtualPublicKey = kf.generatePublic(spec);
                 
-                pgpPubKey = converter.getPGPPublicKey(PGPPublicKey.RSA_GENERAL, virtualPublicKey, new java.util.Date());
+                pgpPubKey = converter.getPGPPublicKey(PGPPublicKey.RSA_GENERAL, virtualPublicKey, new Date());
             }
             
             PGPPrivateKey pgpPrivKey = converter.getPGPPrivateKey(pgpPubKey, privateKey);
@@ -127,7 +128,7 @@ public class GpgSignature {
             PGPSignature signature = sigList.get(0);
             
             JcaPGPKeyConverter converter = new JcaPGPKeyConverter().setProvider("BC");
-            PGPPublicKey pgpPubKey = converter.getPGPPublicKey(PGPPublicKey.RSA_GENERAL, publicKey, new java.util.Date());
+            PGPPublicKey pgpPubKey = converter.getPGPPublicKey(PGPPublicKey.RSA_GENERAL, publicKey, new Date());
             
             signature.init(new JcaPGPContentVerifierBuilderProvider().setProvider("BC"), pgpPubKey);
             signature.update(signedContent);

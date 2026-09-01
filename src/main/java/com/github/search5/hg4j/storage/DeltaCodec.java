@@ -7,6 +7,7 @@ import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 import com.github.luben.zstd.Zstd;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * Component dedicated to revlog data compression and decompression (SRP separation).
@@ -173,7 +174,7 @@ public final class DeltaCodec {
                 out.write(buf, 0, count);
             }
         } catch (DataFormatException e) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Failed to decompress zlib revlog hunk", e);
+            throw new HgCorruptDataException("Failed to decompress zlib revlog hunk", e);
         } finally {
             inflater.end();
         }

@@ -106,11 +106,11 @@ Docker 컨테이너에 빌드해 띄우고 두 방향 모두 검증했다:
 실제로 배포되는 hg 서버 중 이 프로토콜을 쓰는 것은 사실상 없다. "완전 준수" 요건
 충족 목적으로는 의미가 있지만 실사용 가치는 제한적이다.
 
-## 연결 안 된 부분 (백로그)
-`HgRemoteClient`(v1)의 자동 v2 업그레이드 감지 로직이 실제 v1 capabilities 응답에는
-존재하지도 않는 가짜 `"http-v2"`/`"api-v2"` 플래그를 찾도록 되어 있어 절대 트리거
-되지 않는다. v2를 쓰려면 `HgRemoteClientV2`를 직접 생성해야 한다. 상세는
-[[mercurial-spec-compliance-requirement]]의 "남은 백로그" 참고.
+## 연결된 부분 — v1→v2 자동 업그레이드 (2026-09-01 완료)
+`HgRemoteClient`(v1)가 이제 `?cmd=capabilities` 요청에 실제 `X-HgUpgrade-1`/
+`X-HgProto-1` 핸드셰이크 헤더를 실어 보내고, 서버가 CBOR `{apibase, apis}` 디스크립터로
+응답하면(실제 v2 지원) `HgRemoteClientV2`에 즉시 위임 — 사용자가 `HgRemoteClientV2`를
+직접 생성할 필요가 없어졌다. 상세는 [[mercurial-spec-compliance-requirement]] 참고.
 
 ## 관련 페이지
 - [[mercurial-spec-compliance-requirement]] — 이 계획의 상위 근거 및 최신 백로그

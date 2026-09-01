@@ -63,14 +63,14 @@ public class CHgPullRoundtripTest {
         String nativeLog = HgTestUtils.hg(remoteDir, "log", "--template", "{node}|{desc}|{author}|{branch}\n");
         String[] nativeLines = nativeLog.split("\n");
 
-        List<com.github.search5.hg4j.api.HgCommit> localLog = new LogCommand(localRepository).call();
+        List<HgCommit> localLog = new LogCommand(localRepository).call();
 
         assertEquals(3, localLog.size(), "Commit count must match pulled commits");
 
         for (int i = 0; i < 3; i++) {
             // Both local log and native log are in reverse chronological order (newest first)
             String[] fields = nativeLines[i].split("\\|");
-            com.github.search5.hg4j.api.HgCommit hgCommit = localLog.get(i);
+            HgCommit hgCommit = localLog.get(i);
 
             assertEquals(fields[0], hgCommit.getNodeId().toHex(), "Node ID must match");
             assertEquals(fields[1], hgCommit.getMessage(), "Commit message must match");

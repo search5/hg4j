@@ -1,5 +1,25 @@
 package com.github.search5.hg4j.api;
 
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.lib.HgRcConfig;
+import com.github.search5.hg4j.lib.HgRepository;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.treewalk.ManifestWalk;
+import com.github.search5.hg4j.treewalk.SparseConfig;
+import com.github.search5.hg4j.treewalk.TreeWalk;
+import com.github.search5.hg4j.treewalk.WorkingDirWalk;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 /**
  * Porcelain API for Mercurial commands, similar to JGit's Git class.
  * Designed with elegant instance-level encapsulation and strict resource management (AutoCloseable).
@@ -11,10 +31,10 @@ package com.github.search5.hg4j.api;
  */
 public class Hg implements AutoCloseable {
     
-    private final com.github.search5.hg4j.lib.HgRepository repository;
-    private final java.util.Map<HgHookType, java.util.List<HgHook>> hooks = new java.util.concurrent.ConcurrentHashMap<>();
+    private final HgRepository repository;
+    private final Map<HgHookType, List<HgHook>> hooks = new ConcurrentHashMap<>();
     
-    private Hg(com.github.search5.hg4j.lib.HgRepository repository) {
+    private Hg(HgRepository repository) {
         this.repository = repository;
     }
 
@@ -27,7 +47,7 @@ public class Hg implements AutoCloseable {
      */
     public Hg registerHook(HgHookType type, HgHook hook) {
         if (type != null && hook != null) {
-            hooks.computeIfAbsent(type, k -> new java.util.concurrent.CopyOnWriteArrayList<>()).add(hook);
+            hooks.computeIfAbsent(type, k -> new CopyOnWriteArrayList<>()).add(hook);
         }
         return this;
     }
@@ -35,8 +55,8 @@ public class Hg implements AutoCloseable {
     /**
      * Returns the list of all registered Java hooks for a specific phase.
      */
-    public java.util.List<HgHook> getHooks(HgHookType type) {
-        return hooks.getOrDefault(type, java.util.Collections.emptyList());
+    public List<HgHook> getHooks(HgHookType type) {
+        return hooks.getOrDefault(type, Collections.emptyList());
     }
     
     /**
@@ -44,8 +64,8 @@ public class Hg implements AutoCloseable {
      * Acquires exclusive store and working copy locks to prevent concurrent write contention during execution.
      */
     public void runTransaction(Runnable action) throws Exception {
-        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock storeLock = repository.lockStore();
+             HgLock wlock = repository.lockWorkingCopy()) {
             action.run();
         }
     }
@@ -56,7 +76,7 @@ public class Hg implements AutoCloseable {
      * @param repository the repository instance to wrap
      * @return the {@link Hg} facade instance
      */
-    public static Hg wrap(com.github.search5.hg4j.lib.HgRepository repository) {
+    public static Hg wrap(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
         }
@@ -70,11 +90,11 @@ public class Hg implements AutoCloseable {
      * @return the {@link Hg} instance wrapping the repository
      * @throws java.io.IOException if repository not found or invalid
      */
-    public static Hg open(String path) throws java.io.IOException {
+    public static Hg open(String path) throws IOException {
         if (path == null || path.isEmpty()) {
             throw new IllegalArgumentException("Path cannot be null or empty");
         }
-        return open(new java.io.File(path));
+        return open(new File(path));
     }
 
     /**
@@ -85,40 +105,40 @@ public class Hg implements AutoCloseable {
      * @return the {@link Hg} instance wrapping the repository
      * @throws java.io.IOException if repository not found or invalid
      */
-    public static Hg open(java.io.File directory) throws java.io.IOException {
+    public static Hg open(File directory) throws IOException {
         if (directory == null) {
             throw new IllegalArgumentException("Directory cannot be null");
         }
-        java.io.File hgDir = new java.io.File(directory, ".hg");
+        File hgDir = new File(directory, ".hg");
         if (!hgDir.exists() || !hgDir.isDirectory()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
+            throw new HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
         }
 
         // Robustness: Validate repository requirements format to prevent silent data corruption
-        java.util.Set<String> SUPPORTED = java.util.Set.of(
+        Set<String> SUPPORTED = Set.of(
             "dotencode", "fncache", "generaldelta", "revlogv1", "store", "dirstate-v2", "share-safe",
             "revlog-compression", "narrowspec"
         );
 
-        java.io.File[] requiresFiles = {
-            new java.io.File(hgDir, "requires"),
-            new java.io.File(new java.io.File(hgDir, "store"), "requires")
+        File[] requiresFiles = {
+            new File(hgDir, "requires"),
+            new File(new File(hgDir, "store"), "requires")
         };
 
-        for (java.io.File reqFile : requiresFiles) {
+        for (File reqFile : requiresFiles) {
             if (reqFile.exists()) {
-                for (String line : java.nio.file.Files.readAllLines(reqFile.toPath())) {
+                for (String line : Files.readAllLines(reqFile.toPath())) {
                     String r = line.trim();
                     if (r.isEmpty()) continue;
                     String key = r.contains("=") ? r.substring(0, r.indexOf('=')) : r;
                     if (!SUPPORTED.contains(r) && !SUPPORTED.contains(key)) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("unsupported repository requirement: " + r);
+                        throw new HgValidationException("unsupported repository requirement: " + r);
                     }
                 }
             }
         }
 
-        return new Hg(new com.github.search5.hg4j.lib.HgRepository(directory));
+        return new Hg(new HgRepository(directory));
     }
 
     /**
@@ -139,7 +159,7 @@ public class Hg implements AutoCloseable {
         return new CloneCommand();
     }
 
-    public com.github.search5.hg4j.lib.HgRepository getRepository() {
+    public HgRepository getRepository() {
         return this.repository;
     }
 
@@ -247,7 +267,7 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
-    public void rollback() throws java.io.IOException {
+    public void rollback() throws IOException {
         new RollbackCommand(this.repository).call();
     }
 
@@ -404,8 +424,8 @@ public class Hg implements AutoCloseable {
      * profiles tracked at {@code changelogRev}) into an include/exclude pattern set, matching
      * real hg's {@code sparse.patternsforrev}. See {@link com.github.search5.hg4j.treewalk.SparseConfig}.
      */
-    public com.github.search5.hg4j.treewalk.SparseConfig sparseConfig(int changelogRev) throws java.io.IOException {
-        return com.github.search5.hg4j.treewalk.SparseConfig.resolveForRevision(this.repository, changelogRev);
+    public SparseConfig sparseConfig(int changelogRev) throws IOException {
+        return SparseConfig.resolveForRevision(this.repository, changelogRev);
     }
 
     /**
@@ -415,11 +435,11 @@ public class Hg implements AutoCloseable {
      * 2. User global hgrc (~/.hgrc or ~/mercurial.ini)
      * 3. Local repository hgrc (.hg/hgrc)
      */
-    public com.github.search5.hg4j.lib.HgRcConfig config() {
-        com.github.search5.hg4j.lib.HgRcConfig cfg = new com.github.search5.hg4j.lib.HgRcConfig();
+    public HgRcConfig config() {
+        HgRcConfig cfg = new HgRcConfig();
         try {
             // 1. System-wide configuration
-            java.io.File systemHgrc = new java.io.File("/etc/mercurial/hgrc");
+            File systemHgrc = new File("/etc/mercurial/hgrc");
             if (systemHgrc.exists()) {
                 cfg.load(systemHgrc);
             }
@@ -427,11 +447,11 @@ public class Hg implements AutoCloseable {
             // 2. User-wide configuration
             String userHome = System.getProperty("user.home");
             if (userHome != null) {
-                java.io.File userHgrc = new java.io.File(userHome, ".hgrc");
+                File userHgrc = new File(userHome, ".hgrc");
                 if (userHgrc.exists()) {
                     cfg.load(userHgrc);
                 } else {
-                    java.io.File userIni = new java.io.File(userHome, "mercurial.ini");
+                    File userIni = new File(userHome, "mercurial.ini");
                     if (userIni.exists()) {
                         cfg.load(userIni);
                     }
@@ -440,12 +460,12 @@ public class Hg implements AutoCloseable {
             
             // 3. Local repository configuration
             if (this.repository != null && this.repository.getHgDir() != null) {
-                java.io.File localHgrc = new java.io.File(this.repository.getHgDir(), "hgrc");
+                File localHgrc = new File(this.repository.getHgDir(), "hgrc");
                 if (localHgrc.exists()) {
                     cfg.load(localHgrc);
                 }
             }
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             // ignore
         }
         return cfg;
@@ -458,44 +478,44 @@ public class Hg implements AutoCloseable {
     /**
      * Helper method to directly compute diff between two revisions.
      */
-    public java.util.List<DiffCommand.DiffEntry> getDiff(int oldRevision, int newRevision) throws java.io.IOException {
+    public List<DiffCommand.DiffEntry> getDiff(int oldRevision, int newRevision) throws IOException {
         return diff().setOldRevision(oldRevision).setNewRevision(newRevision).call();
     }
 
     /**
      * Helper method to directly compute diff between two revisions using NodeId.
      */
-    public java.util.List<DiffCommand.DiffEntry> getDiff(com.github.search5.hg4j.lib.NodeId oldRevision, com.github.search5.hg4j.lib.NodeId newRevision) throws java.io.IOException {
+    public List<DiffCommand.DiffEntry> getDiff(NodeId oldRevision, NodeId newRevision) throws IOException {
         return diff().setOldRevision(oldRevision).setNewRevision(newRevision).call();
     }
 
     /**
      * Helper method to directly retrieve the file tree of a revision.
      */
-    public java.util.List<TreeCommand.TreeEntry> getTree(int revision) throws java.io.IOException {
+    public List<TreeCommand.TreeEntry> getTree(int revision) throws IOException {
         return tree().setRevision(revision).call();
     }
 
     /**
      * Helper method to directly retrieve the file tree of a revision using NodeId.
      */
-    public java.util.List<TreeCommand.TreeEntry> getTree(com.github.search5.hg4j.lib.NodeId revision) throws java.io.IOException {
+    public List<TreeCommand.TreeEntry> getTree(NodeId revision) throws IOException {
         return tree().setNodeId(revision).call();
     }
 
-    public com.github.search5.hg4j.treewalk.ManifestWalk walkManifest(String revision) {
-        return new com.github.search5.hg4j.treewalk.ManifestWalk(this.repository, revision);
+    public ManifestWalk walkManifest(String revision) {
+        return new ManifestWalk(this.repository, revision);
     }
 
-    public com.github.search5.hg4j.treewalk.WorkingDirWalk walkWorkingDir() {
-        return new com.github.search5.hg4j.treewalk.WorkingDirWalk(this.repository);
+    public WorkingDirWalk walkWorkingDir() {
+        return new WorkingDirWalk(this.repository);
     }
 
     /**
      * Returns a new TreeWalk instance for advanced parallel sorted traversal of multiple trees.
      */
-    public com.github.search5.hg4j.treewalk.TreeWalk walkTree() {
-        return new com.github.search5.hg4j.treewalk.TreeWalk();
+    public TreeWalk walkTree() {
+        return new TreeWalk();
     }
 
     @Override

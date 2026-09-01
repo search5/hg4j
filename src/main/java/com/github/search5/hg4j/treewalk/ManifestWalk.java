@@ -6,6 +6,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import java.util.AbstractList;
+import java.util.Iterator;
 
 public class ManifestWalk {
 
@@ -35,7 +38,7 @@ public class ManifestWalk {
         }
 
         public String getNodeIdHex() {
-            return com.github.search5.hg4j.util.NodeIdUtil.toHex(nodeId);
+            return NodeIdUtil.toHex(nodeId);
         }
 
         public boolean isExecutable() {
@@ -90,9 +93,9 @@ public class ManifestWalk {
     }
 
     public List<Entry> getEntries() throws IOException {
-        return new java.util.AbstractList<Entry>() {
-            private final List<Entry> cache = new java.util.ArrayList<>();
-            private final java.util.Iterator<Entry> it = lazyEntries();
+        return new AbstractList<Entry>() {
+            private final List<Entry> cache = new ArrayList<>();
+            private final Iterator<Entry> it = lazyEntries();
 
             @Override
             public Entry get(int index) {
@@ -114,7 +117,7 @@ public class ManifestWalk {
             }
 
             @Override
-            public java.util.Iterator<Entry> iterator() {
+            public Iterator<Entry> iterator() {
                 return lazyEntries();
             }
         };
@@ -124,8 +127,8 @@ public class ManifestWalk {
      * JGit TreeWalk 스타일의 lazy streaming 탐색을 제공합니다.
      * 메모리를 선적재하지 않고, 필요한 요소를 순차적으로 스트리밍합니다 (힙 압박 해결).
      */
-    public java.util.Iterator<Entry> lazyEntries() {
-        return new java.util.Iterator<Entry>() {
+    public Iterator<Entry> lazyEntries() {
+        return new Iterator<Entry>() {
             private final ManifestTreeIterator it = iterator;
             private boolean initialized = false;
 

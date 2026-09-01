@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.charset.StandardCharsets;
 
 public class ShelveCommandTest {
 
@@ -88,15 +89,15 @@ public class ShelveCommandTest {
         repository.writeDirstate(currentDirstate);
 
         File stateFile = new File(shelvedDir, "test-shelve.state");
-        String stateContent = Files.readString(stateFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+        String stateContent = Files.readString(stateFile.toPath(), StandardCharsets.UTF_8);
         String tamperedContent = stateContent.replace("test-shelve", "tampered-name");
-        Files.writeString(stateFile.toPath(), tamperedContent, java.nio.charset.StandardCharsets.UTF_8);
+        Files.writeString(stateFile.toPath(), tamperedContent, StandardCharsets.UTF_8);
 
         IOException exName = assertThrows(IOException.class, () -> unshelveCmd.call());
         assertTrue(exName.getMessage().contains("Shelve name mismatch"));
 
         // Restore state file name content
-        Files.writeString(stateFile.toPath(), stateContent, java.nio.charset.StandardCharsets.UTF_8);
+        Files.writeString(stateFile.toPath(), stateContent, StandardCharsets.UTF_8);
 
         // 5. Restore correct parent1 and perform unshelve successfully
         currentDirstate = repository.getDirstate();
@@ -107,5 +108,104 @@ public class ShelveCommandTest {
         assertFalse(new File(shelvedDir, "test-shelve.state").exists());
         assertFalse(new File(shelvedDir, "test-shelve.hg").exists());
         assertEquals("modified content", Files.readString(file.toPath()));
+    }
+
+    @Test
+    public void shelveAndUnshelveHandlesAddedModifiedAndRemovedFilesTogether(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        new InitCommand().setDirectory(repoDir).call();
+        HgRepository repository = new HgRepository(repoDir);
+
+        File keep = new File(repoDir, "keep.txt");
+        Files.writeString(keep.toPath(), "keep original");
+        File toRemove = new File(repoDir, "toremove.txt");
+        Files.writeString(toRemove.toPath(), "will be removed");
+        new AddCommand(repository).call();
+        new CommitCommand(repository).setAuthor("u <u@example.com>").setMessage("baseline").call();
+
+        // Pending changes: modify keep.txt, remove toremove.txt, add new.txt.
+        Files.writeString(keep.toPath(), "keep modified");
+        new RemoveCommand(repository).setFile("toremove.txt").call();
+        File added = new File(repoDir, "new.txt");
+        Files.writeString(added.toPath(), "brand new file");
+        new AddCommand(repository).addFile("new.txt").call();
+
+        new ShelveCommand(repository).setName("mixed").call();
+
+        // Working directory must be restored to the clean baseline.
+        assertEquals("keep original", Files.readString(keep.toPath()));
+        assertTrue(toRemove.exists(), "Removed file must be restored to disk after shelving");
+        assertFalse(added.exists(), "Newly added file must be removed from disk after shelving");
+
+        new ShelveCommand(repository).setName("mixed").setUnshelve(true).call();
+
+        // Pending changes must be reapplied exactly as they were before shelving.
+        assertEquals("keep modified", Files.readString(keep.toPath()));
+        assertFalse(toRemove.exists(), "Removed file must stay removed after unshelving");
+        assertEquals("brand new file", Files.readString(added.toPath()));
+        assertEquals('r', repository.getDirstate().getEntries().get("toremove.txt").getState());
+        assertEquals('a', repository.getDirstate().getEntries().get("new.txt").getState());
+    }
+
+    @Test
+    public void shelveDetectsARacyWriteThatKeepsTheSameSizeAndMtimeAsDirstate(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        new InitCommand().setDirectory(repoDir).call();
+        HgRepository repository = new HgRepository(repoDir);
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "AAAAAAAAAA");
+        new AddCommand(repository).call();
+        new CommitCommand(repository).setAuthor("u <u@example.com>").setMessage("baseline").call();
+
+        long recordedMtime = repository.getDirstate().getEntries().get("a.txt").getTime();
+
+        // Same byte length as the committed content, but different bytes, with the on-disk mtime
+        // forced back to exactly the dirstate-recorded second -- indistinguishable from "unchanged"
+        // by size/mtime alone.
+        Files.writeString(file.toPath(), "BBBBBBBBBB");
+        assertTrue(file.setLastModified(recordedMtime * 1000));
+
+        new ShelveCommand(repository).setName("racy").call();
+
+        assertEquals("AAAAAAAAAA", Files.readString(file.toPath()),
+                "The racy content change must have been detected and shelved");
+
+        new ShelveCommand(repository).setName("racy").setUnshelve(true).call();
+        assertEquals("BBBBBBBBBB", Files.readString(file.toPath()));
+    }
+
+    @Test
+    public void shelveIgnoresAByteIdenticalRacyRewrite(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        new InitCommand().setDirectory(repoDir).call();
+        HgRepository repository = new HgRepository(repoDir);
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "AAAAAAAAAA");
+        new AddCommand(repository).call();
+        new CommitCommand(repository).setAuthor("u <u@example.com>").setMessage("baseline").call();
+
+        long recordedMtime = repository.getDirstate().getEntries().get("a.txt").getTime();
+
+        // Rewritten with byte-identical content and the mtime forced back to the same second --
+        // the racy-write guard must fall back to a real content comparison and find no change.
+        Files.writeString(file.toPath(), "AAAAAAAAAA");
+        assertTrue(file.setLastModified(recordedMtime * 1000));
+
+        new ShelveCommand(repository).setName("racy-same").call();
+
+        assertFalse(new File(repository.getHgDir(), "shelved/racy-same.state").exists(),
+                "A byte-identical racy rewrite must not be treated as a pending change");
+    }
+
+    @Test
+    public void callIsNoOpWhenThereAreNoPendingChangesToShelve(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repository = new InitCommand().setDirectory(repoDir).call();
+        new ShelveCommand(repository).setName("empty").call();
+
+        assertFalse(new File(repository.getHgDir(), "shelved/empty.state").exists(),
+                "No shelve artifacts should be created when there is nothing pending");
     }
 }

@@ -3,6 +3,8 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.storage.Revlog;
 import java.io.*;
 import java.util.Random;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
 
 public class RobustnessFuzzingHarness {
     public static byte[] generateCorruptedPayload(byte[] original, double corruptionRate) {
@@ -23,7 +25,7 @@ public class RobustnessFuzzingHarness {
             for (int i = 0; i < revlog.getRevisionCount(); i++) {
                 revlog.getRevisionContent(i);
             }
-        } catch (com.github.search5.hg4j.errors.HgCorruptDataException | com.github.search5.hg4j.errors.HgRevisionNotFoundException e) {
+        } catch (HgCorruptDataException | HgRevisionNotFoundException e) {
             // 정상 포착됨
         } catch (OutOfMemoryError oom) {
             throw new AssertionError("Fuzzing FAILED: Parser allocated excessive memory!", oom);

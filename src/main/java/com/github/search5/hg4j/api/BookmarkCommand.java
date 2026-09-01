@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.revwalk.ChangesetGraph;
+import com.github.search5.hg4j.storage.Revlog;
 
 /**
  * Commands for bookmark management (listing, creating, or deleting bookmarks).
@@ -149,8 +151,8 @@ public class BookmarkCommand {
 
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        com.github.search5.hg4j.storage.Revlog changelog = repository.getRevlog(clIdx, clDat);
-        com.github.search5.hg4j.revwalk.ChangesetGraph graph = new com.github.search5.hg4j.revwalk.ChangesetGraph(changelog);
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        ChangesetGraph graph = new ChangesetGraph(changelog);
 
         String suffix = (remotePathName != null && !remotePathName.isEmpty()) ? remotePathName : "1";
 

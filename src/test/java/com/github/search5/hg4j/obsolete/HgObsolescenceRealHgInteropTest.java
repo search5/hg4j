@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Obsolescence marker(Track B-5) FM1 바이너리 포맷 검증. src/test/resources/fixtures/obsstore-fm1/
@@ -72,7 +73,7 @@ public class HgObsolescenceRealHgInteropTest {
         pb.directory(repoDir);
         pb.redirectErrorStream(true);
         Process p = pb.start();
-        String output = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         int exit = p.waitFor();
 
         assertEquals(0, exit, "실제 hg debugobsolete가 hg4j가 쓴 obsstore를 오류 없이 읽어야 함: " + output);

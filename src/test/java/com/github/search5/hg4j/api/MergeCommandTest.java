@@ -14,6 +14,9 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import java.nio.charset.StandardCharsets;
 
 public class MergeCommandTest {
 
@@ -383,7 +386,7 @@ public class MergeCommandTest {
         File symlinkFile = new File(repoDir, "link.txt");
         boolean hasSymlink = true;
         try {
-            Files.createSymbolicLink(symlinkFile.toPath(), java.nio.file.Path.of("run.sh"));
+            Files.createSymbolicLink(symlinkFile.toPath(), Path.of("run.sh"));
         } catch (Exception e) {
             hasSymlink = false;
         }
@@ -414,12 +417,12 @@ public class MergeCommandTest {
         File mfDat = new File(repo.getStoreDir(), "00manifest.d");
         Revlog mfRevlog = new Revlog(mfIdx, mfDat);
         byte[] yoursCommitContent = new Revlog(new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d")).getRevisionContent(1);
-        String yoursClText = new String(yoursCommitContent, java.nio.charset.StandardCharsets.UTF_8);
+        String yoursClText = new String(yoursCommitContent, StandardCharsets.UTF_8);
         String yoursMfLine = yoursClText.split("\n")[0].trim();
-        byte[] yoursMfNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(yoursMfLine);
-        int yoursMfRev = com.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(mfRevlog, yoursMfNode);
+        byte[] yoursMfNode = NodeIdUtil.fromHex(yoursMfLine);
+        int yoursMfRev = NodeIdUtil.findRevisionByNodeId(mfRevlog, yoursMfNode);
         byte[] yoursMfContent = mfRevlog.getRevisionContent(yoursMfRev);
-        String yoursMfText = new String(yoursMfContent, java.nio.charset.StandardCharsets.UTF_8);
+        String yoursMfText = new String(yoursMfContent, StandardCharsets.UTF_8);
         System.out.println("YOURS MANIFEST LOG: " + yoursMfText);
 
         MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(yoursNode).call();
@@ -432,7 +435,7 @@ public class MergeCommandTest {
         // Verify symlink is restored as a symbolic link (if supported)
         if (hasSymlink) {
             assertTrue(Files.isSymbolicLink(symlinkFile.toPath()));
-            java.nio.file.Path target = Files.readSymbolicLink(symlinkFile.toPath());
+            Path target = Files.readSymbolicLink(symlinkFile.toPath());
             assertEquals("run.sh", target.toString());
         }
     }
@@ -451,11 +454,34 @@ public class MergeCommandTest {
         MergeCommand cmd = new MergeCommand(repo);
         
         byte[] dummyBytes = new byte[20];
-        com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(dummyBytes);
+        NodeId nodeId = new NodeId(dummyBytes);
         
         // setNodeId(NodeId) 테스트
         cmd.setNodeId(nodeId);
         // setNodeId(null) 테스트
-        cmd.setNodeId((com.github.search5.hg4j.lib.NodeId) null);
+        cmd.setNodeId((NodeId) null);
+    }
+
+    @Test
+    public void fastForwardMergeSwitchesTheWorkingBranchToMatchTheAdvancedTarget(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        File repoDir = tempDir.toFile();
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("rev0").call();
+
+        new BranchCommand(repo).setBranchName("feature").call();
+        Files.writeString(f.toPath(), "v1");
+        byte[] rev1 = new CommitCommand(repo).setMessage("rev1 on feature").call();
+
+        new UpdateCommand(repo).setRevision("0").call();
+        assertEquals("default", repo.getBranch());
+
+        MergeCommand.MergeResult result = new MergeCommand(repo).setNodeId(rev1).call();
+        assertFalse(result.isConflicted());
+        assertEquals("v1", Files.readString(f.toPath()));
+        assertEquals("feature", repo.getBranch(),
+                "Fast-forward merge must switch the working branch to match the newly-advanced target revision");
     }
 }

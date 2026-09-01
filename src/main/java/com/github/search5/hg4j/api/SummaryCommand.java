@@ -8,6 +8,11 @@ import com.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import com.github.search5.hg4j.lib.NodeId;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Porcelain command corresponding to {@code hg summary} — a condensed overview of the working
@@ -42,14 +47,14 @@ public class SummaryCommand {
         Revlog changelog = clIdx.exists() ? repository.getRevlog(clIdx, clDat) : null;
 
         List<String> parentHexes = new ParentsCommand(repository).call();
-        java.util.List<ParentInfo> parents = new java.util.ArrayList<>();
+        List<ParentInfo> parents = new ArrayList<>();
         for (String hex : parentHexes) {
             if (changelog != null) {
                 int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
                 String desc = "";
                 if (rev != -1) {
                     try {
-                        java.util.Map<String, String> lines = parseChangelogHeader(changelog.getRevisionContent(rev));
+                        Map<String, String> lines = parseChangelogHeader(changelog.getRevisionContent(rev));
                         desc = lines.getOrDefault("desc", "");
                     } catch (Exception ignored) {}
                 }
@@ -69,7 +74,7 @@ public class SummaryCommand {
             try {
                 PhaseRoots phaseRoots = repository.getPhaseRoots();
                 byte[] p1 = NodeIdUtil.fromHex(parents.get(0).node());
-                phase = phaseRoots.getPhase(new com.github.search5.hg4j.lib.NodeId(p1), changelog);
+                phase = phaseRoots.getPhase(new NodeId(p1), changelog);
             } catch (Exception ignored) {}
         }
 
@@ -85,9 +90,9 @@ public class SummaryCommand {
                 phase);
     }
 
-    private java.util.Map<String, String> parseChangelogHeader(byte[] content) {
-        java.util.Map<String, String> result = new java.util.HashMap<>();
-        String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
+    private Map<String, String> parseChangelogHeader(byte[] content) {
+        Map<String, String> result = new HashMap<>();
+        String text = new String(content, StandardCharsets.UTF_8);
         int blank = text.indexOf("\n\n");
         if (blank != -1 && blank + 2 <= text.length()) {
             result.put("desc", text.substring(blank + 2).trim());

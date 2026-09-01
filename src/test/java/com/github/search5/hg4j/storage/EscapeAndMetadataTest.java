@@ -10,6 +10,10 @@ import java.util.Arrays;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.api.GcCommand;
+import com.github.search5.hg4j.api.Hg;
+import com.github.search5.hg4j.lib.HgRepository;
+import java.nio.file.Files;
 
 public class EscapeAndMetadataTest {
 
@@ -73,7 +77,7 @@ public class EscapeAndMetadataTest {
     public void testGcCommandWithMetadataFiles(@TempDir Path tempDir) throws Exception {
         // 1. 임시 리포지토리 생성
         File repoDir = tempDir.resolve("repo").toFile();
-        com.github.search5.hg4j.lib.HgRepository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(repoDir).call();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         // 2. 메타데이터(복사 등)를 가지는 파일의 Revlog 생성 및 리비전 추가
         File idxFile = new File(repo.getStoreDir(), "data/test.i");
@@ -99,11 +103,11 @@ public class EscapeAndMetadataTest {
 
         // fncache에 경로 등록 (GcCommand가 fncache를 빌드할 수 있도록)
         File fncacheFile = new File(repo.getStoreDir(), "fncache");
-        java.nio.file.Files.writeString(fncacheFile.toPath(), "data/test.i\n");
+        Files.writeString(fncacheFile.toPath(), "data/test.i\n");
 
 
         // 4. GcCommand 실행
-        com.github.search5.hg4j.api.GcCommand gc = new com.github.search5.hg4j.api.GcCommand(repo);
+        GcCommand gc = new GcCommand(repo);
         String report = gc.call();
         assertTrue(report.contains("GC / Compaction complete"));
 

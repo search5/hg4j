@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.lib.NodeId;
 
 /**
  * 트랜잭션 저널링/rollback(Track B-4) 실제 hg CLI 상호운용 검증.
@@ -35,7 +36,7 @@ public class RollbackRealHgInteropTest {
         Files.writeString(new File(repoDir, "a.txt").toPath(), "one");
         new AddCommand(repo).call();
         byte[] c1 = new CommitCommand(repo).setAuthor("T").setMessage("c1").call();
-        String c1Hex = new com.github.search5.hg4j.lib.NodeId(c1).toHex();
+        String c1Hex = new NodeId(c1).toHex();
 
         Files.writeString(new File(repoDir, "a.txt").toPath(), "two");
         new CommitCommand(repo).setAuthor("T").setMessage("c2").call();

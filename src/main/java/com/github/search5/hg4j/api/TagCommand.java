@@ -12,6 +12,9 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 /**
  * Commands for tag management (listing tags or creating tags).
@@ -21,8 +24,8 @@ public class TagCommand {
     private String tagName;
     private byte[] nodeId;
     private boolean commit = true;
-    private final List<HgHook> preTagHooks = new java.util.ArrayList<>();
-    private final List<HgHook> postTagHooks = new java.util.ArrayList<>();
+    private final List<HgHook> preTagHooks = new ArrayList<>();
+    private final List<HgHook> postTagHooks = new ArrayList<>();
 
     public TagCommand(HgRepository repository) {
         this.repository = repository;
@@ -68,13 +71,13 @@ public class TagCommand {
 
             // 1. PRE_TAG hooks trigger
             if (!preTagHooks.isEmpty()) {
-                Map<String, Object> ctx = new java.util.HashMap<>();
+                Map<String, Object> ctx = new HashMap<>();
                 ctx.put("repository", repository);
                 ctx.put("tag", tagName);
                 ctx.put("node", nodeId);
                 for (HgHook hook : preTagHooks) {
                     if (!hook.run(ctx)) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("Tag creation rejected by PRE_TAG hook: " + tagName);
+                        throw new HgValidationException("Tag creation rejected by PRE_TAG hook: " + tagName);
                     }
                 }
             }
@@ -98,7 +101,7 @@ public class TagCommand {
 
             // 2. POST_TAG hooks trigger
             if (!postTagHooks.isEmpty()) {
-                Map<String, Object> ctx = new java.util.HashMap<>();
+                Map<String, Object> ctx = new HashMap<>();
                 ctx.put("repository", repository);
                 ctx.put("tag", tagName);
                 ctx.put("node", nodeId);

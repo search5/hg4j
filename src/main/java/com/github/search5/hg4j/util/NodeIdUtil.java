@@ -2,6 +2,13 @@ package com.github.search5.hg4j.util;
 import com.github.search5.hg4j.storage.Revlog;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
 
 
 /**
@@ -143,8 +150,8 @@ public final class NodeIdUtil {
      * reserved device name appearing as the basename before the first {@code .}, and a trailing
      * {@code .}/space.
      */
-    private static java.util.List<String> auxEncode(java.util.List<String> parts, boolean dotEncode) {
-        java.util.List<String> result = new java.util.ArrayList<>(parts.size());
+    private static List<String> auxEncode(List<String> parts, boolean dotEncode) {
+        List<String> result = new ArrayList<>(parts.size());
         for (String n : parts) {
             if (n.isEmpty()) {
                 result.add(n);
@@ -193,18 +200,18 @@ public final class NodeIdUtil {
      * human-readable prefix is truncated.
      */
     private static String hashEncode(String dirEncodedPath, boolean dotEncode) {
-        String digest = toHex(sha1(dirEncodedPath.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        String digest = toHex(sha1(dirEncodedPath.getBytes(StandardCharsets.UTF_8)));
 
         String afterPrefix = dirEncodedPath.substring(5); // "data/" or "meta/", both 5 bytes
-        String lowered = lowerEncodeBytes(afterPrefix.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        java.util.List<String> le = new java.util.ArrayList<>(java.util.Arrays.asList(lowered.split("/", -1)));
-        java.util.List<String> parts = auxEncode(le, dotEncode);
+        String lowered = lowerEncodeBytes(afterPrefix.getBytes(StandardCharsets.UTF_8));
+        List<String> le = new ArrayList<>(Arrays.asList(lowered.split("/", -1)));
+        List<String> parts = auxEncode(le, dotEncode);
 
         String basename = parts.get(parts.size() - 1);
         int dotIdx = basename.lastIndexOf('.');
         String ext = dotIdx != -1 ? basename.substring(dotIdx) : "";
 
-        java.util.List<String> sdirs = new java.util.ArrayList<>();
+        List<String> sdirs = new ArrayList<>();
         int sdirsLen = 0;
         for (int i = 0; i < parts.size() - 1; i++) {
             String p = parts.get(i);
@@ -240,8 +247,8 @@ public final class NodeIdUtil {
 
     private static byte[] sha1(byte[] data) {
         try {
-            return java.security.MessageDigest.getInstance("SHA-1").digest(data);
-        } catch (java.security.NoSuchAlgorithmException e) {
+            return MessageDigest.getInstance("SHA-1").digest(data);
+        } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
     }
@@ -258,12 +265,12 @@ public final class NodeIdUtil {
         String logicalPath = (relPath.startsWith("data/") || relPath.startsWith("meta/")) ? relPath : "data/" + relPath;
         String dirEncoded = encodeDir(logicalPath);
 
-        if (logicalPath.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > STORE_MAX_PATH_LEN) {
+        if (logicalPath.getBytes(StandardCharsets.UTF_8).length > STORE_MAX_PATH_LEN) {
             return hashEncode(dirEncoded, true);
         }
 
-        String ef = encodeFnameBytes(dirEncoded.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        java.util.List<String> parts = new java.util.ArrayList<>(java.util.Arrays.asList(ef.split("/", -1)));
+        String ef = encodeFnameBytes(dirEncoded.getBytes(StandardCharsets.UTF_8));
+        List<String> parts = new ArrayList<>(Arrays.asList(ef.split("/", -1)));
         String result = String.join("/", auxEncode(parts, true));
 
         if (result.length() > STORE_MAX_PATH_LEN) {
@@ -272,9 +279,9 @@ public final class NodeIdUtil {
         return result;
     }
 
-    public static final java.util.Comparator<String> UTF8_STRING_COMPARATOR = (s1, s2) -> {
-        byte[] b1 = s1.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] b2 = s2.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    public static final Comparator<String> UTF8_STRING_COMPARATOR = (s1, s2) -> {
+        byte[] b1 = s1.getBytes(StandardCharsets.UTF_8);
+        byte[] b2 = s2.getBytes(StandardCharsets.UTF_8);
         int len = Math.min(b1.length, b2.length);
         for (int i = 0; i < len; i++) {
             int v1 = b1[i] & 0xFF;
@@ -299,7 +306,7 @@ public final class NodeIdUtil {
             }
         } catch (NumberFormatException ignored) {}
 
-        java.util.List<byte[]> matches = changelog.getIndex().findByHexPrefix(revStr);
+        List<byte[]> matches = changelog.getIndex().findByHexPrefix(revStr);
         if (matches == null || matches.isEmpty()) {
             return null;
         }
@@ -339,7 +346,7 @@ public final class NodeIdUtil {
         }
 
         try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
             md.update(first);
             md.update(second);
             md.update(content);
@@ -348,7 +355,7 @@ public final class NodeIdUtil {
             byte[] nodeId = new byte[32];
             System.arraycopy(hash, 0, nodeId, 0, 20);
             return nodeId;
-        } catch (java.security.NoSuchAlgorithmException e) {
+        } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("SHA-1 digest not available", e);
         }
     }

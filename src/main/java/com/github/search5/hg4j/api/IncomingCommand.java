@@ -10,6 +10,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
+import com.github.search5.hg4j.diff.DeltaEngine;
+import java.io.ByteArrayInputStream;
+import java.util.Collections;
 
 /**
  * Incoming command for identifying changesets present in the remote repository
@@ -72,16 +76,16 @@ public class IncomingCommand {
 
         // Fetch actual missing changegroup binary from the remote server
         try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
-            byte[] bundleBytes = client.getChangegroup(java.util.Collections.emptyList());
+            byte[] bundleBytes = client.getChangegroup(Collections.emptyList());
             if (bundleBytes != null && bundleBytes.length > 0) {
-                try (java.io.ByteArrayInputStream bin = new java.io.ByteArrayInputStream(bundleBytes)) {
-                    com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(bin);
+                try (ByteArrayInputStream bin = new ByteArrayInputStream(bundleBytes)) {
+                    ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(bin);
                     if (bundle != null && bundle.changelogEntries != null) {
                         byte[] currentBase = new byte[0];
-                        for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                        for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                             byte[] clContent;
                             try {
-                                clContent = com.github.search5.hg4j.diff.DeltaEngine.applyDelta(currentBase, entry.delta);
+                                clContent = DeltaEngine.applyDelta(currentBase, entry.delta);
                             } catch (Exception e) {
                                 // Fallback if applyDelta fails, use delta as raw text
                                 clContent = entry.delta;

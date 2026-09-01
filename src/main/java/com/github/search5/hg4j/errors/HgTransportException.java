@@ -1,10 +1,12 @@
 package com.github.search5.hg4j.errors;
 
+import java.io.IOException;
+
 /**
  * Base exception class for network and wire protocol control errors.
  * Parent class for all exceptions occurring in the HTTP/SSH transport layer.
  */
-public class HgTransportException extends java.io.IOException {
+public class HgTransportException extends IOException {
     private static final long serialVersionUID = 1L;
 
     private final String remoteUrl;

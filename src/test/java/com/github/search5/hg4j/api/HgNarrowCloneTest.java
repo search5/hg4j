@@ -8,6 +8,8 @@ import java.nio.file.Files;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.lib.HgRepository;
+import java.nio.charset.StandardCharsets;
 
 public class HgNarrowCloneTest {
 
@@ -20,7 +22,7 @@ public class HgNarrowCloneTest {
         File destRepoDir = new File(tempDir, "narrow_repo");
         
         // 1. Initialize source repository and write files in different dirs
-        com.github.search5.hg4j.lib.HgRepository srcRepo = Hg.init().setDirectory(srcRepoDir).call();
+        HgRepository srcRepo = Hg.init().setDirectory(srcRepoDir).call();
         try (Hg hgSrc = Hg.wrap(srcRepo)) {
             File f1 = new File(srcRepoDir, "src/main/A.java");
             f1.getParentFile().mkdirs();
@@ -47,12 +49,12 @@ public class HgNarrowCloneTest {
         File narrowSpecFile = new File(destRepoDir, ".hg/narrowspec");
         assertTrue(narrowSpecFile.exists());
 
-        String specText = Files.readString(narrowSpecFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+        String specText = Files.readString(narrowSpecFile.toPath(), StandardCharsets.UTF_8);
         assertTrue(specText.contains("[includes]"));
         assertTrue(specText.contains("src/"));
 
         File requiresFile = new File(destRepoDir, ".hg/requires");
-        String requiresText = Files.readString(requiresFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+        String requiresText = Files.readString(requiresFile.toPath(), StandardCharsets.UTF_8);
         assertTrue(requiresText.contains("narrowspec"));
     }
 }

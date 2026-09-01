@@ -12,6 +12,11 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.api.AddCommand;
+import com.github.search5.hg4j.api.CommitCommand;
+import com.github.search5.hg4j.api.Hg;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 
 public class HgRepositoryTest {
 
@@ -112,17 +117,17 @@ public class HgRepositoryTest {
             File dirstateFile = new File(repo.getHgDir(), "dirstate");
             
             // Write V2 data file
-            File dataFile = new File(repo.getHgDir(), "dirstate.d.123456");
+            File dataFile = new File(repo.getHgDir(), "dirstate.123456");
             byte[] v2DataHeader = new byte[12];
             v2DataHeader[7] = 12; // nodesOffset = 12
             v2DataHeader[11] = 12; // dataOffset = 12
             Files.write(dataFile.toPath(), v2DataHeader);
 
             // Write V2 Docket file (Strict 122+ bytes)
-            byte[] v2Magic = "dirstate-v2\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-            byte[] uidBytes = "123456".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
+            byte[] uidBytes = "123456".getBytes(StandardCharsets.US_ASCII);
             int docketSize = 12 + 32 + 32 + 44 + 4 + 1 + uidBytes.length;
-            ByteBuffer buf = ByteBuffer.allocate(docketSize).order(java.nio.ByteOrder.BIG_ENDIAN);
+            ByteBuffer buf = ByteBuffer.allocate(docketSize).order(ByteOrder.BIG_ENDIAN);
             buf.put(v2Magic);
             buf.put(new byte[32]); // p1
             buf.put(new byte[32]); // p2
@@ -172,12 +177,12 @@ public class HgRepositoryTest {
     public void testRebuildDirstateFromManifestV1WithFiles(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         // 1. Repository 초기화 및 파일 커밋
-        try (HgRepository repo = com.github.search5.hg4j.api.Hg.init().setDirectory(repoDir).call()) {
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
             
             File f1 = new File(repoDir, "a.txt");
             Files.writeString(f1.toPath(), "Hello fulltext\n");
-            new com.github.search5.hg4j.api.AddCommand(repo).addFile("a.txt").call();
-            new com.github.search5.hg4j.api.CommitCommand(repo).setMessage("commit1").call();
+            new AddCommand(repo).addFile("a.txt").call();
+            new CommitCommand(repo).setMessage("commit1").call();
 
             // 2. dirstate 파일을 강제로 손상된 데이터로 덮어쓰기
             File dirstateFile = new File(repo.getHgDir(), "dirstate");

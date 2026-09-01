@@ -8,6 +8,8 @@ import com.github.search5.hg4j.dirstate.Dirstate;
 import java.io.File;
 import java.io.IOException;
 import java.util.Map;
+import com.github.search5.hg4j.treewalk.ManifestWalk;
+import java.util.LinkedHashMap;
 
 /**
  * Standard file-system implementation of StoreEngine.
@@ -30,10 +32,10 @@ public class DefaultFileStoreEngine implements StoreEngine {
             throw new IOException("Commit revision not found: " + NodeIdUtil.toHex(commitNodeId));
         }
 
-        java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
-        com.github.search5.hg4j.treewalk.ManifestWalk mw = new com.github.search5.hg4j.treewalk.ManifestWalk(repository, String.valueOf(commitRev));
+        Map<String, String> result = new LinkedHashMap<>();
+        ManifestWalk mw = new ManifestWalk(repository, String.valueOf(commitRev));
         while (mw.next()) {
-            com.github.search5.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
+            ManifestWalk.Entry entry = mw.getEntry();
             String hex = entry.getNodeIdHex();
             String flag = entry.isExecutable() ? "x" : (entry.isSymlink() ? "l" : "");
             result.put(entry.getPath(), hex + flag);

@@ -2,6 +2,7 @@ package com.github.search5.hg4j.merge;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
 
 /**
  * A robust line-level 3-way merge engine based on Sync Points via LCS Index Mapping.
@@ -136,7 +137,7 @@ public class Merge3 {
         int m = a.size();
         int n = b.size();
         int[] mapping = new int[m];
-        java.util.Arrays.fill(mapping, -1);
+        Arrays.fill(mapping, -1);
         
         if (m == 0 || n == 0) {
             return mapping;

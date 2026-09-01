@@ -5,6 +5,12 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.errors.HgAuthException;
+import com.github.search5.hg4j.errors.HgProtocolException;
+import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * pure Java SSH Client communicating with remote Mercurial repositories
@@ -154,9 +160,9 @@ public class HgSshClient implements HgRemoteConnection {
             close();
             String msg = e.getMessage();
             if (e instanceof JSchException || (msg != null && (msg.toLowerCase().contains("auth fail") || msg.toLowerCase().contains("authentication") || msg.toLowerCase().contains("permission denied")))) {
-                throw new com.github.search5.hg4j.errors.HgAuthException(sshUrl, username, e);
+                throw new HgAuthException(sshUrl, username, e);
             }
-            throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Failed to establish SSH connection: " + msg, e);
+            throw new HgProtocolException(sshUrl, "Failed to establish SSH connection: " + msg, e);
         }
     }
 
@@ -171,7 +177,7 @@ public class HgSshClient implements HgRemoteConnection {
             while (read < 4) {
                 int got = in.read(lenBytes, read, 4 - read);
                 if (got == -1) {
-                    throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 frame size");
+                    throw new HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 frame size");
                 }
                 read += got;
             }
@@ -187,7 +193,7 @@ public class HgSshClient implements HgRemoteConnection {
             while (total < len) {
                 int got = in.read(buf, total, len - total);
                 if (got == -1) {
-                    throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 frame payload");
+                    throw new HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 frame payload");
                 }
                 total += got;
             }
@@ -208,7 +214,7 @@ public class HgSshClient implements HgRemoteConnection {
     private void writeLine(String line) throws IOException {
         if (protocolVersion == 2) {
             byte[] data = (line + "\n").getBytes(StandardCharsets.UTF_8);
-            java.nio.ByteBuffer header = java.nio.ByteBuffer.allocate(5);
+            ByteBuffer header = ByteBuffer.allocate(5);
             header.put((byte) 1);
             header.putInt(data.length);
             out.write(header.array());
@@ -222,7 +228,7 @@ public class HgSshClient implements HgRemoteConnection {
     private void readCapabilities() throws IOException {
         String header = readLine();
         if (!header.startsWith("capabilities:")) {
-            throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Remote SSH server did not output valid Mercurial stdio capabilities header. Received: " + header);
+            throw new HgProtocolException(sshUrl, "Remote SSH server did not output valid Mercurial stdio capabilities header. Received: " + header);
         }
 
         String capString = header.substring("capabilities:".length()).trim();
@@ -235,7 +241,7 @@ public class HgSshClient implements HgRemoteConnection {
 
         // Attempt to upgrade to v2 (disabled by default, can be enabled using JVM option -Dhg4j.ssh.v2.enabled=true if necessary)
         if (Boolean.getBoolean("hg4j.ssh.v2.enabled") && capabilities.contains("exp-ssh-v2-0003")) {
-            String token = java.util.UUID.randomUUID().toString().replace("-", "");
+            String token = UUID.randomUUID().toString().replace("-", "");
             writeLine("upgrade " + token + " proto=exp-ssh-v2-0003");
             String upgradeResponse = readLine();
 
@@ -345,7 +351,7 @@ public class HgSshClient implements HgRemoteConnection {
         writeLine("");
 
         if (protocolVersion == 2) {
-            java.nio.ByteBuffer header = java.nio.ByteBuffer.allocate(5);
+            ByteBuffer header = ByteBuffer.allocate(5);
             header.put((byte) 1);
             header.putInt(bundleBytes.length);
             out.write(header.array());
@@ -380,7 +386,7 @@ public class HgSshClient implements HgRemoteConnection {
                 while (read < 4) {
                     int got = in.read(lenBytes, read, 4 - read);
                     if (got == -1) {
-                        throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 binary frame size");
+                        throw new HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 binary frame size");
                     }
                     read += got;
                 }
@@ -396,7 +402,7 @@ public class HgSshClient implements HgRemoteConnection {
                 while (chunkRead < len) {
                     int got = in.read(chunkBuf, chunkRead, len - chunkRead);
                     if (got == -1) {
-                        throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 binary frame payload");
+                        throw new HgProtocolException(sshUrl, "Unexpected EOF while reading SSH V2 binary frame payload");
                     }
                     chunkRead += got;
                 }
@@ -426,7 +432,7 @@ public class HgSshClient implements HgRemoteConnection {
                     if (read == 0) {
                         return baos.toByteArray(); // EOF
                     }
-                    throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF while reading Mercurial SSH binary chunk size");
+                    throw new HgProtocolException(sshUrl, "Unexpected EOF while reading Mercurial SSH binary chunk size");
                 }
                 read += got;
             }
@@ -438,7 +444,7 @@ public class HgSshClient implements HgRemoteConnection {
                 break; // Empty chunk signals end of payload
             }
             if (len < 0) {
-                throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Invalid negative binary chunk size: " + len);
+                throw new HgProtocolException(sshUrl, "Invalid negative binary chunk size: " + len);
             }
 
             byte[] chunkBuf = new byte[len];
@@ -446,7 +452,7 @@ public class HgSshClient implements HgRemoteConnection {
             while (chunkRead < len) {
                 int got = in.read(chunkBuf, chunkRead, len - chunkRead);
                 if (got == -1) {
-                    throw new com.github.search5.hg4j.errors.HgProtocolException(sshUrl, "Unexpected EOF inside Mercurial SSH binary chunk payload");
+                    throw new HgProtocolException(sshUrl, "Unexpected EOF inside Mercurial SSH binary chunk payload");
                 }
                 chunkRead += got;
             }
@@ -456,14 +462,14 @@ public class HgSshClient implements HgRemoteConnection {
     }
 
     @Override
-    public java.util.Map<String, String> listKeys(String namespace) throws IOException {
+    public Map<String, String> listKeys(String namespace) throws IOException {
         ensureConnected();
         writeLine("listkeys");
         writeLine("namespace " + namespace);
         writeLine("");
 
         String resp = readLine();
-        java.util.Map<String, String> map = new java.util.HashMap<>();
+        Map<String, String> map = new HashMap<>();
         if (!resp.isEmpty()) {
             for (String line : resp.split("\n")) {
                 int tab = line.indexOf('\t');

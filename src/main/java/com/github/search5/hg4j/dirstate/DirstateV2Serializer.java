@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import com.github.search5.hg4j.errors.HgValidationException;
 
 /**
  * High-performance serializer to output binary dirstate-v2 format compliant with Mercurial.
@@ -127,7 +128,7 @@ public class DirstateV2Serializer {
             String fullPath = fullPathMap.get(node);
             byte[] nameBytes = fullPath.getBytes(StandardCharsets.UTF_8);
             if (nameBytes.length > 65535) {
-                throw new com.github.search5.hg4j.errors.HgValidationException("Dirstate segment path name too long (max 65535 bytes): " + fullPath);
+                throw new HgValidationException("Dirstate segment path name too long (max 65535 bytes): " + fullPath);
             }
             pathOffsetMap.put(node, dataBlock.size());
             pathLenMap.put(node, (short) nameBytes.length);

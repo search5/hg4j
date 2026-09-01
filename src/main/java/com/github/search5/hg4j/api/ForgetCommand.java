@@ -6,6 +6,7 @@ import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.lib.HgRepository;
 
 import java.io.IOException;
+import com.github.search5.hg4j.errors.HgValidationException;
 
 /**
  * Porcelain command corresponding to {@code hg forget} — stops tracking a file without touching
@@ -32,7 +33,7 @@ public class ForgetCommand {
             Dirstate dirstate = repository.getDirstate();
             Dirstate.Entry entry = dirstate.getEntries().get(file);
             if (entry == null) {
-                throw new com.github.search5.hg4j.errors.HgValidationException("File is not tracked: " + file);
+                throw new HgValidationException("File is not tracked: " + file);
             }
 
             if (entry.getState() == 'a') {

@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * Parses Mercurial's obsolescence store (obsstore) binary format.
@@ -40,7 +41,7 @@ public final class HgObsolescenceParser {
 
         int version = bytes[0] & 0xFF;
         if (version != FM1_VERSION) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException(
+            throw new HgCorruptDataException(
                     "Unsupported obsstore format version: " + version + " (only FM1/version=1 is supported)");
         }
 
@@ -48,7 +49,7 @@ public final class HgObsolescenceParser {
         try {
             while (buffer.hasRemaining()) {
                 if (buffer.remaining() < 19) {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Truncated obsstore content: incomplete fixed header");
+                    throw new HgCorruptDataException("Truncated obsstore content: incomplete fixed header");
                 }
                 int recordStart = buffer.position();
                 int totalSize = buffer.getInt();
@@ -96,16 +97,16 @@ public final class HgObsolescenceParser {
                 // 끝났다.
                 int consumed = buffer.position() - recordStart;
                 if (consumed != totalSize) {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException(
+                    throw new HgCorruptDataException(
                             "obsstore record size mismatch: declared=" + totalSize + " actual=" + consumed);
                 }
 
                 markers.add(new HgObsMarker(predecessor, successors, flags, metadata));
             }
-        } catch (com.github.search5.hg4j.errors.HgCorruptDataException e) {
+        } catch (HgCorruptDataException e) {
             throw e;
         } catch (Exception e) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Failed to parse obsstore binary content", e);
+            throw new HgCorruptDataException("Failed to parse obsstore binary content", e);
         }
 
         return markers;

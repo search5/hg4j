@@ -2,6 +2,7 @@ package com.github.search5.hg4j.lfs;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * Represents a parsed Mercurial LFS (Large File Storage) pointer file.
@@ -47,7 +48,7 @@ public final class HgLfsPointer {
      */
     public static HgLfsPointer parse(byte[] content) throws IOException {
         if (content == null || content.length == 0) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("LFS pointer content is empty or null");
+            throw new HgCorruptDataException("LFS pointer content is empty or null");
         }
 
         String text = new String(content, StandardCharsets.UTF_8);
@@ -69,18 +70,18 @@ public final class HgLfsPointer {
                 try {
                     size = Long.parseLong(trimmed.substring("size ".length()).trim());
                 } catch (NumberFormatException e) {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Invalid size format in LFS pointer: " + trimmed, e);
+                    throw new HgCorruptDataException("Invalid size format in LFS pointer: " + trimmed, e);
                 }
             }
         }
 
         if (version == null || oid == null || size == -1) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Malformed LFS pointer file: missing required fields");
+            throw new HgCorruptDataException("Malformed LFS pointer file: missing required fields");
         }
 
         // Validate OID hex string (should be 64 characters for SHA-256)
         if (oid.length() != 64) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Invalid LFS OID length. Expected 64 characters, got: " + oid.length());
+            throw new HgCorruptDataException("Invalid LFS OID length. Expected 64 characters, got: " + oid.length());
         }
 
         return new HgLfsPointer(version, oid, size);

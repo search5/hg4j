@@ -7,6 +7,10 @@ import java.io.InputStream;
 import java.util.zip.InflaterInputStream;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import com.github.luben.zstd.ZstdInputStream;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import java.nio.charset.StandardCharsets;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 
 /**
  * Lightweight, production-grade parser for decoding the Mercurial bundle2 (HG20) container format.
@@ -44,9 +48,9 @@ public class Bundle2Parser {
         // 1. Read Magic "HG20"
         byte[] magic = new byte[4];
         dis.readFully(magic);
-        String magicStr = new String(magic, java.nio.charset.StandardCharsets.US_ASCII);
+        String magicStr = new String(magic, StandardCharsets.US_ASCII);
         if (!"HG20".equals(magicStr)) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unsupported bundle magic: " + magicStr + ". Expected HG20.");
+            throw new HgCorruptDataException("Unsupported bundle magic: " + magicStr + ". Expected HG20.");
         }
 
         // 2. Stream Level Parameters Size — 실제 스펙(mercurial/bundle2.py의
@@ -58,7 +62,7 @@ public class Bundle2Parser {
         if (paramsSize > 0) {
             byte[] paramBytes = new byte[paramsSize];
             dis.readFully(paramBytes);
-            String params = new String(paramBytes, java.nio.charset.StandardCharsets.UTF_8);
+            String params = new String(paramBytes, StandardCharsets.UTF_8);
             for (String param : params.split(" ")) {
                 if (param.startsWith("Compression=")) {
                     compression = param.substring("Compression=".length());
@@ -74,12 +78,12 @@ public class Bundle2Parser {
                 payloadStream = new InflaterInputStream(dis);
             } else if ("BZ".equalsIgnoreCase(compression)) {
                 // Bzip2 compression
-                payloadStream = new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(dis);
+                payloadStream = new BZip2CompressorInputStream(dis);
             } else if ("ZS".equalsIgnoreCase(compression)) {
                 // Zstandard compression
-                payloadStream = new com.github.luben.zstd.ZstdInputStream(dis);
+                payloadStream = new ZstdInputStream(dis);
             } else {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unsupported bundle2 compression: " + compression);
+                throw new HgCorruptDataException("Unsupported bundle2 compression: " + compression);
             }
         }
 
@@ -102,7 +106,7 @@ public class Bundle2Parser {
             // Parse part header
             int cursor = 0;
             int nameSize = headerBlock[cursor++] & 0xFF;
-            String partName = new String(headerBlock, cursor, nameSize, java.nio.charset.StandardCharsets.US_ASCII);
+            String partName = new String(headerBlock, cursor, nameSize, StandardCharsets.US_ASCII);
             LOGGER.log(Level.FINE, "[DEBUG BUNDLE2] Parsed partName: ''{0}'', partHeaderSize: {1}, nameSize: {2}", new Object[]{partName, partHeaderSize, nameSize});
             cursor += nameSize;
             
@@ -128,7 +132,7 @@ public class Bundle2Parser {
                 valLens[i] = headerBlock[cursor++] & 0xFF;
             }
             for (int i = 0; i < paramCount; i++) {
-                String paramName = new String(headerBlock, cursor, keyLens[i], java.nio.charset.StandardCharsets.US_ASCII);
+                String paramName = new String(headerBlock, cursor, keyLens[i], StandardCharsets.US_ASCII);
                 cursor += keyLens[i];
 
                 byte[] paramValBytes = new byte[valLens[i]];
@@ -136,7 +140,7 @@ public class Bundle2Parser {
                 cursor += valLens[i];
 
                 if (isChangegroup && "version".equalsIgnoreCase(paramName)) {
-                    extractedVersion = new String(paramValBytes, java.nio.charset.StandardCharsets.US_ASCII).trim();
+                    extractedVersion = new String(paramValBytes, StandardCharsets.US_ASCII).trim();
                 }
             }
 
@@ -149,7 +153,7 @@ public class Bundle2Parser {
                 }
                 if (chunkSize == -1) {
                     // Interrupt (nested part starts)
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Nested stream interrupts are not supported in this lightweight parser.");
+                    throw new HgCorruptDataException("Nested stream interrupts are not supported in this lightweight parser.");
                 }
                 
                 byte[] chunkData = new byte[chunkSize];
@@ -162,7 +166,7 @@ public class Bundle2Parser {
         }
 
         if (cgOut.size() == 0) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("No CHANGEGROUP part found in the bundle2 stream.");
+            throw new HgCorruptDataException("No CHANGEGROUP part found in the bundle2 stream.");
         }
 
         ExtractedBundle2 result = new ExtractedBundle2();

@@ -19,6 +19,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.io.OutputStream;
+import java.net.Proxy;
+import java.net.URI;
+import java.util.Base64;
+import java.util.LinkedHashSet;
 
 /**
  * Real hg wireprotocol v2 client: capability discovery via the {@code X-HgUpgrade-1}/
@@ -46,7 +51,7 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
     private String username;
     private String password;
     private boolean forceTls = false;
-    private java.net.Proxy proxy = java.net.Proxy.NO_PROXY;
+    private Proxy proxy = Proxy.NO_PROXY;
 
     private String apibase;
     private String namespace;
@@ -54,6 +59,16 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
 
     public HgRemoteClientV2(String url) {
         this.baseUrl = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+
+    /**
+     * Injects an apibase/namespace already discovered by a caller (e.g. {@link HgRemoteClient}'s
+     * own v1-capabilities-request-turned-upgrade-handshake) so {@link #ensureDiscovered()} skips
+     * a redundant second discovery round-trip.
+     */
+    void primeDiscovery(String apibase, String namespace) {
+        this.apibase = apibase;
+        this.namespace = namespace;
     }
 
     public void setTimeouts(int connectTimeout, int readTimeout) {
@@ -81,7 +96,7 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         this.forceTls = forceTls;
     }
 
-    public void setProxy(java.net.Proxy proxy) {
+    public void setProxy(Proxy proxy) {
         if (proxy != null) {
             this.proxy = proxy;
         }
@@ -135,7 +150,7 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         conn.setRequestProperty("Content-Type", Wire2Transport.FRAMINGTYPE);
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Length", String.valueOf(requestBody.length));
-        try (java.io.OutputStream os = conn.getOutputStream()) {
+        try (OutputStream os = conn.getOutputStream()) {
             os.write(requestBody);
         }
 
@@ -147,14 +162,14 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         if (forceTls && !url.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + url);
         }
-        HttpURLConnection conn = (HttpURLConnection) java.net.URI.create(url).toURL().openConnection(proxy);
+        HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection(proxy);
         conn.setRequestMethod(method);
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
         if (username != null && password != null) {
             String credentials = username + ":" + password;
-            String encoded = java.util.Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+            String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
         }
         return conn;
@@ -295,13 +310,13 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         bundle.fileGroups = new ArrayList<>();
 
         List<byte[]> manifestNodesInOrder = new ArrayList<>();
-        java.util.LinkedHashSet<String> manifestNodeHexes = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> manifestNodeHexes = new LinkedHashSet<>();
         // manifest node hex -> the changeset node that references it (real hg's "linknode" for a
         // manifest entry — NOT the manifest's own node; matches HgLocalClient.getBundle, where
         // mfEntry.cs is the referencing changelog node, since a manifest revlog's link points at
         // the changelog, unlike the changelog itself which links to its own node).
         Map<String, byte[]> manifestLinkNode = new LinkedHashMap<>();
-        java.util.LinkedHashSet<String> touchedPaths = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> touchedPaths = new LinkedHashSet<>();
 
         byte[] prevClContent = new byte[0];
         for (Map<String, Object> rec : csRecords) {

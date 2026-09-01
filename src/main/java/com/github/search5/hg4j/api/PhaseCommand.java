@@ -47,7 +47,7 @@ public class PhaseCommand {
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        byte[] nodeBytes = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, revision);
+        byte[] nodeBytes = NodeIdUtil.resolveRevision(changelog, revision);
         if (nodeBytes == null) {
             throw new IOException("Phase error: Revision not found in repository: " + revision);
         }

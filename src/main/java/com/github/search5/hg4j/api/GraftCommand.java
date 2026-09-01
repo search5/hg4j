@@ -9,16 +9,27 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.obsolete.HgObsMarker;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Graft command (equivalent to git cherry-pick) for Mercurial repositories.
  * Copies the changes of a source revision and commits them on top of the current parent.
  */
 public class GraftCommand {
-    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(GraftCommand.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(GraftCommand.class.getName());
     private final HgRepository repository;
     private String sourceRevision;
-    private final java.util.List<HgHook> postGraftHooks = new java.util.ArrayList<>();
+    private final List<HgHook> postGraftHooks = new ArrayList<>();
 
     public GraftCommand(HgRepository repository) {
         this.repository = repository;
@@ -56,7 +67,7 @@ public class GraftCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        byte[] origNode = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, sourceRevision);
+        byte[] origNode = NodeIdUtil.resolveRevision(changelog, sourceRevision);
         if (origNode == null) {
             throw new IOException("Graft source revision not found: " + sourceRevision);
         }
@@ -67,7 +78,7 @@ public class GraftCommand {
         String origClText = new String(origClContent, StandardCharsets.UTF_8);
         String[] origClLines = origClText.split("\n");
 
-        java.util.List<String> filesModified = new java.util.ArrayList<>();
+        List<String> filesModified = new ArrayList<>();
         String author = "graft";
         if (origClLines.length > 1) {
             author = origClLines[1].trim();
@@ -89,11 +100,11 @@ public class GraftCommand {
         }
         String graftMessage = msgBuilder.toString() + "\n(grafted from " + NodeIdUtil.toHex(origNode).substring(0, 12) + ")";
 
-        java.util.Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
+        Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
 
         // Acquire lock explicitly to restore files and commit safely in a transaction
-        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock storeLock = repository.lockStore();
+             HgLock wlock = repository.lockWorkingCopy()) {
             
             // 2. For each modified file in the source revision, copy contents and write to working copy
             for (String path : filesModified) {
@@ -125,13 +136,13 @@ public class GraftCommand {
 
             // Register obsolescence marker linking original commit to grafted commit
             try {
-                com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), origNode, java.util.List.of(newCommitNode), "graft");
+                HgObsMarker.writeMarker(repository.getStoreDir(), origNode, List.of(newCommitNode), "graft");
             } catch (Exception e) {
                 // non-blocking
             }
 
             // POST_GRAFT hooks trigger
-            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            Map<String, Object> ctx = new HashMap<>();
             ctx.put("sourceRevision", sourceRevision);
             ctx.put("graftedNode", NodeIdUtil.toHex(newCommitNode));
             ctx.put("repository", repository);
@@ -139,7 +150,7 @@ public class GraftCommand {
                 try {
                     hook.run(ctx);
                 } catch (Exception e) {
-                    LOGGER.log(java.util.logging.Level.WARNING, "Post-graft hook execution failed", e);
+                    LOGGER.log(Level.WARNING, "Post-graft hook execution failed", e);
                 }
             }
 
@@ -147,9 +158,9 @@ public class GraftCommand {
         }
     }
 
-    private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
-        java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
+    private Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
+        Map<String, String> manifestMap = new LinkedHashMap<>();
+        if (commitNode == null || NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -162,7 +173,7 @@ public class GraftCommand {
         if (lines.length == 0) return manifestMap;
 
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);
@@ -178,16 +189,16 @@ public class GraftCommand {
         return manifestMap;
     }
 
-    private byte[] getFileRevisionContent(com.github.search5.hg4j.lib.HgRepository repository, String path, String nodeHex) throws IOException {
+    private byte[] getFileRevisionContent(HgRepository repository, String path, String nodeHex) throws IOException {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
+            throw new HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(nodeHex.substring(0, 40)));
         if (rev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }

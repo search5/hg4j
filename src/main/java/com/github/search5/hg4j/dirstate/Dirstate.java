@@ -12,6 +12,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Parses and writes the Mercurial binary .hg/dirstate file.
@@ -118,11 +122,11 @@ public class Dirstate {
 
     public void read(byte[] bytes) throws IOException {
         if (bytes == null) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Invalid dirstate file: content cannot be null");
+            throw new HgCorruptDataException("Invalid dirstate file: content cannot be null");
         }
 
         if (bytes.length < 40) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Invalid dirstate file: must be at least 40 bytes");
+            throw new HgCorruptDataException("Invalid dirstate file: must be at least 40 bytes");
         }
 
         ByteBuffer buf = ByteBuffer.wrap(bytes);
@@ -136,7 +140,7 @@ public class Dirstate {
         entries.clear();
         while (buf.hasRemaining()) {
             if (buf.remaining() < 17) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Truncated dirstate entry header");
+                throw new HgCorruptDataException("Truncated dirstate entry header");
             }
             char state = (char) buf.get();
             int mode = buf.getInt();
@@ -145,7 +149,7 @@ public class Dirstate {
             int pathLen = buf.getInt();
 
             if (pathLen < 0 || buf.remaining() < pathLen) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Truncated dirstate entry path");
+                throw new HgCorruptDataException("Truncated dirstate entry path");
             }
 
             byte[] pathBytes = new byte[pathLen];
@@ -200,14 +204,14 @@ public class Dirstate {
                 docketBuf.get(uidBytes);
                 String uid = new String(uidBytes, StandardCharsets.US_ASCII);
 
-                // Load .hg/dirstate.d.<uid> data file
-                File dataFile = new File(file.getParentFile(), "dirstate.d." + uid);
+                // Load .hg/dirstate.<uid> data file
+                File dataFile = new File(file.getParentFile(), "dirstate." + uid);
                 if (!dataFile.exists()) {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Dirstate-v2 data file not found for uid: " + uid);
+                    throw new HgCorruptDataException("Dirstate-v2 data file not found for uid: " + uid);
                 }
                 byte[] dataBytes = Files.readAllBytes(dataFile.toPath());
                 if (dataBytes.length != dataLength) {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Dirstate-v2 data file length mismatch. Expected " + dataLength + " but got " + dataBytes.length);
+                    throw new HgCorruptDataException("Dirstate-v2 data file length mismatch. Expected " + dataLength + " but got " + dataBytes.length);
                 }
 
                 this.isV2 = true;
@@ -291,10 +295,10 @@ public class Dirstate {
             byte[] dataBytes = DirstateV2Serializer.serialize(this);
 
             // 2. Generate a unique UID (in the form of a random UUID)
-            String uid = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+            String uid = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
 
-            // 3. Write data file .hg/dirstate.d.<uid>
-            File dataFile = new File(file.getParentFile(), "dirstate.d." + uid);
+            // 3. Write data file .hg/dirstate.<uid>
+            File dataFile = new File(file.getParentFile(), "dirstate." + uid);
             SafeFileIO.writeAtomic(dataFile, dataBytes);
 
             // 4. Assemble Docket bytes
@@ -317,7 +321,7 @@ public class Dirstate {
             docketBuf.put(p2_32);
 
             // Tree Metadata (44 bytes): root_nodes (start=0 [4B] + count=rootCount [4B]) + nodes_with_entry_count [4B] + nodes_with_copy_source_count [4B] + 28-byte zero padding
-            java.util.Set<String> rootSegments = new java.util.HashSet<>();
+            Set<String> rootSegments = new HashSet<>();
             for (String path : entries.keySet()) {
                 int slashIdx = path.indexOf('/');
                 if (slashIdx == -1) {
@@ -351,7 +355,7 @@ public class Dirstate {
 
             // 6. W-LEAK: Delete the old data file
             if (oldUid != null && !oldUid.equals(uid)) {
-                File oldDataFile = new File(file.getParentFile(), "dirstate.d." + oldUid);
+                File oldDataFile = new File(file.getParentFile(), "dirstate." + oldUid);
                 Files.deleteIfExists(oldDataFile.toPath());
             }
             return;

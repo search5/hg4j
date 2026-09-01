@@ -14,6 +14,8 @@ import java.io.File;
 import java.nio.file.Files;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.file.Path;
+import java.util.Set;
 
 /**
  * {@code .hg/sparse}(및 {@code %include} 프로파일) 파싱을 real hg CLI로 만든 저장소/파일
@@ -38,23 +40,23 @@ public class SparseConfigInteropTest {
                 + "[exclude]\n"
                 + "b/skip.txt\n";
         SparseConfig cfg = SparseConfig.parse(raw);
-        assertEquals(java.util.Set.of("a/*.txt", "b"), cfg.includes);
-        assertEquals(java.util.Set.of("b/skip.txt"), cfg.excludes);
-        assertEquals(java.util.Set.of("profile.sparse"), cfg.profiles);
+        assertEquals(Set.of("a/*.txt", "b"), cfg.includes);
+        assertEquals(Set.of("b/skip.txt"), cfg.excludes);
+        assertEquals(Set.of("profile.sparse"), cfg.profiles);
     }
 
     @Test
     public void commentsAndBlankLinesAreIgnored() throws Exception {
         String raw = "# a comment\n\n[include]\n# another comment\nfoo\n\n";
         SparseConfig cfg = SparseConfig.parse(raw);
-        assertEquals(java.util.Set.of("foo"), cfg.includes);
+        assertEquals(Set.of("foo"), cfg.includes);
     }
 
     @Test
     public void leadingSlashPatternIsIgnoredNotFatal() throws Exception {
         String raw = "[include]\n/absolute/path\nrelative/path\n";
         SparseConfig cfg = SparseConfig.parse(raw);
-        assertEquals(java.util.Set.of("relative/path"), cfg.includes);
+        assertEquals(Set.of("relative/path"), cfg.includes);
     }
 
     @Test
@@ -69,7 +71,7 @@ public class SparseConfigInteropTest {
     }
 
     @Test
-    public void resolvesTrackedProfileFromManifestAndAppliesHgStarAutoInclude(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void resolvesTrackedProfileFromManifestAndAppliesHgStarAutoInclude(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -100,7 +102,7 @@ public class SparseConfigInteropTest {
     }
 
     @Test
-    public void missingProfileIsSkippedNotFatal(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void missingProfileIsSkippedNotFatal(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -115,7 +117,7 @@ public class SparseConfigInteropTest {
         // 집합(찾았든 못 찾았든)을 그대로 profiles로 반환하므로, 여기서도 포함되어 있는
         // 것이 정상이다 — 단지 그 내용(include/exclude)만 병합에서 제외된다.
         SparseConfig resolved = assertDoesNotThrow(() -> hg.sparseConfig(0));
-        assertEquals(java.util.Set.of("a.txt", ".hg*"), resolved.includes,
+        assertEquals(Set.of("a.txt", ".hg*"), resolved.includes,
                 "존재하지 않는 프로파일 자체의 규칙은 병합되지 않아야 함");
     }
 }

@@ -10,6 +10,9 @@ import java.nio.file.Path;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class TagCommandTest {
 
@@ -87,6 +90,67 @@ public class TagCommandTest {
 
         assertThrows(IllegalArgumentException.class, () -> 
                 new TagCommand(repo).setTagName("v1.0").setNodeId(new byte[10]).call()); // short nodeId
+    }
+
+    @Test
+    public void preTagHookCanRejectTagCreation(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "Content");
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("First commit").call();
+
+        assertThrows(HgValidationException.class, () ->
+                new TagCommand(repo)
+                        .setTagName("rejected")
+                        .setNodeId(commitNode)
+                        .setCommit(false)
+                        .registerPreTagHook(ctx -> false)
+                        .call());
+
+        // Rejected tag must not have been written.
+        assertTrue(new TagCommand(repo).call().isEmpty());
+    }
+
+    @Test
+    public void preAndPostTagHooksRunWithExpectedContextOnSuccessfulTag(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "Content");
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("First commit").call();
+
+        List<String> firedHooks = new ArrayList<>();
+        new TagCommand(repo)
+                .setTagName("v2.0")
+                .setNodeId(commitNode)
+                .setCommit(false)
+                .registerPreTagHook(ctx -> {
+                    firedHooks.add("pre:" + ctx.get("tag"));
+                    return true;
+                })
+                .registerPostTagHook(ctx -> {
+                    firedHooks.add("post:" + ctx.get("tag"));
+                    return true;
+                })
+                .call();
+
+        assertEquals(List.of("pre:v2.0", "post:v2.0"), firedHooks);
+        assertEquals("v2.0", new TagCommand(repo).call().keySet().iterator().next());
+    }
+
+    @Test
+    public void listTagsSkipsBlankAndCommentLines(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, ".hgtags").toPath(),
+                "\n# a comment\n" + "a".repeat(40) + " v1.0\n\n");
+
+        Map<String, String> tags = new TagCommand(repo).call();
+        assertEquals(1, tags.size());
+        assertEquals("a".repeat(40), tags.get("v1.0"));
     }
 
     private static String toHex(byte[] bytes) {

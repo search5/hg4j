@@ -6,6 +6,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Parser for unpackaging and applying Mercurial changegroup (Bundle) payload
@@ -35,14 +37,14 @@ public class ChangegroupParser {
         }
         int payloadLen = len - 4;
         if (payloadLen > 20 * 1024 * 1024) { // 20MB guard limit to prevent DoS OOM
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Security Guard: Changegroup chunk size exceeds maximum allowed limit (20MB): " + payloadLen);
+            throw new HgCorruptDataException("Security Guard: Changegroup chunk size exceeds maximum allowed limit (20MB): " + payloadLen);
         }
         byte[] payload = new byte[payloadLen];
         int offset = 0;
         while (offset < payloadLen) {
             int count = in.read(payload, offset, payloadLen - offset);
             if (count == -1) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unexpected EOF while reading changegroup chunk payload of size: " + payloadLen);
+                throw new HgCorruptDataException("Unexpected EOF while reading changegroup chunk payload of size: " + payloadLen);
             }
             offset += count;
         }
@@ -112,7 +114,7 @@ public class ChangegroupParser {
             }
 
             if (chunk.length < headerSize) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Malformed changegroup header chunk. Length too small: " + chunk.length + " for version: " + detectedVersion);
+                throw new HgCorruptDataException("Malformed changegroup header chunk. Length too small: " + chunk.length + " for version: " + detectedVersion);
             }
 
             ChangeGroupEntry entry = new ChangeGroupEntry();
@@ -233,7 +235,7 @@ public class ChangegroupParser {
                     break;
                 }
                 ManifestGroup mg = new ManifestGroup();
-                mg.path = new String(pathChunk, java.nio.charset.StandardCharsets.UTF_8);
+                mg.path = new String(pathChunk, StandardCharsets.UTF_8);
                 mg.entries = parseGroup(in, detectedVersion, versionHolder);
                 bundle.manifestGroups.add(mg);
             }
@@ -248,7 +250,7 @@ public class ChangegroupParser {
                 break;
             }
             FileGroup fg = new FileGroup();
-            fg.path = new String(pathChunk, java.nio.charset.StandardCharsets.UTF_8);
+            fg.path = new String(pathChunk, StandardCharsets.UTF_8);
             fg.entries = parseGroup(in, detectedVersion, versionHolder);
             bundle.fileGroups.add(fg);
         }

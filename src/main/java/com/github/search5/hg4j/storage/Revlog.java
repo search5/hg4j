@@ -14,6 +14,19 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import com.github.search5.hg4j.errors.HgCensoredContentException;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Core implementation for Mercurial Revlog (index .i and data .d files).
@@ -27,9 +40,9 @@ public class Revlog {
     private boolean useZstd = false;
 
     // In-memory LRU revision content cache (max 100 entries)
-    private final java.util.Map<Integer, byte[]> contentCache = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+    private final Map<Integer, byte[]> contentCache = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(java.util.Map.Entry<Integer, byte[]> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<Integer, byte[]> eldest) {
             return size() > 100;
         }
     };
@@ -97,21 +110,132 @@ public class Revlog {
         }
     }
 
+    /** {@code flags} bit marking a revision as censored (real hg's {@code REVIDX_ISCENSORED}). */
+    public static final int REVIDX_ISCENSORED = 0x8000;
+
+    public synchronized boolean isCensored(int rev) {
+        return (getIndexRecord(rev).getFlags() & REVIDX_ISCENSORED) != 0;
+    }
+
+    /**
+     * Rewrites this revlog so that {@code censorRev}'s stored payload becomes {@code
+     * tombstoneRawContent} and its {@code flags} gains {@link #REVIDX_ISCENSORED} — real hg's
+     * {@code hg censor} (mercurial/revlogutils/rewrite.py's {@code v1_censor}). Node identity,
+     * parents, and linkrev for every revision (including the censored one) are preserved exactly;
+     * only the payload of {@code censorRev} changes. History/DAG shape is untouched.
+     *
+     * <p>Unlike real hg's rewrite (which keeps each surviving revision's original delta-or-full
+     * storage choice), every revision here is rewritten as a full (non-delta) entry — simpler and
+     * always correct, at the cost of a larger file than real hg would produce for the same
+     * content. This only affects on-disk size, not readability: any reader (hg4j or real hg)
+     * reconstructs identical revision content either way.</p>
+     *
+     * <p>This instance's own cache is refreshed in place via {@link #clearCache()} once the
+     * on-disk files are swapped, so it remains usable after this call returns.</p>
+     */
+    public synchronized void censorRevision(int censorRev, byte[] tombstoneRawContent) throws IOException {
+        int count = index.getRevisionCount();
+        if (censorRev < 0 || censorRev >= count) {
+            throw new HgRevisionNotFoundException(
+                    "Revision " + censorRev + " not found. Total revisions: " + count);
+        }
+
+        // Capture every revision's raw (as-currently-stored) content and index metadata before
+        // touching any file -- getRawRevisionContent()/getIndexRecord() read from the files being
+        // rewritten, so this must all happen before the new files start replacing them.
+        byte[][] rawContents = new byte[count][];
+        IndexRecord[] records = new IndexRecord[count];
+        for (int r = 0; r < count; r++) {
+            records[r] = getIndexRecord(r);
+            rawContents[r] = (r == censorRev) ? tombstoneRawContent : getRawRevisionContent(r);
+        }
+
+        File tmpIdx = new File(idxFile.getParentFile(), idxFile.getName() + ".tmpcensored");
+        File tmpDat = inline ? null : new File(datFile.getParentFile(), datFile.getName() + ".tmpcensored");
+        Files.deleteIfExists(tmpIdx.toPath());
+        if (tmpDat != null) {
+            Files.deleteIfExists(tmpDat.toPath());
+        }
+
+        try {
+            long dataOffset = 0;
+            try (FileOutputStream idxOut = new FileOutputStream(tmpIdx);
+                 FileOutputStream datOut = inline ? null : new FileOutputStream(tmpDat)) {
+                for (int r = 0; r < count; r++) {
+                    IndexRecord rec = records[r];
+                    byte[] content = rawContents[r];
+                    int flags = (r == censorRev) ? REVIDX_ISCENSORED : rec.getFlags();
+                    byte[] dataHunk = DeltaCodec.compress(content, useZstd);
+
+                    long offsetFlags;
+                    if (r == 0) {
+                        long formatFlags = inline ? 0x0003L : 0x0002L; // (inline+)generaldelta
+                        long version = 1L;
+                        offsetFlags = (formatFlags << 48) | (version << 32) | (flags & 0xFFFFL);
+                    } else {
+                        offsetFlags = (dataOffset << 16) | (flags & 0xFFFFL);
+                    }
+
+                    ByteBuffer recordBuf = ByteBuffer.allocate(64);
+                    recordBuf.putLong(offsetFlags);
+                    recordBuf.putInt(dataHunk.length);
+                    recordBuf.putInt(content.length);
+                    recordBuf.putInt(r); // baseRev = r: always a full (non-delta) revision
+                    recordBuf.putInt(rec.getLinkRev());
+                    recordBuf.putInt(rec.getParent1());
+                    recordBuf.putInt(rec.getParent2());
+                    byte[] node32 = new byte[32];
+                    System.arraycopy(rec.getNodeId(), 0, node32, 0, Math.min(20, rec.getNodeId().length));
+                    recordBuf.put(node32);
+
+                    idxOut.write(recordBuf.array());
+                    if (inline) {
+                        idxOut.write(dataHunk);
+                    } else {
+                        datOut.write(dataHunk);
+                    }
+                    dataOffset += dataHunk.length;
+                }
+                idxOut.getFD().sync();
+                if (datOut != null) {
+                    datOut.getFD().sync();
+                }
+            }
+
+            // Same ordering real hg's v1_censor uses (index, then data) -- swapping both files
+            // together isn't atomic across the pair either way; matched here rather than
+            // "improved" so behavior under a mid-swap crash matches what real hg itself accepts.
+            Files.move(tmpIdx.toPath(), idxFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            if (tmpDat != null) {
+                Files.move(tmpDat.toPath(), datFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            }
+        } finally {
+            Files.deleteIfExists(tmpIdx.toPath());
+            if (tmpDat != null) {
+                Files.deleteIfExists(tmpDat.toPath());
+            }
+        }
+
+        clearCache();
+    }
+
     public synchronized byte[] getRawRevisionContent(int rev) throws IOException {
         if (rev == -1) {
             return new byte[0];
         }
 
         if (rev < -1 || rev >= getRevisionCount()) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Revision " + rev + " not found. Total revisions: " + getRevisionCount());
+            throw new HgRevisionNotFoundException("Revision " + rev + " not found. Total revisions: " + getRevisionCount());
         }
 
         List<Integer> chain = new ArrayList<>();
         int curr = rev;
-        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        Set<Integer> visited = new HashSet<>();
         while (true) {
             if (!visited.add(curr)) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Cycle detected in revlog delta chain at revision: " + curr);
+                throw new HgCorruptDataException("Cycle detected in revlog delta chain at revision: " + curr);
             }
             chain.add(curr);
             IndexRecord currRec = getIndexRecord(curr);
@@ -126,10 +250,10 @@ public class Revlog {
 
         File targetFile = inline ? idxFile : datFile;
         if (!targetFile.exists()) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Revlog data file does not exist: " + targetFile);
+            throw new HgCorruptDataException("Revlog data file does not exist: " + targetFile);
         }
 
-        try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(targetFile.toPath(), java.nio.file.StandardOpenOption.READ)) {
+        try (FileChannel channel = FileChannel.open(targetFile.toPath(), StandardOpenOption.READ)) {
             byte[] hunk = readHunk(channel, startRec);
             byte[] content = decompressHunk(hunk, startRec);
 
@@ -151,7 +275,15 @@ public class Revlog {
         }
 
         if (rev < -1 || rev >= getRevisionCount()) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Revision " + rev + " not found. Total revisions: " + getRevisionCount());
+            throw new HgRevisionNotFoundException("Revision " + rev + " not found. Total revisions: " + getRevisionCount());
+        }
+
+        if (isCensored(rev)) {
+            // Real hg raises error.CensoredNodeError by default (censor.policy != "ignore")
+            // rather than silently handing back the tombstone text; getRawRevisionContent()
+            // remains available for callers that explicitly want the raw tombstone bytes.
+            byte[] rawTombstone = getRawRevisionContent(rev);
+            throw new HgCensoredContentException(idxFile.getName(), rev, rawTombstone);
         }
 
         if (contentCache.containsKey(rev)) {
@@ -186,9 +318,9 @@ public class Revlog {
         return processed;
     }
 
-    public synchronized java.util.Map<String, String> getRevisionMetadata(int rev) throws IOException {
+    public synchronized Map<String, String> getRevisionMetadata(int rev) throws IOException {
         byte[] raw = getRawRevisionContent(rev);
-        java.util.Map<String, String> meta = new java.util.HashMap<>();
+        Map<String, String> meta = new HashMap<>();
         if (raw.length >= 2 && raw[0] == '\u0001' && raw[1] == '\n') {
             int secondMetaMarker = -1;
             for (int i = 2; i < raw.length - 1; i++) {
@@ -212,7 +344,7 @@ public class Revlog {
         return meta;
     }
 
-    private byte[] readHunk(java.nio.channels.FileChannel channel, IndexRecord rec) throws IOException {
+    private byte[] readHunk(FileChannel channel, IndexRecord rec) throws IOException {
         long seekOffset = rec.getOffset();
         if (inline) {
             seekOffset = index.getFileOffset(rec.getRevision()) + 64;
@@ -224,7 +356,7 @@ public class Revlog {
 
         // Hardening for OOM (L-3): Use memory-mapping for large hunks to save JVM heap space
         if (compLen > 5 * 1024 * 1024) { 
-            java.nio.MappedByteBuffer mapBuf = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, seekOffset, compLen);
+            MappedByteBuffer mapBuf = channel.map(FileChannel.MapMode.READ_ONLY, seekOffset, compLen);
             byte[] data = new byte[compLen];
             mapBuf.get(data);
             return data;
@@ -240,7 +372,7 @@ public class Revlog {
             position += read;
         }
         if (buf.hasRemaining()) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Failed to read complete hunk of size " + compLen + " at offset " + seekOffset);
+            throw new HgCorruptDataException("Failed to read complete hunk of size " + compLen + " at offset " + seekOffset);
         }
         return buf.array();
     }
@@ -343,7 +475,7 @@ public class Revlog {
         return hash;
     }
 
-    public synchronized byte[] appendRevision(byte[] content, java.util.Map<String, String> metadata, int parent1, int parent2,
+    public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         int rev = index.getRevisionCount();
 
@@ -352,7 +484,7 @@ public class Revlog {
         if (metadata != null && !metadata.isEmpty()) {
             StringBuilder msb = new StringBuilder();
             msb.append('\u0001').append('\n');
-            for (java.util.Map.Entry<String, String> entry : metadata.entrySet()) {
+            for (Map.Entry<String, String> entry : metadata.entrySet()) {
                 msb.append(entry.getKey()).append(": ").append(entry.getValue()).append('\n');
             }
             msb.append('\u0001').append('\n');
@@ -518,7 +650,7 @@ public class Revlog {
                 if (NodeIdUtil.isAllZero(entry.deltabase)) {
                     content = applyDelta(new byte[0], entry.delta);
                 } else {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Delta base revision not found in local index: " + NodeIdUtil.toHex(entry.deltabase) + " for commit: " + NodeIdUtil.toHex(entry.node));
+                    throw new HgCorruptDataException("Delta base revision not found in local index: " + NodeIdUtil.toHex(entry.deltabase) + " for commit: " + NodeIdUtil.toHex(entry.node));
                 }
             } else {
                 byte[] baseContent = getRawRevisionContent(baseRev);
@@ -544,33 +676,39 @@ public class Revlog {
         byte[] p1Node = entry.p1 != null ? entry.p1 : new byte[20];
         byte[] p2Node = entry.p2 != null ? entry.p2 : new byte[20];
 
-        // E3: Verify node hash integrity from remote
-        byte[] expectedHash;
-        try {
-            byte[] first = p1Node;
-            byte[] second = p2Node;
-            if (compareBytes(first, second) > 0) {
-                first = p2Node;
-                second = p1Node;
+        // E3: Verify node hash integrity from remote -- skipped for censored content. A censored
+        // revision's node identity is intentionally preserved from BEFORE censoring while its
+        // content is replaced with a tombstone, so hash(parents, tombstone) can never equal the
+        // transmitted node by design; treating that mismatch as corruption would make it
+        // impossible to ever pull/clone a repository containing a censored revision.
+        if (!isCensoredText(content)) {
+            byte[] expectedHash;
+            try {
+                byte[] first = p1Node;
+                byte[] second = p2Node;
+                if (compareBytes(first, second) > 0) {
+                    first = p2Node;
+                    second = p1Node;
+                }
+                MessageDigest md = MessageDigest.getInstance("SHA-1");
+                md.update(first);
+                md.update(second);
+                md.update(content);
+                expectedHash = md.digest();
+            } catch (NoSuchAlgorithmException e) {
+                throw new RuntimeException("SHA-1 digest not available", e);
             }
-            MessageDigest md = MessageDigest.getInstance("SHA-1");
-            md.update(first);
-            md.update(second);
-            md.update(content);
-            expectedHash = md.digest();
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-1 digest not available", e);
-        }
 
-        byte[] expectedNodeId = new byte[20];
-        System.arraycopy(expectedHash, 0, expectedNodeId, 0, 20);
+            byte[] expectedNodeId = new byte[20];
+            System.arraycopy(expectedHash, 0, expectedNodeId, 0, 20);
 
-        byte[] remoteNodeId = new byte[20];
-        System.arraycopy(entry.node, 0, remoteNodeId, 0, 20);
+            byte[] remoteNodeId = new byte[20];
+            System.arraycopy(entry.node, 0, remoteNodeId, 0, 20);
 
-        if (!Arrays.equals(expectedNodeId, remoteNodeId)) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Security Integrity Error: Changegroup entry hash mismatch! Expected: " 
-                + NodeIdUtil.toHex(expectedNodeId) + " but received: " + NodeIdUtil.toHex(remoteNodeId));
+            if (!Arrays.equals(expectedNodeId, remoteNodeId)) {
+                throw new HgCorruptDataException("Security Integrity Error: Changegroup entry hash mismatch! Expected: "
+                    + NodeIdUtil.toHex(expectedNodeId) + " but received: " + NodeIdUtil.toHex(remoteNodeId));
+            }
         }
 
         byte[] rawToWrite;
@@ -589,7 +727,13 @@ public class Revlog {
 
         boolean isMetadataLog = idxFile.getName().contains("00manifest") || idxFile.getName().contains("00changelog");
 
-        if (!isMetadataLog && rev > 0 && parent1 != -1 && chainLen < 100) {
+        // A censored revision must always be stored as a full (non-delta) entry: real hg forbids
+        // deltas against (or of) a censored revision (revlog.py's iscensored()+delta rejection),
+        // since a delta can't sensibly reconstruct a tombstone that replaced arbitrary-length
+        // original content.
+        int flags = isCensoredText(content) ? REVIDX_ISCENSORED : 0;
+
+        if (!isMetadataLog && flags == 0 && rev > 0 && parent1 != -1 && chainLen < 100 && !isCensored(parent1)) {
             byte[] baseContent = getRawRevisionContent(parent1);
             byte[] delta = createDelta(baseContent, content);
             if (delta.length < content.length) {
@@ -620,9 +764,9 @@ public class Revlog {
         if (rev == 0) {
             long formatFlags = 0x0002L;
             long version = 1L;
-            offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            offsetFlags = (formatFlags << 48) | (version << 32) | (flags & 0xFFFFL);
         } else {
-            offsetFlags = (offset << 16) | (0 & 0xFFFF);
+            offsetFlags = (offset << 16) | (flags & 0xFFFFL);
         }
 
         ByteBuffer recordBuf = ByteBuffer.allocate(64);
@@ -643,10 +787,43 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, content.length,
+        index.addRecord(new IndexRecord(rev, offset, flags, dataHunk.length, content.length,
                 baseRev, linkRev, parent1, parent2, entry.node));
 
         clearCache();
+    }
+
+    /**
+     * Detects real hg's censor tombstone marker in as-stored revision text: a {@code \x01\n}
+     * metadata header whose key/value lines include a {@code censored} key (mirrors
+     * {@code mercurial/utils/storageutil.py}'s {@code iscensoredtext}/{@code parsemeta}). Used as
+     * a fallback to recover the {@link #REVIDX_ISCENSORED} flag for changegroup formats that
+     * don't carry an explicit per-entry flags field (cg1/cg2 — only cg3 does), exactly the way
+     * real hg's own {@code revlog.py} peeks at incoming delta/fulltext content
+     * ({@code _peek_iscensored}) to reconstruct the flag when it isn't explicitly transmitted.
+     */
+    static boolean isCensoredText(byte[] content) {
+        if (content == null || content.length < 2 || content[0] != '' || content[1] != '\n') {
+            return false;
+        }
+        int metaEnd = -1;
+        for (int i = 2; i < content.length - 1; i++) {
+            if (content[i] == '' && content[i + 1] == '\n') {
+                metaEnd = i;
+                break;
+            }
+        }
+        if (metaEnd <= 2) {
+            return false;
+        }
+        String metaText = new String(content, 2, metaEnd - 2, StandardCharsets.UTF_8);
+        for (String line : metaText.split("\n")) {
+            int colon = line.indexOf(':');
+            if (colon != -1 && line.substring(0, colon).equals("censored")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public synchronized int findRevision(byte[] nodeId) {

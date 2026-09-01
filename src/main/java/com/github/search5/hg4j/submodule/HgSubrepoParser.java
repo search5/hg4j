@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * High-performance parser for Mercurial subrepository configuration files (.hgsub and .hgsubstate).
@@ -35,7 +36,7 @@ public final class HgSubrepoParser {
                 }
                 int eqIdx = trimmed.indexOf('=');
                 if (eqIdx == -1) {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Malformed .hgsub entry: missing '=' symbol");
+                    throw new HgCorruptDataException("Malformed .hgsub entry: missing '=' symbol");
                 }
                 String path = trimmed.substring(0, eqIdx).trim();
                 String rawUrl = trimmed.substring(eqIdx + 1).trim();
@@ -62,7 +63,7 @@ public final class HgSubrepoParser {
                 }
                 int spaceIdx = trimmed.indexOf(' ');
                 if (spaceIdx == -1) {
-                    throw new com.github.search5.hg4j.errors.HgCorruptDataException("Malformed .hgsubstate entry: missing space between hash and path");
+                    throw new HgCorruptDataException("Malformed .hgsubstate entry: missing space between hash and path");
                 }
                 String revision = trimmed.substring(0, spaceIdx).trim();
                 String path = trimmed.substring(spaceIdx + 1).trim();

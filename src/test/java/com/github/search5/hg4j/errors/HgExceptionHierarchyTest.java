@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.io.IOException;
 
 /**
  * Phase 14: 전체 도메인 예외 계층 TDD 테스트.
@@ -61,7 +62,7 @@ public class HgExceptionHierarchyTest {
         @DisplayName("IOException 서브클래스임을 확인")
         void testIsIOException() {
             HgRepositoryNotFoundException ex = new HgRepositoryNotFoundException("/no/such/path");
-            assertInstanceOf(java.io.IOException.class, ex);
+            assertInstanceOf(IOException.class, ex);
         }
 
         @Test
@@ -74,7 +75,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithCause() {
-            Throwable cause = new java.io.IOException("disk error");
+            Throwable cause = new IOException("disk error");
             HgRepositoryNotFoundException ex =
                     new HgRepositoryNotFoundException("/repo/path", cause);
             assertNotNull(ex.getCause());
@@ -91,7 +92,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("catch IOException으로 잡힘")
         void testCatchAsIOException() {
-            assertThrows(java.io.IOException.class, () -> {
+            assertThrows(IOException.class, () -> {
                 throw new HgRepositoryNotFoundException("/missing");
             });
         }
@@ -108,7 +109,7 @@ public class HgExceptionHierarchyTest {
         @DisplayName("IOException 서브클래스임을 확인")
         void testIsIOException() {
             HgCorruptDataException ex = new HgCorruptDataException("checksum mismatch");
-            assertInstanceOf(java.io.IOException.class, ex);
+            assertInstanceOf(IOException.class, ex);
         }
 
         @Test
@@ -121,7 +122,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithCause() {
-            Throwable cause = new java.io.IOException("read error");
+            Throwable cause = new IOException("read error");
             HgCorruptDataException ex = new HgCorruptDataException("corrupt data", cause);
             assertEquals(cause, ex.getCause());
         }
@@ -129,7 +130,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("catch IOException으로 잡힘")
         void testCatchAsIOException() {
-            assertThrows(java.io.IOException.class, () -> {
+            assertThrows(IOException.class, () -> {
                 throw new HgCorruptDataException("delta apply failed");
             });
         }
@@ -147,7 +148,7 @@ public class HgExceptionHierarchyTest {
         void testIsIOException() {
             HgRevisionNotFoundException ex =
                     new HgRevisionNotFoundException("abcdef1234567890abcdef1234567890abcdef12");
-            assertInstanceOf(java.io.IOException.class, ex);
+            assertInstanceOf(IOException.class, ex);
         }
 
         @Test
@@ -168,7 +169,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithMessageAndCause() {
-            Throwable cause = new java.io.IOException("io error");
+            Throwable cause = new IOException("io error");
             HgRevisionNotFoundException ex =
                     new HgRevisionNotFoundException("Revision not found: abc", cause);
             assertTrue(ex.getMessage().contains("abc"));
@@ -178,7 +179,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("catch IOException으로 잡힘")
         void testCatchAsIOException() {
-            assertThrows(java.io.IOException.class, () -> {
+            assertThrows(IOException.class, () -> {
                 throw new HgRevisionNotFoundException("deadbeef");
             });
         }
@@ -218,7 +219,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithCause() {
-            Throwable cause = new java.io.IOException("underlying error");
+            Throwable cause = new IOException("underlying error");
             HgMergeConflictException ex =
                     new HgMergeConflictException("src/Conflict.java", "both modified", cause);
             assertEquals("src/Conflict.java", ex.getConflictPath());
@@ -266,7 +267,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithCause() {
-            Throwable cause = new java.io.IOException("permission denied");
+            Throwable cause = new IOException("permission denied");
             HgLockException ex = new HgLockException("store.lock", "failed", cause);
             assertEquals(cause, ex.getCause());
         }
@@ -292,7 +293,7 @@ public class HgExceptionHierarchyTest {
         void testIsIOException() {
             HgTransportException ex =
                     new HgTransportException("ssh://host/repo", "connection refused");
-            assertInstanceOf(java.io.IOException.class, ex);
+            assertInstanceOf(IOException.class, ex);
         }
 
         @Test
@@ -314,7 +315,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithCause() {
-            Throwable cause = new java.io.IOException("network error");
+            Throwable cause = new IOException("network error");
             HgTransportException ex =
                     new HgTransportException("http://example.com/hg", "failed", cause);
             assertEquals(cause, ex.getCause());
@@ -323,7 +324,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("catch IOException으로 잡힘")
         void testCatchAsIOException() {
-            assertThrows(java.io.IOException.class, () -> {
+            assertThrows(IOException.class, () -> {
                 throw new HgTransportException("ssh://host", "refused");
             });
         }
@@ -346,7 +347,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("IOException으로도 잡힘 (계층 전파)")
         void testCatchAsIOException() {
-            assertThrows(java.io.IOException.class, () -> {
+            assertThrows(IOException.class, () -> {
                 throw new HgAuthException("http://server/hg", "user");
             });
         }
@@ -368,7 +369,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithCause() {
-            Throwable cause = new java.io.IOException("auth failed");
+            Throwable cause = new IOException("auth failed");
             HgAuthException ex = new HgAuthException("ssh://host", "bob", cause);
             assertEquals(cause, ex.getCause());
         }
@@ -392,7 +393,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("IOException으로도 잡힘 (계층 전파)")
         void testCatchAsIOException() {
-            assertThrows(java.io.IOException.class, () -> {
+            assertThrows(IOException.class, () -> {
                 throw new HgProtocolException("ssh://host", "bad protocol");
             });
         }
@@ -408,7 +409,7 @@ public class HgExceptionHierarchyTest {
         @Test
         @DisplayName("메시지 + 원인 예외 생성자")
         void testWithCause() {
-            Throwable cause = new java.io.IOException("read error");
+            Throwable cause = new IOException("read error");
             HgProtocolException ex =
                     new HgProtocolException("http://server/hg", "corrupt frame", cause);
             assertEquals(cause, ex.getCause());

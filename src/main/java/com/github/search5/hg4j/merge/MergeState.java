@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 /**
  * Reads and writes {@code .hg/merge/state2} — the on-disk record of an in-progress (possibly
@@ -80,14 +82,32 @@ public final class MergeState {
     }
 
     public void markResolved(String path) {
+        setResolutionState(path, true);
+    }
+
+    public void markUnresolved(String path) {
+        setResolutionState(path, false);
+    }
+
+    private void setResolutionState(String path, boolean resolved) {
         List<String> fields = state.get(path);
         if (fields == null || fields.isEmpty()) {
             return;
         }
         List<String> updated = new ArrayList<>(fields);
         boolean isPathConflict = UNRESOLVED_PATH.equals(fields.get(0)) || RESOLVED_PATH.equals(fields.get(0));
-        updated.set(0, isPathConflict ? RESOLVED_PATH : RESOLVED);
+        updated.set(0, isPathConflict ? (resolved ? RESOLVED_PATH : UNRESOLVED_PATH) : (resolved ? RESOLVED : UNRESOLVED));
         state.put(path, updated);
+    }
+
+    /** Whether {@code path} is tracked as part of this merge at all (resolved or not). */
+    public boolean hasFile(String path) {
+        return state.containsKey(path);
+    }
+
+    /** Whether this represents an actual in-progress merge (a {@code state2} file existed). */
+    public boolean isActive() {
+        return local != null && other != null;
     }
 
     public boolean isEmpty() {
@@ -115,8 +135,8 @@ public final class MergeState {
 
     private static byte[] sha1(byte[] data) {
         try {
-            return java.security.MessageDigest.getInstance("SHA-1").digest(data);
-        } catch (java.security.NoSuchAlgorithmException e) {
+            return MessageDigest.getInstance("SHA-1").digest(data);
+        } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
     }

@@ -8,6 +8,12 @@ import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.storage.Revlog;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 
 /**
  * Porcelain command to untrack and remove files from the working directory and staging area.
@@ -33,7 +39,7 @@ public class RemoveCommand {
     }
 
     private void appendToJournal(File journal, String entry) throws IOException {
-        java.nio.file.Files.write(journal.toPath(), (entry + "\n").getBytes(), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        Files.write(journal.toPath(), (entry + "\n").getBytes(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
     }
 
     public boolean call() throws IOException, HgLockException {
@@ -52,7 +58,7 @@ public class RemoveCommand {
             Files.deleteIfExists(journalFile.toPath());
             if (dirstateFile.exists()) {
                 File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 appendToJournal(journalFile, "dirstate");
             }
 
@@ -61,13 +67,13 @@ public class RemoveCommand {
                 Dirstate.Entry entry = dirstate.getEntries().get(file);
 
                 if (entry == null) {
-                    throw new com.github.search5.hg4j.errors.HgValidationException("File is not tracked: " + file);
+                    throw new HgValidationException("File is not tracked: " + file);
                 }
 
                 if (!force) {
                     char state = entry.getState();
                     if (state == 'a') {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("File has uncommitted changes (added): " + file + ". Use force to remove.");
+                        throw new HgValidationException("File has uncommitted changes (added): " + file + ". Use force to remove.");
                     } else if (state == 'n' || state == 'm') {
                         File diskFile = new File(repository.getDirectory(), file);
                         if (diskFile.exists() && diskFile.isFile()) {
@@ -80,11 +86,11 @@ public class RemoveCommand {
                                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                                 if (flIdx.exists()) {
                                     try {
-                                        com.github.search5.hg4j.storage.Revlog filelog = repository.getRevlog(flIdx, flDat);
+                                        Revlog filelog = repository.getRevlog(flIdx, flDat);
                                         if (filelog.getRevisionCount() > 0) {
                                             byte[] fileContent = Files.readAllBytes(diskFile.toPath());
                                             byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                            if (!java.util.Arrays.equals(fileContent, lastContent)) {
+                                            if (!Arrays.equals(fileContent, lastContent)) {
                                                 isDirty = true;
                                             }
                                         }
@@ -92,7 +98,7 @@ public class RemoveCommand {
                                 }
                             }
                             if (isDirty) {
-                                throw new com.github.search5.hg4j.errors.HgValidationException("File has uncommitted changes (modified): " + file + ". Use force to remove.");
+                                throw new HgValidationException("File has uncommitted changes (modified): " + file + ". Use force to remove.");
                             }
                         }
                     }
@@ -123,7 +129,7 @@ public class RemoveCommand {
                 // Restore dirstate on failure
                 if (dirstateBackup != null) {
                     try {
-                        com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                        SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
                     } catch (Exception ignored) {}
                 }
                 try {

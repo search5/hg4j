@@ -26,6 +26,25 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.HgTestUtils;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.revset.HgRevsetEngine;
+import com.github.search5.hg4j.transport.CredentialItem;
+import com.github.search5.hg4j.transport.CredentialsProvider;
+import com.github.search5.hg4j.transport.HgRemoteClient;
+import com.github.search5.hg4j.transport.HgSshClient;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.util.zip.InflaterInputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
+import org.apache.sshd.server.Environment;
+import org.apache.sshd.server.ExitCallback;
+import org.apache.sshd.server.channel.ChannelSession;
 
 /**
  * TDD Verification: Test suite for concurrent read safety, triggering of 4 new hook types, lazy walk, and RevFilter integration
@@ -124,12 +143,12 @@ public class HgConcurrentAndHookTest {
         });
 
         // 3. Verify POST_UPDATE hook
-        hg.update().setRevision(com.github.search5.hg4j.util.NodeIdUtil.toHex(firstCommit)).setForce(true).call();
+        hg.update().setRevision(NodeIdUtil.toHex(firstCommit)).setForce(true).call();
         assertEquals(1, postUpdateTriggerCount.get());
 
         // 4. Verify remaining hooks for registration methods and behavior during exceptions/completion
         // Call GraftCommand hook directly in isolation
-        GraftCommand graftCmd = hg.graft().setSource(com.github.search5.hg4j.util.NodeIdUtil.toHex(firstCommit));
+        GraftCommand graftCmd = hg.graft().setSource(NodeIdUtil.toHex(firstCommit));
         try {
             graftCmd.call();
         } catch (Exception ignored) {
@@ -167,7 +186,7 @@ public class HgConcurrentAndHookTest {
 
         // 1. Verify ManifestWalk Lazy Streaming
         ManifestWalk manifestWalk = hg.walkManifest("tip");
-        java.util.Iterator<ManifestWalk.Entry> manifestIt = manifestWalk.lazyEntries();
+        Iterator<ManifestWalk.Entry> manifestIt = manifestWalk.lazyEntries();
         int countManifest = 0;
         while (manifestIt.hasNext()) {
             countManifest++;
@@ -178,7 +197,7 @@ public class HgConcurrentAndHookTest {
 
         // 2. Verify WorkingDirWalk Lazy Streaming
         WorkingDirWalk workingDirWalk = hg.walkWorkingDir();
-        java.util.Iterator<WorkingDirWalk.Entry> workingIt = workingDirWalk.lazyEntries();
+        Iterator<WorkingDirWalk.Entry> workingIt = workingDirWalk.lazyEntries();
         int countWorking = 0;
         while (workingIt.hasNext()) {
             countWorking++;
@@ -250,7 +269,7 @@ public class HgConcurrentAndHookTest {
         File fncacheFile = new File(repo.getStoreDir(), "fncache");
         assertTrue(fncacheFile.exists());
 
-        List<String> cachedLines = Files.readAllLines(fncacheFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+        List<String> cachedLines = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
         assertFalse(cachedLines.isEmpty());
 
         // Standard hg store path for data (Verify rigorous hex-escaped encoding spec)
@@ -282,7 +301,7 @@ public class HgConcurrentAndHookTest {
         hg.add().addFile("a.txt").call();
         byte[] c0 = hg.commit().setAuthor("tester or helper").setMessage("First commit with keyword or test").call();
 
-        com.github.search5.hg4j.revset.HgRevsetEngine engine = new com.github.search5.hg4j.revset.HgRevsetEngine(repo);
+        HgRevsetEngine engine = new HgRevsetEngine(repo);
         
         // 1. Author parameter containing "or" keyword - should not be parsed as logical OR
         List<Integer> res1 = engine.query("author(\"tester or helper\")");
@@ -316,10 +335,10 @@ public class HgConcurrentAndHookTest {
         Files.writeString(dummyFile.toPath(), "Hello HTTP Real Bundle");
         srcHg.add().addFile("test.txt").call();
         byte[] commitNode = srcHg.commit().setAuthor("tester").setMessage("Initial HTTP").call();
-        String commitNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
+        String commitNodeHex = NodeIdUtil.toHex(commitNode);
         
-        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
-        byte[] realCgBytes = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] realCgBytes = HgTestUtils.serializeBundleToBytes(bundle);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         int port = server.getAddress().getPort();
@@ -338,7 +357,7 @@ public class HgConcurrentAndHookTest {
             }
             
             exchange.sendResponseHeaders(200, responseBytes.length);
-            try (java.io.OutputStream os = exchange.getResponseBody()) {
+            try (OutputStream os = exchange.getResponseBody()) {
                 os.write(responseBytes);
             }
         });
@@ -346,7 +365,7 @@ public class HgConcurrentAndHookTest {
 
         try {
             String httpUrl = "http://localhost:" + port + "/";
-            com.github.search5.hg4j.transport.HgRemoteClient client = new com.github.search5.hg4j.transport.HgRemoteClient(httpUrl);
+            HgRemoteClient client = new HgRemoteClient(httpUrl);
             
             List<String> caps = client.getCapabilities();
             assertTrue(caps.contains("heads") || caps.isEmpty() || !caps.isEmpty());
@@ -386,10 +405,10 @@ public class HgConcurrentAndHookTest {
         Files.writeString(dummyFile.toPath(), "Hello SSH Real Bundle");
         srcHg.add().addFile("test.txt").call();
         byte[] commitNode = srcHg.commit().setAuthor("tester").setMessage("Initial SSH").call();
-        String commitNodeHex = com.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
+        String commitNodeHex = NodeIdUtil.toHex(commitNode);
         
-        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
-        byte[] realCgBytes = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] realCgBytes = HgTestUtils.serializeBundleToBytes(bundle);
 
         SshServer sshd = SshServer.setUpDefaultServer();
         sshd.setPort(0);
@@ -397,27 +416,27 @@ public class HgConcurrentAndHookTest {
         sshd.setPasswordAuthenticator((username, password, session) -> true);
         
         sshd.setCommandFactory((channel, command) -> new Command() {
-            private java.io.InputStream in;
-            private java.io.OutputStream out;
-            private org.apache.sshd.server.ExitCallback callback;
+            private InputStream in;
+            private OutputStream out;
+            private ExitCallback callback;
 
             @Override
-            public void setInputStream(java.io.InputStream in) { this.in = in; }
+            public void setInputStream(InputStream in) { this.in = in; }
             @Override
-            public void setOutputStream(java.io.OutputStream out) { this.out = out; }
+            public void setOutputStream(OutputStream out) { this.out = out; }
             @Override
-            public void setErrorStream(java.io.OutputStream err) {}
+            public void setErrorStream(OutputStream err) {}
             @Override
-            public void setExitCallback(org.apache.sshd.server.ExitCallback callback) { this.callback = callback; }
+            public void setExitCallback(ExitCallback callback) { this.callback = callback; }
 
             @Override
-            public void start(org.apache.sshd.server.channel.ChannelSession channelSession, org.apache.sshd.server.Environment env) throws IOException {
+            public void start(ChannelSession channelSession, Environment env) throws IOException {
                 new Thread(() -> {
                     try {
                         out.write("capabilities: heads getbundle between known changegroup\n".getBytes(StandardCharsets.UTF_8));
                         out.flush();
                         
-                        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(in, StandardCharsets.UTF_8));
+                        BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
                         String line;
                         while ((line = r.readLine()) != null) {
                             String cmd = line.trim();
@@ -432,12 +451,12 @@ public class HgConcurrentAndHookTest {
                                         break;
                                     }
                                 }
-                                java.nio.ByteBuffer lenBuf = java.nio.ByteBuffer.allocate(4);
+                                ByteBuffer lenBuf = ByteBuffer.allocate(4);
                                 lenBuf.putInt(realCgBytes.length);
                                 out.write(lenBuf.array());
                                 out.write(realCgBytes);
                                 
-                                java.nio.ByteBuffer endBuf = java.nio.ByteBuffer.allocate(4);
+                                ByteBuffer endBuf = ByteBuffer.allocate(4);
                                 endBuf.putInt(0);
                                 out.write(endBuf.array());
                                 out.flush();
@@ -475,7 +494,7 @@ public class HgConcurrentAndHookTest {
             }
 
             @Override
-            public void destroy(org.apache.sshd.server.channel.ChannelSession channelSession) {}
+            public void destroy(ChannelSession channelSession) {}
         });
         
         sshd.start();
@@ -483,7 +502,7 @@ public class HgConcurrentAndHookTest {
 
         try {
             String sshUrl = "ssh://testuser@localhost:" + port + "/mockrepo";
-            com.github.search5.hg4j.transport.HgSshClient client = new com.github.search5.hg4j.transport.HgSshClient(sshUrl);
+            HgSshClient client = new HgSshClient(sshUrl);
             client.setPassword("any_password");
             
             List<String> caps = client.getCapabilities();
@@ -498,14 +517,14 @@ public class HgConcurrentAndHookTest {
             
             FetchCommand fetch = new FetchCommand(destRepo);
             fetch.setSource(sshUrl);
-            fetch.setCredentialsProvider(new com.github.search5.hg4j.transport.CredentialsProvider() {
+            fetch.setCredentialsProvider(new CredentialsProvider() {
                 @Override
-                public boolean get(String uri, com.github.search5.hg4j.transport.CredentialItem... items) {
-                    for (com.github.search5.hg4j.transport.CredentialItem item : items) {
-                        if (item instanceof com.github.search5.hg4j.transport.CredentialItem.Password) {
-                            ((com.github.search5.hg4j.transport.CredentialItem.Password) item).setValue("any_password".toCharArray());
-                        } else if (item instanceof com.github.search5.hg4j.transport.CredentialItem.Username) {
-                            ((com.github.search5.hg4j.transport.CredentialItem.Username) item).setValue("testuser");
+                public boolean get(String uri, CredentialItem... items) {
+                    for (CredentialItem item : items) {
+                        if (item instanceof CredentialItem.Password) {
+                            ((CredentialItem.Password) item).setValue("any_password".toCharArray());
+                        } else if (item instanceof CredentialItem.Username) {
+                            ((CredentialItem.Username) item).setValue("testuser");
                         }
                     }
                     return true;
@@ -538,7 +557,7 @@ public class HgConcurrentAndHookTest {
         
         // 파일 작성
         File testFile = new File(nativeRepoDir, "interop.txt");
-        java.nio.file.Files.writeString(testFile.toPath(), "Interoperability Test Content");
+        Files.writeString(testFile.toPath(), "Interoperability Test Content");
         
         // hg add 실행
         Process addProc = new ProcessBuilder("hg", "add", "interop.txt")
@@ -568,23 +587,23 @@ public class HgConcurrentAndHookTest {
         HgRepository destRepo = Hg.init().setDirectory(destDir).call();
         
         // 번들 파일을 읽어들임
-        byte[] bundleBytes = java.nio.file.Files.readAllBytes(bundleFile.toPath());
+        byte[] bundleBytes = Files.readAllBytes(bundleFile.toPath());
         
         // Import the native hg bundle into the local repository
         byte[] changegroupBytes = bundleBytes;
         String cgVersion = "01";
         
         if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
-            com.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 ext = com.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(new java.io.ByteArrayInputStream(bundleBytes));
+            Bundle2Parser.ExtractedBundle2 ext = Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
             changegroupBytes = ext.changegroupBytes;
             cgVersion = ext.cgVersion;
         } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
-            String comp = new String(bundleBytes, 4, 2, java.nio.charset.StandardCharsets.US_ASCII);
-            java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
+            String comp = new String(bundleBytes, 4, 2, StandardCharsets.US_ASCII);
+            ByteArrayInputStream bais = new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
             if ("UN".equals(comp)) {
                 changegroupBytes = bais.readAllBytes();
             } else if ("GZ".equals(comp)) {
-                try (java.util.zip.InflaterInputStream iis = new java.util.zip.InflaterInputStream(bais)) {
+                try (InflaterInputStream iis = new InflaterInputStream(bais)) {
                     changegroupBytes = iis.readAllBytes();
                 }
             } else if ("BZ".equals(comp)) {
@@ -593,15 +612,15 @@ public class HgConcurrentAndHookTest {
                 bzData[0] = 'B';
                 bzData[1] = 'Z';
                 System.arraycopy(rawData, 0, bzData, 2, rawData.length);
-                try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream bzis = 
-                             new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(new java.io.ByteArrayInputStream(bzData))) {
+                try (BZip2CompressorInputStream bzis = 
+                             new BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
                     changegroupBytes = bzis.readAllBytes();
                 }
             }
             cgVersion = "01";
         }
         
-        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(new java.io.ByteArrayInputStream(changegroupBytes), cgVersion);
+        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
         FetchCommand fetch = new FetchCommand(destRepo);
         List<byte[]> results = fetch.applyBundle(bundle);
         assertFalse(results.isEmpty());
@@ -625,7 +644,7 @@ public class HgConcurrentAndHookTest {
         Hg hg = Hg.wrap(repo);
 
         File f = new File(repoDir, "a.txt");
-        java.nio.file.Files.writeString(f.toPath(), "Some Content");
+        Files.writeString(f.toPath(), "Some Content");
         hg.add().addFile("a.txt").call();
         byte[] commitNode = hg.commit().setAuthor("tester").setMessage("First").call();
 
@@ -636,7 +655,7 @@ public class HgConcurrentAndHookTest {
             return false; // 거부
         });
 
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, () -> {
+        assertThrows(HgValidationException.class, () -> {
             hg.update().setRevision("0").call();
         });
 
@@ -647,7 +666,7 @@ public class HgConcurrentAndHookTest {
             return false; // 거부
         });
 
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, () -> {
+        assertThrows(HgValidationException.class, () -> {
             hg.merge().setNodeId(commitNode).call();
         });
 
@@ -659,7 +678,7 @@ public class HgConcurrentAndHookTest {
             return false; // 거부
         });
 
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, () -> {
+        assertThrows(HgValidationException.class, () -> {
             hg.rebase().setSource(commitNode).setTarget(commitNode).call();
         });
 

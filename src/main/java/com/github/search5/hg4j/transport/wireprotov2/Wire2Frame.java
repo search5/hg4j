@@ -5,6 +5,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.List;
 
 /**
  * The unified frame used by real Mercurial's wire protocol version 2, matching
@@ -132,7 +133,7 @@ public final class Wire2Frame {
         out.write(encode());
     }
 
-    public static byte[] concatenatePayloads(java.util.List<Wire2Frame> frames) throws IOException {
+    public static byte[] concatenatePayloads(List<Wire2Frame> frames) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (Wire2Frame f : frames) {
             out.write(f.payload);

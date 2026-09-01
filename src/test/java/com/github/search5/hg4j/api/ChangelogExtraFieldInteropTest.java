@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.file.Path;
 
 /**
  * 실제 hg는 default 브랜치 커밋의 changelog "extra" 줄에 "branch:default"를 전혀 쓰지
@@ -31,7 +32,7 @@ public class ChangelogExtraFieldInteropTest {
     }
 
     @Test
-    public void defaultBranchCommitOmitsBranchExtraField(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void defaultBranchCommitOmitsBranchExtraField(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -53,7 +54,7 @@ public class ChangelogExtraFieldInteropTest {
     }
 
     @Test
-    public void nonDefaultBranchCommitIncludesBranchExtraField(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void nonDefaultBranchCommitIncludesBranchExtraField(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -72,7 +73,7 @@ public class ChangelogExtraFieldInteropTest {
     }
 
     @Test
-    public void hg4jDefaultBranchChangelogBytesMatchRealHg(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void hg4jDefaultBranchChangelogBytesMatchRealHg(@TempDir Path tempDir) throws Exception {
         // 실제 hg가 만드는 changelog 원문(사용자/날짜 제외 나머지)과 hg4j가 만드는 것을
         // 형태적으로 대조: 둘 다 "manifest\nuser\nsecs tz\nfiles...\n\nmsg" 형태이며
         // default 브랜치에서는 3번째 줄에 "secs tz" 뿐이어야 한다.

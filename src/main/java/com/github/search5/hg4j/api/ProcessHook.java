@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.nio.charset.StandardCharsets;
 
 /**
  * External process SCM hook executor that launches OS shell scripts or binaries
@@ -121,7 +122,7 @@ public class ProcessHook implements HgHook {
             Process process = pb.start();
             
             // Consume unified output/error streams to avoid deadlock
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
                     LOGGER.log(Level.INFO, "[ProcessHook OutErr] " + line);

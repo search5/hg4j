@@ -10,6 +10,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.Queue;
+import java.util.Set;
 
 /**
  * Outgoing command for identifying changesets present in the local repository
@@ -72,7 +77,7 @@ public class OutgoingCommand {
                         break;
                     }
                 } else {
-                    if (java.util.Arrays.equals(node, rHead)) {
+                    if (Arrays.equals(node, rHead)) {
                         isKnownByRemote = true;
                         break;
                     }
@@ -104,8 +109,8 @@ public class OutgoingCommand {
         if (ancestorRev == descendantRev) return true;
         if (ancestorRev > descendantRev) return false; // Topological ordering optimization
         
-        java.util.Queue<Integer> queue = new java.util.LinkedList<>();
-        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        Queue<Integer> queue = new LinkedList<>();
+        Set<Integer> visited = new HashSet<>();
         queue.add(descendantRev);
         visited.add(descendantRev);
         

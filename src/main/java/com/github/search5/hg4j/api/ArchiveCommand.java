@@ -9,6 +9,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import java.nio.file.Files;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Archive command for extracting a repository revision snapshot
@@ -52,19 +57,19 @@ public class ArchiveCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        byte[] node = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, revision);
+        byte[] node = NodeIdUtil.resolveRevision(changelog, revision);
         if (node == null) {
             throw new IOException("Archive target revision not found: " + revision);
         }
 
-        java.util.Map<String, String> manifestMap = getManifestForCommit(changelog, manifestRevlog, node);
+        Map<String, String> manifestMap = getManifestForCommit(changelog, manifestRevlog, node);
 
         boolean zipOutput = destination.getName().endsWith(".zip");
 
         if (zipOutput) {
             destination.getParentFile().mkdirs();
             try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(destination))) {
-                for (java.util.Map.Entry<String, String> entry : manifestMap.entrySet()) {
+                for (Map.Entry<String, String> entry : manifestMap.entrySet()) {
                     String path = entry.getKey();
                     String hexAndFlag = entry.getValue();
                     String fileHex = hexAndFlag.substring(0, 40);
@@ -78,7 +83,7 @@ public class ArchiveCommand {
             }
         } else {
             // Directory output
-            for (java.util.Map.Entry<String, String> entry : manifestMap.entrySet()) {
+            for (Map.Entry<String, String> entry : manifestMap.entrySet()) {
                 String path = entry.getKey();
                 String hexAndFlag = entry.getValue();
                 String fileHex = hexAndFlag.substring(0, 40);
@@ -86,14 +91,14 @@ public class ArchiveCommand {
                 byte[] content = getFileRevisionContent(repository, path, fileHex);
                 File targetFile = new File(destination, path);
                 targetFile.getParentFile().mkdirs();
-                java.nio.file.Files.write(targetFile.toPath(), content);
+                Files.write(targetFile.toPath(), content);
             }
         }
     }
 
-    private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
-        java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
+    private Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
+        Map<String, String> manifestMap = new LinkedHashMap<>();
+        if (commitNode == null || NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -106,7 +111,7 @@ public class ArchiveCommand {
         if (lines.length == 0) return manifestMap;
 
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);
@@ -122,16 +127,16 @@ public class ArchiveCommand {
         return manifestMap;
     }
 
-    private byte[] getFileRevisionContent(com.github.search5.hg4j.lib.HgRepository repository, String path, String nodeHex) throws IOException {
+    private byte[] getFileRevisionContent(HgRepository repository, String path, String nodeHex) throws IOException {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
+            throw new HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(nodeHex.substring(0, 40)));
         if (rev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }

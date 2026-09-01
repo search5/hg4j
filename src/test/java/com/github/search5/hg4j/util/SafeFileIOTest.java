@@ -11,13 +11,15 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
 
 public class SafeFileIOTest {
 
     @Test
     public void testPrivateConstructor() throws Exception {
         Constructor<SafeFileIO> constructor = SafeFileIO.class.getDeclaredConstructor();
-        assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()));
+        assertTrue(Modifier.isPrivate(constructor.getModifiers()));
         constructor.setAccessible(true);
         SafeFileIO instance = constructor.newInstance();
         assertNotNull(instance);
@@ -33,7 +35,7 @@ public class SafeFileIOTest {
         });
 
         // Safe write raw bytes
-        byte[] data = "Hello Atomic World".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] data = "Hello Atomic World".getBytes(StandardCharsets.UTF_8);
         SafeFileIO.writeAtomic(targetFile, data);
         
         assertTrue(targetFile.exists());

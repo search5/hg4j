@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.util.Arrays;
 
 /**
  * Server-side implementations of real hg's wireprotocol v2 commands, verified against
@@ -157,7 +159,7 @@ public final class Wire2Commands {
         if (node == null) {
             throw new HgProtocolException("wireprotov2", "unknown revision: " + key);
         }
-        return List.of(java.util.Arrays.copyOf(node, 20));
+        return List.of(Arrays.copyOf(node, 20));
     }
 
     public static List<Object> pushkey(HgRepository repo, Map<String, Object> args) throws IOException {
@@ -469,7 +471,7 @@ public final class Wire2Commands {
         return result;
     }
 
-    private static Map<String, String> readListKeys(HgRepository repo, String namespace) throws IOException {
+    public static Map<String, String> readListKeys(HgRepository repo, String namespace) throws IOException {
         Map<String, String> map = new LinkedHashMap<>();
         if ("bookmarks".equals(namespace)) {
             File bkFile = new File(repo.getHgDir(), "bookmarks");
@@ -497,7 +499,7 @@ public final class Wire2Commands {
         return map;
     }
 
-    private static boolean applyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal) throws IOException {
+    public static boolean applyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal) throws IOException {
         if (!"bookmarks".equals(namespace)) {
             return false;
         }
@@ -521,12 +523,12 @@ public final class Wire2Commands {
             for (Map.Entry<String, String> e : bookmarks.entrySet()) {
                 sb.append(e.getValue()).append(' ').append(e.getKey()).append('\n');
             }
-            com.github.search5.hg4j.util.SafeFileIO.writeStringAtomic(bkFile, sb.toString());
+            SafeFileIO.writeStringAtomic(bkFile, sb.toString());
         }
         return true;
     }
 
-    private static Revlog changelog(HgRepository repo) throws IOException {
+    public static Revlog changelog(HgRepository repo) throws IOException {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         return repo.getRevlog(clIdx, clDat);

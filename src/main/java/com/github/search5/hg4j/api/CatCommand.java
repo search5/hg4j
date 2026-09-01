@@ -6,6 +6,10 @@ import com.github.search5.hg4j.storage.Revlog;
 
 import java.io.File;
 import java.io.IOException;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.lib.NodeId;
+import java.util.Map;
 
 /**
  * Porcelain command to retrieve the content of a specific file version in history.
@@ -30,7 +34,7 @@ public class CatCommand {
         return this;
     }
 
-    public CatCommand setRevision(com.github.search5.hg4j.lib.NodeId nodeId) {
+    public CatCommand setRevision(NodeId nodeId) {
         this.revision = nodeId != null ? nodeId.toHex() : null;
         return this;
     }
@@ -47,35 +51,35 @@ public class CatCommand {
         Revlog changelog = repository.getRevlog(clIdx, clDat);
         byte[] targetNodeId = NodeIdUtil.resolveRevision(changelog, revision);
         if (targetNodeId == null) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Unable to resolve revision");
+            throw new HgRevisionNotFoundException("Unable to resolve revision");
         }
 
         int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
         if (commitRev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Commit revision not found: " + NodeIdUtil.toHex(targetNodeId));
+            throw new HgRevisionNotFoundException("Commit revision not found: " + NodeIdUtil.toHex(targetNodeId));
         }
 
         // Read Manifest at that commit to find file version node
-        java.util.Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
+        Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
         String fileHexNode = manifestMap.get(file);
         if (fileHexNode != null && fileHexNode.length() > 40) {
             fileHexNode = fileHexNode.substring(0, 40);
         }
 
         if (fileHexNode == null) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File not tracked at target revision: " + file);
+            throw new HgRevisionNotFoundException("File not tracked at target revision: " + file);
         }
 
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), file);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Filelog not found for tracked file: " + file);
+            throw new HgCorruptDataException("Filelog not found for tracked file: " + file);
         }
 
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(fileHexNode));
         if (fileRev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File version not found in history: " + file + " @ " + fileHexNode);
+            throw new HgRevisionNotFoundException("File version not found in history: " + file + " @ " + fileHexNode);
         }
 
         return filelog.getRevisionContent(fileRev);

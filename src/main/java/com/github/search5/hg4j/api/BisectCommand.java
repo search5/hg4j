@@ -6,6 +6,14 @@ import com.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import com.github.search5.hg4j.dirstate.Dirstate;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Porcelain command for Git-bisect / Hg-bisect style binary search
@@ -53,7 +61,7 @@ public class BisectCommand {
         }
 
         // 1. DAG-based Topological range search (Graph Algorithm)
-        java.util.List<Integer> range = getTopologicalRange(changelog, goodRev, badRev);
+        List<Integer> range = getTopologicalRange(changelog, goodRev, badRev);
         if (range.isEmpty()) {
             throw new IOException("Bisect error: no topological path exists between good and bad nodes");
         }
@@ -66,8 +74,8 @@ public class BisectCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        java.util.Map<String, String> manifestMap = getManifestForCommit(changelog, manifestRevlog, midNode);
-        for (java.util.Map.Entry<String, String> entry : manifestMap.entrySet()) {
+        Map<String, String> manifestMap = getManifestForCommit(changelog, manifestRevlog, midNode);
+        for (Map.Entry<String, String> entry : manifestMap.entrySet()) {
             String path = entry.getKey();
             String hexAndFlag = entry.getValue();
             String fileHex = hexAndFlag.substring(0, 40);
@@ -75,20 +83,26 @@ public class BisectCommand {
             byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
             File wFile = new File(repository.getDirectory(), path);
             wFile.getParentFile().mkdirs();
-            java.nio.file.Files.write(wFile.toPath(), fileContent);
+            Files.write(wFile.toPath(), fileContent);
         }
 
         // Update working directory parent to checkout the mid-node automatically
-        com.github.search5.hg4j.dirstate.Dirstate d = repository.getDirstate();
+        Dirstate d = repository.getDirstate();
         d.setParents(midNode, new byte[20]);
         repository.writeDirstate(d);
+
+        // Each candidate hg4j checks out during bisect is a full working-copy checkout,
+        // same as `hg update` — the working branch must follow it, or `hg branch`/a
+        // subsequent commit would silently report whatever branch bisect started on.
+        repository.setBranch(CommitCommand.getBranchOfRevision(changelog, midRev));
+
         repository.clearRevlogCache();
 
         return midNode;
     }
 
-    private java.util.List<Integer> getTopologicalRange(Revlog changelog, int goodRev, int badRev) throws IOException {
-        java.util.List<Integer> range = new java.util.ArrayList<>();
+    private List<Integer> getTopologicalRange(Revlog changelog, int goodRev, int badRev) throws IOException {
+        List<Integer> range = new ArrayList<>();
         int min = Math.min(goodRev, badRev);
         int max = Math.max(goodRev, badRev);
 
@@ -128,9 +142,9 @@ public class BisectCommand {
         return range;
     }
 
-    private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
-        java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
+    private Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
+        Map<String, String> manifestMap = new LinkedHashMap<>();
+        if (commitNode == null || NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -143,7 +157,7 @@ public class BisectCommand {
         if (lines.length == 0) return manifestMap;
 
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);
@@ -159,16 +173,16 @@ public class BisectCommand {
         return manifestMap;
     }
 
-    private byte[] getFileRevisionContent(com.github.search5.hg4j.lib.HgRepository repository, String path, String nodeHex) throws IOException {
+    private byte[] getFileRevisionContent(HgRepository repository, String path, String nodeHex) throws IOException {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
+            throw new HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(nodeHex.substring(0, 40)));
         if (rev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }

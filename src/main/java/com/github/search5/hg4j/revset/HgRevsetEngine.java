@@ -13,8 +13,12 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
+import com.github.search5.hg4j.lib.NodeId;
+import java.nio.file.Files;
+import java.util.LinkedList;
+import java.util.Queue;
+import java.util.TreeSet;
 
 /**
  * High-performance query evaluator for Mercurial revision sets (Revsets).
@@ -42,8 +46,8 @@ public final class HgRevsetEngine {
             return List.of();
         }
 
-        File clIdx = new java.io.File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new java.io.File(repository.getStoreDir(), "00changelog.d");
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
         if (!clIdx.exists()) {
             return List.of();
         }
@@ -66,7 +70,7 @@ public final class HgRevsetEngine {
             List<Integer> leftRes = evaluateExpression(left, changelog, totalRevs);
             List<Integer> rightRes = evaluateExpression(right, changelog, totalRevs);
             
-            Set<Integer> merged = new java.util.TreeSet<>(leftRes);
+            Set<Integer> merged = new TreeSet<>(leftRes);
             merged.addAll(rightRes);
             return new ArrayList<>(merged);
         }
@@ -80,7 +84,7 @@ public final class HgRevsetEngine {
             List<Integer> leftRes = evaluateExpression(left, changelog, totalRevs);
             List<Integer> rightRes = evaluateExpression(right, changelog, totalRevs);
             
-            Set<Integer> intersect = new java.util.TreeSet<>(leftRes);
+            Set<Integer> intersect = new TreeSet<>(leftRes);
             intersect.retainAll(rightRes);
             return new ArrayList<>(intersect);
         }
@@ -279,7 +283,7 @@ public final class HgRevsetEngine {
         PhaseRoots phaseRoots = repository.getPhaseRoots();
         for (int r = 0; r < totalRevs; r++) {
             Revlog.IndexRecord rec = changelog.getIndexRecord(r);
-            com.github.search5.hg4j.lib.NodeId node = new com.github.search5.hg4j.lib.NodeId(rec.getNodeId());
+            NodeId node = new NodeId(rec.getNodeId());
             if (phaseRoots.isDraft(node, changelog)) {
                 res.add(r);
             }
@@ -423,12 +427,12 @@ public final class HgRevsetEngine {
     }
 
     private List<Integer> evaluateAncestors(int targetRev, Revlog changelog) {
-        Set<Integer> visited = new java.util.TreeSet<>();
+        Set<Integer> visited = new TreeSet<>();
         if (targetRev < 0 || targetRev >= changelog.getRevisionCount()) {
             return new ArrayList<>();
         }
         
-        java.util.Queue<Integer> queue = new java.util.LinkedList<>();
+        Queue<Integer> queue = new LinkedList<>();
         queue.add(targetRev);
         while (!queue.isEmpty()) {
             int current = queue.poll();
@@ -442,7 +446,7 @@ public final class HgRevsetEngine {
     }
 
     private List<Integer> evaluateDescendants(int targetRev, Revlog changelog, int totalRevs) {
-        Set<Integer> descendants = new java.util.TreeSet<>();
+        Set<Integer> descendants = new TreeSet<>();
         if (targetRev < 0 || targetRev >= totalRevs) {
             return new ArrayList<>();
         }
@@ -461,7 +465,7 @@ public final class HgRevsetEngine {
         List<Integer> res = new ArrayList<>();
         File tagFile = new File(repository.getDirectory(), ".hgtags");
         if (tagFile.exists()) {
-            List<String> lines = java.nio.file.Files.readAllLines(tagFile.toPath(), StandardCharsets.UTF_8);
+            List<String> lines = Files.readAllLines(tagFile.toPath(), StandardCharsets.UTF_8);
             for (String line : lines) {
                 line = line.trim();
                 if (line.isEmpty()) continue;
@@ -485,7 +489,7 @@ public final class HgRevsetEngine {
         List<Integer> res = new ArrayList<>();
         File bkFile = new File(repository.getHgDir(), "bookmarks");
         if (bkFile.exists()) {
-            List<String> lines = java.nio.file.Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8);
+            List<String> lines = Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8);
             for (String line : lines) {
                 line = line.trim();
                 if (line.isEmpty()) continue;
@@ -507,11 +511,11 @@ public final class HgRevsetEngine {
 
     private List<Integer> evaluatePublic(Revlog changelog, int totalRevs) throws IOException {
         List<Integer> res = new ArrayList<>();
-        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
+        PhaseRoots phaseRoots = repository.getPhaseRoots();
         for (int i = 0; i < totalRevs; i++) {
             byte[] node = changelog.getIndexRecord(i).getNodeId();
-            com.github.search5.hg4j.phase.PhaseRoots.Phase phase = phaseRoots.getPhase(new com.github.search5.hg4j.lib.NodeId(node), changelog);
-            if (phase == com.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC) {
+            PhaseRoots.Phase phase = phaseRoots.getPhase(new NodeId(node), changelog);
+            if (phase == PhaseRoots.Phase.PUBLIC) {
                 res.add(i);
             }
         }
@@ -520,11 +524,11 @@ public final class HgRevsetEngine {
 
     private List<Integer> evaluateSecret(Revlog changelog, int totalRevs) throws IOException {
         List<Integer> res = new ArrayList<>();
-        com.github.search5.hg4j.phase.PhaseRoots phaseRoots = repository.getPhaseRoots();
+        PhaseRoots phaseRoots = repository.getPhaseRoots();
         for (int i = 0; i < totalRevs; i++) {
             byte[] node = changelog.getIndexRecord(i).getNodeId();
-            com.github.search5.hg4j.phase.PhaseRoots.Phase phase = phaseRoots.getPhase(new com.github.search5.hg4j.lib.NodeId(node), changelog);
-            if (phase == com.github.search5.hg4j.phase.PhaseRoots.Phase.SECRET) {
+            PhaseRoots.Phase phase = phaseRoots.getPhase(new NodeId(node), changelog);
+            if (phase == PhaseRoots.Phase.SECRET) {
                 res.add(i);
             }
         }
@@ -544,17 +548,25 @@ public final class HgRevsetEngine {
         } else if ("author".equalsIgnoreCase(field) || "user".equalsIgnoreCase(field)) {
             sorted.sort((a, b) -> {
                 try {
-                    Map<String, String> mA = changelog.getRevisionMetadata(a);
-                    Map<String, String> mB = changelog.getRevisionMetadata(b);
-                    String authorA = mA.getOrDefault("author", "");
-                    String authorB = mB.getOrDefault("author", "");
-                    return authorA.compareTo(authorB);
+                    return getRevisionAuthor(a, changelog).compareTo(getRevisionAuthor(b, changelog));
                 } catch (Exception e) {
                     return 0;
                 }
             });
         }
         return sorted;
+    }
+
+    private String getRevisionAuthor(int rev, Revlog changelog) {
+        try {
+            byte[] content = changelog.getRevisionContent(rev);
+            String text = new String(content, StandardCharsets.UTF_8);
+            String[] lines = text.split("\n");
+            if (lines.length > 1) {
+                return lines[1].trim();
+            }
+        } catch (Exception ignored) {}
+        return "";
     }
 
     private long getRevisionTimestamp(int rev, Revlog changelog) {

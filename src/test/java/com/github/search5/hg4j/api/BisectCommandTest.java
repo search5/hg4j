@@ -44,4 +44,30 @@ public class BisectCommandTest {
         byte[] candidate = bisect.next();
         assertArrayEquals(midNode, candidate); // index 1 is mid between 0 and 2
     }
+
+    @Test
+    public void bisectCheckoutSwitchesTheWorkingBranchToMatchTheCandidateRevision(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "a.txt");
+
+        Files.writeString(f.toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit 1 (good)").call();
+        byte[] goodNode = repo.getDirstate().getParent1();
+
+        new BranchCommand(repo).setBranchName("feature").call();
+        Files.writeString(f.toPath(), "v1");
+        new CommitCommand(repo).setMessage("Commit 2 (mid, on feature)").call();
+
+        new BranchCommand(repo).setBranchName("default").call();
+        Files.writeString(f.toPath(), "v2");
+        new CommitCommand(repo).setMessage("Commit 3 (bad)").call();
+        byte[] badNode = repo.getDirstate().getParent1();
+
+        new BisectCommand(repo).setGood(goodNode).setBad(badNode).next();
+
+        assertEquals("feature", repo.getBranch(),
+                "Checking out the bisect candidate must switch the working branch to match it");
+    }
 }

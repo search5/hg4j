@@ -6,7 +6,6 @@ import com.github.search5.hg4j.dirstate.Dirstate;
 
 import org.junit.jupiter.api.Test;
 import com.github.search5.hg4j.transport.HgRemoteClient;
-import com.github.search5.hg4j.transport.HgWireServer;
 import java.io.File;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -27,6 +26,20 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgProtocolException;
+import com.github.search5.hg4j.errors.HgTransportException;
+import com.github.search5.hg4j.transport.wireprotov2.Cbor;
+import com.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
+import com.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.zip.DeflaterOutputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 
 public class HgRemoteClientTest {
 
@@ -151,7 +164,7 @@ public class HgRemoteClientTest {
         
         // Compress using zlib deflate
         ByteArrayOutputStream compressedStream = new ByteArrayOutputStream();
-        try (java.util.zip.DeflaterOutputStream dos = new java.util.zip.DeflaterOutputStream(compressedStream)) {
+        try (DeflaterOutputStream dos = new DeflaterOutputStream(compressedStream)) {
             dos.write(uncompressedBytes);
         }
         byte[] compressedBytes = compressedStream.toByteArray();
@@ -318,7 +331,7 @@ public class HgRemoteClientTest {
         out.write(new byte[]{0, 0, 0, 0});
         
         // Create unwrapper
-        java.lang.reflect.Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
                 .getDeclaredConstructor(InputStream.class);
         constructor.setAccessible(true);
         InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
@@ -340,15 +353,15 @@ public class HgRemoteClientTest {
         // 이스케이프하며, key:value 분리는 이스케이프 여부와 무관하게 "첫 번째 콜론"에서
         // 이루어진다(Python str.split(':', 1)와 동일).
         String value = "mybranch:with:colons\\and\\slashes";
-        String encoded = com.github.search5.hg4j.api.CommitCommand.encodeExtraKey(value);
+        String encoded = CommitCommand.encodeExtraKey(value);
         assertEquals("mybranch:with:colons\\\\and\\\\slashes", encoded);
         assertFalse(encoded.contains("\\:"), "실제 hg는 콜론을 이스케이프하지 않는다");
 
-        String decoded = com.github.search5.hg4j.api.CommitCommand.decodeExtraKey(encoded);
+        String decoded = CommitCommand.decodeExtraKey(encoded);
         assertEquals(value, decoded);
 
         String part = "branch:my:branch:with:colons";
-        int idx = com.github.search5.hg4j.api.CommitCommand.findUnescapedColon(part);
+        int idx = CommitCommand.findUnescapedColon(part);
         assertEquals("branch".length(), idx);
     }
 
@@ -379,8 +392,8 @@ public class HgRemoteClientTest {
 
         byte[] bzBytes;
         ByteArrayOutputStream bzOut = new ByteArrayOutputStream();
-        try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream bz2 =
-             new org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream(bzOut)) {
+        try (BZip2CompressorOutputStream bz2 =
+             new BZip2CompressorOutputStream(bzOut)) {
             bz2.write(rawPayload.toByteArray());
         }
         bzBytes = bzOut.toByteArray();
@@ -466,7 +479,7 @@ public class HgRemoteClientTest {
     @Test
     public void testNewPorcelainCommandsE2E() throws Exception {
         // Initialize an isolated repository
-        java.nio.file.Path tempPath = Files.createTempDirectory("hg4j_porcelain_test_");
+        Path tempPath = Files.createTempDirectory("hg4j_porcelain_test_");
         File tempRepoDir = tempPath.toFile();
         try {
             HgRepository repo = Hg.init().setDirectory(tempRepoDir).call();
@@ -610,7 +623,7 @@ public class HgRemoteClientTest {
     @Test
     public void testHgRemoteClientMalformedUrlException() {
         HgRemoteClient client = new HgRemoteClient("http://[invalid-url");
-        com.github.search5.hg4j.errors.HgTransportException ex = assertThrows(com.github.search5.hg4j.errors.HgTransportException.class, () -> client.getHeads());
+        HgTransportException ex = assertThrows(HgTransportException.class, () -> client.getHeads());
         assertTrue(ex.getMessage().contains("Malformed URL"));
     }
 
@@ -623,12 +636,12 @@ public class HgRemoteClientTest {
         out.write(0xFF);
         out.write(0x9C);
 
-        java.lang.reflect.Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
                 .getDeclaredConstructor(InputStream.class);
         constructor.setAccessible(true);
         InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
 
-        assertThrows(com.github.search5.hg4j.errors.HgProtocolException.class, () -> chunkedStream.read());
+        assertThrows(HgProtocolException.class, () -> chunkedStream.read());
     }
 
     @Test
@@ -638,12 +651,12 @@ public class HgRemoteClientTest {
         out.write(0);
         out.write(10);
 
-        java.lang.reflect.Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
                 .getDeclaredConstructor(InputStream.class);
         constructor.setAccessible(true);
         InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
 
-        assertThrows(com.github.search5.hg4j.errors.HgProtocolException.class, () -> chunkedStream.read());
+        assertThrows(HgProtocolException.class, () -> chunkedStream.read());
     }
 
     @Test
@@ -655,12 +668,12 @@ public class HgRemoteClientTest {
         out.write(0);
         out.write(10);
 
-        java.lang.reflect.Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
                 .getDeclaredConstructor(InputStream.class);
         constructor.setAccessible(true);
         InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
 
-        assertThrows(com.github.search5.hg4j.errors.HgProtocolException.class, () -> chunkedStream.read());
+        assertThrows(HgProtocolException.class, () -> chunkedStream.read());
     }
 
     @Test
@@ -671,16 +684,16 @@ public class HgRemoteClientTest {
         out.write(5);
         out.write("zstd ".getBytes(StandardCharsets.US_ASCII));
 
-        java.lang.reflect.Method method = HgRemoteClient.class.getDeclaredMethod("unwrapResponseStream", InputStream.class, String.class);
+        Method method = HgRemoteClient.class.getDeclaredMethod("unwrapResponseStream", InputStream.class, String.class);
         method.setAccessible(true);
         
         HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/");
         InputStream inStream = new ByteArrayInputStream(out.toByteArray());
         
-        assertThrows(com.github.search5.hg4j.errors.HgProtocolException.class, () -> {
+        assertThrows(HgProtocolException.class, () -> {
             try {
                 method.invoke(client, inStream, "application/mercurial-0.2");
-            } catch (java.lang.reflect.InvocationTargetException e) {
+            } catch (InvocationTargetException e) {
                 throw e.getCause();
             }
         });
@@ -692,60 +705,157 @@ public class HgRemoteClientTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(10);
 
-        java.lang.reflect.Method method = HgRemoteClient.class.getDeclaredMethod("unwrapResponseStream", InputStream.class, String.class);
+        Method method = HgRemoteClient.class.getDeclaredMethod("unwrapResponseStream", InputStream.class, String.class);
         method.setAccessible(true);
         
         HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/");
         InputStream inStream = new ByteArrayInputStream(out.toByteArray());
         
-        assertThrows(com.github.search5.hg4j.errors.HgProtocolException.class, () -> {
+        assertThrows(HgProtocolException.class, () -> {
             try {
                 method.invoke(client, inStream, "application/mercurial-0.2");
-            } catch (java.lang.reflect.InvocationTargetException e) {
+            } catch (InvocationTargetException e) {
                 throw e.getCause();
             }
         });
     }
 
     @Test
-    public void testV2HandshakeNegotiation() {
+    public void testV1HttpHeaderLimitNegotiationDoesNotFabricateV2Support() {
         HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/");
-        
+
+        // A real v1 capabilities response never contains a "v2 available" token — earlier code
+        // matched a fictional "http-v2"/"api-v2" flag here, which real hg never sends, so the
+        // auto-upgrade could never actually trigger against a live server. Even if a capabilities
+        // list happens to contain that (unrealistic) literal token, it must no longer be treated
+        // as a v2 signal — only the real X-HgUpgrade-1/X-HgProto-1 handshake response can do that
+        // (see below). httpheader=NNNN parsing is real and must still work.
         List<String> v1Caps = Arrays.asList("lookup", "changegroup=01,02", "httpheader=2048", "http-v2");
-        
-        // v2 capability 협상 여부 및 header limit 해석 검증
         boolean supportsV2 = client.negotiateV2(v1Caps);
-        assertTrue(supportsV2, "Client should negotiate and determine that remote server supports v2");
+        assertFalse(supportsV2, "A plain-text v1 capabilities token must never fabricate v2 support");
         assertEquals(2048, client.getMaxHttpHeaderLimit(), "Header limit should be correctly parsed as 2048");
     }
 
-    // 이전에는 여기서 /api/capabilities, /api/heads라는 가짜(fictional) 평면 라우팅을 손으로
-    // mock하는 테스트가 있었다 — 실제 Mercurial 6.0 서버로 직접 검증한 결과 실제 v2는 이런
-    // 라우팅을 전혀 쓰지 않는다(캡ability 발견 핸드셰이크 + /api/<namespace>/<ro|rw>/<command>
-    // 프레임 기반 전송). 손으로 만든 mock은 실제 서버가 바뀌어도 계속 통과하는(즉, 실제로는
-    // 아무것도 검증하지 못하는) 자기참조적 테스트가 되기 쉬워 제거했다 — 같은 경로는 이제
-    // HgHttpTransportV2RoundtripTest가 진짜 HgWireServer 구현으로 대체 검증한다
-    // (2026-09-01, 실제 hg 6.0 도커 서버로 캡ability/heads/known/listkeys/pushkey/changesetdata/
-    // manifestdata/filesdata까지 왕복 검증 완료).
+    @Test
+    public void getCapabilitiesAutoUpgradesToV2WhenServerAdvertisesTheRealHandshake() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(Files.createTempDirectory("hg4j-v2-upgrade-server").toFile()).call();
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", new HgHttpWireServer(repo));
+            server.start();
+
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort());
+            List<String> caps = client.getCapabilities();
+
+            // Real v2's command set (heads/known/listkeys/... — see HgHttpTransportV2RoundtripTest),
+            // not the plain-text v1 tokens the fake handler above would have returned had the
+            // upgrade not been detected — proves HgRemoteClient itself auto-upgraded.
+            assertTrue(caps.contains("changesetdata"), "Auto-upgrade must have switched to the real v2 command set");
+        } finally {
+            server.stop(0);
+        }
+    }
 
     @Test
-    public void testCborFrameParserStreaming() throws Exception {
-        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.dataformat.cbor.databind.CBORMapper();
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
+    public void getCapabilitiesFallsBackToV1WhenServerIgnoresTheUpgradeHeaders() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> {
+                // A real v1-only server: always returns the plain-text v1 line, regardless of
+                // any X-HgUpgrade-1/X-HgProto-1 headers the client may have sent.
+                byte[] body = "lookup changegroupsubset httpheader=1024".getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.1");
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(body);
+                }
+            });
+            server.start();
 
-        // CBOR 포맷으로 여러 개별 객체들을 연속으로 씁니다
-        out.write(mapper.writeValueAsBytes("frame1"));
-        out.write(mapper.writeValueAsBytes("frame2"));
-        out.write(mapper.writeValueAsBytes(100));
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort());
+            List<String> caps = client.getCapabilities();
 
-        ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
-        CborFrameParser parser = new CborFrameParser();
-        List<Object> frames = parser.parseFrames(in);
+            assertTrue(caps.contains("lookup"));
+            assertTrue(caps.contains("changegroupsubset"));
+            assertEquals(1024, client.getMaxHttpHeaderLimit(),
+                    "A garbled-as-CBOR v1 response must still fall back to correct plain-text v1 parsing");
+        } finally {
+            server.stop(0);
+        }
+    }
 
-        assertEquals(3, frames.size());
-        assertEquals("frame1", frames.get(0));
-        assertEquals("frame2", frames.get(1));
-        assertEquals(100, frames.get(2));
+    @Test
+    public void supportsClonebundlesReflectsTheRealCapabilityToken() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> {
+                byte[] body = "lookup clonebundles httpheader=1024".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(body);
+                }
+            });
+            server.start();
+
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort());
+            client.getCapabilities();
+
+            assertTrue(client.supportsClonebundles(), "Client must recognize the real 'clonebundles' capability token");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void supportsClonebundlesIsFalseWhenTheServerDoesNotAdvertiseIt() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> {
+                byte[] body = "lookup changegroupsubset".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(body);
+                }
+            });
+            server.start();
+
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort());
+            client.getCapabilities();
+
+            assertFalse(client.supportsClonebundles());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void fetchClonebundlesManifestReturnsTheServerFileVerbatim() throws Exception {
+        String manifestBody = "https://example.com/bundle.hg BUNDLESPEC=none-v2\n";
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> {
+                String query = exchange.getRequestURI().getQuery();
+                byte[] body;
+                if (query != null && query.contains("cmd=clonebundles")) {
+                    body = manifestBody.getBytes(StandardCharsets.UTF_8);
+                } else {
+                    body = "lookup clonebundles".getBytes(StandardCharsets.UTF_8);
+                }
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(body);
+                }
+            });
+            server.start();
+
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort());
+            String manifest = client.fetchClonebundlesManifest();
+
+            assertEquals(manifestBody, manifest);
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -780,33 +890,42 @@ public class HgRemoteClientTest {
     public void testHgWireServerV2Integration() throws Exception {
         File tempStore = Files.createTempDirectory("hg4j_server_v2").toFile();
         tempStore.deleteOnExit();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         try {
             HgRepository repository = new HgRepository(tempStore);
-            HgWireServer server = new HgWireServer(repository);
+            server.createContext("/", new HgHttpWireServer(repository));
+            server.start();
 
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            server.handleCapabilitiesDiscovery("", out);
+            URL url = new URL("http://127.0.0.1:" + server.getAddress().getPort() + "/?cmd=capabilities");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestProperty("X-HgUpgrade-1", "exp-http-v2-0003");
+            conn.setRequestProperty("X-HgProto-1", "cbor");
+            byte[] body;
+            try (InputStream in = conn.getInputStream()) {
+                body = in.readAllBytes();
+            }
 
             // 실제 스펙(real Mercurial 6.0 서버로 확인, 2026-09-01): 캡ability 발견 응답은
             // {"apibase": "api/", "apis": {"exp-http-v2-0003": {"commands": {...},
             // "framingmediatypes": [...]}}, "v1capabilities": ...} 형태다 — 예전의 평면
             // {"commands": {...}} 는 실제 서버가 절대 만들지 않는 가짜 형태였다.
-            java.util.List<Object> decoded = com.github.search5.hg4j.transport.wireprotov2.Cbor.decodeAll(out.toByteArray());
-            Map<String, Object> resp = com.github.search5.hg4j.transport.wireprotov2.Cbor.asMap(decoded.get(0));
-            assertEquals("api/", com.github.search5.hg4j.transport.wireprotov2.Cbor.asString(resp.get("apibase")));
-            Map<String, Object> apis = com.github.search5.hg4j.transport.wireprotov2.Cbor.asMap(resp.get("apis"));
-            Map<String, Object> descriptor = com.github.search5.hg4j.transport.wireprotov2.Cbor.asMap(
-                    apis.get(com.github.search5.hg4j.transport.wireprotov2.Wire2Commands.NAMESPACE));
+            List<Object> decoded = Cbor.decodeAll(body);
+            Map<String, Object> resp = Cbor.asMap(decoded.get(0));
+            assertEquals("api/", Cbor.asString(resp.get("apibase")));
+            Map<String, Object> apis = Cbor.asMap(resp.get("apis"));
+            Map<String, Object> descriptor = Cbor.asMap(
+                    apis.get(Wire2Commands.NAMESPACE));
             assertNotNull(descriptor);
-            Map<String, Object> commands = com.github.search5.hg4j.transport.wireprotov2.Cbor.asMap(descriptor.get("commands"));
+            Map<String, Object> commands = Cbor.asMap(descriptor.get("commands"));
             assertTrue(commands.containsKey("heads"));
             assertTrue(commands.containsKey("changesetdata"));
-            List<String> framingTypes = new java.util.ArrayList<>();
+            List<String> framingTypes = new ArrayList<>();
             for (Object o : (List<?>) descriptor.get("framingmediatypes")) {
-                framingTypes.add(com.github.search5.hg4j.transport.wireprotov2.Cbor.asString(o));
+                framingTypes.add(Cbor.asString(o));
             }
-            assertTrue(framingTypes.contains(com.github.search5.hg4j.transport.wireprotov2.Wire2Transport.FRAMINGTYPE));
+            assertTrue(framingTypes.contains(Wire2Transport.FRAMINGTYPE));
         } finally {
+            server.stop(0);
             deleteRecursive(tempStore);
         }
     }

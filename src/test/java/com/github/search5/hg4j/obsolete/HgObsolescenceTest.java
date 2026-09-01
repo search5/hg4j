@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * FM1(version=1) obsstore 포맷 파싱 검증. 실제 hg CLI로 생성한 진짜 obsstore 바이트를 쓰는
@@ -83,7 +84,7 @@ public class HgObsolescenceTest {
     @Test
     public void testObsstoreParsingUnsupportedVersionThrows() {
         byte[] badVersion = new byte[]{0x00, 0x00, 0x00, 0x00, 0x00}; // version byte 0 = FM0, 미지원
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+        assertThrows(HgCorruptDataException.class,
                 () -> HgObsolescenceParser.parse(badVersion));
     }
 
@@ -91,7 +92,7 @@ public class HgObsolescenceTest {
     public void testObsstoreParsingTruncatedThrows() {
         // 버전 바이트만 있고 고정 헤더(19바이트)가 다 안 옴
         byte[] badBytes = new byte[]{0x01, 0x00, 0x00};
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+        assertThrows(HgCorruptDataException.class,
                 () -> HgObsolescenceParser.parse(badBytes));
     }
 }

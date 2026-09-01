@@ -13,6 +13,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.lib.NodeId;
+import java.nio.file.StandardOpenOption;
+import java.util.Map;
 
 /**
  * Bookmark(Track B-3) 실제 hg CLI 상호운용 검증. {@link HgTestUtils#hg}로 실제 native
@@ -42,7 +45,7 @@ public class BookmarkRealHgInteropTest {
         Files.writeString(new File(repoDir, "a.txt").toPath(), "two");
         byte[] c2 = new CommitCommand(repo).setAuthor("T").setMessage("c2").call();
 
-        String c2Hex = new com.github.search5.hg4j.lib.NodeId(c2).toHex();
+        String c2Hex = new NodeId(c2).toHex();
         assertEquals(c2Hex, new BookmarkCommand(repo).call().get("feature"),
                 "활성 bookmark는 커밋 시 자동으로 새 리비전을 가리켜야 함");
 
@@ -62,13 +65,13 @@ public class BookmarkRealHgInteropTest {
         Files.writeString(new File(repoDir, "a.txt").toPath(), "one");
         new AddCommand(repo).call();
         byte[] c1 = new CommitCommand(repo).setAuthor("T").setMessage("c1").call();
-        new BookmarkCommand(repo).setBookmarkName("stable").setRevision(new com.github.search5.hg4j.lib.NodeId(c1).toHex()).call();
+        new BookmarkCommand(repo).setBookmarkName("stable").setRevision(new NodeId(c1).toHex()).call();
 
         Files.writeString(new File(repoDir, "a.txt").toPath(), "two");
         new CommitCommand(repo).setAuthor("T").setMessage("c2").call();
         assertNull(new BookmarkCommand(repo).getActiveBookmark(), "c2 커밋 시점에는 활성 bookmark가 없어야 함");
 
-        new UpdateCommand(repo).setRevision(new com.github.search5.hg4j.lib.NodeId(c1).toHex()).call();
+        new UpdateCommand(repo).setRevision(new NodeId(c1).toHex()).call();
         assertEquals("stable", new BookmarkCommand(repo).getActiveBookmark(),
                 "stable이 가리키는 리비전으로 update하면 자동 활성화되어야 함");
 
@@ -83,14 +86,14 @@ public class BookmarkRealHgInteropTest {
 
         HgTestUtils.nativeRepo(remoteDir, dir -> {});
         Files.writeString(new File(remoteDir, ".hg/hgrc").toPath(),
-                "[web]\nallow_push = *\npush_ssl = false\n", java.nio.file.StandardOpenOption.APPEND);
+                "[web]\nallow_push = *\npush_ssl = false\n", StandardOpenOption.APPEND);
 
         new InitCommand().setDirectory(localDir).call();
         HgRepository local = new HgRepository(localDir);
         Files.writeString(new File(localDir, "a.txt").toPath(), "content");
         new AddCommand(local).call();
         byte[] node = new CommitCommand(local).setAuthor("T").setMessage("c1").call();
-        new BookmarkCommand(local).setBookmarkName("mybook").setRevision(new com.github.search5.hg4j.lib.NodeId(node).toHex()).call();
+        new BookmarkCommand(local).setBookmarkName("mybook").setRevision(new NodeId(node).toHex()).call();
 
         new PushCommand(local).setDestination(remoteDir.getAbsolutePath()).call();
 
@@ -131,7 +134,7 @@ public class BookmarkRealHgInteropTest {
         //    local의 "shared"가 그냥 remoteHex로 전진해야 한다.
         new PullCommand(local).setSource(remoteDir.getAbsolutePath()).call();
 
-        java.util.Map<String, String> localBks = new BookmarkCommand(local).call();
+        Map<String, String> localBks = new BookmarkCommand(local).call();
         assertEquals(remoteHex, localBks.get("shared"),
                 "fast-forward pull이면 로컬 bookmark가 그냥 전진해야 함: " + localBks);
         assertEquals(1, localBks.size(),
@@ -188,7 +191,7 @@ public class BookmarkRealHgInteropTest {
         // pull: 새로 받아올 changeset은 없고(이미 다 있음), bookmark만 동기화된다.
         new PullCommand(local).setSource(remoteDir.getAbsolutePath()).call();
 
-        java.util.Map<String, String> localBks = new BookmarkCommand(local).call();
+        Map<String, String> localBks = new BookmarkCommand(local).call();
         assertEquals(headBHex, localBks.get("shared"),
                 "진짜 divergence에서는 로컬 bookmark 값이 보존돼야 함(조용히 덮어쓰기 금지): " + localBks);
         boolean hasDivergentCopy = localBks.entrySet().stream()

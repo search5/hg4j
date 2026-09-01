@@ -5,6 +5,7 @@ import com.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
+import com.github.search5.hg4j.util.NodeIdUtil;
 
 /**
  * TreeIterator implementation that traverses the physical working copy and dirstate information.
@@ -69,7 +70,7 @@ public class WorkingDirTreeIterator implements TreeIterator {
             entries.add(new Entry(relPath, executable, state));
         }
 
-        entries.sort((e1, e2) -> com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR.compare(e1.path, e2.path));
+        entries.sort((e1, e2) -> NodeIdUtil.UTF8_STRING_COMPARATOR.compare(e1.path, e2.path));
     }
 
     @Override

@@ -6,6 +6,7 @@ import com.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Porcelain command for exporting Mercurial changeset commits
@@ -90,7 +91,7 @@ public class ExportCommand {
             diffCmd.setOldRevision(-2);
         }
         
-        java.util.List<DiffCommand.DiffEntry> diffs = diffCmd.call();
+        List<DiffCommand.DiffEntry> diffs = diffCmd.call();
         for (DiffCommand.DiffEntry diff : diffs) {
             sb.append("diff -r ");
             if (rev > 0) {

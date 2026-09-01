@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.nio.file.StandardCopyOption;
 
 /**
  * Porcelain command to rollback the last successful transaction.
@@ -69,7 +70,7 @@ public class RollbackCommand {
             // 3. Restore Bookmarks
             File bookmarksFile = new File(repository.getDirectory(), ".hg/bookmarks");
             if (undoBookmarks.exists()) {
-                Files.copy(undoBookmarks.toPath(), bookmarksFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(undoBookmarks.toPath(), bookmarksFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             } else {
                 Files.deleteIfExists(bookmarksFile.toPath());
             }

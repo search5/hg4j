@@ -2,7 +2,6 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.bundle.Bundle2Parser;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 
-import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.transport.HgRemoteClient;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
@@ -32,6 +31,24 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.HgTestUtils;
+import com.github.search5.hg4j.dirstate.Dirstate;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
+import com.github.search5.hg4j.treewalk.TreeWalk;
+import com.github.search5.hg4j.treewalk.WorkingDirTreeIterator;
+import java.io.BufferedReader;
+import java.io.FilterInputStream;
+import java.io.InputStreamReader;
+import java.util.Map;
+import java.util.zip.DeflaterOutputStream;
+import java.util.zip.InflaterInputStream;
+import org.apache.sshd.server.Environment;
+import org.apache.sshd.server.ExitCallback;
+import org.apache.sshd.server.channel.ChannelSession;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Timeout;
 
 public class HgRemoteAndSyncTest {
 
@@ -70,7 +87,7 @@ public class HgRemoteAndSyncTest {
                 .call();
 
         // 2. Mock a ChangegroupBundle based on source repository revisions
-        ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
 
         // 3. Apply bundle via PullCommand in a new destination repository
         HgRepository destRepo = Hg.init().setDirectory(destDir).call();
@@ -108,7 +125,7 @@ public class HgRemoteAndSyncTest {
         new AddCommand(srcRepo).call();
         new CommitCommand(srcRepo).setMessage("First").call();
 
-        ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
 
         // Let's corrupt the manifest entries to trigger failure during pull application
         bundle.manifestEntries.get(0).cs = new byte[20]; // Corrupt link revision hash to trigger IOException
@@ -324,8 +341,8 @@ public class HgRemoteAndSyncTest {
         String headHex = NodeIdUtil.toHex(headNode);
 
         // Prepare bundle payload
-        ChangegroupParser.ChangegroupBundle bundle = com.github.search5.hg4j.HgTestUtils.createMockBundleFromRepo(srcRepo);
-        byte[] rawCgBytes = com.github.search5.hg4j.HgTestUtils.serializeBundleToBytes(bundle);
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] rawCgBytes = HgTestUtils.serializeBundleToBytes(bundle);
 
         // 2. Setup mock server
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -411,18 +428,18 @@ public class HgRemoteAndSyncTest {
         pb.directory(dir);
         pb.redirectErrorStream(true);
         Process process = pb.start();
-        try (java.io.InputStream is = process.getInputStream()) {
+        try (InputStream is = process.getInputStream()) {
             is.readAllBytes();
         }
         int exitCode = process.waitFor();
         if (exitCode != 0) {
-            throw new IOException("Process " + java.util.Arrays.toString(cmd) + " failed with exit code: " + exitCode);
+            throw new IOException("Process " + Arrays.toString(cmd) + " failed with exit code: " + exitCode);
         }
     }
 
     @Test
     public void testNativeHgCopyRenamePull(@TempDir Path tempDir) throws Exception {
-        org.junit.jupiter.api.Assumptions.assumeTrue(com.github.search5.hg4j.HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg pull integration test.");
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg pull integration test.");
 
         // 1. Setup native hg remote repository
         File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
@@ -445,17 +462,17 @@ public class HgRemoteAndSyncTest {
         servePb.redirectErrorStream(true);
         Process serveProcess = servePb.start();
 
-        java.io.InputStream rawIn = serveProcess.getInputStream();
-        java.io.InputStream nonCloseableIn = new java.io.FilterInputStream(rawIn) {
+        InputStream rawIn = serveProcess.getInputStream();
+        InputStream nonCloseableIn = new FilterInputStream(rawIn) {
             @Override
-            public void close() throws java.io.IOException {
+            public void close() throws IOException {
                 // Do not close the underlying process stream
             }
         };
 
         String remoteUrl = null;
-        java.io.BufferedReader reader = new java.io.BufferedReader(
-                new java.io.InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8));
+        BufferedReader reader = new BufferedReader(
+                new InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8));
         
         long start = System.currentTimeMillis();
         while (System.currentTimeMillis() - start < 5000) {
@@ -500,7 +517,7 @@ public class HgRemoteAndSyncTest {
             assertEquals(1, bFilelog.getRevisionCount(), "b.txt must have 1 revision");
 
             // Read metadata and verify copy source
-            java.util.Map<String, String> metadata = bFilelog.getRevisionMetadata(0);
+            Map<String, String> metadata = bFilelog.getRevisionMetadata(0);
             assertEquals("a.txt", metadata.get("copy"), "Copy source metadata must match 'a.txt'");
 
             // Read logical content and verify it matches
@@ -514,7 +531,7 @@ public class HgRemoteAndSyncTest {
 
     @Test
     public void testNativeHgPush(@TempDir Path tempDir) throws Exception {
-        org.junit.jupiter.api.Assumptions.assumeTrue(com.github.search5.hg4j.HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg push integration test.");
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping native hg push integration test.");
 
         // 1. Setup native hg remote repository
         File remoteRepoDir = tempDir.resolve("remote_repo").toFile();
@@ -531,17 +548,17 @@ public class HgRemoteAndSyncTest {
         servePb.redirectErrorStream(true);
         Process serveProcess = servePb.start();
 
-        java.io.InputStream rawIn = serveProcess.getInputStream();
-        java.io.InputStream nonCloseableIn = new java.io.FilterInputStream(rawIn) {
+        InputStream rawIn = serveProcess.getInputStream();
+        InputStream nonCloseableIn = new FilterInputStream(rawIn) {
             @Override
-            public void close() throws java.io.IOException {
+            public void close() throws IOException {
                 // Do not close the underlying process stream
             }
         };
 
         String remoteUrl = null;
-        try (java.io.BufferedReader reader = new java.io.BufferedReader(
-                new java.io.InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8))) {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(nonCloseableIn, StandardCharsets.UTF_8))) {
             
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 5000) {
@@ -637,7 +654,7 @@ public class HgRemoteAndSyncTest {
         new CommitCommand(unrelatedRepo).setMessage("Unrelated").call();
 
         PushCommand pushUnrelated = new PushCommand(localRepo).setDestination(unrelatedDir.getAbsolutePath());
-        com.github.search5.hg4j.errors.HgValidationException ex = assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, pushUnrelated::call);
+        HgValidationException ex = assertThrows(HgValidationException.class, pushUnrelated::call);
         assertTrue(ex.getMessage().contains("repository is unrelated"));
 
         // 5. Pack Filelogs missing filelog index (continue branch at line 188)
@@ -662,10 +679,10 @@ public class HgRemoteAndSyncTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("Disabled due to high resource usage and flakiness of Apache SSHD in container envs")
-    @org.junit.jupiter.api.Timeout(10)
+    @Disabled("Disabled due to high resource usage and flakiness of Apache SSHD in container envs")
+    @Timeout(10)
     public void testNativeHgSshPull(@TempDir Path tempDir) throws Exception {
-        org.junit.jupiter.api.Assumptions.assumeTrue(com.github.search5.hg4j.HgTestUtils.isHgInstalled(), 
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), 
                 "Native Mercurial (hg) is not installed. Skipping native hg-over-ssh pull integration test.");
 
         // 1. Setup native remote repository
@@ -690,17 +707,17 @@ public class HgRemoteAndSyncTest {
             private InputStream in;
             private OutputStream out;
             private OutputStream err;
-            private org.apache.sshd.server.ExitCallback callback;
+            private ExitCallback callback;
             private Process process;
             private Thread t1, t2, t3;
 
             @Override public void setInputStream(InputStream in) { this.in = in; }
             @Override public void setOutputStream(OutputStream out) { this.out = out; }
             @Override public void setErrorStream(OutputStream err) { this.err = err; }
-            @Override public void setExitCallback(org.apache.sshd.server.ExitCallback cb) { this.callback = cb; }
+            @Override public void setExitCallback(ExitCallback cb) { this.callback = cb; }
 
             @Override
-            public void start(org.apache.sshd.server.channel.ChannelSession s, org.apache.sshd.server.Environment env) throws IOException {
+            public void start(ChannelSession s, Environment env) throws IOException {
                 ProcessBuilder pb = new ProcessBuilder("hg", "-R", remoteRepoDir.getAbsolutePath(), "serve", "--stdio");
                 pb.redirectErrorStream(false);
                 process = pb.start();
@@ -750,7 +767,7 @@ public class HgRemoteAndSyncTest {
             }
 
             @Override
-            public void destroy(org.apache.sshd.server.channel.ChannelSession s) {
+            public void destroy(ChannelSession s) {
                 if (process != null) {
                     process.destroy();
                 }
@@ -785,10 +802,10 @@ public class HgRemoteAndSyncTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("Disabled due to high resource usage and flakiness of Apache SSHD in container envs")
-    @org.junit.jupiter.api.Timeout(10)
+    @Disabled("Disabled due to high resource usage and flakiness of Apache SSHD in container envs")
+    @Timeout(10)
     public void testNativeHgSshPush(@TempDir Path tempDir) throws Exception {
-        org.junit.jupiter.api.Assumptions.assumeTrue(com.github.search5.hg4j.HgTestUtils.isHgInstalled(), 
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), 
                 "Native Mercurial (hg) is not installed. Skipping native hg-over-ssh push integration test.");
 
         // 1. Setup native remote repository
@@ -812,17 +829,17 @@ public class HgRemoteAndSyncTest {
             private InputStream in;
             private OutputStream out;
             private OutputStream err;
-            private org.apache.sshd.server.ExitCallback callback;
+            private ExitCallback callback;
             private Process process;
             private Thread t1, t2, t3;
 
             @Override public void setInputStream(InputStream in) { this.in = in; }
             @Override public void setOutputStream(OutputStream out) { this.out = out; }
             @Override public void setErrorStream(OutputStream err) { this.err = err; }
-            @Override public void setExitCallback(org.apache.sshd.server.ExitCallback cb) { this.callback = cb; }
+            @Override public void setExitCallback(ExitCallback cb) { this.callback = cb; }
 
             @Override
-            public void start(org.apache.sshd.server.channel.ChannelSession s, org.apache.sshd.server.Environment env) throws IOException {
+            public void start(ChannelSession s, Environment env) throws IOException {
                 ProcessBuilder pb = new ProcessBuilder("hg", "-R", remoteRepoDir.getAbsolutePath(), "serve", "--stdio");
                 pb.redirectErrorStream(false);
                 process = pb.start();
@@ -872,7 +889,7 @@ public class HgRemoteAndSyncTest {
             }
 
             @Override
-            public void destroy(org.apache.sshd.server.channel.ChannelSession s) {
+            public void destroy(ChannelSession s) {
                 if (process != null) {
                     process.destroy();
                 }
@@ -936,7 +953,7 @@ public class HgRemoteAndSyncTest {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         baos.write("HG10GZ".getBytes(StandardCharsets.US_ASCII));
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (java.util.zip.DeflaterOutputStream dos = new java.util.zip.DeflaterOutputStream(compressed)) {
+        try (DeflaterOutputStream dos = new DeflaterOutputStream(compressed)) {
             dos.write(new byte[0]);
         }
         baos.write(compressed.toByteArray());
@@ -949,7 +966,7 @@ public class HgRemoteAndSyncTest {
         assertEquals('Z', payload[5]);
 
         ByteArrayInputStream bais = new ByteArrayInputStream(payload, 6, payload.length - 6);
-        try (java.util.zip.InflaterInputStream iis = new java.util.zip.InflaterInputStream(bais)) {
+        try (InflaterInputStream iis = new InflaterInputStream(bais)) {
             byte[] decompressed = iis.readAllBytes();
             assertEquals(0, decompressed.length);
         }
@@ -1002,7 +1019,7 @@ public class HgRemoteAndSyncTest {
         new AddCommand(repo).call();
         byte[] feat = new CommitCommand(repo).setMessage("feature branch commit").call();
 
-        com.github.search5.hg4j.dirstate.Dirstate ds = repo.getDirstate();
+        Dirstate ds = repo.getDirstate();
         ds.setParents(base, new byte[20]);
         repo.writeDirstate(ds);
 
@@ -1036,13 +1053,13 @@ public class HgRemoteAndSyncTest {
         nonAsciiFile.getParentFile().mkdirs();
 
         byte[] largeData = new byte[1024 * 1024];
-        java.util.Arrays.fill(largeData, (byte) 'A');
+        Arrays.fill(largeData, (byte) 'A');
         Files.write(nonAsciiFile.toPath(), largeData);
 
         new AddCommand(repo).call();
         byte[] commitNode = new CommitCommand(repo).setMessage("Large and non-ascii commit").call();
 
-        java.util.Map<String, String> manifest = repo.getManifestAtCommit(commitNode);
+        Map<String, String> manifest = repo.getManifestAtCommit(commitNode);
         assertTrue(manifest.containsKey(nonAsciiPath), "Manifest must contain Hangul file path");
 
         File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), nonAsciiPath);
@@ -1054,9 +1071,9 @@ public class HgRemoteAndSyncTest {
         assertEquals(largeData.length, recovered.length);
         assertArrayEquals(largeData, recovered);
 
-        com.github.search5.hg4j.treewalk.TreeWalk tw = new com.github.search5.hg4j.treewalk.TreeWalk();
-        tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repo, "0"));
-        tw.addTree(new com.github.search5.hg4j.treewalk.WorkingDirTreeIterator(repo));
+        TreeWalk tw = new TreeWalk();
+        tw.addTree(new ManifestTreeIterator(repo, "0"));
+        tw.addTree(new WorkingDirTreeIterator(repo));
 
         tw.reset();
         assertTrue(tw.next());

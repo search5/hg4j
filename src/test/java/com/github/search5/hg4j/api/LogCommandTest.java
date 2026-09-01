@@ -10,6 +10,8 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.storage.Revlog;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
 
 public class LogCommandTest {
 
@@ -74,7 +76,7 @@ public class LogCommandTest {
 
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        com.github.search5.hg4j.storage.Revlog changelog = repo.getRevlog(clIdx, clDat);
+        Revlog changelog = repo.getRevlog(clIdx, clDat);
 
         // 1. Malformed commit: no newline at all
         changelog.appendRevision("NoNewline".getBytes(), -1, -1, new byte[20], new byte[20], 0);
@@ -150,11 +152,63 @@ public class LogCommandTest {
         assertEquals(2, commitsAll.size());
 
         // With filter (only "src/"): should only return Commit 0
-        com.github.search5.hg4j.treewalk.HgTreeFilter filter = com.github.search5.hg4j.treewalk.HgTreeFilter.createPathPrefixFilter(java.util.List.of("src/"), java.util.List.of());
+        HgTreeFilter filter = HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
         List<HgCommit> commitsFiltered = new LogCommand(repo).setTreeFilter(filter).call();
 
         assertEquals(1, commitsFiltered.size());
         assertEquals("Commit Src", commitsFiltered.get(0).getMessage().trim());
         assertTrue(commitsFiltered.get(0).getFiles().contains("src/a.txt"));
+    }
+
+    @Test
+    public void treeFilterExcludesCommitsWithNoMatchingFiles(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "content");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setMessage("only a.txt").call();
+
+        HgTreeFilter filter =
+                HgTreeFilter.createPathPrefixFilter(List.of("nomatch/"), List.of());
+        assertTrue(new LogCommand(repo).setTreeFilter(filter).call().isEmpty());
+    }
+
+    @Test
+    public void reportsNonDefaultBranchFromExtraField(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        new BranchCommand(repo).setBranchName("feature").call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "content");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setMessage("on feature branch").call();
+
+        List<HgCommit> log = new LogCommand(repo).call();
+        assertEquals(1, log.size());
+        assertEquals("feature", log.get(0).getBranch());
+    }
+
+    @Test
+    public void followAncestorsLimitsLogToAncestorsOfStartRev(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setMessage("rev0").call(); // rev 0
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v2");
+        new CommitCommand(repo).setMessage("rev1").call(); // rev 1, child of rev0
+
+        // Fork a second, unrelated child of rev0.
+        new UpdateCommand(repo).setRevision("0").call();
+        Files.writeString(new File(repoDir, "b.txt").toPath(), "other branch");
+        new AddCommand(repo).addFile("b.txt").call();
+        new CommitCommand(repo).setMessage("rev2").call(); // rev 2, sibling of rev1
+
+        List<HgCommit> restricted = new LogCommand(repo).setFollowAncestors(true).setStartRev("1").call();
+        assertEquals(2, restricted.size(), "Should only include rev1 and its ancestor rev0, not the unrelated rev2");
+        assertTrue(restricted.stream().anyMatch(c -> c.getRevision() == 0));
+        assertTrue(restricted.stream().anyMatch(c -> c.getRevision() == 1));
+        assertTrue(restricted.stream().noneMatch(c -> c.getRevision() == 2));
     }
 }

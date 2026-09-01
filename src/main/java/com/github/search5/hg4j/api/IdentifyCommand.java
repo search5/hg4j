@@ -5,6 +5,9 @@ import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.List;
 
 /**
  * Identify command for summary status overview of active workspace node, branch and tag.
@@ -49,7 +52,7 @@ public class IdentifyCommand {
         // Fetch actual tags matching from .hgtags file
         File hgTagsFile = new File(repository.getDirectory(), ".hgtags");
         if (hgTagsFile.exists()) {
-            java.util.List<String> tagLines = java.nio.file.Files.readAllLines(hgTagsFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+            List<String> tagLines = Files.readAllLines(hgTagsFile.toPath(), StandardCharsets.UTF_8);
             String targetHex = NodeIdUtil.toHex(p1);
             for (String line : tagLines) {
                 line = line.trim();

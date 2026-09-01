@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.Arrays;
 
 /**
  * Porcelain command corresponding to {@code hg backout REV} — creates a new commit that undoes
@@ -80,7 +81,7 @@ public class BackoutCommand {
             File diskFile = new File(repository.getDirectory(), path);
 
             if (targetFileNode != null && parentFileNode != null) {
-                if (!java.util.Arrays.equals(targetFileNode, parentFileNode)) {
+                if (!Arrays.equals(targetFileNode, parentFileNode)) {
                     // 대상 리비전에서 수정됨 → 그 이전(부모) 상태로 복원
                     writeFileContentByNode(path, parentFileNode);
                 }

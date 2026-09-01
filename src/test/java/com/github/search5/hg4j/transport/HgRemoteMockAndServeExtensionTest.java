@@ -5,7 +5,6 @@ import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.api.*;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.lib.HgRepository;
-import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.errors.HgAuthException;
 import com.github.search5.hg4j.errors.HgCorruptDataException;
@@ -33,6 +32,11 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.HgTestUtils;
+import java.util.Collections;
+import org.apache.sshd.server.Environment;
+import org.apache.sshd.server.ExitCallback;
+import org.apache.sshd.server.channel.ChannelSession;
 
 public class HgRemoteMockAndServeExtensionTest {
 
@@ -370,22 +374,22 @@ public class HgRemoteMockAndServeExtensionTest {
         sshServer.setPasswordAuthenticator((username, password, session) -> true);
         sshServer.setCommandFactory((channel, command) -> new Command() {
             private OutputStream out;
-            private org.apache.sshd.server.ExitCallback callback;
+            private ExitCallback callback;
 
             @Override public void setInputStream(InputStream in) {}
             @Override public void setOutputStream(OutputStream out) { this.out = out; }
             @Override public void setErrorStream(OutputStream err) {}
-            @Override public void setExitCallback(org.apache.sshd.server.ExitCallback cb) { this.callback = cb; }
+            @Override public void setExitCallback(ExitCallback cb) { this.callback = cb; }
 
             @Override
-            public void start(org.apache.sshd.server.channel.ChannelSession s, org.apache.sshd.server.Environment env) throws IOException {
+            public void start(ChannelSession s, Environment env) throws IOException {
                 // Respond with invalid text instead of capabilities header
                 out.write("invalid response header string\n".getBytes(StandardCharsets.UTF_8));
                 out.flush();
                 callback.onExit(0);
             }
 
-            @Override public void destroy(org.apache.sshd.server.channel.ChannelSession s) {}
+            @Override public void destroy(ChannelSession s) {}
         });
 
         sshServer.start();
@@ -414,15 +418,15 @@ public class HgRemoteMockAndServeExtensionTest {
         sshServer.setCommandFactory((channel, command) -> new Command() {
             private InputStream in;
             private OutputStream out;
-            private org.apache.sshd.server.ExitCallback callback;
+            private ExitCallback callback;
 
             @Override public void setInputStream(InputStream in) { this.in = in; }
             @Override public void setOutputStream(OutputStream out) { this.out = out; }
             @Override public void setErrorStream(OutputStream err) {}
-            @Override public void setExitCallback(org.apache.sshd.server.ExitCallback cb) { this.callback = cb; }
+            @Override public void setExitCallback(ExitCallback cb) { this.callback = cb; }
 
             @Override
-            public void start(org.apache.sshd.server.channel.ChannelSession s, org.apache.sshd.server.Environment env) throws IOException {
+            public void start(ChannelSession s, Environment env) throws IOException {
                 new Thread(() -> {
                     try {
                         out.write("capabilities: heads getbundle changegroup\n".getBytes(StandardCharsets.UTF_8));
@@ -442,7 +446,7 @@ public class HgRemoteMockAndServeExtensionTest {
                 }).start();
             }
 
-            @Override public void destroy(org.apache.sshd.server.channel.ChannelSession s) {}
+            @Override public void destroy(ChannelSession s) {}
         });
 
         sshServer.start();
@@ -468,7 +472,7 @@ public class HgRemoteMockAndServeExtensionTest {
 
     @Test
     public void testNativeHgExtendedServe(@TempDir Path tempDir) throws Exception {
-        if (!com.github.search5.hg4j.HgTestUtils.isHgInstalled()) {
+        if (!HgTestUtils.isHgInstalled()) {
             return;
         }
 
@@ -699,6 +703,6 @@ public class HgRemoteMockAndServeExtensionTest {
     // Helper static class to avoid socket block and fetch ports asynchronously
     private static class ServePortTracker {
         public static volatile String detectedUrl = null;
-        public static final List<String> capturedLines = java.util.Collections.synchronizedList(new ArrayList<>());
+        public static final List<String> capturedLines = Collections.synchronizedList(new ArrayList<>());
     }
 }

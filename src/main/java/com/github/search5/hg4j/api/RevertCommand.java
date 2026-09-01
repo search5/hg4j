@@ -10,6 +10,10 @@ import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.Map;
 
 /**
  * Porcelain command to revert changes to files in the working directory.
@@ -66,7 +70,7 @@ public class RevertCommand {
                     repository.writeDirstate(dirstate);
                     return true;
                 }
-                throw new com.github.search5.hg4j.errors.HgValidationException("Cannot revert file when parent commit is zero and file is not tracked.");
+                throw new HgValidationException("Cannot revert file when parent commit is zero and file is not tracked.");
             }
 
             // Retrieve the historical version of this file
@@ -79,7 +83,7 @@ public class RevertCommand {
                 targetContent = cat.call();
                 tracked = true;
                 
-                java.util.Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
+                Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
                 String nodeWithFlags = manifestMap.get(file);
                 String flags = "";
                 if (nodeWithFlags != null) {
@@ -106,9 +110,9 @@ public class RevertCommand {
                     Files.delete(diskFile.toPath());
                 }
                 if (mode == 0120000) {
-                    String target = new String(targetContent, java.nio.charset.StandardCharsets.UTF_8).trim();
+                    String target = new String(targetContent, StandardCharsets.UTF_8).trim();
                     try {
-                        Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                        Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
                     } catch (Exception e) {
                         Files.write(diskFile.toPath(), targetContent);
                     }

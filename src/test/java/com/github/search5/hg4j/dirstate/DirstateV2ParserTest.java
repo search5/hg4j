@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * Round-trip integration tests for the dirstate-v2 parser and serializer.
@@ -57,7 +58,7 @@ public class DirstateV2ParserTest {
     @Test
     public void testParseNullData_throwsHgCorruptDataException() {
         DirstateV2Parser parser = new DirstateV2Parser();
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class, () -> parser.parse(null));
+        assertThrows(HgCorruptDataException.class, () -> parser.parse(null));
     }
 
     @Test
@@ -73,7 +74,7 @@ public class DirstateV2ParserTest {
     public void testParseMalformedLayout_throwsHgCorruptDataException() {
         DirstateV2Parser parser = new DirstateV2Parser();
         // 10 bytes of invalid data
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class, () -> parser.parse(new byte[10]));
+        assertThrows(HgCorruptDataException.class, () -> parser.parse(new byte[10]));
     }
 
     @Test
@@ -82,27 +83,27 @@ public class DirstateV2ParserTest {
         
         // DirstateV2Node.NODE_SIZE = 44 bytes.
         byte[] malformedBytes = new byte[44];
-        
-        // pathOffset (offset 16): 100
-        malformedBytes[16] = 0;
-        malformedBytes[17] = 0;
-        malformedBytes[18] = 0;
-        malformedBytes[19] = 100;
-        
-        // pathLen (offset 20): 50
-        malformedBytes[20] = 0;
-        malformedBytes[21] = 50;
-        
+
+        // path_start (real NODE struct offset 0): 100
+        malformedBytes[0] = 0;
+        malformedBytes[1] = 0;
+        malformedBytes[2] = 0;
+        malformedBytes[3] = 100;
+
+        // path_len (real NODE struct offset 4): 50
+        malformedBytes[4] = 0;
+        malformedBytes[5] = 50;
+
         // pathOffset + pathLen = 100 + 50 = 150.
         // Set bytes.length exactly to 150 bytes to pass nodeLayout verification
         byte[] fullBytes = new byte[150];
         System.arraycopy(malformedBytes, 0, fullBytes, 0, 44);
-        
+
         // Manipulate pathLen to 55 to exceed the capacity
-        fullBytes[20] = 0;
-        fullBytes[21] = 55;
+        fullBytes[4] = 0;
+        fullBytes[5] = 55;
         
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class, () -> parser.parse(fullBytes));
+        assertThrows(HgCorruptDataException.class, () -> parser.parse(fullBytes));
     }
 }
 

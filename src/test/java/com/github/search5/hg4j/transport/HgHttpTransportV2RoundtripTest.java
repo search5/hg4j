@@ -1,10 +1,7 @@
 package com.github.search5.hg4j.transport;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.github.search5.hg4j.lib.HgRepository;
-import com.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.api.Hg;
@@ -16,21 +13,23 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Map;
 
 /**
- * hg4j 서버(HgWireServer)와 hg4j 클라이언트(HgRemoteClientV2) 양쪽 모두 real hg 6.0 서버로
- * 직접 검증한 실제 wireprotocol v2 스펙(프레임 기반 전송, X-HgUpgrade/X-HgProto 캡ability
- * 발견 핸드셰이크, /api/&lt;namespace&gt;/&lt;ro|rw&gt;/&lt;command&gt; 라우팅)을 그대로
- * 구현하고 있으므로, 이 테스트는 hg4j끼리의 자기 일관성(self-consistency) 회귀 테스트다.
+ * hg4j 서버({@link HgHttpWireServer})와 hg4j 클라이언트(HgRemoteClientV2) 양쪽 모두 real hg 6.0
+ * 서버로 직접 검증한 실제 wireprotocol v2 스펙(프레임 기반 전송, X-HgUpgrade/X-HgProto
+ * 캡ability 발견 핸드셰이크, /api/&lt;namespace&gt;/&lt;ro|rw&gt;/&lt;command&gt; 라우팅)을
+ * 그대로 구현하고 있으므로, 이 테스트는 hg4j끼리의 자기 일관성(self-consistency) 회귀 테스트다.
  */
 @DisplayName("Wire Protocol v2 real-spec framing HTTP roundtrip tests")
 public class HgHttpTransportV2RoundtripTest {
@@ -41,53 +40,16 @@ public class HgHttpTransportV2RoundtripTest {
     private HttpServer server;
     private int port;
     private HgRepository repository;
-    private HgWireServer wireServer;
     private File repoDir;
 
     @BeforeEach
     void setUp() throws Exception {
         repoDir = tempDir.resolve("server_repo").toFile();
         repository = Hg.init().setDirectory(repoDir).call();
-        wireServer = new HgWireServer(repository);
 
         server = HttpServer.create(new InetSocketAddress(0), 0);
         port = server.getAddress().getPort();
-
-        server.createContext("/", new HttpHandler() {
-            @Override
-            public void handle(HttpExchange exchange) throws IOException {
-                String path = exchange.getRequestURI().getPath();
-                String query = exchange.getRequestURI().getQuery();
-
-                if ("/".equals(path) && query != null && query.contains("cmd=capabilities")
-                        && exchange.getRequestHeaders().getFirst("X-HgUpgrade-1") != null) {
-                    exchange.getResponseHeaders().set("Content-Type", "application/mercurial-cbor");
-                    exchange.sendResponseHeaders(200, 0);
-                    try (OutputStream out = exchange.getResponseBody()) {
-                        wireServer.handleCapabilitiesDiscovery("", out);
-                    }
-                    return;
-                }
-
-                if (path.startsWith("/api/")) {
-                    String[] parts = path.substring("/api/".length()).split("/");
-                    if (parts.length == 3) {
-                        String permission = parts[1];
-                        String command = parts[2];
-                        exchange.getResponseHeaders().set("Content-Type", Wire2Transport.FRAMINGTYPE);
-                        exchange.sendResponseHeaders(200, 0);
-                        try (InputStream in = exchange.getRequestBody();
-                             OutputStream out = exchange.getResponseBody()) {
-                            wireServer.handleWire2Request(permission, command, in, out);
-                        }
-                        return;
-                    }
-                }
-
-                exchange.sendResponseHeaders(404, -1);
-            }
-        });
-
+        server.createContext("/", new HgHttpWireServer(repository));
         server.start();
     }
 
@@ -145,12 +107,12 @@ public class HgHttpTransportV2RoundtripTest {
         assertNotNull(bundleBytes);
         assertTrue(bundleBytes.length > 0, "실제 changegroup 바이트가 반환돼야 함");
 
-        assertEquals("HG10UN", new String(bundleBytes, 0, 6, java.nio.charset.StandardCharsets.US_ASCII));
-        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle =
-                com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(
-                        new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+        assertEquals("HG10UN", new String(bundleBytes, 0, 6, StandardCharsets.US_ASCII));
+        ChangegroupParser.ChangegroupBundle bundle =
+                ChangegroupParser.parseBundle(
+                        new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertEquals(1, bundle.changelogEntries.size());
-        assertArrayEquals(java.util.Arrays.copyOf(commitNode, 20), bundle.changelogEntries.get(0).node);
+        assertArrayEquals(Arrays.copyOf(commitNode, 20), bundle.changelogEntries.get(0).node);
     }
 
     @Test
@@ -169,7 +131,7 @@ public class HgHttpTransportV2RoundtripTest {
         boolean ok = client.pushkey("bookmarks", "mybook", "", hex);
         assertTrue(ok, "존재하지 않던 키에 대한 pushkey(oldVal empty)는 성공해야 함");
 
-        java.util.Map<String, String> keys = client.listKeys("bookmarks");
+        Map<String, String> keys = client.listKeys("bookmarks");
         assertEquals(hex, keys.get("mybook"), "listkeys로 방금 push한 bookmark가 조회돼야 함");
     }
 

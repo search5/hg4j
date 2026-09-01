@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.junit.jupiter.api.Assertions;
 
 @Tag("interop")
 public class CHgBranchWriteTest {
@@ -49,6 +50,6 @@ public class CHgBranchWriteTest {
 
         // Verify repository integrity
         String nativeVerify = HgTestUtils.hg(repoDir, "verify");
-        org.junit.jupiter.api.Assertions.assertFalse(nativeVerify.contains("integrity error"), "Saved repository contains integrity errors!\n" + nativeVerify);
+        Assertions.assertFalse(nativeVerify.contains("integrity error"), "Saved repository contains integrity errors!\n" + nativeVerify);
     }
 }

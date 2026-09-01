@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Modifier;
 
 public class InitCommandTest {
 
@@ -103,8 +105,8 @@ public class InitCommandTest {
 
     @Test
     public void testHgConstructorCoverage() throws Exception {
-        java.lang.reflect.Constructor<Hg> constructor = Hg.class.getDeclaredConstructor(com.github.search5.hg4j.lib.HgRepository.class);
-        assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()));
+        Constructor<Hg> constructor = Hg.class.getDeclaredConstructor(HgRepository.class);
+        assertTrue(Modifier.isPrivate(constructor.getModifiers()));
         constructor.setAccessible(true);
         HgRepository fakeRepo = new HgRepository(new File("."));
         Hg instance = constructor.newInstance(fakeRepo);

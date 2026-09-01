@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.lang.reflect.Field;
 
 public class ProcessHookTest {
 
@@ -86,7 +88,7 @@ public class ProcessHookTest {
         commitCmd.registerPreCommitHook(failingHook);
 
         // Verify that an exception is thrown when PreCommitHook is rejected
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, () -> {
+        assertThrows(HgValidationException.class, () -> {
             commitCmd.call();
         }, "Pre-commit hook이 실패를 반환하면 커밋이 거부되어 예외가 터져야 합니다.");
     }
@@ -96,7 +98,7 @@ public class ProcessHookTest {
         // Pass a script path containing spaces wrapped in quotes
         ProcessHook hook = new ProcessHook("\"/path/to/my script.sh\" arg1 'arg2 with space'");
         
-        java.lang.reflect.Field cmdField = ProcessHook.class.getDeclaredField("command");
+        Field cmdField = ProcessHook.class.getDeclaredField("command");
         cmdField.setAccessible(true);
         @SuppressWarnings("unchecked")
         List<String> commandList = (List<String>) cmdField.get(hook);

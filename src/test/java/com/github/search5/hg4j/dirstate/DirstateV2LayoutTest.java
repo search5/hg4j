@@ -8,6 +8,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for field mapping and verification of the dirstate-v2 binary node layout.
+ *
+ * <p>Offsets and flag bit values below are the real ones, verified against Mercurial 6.0's
+ * {@code mercurial/dirstateutils/v2.py} ({@code NODE = struct.Struct('>LHHLHLLLLHlll')}) and
+ * {@code mercurial/pure/parsers.py} ({@code DIRSTATE_V2_*} constants) — see
+ * {@link DirstateV2Node}'s class doc for how this was cross-checked against a real fixture.</p>
  */
 public class DirstateV2LayoutTest {
 
@@ -17,27 +22,33 @@ public class DirstateV2LayoutTest {
         byte[] buffer = new byte[44];
         ByteBuffer wrapper = ByteBuffer.wrap(buffer).order(ByteOrder.BIG_ENDIAN);
 
-        // Write node field information (Offset-based binary writing aligned with Mercurial native specifications)
-        wrapper.putInt(0, 10);              // children_start: index 10
-        wrapper.putInt(4, 2);               // children_count: 2
-        wrapper.putInt(8, 20);              // descendants_with_entry: 20
-        wrapper.putInt(12, 15);             // tracked_descendants: 15
-        wrapper.putShort(16, (short) 0x3B); // flags: 0x3B (WDIR_TRACKED | P1_TRACKED | MODE_EXEC_PERM | HAS_MODE_AND_SIZE | HAS_MTIME) -> state 'n', executable
-        wrapper.putInt(18, 12345);          // size: 12345 bytes
-        wrapper.putInt(22, 1680000000);    // mtime: epoch seconds
-        wrapper.putInt(26, 999);            // mtime_nanoseconds: 999
-        wrapper.putInt(30, 500);            // path_offset: 500
-        wrapper.putShort(34, (short) 12);   // path_len: 12 bytes
-        wrapper.putShort(36, (short) 4);    // basename_start: 4
-        wrapper.putInt(38, 600);            // copy_source_offset: 600
-        wrapper.putShort(42, (short) 5);    // copy_source_len: 5 bytes
+        // Write node field information at the real NODE struct offsets:
+        // >LHHLHLLLLHlll -> path_start(0,L) path_len(4,H) basename_start(6,H)
+        // copy_source_start(8,L) copy_source_len(12,H) children_start(14,L) children_count(18,L)
+        // descendants_with_entry(22,L) tracked_descendants(26,L) flags(30,H) size(32,l)
+        // mtime_s(36,l) mtime_ns(40,l)
+        wrapper.putInt(0, 500);              // path_start: 500
+        wrapper.putShort(4, (short) 12);     // path_len: 12 bytes
+        wrapper.putShort(6, (short) 4);      // basename_start: 4
+        wrapper.putInt(8, 600);              // copy_source_start: 600
+        wrapper.putShort(12, (short) 5);     // copy_source_len: 5 bytes
+        wrapper.putInt(14, 10);              // children_start: index 10
+        wrapper.putInt(18, 2);               // children_count: 2
+        wrapper.putInt(22, 20);              // descendants_with_entry: 20
+        wrapper.putInt(26, 15);              // tracked_descendants: 15
+        // flags: WDIR_TRACKED(1) | P1_TRACKED(2) | MODE_EXEC_PERM(8) | HAS_MODE_AND_SIZE(1024)
+        // | HAS_MTIME(2048) -> state 'n', executable
+        wrapper.putShort(30, (short) (1 | 2 | 8 | 1024 | 2048));
+        wrapper.putInt(32, 12345);           // size: 12345 bytes
+        wrapper.putInt(36, 1680000000);      // mtime_s: epoch seconds
+        wrapper.putInt(40, 999);             // mtime_ns: 999
 
         // When: Bind DirstateV2Node structure mapper
         DirstateV2Node node = new DirstateV2Node(buffer, 0);
 
         // Then: Assert decoded binary values against expected fields
         assertEquals('n', node.getState());
-        assertEquals((short) 0x3B, node.getFlags());
+        assertEquals((short) (1 | 2 | 8 | 1024 | 2048), node.getFlags());
         assertEquals(0100755, node.getMode()); // executable
         assertEquals(12345, node.getSize());
         assertEquals(1680000000L, node.getMtime());
@@ -54,7 +65,7 @@ public class DirstateV2LayoutTest {
 
         // When: Modify node information using the Java API
         node.setState('a');                 // 'a' (added) -> WDIR_TRACKED (0x01)
-        node.setMode(0644);                 // 0644 (normal file) -> flags = 0x01
+        node.setMode(0644);                 // 0644 (normal file) -> no exec/symlink flags
         node.setSize(9999);
         node.setMtime(1700000000L);
         node.setPathOffset(800);
@@ -68,19 +79,25 @@ public class DirstateV2LayoutTest {
         node.setTrackedDescendants(35);
         node.setMtimeNanoseconds(888);
 
-        // Then: Cross-verify that modifications are correctly reflected in the original byte buffer based on Mercurial native specifications
-        assertEquals(30, wrapper.getInt(0));
-        assertEquals(4, wrapper.getInt(4));
-        assertEquals(40, wrapper.getInt(8));
-        assertEquals(35, wrapper.getInt(12));
-        assertEquals((short) 0x19, wrapper.getShort(16)); // state 'a' & normal file -> flags = 0x19 (WDIR_TRACKED | HAS_MODE_AND_SIZE | HAS_MTIME)
-        assertEquals(9999, wrapper.getInt(18));
-        assertEquals(1700000000L, wrapper.getInt(22) & 0xFFFFFFFFL);
-        assertEquals(888, wrapper.getInt(26));
-        assertEquals(800, wrapper.getInt(30));
-        assertEquals((short) 15, wrapper.getShort(34));
-        assertEquals((short) 6, wrapper.getShort(36));
-        assertEquals(700, wrapper.getInt(38));
-        assertEquals((short) 7, wrapper.getShort(42));
+        // Then: Cross-verify that modifications are correctly reflected in the original byte
+        // buffer at the real struct offsets.
+        assertEquals(800, wrapper.getInt(0));
+        assertEquals((short) 15, wrapper.getShort(4));
+        assertEquals((short) 6, wrapper.getShort(6));
+        assertEquals(700, wrapper.getInt(8));
+        assertEquals((short) 7, wrapper.getShort(12));
+        assertEquals(30, wrapper.getInt(14));
+        assertEquals(4, wrapper.getInt(18));
+        assertEquals(40, wrapper.getInt(22));
+        assertEquals(35, wrapper.getInt(26));
+        // setState()/setMode() only ever touch their own specific bits (WDIR_TRACKED/P1_TRACKED/
+        // P2_INFO and MODE_EXEC_PERM/MODE_IS_SYMLINK respectively) -- HAS_MODE_AND_SIZE(1024) and
+        // HAS_MTIME(2048) from the original setup are left untouched, same as real hg's
+        // DirstateItem.v2_data(), which sets each flag bit independently based on which fields
+        // are non-null. Final: WDIR_TRACKED(1) | HAS_MODE_AND_SIZE(1024) | HAS_MTIME(2048).
+        assertEquals((short) (1 | 1024 | 2048), wrapper.getShort(30));
+        assertEquals(9999, wrapper.getInt(32));
+        assertEquals(1700000000L, wrapper.getInt(36) & 0xFFFFFFFFL);
+        assertEquals(888, wrapper.getInt(40));
     }
 }

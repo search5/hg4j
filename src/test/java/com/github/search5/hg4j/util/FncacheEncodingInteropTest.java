@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.Path;
 
 /**
  * 실제 hg가 까다로운 파일명(대문자, 앞자리 점, Windows 예약어, com/lpt+숫자, 매우 긴 경로)에
@@ -28,7 +29,7 @@ public class FncacheEncodingInteropTest {
     }
 
     @Test
-    public void hg4jStoreEncodingMatchesRealHgOnDiskLayout(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void hg4jStoreEncodingMatchesRealHgOnDiskLayout(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgTestUtils.nativeRepo(repoDir, dir -> {
             try {

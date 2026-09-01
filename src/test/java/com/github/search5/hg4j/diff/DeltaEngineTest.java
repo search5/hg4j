@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.ByteBuffer;
+import java.util.List;
 
 /**
  * Unit tests for DeltaEngine.
@@ -178,7 +180,7 @@ public class DeltaEngineTest {
     // ─────────────────────────────────────────────────────────────
 
     private byte[] buildDelta(int start, int end, byte[] data) {
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(12 + data.length);
+        ByteBuffer buf = ByteBuffer.allocate(12 + data.length);
         buf.putInt(start);
         buf.putInt(end);
         buf.putInt(data.length);
@@ -187,7 +189,7 @@ public class DeltaEngineTest {
     }
 
     private byte[] buildDeltaHeaderOnly(int start, int end, int length) {
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(12);
+        ByteBuffer buf = ByteBuffer.allocate(12);
         buf.putInt(start);
         buf.putInt(end);
         buf.putInt(length);
@@ -197,21 +199,21 @@ public class DeltaEngineTest {
     @Test
     @DisplayName("Line inner class equals / hashCode consistency test")
     public void testLineEqualsAndHashCode() throws Exception {
-        java.util.List<?> lines = (java.util.List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
+        List<?> lines = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
                 .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
         
         assertNotNull(lines);
         assertEquals(1, lines.size());
         Object lineObj1 = lines.get(0);
         
-        java.util.List<?> lines2 = (java.util.List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
+        List<?> lines2 = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
                 .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
         Object lineObj2 = lines2.get(0);
         
         assertEquals(lineObj1, lineObj2);
         assertEquals(lineObj1.hashCode(), lineObj2.hashCode());
         
-        java.util.List<?> lines3 = (java.util.List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
+        List<?> lines3 = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
                 .invoke(null, (Object) "Line 2\n".getBytes(StandardCharsets.UTF_8));
         Object lineObj3 = lines3.get(0);
         

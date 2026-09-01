@@ -4,6 +4,12 @@ import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import java.io.File;
 import java.io.IOException;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * Compaction / Garbage Collection command for optimizing Mercurial revlog storage.
@@ -48,7 +54,7 @@ public class GcCommand {
         }
 
         // 2. Perform Pack GC: Compress and defragment all revlogs (.i and .d) in the store
-        java.util.Set<String> validStorePaths = new java.util.LinkedHashSet<>();
+        Set<String> validStorePaths = new LinkedHashSet<>();
         
         File clIdx = new File(storeDir, "00changelog.i");
         File clDat = new File(storeDir, "00changelog.d");
@@ -86,7 +92,7 @@ public class GcCommand {
         // 3. Rebuild fncache with atomic file IO
         File fncacheFile = new File(storeDir, "fncache");
         if (!validStorePaths.isEmpty()) {
-            com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(fncacheFile, new java.util.ArrayList<>(validStorePaths));
+            SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(validStorePaths));
         }
 
         // 4. Request JVM level defragmentation
@@ -131,9 +137,9 @@ public class GcCommand {
             }
 
             // Atomic replace of store files
-            java.nio.file.Files.move(tmpIdx.toPath(), idxFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.move(tmpIdx.toPath(), idxFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             if (tmpDat.exists()) {
-                java.nio.file.Files.move(tmpDat.toPath(), datFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.move(tmpDat.toPath(), datFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
         } finally {
             tmpIdx.delete();
@@ -141,7 +147,7 @@ public class GcCommand {
         }
     }
 
-    private void scanForIndexFiles(File dir, java.util.Set<String> result) {
+    private void scanForIndexFiles(File dir, Set<String> result) {
         File[] files = dir.listFiles();
         if (files == null) return;
         for (File f : files) {

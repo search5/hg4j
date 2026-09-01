@@ -11,6 +11,15 @@ import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.channels.FileChannel;
 import java.nio.file.StandardOpenOption;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.obsolete.HgObsMarker;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Strip command for truncating/removing changesets and their descendants
@@ -44,7 +53,7 @@ public class StripCommand {
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        byte[] nodeBytes = com.github.search5.hg4j.util.NodeIdUtil.resolveRevision(changelog, revision);
+        byte[] nodeBytes = NodeIdUtil.resolveRevision(changelog, revision);
         if (nodeBytes == null) {
             throw new IOException("Strip target revision not found: " + revision);
         }
@@ -58,19 +67,19 @@ public class StripCommand {
         int keepCount = targetRev;
         byte[] rollbackParent = (keepCount > 0) ? changelog.getIndexRecord(keepCount - 1).getNodeId() : new byte[20];
 
-        java.util.Map<File, Long> fileSizes = new java.util.HashMap<>();
+        Map<File, Long> fileSizes = new HashMap<>();
         File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
         byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
         File journalFile = new File(repository.getStoreDir(), "journal");
 
-        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock storeLock = repository.lockStore();
+             HgLock wlock = repository.lockWorkingCopy()) {
             
             // 0. Create physical journal and file size logs
             Files.deleteIfExists(journalFile.toPath());
             if (dirstateFile.exists()) {
                 File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 appendToJournal(journalFile, "dirstate");
             }
 
@@ -89,11 +98,11 @@ public class StripCommand {
 
             // 1. Truncate / delete individual file revlogs whose linkRev >= targetRev
             File fncacheFile = new File(repository.getStoreDir(), "fncache");
-            java.util.List<String> fncachePaths = fncacheFile.exists() 
-                ? java.nio.file.Files.readAllLines(fncacheFile.toPath(), java.nio.charset.StandardCharsets.UTF_8)
-                : new java.util.ArrayList<>();
+            List<String> fncachePaths = fncacheFile.exists() 
+                ? Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8)
+                : new ArrayList<>();
                 
-            java.util.List<String> updatedFncachePaths = new java.util.ArrayList<>();
+            List<String> updatedFncachePaths = new ArrayList<>();
             
             for (String storePath : fncachePaths) {
                 if (storePath.equals("00changelog.i") || storePath.equals("00manifest.i")) {
@@ -139,7 +148,7 @@ public class StripCommand {
             }
             
             // Write back updated fncache atomically
-            com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(fncacheFile, updatedFncachePaths);
+            SafeFileIO.writeLinesAtomic(fncacheFile, updatedFncachePaths);
 
             // 2. Truncate Core Changelog and Manifest
             truncateRevlog(clIdx, clDat, keepCount);
@@ -148,14 +157,14 @@ public class StripCommand {
             // 3. Clean bookmarks whose revisions are stripped
             File bookmarksFile = new File(repository.getHgDir(), "bookmarks");
             if (bookmarksFile.exists()) {
-                java.util.List<String> bLines = java.nio.file.Files.readAllLines(bookmarksFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
-                java.util.List<String> updatedBLines = new java.util.ArrayList<>();
+                List<String> bLines = Files.readAllLines(bookmarksFile.toPath(), StandardCharsets.UTF_8);
+                List<String> updatedBLines = new ArrayList<>();
                 for (String line : bLines) {
                     if (line.trim().isEmpty()) continue;
                     String[] parts = line.trim().split("\\s+", 2);
                     if (parts.length == 2) {
                         String hexNode = parts[0];
-                        byte[] node = com.github.search5.hg4j.util.NodeIdUtil.fromHex(hexNode);
+                        byte[] node = NodeIdUtil.fromHex(hexNode);
                         int rev = changelog.findRevision(node);
                         if (rev != -1 && rev < targetRev) {
                             updatedBLines.add(line);
@@ -165,7 +174,7 @@ public class StripCommand {
                 if (updatedBLines.isEmpty()) {
                     bookmarksFile.delete();
                 } else {
-                    com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(bookmarksFile, updatedBLines);
+                    SafeFileIO.writeLinesAtomic(bookmarksFile, updatedBLines);
                 }
             }
 
@@ -174,14 +183,14 @@ public class StripCommand {
             // real hg CLI로 확인, 2026-09-01).
             File phaserootsFile = new File(repository.getStoreDir(), "phaseroots");
             if (phaserootsFile.exists()) {
-                java.util.List<String> pLines = java.nio.file.Files.readAllLines(phaserootsFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
-                java.util.List<String> updatedPLines = new java.util.ArrayList<>();
+                List<String> pLines = Files.readAllLines(phaserootsFile.toPath(), StandardCharsets.UTF_8);
+                List<String> updatedPLines = new ArrayList<>();
                 for (String line : pLines) {
                     if (line.trim().isEmpty()) continue;
                     String[] parts = line.trim().split("\\s+", 2);
                     if (parts.length == 2) {
                         String hexNode = parts[1];
-                        byte[] node = com.github.search5.hg4j.util.NodeIdUtil.fromHex(hexNode);
+                        byte[] node = NodeIdUtil.fromHex(hexNode);
                         int rev = changelog.findRevision(node);
                         if (rev != -1 && rev < targetRev) {
                             updatedPLines.add(line);
@@ -191,7 +200,7 @@ public class StripCommand {
                 if (updatedPLines.isEmpty()) {
                     phaserootsFile.delete();
                 } else {
-                    com.github.search5.hg4j.util.SafeFileIO.writeLinesAtomic(phaserootsFile, updatedPLines);
+                    SafeFileIO.writeLinesAtomic(phaserootsFile, updatedPLines);
                 }
             }
 
@@ -202,9 +211,19 @@ public class StripCommand {
             d.setParents(parent20, new byte[20]);
             repository.writeDirstate(d);
 
+            // The working copy is reset to whatever revision survives as the new tip —
+            // its branch may differ from the branch the stripped revision(s) were on
+            // (e.g. stripping a feature-branch tip lands back on a default-branch
+            // ancestor), so the working branch must follow it, same as UpdateCommand.
+            if (keepCount > 0) {
+                repository.setBranch(CommitCommand.getBranchOfRevision(changelog, keepCount - 1));
+            } else {
+                repository.setBranch("default");
+            }
+
             // Register obsolescence marker pruning the stripped commit completely (no successors)
             try {
-                com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), nodeBytes, java.util.List.of(), "prune");
+                HgObsMarker.writeMarker(repository.getStoreDir(), nodeBytes, List.of(), "prune");
             } catch (Exception e) {
                 // non-blocking
             }
@@ -223,7 +242,7 @@ public class StripCommand {
 
         } catch (Exception e) {
             // Transaction Rollback Session on error
-            for (java.util.Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
+            for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
                 File file = sizeEntry.getKey();
                 long origSize = sizeEntry.getValue();
                 if (origSize == 0) {
@@ -236,7 +255,7 @@ public class StripCommand {
                 }
             }
             if (dirstateBackup != null) {
-                com.github.search5.hg4j.util.SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
             }
             Files.deleteIfExists(journalFile.toPath());
             throw e;
@@ -265,9 +284,9 @@ public class StripCommand {
     }
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
-        Files.writeString(journalFile.toPath(), entry + "\n", java.nio.charset.StandardCharsets.UTF_8,
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-        try (java.nio.channels.FileChannel fc = java.nio.channels.FileChannel.open(journalFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
             fc.force(true);
         }
     }

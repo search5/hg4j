@@ -20,6 +20,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 
 /**
  * TDD 검증: JGit 스타일의 open, NodeId 기반 API, 그리고 정교한 예외 흐름 종합 테스트 스위트
@@ -65,7 +68,7 @@ public class HgPorcelainAndExceptionsTest {
 
         try (Hg hg = Hg.open(repoDir)) {
             assertNotNull(hg);
-            assertThrows(IllegalArgumentException.class, () -> Hg.open((java.io.File) null));
+            assertThrows(IllegalArgumentException.class, () -> Hg.open((File) null));
 
             // 커맨드 빌더 확인
             assertNotNull(hg.branch());
@@ -98,11 +101,11 @@ public class HgPorcelainAndExceptionsTest {
 
     @Test
     public void testHgValidationException() {
-        com.github.search5.hg4j.errors.HgValidationException ex1 = new com.github.search5.hg4j.errors.HgValidationException("val error");
+        HgValidationException ex1 = new HgValidationException("val error");
         assertEquals("val error", ex1.getMessage());
         
         Throwable cause = new RuntimeException("cause");
-        com.github.search5.hg4j.errors.HgValidationException ex2 = new com.github.search5.hg4j.errors.HgValidationException("val error 2", cause);
+        HgValidationException ex2 = new HgValidationException("val error 2", cause);
         assertEquals("val error 2", ex2.getMessage());
         assertEquals(cause, ex2.getCause());
     }
@@ -191,30 +194,30 @@ public class HgPorcelainAndExceptionsTest {
         byte[] revNode = new CommitCommand(repo).setMessage("Base").call();
 
         // setRevision(NodeId) 테스트
-        cat.setRevision(new com.github.search5.hg4j.lib.NodeId(revNode));
+        cat.setRevision(new NodeId(revNode));
         assertArrayEquals("Hello Cat\n".getBytes(), cat.call());
 
         // setRevision(NodeId null) 테스트
-        cat.setRevision((com.github.search5.hg4j.lib.NodeId) null);
+        cat.setRevision((NodeId) null);
         assertArrayEquals("Hello Cat\n".getBytes(), cat.call()); // defaults to tip
 
         // 3. Revision not found
         cat.setRevision("non_existent_branch_123");
-        assertThrows(com.github.search5.hg4j.errors.HgRevisionNotFoundException.class, cat::call);
+        assertThrows(HgRevisionNotFoundException.class, cat::call);
 
         // 4. Filelog index not found
         File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "a.txt");
         assertTrue(flIdx.exists());
         assertTrue(flIdx.delete());
 
-        cat.setRevision(new com.github.search5.hg4j.lib.NodeId(revNode));
-        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class, cat::call);
+        cat.setRevision(new NodeId(revNode));
+        assertThrows(HgCorruptDataException.class, cat::call);
     }
 
     @Test
-    public void testHgOpenRequiresValidationAndWrap(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void testHgOpenRequiresValidationAndWrap(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("requires_val_repo").toFile();
-        com.github.search5.hg4j.lib.HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
         
         // 1. wrap() verify
         try (Hg hg = Hg.wrap(repo)) {
@@ -232,15 +235,15 @@ public class HgPorcelainAndExceptionsTest {
         File requires = new File(hgDir, "requires");
         Files.writeString(requires.toPath(), "unsupported-ext-requirement-123\n");
         
-        assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, () -> {
+        assertThrows(HgValidationException.class, () -> {
             Hg.open(repoDir);
         });
     }
 
     @Test
-    public void testJavaScmHookSystemIntegration(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void testJavaScmHookSystemIntegration(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("hook_test_repo").toFile();
-        com.github.search5.hg4j.lib.HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
         
         try (Hg hg = Hg.wrap(repo)) {
             // 1. PRE_COMMIT hook 등록하여 커밋 트랜잭션을 거부하는지 확인
@@ -251,7 +254,7 @@ public class HgPorcelainAndExceptionsTest {
             });
 
             // 2. POST_COMMIT hook 등록하여 성공 시 context 데이터를 수집하는지 검사
-            final List<String> hookResults = new java.util.ArrayList<>();
+            final List<String> hookResults = new ArrayList<>();
             hg.registerHook(HgHookType.POST_COMMIT, ctx -> {
                 hookResults.add((String) ctx.get("message"));
                 return true;
@@ -263,7 +266,7 @@ public class HgPorcelainAndExceptionsTest {
 
             // 3. PRE_COMMIT 훅 거부 시 예외가 발생하는지 확인
             CommitCommand rejectCommit = hg.commit().setAuthor("Tester").setMessage("bad message");
-            assertThrows(com.github.search5.hg4j.errors.HgValidationException.class, rejectCommit::call);
+            assertThrows(HgValidationException.class, rejectCommit::call);
 
             // 4. 정상적인 메시지로 커밋 시 성공적으로 수행되고 POST_COMMIT 훅이 구동되는지 확인
             byte[] node = hg.commit().setAuthor("Tester").setMessage("good message").call();
@@ -274,10 +277,10 @@ public class HgPorcelainAndExceptionsTest {
     }
 
     @Test
-    public void testDynamicZstdCompressionIntegration(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void testDynamicZstdCompressionIntegration(@TempDir Path tempDir) throws Exception {
         // 1. Zstd 압축이 활성화된 저장소 초기화
         File zstdRepoDir = tempDir.resolve("zstd_repo").toFile();
-        com.github.search5.hg4j.lib.HgRepository zstdRepo = Hg.init()
+        HgRepository zstdRepo = Hg.init()
                 .setDirectory(zstdRepoDir)
                 .setUseZstd(true)
                 .call();
@@ -304,12 +307,12 @@ public class HgPorcelainAndExceptionsTest {
             
             Revlog fl = zstdRepo.getRevlog(flIdx, flDat);
             byte[] content = fl.getRevisionContent(0);
-            assertEquals(sb.toString(), new String(content, java.nio.charset.StandardCharsets.UTF_8));
+            assertEquals(sb.toString(), new String(content, StandardCharsets.UTF_8));
         }
 
         // 4. 일반 저장소(Zstd 비활성화)와 대조 검증
         File normalRepoDir = tempDir.resolve("normal_repo").toFile();
-        com.github.search5.hg4j.lib.HgRepository normalRepo = Hg.init()
+        HgRepository normalRepo = Hg.init()
                 .setDirectory(normalRepoDir)
                 .setUseZstd(false)
                 .call();
@@ -327,7 +330,7 @@ public class HgPorcelainAndExceptionsTest {
             File flDat = new File(normalRepo.getStoreDir(), "data/a.txt.d");
             Revlog fl = normalRepo.getRevlog(flIdx, flDat);
             byte[] content = fl.getRevisionContent(0);
-            assertEquals("Simple text", new String(content, java.nio.charset.StandardCharsets.UTF_8));
+            assertEquals("Simple text", new String(content, StandardCharsets.UTF_8));
         }
     }
 
@@ -345,7 +348,7 @@ public class HgPorcelainAndExceptionsTest {
      */
     @Test
     @Tag("interop")
-    public void testZstdRepoIsReadableByRealHgCli(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void testZstdRepoIsReadableByRealHgCli(@TempDir Path tempDir) throws Exception {
         Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping.");
 
         File repoDir = tempDir.resolve("real_zstd_repo").toFile();
@@ -368,7 +371,7 @@ public class HgPorcelainAndExceptionsTest {
         pb.directory(repoDir);
         pb.redirectErrorStream(true);
         Process p = pb.start();
-        String output = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         int exit = p.waitFor();
         assertEquals(0, exit, "실제 hg verify가 zstd 저장소를 정상으로 인식해야 함: " + output);
         assertFalse(output.contains("unknown to this Mercurial"), "unknown requirement 오류가 없어야 함: " + output);

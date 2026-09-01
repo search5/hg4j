@@ -4,7 +4,6 @@ import com.github.search5.hg4j.bundle.ChangegroupParser;
 
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
-import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.api.CommitCommand;
 import java.io.File;
@@ -18,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
+import java.nio.file.StandardOpenOption;
 
 public class HgTestUtils {
 
@@ -65,9 +65,9 @@ public class HgTestUtils {
         // Disable zstd compression in the newly initialized native repository for compatibility
         File hgrc = new File(dir, ".hg/hgrc");
         hgrc.getParentFile().mkdirs();
-        java.nio.file.Files.writeString(hgrc.toPath(),
+        Files.writeString(hgrc.toPath(),
                 "[format]\nusezstd = false\nrevlog-compression = zlib\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
 
         setup.accept(dir);
         return new HgRepository(dir);

@@ -19,6 +19,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.treewalk.ManifestWalk;
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 
 /**
  * Porcelain command to shelve and unshelve local working copy changes.
@@ -76,9 +84,9 @@ public class ShelveCommand {
             return null;
         }
 
-        com.github.search5.hg4j.treewalk.ManifestWalk mw = new com.github.search5.hg4j.treewalk.ManifestWalk(repository, String.valueOf(lastRev));
+        ManifestWalk mw = new ManifestWalk(repository, String.valueOf(lastRev));
         while (mw.next()) {
-            com.github.search5.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
+            ManifestWalk.Entry entry = mw.getEntry();
             if (entry.getPath().equals(path)) {
                 byte[] nodeId = entry.getNodeId();
                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
@@ -224,13 +232,21 @@ public class ShelveCommand {
                     if (file.exists() || isSym) {
                         long diskSize = isSym ? Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8).length : file.length();
                         long diskTime = file.lastModified() / 1000;
+                        byte[] content = isSym
+                                ? Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8)
+                                : Files.readAllBytes(file.toPath());
+                        boolean modified;
                         if (entry.getSize() != diskSize || entry.getTime() != diskTime) {
-                            byte[] content;
-                            if (isSym) {
-                                content = Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8);
-                            } else {
-                                content = Files.readAllBytes(file.toPath());
-                            }
+                            modified = true;
+                        } else {
+                            // Racy-write guard: a same-second edit that happens to keep the
+                            // exact same byte size is indistinguishable from "unchanged" by
+                            // size/mtime alone (mirrors StatusCommand's racy-modified check),
+                            // so fall back to comparing against the last committed content.
+                            byte[] baseline = getBaselineContent(path);
+                            modified = baseline == null || !Arrays.equals(content, baseline);
+                        }
+                        if (modified) {
                             shelvedFiles.add(new ShelvedFile(path, 'n', content, entry.getMode()));
                         }
                     }
@@ -276,7 +292,7 @@ public class ShelveCommand {
             Revlog cl = repository.getRevlog(clIdx, clDat);
             int tempRev = cl.findRevision(tempCommitNode);
             if (tempRev == -1) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Failed to resolve temporary shelve commit.");
+                throw new HgRevisionNotFoundException("Failed to resolve temporary shelve commit.");
             }
 
             ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
@@ -405,7 +421,7 @@ public class ShelveCommand {
         File hgBundleFile = new File(shelvedDir, name + ".hg");
 
         if (!stateFile.exists() || !hgBundleFile.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Shelve file not found: " + name);
+            throw new HgRepositoryNotFoundException("Shelve file not found: " + name);
         }
 
         List<String> stateLines = Files.readAllLines(stateFile.toPath(), StandardCharsets.UTF_8);
@@ -414,7 +430,7 @@ public class ShelveCommand {
         String p2Hex = stateLines.get(3).trim();
 
         if (!shelveName.equals(name)) {
-            throw new com.github.search5.hg4j.errors.HgValidationException("Cannot unshelve: Shelve name mismatch. State file has '" + shelveName 
+            throw new HgValidationException("Cannot unshelve: Shelve name mismatch. State file has '" + shelveName 
                 + "' but expected '" + name + "'");
         }
 
@@ -457,12 +473,12 @@ public class ShelveCommand {
             // Validate parent hash consistency (W1)
             String currentP1Hex = NodeIdUtil.toHex(dirstate.getParent1());
             if (!currentP1Hex.equalsIgnoreCase(p1Hex)) {
-                throw new com.github.search5.hg4j.errors.HgValidationException("Cannot unshelve: Working directory parent (" + currentP1Hex 
+                throw new HgValidationException("Cannot unshelve: Working directory parent (" + currentP1Hex 
                     + ") does not match shelved parent (" + p1Hex + ")");
             }
             String currentP2Hex = NodeIdUtil.toHex(dirstate.getParent2());
             if (!currentP2Hex.equalsIgnoreCase(p2Hex)) {
-                throw new com.github.search5.hg4j.errors.HgValidationException("Cannot unshelve: Working directory parent2 (" + currentP2Hex 
+                throw new HgValidationException("Cannot unshelve: Working directory parent2 (" + currentP2Hex 
                     + ") does not match shelved parent2 (" + p2Hex + ")");
             }
 
@@ -492,7 +508,7 @@ public class ShelveCommand {
                 if (mode == 0120000) {
                     String target = new String(content, StandardCharsets.UTF_8).trim();
                     try {
-                        Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                        Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
                     } catch (Exception e) {
                         Files.write(diskFile.toPath(), content);
                     }
@@ -551,9 +567,9 @@ public class ShelveCommand {
         String clText = new String(clContent, StandardCharsets.UTF_8);
         byte[] mfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
         Map<String, String> manifestEntries = new HashMap<>();
-        com.github.search5.hg4j.treewalk.ManifestWalk mw = new com.github.search5.hg4j.treewalk.ManifestWalk(repository, mfNode);
+        ManifestWalk mw = new ManifestWalk(repository, mfNode);
         while (mw.next()) {
-            com.github.search5.hg4j.treewalk.ManifestWalk.Entry entry = mw.getEntry();
+            ManifestWalk.Entry entry = mw.getEntry();
             String flag = entry.isSymlink() ? "l" : (entry.isExecutable() ? "x" : "");
             manifestEntries.put(entry.getPath(), entry.getNodeIdHex() + flag);
         }
@@ -590,7 +606,7 @@ public class ShelveCommand {
                     mode = 0120000;
                     String target = new String(originalContent, StandardCharsets.UTF_8).trim();
                     try {
-                        Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                        Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
                     } catch (Exception e) {
                         Files.write(diskFile.toPath(), originalContent);
                     }
@@ -709,7 +725,7 @@ public class ShelveCommand {
         if (size == 0) {
             Files.deleteIfExists(file.toPath());
         } else {
-            try (java.nio.channels.FileChannel outChan = java.nio.channels.FileChannel.open(file.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+            try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
                 outChan.truncate(size);
                 outChan.force(true);
             }

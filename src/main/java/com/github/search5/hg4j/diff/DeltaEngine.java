@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
  * Component dedicated to the revlog delta algorithm (SRP separation).
@@ -44,21 +45,21 @@ public final class DeltaEngine {
 
         while (buf.hasRemaining()) {
             if (buf.remaining() < 12) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Truncated delta hunk header");
+                throw new HgCorruptDataException("Truncated delta hunk header");
             }
             int start = buf.getInt();
             int end = buf.getInt();
             int length = buf.getInt();
 
             if (length < 0 || buf.remaining() < length) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Truncated delta hunk data");
+                throw new HgCorruptDataException("Truncated delta hunk data");
             }
             byte[] insertData = new byte[length];
             buf.get(insertData);
 
             if (start < lastCopied || start > baseText.length
                     || end < start || end > baseText.length) {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Invalid delta hunk offsets: start=" + start
+                throw new HgCorruptDataException("Invalid delta hunk offsets: start=" + start
                         + ", end=" + end + ", baseLen=" + baseText.length);
             }
             out.write(baseText, lastCopied, start - lastCopied);
@@ -157,10 +158,10 @@ public final class DeltaEngine {
         int max = n + m;
         int offset = max;
         int[] v = new int[2 * max + 1];
-        java.util.Arrays.fill(v, -1);
+        Arrays.fill(v, -1);
         v[offset + 1] = 0;
 
-        List<int[]> history = new java.util.ArrayList<>();
+        List<int[]> history = new ArrayList<>();
 
         int targetD = -1;
         for (int d = 0; d <= max; d++) {
@@ -191,7 +192,7 @@ public final class DeltaEngine {
                 break;
             }
             int[] currentVCopy = new int[2 * d + 1];
-            java.util.Arrays.fill(currentVCopy, -1);
+            Arrays.fill(currentVCopy, -1);
             for (int k2 = -d; k2 <= d; k2++) {
                 if (Math.abs(offset + k2) < v.length) {
                     currentVCopy[k2 + d] = v[offset + k2];

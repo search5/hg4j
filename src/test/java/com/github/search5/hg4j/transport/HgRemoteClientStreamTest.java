@@ -11,6 +11,10 @@ import java.lang.reflect.Constructor;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sun.net.httpserver.HttpServer;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.util.List;
 
 /**
  * Comprehensive unit tests for the internal MercurialChunkedInputStream class
@@ -201,15 +205,15 @@ public class HgRemoteClientStreamTest {
     @DisplayName("mercurial-0.1 응답에서 zlib 압축 감지 동작 확인")
     public void testHgRemoteClient_mercurial01_capabilities_viaLocalServer() throws Exception {
         // Configure a local server using com.sun.net.httpserver
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server =
+                HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 
         server.createContext("/", exchange -> {
             String response = "lookup getbundle changegroup\n";
             byte[] respBytes = response.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.1");
             exchange.sendResponseHeaders(200, respBytes.length);
-            try (java.io.OutputStream os = exchange.getResponseBody()) {
+            try (OutputStream os = exchange.getResponseBody()) {
                 os.write(respBytes);
             }
         });
@@ -218,7 +222,7 @@ public class HgRemoteClientStreamTest {
 
         try {
             HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + port + "/");
-            java.util.List<String> caps = client.getCapabilities();
+            List<String> caps = client.getCapabilities();
             assertNotNull(caps);
             assertTrue(caps.contains("lookup"));
             assertTrue(caps.contains("getbundle"));
@@ -231,8 +235,8 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("mercurial-0.2 응답에서 none 압축으로 청크 데이터 정상 수신")
     public void testHgRemoteClient_mercurial02_none_compression() throws Exception {
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server =
+                HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 
         server.createContext("/", exchange -> {
             // mercurial-0.2 response format:
@@ -257,7 +261,7 @@ public class HgRemoteClientStreamTest {
             byte[] respBytes = body.toByteArray();
             exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.2");
             exchange.sendResponseHeaders(200, respBytes.length);
-            try (java.io.OutputStream os = exchange.getResponseBody()) {
+            try (OutputStream os = exchange.getResponseBody()) {
                 os.write(respBytes);
             }
         });
@@ -266,7 +270,7 @@ public class HgRemoteClientStreamTest {
 
         try {
             HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + port + "/");
-            java.util.List<String> caps = client.getCapabilities();
+            List<String> caps = client.getCapabilities();
             assertNotNull(caps);
             assertTrue(caps.contains("lookup"));
             assertTrue(caps.contains("getbundle"));
@@ -278,8 +282,8 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("HTTP 500 응답 → IOException 발생")
     public void testHgRemoteClient_http500_throwsIOException() throws Exception {
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server =
+                HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             exchange.sendResponseHeaders(500, -1);
             exchange.getResponseBody().close();
@@ -298,12 +302,12 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("getChangegroup 정상 요청 처리")
     public void testHgRemoteClient_getChangegroup_success() throws Exception {
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server =
+                HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             byte[] resp = new byte[]{0x01, 0x02, 0x03};
             exchange.sendResponseHeaders(200, resp.length);
-            try (java.io.OutputStream os = exchange.getResponseBody()) {
+            try (OutputStream os = exchange.getResponseBody()) {
                 os.write(resp);
             }
         });
@@ -312,7 +316,7 @@ public class HgRemoteClientStreamTest {
 
         try {
             HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + port + "/");
-            byte[] result = client.getChangegroup(java.util.List.of("abc123"));
+            byte[] result = client.getChangegroup(List.of("abc123"));
             assertNotNull(result);
             assertEquals(3, result.length);
         } finally {
@@ -323,12 +327,12 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("getBundle 정상 요청 처리")
     public void testHgRemoteClient_getBundle_success() throws Exception {
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server =
+                HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             byte[] resp = "bundle_data".getBytes(StandardCharsets.US_ASCII);
             exchange.sendResponseHeaders(200, resp.length);
-            try (java.io.OutputStream os = exchange.getResponseBody()) {
+            try (OutputStream os = exchange.getResponseBody()) {
                 os.write(resp);
             }
         });
@@ -337,7 +341,7 @@ public class HgRemoteClientStreamTest {
 
         try {
             HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + port + "/");
-            byte[] result = client.getBundle(java.util.List.of(), java.util.List.of("head1"), null);
+            byte[] result = client.getBundle(List.of(), List.of("head1"), null);
             assertNotNull(result);
             assertTrue(result.length > 0);
         } finally {
@@ -348,13 +352,13 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("push 정상 요청 처리")
     public void testHgRemoteClient_push_success() throws Exception {
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server =
+                HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             String resp = "push ok";
             byte[] respBytes = resp.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, respBytes.length);
-            try (java.io.OutputStream os = exchange.getResponseBody()) {
+            try (OutputStream os = exchange.getResponseBody()) {
                 os.write(respBytes);
             }
         });
@@ -363,7 +367,7 @@ public class HgRemoteClientStreamTest {
 
         try {
             HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + port + "/");
-            String result = client.push(new byte[]{0x01, 0x02}, java.util.List.of("head1"));
+            String result = client.push(new byte[]{0x01, 0x02}, List.of("head1"));
             assertEquals("push ok", result);
         } finally {
             server.stop(0);
@@ -373,8 +377,8 @@ public class HgRemoteClientStreamTest {
     @Test
     @DisplayName("지원하지 않는 압축 방식 (mercurial-0.2) → IOException 발생")
     public void testHgRemoteClient_mercurial02_unknownCompression_throwsIOException() throws Exception {
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        HttpServer server =
+                HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             String compName = "lz4"; // Unsupported compression
@@ -385,7 +389,7 @@ public class HgRemoteClientStreamTest {
             byte[] respBytes = body.toByteArray();
             exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.2");
             exchange.sendResponseHeaders(200, respBytes.length);
-            try (java.io.OutputStream os = exchange.getResponseBody()) {
+            try (OutputStream os = exchange.getResponseBody()) {
                 os.write(respBytes);
             }
         });

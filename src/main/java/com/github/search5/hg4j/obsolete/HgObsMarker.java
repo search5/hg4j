@@ -5,6 +5,11 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.io.FileOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 
 /**
  * Represents a single Obsolescence Marker (Evolve mechanism).
@@ -93,7 +98,7 @@ public final class HgObsMarker {
         final int NUMPAR_NONE = 3; // _fm1parentnone: 부모 정보를 기록하지 않음
         final int NODE_SIZE = 20;  // sha1 (usingsha256 플래그 미사용)
 
-        java.util.LinkedHashMap<String, String> meta = new java.util.LinkedHashMap<>();
+        LinkedHashMap<String, String> meta = new LinkedHashMap<>();
         meta.put("operation", operation != null ? operation : "amend");
         meta.put("user", "hg4j");
 
@@ -102,12 +107,12 @@ public final class HgObsMarker {
         int metaPairsSection = 2 * meta.size();
         int metaBytesLen = 0;
         for (Map.Entry<String, String> e : meta.entrySet()) {
-            metaBytesLen += e.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8).length
-                    + e.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            metaBytesLen += e.getKey().getBytes(StandardCharsets.UTF_8).length
+                    + e.getValue().getBytes(StandardCharsets.UTF_8).length;
         }
         int totalSize = fixedSize + nodesSection + metaPairsSection + metaBytesLen;
 
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(totalSize).order(java.nio.ByteOrder.BIG_ENDIAN);
+        ByteBuffer buf = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(totalSize);
         buf.putDouble(System.currentTimeMillis() / 1000.0);
         buf.putShort((short) 0); // tz(분 단위) — 단순화를 위해 UTC로 기록
@@ -120,15 +125,15 @@ public final class HgObsMarker {
             buf.put(succ, 0, NODE_SIZE);
         }
         for (Map.Entry<String, String> e : meta.entrySet()) {
-            buf.put((byte) e.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
-            buf.put((byte) e.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            buf.put((byte) e.getKey().getBytes(StandardCharsets.UTF_8).length);
+            buf.put((byte) e.getValue().getBytes(StandardCharsets.UTF_8).length);
         }
         for (Map.Entry<String, String> e : meta.entrySet()) {
-            buf.put(e.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            buf.put(e.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            buf.put(e.getKey().getBytes(StandardCharsets.UTF_8));
+            buf.put(e.getValue().getBytes(StandardCharsets.UTF_8));
         }
 
-        try (java.io.FileOutputStream out = new java.io.FileOutputStream(obsstoreFile, true)) {
+        try (FileOutputStream out = new FileOutputStream(obsstoreFile, true)) {
             if (writeVersionByte) {
                 out.write(1); // _fm1version
             }

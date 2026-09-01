@@ -54,26 +54,34 @@ public class CHgDirstateV2Test {
         Assumptions.assumeTrue(ver >= 6.0, "Mercurial version must be 6.0 or higher for dirstate-v2 tests. Current version: " + ver);
 
         File repoDir = tempDir.resolve("repo").toFile();
-        
-        // Setup repository using native hg with dirstate-v2 enabled
-        HgRepository repository = HgTestUtils.nativeRepo(repoDir, dir -> {
-            try {
-                // Enable dirstate-v2 through format config
-                File hgrc = new File(dir, ".hg/hgrc");
-                hgrc.getParentFile().mkdirs();
-                Files.writeString(hgrc.toPath(), "[format]\nuse-dirstate-v2 = true\nusezstd = false\n");
 
-                File f1 = new File(dir, "f1.txt");
-                Files.writeString(f1.toPath(), "Dirstate-v2 testing file 1");
-                File f2 = new File(dir, "f2.txt");
-                Files.writeString(f2.toPath(), "Dirstate-v2 testing file 2");
+        // `format.use-dirstate-v2` only takes effect at `hg init` time (it decides whether the
+        // `dirstate-v2` requirement gets written) -- setting it in `.hg/hgrc` afterwards, as
+        // HgTestUtils.nativeRepo()'s plain `hg init` + setup-callback pattern would do, is too
+        // late and silently keeps the repo on dirstate-v1. slow-path=allow is required because
+        // this environment's hg has no Rust extension (HAS_FAST_DIRSTATE_V2 == False) -- without
+        // it hg aborts with "accessing `dirstate-v2` repository without associated fast
+        // implementation". Both gaps combined meant this test could never have actually created
+        // a dirstate-v2 repo, and always silently skipped via the requires-file assumeTrue below
+        // without ever exercising real interop.
+        repoDir.mkdirs();
+        HgTestUtils.hg(repoDir, "init",
+                "--config", "format.use-dirstate-v2=true",
+                "--config", "storage.dirstate-v2.slow-path=allow");
+        File hgrc = new File(repoDir, ".hg/hgrc");
+        Files.writeString(hgrc.toPath(),
+                "[format]\nusezstd = false\nrevlog-compression = zlib\n"
+                        + "[storage]\ndirstate-v2.slow-path = allow\n");
 
-                HgTestUtils.hg(dir, "add", "f1.txt", "f2.txt");
-                HgTestUtils.hg(dir, "commit", "-m", "Commit with dirstate-v2 format enabled");
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        });
+        File f1 = new File(repoDir, "f1.txt");
+        Files.writeString(f1.toPath(), "Dirstate-v2 testing file 1");
+        File f2 = new File(repoDir, "f2.txt");
+        Files.writeString(f2.toPath(), "Dirstate-v2 testing file 2");
+
+        HgTestUtils.hg(repoDir, "add", "f1.txt", "f2.txt");
+        HgTestUtils.hg(repoDir, "commit", "-m", "Commit with dirstate-v2 format enabled");
+
+        HgRepository repository = new HgRepository(repoDir);
 
         // 1. Verify that the repository has dirstate-v2 requirement
         File requirements = new File(repoDir, ".hg/requires");

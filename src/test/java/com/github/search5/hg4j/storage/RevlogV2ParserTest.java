@@ -12,6 +12,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Revlog v2 docket/index 파싱 검증.
@@ -78,9 +80,9 @@ public class RevlogV2ParserTest {
 
         assertEquals(2, index.getRevisionCount());
         // 실제 `hg log --template '{rev}:{node}\n'` 출력과 대조된 값
-        assertEquals(0, index.findRevision(com.github.search5.hg4j.util.NodeIdUtil.fromHex(
+        assertEquals(0, index.findRevision(NodeIdUtil.fromHex(
                 "78b00ae5215f47873d210b4c43e9d9adad40e2fb")));
-        assertEquals(1, index.findRevision(com.github.search5.hg4j.util.NodeIdUtil.fromHex(
+        assertEquals(1, index.findRevision(NodeIdUtil.fromHex(
                 "a982e222c0e75569b3b55869ec11c16a5944543b")));
     }
 
@@ -115,13 +117,13 @@ public class RevlogV2ParserTest {
         assertEquals(2, revlog.getRevisionCount());
 
         byte[] raw0 = revlog.getRawRevisionContent(0);
-        String text0 = new String(raw0, java.nio.charset.StandardCharsets.UTF_8);
+        String text0 = new String(raw0, StandardCharsets.UTF_8);
         assertTrue(text0.startsWith("c180980ee057d123b053b78589cb4040f93d2c97\n"),
                 "rev0 실제 복원 내용: " + text0);
         assertTrue(text0.contains("first commit"));
 
         byte[] raw1 = revlog.getRawRevisionContent(1);
-        String text1 = new String(raw1, java.nio.charset.StandardCharsets.UTF_8);
+        String text1 = new String(raw1, StandardCharsets.UTF_8);
         assertTrue(text1.contains("second commit"), "rev1 실제 복원 내용: " + text1);
     }
 
@@ -132,9 +134,9 @@ public class RevlogV2ParserTest {
         Revlog revlog = new Revlog(docket, new File(tempDir.toFile(), "00changelog.d"));
         assertEquals(2, revlog.getRevisionCount());
 
-        byte[] p1Node = com.github.search5.hg4j.util.NodeIdUtil.fromHex("a982e222c0e75569b3b55869ec11c16a5944543b");
+        byte[] p1Node = NodeIdUtil.fromHex("a982e222c0e75569b3b55869ec11c16a5944543b");
         byte[] p2Node = new byte[20];
-        byte[] content = "third commit content".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] content = "third commit content".getBytes(StandardCharsets.UTF_8);
         revlog.appendRevision(content, 1, -1, p1Node, p2Node, 2);
 
         assertEquals(3, revlog.getRevisionCount());

@@ -6,6 +6,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Provides production-grade safe and atomic file I/O operations.
@@ -49,9 +54,9 @@ public final class SafeFileIO {
             // Bind with synchronized to prevent OverlappingFileLockException when multiple threads in the same JVM process try to call lock() on the same file
             synchronized (SafeFileIO.class) {
                 File lockFile = new File(parent, file.getName() + ".lock");
-                try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(lockFile, "rw");
-                     java.nio.channels.FileChannel lockChannel = raf.getChannel();
-                     java.nio.channels.FileLock fileLock = lockChannel.lock()) {
+                try (RandomAccessFile raf = new RandomAccessFile(lockFile, "rw");
+                     FileChannel lockChannel = raf.getChannel();
+                     FileLock fileLock = lockChannel.lock()) {
                     executeAtomicMove(file, data, parent);
                 } finally {
                     try {
@@ -66,10 +71,10 @@ public final class SafeFileIO {
         File tempFile = File.createTempFile(file.getName() + "_", ".tmp", parent);
         try {
             // Write and physically fsync to disk before renaming (Durability)
-            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(tempFile.toPath(),
-                    java.nio.file.StandardOpenOption.CREATE,
-                    java.nio.file.StandardOpenOption.WRITE)) {
-                channel.write(java.nio.ByteBuffer.wrap(data));
+            try (FileChannel channel = FileChannel.open(tempFile.toPath(),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE)) {
+                channel.write(ByteBuffer.wrap(data));
                 channel.force(true);
             }
             
@@ -78,8 +83,8 @@ public final class SafeFileIO {
             
             // Attempt to fsync the parent directory to persist directory entries (metadata) on supported filesystems/platforms
             if (parent != null) {
-                try (java.nio.channels.FileChannel dirChannel = java.nio.channels.FileChannel.open(parent.toPath(),
-                        java.nio.file.StandardOpenOption.READ)) {
+                try (FileChannel dirChannel = FileChannel.open(parent.toPath(),
+                        StandardOpenOption.READ)) {
                     dirChannel.force(true);
                 } catch (Exception ignored) {
                     // Silent fallback if platform/filesystem does not support directory fsync

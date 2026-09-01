@@ -7,6 +7,15 @@ import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
+import com.github.search5.hg4j.dirstate.Dirstate;
+import com.github.search5.hg4j.lib.HgLock;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Porcelain command for applying unified diff patch files
@@ -80,21 +89,21 @@ public class ImportCommand {
         int linkRev = changelog.getRevisionCount();
 
         // 1. Apply unified diff patches to physical files and collect contents
-        java.util.Map<String, String> patchedFiles = parseAndApplyPatch(patchText);
-        java.util.List<String> filesModified = new java.util.ArrayList<>(patchedFiles.keySet());
+        Map<String, String> patchedFiles = parseAndApplyPatch(patchText);
+        List<String> filesModified = new ArrayList<>(patchedFiles.keySet());
 
         // 2. Get parent manifest map to initialize new manifest
-        java.util.Map<String, String> manifestMap = getManifestForCommit(changelog, manifestRevlog, parent);
+        Map<String, String> manifestMap = getManifestForCommit(changelog, manifestRevlog, parent);
 
         // 3. Update physical files and commit to their filelogs
-        for (java.util.Map.Entry<String, String> fEntry : patchedFiles.entrySet()) {
+        for (Map.Entry<String, String> fEntry : patchedFiles.entrySet()) {
             String path = fEntry.getKey();
             byte[] fileContent = fEntry.getValue().getBytes(StandardCharsets.UTF_8);
 
             // Write content to working directory file
             File wFile = new File(repository.getDirectory(), path);
             wFile.getParentFile().mkdirs();
-            java.nio.file.Files.write(wFile.toPath(), fileContent);
+            Files.write(wFile.toPath(), fileContent);
 
             // Commit to filelog
             File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
@@ -107,33 +116,33 @@ public class ImportCommand {
             String parentFileHexAndFlag = manifestMap.get(path);
             if (parentFileHexAndFlag != null) {
                 String parentFileHex = parentFileHexAndFlag.substring(0, 40);
-                p1FileNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(parentFileHex);
-                parent1FileRev = com.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
+                p1FileNode = NodeIdUtil.fromHex(parentFileHex);
+                parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
             }
 
             int newCommitRev = changelog.getRevisionCount();
             byte[] newFileNode = filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], newCommitRev);
 
-            manifestMap.put(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(newFileNode)); // default flag is empty
+            manifestMap.put(path, NodeIdUtil.toHex(newFileNode)); // default flag is empty
         }
 
         // 4. Serialize and append new manifest revision
         StringBuilder manifestSb = new StringBuilder();
-        for (java.util.Map.Entry<String, String> entry : manifestMap.entrySet()) {
+        for (Map.Entry<String, String> entry : manifestMap.entrySet()) {
             manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
         }
         byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
 
         int parent1ManifestRev = -1;
         byte[] p1ManifestNode = new byte[20];
-        if (parent != null && !com.github.search5.hg4j.util.NodeIdUtil.isAllZero(parent)) {
+        if (parent != null && !NodeIdUtil.isAllZero(parent)) {
             int pRev = changelog.findRevision(parent);
             if (pRev != -1) {
                 byte[] pContent = changelog.getRevisionContent(pRev);
                 String pText = new String(pContent, StandardCharsets.UTF_8);
                 String[] pLines = pText.split("\n");
                 if (pLines.length > 0) {
-                    p1ManifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(pLines[0].trim());
+                    p1ManifestNode = NodeIdUtil.fromHex(pLines[0].trim());
                     parent1ManifestRev = manifestRevlog.findRevision(p1ManifestNode);
                 }
             }
@@ -143,7 +152,7 @@ public class ImportCommand {
 
         // 5. Serialize and append new changelog (commit) revision
         StringBuilder clSb = new StringBuilder();
-        clSb.append(com.github.search5.hg4j.util.NodeIdUtil.toHex(manifestNode)).append('\n');
+        clSb.append(NodeIdUtil.toHex(manifestNode)).append('\n');
         clSb.append(author).append('\n');
 
         String dateStr = (dateVal != null) ? dateVal : (System.currentTimeMillis() / 1000) + " 0";
@@ -152,7 +161,7 @@ public class ImportCommand {
         // 기본 브랜치로 임포트하므로 그 필드를 생략해 실제 hg와 동일한 원문 바이트를 낸다.
         clSb.append(dateStr).append('\n');
 
-        java.util.Collections.sort(filesModified, com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
+        Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (String path : filesModified) {
             clSb.append(path).append('\n');
         }
@@ -166,7 +175,7 @@ public class ImportCommand {
             System.arraycopy(parent, 0, p1Normalized, 0, Math.min(parent.length, 20));
         }
 
-        com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
+        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
         entry.node = NodeIdUtil.computeNodeId(changelogTextBytes, p1Normalized, new byte[20]);
         byte[] entryNode20 = new byte[20];
         System.arraycopy(entry.node, 0, entryNode20, 0, 20);
@@ -177,22 +186,22 @@ public class ImportCommand {
         entry.deltabase = new byte[20];
         entry.delta = Revlog.createDelta(new byte[0], changelogTextBytes);
 
-        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock storeLock = repository.lockStore();
+             HgLock wlock = repository.lockWorkingCopy()) {
             changelog.appendChangeGroupEntry(entry, linkRev);
 
-            com.github.search5.hg4j.dirstate.Dirstate d = repository.getDirstate();
+            Dirstate d = repository.getDirstate();
             d.setParents(entry.node, new byte[20]);
             repository.writeDirstate(d);
             repository.clearRevlogCache();
         }
     }
 
-    private java.util.Map<String, String> parseAndApplyPatch(String patchText) throws IOException {
-        java.util.Map<String, String> fileContents = new java.util.LinkedHashMap<>();
+    private Map<String, String> parseAndApplyPatch(String patchText) throws IOException {
+        Map<String, String> fileContents = new LinkedHashMap<>();
         String[] lines = patchText.split("\n", -1);
         String currentFile = null;
-        java.util.List<String> currentLines = new java.util.ArrayList<>();
+        List<String> currentLines = new ArrayList<>();
         
         int idx = 0;
         while (idx < lines.length) {
@@ -200,9 +209,9 @@ public class ImportCommand {
             if (line.startsWith("+++ b/")) {
                 currentFile = line.substring(6).trim();
                 File wFile = new File(repository.getDirectory(), currentFile);
-                currentLines = new java.util.ArrayList<>();
+                currentLines = new ArrayList<>();
                 if (wFile.exists()) {
-                    currentLines.addAll(java.nio.file.Files.readAllLines(wFile.toPath(), StandardCharsets.UTF_8));
+                    currentLines.addAll(Files.readAllLines(wFile.toPath(), StandardCharsets.UTF_8));
                 }
                 idx++;
                 continue;
@@ -210,8 +219,8 @@ public class ImportCommand {
             
             if (currentFile != null && line.startsWith("@@ ")) {
                 idx++;
-                java.util.List<String> hunkOld = new java.util.ArrayList<>();
-                java.util.List<String> hunkNew = new java.util.ArrayList<>();
+                List<String> hunkOld = new ArrayList<>();
+                List<String> hunkNew = new ArrayList<>();
                 while (idx < lines.length) {
                     String hunkLine = lines[idx];
                     if (hunkLine.startsWith("diff ") || hunkLine.startsWith("--- ") || hunkLine.startsWith("+++ ")) {
@@ -271,9 +280,9 @@ public class ImportCommand {
         return fileContents;
     }
 
-    private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
-        java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
+    private Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
+        Map<String, String> manifestMap = new LinkedHashMap<>();
+        if (commitNode == null || NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -286,7 +295,7 @@ public class ImportCommand {
         if (lines.length == 0) return manifestMap;
         
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);

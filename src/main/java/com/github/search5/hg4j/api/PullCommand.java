@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
 
 /**
  * Porcelain command to pull changes from a remote repository.
@@ -36,7 +37,7 @@ public class PullCommand {
     private final HgRepository repository;
     private String sourceUrl;
     private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
-    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
+    private HgTreeFilter treeFilter = HgTreeFilter.ALL;
     private CredentialsProvider credentialsProvider;
 
     public PullCommand(HgRepository repository) {
@@ -48,7 +49,7 @@ public class PullCommand {
         return this;
     }
 
-    public PullCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
+    public PullCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }

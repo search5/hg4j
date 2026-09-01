@@ -3,6 +3,7 @@ package com.github.search5.hg4j.treewalk;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.util.NodeIdUtil;
 
 public class TreeWalk {
 
@@ -46,7 +47,7 @@ public class TreeWalk {
             for (TreeIterator tree : trees) {
                 String path = tree.getEntryPath();
                 if (path != null) {
-                    if (minPath == null || com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR.compare(path, minPath) < 0) {
+                    if (minPath == null || NodeIdUtil.UTF8_STRING_COMPARATOR.compare(path, minPath) < 0) {
                         minPath = path;
                     }
                 }

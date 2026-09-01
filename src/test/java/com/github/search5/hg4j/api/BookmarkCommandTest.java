@@ -17,6 +17,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.nio.file.StandardCopyOption;
 
 public class BookmarkCommandTest {
 
@@ -266,7 +267,7 @@ public class BookmarkCommandTest {
                 }
             }
         } else {
-            Files.copy(source.toPath(), destination.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(source.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
     }
 }

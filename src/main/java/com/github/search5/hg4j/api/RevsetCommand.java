@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.revset.HgRevsetEngine;
 
 /**
  * Revset command for querying repository revision DAGs
@@ -42,7 +43,7 @@ public class RevsetCommand {
         Revlog changelog = repository.getRevlog(clIdx, clDat);
 
         // 1. Reuse high-performance evaluation engine
-        com.github.search5.hg4j.revset.HgRevsetEngine engine = new com.github.search5.hg4j.revset.HgRevsetEngine(repository);
+        HgRevsetEngine engine = new HgRevsetEngine(repository);
 
         // Preprocess symbolic revision terms inside queries (e.g. parents(tip) -> parents(<hex>))
         String resolvedExpr = expression;

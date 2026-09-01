@@ -6,6 +6,8 @@ import com.github.search5.hg4j.storage.Revlog;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * TreeIterator implementation that traverses historical repository manifests.
@@ -71,7 +73,7 @@ public class ManifestTreeIterator implements TreeIterator {
                 }
 
                 if (nullIdx != -1) {
-                    String path = new String(mfContent, start, nullIdx - start, java.nio.charset.StandardCharsets.UTF_8);
+                    String path = new String(mfContent, start, nullIdx - start, StandardCharsets.UTF_8);
                     int valStart = nullIdx + 1;
                     int valLen = end - valStart;
 
@@ -86,10 +88,10 @@ public class ManifestTreeIterator implements TreeIterator {
                         }
 
                         if (isHexText) {
-                            String hexNodeId = new String(mfContent, valStart, 40, java.nio.charset.StandardCharsets.UTF_8);
+                            String hexNodeId = new String(mfContent, valStart, 40, StandardCharsets.UTF_8);
                             String flag = "";
                             if (valLen > 40) {
-                                flag = new String(mfContent, valStart + 40, valLen - 40, java.nio.charset.StandardCharsets.UTF_8).trim();
+                                flag = new String(mfContent, valStart + 40, valLen - 40, StandardCharsets.UTF_8).trim();
                             }
                             boolean executable = flag.contains("x");
                             boolean symlink = flag.contains("l");
@@ -108,7 +110,7 @@ public class ManifestTreeIterator implements TreeIterator {
                         int flagStart = valStart + 20;
                         String flag = "";
                         if (flagStart < end) {
-                            flag = new String(mfContent, flagStart, end - flagStart, java.nio.charset.StandardCharsets.UTF_8).trim();
+                            flag = new String(mfContent, flagStart, end - flagStart, StandardCharsets.UTF_8).trim();
                         }
                         boolean executable = flag.contains("x");
                         boolean symlink = flag.contains("l");
@@ -137,12 +139,12 @@ public class ManifestTreeIterator implements TreeIterator {
 
             byte[] targetNodeId = NodeIdUtil.resolveRevision(changelog, revision);
             if (targetNodeId == null) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Revision not found in changelog: " + revision);
+                throw new HgRevisionNotFoundException("Revision not found in changelog: " + revision);
             }
 
             int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
             if (commitRev == -1) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Commit not found in changelog for node: " + NodeIdUtil.toHex(targetNodeId));
+                throw new HgRevisionNotFoundException("Commit not found in changelog for node: " + NodeIdUtil.toHex(targetNodeId));
             }
 
             byte[] clContent = changelog.getRevisionContent(commitRev);
@@ -166,7 +168,7 @@ public class ManifestTreeIterator implements TreeIterator {
                 }
 
                 if (isHexText) {
-                    String hexNode = new String(clContent, 0, 40, java.nio.charset.StandardCharsets.UTF_8);
+                    String hexNode = new String(clContent, 0, 40, StandardCharsets.UTF_8);
                     mfNode = NodeIdUtil.fromHex(hexNode);
                 }
             }

@@ -13,6 +13,17 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.obsolete.HgObsMarker;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 
 /**
  * Porcelain command for Interactive Rebase (histedit) on Mercurial repositories.
@@ -53,13 +64,37 @@ public class HisteditCommand implements AutoCloseable {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
+        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         // Backup current repository status for rollback in case of error
         Dirstate dirstate = repository.getDirstate();
         byte[] originalParent = dirstate.getParent1();
 
-        try (com.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore();
-             com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+        // Crash/failure safety: snapshot every revlog this operation may append to before
+        // touching anything, journal them (same scheme as CommitCommand/StripCommand), and
+        // back up dirstate — so a mid-histedit failure (this method's own catch block, or a
+        // real crash recovered via HgRepository.checkAndPerformAutoRollback()) truncates
+        // everything back to its pre-histedit state instead of leaving a half-rewritten
+        // history behind.
+        Map<File, Long> fileSizes = new LinkedHashMap<>();
+        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+        File journalFile = new File(repository.getStoreDir(), "journal");
+        File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
+
+        try (HgLock storeLock = repository.lockStore();
+             HgLock wlock = repository.lockWorkingCopy()) {
+
+            Files.deleteIfExists(journalFile.toPath());
+            if (dirstateFile.exists()) {
+                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                appendToJournal(journalFile, "dirstate");
+            }
+            recordAndJournal(clIdx, fileSizes, journalFile);
+            recordAndJournal(clDat, fileSizes, journalFile);
+            recordAndJournal(mfIdx, fileSizes, journalFile);
+            recordAndJournal(mfDat, fileSizes, journalFile);
 
             // To support folding/merging revisions, we will parse the target revisions content
             // and perform clean recommits according to actions.
@@ -108,7 +143,7 @@ public class HisteditCommand implements AutoCloseable {
                 if (rule.action == Action.PICK) {
                     if (pendingCommitMsg != null) {
                         // Commit folded changes first
-                        lastCommittedNode = commitNewRev(lastCommittedNode, lastAuthor, pendingCommitMsg, lastCommitHex);
+                        lastCommittedNode = commitNewRev(lastCommittedNode, lastAuthor, pendingCommitMsg, lastCommitHex, fileSizes, journalFile);
                         pendingCommitMsg = null;
                     }
                     pendingCommitMsg = commitMsg;
@@ -135,7 +170,7 @@ public class HisteditCommand implements AutoCloseable {
             }
 
             if (pendingCommitMsg != null) {
-                lastCommittedNode = commitNewRev(lastCommittedNode, lastAuthor, pendingCommitMsg, lastCommitHex);
+                lastCommittedNode = commitNewRev(lastCommittedNode, lastAuthor, pendingCommitMsg, lastCommitHex, fileSizes, journalFile);
             }
 
             // Sync workspace to the last committed node
@@ -143,10 +178,66 @@ public class HisteditCommand implements AutoCloseable {
             d.setParents(lastCommittedNode, new byte[20]);
             repository.writeDirstate(d);
             repository.clearRevlogCache();
+
+            // Leave the working branch matching the new tip's branch, the same way real
+            // hg's checkout after a history-rewrite does.
+            int newTipRev = changelog.findRevision(lastCommittedNode);
+            if (newTipRev != -1) {
+                repository.setBranch(CommitCommand.getBranchOfRevision(changelog, newTipRev));
+            }
+
+            try {
+                CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup);
+            } catch (Exception e) {
+                // non-blocking, same as CommitCommand/StripCommand
+            }
+            Files.deleteIfExists(journalFile.toPath());
+            Files.deleteIfExists(dirstateBackupFile.toPath());
+        } catch (Exception e) {
+            // Roll every touched revlog back to its pre-histedit size and restore dirstate,
+            // same recovery strategy as CommitCommand/StripCommand.
+            for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
+                File file = sizeEntry.getKey();
+                long origSize = sizeEntry.getValue();
+                if (origSize == 0) {
+                    Files.deleteIfExists(file.toPath());
+                } else if (file.exists()) {
+                    try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
+                        outChan.truncate(origSize);
+                        outChan.force(true);
+                    }
+                }
+            }
+            if (dirstateBackup != null) {
+                SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+            }
+            Files.deleteIfExists(journalFile.toPath());
+            Files.deleteIfExists(dirstateBackupFile.toPath());
+            repository.clearRevlogCache();
+            throw e;
         }
     }
 
-    private byte[] commitNewRev(byte[] parent, String author, String message, String originalCommitHex) throws IOException {
+    private void recordAndJournal(File file, Map<File, Long> fileSizes, File journalFile) throws IOException {
+        if (fileSizes.containsKey(file)) {
+            return;
+        }
+        long size = file.exists() ? file.length() : 0L;
+        fileSizes.put(file, size);
+        String relPath = "store/" + repository.getStoreDir().toPath().relativize(file.toPath()).toString().replace(File.separatorChar, '/');
+        appendToJournal(journalFile, relPath + "\t" + size);
+    }
+
+    private void appendToJournal(File journalFile, String entry) throws IOException {
+        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
+            fc.force(true);
+        }
+    }
+
+    private byte[] commitNewRev(byte[] parent, String author, String message, String originalCommitHex,
+                                 Map<File, Long> fileSizes, File journalFile) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
@@ -156,7 +247,7 @@ public class HisteditCommand implements AutoCloseable {
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
         // 1. Get original manifest and changed files
-        byte[] origNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(originalCommitHex);
+        byte[] origNode = NodeIdUtil.fromHex(originalCommitHex);
         int origRev = changelog.findRevision(origNode);
         if (origRev == -1) {
             throw new IOException("Original commit not found: " + originalCommitHex);
@@ -167,7 +258,7 @@ public class HisteditCommand implements AutoCloseable {
         String[] origClLines = origClText.split("\n");
         
         // Find files modified in original commit
-        java.util.List<String> filesModified = new java.util.ArrayList<>();
+        List<String> filesModified = new ArrayList<>();
         int msgStartIdx = -1;
         for (int i = 3; i < origClLines.length; i++) {
             if (origClLines[i].isEmpty()) {
@@ -178,10 +269,10 @@ public class HisteditCommand implements AutoCloseable {
         }
         
         // Get original manifest map
-        java.util.Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
+        Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
         
         // 2. Get parent manifest map to initialize new manifest
-        java.util.Map<String, String> newManifest = getManifestForCommit(changelog, manifestRevlog, parent);
+        Map<String, String> newManifest = getManifestForCommit(changelog, manifestRevlog, parent);
         
         // 3. For each modified file, copy the revision from original filelog and commit to new filelog
         for (String path : filesModified) {
@@ -201,12 +292,14 @@ public class HisteditCommand implements AutoCloseable {
             // Write content to working directory file to physically update workspace!
             File wFile = new File(repository.getDirectory(), path);
             wFile.getParentFile().mkdirs();
-            java.nio.file.Files.write(wFile.toPath(), fileContent);
+            Files.write(wFile.toPath(), fileContent);
             
             // Commit to new filelog
             File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
             flIdx.getParentFile().mkdirs();
+            recordAndJournal(flIdx, fileSizes, journalFile);
+            recordAndJournal(flDat, fileSizes, journalFile);
             Revlog filelog = repository.getRevlog(flIdx, flDat);
             
             int parent1FileRev = -1;
@@ -214,33 +307,33 @@ public class HisteditCommand implements AutoCloseable {
             String parentFileHexAndFlag = newManifest.get(path);
             if (parentFileHexAndFlag != null) {
                 String parentFileHex = parentFileHexAndFlag.substring(0, 40);
-                p1FileNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(parentFileHex);
-                parent1FileRev = com.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
+                p1FileNode = NodeIdUtil.fromHex(parentFileHex);
+                parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
             }
             
             int newCommitRev = changelog.getRevisionCount();
             byte[] newFileNode = filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], newCommitRev);
             
-            newManifest.put(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(newFileNode) + flag);
+            newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
         }
         
         // 4. Serialize and append new manifest revision
         StringBuilder manifestSb = new StringBuilder();
-        for (java.util.Map.Entry<String, String> entry : newManifest.entrySet()) {
+        for (Map.Entry<String, String> entry : newManifest.entrySet()) {
             manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
         }
         byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
         
         int parent1ManifestRev = -1;
         byte[] p1ManifestNode = new byte[20];
-        if (parent != null && !com.github.search5.hg4j.util.NodeIdUtil.isAllZero(parent)) {
+        if (parent != null && !NodeIdUtil.isAllZero(parent)) {
             int pRev = changelog.findRevision(parent);
             if (pRev != -1) {
                 byte[] pContent = changelog.getRevisionContent(pRev);
                 String pText = new String(pContent, StandardCharsets.UTF_8);
                 String[] pLines = pText.split("\n");
                 if (pLines.length > 0) {
-                    p1ManifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(pLines[0].trim());
+                    p1ManifestNode = NodeIdUtil.fromHex(pLines[0].trim());
                     parent1ManifestRev = manifestRevlog.findRevision(p1ManifestNode);
                 }
             }
@@ -251,14 +344,21 @@ public class HisteditCommand implements AutoCloseable {
         
         // 5. Serialize and append new changelog (commit) revision
         StringBuilder clSb = new StringBuilder();
-        clSb.append(com.github.search5.hg4j.util.NodeIdUtil.toHex(manifestNode)).append('\n');
+        clSb.append(NodeIdUtil.toHex(manifestNode)).append('\n');
         clSb.append(author).append('\n');
         
         long secs = System.currentTimeMillis() / 1000;
-        // 실제 hg는 default 브랜치 커밋에 "branch:default" extra 항목을 쓰지 않는다.
-        clSb.append(secs).append(" 0\n");
+        clSb.append(secs).append(" 0");
+        // Preserve the branch the original (rewritten) commit was on — real hg does not
+        // write this extra field for the default branch, and never re-branches a picked
+        // commit onto whatever branch happens to be active during the histedit.
+        String branchName = CommitCommand.getBranchOfRevision(changelog, origRev);
+        if (branchName != null && !branchName.isEmpty() && !"default".equals(branchName)) {
+            clSb.append(" ").append("branch:").append(CommitCommand.encodeExtraKey(branchName));
+        }
+        clSb.append("\n");
         
-        java.util.Collections.sort(filesModified, com.github.search5.hg4j.util.NodeIdUtil.UTF8_STRING_COMPARATOR);
+        Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (String path : filesModified) {
             clSb.append(path).append('\n');
         }
@@ -272,7 +372,7 @@ public class HisteditCommand implements AutoCloseable {
             System.arraycopy(parent, 0, p1Normalized, 0, Math.min(parent.length, 20));
         }
         
-        com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
+        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
         entry.node = NodeIdUtil.computeNodeId(changelogTextBytes, p1Normalized, new byte[20]);
         byte[] entryNode20 = new byte[20];
         System.arraycopy(entry.node, 0, entryNode20, 0, 20);
@@ -287,7 +387,7 @@ public class HisteditCommand implements AutoCloseable {
 
         // Register obsolescence marker linking original commit to histedited commit
         try {
-            com.github.search5.hg4j.obsolete.HgObsMarker.writeMarker(repository.getStoreDir(), origNode, List.of(entry.node), "histedit");
+            HgObsMarker.writeMarker(repository.getStoreDir(), origNode, List.of(entry.node), "histedit");
         } catch (Exception e) {
             // non-blocking
         }
@@ -295,9 +395,9 @@ public class HisteditCommand implements AutoCloseable {
         return entry.node;
     }
 
-    private java.util.Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
-        java.util.Map<String, String> manifestMap = new java.util.LinkedHashMap<>();
-        if (commitNode == null || com.github.search5.hg4j.util.NodeIdUtil.isAllZero(commitNode)) {
+    private Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
+        Map<String, String> manifestMap = new LinkedHashMap<>();
+        if (commitNode == null || NodeIdUtil.isAllZero(commitNode)) {
             return manifestMap;
         }
         int rev = changelog.findRevision(commitNode);
@@ -310,7 +410,7 @@ public class HisteditCommand implements AutoCloseable {
         if (lines.length == 0) return manifestMap;
         
         String manifestHex = lines[0].trim();
-        byte[] manifestNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(manifestHex);
+        byte[] manifestNode = NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);
         if (mRev != -1) {
             byte[] mContent = manifestRevlog.getRevisionContent(mRev);
@@ -326,16 +426,16 @@ public class HisteditCommand implements AutoCloseable {
         return manifestMap;
     }
 
-    private byte[] getFileRevisionContent(com.github.search5.hg4j.lib.HgRepository repository, String path, String nodeHex) throws IOException {
+    private byte[] getFileRevisionContent(HgRepository repository, String path, String nodeHex) throws IOException {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         if (!flIdx.exists()) {
-            throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
+            throw new HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
         }
         Revlog filelog = repository.getRevlog(flIdx, flDat);
         int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(nodeHex.substring(0, 40)));
         if (rev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
     }

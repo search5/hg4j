@@ -16,6 +16,9 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import org.apache.sshd.server.Environment;
+import org.apache.sshd.server.ExitCallback;
+import org.apache.sshd.server.channel.ChannelSession;
 
 public class HgSshClientTest {
 
@@ -40,7 +43,7 @@ public class HgSshClientTest {
         // CommandFactory to mock 'hg -R /test/repo serve --stdio'
         sshServer.setCommandFactory(new CommandFactory() {
             @Override
-            public Command createCommand(org.apache.sshd.server.channel.ChannelSession channel, String command) throws IOException {
+            public Command createCommand(ChannelSession channel, String command) throws IOException {
                 return new MockHgStdioCommand(command);
             }
         });
@@ -84,15 +87,15 @@ public class HgSshClientTest {
 
     @Test
     public void testCustomSshSessionFactoryPluggability() throws Exception {
-        com.github.search5.hg4j.transport.SshSessionFactory originalFactory = HgSshClient.getSshSessionFactory();
+        SshSessionFactory originalFactory = HgSshClient.getSshSessionFactory();
         assertNotNull(originalFactory);
-        assertInstanceOf(com.github.search5.hg4j.transport.JschSessionFactory.class, originalFactory);
+        assertInstanceOf(JschSessionFactory.class, originalFactory);
 
         final int customPort = 22222;
         final boolean[] openSessionCalled = {false};
-        com.github.search5.hg4j.transport.SshSessionFactory mockFactory = new com.github.search5.hg4j.transport.SshSessionFactory() {
+        SshSessionFactory mockFactory = new SshSessionFactory() {
             @Override
-            public com.github.search5.hg4j.transport.SshSession createSession(String host, int port, String username, String password, String privateKeyPath, String passphrase) throws Exception {
+            public SshSession createSession(String host, int port, String username, String password, String privateKeyPath, String passphrase) throws Exception {
                 openSessionCalled[0] = true;
                 assertEquals("127.0.0.1", host);
                 assertEquals(customPort, port); // custom port verify
@@ -100,7 +103,7 @@ public class HgSshClientTest {
                 assertEquals("mockpass", password);
                 
                 // Return mock SshSession
-                return new com.github.search5.hg4j.transport.SshSession() {
+                return new SshSession() {
                     @Override
                     public void connect(int timeoutMs) throws Exception {}
 
@@ -108,17 +111,17 @@ public class HgSshClientTest {
                     public void executeCommand(String command, int timeoutMs) throws Exception {}
 
                     @Override
-                    public java.io.InputStream getInputStream() throws java.io.IOException {
-                        return new java.io.ByteArrayInputStream("capabilities: heads\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    public InputStream getInputStream() throws IOException {
+                        return new ByteArrayInputStream("capabilities: heads\n".getBytes(StandardCharsets.UTF_8));
                     }
 
                     @Override
-                    public java.io.OutputStream getOutputStream() throws java.io.IOException {
-                        return new java.io.ByteArrayOutputStream();
+                    public OutputStream getOutputStream() throws IOException {
+                        return new ByteArrayOutputStream();
                     }
 
                     @Override
-                    public void close() throws java.io.IOException {}
+                    public void close() throws IOException {}
                 };
             }
         };
@@ -133,7 +136,7 @@ public class HgSshClientTest {
             HgSshClient client = new HgSshClient(sshUrl);
             
             try {
-                java.util.List<String> caps = client.getCapabilities(); // 트리거 ensureConnected()
+                List<String> caps = client.getCapabilities(); // 트리거 ensureConnected()
                 assertNotNull(caps);
                 assertTrue(caps.contains("heads"));
             } finally {
@@ -155,7 +158,7 @@ public class HgSshClientTest {
         private InputStream in;
         private OutputStream out;
         private OutputStream err;
-        private org.apache.sshd.server.ExitCallback callback;
+        private ExitCallback callback;
         private Thread thread;
 
         public MockHgStdioCommand(String command) {
@@ -178,18 +181,18 @@ public class HgSshClientTest {
         }
 
         @Override
-        public void setExitCallback(org.apache.sshd.server.ExitCallback callback) {
+        public void setExitCallback(ExitCallback callback) {
             this.callback = callback;
         }
 
         @Override
-        public void start(org.apache.sshd.server.channel.ChannelSession session, org.apache.sshd.server.Environment env) throws IOException {
+        public void start(ChannelSession session, Environment env) throws IOException {
             thread = new Thread(this);
             thread.start();
         }
 
         @Override
-        public void destroy(org.apache.sshd.server.channel.ChannelSession session) throws Exception {
+        public void destroy(ChannelSession session) throws Exception {
             if (thread != null) {
                 thread.interrupt();
             }

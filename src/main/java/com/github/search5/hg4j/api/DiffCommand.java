@@ -13,6 +13,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
+import com.github.search5.hg4j.treewalk.TreeWalk;
+import java.util.Arrays;
 
 /**
  * Command to compute differences (diff) between two revisions and provide Unified Diff format per file.
@@ -21,9 +26,9 @@ public class DiffCommand {
     private final HgRepository repository;
     private int oldRevision = -2; // -2 means not set (defaults to newRevision's parent)
     private int newRevision = -1; // -1 defaults to tip
-    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
+    private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
-    public DiffCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
+    public DiffCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }
@@ -59,7 +64,7 @@ public class DiffCommand {
         return this;
     }
 
-    public DiffCommand setOldRevision(com.github.search5.hg4j.lib.NodeId oldRevisionNode) {
+    public DiffCommand setOldRevision(NodeId oldRevisionNode) {
         if (oldRevisionNode == null) {
             this.oldRevision = -2;
             return this;
@@ -80,7 +85,7 @@ public class DiffCommand {
         return this;
     }
 
-    public DiffCommand setNewRevision(com.github.search5.hg4j.lib.NodeId newRevisionNode) {
+    public DiffCommand setNewRevision(NodeId newRevisionNode) {
         if (newRevisionNode == null) {
             this.newRevision = -1;
             return this;
@@ -125,9 +130,9 @@ public class DiffCommand {
 
         List<DiffEntry> diffs = new ArrayList<>();
 
-        com.github.search5.hg4j.treewalk.TreeWalk tw = new com.github.search5.hg4j.treewalk.TreeWalk();
-        tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(targetOld)));
-        tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(targetNew)));
+        TreeWalk tw = new TreeWalk();
+        tw.addTree(new ManifestTreeIterator(repository, String.valueOf(targetOld)));
+        tw.addTree(new ManifestTreeIterator(repository, String.valueOf(targetNew)));
 
         tw.reset();
         while (tw.next()) {
@@ -143,18 +148,18 @@ public class DiffCommand {
 
             if (!inOld && inNew) {
                 // ADDED
-                byte[] newContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(newNode));
+                byte[] newContent = getFileContent(path, NodeIdUtil.toHex(newNode));
                 String diffText = generateUnifiedDiff(path, new byte[0], newContent);
                 diffs.add(new DiffEntry(path, ChangeType.ADD, diffText));
             } else if (inOld && !inNew) {
                 // DELETED
-                byte[] oldContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(oldNode));
+                byte[] oldContent = getFileContent(path, NodeIdUtil.toHex(oldNode));
                 String diffText = generateUnifiedDiff(path, oldContent, new byte[0]);
                 diffs.add(new DiffEntry(path, ChangeType.DELETE, diffText));
-            } else if (inOld && inNew && !java.util.Arrays.equals(oldNode, newNode)) {
+            } else if (inOld && inNew && !Arrays.equals(oldNode, newNode)) {
                 // MODIFIED
-                byte[] oldContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(oldNode));
-                byte[] newContent = getFileContent(path, com.github.search5.hg4j.util.NodeIdUtil.toHex(newNode));
+                byte[] oldContent = getFileContent(path, NodeIdUtil.toHex(oldNode));
+                byte[] newContent = getFileContent(path, NodeIdUtil.toHex(newNode));
                 String diffText = generateUnifiedDiff(path, oldContent, newContent);
                 diffs.add(new DiffEntry(path, ChangeType.MODIFY, diffText));
             }

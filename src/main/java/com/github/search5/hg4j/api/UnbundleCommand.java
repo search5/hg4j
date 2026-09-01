@@ -11,6 +11,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import java.util.zip.InflaterInputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 
 /**
  * Porcelain command corresponding to {@code hg unbundle} — applies a local bundle file (as
@@ -51,7 +54,7 @@ public class UnbundleCommand {
             if ("UN".equals(comp)) {
                 changegroupBytes = bais.readAllBytes();
             } else if ("GZ".equals(comp)) {
-                try (java.util.zip.InflaterInputStream iis = new java.util.zip.InflaterInputStream(bais)) {
+                try (InflaterInputStream iis = new InflaterInputStream(bais)) {
                     changegroupBytes = iis.readAllBytes();
                 }
             } else if ("BZ".equals(comp)) {
@@ -60,16 +63,16 @@ public class UnbundleCommand {
                 bzData[0] = 'B';
                 bzData[1] = 'Z';
                 System.arraycopy(rawData, 0, bzData, 2, rawData.length);
-                try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream bzis =
-                             new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
+                try (BZip2CompressorInputStream bzis =
+                             new BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
                     changegroupBytes = bzis.readAllBytes();
                 }
             } else {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unsupported bundle1 compression format: HG10" + comp);
+                throw new HgCorruptDataException("Unsupported bundle1 compression format: HG10" + comp);
             }
             cgVersion = "01";
         } else {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unrecognized bundle file header: " + bundleFile);
+            throw new HgCorruptDataException("Unrecognized bundle file header: " + bundleFile);
         }
 
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(

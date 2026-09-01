@@ -8,6 +8,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * Purge command (equivalent to git clean) for Mercurial repositories.
@@ -49,8 +51,8 @@ public class PurgeCommand {
 
         if (Files.isDirectory(path)) {
             // Traverse children
-            try (java.util.stream.Stream<Path> stream = Files.list(path)) {
-                java.util.List<Path> children = stream.toList();
+            try (Stream<Path> stream = Files.list(path)) {
+                List<Path> children = stream.toList();
                 for (Path child : children) {
                     purgePath(child, trackedFiles);
                 }
@@ -59,7 +61,7 @@ public class PurgeCommand {
             if (purgeDirectories && !path.equals(repository.getDirectory().toPath())) {
                 String rel = repository.getDirectory().toPath().relativize(path).toString().replace('\\', '/');
                 if (!rel.isEmpty() && !trackedFiles.contains(rel) && !repository.isIgnored(rel)) {
-                    try (java.util.stream.Stream<Path> stream = Files.list(path)) {
+                    try (Stream<Path> stream = Files.list(path)) {
                         if (stream.findAny().isEmpty()) {
                             Files.delete(path);
                         }

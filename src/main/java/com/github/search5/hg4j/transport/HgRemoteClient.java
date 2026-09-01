@@ -8,8 +8,26 @@ import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.transport.wireprotov2.Cbor;
+import com.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
+import com.github.search5.hg4j.errors.HgAuthException;
+import com.github.search5.hg4j.errors.HgProtocolException;
+import com.github.search5.hg4j.errors.HgTransportException;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.io.PushbackInputStream;
+import java.net.Proxy;
+import java.net.URI;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.zip.InflaterInputStream;
 
 /**
  * Client for communicating with remote Mercurial repositories using the HTTP Wire Protocol v1.
@@ -21,10 +39,11 @@ public class HgRemoteClient implements HgRemoteConnection {
     private String username;
     private String password;
     private boolean forceTls = false;
-    private java.net.Proxy proxy = java.net.Proxy.NO_PROXY;
+    private Proxy proxy = Proxy.NO_PROXY;
     
     private int maxHttpHeaderLimit = 1024; // 기본 1024바이트 제한
     private boolean supportsV2 = false;
+    private boolean supportsClonebundles = false;
     private boolean hasNegotiated = false;
     private HgRemoteClientV2 delegate = null;
 
@@ -37,34 +56,104 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     /**
-     * V2 API handshake 및 header limit 협상을 분석한다.
+     * Parses the real v1 {@code httpheader=NNNN} capability token for the HTTP header size limit.
+     * v2 availability is <b>not</b> inferred from this list — a real v1 {@code capabilities}
+     * response never contains a "v2 is available" flag (no such token exists in the actual
+     * wire protocol; earlier code here matched a fictional {@code "http-v2"}/{@code "api-v2"}
+     * token that real hg never sends, so the auto-upgrade could never trigger). The real signal
+     * is the separate {@code X-HgUpgrade-1}/{@code X-HgProto-1} header handshake performed in
+     * {@link #tryEstablishV2FromDiscoveryResponse(byte[])}.
      */
     public boolean negotiateV2(List<String> capabilities) {
-        if (capabilities == null) return false;
+        if (capabilities == null) return this.supportsV2;
         for (String cap : capabilities) {
             if (cap.startsWith("httpheader=")) {
                 try {
                     this.maxHttpHeaderLimit = Integer.parseInt(cap.substring("httpheader=".length()).trim());
                 } catch (NumberFormatException ignored) {}
             }
-            if ("http-v2".equalsIgnoreCase(cap) || "api-v2".equalsIgnoreCase(cap) || cap.startsWith("http-v2")) {
-                this.supportsV2 = true;
+            if ("clonebundles".equals(cap)) {
+                this.supportsClonebundles = true;
             }
-        }
-        if (this.supportsV2 && this.delegate == null) {
-            this.delegate = new HgRemoteClientV2(this.baseUrl);
-            this.delegate.setTimeouts(this.connectTimeout, this.readTimeout);
-            if (this.username != null && this.password != null) {
-                this.delegate.setCredentials(this.username, this.password);
-            }
-            this.delegate.setForceTls(this.forceTls);
-            this.delegate.setProxy(this.proxy);
         }
         return this.supportsV2;
     }
 
+    /**
+     * Attempts real hg's capability-upgrade handshake using the same {@code ?cmd=capabilities}
+     * response the v1 path would otherwise parse as plain text: the request carries
+     * {@code X-HgUpgrade-1: <namespace>} and {@code X-HgProto-1: cbor}, and a server that
+     * supports the upgrade replies with a CBOR {@code {apibase, apis: {<namespace>: {...}}}}
+     * descriptor instead of the plain-text v1 capabilities line. A real v1-only server simply
+     * ignores the unrecognized headers and returns its normal plain-text response, which fails
+     * to CBOR-decode into that shape here and is then parsed as ordinary v1 capabilities by the
+     * caller — so this is a single request that serves either outcome, exactly like a real
+     * client's opportunistic upgrade attempt.
+     *
+     * @return true if the server advertised wireprotocol v2 and {@link #delegate} was wired up
+     */
+    private boolean tryEstablishV2FromDiscoveryResponse(byte[] discoveryResponseBytes) {
+        try {
+            List<Object> objs = Cbor.decodeAll(discoveryResponseBytes);
+            if (objs.isEmpty()) {
+                return false;
+            }
+            Map<String, Object> descriptor = Cbor.asMap(objs.get(0));
+            String discoveredApibase = Cbor.asString(descriptor.get("apibase"));
+            Map<String, Object> apis = Cbor.asMap(descriptor.get("apis"));
+            if (discoveredApibase == null || !apis.containsKey(Wire2Commands.NAMESPACE)) {
+                return false;
+            }
+            this.supportsV2 = true;
+            // The discovery response still embeds the real v1 capabilities line verbatim (see
+            // HgHttpWireServer#handleCapabilitiesDiscovery) even when the client upgrades to v2 --
+            // v1-only tokens like "clonebundles" have no v2 equivalent, so they must still be
+            // parsed out here rather than silently lost on upgrade.
+            String v1CapabilitiesLine = Cbor.asString(descriptor.get("v1capabilities"));
+            if (v1CapabilitiesLine != null && !v1CapabilitiesLine.isEmpty()) {
+                negotiateV2(Arrays.asList(v1CapabilitiesLine.split(" ")));
+            }
+            HgRemoteClientV2 v2 = new HgRemoteClientV2(this.baseUrl);
+            v2.setTimeouts(this.connectTimeout, this.readTimeout);
+            if (this.username != null && this.password != null) {
+                v2.setCredentials(this.username, this.password);
+            }
+            v2.setForceTls(this.forceTls);
+            v2.setProxy(this.proxy);
+            v2.primeDiscovery(discoveredApibase, Wire2Commands.NAMESPACE);
+            this.delegate = v2;
+            return true;
+        } catch (Exception notAV2DiscoveryResponse) {
+            return false;
+        }
+    }
+
     public int getMaxHttpHeaderLimit() {
         return maxHttpHeaderLimit;
+    }
+
+    /**
+     * Whether the remote advertised the real {@code "clonebundles"} v1 capability token
+     * (available only after {@link #getCapabilities()} has been called at least once).
+     */
+    public boolean supportsClonebundles() {
+        return supportsClonebundles;
+    }
+
+    /**
+     * Fetches the raw text of the remote's clonebundles manifest via {@code ?cmd=clonebundles} —
+     * real hg's {@code wireprotov1server.py} {@code clonebundles()} command, which just returns
+     * the server repository's {@code .hg/clonebundles.manifest} file content verbatim. Parse the
+     * result with {@link com.github.search5.hg4j.bundle.ClonebundlesManifest#parse(String)}.
+     *
+     * <p>This call itself still goes over the wire protocol (it's a normal {@code ?cmd=} request);
+     * the actual "bypass" happens afterward, when the caller downloads the bundle from whatever
+     * URL an entry in the manifest names — a plain HTTP(S) GET with no wire-protocol framing at
+     * all, see {@code decisions/mercurial-spec-compliance-requirement.md}'s Clonebundles plan.</p>
+     */
+    public String fetchClonebundlesManifest() throws IOException {
+        byte[] bytes = executeGetBinary("clonebundles");
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     public void setTimeouts(int connectTimeout, int readTimeout) {
@@ -95,7 +184,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         this.forceTls = forceTls;
     }
 
-    public void setProxy(java.net.Proxy proxy) {
+    public void setProxy(Proxy proxy) {
         if (proxy != null) {
             this.proxy = proxy;
         }
@@ -108,7 +197,17 @@ public class HgRemoteClient implements HgRemoteConnection {
         if (delegate != null) {
             return delegate.getCapabilities();
         }
-        byte[] bytes = executeGetBinary("capabilities");
+        byte[] bytes;
+        boolean firstNegotiation = !hasNegotiated;
+        if (firstNegotiation) {
+            hasNegotiated = true;
+            bytes = executeGetBinaryWithV2UpgradeHeaders("capabilities");
+            if (tryEstablishV2FromDiscoveryResponse(bytes)) {
+                return delegate.getCapabilities();
+            }
+        } else {
+            bytes = executeGetBinary("capabilities");
+        }
         List<String> caps = new ArrayList<>();
         String resp = new String(bytes, StandardCharsets.UTF_8);
         if (resp != null && !resp.trim().isEmpty()) {
@@ -117,10 +216,7 @@ public class HgRemoteClient implements HgRemoteConnection {
                 caps.add(clean);
             }
         }
-        if (!hasNegotiated) {
-            hasNegotiated = true;
-            negotiateV2(caps);
-        }
+        negotiateV2(caps);
         return caps;
     }
 
@@ -152,7 +248,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         if (delegate != null) {
             return delegate.getChangegroup(roots);
         }
-        java.util.Map<String, String> params = new java.util.HashMap<>();
+        Map<String, String> params = new HashMap<>();
         if (roots != null && !roots.isEmpty()) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < roots.size(); i++) {
@@ -178,7 +274,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         if (delegate != null) {
             return delegate.getBundle(common, heads, bundleCaps);
         }
-        java.util.Map<String, String> params = new java.util.HashMap<>();
+        Map<String, String> params = new HashMap<>();
         
         if (common != null && !common.isEmpty()) {
             params.put("common", String.join(" ", common));
@@ -208,6 +304,23 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     private byte[] executeGetBinary(String cmd) throws IOException {
+        return executeGetBinary(cmd, Map.of());
+    }
+
+    /**
+     * Same GET as {@link #executeGetBinary(String)} but with extra request headers — used once
+     * per client, on the first {@code capabilities} call, to carry the real
+     * {@code X-HgUpgrade-1}/{@code X-HgProto-1} v2 upgrade-handshake headers alongside the
+     * normal request.
+     */
+    private byte[] executeGetBinaryWithV2UpgradeHeaders(String cmd) throws IOException {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("X-HgUpgrade-1", Wire2Commands.NAMESPACE);
+        headers.put("X-HgProto-1", "cbor");
+        return executeGetBinary(cmd, headers);
+    }
+
+    private byte[] executeGetBinary(String cmd, Map<String, String> extraHeaders) throws IOException {
         String fullUrl = baseUrl;
         if (cmd.contains("?")) {
             fullUrl += "?cmd=" + cmd.substring(0, cmd.indexOf("?")) + "&" + cmd.substring(cmd.indexOf("?") + 1);
@@ -218,11 +331,11 @@ public class HgRemoteClient implements HgRemoteConnection {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
 
-        java.net.URL url;
+        URL url;
         try {
-            url = java.net.URI.create(fullUrl).toURL();
+            url = URI.create(fullUrl).toURL();
         } catch (Exception e) {
-            throw new com.github.search5.hg4j.errors.HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
+            throw new HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
@@ -231,19 +344,22 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
         conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
+        for (Map.Entry<String, String> header : extraHeaders.entrySet()) {
+            conn.setRequestProperty(header.getKey(), header.getValue());
+        }
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;
-            String encoded = java.util.Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+            String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
         }
 
         int status = conn.getResponseCode();
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
-            throw new com.github.search5.hg4j.errors.HgAuthException(fullUrl, username != null ? username : "anonymous");
+            throw new HgAuthException(fullUrl, username != null ? username : "anonymous");
         }
         if (status != HttpURLConnection.HTTP_OK) {
-            throw new com.github.search5.hg4j.errors.HgProtocolException(fullUrl, "Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
+            throw new HgProtocolException(fullUrl, "Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
         }
 
         String contentType = conn.getContentType();
@@ -251,7 +367,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         tempFile.deleteOnExit();
 
         try (InputStream in = unwrapResponseStream(conn.getInputStream(), contentType);
-             java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
+             FileOutputStream fos = new FileOutputStream(tempFile)) {
             byte[] buf = new byte[8192];
             int count;
             long totalBytes = 0;
@@ -259,7 +375,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while ((count = in.read(buf)) != -1) {
                 totalBytes += count;
                 if (totalBytes > maxResponseBytes) {
-                    throw new com.github.search5.hg4j.errors.HgProtocolException(fullUrl, "Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
+                    throw new HgProtocolException(fullUrl, "Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
                 }
                 fos.write(buf, 0, count);
             }
@@ -277,17 +393,17 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
     }
 
-    private byte[] executePostBinary(String cmd, java.util.Map<String, String> params) throws IOException {
+    private byte[] executePostBinary(String cmd, Map<String, String> params) throws IOException {
         String fullUrl = baseUrl + "?cmd=" + cmd;
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
 
-        java.net.URL url;
+        URL url;
         try {
-            url = java.net.URI.create(fullUrl).toURL();
+            url = URI.create(fullUrl).toURL();
         } catch (Exception e) {
-            throw new com.github.search5.hg4j.errors.HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
+            throw new HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
@@ -301,34 +417,34 @@ public class HgRemoteClient implements HgRemoteConnection {
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;
-            String encoded = java.util.Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+            String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
         }
 
         byte[] postData;
         StringBuilder bodyBuilder = new StringBuilder();
-        for (java.util.Map.Entry<String, String> entry : params.entrySet()) {
+        for (Map.Entry<String, String> entry : params.entrySet()) {
             if (bodyBuilder.length() > 0) {
                 bodyBuilder.append("&");
             }
-            bodyBuilder.append(java.net.URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8));
+            bodyBuilder.append(URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8));
             bodyBuilder.append("=");
-            bodyBuilder.append(java.net.URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8));
+            bodyBuilder.append(URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8));
         }
         postData = bodyBuilder.toString().getBytes(StandardCharsets.UTF_8);
         conn.setRequestProperty("Content-Length", String.valueOf(postData.length));
 
-        try (java.io.OutputStream os = conn.getOutputStream()) {
+        try (OutputStream os = conn.getOutputStream()) {
             os.write(postData);
             os.flush();
         }
 
         int status = conn.getResponseCode();
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
-            throw new com.github.search5.hg4j.errors.HgAuthException(fullUrl, username != null ? username : "anonymous");
+            throw new HgAuthException(fullUrl, username != null ? username : "anonymous");
         }
         if (status != HttpURLConnection.HTTP_OK) {
-            throw new com.github.search5.hg4j.errors.HgProtocolException(fullUrl, "Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
+            throw new HgProtocolException(fullUrl, "Remote Mercurial server returned HTTP " + status + " for URL: " + fullUrl);
         }
 
         String contentType = conn.getContentType();
@@ -336,7 +452,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         tempFile.deleteOnExit();
 
         try (InputStream in = unwrapResponseStream(conn.getInputStream(), contentType);
-             java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
+             FileOutputStream fos = new FileOutputStream(tempFile)) {
             byte[] buf = new byte[8192];
             int count;
             long totalBytes = 0;
@@ -344,7 +460,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while ((count = in.read(buf)) != -1) {
                 totalBytes += count;
                 if (totalBytes > maxResponseBytes) {
-                    throw new com.github.search5.hg4j.errors.HgProtocolException(fullUrl, "Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
+                    throw new HgProtocolException(fullUrl, "Security Guard: Remote server response size exceeds maximum allowed limit (100MB)");
                 }
                 fos.write(buf, 0, count);
             }
@@ -382,7 +498,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             int b = in.read();
             if (b == -1) {
                 eof = true;
-                throw new com.github.search5.hg4j.errors.HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
+                throw new HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
             }
             remaining--;
             return b;
@@ -400,7 +516,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             int read = in.read(b, off, toRead);
             if (read == -1) {
                 eof = true;
-                throw new com.github.search5.hg4j.errors.HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
+                throw new HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
             }
             remaining -= read;
             return read;
@@ -416,7 +532,7 @@ public class HgRemoteClient implements HgRemoteConnection {
                         eof = true;
                         return false;
                     }
-                    throw new com.github.search5.hg4j.errors.HgProtocolException("", "Unexpected EOF while reading mercurial-0.2 chunk length");
+                    throw new HgProtocolException("", "Unexpected EOF while reading mercurial-0.2 chunk length");
                 }
                 read += count;
             }
@@ -429,7 +545,7 @@ public class HgRemoteClient implements HgRemoteConnection {
                 return false;
             }
             if (len < 0) {
-                throw new com.github.search5.hg4j.errors.HgProtocolException("", "Invalid negative chunk length: " + len);
+                throw new HgProtocolException("", "Invalid negative chunk length: " + len);
             }
             remaining = len;
             return true;
@@ -447,7 +563,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while (read < compNameLen) {
                 int count = in.read(compNameBytes, read, compNameLen - read);
                 if (count == -1) {
-                    throw new com.github.search5.hg4j.errors.HgProtocolException("", "Unexpected EOF while reading compression header in application/mercurial-0.2 stream");
+                    throw new HgProtocolException("", "Unexpected EOF while reading compression header in application/mercurial-0.2 stream");
                 }
                 read += count;
             }
@@ -457,21 +573,21 @@ public class HgRemoteClient implements HgRemoteConnection {
             InputStream chunkedIn = new MercurialChunkedInputStream(in);
 
             if ("zlib".equalsIgnoreCase(compName) || "deflate".equalsIgnoreCase(compName)) {
-                return new java.util.zip.InflaterInputStream(chunkedIn);
+                return new InflaterInputStream(chunkedIn);
             } else if ("none".equalsIgnoreCase(compName) || compName.isEmpty()) {
                 return chunkedIn;
             } else {
-                throw new com.github.search5.hg4j.errors.HgProtocolException("", "Unsupported compression format in application/mercurial-0.2 framing: " + compName);
+                throw new HgProtocolException("", "Unsupported compression format in application/mercurial-0.2 framing: " + compName);
             }
         } else if (contentType != null && contentType.contains("application/mercurial-0.1")) {
             // Automatically detect and decompress application/mercurial-0.1 raw deflate (zlib) streams
-            java.io.PushbackInputStream pbis = new java.io.PushbackInputStream(in, 2);
+            PushbackInputStream pbis = new PushbackInputStream(in, 2);
             int b1 = pbis.read();
             int b2 = pbis.read();
             if (b1 == 0x78 && (b2 == 0x9C || b2 == 0x01 || b2 == 0x5E || b2 == 0xDA)) {
                 pbis.unread(b2);
                 pbis.unread(b1);
-                return new java.util.zip.InflaterInputStream(pbis);
+                return new InflaterInputStream(pbis);
             } else {
                 if (b2 != -1) pbis.unread(b2);
                 if (b1 != -1) pbis.unread(b1);
@@ -510,11 +626,11 @@ public class HgRemoteClient implements HgRemoteConnection {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
 
-        java.net.URL url;
+        URL url;
         try {
-            url = java.net.URI.create(fullUrl).toURL();
+            url = URI.create(fullUrl).toURL();
         } catch (Exception e) {
-            throw new com.github.search5.hg4j.errors.HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
+            throw new HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
@@ -529,21 +645,21 @@ public class HgRemoteClient implements HgRemoteConnection {
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;
-            String encoded = java.util.Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+            String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
         }
 
-        try (java.io.OutputStream os = conn.getOutputStream()) {
+        try (OutputStream os = conn.getOutputStream()) {
             os.write(bundleBytes);
             os.flush();
         }
 
         int status = conn.getResponseCode();
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
-            throw new com.github.search5.hg4j.errors.HgAuthException(fullUrl, username != null ? username : "anonymous");
+            throw new HgAuthException(fullUrl, username != null ? username : "anonymous");
         }
         if (status != HttpURLConnection.HTTP_OK) {
-            throw new com.github.search5.hg4j.errors.HgProtocolException(fullUrl, "Remote server returned HTTP " + status + " for unbundle: " + fullUrl);
+            throw new HgProtocolException(fullUrl, "Remote server returned HTTP " + status + " for unbundle: " + fullUrl);
         }
 
         try (InputStream in = conn.getInputStream();
@@ -554,7 +670,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             while ((count = in.read(buf)) != -1) {
                 totalRead += count;
                 if (totalRead > 10 * 1024 * 1024) { // 10MB Limit Guard
-                    throw new com.github.search5.hg4j.errors.HgProtocolException(fullUrl, "HTTP response size exceeded 10MB safety threshold under push");
+                    throw new HgProtocolException(fullUrl, "HTTP response size exceeded 10MB safety threshold under push");
                 }
                 out.write(buf, 0, count);
             }
@@ -565,13 +681,13 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     @Override
-    public java.util.Map<String, String> listKeys(String namespace) throws IOException {
+    public Map<String, String> listKeys(String namespace) throws IOException {
         if (delegate != null) {
             return delegate.listKeys(namespace);
         }
         // Fallback to GET for V1
         String resp = executeGet("listkeys?namespace=" + namespace);
-        java.util.Map<String, String> map = new java.util.HashMap<>();
+        Map<String, String> map = new HashMap<>();
         if (resp != null && !resp.trim().isEmpty()) {
             for (String line : resp.split("\n")) {
                 int tab = line.indexOf('\t');
@@ -585,8 +701,8 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     @Override
     public List<String> between(List<String> pairs) throws IOException {
-        String resp = executeGet("between?pairs=" + java.net.URLEncoder.encode(String.join(" ", pairs), "UTF-8"));
-        List<String> list = new java.util.ArrayList<>();
+        String resp = executeGet("between?pairs=" + URLEncoder.encode(String.join(" ", pairs), "UTF-8"));
+        List<String> list = new ArrayList<>();
         if (resp != null && !resp.trim().isEmpty()) {
             for (String val : resp.trim().split("\\s+")) {
                 list.add(val.trim());
@@ -597,7 +713,7 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     @Override
     public String known(List<String> nodes) throws IOException {
-        return executeGet("known?nodes=" + java.net.URLEncoder.encode(String.join(" ", nodes), "UTF-8"));
+        return executeGet("known?nodes=" + URLEncoder.encode(String.join(" ", nodes), "UTF-8"));
     }
 
     @Override
@@ -605,7 +721,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         if (delegate != null) {
             return delegate.pushkey(namespace, key, oldVal, newVal);
         }
-        java.util.Map<String, String> params = new java.util.HashMap<>();
+        Map<String, String> params = new HashMap<>();
         params.put("namespace", namespace);
         params.put("key", key);
         params.put("old", oldVal != null ? oldVal : "");

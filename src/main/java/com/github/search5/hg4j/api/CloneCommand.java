@@ -15,6 +15,10 @@ import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import java.nio.file.Path;
 
 /**
  * Porcelain command to clone a remote Mercurial repository into a local directory.
@@ -52,7 +56,7 @@ public class CloneCommand {
         }
 
         if (directory.exists() && directory.list() != null && directory.list().length > 0) {
-            throw new com.github.search5.hg4j.errors.HgValidationException("Destination directory is not empty: " + directory.getAbsolutePath());
+            throw new HgValidationException("Destination directory is not empty: " + directory.getAbsolutePath());
         }
 
         monitor.start("Cloning repository", 3);
@@ -101,7 +105,7 @@ public class CloneCommand {
         Revlog manifest = repo.getManifestRevlog();
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, mfNode);
         if (mfRev == -1) {
-            throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Manifest revision not found: " + NodeIdUtil.toHex(mfNode));
+            throw new HgRevisionNotFoundException("Manifest revision not found: " + NodeIdUtil.toHex(mfNode));
         }
 
         byte[] mfContent = manifest.getRevisionContent(mfRev);
@@ -134,13 +138,13 @@ public class CloneCommand {
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
 
             if (!flIdx.exists()) {
-                throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
+                throw new HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
             }
 
             Revlog filelog = repo.getRevlog(flIdx, flDat);
             int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
             if (fileRev == -1) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
+                throw new HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
             }
 
             byte[] fileContent = filelog.getRevisionContent(fileRev);
@@ -157,7 +161,7 @@ public class CloneCommand {
                 mode = 0120000;
                 String target = new String(fileContent, StandardCharsets.UTF_8).trim();
                 try {
-                    Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                    Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
                 } catch (Exception e) {
                     Files.write(diskFile.toPath(), fileContent);
                 }

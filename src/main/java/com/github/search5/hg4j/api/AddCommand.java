@@ -8,6 +8,8 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.lib.HgLock;
 
 /**
  * Adds untracked files to the repository tracking list.
@@ -29,7 +31,7 @@ public class AddCommand {
     }
 
     public void call() throws IOException, HgLockException {
-        try (com.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock wlock = repository.lockWorkingCopy()) {
             Dirstate dirstate = repository.getDirstate();
 
             List<String> filesToAdd = new ArrayList<>(files);
@@ -46,7 +48,7 @@ public class AddCommand {
             for (String relPath : filesToAdd) {
                 File diskFile = new File(repository.getDirectory(), relPath);
                 if (!diskFile.exists() || !diskFile.isFile()) {
-                    throw new com.github.search5.hg4j.errors.HgValidationException("File not found or is not a standard file: " + relPath);
+                    throw new HgValidationException("File not found or is not a standard file: " + relPath);
                 }
 
                 boolean executable = diskFile.canExecute();

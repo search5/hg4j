@@ -13,20 +13,34 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.Map;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
+import com.github.search5.hg4j.submodule.HgSubrepoEntry;
+import com.github.search5.hg4j.submodule.HgSubrepoParser;
+import com.github.search5.hg4j.treewalk.HgTreeFilter;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
+import com.github.search5.hg4j.treewalk.TreeWalk;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Porcelain command to update (checkout) working copy to a specified target revision.
  * Built with full transaction isolation and strict dirstate state transitions.
  */
 public class UpdateCommand {
-    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(UpdateCommand.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(UpdateCommand.class.getName());
 
     private final HgRepository repository;
     private String targetRevision;
     private boolean force = false;
-    private com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter = com.github.search5.hg4j.treewalk.HgTreeFilter.ALL;
-    private final java.util.List<HgHook> preUpdateHooks = new java.util.ArrayList<>();
-    private final java.util.List<HgHook> postUpdateHooks = new java.util.ArrayList<>();
+    private HgTreeFilter treeFilter = HgTreeFilter.ALL;
+    private final List<HgHook> preUpdateHooks = new ArrayList<>();
+    private final List<HgHook> postUpdateHooks = new ArrayList<>();
 
     public UpdateCommand(HgRepository repository) {
         this.repository = repository;
@@ -46,7 +60,7 @@ public class UpdateCommand {
         return this;
     }
 
-    public UpdateCommand setTreeFilter(com.github.search5.hg4j.treewalk.HgTreeFilter treeFilter) {
+    public UpdateCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
         }
@@ -72,13 +86,13 @@ public class UpdateCommand {
 
             // PRE_UPDATE hooks trigger
             if (!preUpdateHooks.isEmpty()) {
-                Map<String, Object> ctx = new java.util.HashMap<>();
+                Map<String, Object> ctx = new HashMap<>();
                 ctx.put("repository", repository);
                 ctx.put("targetRevision", targetRevision);
                 ctx.put("force", force);
                 for (HgHook hook : preUpdateHooks) {
                     if (!hook.run(ctx)) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("Update rejected by PRE_UPDATE hook");
+                        throw new HgValidationException("Update rejected by PRE_UPDATE hook");
                     }
                 }
             }
@@ -88,7 +102,7 @@ public class UpdateCommand {
                 if (!dirstate.getEntries().isEmpty()) {
                     Status status = new StatusCommand(repository).call();
                     if (!status.getAdded().isEmpty() || !status.getModified().isEmpty() || !status.getRemoved().isEmpty()) {
-                        throw new com.github.search5.hg4j.errors.HgValidationException("Working directory has uncommitted changes. Use force to update.");
+                        throw new HgValidationException("Working directory has uncommitted changes. Use force to update.");
                     }
                 }
             }
@@ -96,12 +110,12 @@ public class UpdateCommand {
             Revlog changelog = repository.getRevlog(clIdx, clDat);
             byte[] targetNodeId = resolveTargetNodeId(changelog);
             if (targetNodeId == null) {
-                throw new com.github.search5.hg4j.errors.HgValidationException("Repository is empty, cannot update.");
+                throw new HgValidationException("Repository is empty, cannot update.");
             }
 
             int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
             if (commitRev == -1) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
+                throw new HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
             }
 
             // Resolve current parent revision for TreeWalk
@@ -115,9 +129,9 @@ public class UpdateCommand {
                 }
             }
 
-            com.github.search5.hg4j.treewalk.TreeWalk tw = new com.github.search5.hg4j.treewalk.TreeWalk();
-            tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest
-            tw.addTree(new com.github.search5.hg4j.treewalk.ManifestTreeIterator(repository, String.valueOf(commitRev))); // Tree 1: Target Commit Manifest
+            TreeWalk tw = new TreeWalk();
+            tw.addTree(new ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest
+            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev))); // Tree 1: Target Commit Manifest
 
             tw.reset();
             while (tw.next()) {
@@ -156,13 +170,13 @@ public class UpdateCommand {
                     File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
 
                     if (!flIdx.exists()) {
-                        throw new com.github.search5.hg4j.errors.HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
+                        throw new HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
                     }
 
                     Revlog filelog = repository.getRevlog(flIdx, flDat);
                     int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, targetNode);
                     if (fileRev == -1) {
-                        throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
+                        throw new HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
                     }
 
                     byte[] fileContent = filelog.getRevisionContent(fileRev);
@@ -176,7 +190,7 @@ public class UpdateCommand {
                         if (!symlink) {
                             try {
                                 byte[] existingContent = Files.readAllBytes(diskFile.toPath());
-                                if (java.util.Arrays.equals(existingContent, fileContent)) {
+                                if (Arrays.equals(existingContent, fileContent)) {
                                     needsWrite = false;
                                 }
                             } catch (Exception ignored) {
@@ -194,7 +208,7 @@ public class UpdateCommand {
                             mode = 0120000;
                             String target = new String(fileContent, StandardCharsets.UTF_8).trim();
                             try {
-                                Files.createSymbolicLink(diskFile.toPath(), java.nio.file.Path.of(target));
+                                Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
                             } catch (Exception e) {
                                 Files.write(diskFile.toPath(), fileContent);
                             }
@@ -223,12 +237,19 @@ public class UpdateCommand {
             dirstate.setParents(targetNodeId, new byte[20]);
             repository.writeDirstate(dirstate);
 
+            // Real hg's `hg update` switches the working directory's active branch to
+            // whatever branch the target revision was committed on (`hg branch` reflects
+            // dirstate.branch, which `merge.update()` always resets on checkout). Without
+            // this, the working branch stays stuck on whatever it was before the update,
+            // so e.g. the next commit lands on the wrong branch.
+            repository.setBranch(CommitCommand.getBranchOfRevision(changelog, commitRev));
+
             // 4a. Update active bookmark based on targetNodeId (Auto-Switch)
             BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
-            java.util.Map<String, String> allBookmarks = bookmarkCmd.call();
+            Map<String, String> allBookmarks = bookmarkCmd.call();
             String targetHex = NodeIdUtil.toHex(targetNodeId);
-            java.util.List<String> matchingBookmarks = new java.util.ArrayList<>();
-            for (java.util.Map.Entry<String, String> entry : allBookmarks.entrySet()) {
+            List<String> matchingBookmarks = new ArrayList<>();
+            for (Map.Entry<String, String> entry : allBookmarks.entrySet()) {
                 if (entry.getValue().equals(targetHex)) {
                     matchingBookmarks.add(entry.getKey());
                 }
@@ -246,19 +267,19 @@ public class UpdateCommand {
                 try {
                     byte[] hgsubBytes = Files.readAllBytes(hgsubFile.toPath());
                     byte[] hgsubstateBytes = Files.readAllBytes(hgsubstateFile.toPath());
-                    java.util.Map<String, com.github.search5.hg4j.submodule.HgSubrepoEntry> subrepos = com.github.search5.hg4j.submodule.HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
+                    Map<String, HgSubrepoEntry> subrepos = HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
                     
-                    for (com.github.search5.hg4j.submodule.HgSubrepoEntry subEntry : subrepos.values()) {
+                    for (HgSubrepoEntry subEntry : subrepos.values()) {
                         if (subEntry.isGit()) {
                             continue; // Skip Git subrepos
                         }
                         
                         File subDir = new File(repository.getDirectory(), subEntry.getPath());
-                        com.github.search5.hg4j.lib.HgRepository subRepo;
+                        HgRepository subRepo;
                         if (!new File(subDir, ".hg").exists()) {
                             subRepo = Hg.init().setDirectory(subDir).call();
                         } else {
-                            subRepo = new com.github.search5.hg4j.lib.HgRepository(subDir);
+                            subRepo = new HgRepository(subDir);
                         }
 
                         try (Hg hgSub = Hg.wrap(subRepo)) {
@@ -266,7 +287,7 @@ public class UpdateCommand {
                                 try {
                                     hgSub.pull().setSource(subEntry.getSourceUrl()).call();
                                 } catch (Exception e) {
-                                    LOGGER.log(java.util.logging.Level.WARNING, "Failed to pull subrepo from: " + subEntry.getSourceUrl() + ", error: " + e.getMessage(), e);
+                                    LOGGER.log(Level.WARNING, "Failed to pull subrepo from: " + subEntry.getSourceUrl() + ", error: " + e.getMessage(), e);
                                 }
                             }
                             
@@ -276,19 +297,19 @@ public class UpdateCommand {
                         }
                     }
                 } catch (Exception e) {
-                    LOGGER.log(java.util.logging.Level.WARNING, "Failed to perform recursive subrepo checkout", e);
+                    LOGGER.log(Level.WARNING, "Failed to perform recursive subrepo checkout", e);
                 }
             }
 
             // POST_UPDATE hooks trigger
-            java.util.Map<String, Object> ctx = new java.util.HashMap<>();
+            Map<String, Object> ctx = new HashMap<>();
             ctx.put("targetNode", NodeIdUtil.toHex(targetNodeId));
             ctx.put("repository", repository);
             for (HgHook hook : postUpdateHooks) {
                 try {
                     hook.run(ctx);
                 } catch (Exception e) {
-                    LOGGER.log(java.util.logging.Level.WARNING, "Post-update hook execution failed", e);
+                    LOGGER.log(Level.WARNING, "Post-update hook execution failed", e);
                 }
             }
 
@@ -307,7 +328,7 @@ public class UpdateCommand {
             }
         } catch (IOException e) {
             if (e.getMessage() != null && e.getMessage().contains("Ambiguous")) {
-                throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException(e.getMessage());
+                throw new HgRevisionNotFoundException(e.getMessage());
             }
             throw e;
         }
@@ -315,30 +336,7 @@ public class UpdateCommand {
         // 3. Try named branch head
         byte[] branchHead = null;
         for (int i = changelog.getRevisionCount() - 1; i >= 0; i--) {
-            byte[] content = changelog.getRevisionContent(i);
-            String text = new String(content, StandardCharsets.UTF_8);
-            String[] lines = text.split("\n");
-            String dateLine = lines[2].trim();
-
-            String branch = "default";
-            int firstSpace = dateLine.indexOf(' ');
-            if (firstSpace != -1) {
-                int secondSpace = dateLine.indexOf(' ', firstSpace + 1);
-                String extraPart = (secondSpace != -1) ? dateLine.substring(secondSpace + 1) : null;
-                if (extraPart != null && !extraPart.isEmpty()) {
-                    String[] extraItems = extraPart.split("\0", -1);
-                    for (String part : extraItems) {
-                        int colonIdx = CommitCommand.findUnescapedColon(part);
-                        if (colonIdx != -1) {
-                            String key = part.substring(0, colonIdx);
-                            String val = part.substring(colonIdx + 1);
-                            if ("branch".equals(CommitCommand.decodeExtraKey(key))) {
-                                branch = CommitCommand.decodeExtraKey(val);
-                            }
-                        }
-                    }
-                }
-            }
+            String branch = CommitCommand.getBranchOfRevision(changelog, i);
             if (targetRevision.equals(branch)) {
                 branchHead = changelog.getIndexRecord(i).getNodeId();
                 break;
@@ -348,6 +346,6 @@ public class UpdateCommand {
             return branchHead;
         }
 
-        throw new com.github.search5.hg4j.errors.HgRevisionNotFoundException("Unable to resolve revision identifier: " + targetRevision);
+        throw new HgRevisionNotFoundException("Unable to resolve revision identifier: " + targetRevision);
     }
 }

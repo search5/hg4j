@@ -15,6 +15,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Assertions;
 
 @Tag("interop")
 public class CHgCommitWriteTest {
@@ -43,7 +44,7 @@ public class CHgCommitWriteTest {
                 .setMessage("Initial commit from hg4j")
                 .call();
         
-        String commitHex = new com.github.search5.hg4j.lib.NodeId(commitNodeId).toHex();
+        String commitHex = new NodeId(commitNodeId).toHex();
 
         // 3. Cross-verify using native hg commands
         // Compare NodeID
@@ -64,6 +65,6 @@ public class CHgCommitWriteTest {
 
         // Verify repository integrity
         String nativeVerify = HgTestUtils.hg(repoDir, "verify");
-        org.junit.jupiter.api.Assertions.assertFalse(nativeVerify.contains("integrity error"), "Saved repository contains integrity errors!\n" + nativeVerify);
+        Assertions.assertFalse(nativeVerify.contains("integrity error"), "Saved repository contains integrity errors!\n" + nativeVerify);
     }
 }

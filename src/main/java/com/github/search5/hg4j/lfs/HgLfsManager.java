@@ -5,6 +5,16 @@ import com.github.search5.hg4j.util.SafeFileIO;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Manages the local caching and resolution of LFS (Large File Storage) objects.
@@ -73,7 +83,7 @@ public final class HgLfsManager {
             throw new IllegalArgumentException("Pointer and data cannot be null");
         }
         if (data.length != pointer.getSize()) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("LFS payload size mismatch: expected " 
+            throw new HgCorruptDataException("LFS payload size mismatch: expected " 
                     + pointer.getSize() + ", got " + data.length);
         }
 
@@ -95,7 +105,7 @@ public final class HgLfsManager {
      */
     public byte[] getCachedObject(HgLfsPointer pointer) throws IOException {
         if (!isCached(pointer)) {
-            throw new com.github.search5.hg4j.errors.HgCorruptDataException("Requested LFS object not cached or size mismatch: " + pointer.getOid());
+            throw new HgCorruptDataException("Requested LFS object not cached or size mismatch: " + pointer.getOid());
         }
         File cacheFile = getLocalPath(pointer.getOid());
         return Files.readAllBytes(cacheFile.toPath());
@@ -128,15 +138,15 @@ public final class HgLfsManager {
                 + "}]"
                 + "}";
 
-        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
-        java.net.http.HttpRequest batchRequest = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create(lfsServerUrl + "/objects/batch"))
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest batchRequest = HttpRequest.newBuilder()
+                .uri(URI.create(lfsServerUrl + "/objects/batch"))
                 .header("Accept", "application/vnd.git-lfs+json")
                 .header("Content-Type", "application/vnd.git-lfs+json")
-                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(batchJson, java.nio.charset.StandardCharsets.UTF_8))
+                .POST(HttpRequest.BodyPublishers.ofString(batchJson, StandardCharsets.UTF_8))
                 .build();
 
-        java.net.http.HttpResponse<String> batchResponse = client.send(batchRequest, java.net.http.HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> batchResponse = client.send(batchRequest, HttpResponse.BodyHandlers.ofString());
         if (batchResponse.statusCode() != 200) {
             throw new IOException("LFS batch API request failed with status: " + batchResponse.statusCode());
         }
@@ -149,34 +159,34 @@ public final class HgLfsManager {
         try {
             MapJsonParser parser = new MapJsonParser(responseBody);
             @SuppressWarnings("unchecked")
-            java.util.Map<String, Object> resMap = (java.util.Map<String, Object>) parser.parse();
+            Map<String, Object> resMap = (Map<String, Object>) parser.parse();
             @SuppressWarnings("unchecked")
-            java.util.List<Object> objects = (java.util.List<Object>) resMap.get("objects");
+            List<Object> objects = (List<Object>) resMap.get("objects");
             if (objects == null || objects.isEmpty()) {
                 throw new IOException("No objects in LFS batch response: " + responseBody);
             }
             @SuppressWarnings("unchecked")
-            java.util.Map<String, Object> objMap = (java.util.Map<String, Object>) objects.get(0);
+            Map<String, Object> objMap = (Map<String, Object>) objects.get(0);
             if (objMap.containsKey("error")) {
                 @SuppressWarnings("unchecked")
-                java.util.Map<String, Object> errMap = (java.util.Map<String, Object>) objMap.get("error");
+                Map<String, Object> errMap = (Map<String, Object>) objMap.get("error");
                 throw new IOException("LFS object download failed from batch API: " 
                     + errMap.get("code") + " - " + errMap.get("message"));
             }
             
             @SuppressWarnings("unchecked")
-            java.util.Map<String, Object> actions = (java.util.Map<String, Object>) objMap.get("actions");
+            Map<String, Object> actions = (Map<String, Object>) objMap.get("actions");
             if (actions == null) {
                 throw new IOException("No actions for LFS object in batch response: " + responseBody);
             }
             @SuppressWarnings("unchecked")
-            java.util.Map<String, Object> download = (java.util.Map<String, Object>) actions.get("download");
+            Map<String, Object> download = (Map<String, Object>) actions.get("download");
             if (download == null) {
                 throw new IOException("No download action for LFS object: " + responseBody);
             }
             downloadUrl = (String) download.get("href");
             @SuppressWarnings("unchecked")
-            java.util.Map<String, Object> headers = (java.util.Map<String, Object>) download.get("header");
+            Map<String, Object> headers = (Map<String, Object>) download.get("header");
             if (headers != null) {
                 authHeaderVal = (String) headers.get("Authorization");
             }
@@ -189,14 +199,14 @@ public final class HgLfsManager {
         }
 
         // 2. Download LFS object payload via HTTP GET
-        java.net.http.HttpRequest.Builder getReqBuilder = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create(downloadUrl))
+        HttpRequest.Builder getReqBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(downloadUrl))
                 .GET();
         if (authHeaderVal != null) {
             getReqBuilder.header("Authorization", authHeaderVal);
         }
 
-        java.net.http.HttpResponse<byte[]> getResponse = client.send(getReqBuilder.build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> getResponse = client.send(getReqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
         if (getResponse.statusCode() != 200) {
             throw new IOException("LFS object download failed with status: " + getResponse.statusCode() + " from: " + downloadUrl);
         }
@@ -232,9 +242,9 @@ public final class HgLfsManager {
             }
         }
         
-        private java.util.Map<String, Object> parseObject() throws IOException {
+        private Map<String, Object> parseObject() throws IOException {
             ptr++; // skip '{'
-            java.util.Map<String, Object> map = new java.util.HashMap<>();
+            Map<String, Object> map = new HashMap<>();
             skipWhitespace();
             if (ptr < src.length() && src.charAt(ptr) == '}') {
                 ptr++;
@@ -260,9 +270,9 @@ public final class HgLfsManager {
             return map;
         }
         
-        private java.util.List<Object> parseArray() throws IOException {
+        private List<Object> parseArray() throws IOException {
             ptr++; // skip '['
-            java.util.List<Object> list = new java.util.ArrayList<>();
+            List<Object> list = new ArrayList<>();
             skipWhitespace();
             if (ptr < src.length() && src.charAt(ptr) == ']') {
                 ptr++;

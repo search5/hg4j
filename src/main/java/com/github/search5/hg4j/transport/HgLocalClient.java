@@ -9,6 +9,23 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import com.github.search5.hg4j.api.CommitCommand;
+import com.github.search5.hg4j.api.HgHook;
+import com.github.search5.hg4j.api.PullCommand;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.lib.NodeId;
+import com.github.search5.hg4j.phase.PhaseRoots;
+import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
+import java.io.ByteArrayInputStream;
+import java.io.DataOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Pure Java transport that provides a connection to a Mercurial repository on the local filesystem.
@@ -23,6 +40,17 @@ public class HgLocalClient implements HgRemoteConnection {
         String cleanPath = path.startsWith("file://") ? path.substring(7) : path;
         this.repoDir = new File(cleanPath);
         this.remoteRepo = new HgRepository(repoDir);
+    }
+
+    /**
+     * Wraps an already-open repository instead of reopening one from a path — used by server-side
+     * wire protocol dispatch ({@code transport.wireprotov1.Wire1Commands}), which already has a
+     * live {@link HgRepository} for the request and reuses this class's bundle-building logic
+     * (getbundle/changegroup/listkeys/pushkey) rather than duplicating it.
+     */
+    public HgLocalClient(HgRepository repository) {
+        this.repoDir = repository.getDirectory();
+        this.remoteRepo = repository;
     }
 
     @Override
@@ -53,7 +81,7 @@ public class HgLocalClient implements HgRemoteConnection {
         List<String> heads = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             if (!isParent[i]) {
-                heads.add(com.github.search5.hg4j.util.NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
+                heads.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
             }
         }
         return heads;
@@ -95,7 +123,7 @@ public class HgLocalClient implements HgRemoteConnection {
         if (!validCommon.isEmpty()) {
             boolean[] commonKnown = new boolean[count];
             for (String c : validCommon) {
-                int rev = changelog.findRevision(com.github.search5.hg4j.util.NodeIdUtil.fromHex(c));
+                int rev = changelog.findRevision(NodeIdUtil.fromHex(c));
                 if (rev != -1) {
                     commonKnown[rev] = true;
                 }
@@ -123,7 +151,7 @@ public class HgLocalClient implements HgRemoteConnection {
         }
 
         // Build bundle
-        com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle();
+        ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
         bundle.changelogEntries = new ArrayList<>();
         bundle.manifestEntries = new ArrayList<>();
         bundle.fileGroups = new ArrayList<>();
@@ -140,7 +168,7 @@ public class HgLocalClient implements HgRemoteConnection {
         byte[] prevClContent = (startRev > 0) ? changelog.getRevisionContent(startRev - 1) : new byte[0];
         for (int r = startRev; r < count; r++) {
             Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
-            com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry clEntry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
+            ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
             clEntry.node = clRec.getNodeId();
             clEntry.p1 = (clRec.getParent1() != -1) ? changelog.getIndexRecord(clRec.getParent1()).getNodeId() : new byte[20];
             clEntry.p2 = (clRec.getParent2() != -1) ? changelog.getIndexRecord(clRec.getParent2()).getNodeId() : new byte[20];
@@ -154,16 +182,16 @@ public class HgLocalClient implements HgRemoteConnection {
 
         // 1b. Pack Manifests
         Revlog manifest = remoteRepo.getRevlog(mfIdx, mfDat);
-        java.util.Set<String> affectedFiles = new java.util.HashSet<>();
+        Set<String> affectedFiles = new HashSet<>();
         // incremental pull이면 마지막 공통 changelog 리비전(startRev-1)이 가리키는 manifest
         // 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다(changelog와 동일한 이유).
         byte[] prevMfContent = new byte[0];
         if (startRev > 0) {
             byte[] prevClRaw = changelog.getRevisionContent(startRev - 1);
-            String prevClText = new String(prevClRaw, java.nio.charset.StandardCharsets.UTF_8);
+            String prevClText = new String(prevClRaw, StandardCharsets.UTF_8);
             int nl = prevClText.indexOf('\n');
             if (nl > 0) {
-                byte[] prevMfNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(prevClText.substring(0, nl).trim().substring(0, 40));
+                byte[] prevMfNode = NodeIdUtil.fromHex(prevClText.substring(0, nl).trim().substring(0, 40));
                 int prevMfRev = manifest.findRevision(prevMfNode);
                 if (prevMfRev != -1) {
                     prevMfContent = manifest.getRevisionContent(prevMfRev);
@@ -172,7 +200,7 @@ public class HgLocalClient implements HgRemoteConnection {
         }
         for (int r = startRev; r < count; r++) {
             byte[] clContent = changelog.getRevisionContent(r);
-            String clText = new String(clContent, java.nio.charset.StandardCharsets.UTF_8);
+            String clText = new String(clContent, StandardCharsets.UTF_8);
             String[] clLines = clText.split("\n");
             for (int i = 3; i < clLines.length; i++) {
                 String line = clLines[i].trim();
@@ -180,12 +208,12 @@ public class HgLocalClient implements HgRemoteConnection {
                 affectedFiles.add(line);
             }
 
-            byte[] mfNode = com.github.search5.hg4j.util.NodeIdUtil.fromHex(clLines[0].trim().substring(0, 40));
+            byte[] mfNode = NodeIdUtil.fromHex(clLines[0].trim().substring(0, 40));
             int mfRev = manifest.findRevision(mfNode);
             if (mfRev == -1) continue;
 
             Revlog.IndexRecord mfRec = manifest.getIndexRecord(mfRev);
-            com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry mfEntry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
+            ChangegroupParser.ChangeGroupEntry mfEntry = new ChangegroupParser.ChangeGroupEntry();
             mfEntry.node = mfRec.getNodeId();
             mfEntry.p1 = (mfRec.getParent1() != -1) ? manifest.getIndexRecord(mfRec.getParent1()).getNodeId() : new byte[20];
             mfEntry.p2 = (mfRec.getParent2() != -1) ? manifest.getIndexRecord(mfRec.getParent2()).getNodeId() : new byte[20];
@@ -199,32 +227,37 @@ public class HgLocalClient implements HgRemoteConnection {
 
         // 1c. Pack Filelogs
         for (String path : affectedFiles) {
-            File flIdx = com.github.search5.hg4j.api.CommitCommand.getFilelogIndex(remoteRepo.getStoreDir(), path);
+            File flIdx = CommitCommand.getFilelogIndex(remoteRepo.getStoreDir(), path);
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
             if (!flIdx.exists()) continue;
 
             Revlog fl = remoteRepo.getRevlog(flIdx, flDat);
-            List<com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
+            List<ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
 
             // incremental pull이면 이미 공유된 마지막 filelog 리비전(linkRev < startRev 중 가장
             // 최근 것)의 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다.
+            // Raw (as-stored) content throughout, not getRevisionContent(): a filelog revision
+            // can be censored (Revlog.REVIDX_ISCENSORED), and bundling must transfer its
+            // tombstone bytes as-is rather than throwing HgCensoredContentException -- real hg's
+            // own changegroup packer likewise always uses rawdata()/`_chunk()`, never the decoded
+            // text.
             byte[] prevFlContent = new byte[0];
             for (int i = fl.getRevisionCount() - 1; i >= 0; i--) {
                 if (fl.getIndexRecord(i).getLinkRev() < startRev) {
-                    prevFlContent = fl.getRevisionContent(i);
+                    prevFlContent = fl.getRawRevisionContent(i);
                     break;
                 }
             }
             for (int i = 0; i < fl.getRevisionCount(); i++) {
                 Revlog.IndexRecord flRec = fl.getIndexRecord(i);
                 if (flRec.getLinkRev() >= startRev) {
-                    com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry flEntry = new com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry();
+                    ChangegroupParser.ChangeGroupEntry flEntry = new ChangegroupParser.ChangeGroupEntry();
                     flEntry.node = flRec.getNodeId();
                     flEntry.p1 = (flRec.getParent1() != -1) ? fl.getIndexRecord(flRec.getParent1()).getNodeId() : new byte[20];
                     flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
                     flEntry.cs = changelog.getIndexRecord(flRec.getLinkRev()).getNodeId();
 
-                    byte[] content = fl.getRevisionContent(i);
+                    byte[] content = fl.getRawRevisionContent(i);
                     flEntry.delta = Revlog.createDelta(prevFlContent, content);
                     flEntries.add(flEntry);
                     prevFlContent = content;
@@ -232,7 +265,7 @@ public class HgLocalClient implements HgRemoteConnection {
             }
 
             if (!flEntries.isEmpty()) {
-                com.github.search5.hg4j.bundle.ChangegroupParser.FileGroup fg = new com.github.search5.hg4j.bundle.ChangegroupParser.FileGroup();
+                ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
                 fg.path = path;
                 fg.entries = flEntries;
                 bundle.fileGroups.add(fg);
@@ -241,22 +274,22 @@ public class HgLocalClient implements HgRemoteConnection {
 
         // Serialize to binary bytes
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (java.io.DataOutputStream dos = new java.io.DataOutputStream(baos)) {
-            dos.write("HG10UN".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        try (DataOutputStream dos = new DataOutputStream(baos)) {
+            dos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
 
-            for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                 writeEntryChunk(dos, entry);
             }
             writeTerminalChunk(dos);
 
-            for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
                 writeEntryChunk(dos, entry);
             }
             writeTerminalChunk(dos);
 
-            for (com.github.search5.hg4j.bundle.ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+            for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
                 writePathChunk(dos, fg.path);
-                for (com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
                     writeEntryChunk(dos, entry);
                 }
                 writeTerminalChunk(dos);
@@ -269,46 +302,100 @@ public class HgLocalClient implements HgRemoteConnection {
 
     @Override
     public String push(byte[] bundleBytes, List<String> heads) throws IOException, HgLockException {
+        return pushWithHooks(bundleBytes, heads, List.of(), List.of()).status;
+    }
+
+    /** Result of {@link #pushWithHooks}, reported back so wireprotocol server glue can tell an
+     * empty/rejected push apart from a genuine import when firing hooks or building the pushres line. */
+    public static class PushResult {
+        public final String status;
+        public final List<String> importedNodeHexes;
+
+        public PushResult(String status, List<String> importedNodeHexes) {
+            this.status = status;
+            this.importedNodeHexes = importedNodeHexes;
+        }
+    }
+
+    /**
+     * Same as {@link #push}, but also runs server-side {@link com.github.search5.hg4j.api.HgHook}
+     * callbacks around applying the incoming changegroup -- real hg's {@code pretxnchangegroup}
+     * (abort-capable, sees the pending node hexes before anything is written) and {@code
+     * changegroup} (notification-only, sees the actually-imported node hexes) hooks. A pre-hook
+     * returning {@code false} aborts before {@link com.github.search5.hg4j.api.PullCommand#applyBundle}
+     * runs, so nothing lands.
+     */
+    public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,
+                                     List<HgHook> preHooks,
+                                     List<HgHook> postHooks) throws IOException, HgLockException {
         if (bundleBytes == null || bundleBytes.length == 0) {
-            return "no changes found";
+            return new PushResult("no changes found", List.of());
         }
 
         // Backup remote dirstate before push to preserve bare status
         File dirstateFile = new File(remoteRepo.getDirectory(), ".hg/dirstate");
-        byte[] dirstateBackup = dirstateFile.exists() ? java.nio.file.Files.readAllBytes(dirstateFile.toPath()) : null;
+        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
 
         byte[] changegroupBytes = bundleBytes;
         String cgVersion = "01";
         if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
-            String comp = new String(bundleBytes, 4, 2, java.nio.charset.StandardCharsets.US_ASCII);
-            java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
+            String comp = new String(bundleBytes, 4, 2, StandardCharsets.US_ASCII);
+            ByteArrayInputStream bais = new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
             if ("UN".equals(comp)) {
                 changegroupBytes = bais.readAllBytes();
             } else {
-                throw new com.github.search5.hg4j.errors.HgCorruptDataException("Unsupported compression format in local push: HG10" + comp);
+                throw new HgCorruptDataException("Unsupported compression format in local push: HG10" + comp);
             }
         }
 
-        try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(changegroupBytes)) {
-            com.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle = 
-                    com.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(bais, cgVersion);
+        try (ByteArrayInputStream bais = new ByteArrayInputStream(changegroupBytes)) {
+            ChangegroupParser.ChangegroupBundle bundle =
+                    ChangegroupParser.parseBundle(bais, cgVersion);
+
+            List<String> pendingNodeHexes = new ArrayList<>();
+            for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
+                pendingNodeHexes.add(NodeIdUtil.toHex(entry.node));
+            }
+            if (!preHooks.isEmpty()) {
+                Map<String, Object> preCtx = new HashMap<>();
+                preCtx.put("repository", remoteRepo);
+                preCtx.put("nodes", pendingNodeHexes);
+                for (HgHook hook : preHooks) {
+                    if (!hook.run(preCtx)) {
+                        throw new IOException("push rejected by pre-changegroup hook");
+                    }
+                }
+            }
 
             // Apply bundle natively to remoteRepo using transactional API of PullCommand
-            com.github.search5.hg4j.api.PullCommand pullApi = new com.github.search5.hg4j.api.PullCommand(remoteRepo);
+            PullCommand pullApi = new PullCommand(remoteRepo);
             List<byte[]> imported = pullApi.applyBundle(bundle);
 
             // Restore remote dirstate to preserve bare repo status
             if (dirstateBackup != null) {
-                java.nio.file.Files.write(dirstateFile.toPath(), dirstateBackup);
+                Files.write(dirstateFile.toPath(), dirstateBackup);
             } else {
-                java.nio.file.Files.deleteIfExists(dirstateFile.toPath());
+                Files.deleteIfExists(dirstateFile.toPath());
             }
 
-            return "push successful, imported " + imported.size() + " changesets natively";
+            List<String> importedNodeHexes = new ArrayList<>();
+            for (byte[] node : imported) {
+                importedNodeHexes.add(NodeIdUtil.toHex(node));
+            }
+            if (!postHooks.isEmpty()) {
+                Map<String, Object> postCtx = new HashMap<>();
+                postCtx.put("repository", remoteRepo);
+                postCtx.put("nodes", importedNodeHexes);
+                for (HgHook hook : postHooks) {
+                    hook.run(postCtx);
+                }
+            }
+
+            return new PushResult("push successful, imported " + imported.size() + " changesets natively", importedNodeHexes);
         }
     }
 
-    private void writeEntryChunk(java.io.DataOutputStream dos, com.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry entry) throws IOException {
+    private void writeEntryChunk(DataOutputStream dos, ChangegroupParser.ChangeGroupEntry entry) throws IOException {
         int totalLen = 4 + 80 + entry.delta.length;
         dos.writeInt(totalLen);
         dos.write(entry.node);
@@ -318,24 +405,24 @@ public class HgLocalClient implements HgRemoteConnection {
         dos.write(entry.delta);
     }
 
-    private void writePathChunk(java.io.DataOutputStream dos, String path) throws IOException {
-        byte[] pathBytes = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private void writePathChunk(DataOutputStream dos, String path) throws IOException {
+        byte[] pathBytes = path.getBytes(StandardCharsets.UTF_8);
         int totalLen = 4 + pathBytes.length;
         dos.writeInt(totalLen);
         dos.write(pathBytes);
     }
 
-    private void writeTerminalChunk(java.io.DataOutputStream dos) throws IOException {
+    private void writeTerminalChunk(DataOutputStream dos) throws IOException {
         dos.writeInt(0);
     }
 
     @Override
-    public java.util.Map<String, String> listKeys(String namespace) throws IOException {
-        java.util.Map<String, String> map = new java.util.HashMap<>();
+    public Map<String, String> listKeys(String namespace) throws IOException {
+        Map<String, String> map = new HashMap<>();
         if ("bookmarks".equals(namespace)) {
             File bkFile = new File(remoteRepo.getHgDir(), "bookmarks");
             if (bkFile.exists()) {
-                List<String> lines = java.nio.file.Files.readAllLines(bkFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
+                List<String> lines = Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8);
                 for (String line : lines) {
                     line = line.trim();
                     if (line.isEmpty()) continue;
@@ -348,17 +435,17 @@ public class HgLocalClient implements HgRemoteConnection {
                 }
             }
         } else if ("phases".equals(namespace)) {
-            com.github.search5.hg4j.phase.PhaseRoots phaseRoots = remoteRepo.getPhaseRoots();
+            PhaseRoots phaseRoots = remoteRepo.getPhaseRoots();
             File clIdx = new File(remoteRepo.getStoreDir(), "00changelog.i");
             File clDat = new File(remoteRepo.getStoreDir(), "00changelog.d");
             if (clIdx.exists()) {
                 Revlog cl = remoteRepo.getRevlog(clIdx, clDat);
                 for (int i = 0; i < cl.getRevisionCount(); i++) {
                     byte[] nodeBytes = cl.getIndexRecord(i).getNodeId();
-                    com.github.search5.hg4j.lib.NodeId nodeId = new com.github.search5.hg4j.lib.NodeId(nodeBytes);
-                    com.github.search5.hg4j.phase.PhaseRoots.Phase phase = phaseRoots.getPhase(nodeId, cl);
-                    if (phase != com.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC) {
-                        map.put(com.github.search5.hg4j.util.NodeIdUtil.toHex(nodeBytes), String.valueOf(phase.getValue()));
+                    NodeId nodeId = new NodeId(nodeBytes);
+                    PhaseRoots.Phase phase = phaseRoots.getPhase(nodeId, cl);
+                    if (phase != PhaseRoots.Phase.PUBLIC) {
+                        map.put(NodeIdUtil.toHex(nodeBytes), String.valueOf(phase.getValue()));
                     }
                 }
             }
@@ -370,7 +457,7 @@ public class HgLocalClient implements HgRemoteConnection {
     public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
         if ("bookmarks".equals(namespace)) {
             File bkFile = new File(remoteRepo.getHgDir(), "bookmarks");
-            java.util.Map<String, String> bks = listKeys("bookmarks");
+            Map<String, String> bks = listKeys("bookmarks");
             String currentVal = bks.getOrDefault(key, "");
             if (oldVal == null) oldVal = "";
             if (newVal == null) newVal = "";
@@ -387,10 +474,10 @@ public class HgLocalClient implements HgRemoteConnection {
                     if (bkFile.exists()) bkFile.delete();
                 } else {
                     StringBuilder sb = new StringBuilder();
-                    for (java.util.Map.Entry<String, String> entry : bks.entrySet()) {
+                    for (Map.Entry<String, String> entry : bks.entrySet()) {
                         sb.append(entry.getValue()).append(" ").append(entry.getKey()).append("\n");
                     }
-                    com.github.search5.hg4j.util.SafeFileIO.writeStringAtomic(bkFile, sb.toString());
+                    SafeFileIO.writeStringAtomic(bkFile, sb.toString());
                 }
                 return true;
             }

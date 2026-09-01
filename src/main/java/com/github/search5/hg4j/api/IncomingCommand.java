@@ -95,10 +95,27 @@ public class IncomingCommand {
                             if (changelog.findRevision(entry.node) == -1) {
                                 if (clContent != null && clContent.length > 0) {
                                     String clText = new String(clContent, StandardCharsets.UTF_8);
-                                    String[] clLines = clText.split("\n");
-                                    String author = (clLines.length > 1) ? clLines[1].trim() : "remote_developer";
-                                    String msg = (clLines.length > 4) ? clLines[clLines.length - 1].trim() : "Remote changeset summary";
-                                    
+                                    // Raw changelog entry layout (see mercurial/changelog.py):
+                                    // manifest\nuser\ndate tz extra\nfiles...\n\ndescription
+                                    // The header (manifest/user/date/files) is separated from the
+                                    // free-form description by a blank line, and "summary" is the
+                                    // *first* line of the description -- not the last raw line of
+                                    // the whole blob, which for a multi-line commit message would
+                                    // otherwise pick up the last line of the description instead.
+                                    String[] headerAndDesc = clText.split("\n\n", 2);
+                                    String[] headerLines = headerAndDesc[0].split("\n");
+                                    String author = (headerLines.length > 1) ? headerLines[1].trim() : "remote_developer";
+                                    String msg = "Remote changeset summary";
+                                    if (headerAndDesc.length > 1) {
+                                        String desc = headerAndDesc[1];
+                                        int nl = desc.indexOf('\n');
+                                        String firstLine = (nl == -1) ? desc : desc.substring(0, nl);
+                                        firstLine = firstLine.trim();
+                                        if (!firstLine.isEmpty()) {
+                                            msg = firstLine;
+                                        }
+                                    }
+
                                     incomingMessages.add("changeset:   " + NodeIdUtil.toHex(entry.node).substring(0, 12));
                                     incomingMessages.add("user:        " + author);
                                     incomingMessages.add("summary:     " + msg);

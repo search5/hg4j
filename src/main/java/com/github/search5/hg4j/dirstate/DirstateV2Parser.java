@@ -124,8 +124,15 @@ public class DirstateV2Parser {
             int lastNodeOffset = (n - 1) * nodeSize;
             int pathOffset = tempBuf.getInt(lastNodeOffset + 0);
             int pathLen = tempBuf.getShort(lastNodeOffset + 4) & 0xFFFF;
-            
-            if (pathOffset + pathLen == bytes.length) {
+            // DirstateV2Serializer writes each node's copy-source bytes (if any) immediately
+            // after that node's own path bytes in the data block, so the true end of the data
+            // block for the last node is copy_source_start + copy_source_len whenever that node
+            // carries a copy source -- not path_start + path_len, which only covers the path.
+            int copySourceOffset = tempBuf.getInt(lastNodeOffset + 8);
+            int copySourceLen = tempBuf.getShort(lastNodeOffset + 12) & 0xFFFF;
+            int expectedEnd = copySourceLen > 0 ? (copySourceOffset + copySourceLen) : (pathOffset + pathLen);
+
+            if (expectedEnd == bytes.length) {
                 nodeCount = n;
                 break;
             }
@@ -137,9 +144,12 @@ public class DirstateV2Parser {
                 int lastNodeOffset = (n - 1) * nodeSize;
                 int pathOffset = tempBuf.getInt(lastNodeOffset + 0);
                 int pathLen = tempBuf.getShort(lastNodeOffset + 4) & 0xFFFF;
+                int copySourceOffset = tempBuf.getInt(lastNodeOffset + 8);
+                int copySourceLen = tempBuf.getShort(lastNodeOffset + 12) & 0xFFFF;
                 int dataOffset = n * nodeSize;
-                
-                if (dataOffset + pathOffset + pathLen == bytes.length) {
+                int expectedEnd = dataOffset + (copySourceLen > 0 ? (copySourceOffset + copySourceLen) : (pathOffset + pathLen));
+
+                if (expectedEnd == bytes.length) {
                     nodeCount = n;
                     break;
                 }

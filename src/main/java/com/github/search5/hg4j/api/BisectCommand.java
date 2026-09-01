@@ -11,6 +11,8 @@ import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.BitSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +61,12 @@ public class BisectCommand {
         if (goodRev == -1 || badRev == -1) {
             throw new IOException("Bisect error: revision nodes not found in changelog history");
         }
+        if (goodRev == badRev) {
+            // Matches real hg (mercurial/hbisect.py bisect()): `hg bisect --good
+            // X --bad X` aborts with "inconsistent state, X is good and bad"
+            // rather than silently treating X as its own bisect candidate.
+            throw new IOException("Bisect error: revision " + NodeIdUtil.toHex(goodNode) + " is marked as both good and bad");
+        }
 
         // 1. DAG-based Topological range search (Graph Algorithm)
         List<Integer> range = getTopologicalRange(changelog, goodRev, badRev);
@@ -66,7 +74,7 @@ public class BisectCommand {
             throw new IOException("Bisect error: no topological path exists between good and bad nodes");
         }
 
-        int midRev = range.get(range.size() / 2);
+        int midRev = selectBisectCandidate(changelog, range, goodRev, badRev);
         byte[] midNode = changelog.getIndexRecord(midRev).getNodeId();
 
         // 2. Physical File Checkout & Workspace Sync
@@ -140,6 +148,76 @@ public class BisectCommand {
             }
         }
         return range;
+    }
+
+    /**
+     * Picks the next revision to test out of {@code range}, mirroring real hg's
+     * bisect algorithm (mercurial/hbisect.py {@code bisect()}): rather than the
+     * mid-index of the linear revision-number range, it picks whichever candidate
+     * best splits the remaining DAG in half, counting each candidate's ancestors
+     * (restricted to the candidate set) via forward propagation along parent edges.
+     *
+     * <p>The revision structurally closest to the "root" side of the range -- i.e.
+     * {@code min(goodRev, badRev)}, which real hg's own directional flip always
+     * resolves to, since a parent's revision number is always lower than its
+     * child's -- is excluded from the candidate set, exactly as real hg excludes
+     * whichever endpoint is not present in its own {@code ancestors} dict.</p>
+     *
+     * <p>Real hg additionally "poisons" (skips) subtrees that provably cannot beat
+     * the current best split, purely as a performance optimization -- omitted here
+     * since it never changes which candidate is ultimately selected.</p>
+     */
+    private int selectBisectCandidate(Revlog changelog, List<Integer> range, int goodRev, int badRev) throws IOException {
+        int excludedRev = Math.min(goodRev, badRev);
+        List<Integer> candidates = new ArrayList<>();
+        for (int r : range) {
+            if (r != excludedRev) {
+                candidates.add(r);
+            }
+        }
+        // goodRev != badRev is guaranteed by next()'s own precondition check, and
+        // both are always members of range (getTopologicalRange seeds isDescendant
+        // at min and isAncestor at max unconditionally) -- so range always contains
+        // at least the two distinct endpoints, and candidates (range minus exactly
+        // one of them) is therefore never empty.
+        int tot = candidates.size();
+
+        Map<Integer, Integer> candidateIndex = new HashMap<>();
+        for (int i = 0; i < tot; i++) {
+            candidateIndex.put(candidates.get(i), i);
+        }
+
+        BitSet[] ancestorBits = new BitSet[tot];
+        int bestIdx = -1;
+        int bestValue = -1;
+        int perfect = tot / 2;
+        for (int i = 0; i < tot; i++) {
+            int rev = candidates.get(i);
+            BitSet a = new BitSet(tot);
+            a.set(i);
+            Revlog.IndexRecord rec = changelog.getIndexRecord(rev);
+            Integer p1Idx = candidateIndex.get(rec.getParent1());
+            if (p1Idx != null) {
+                a.or(ancestorBits[p1Idx]);
+            }
+            Integer p2Idx = candidateIndex.get(rec.getParent2());
+            if (p2Idx != null) {
+                a.or(ancestorBits[p2Idx]);
+            }
+            ancestorBits[i] = a;
+
+            int x = a.cardinality();
+            int y = tot - x;
+            int value = Math.min(x, y);
+            if (value > bestValue) {
+                bestValue = value;
+                bestIdx = i;
+                if (value == perfect) {
+                    break;
+                }
+            }
+        }
+        return candidates.get(bestIdx);
     }
 
     private Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {

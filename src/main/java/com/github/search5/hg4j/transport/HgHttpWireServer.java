@@ -76,10 +76,21 @@ public class HgHttpWireServer implements HttpHandler {
             if (path.startsWith("/api/")) {
                 String[] parts = path.substring("/api/".length()).split("/");
                 if (parts.length == 3) {
+                    // Buffer the whole response before sending headers -- unlike a v1 command
+                    // (whose response is likewise fully assembled in memory before any header is
+                    // written), sending headers first here would mean a request-parsing failure
+                    // (e.g. a truncated multi-frame COMMAND_REQUEST) throws only after the
+                    // response has already been committed as chunked, leaving the outer catch
+                    // below unable to send its fallback "abort:" body -- the client would see an
+                    // empty response instead of a diagnosable error.
+                    byte[] responseBody;
+                    try (InputStream in = exchange.getRequestBody()) {
+                        responseBody = handleWire2Request(parts[1], parts[2], in);
+                    }
                     exchange.getResponseHeaders().set("Content-Type", Wire2Transport.FRAMINGTYPE);
-                    exchange.sendResponseHeaders(200, 0);
-                    try (InputStream in = exchange.getRequestBody(); OutputStream out = exchange.getResponseBody()) {
-                        handleWire2Request(parts[1], parts[2], in, out);
+                    exchange.sendResponseHeaders(200, responseBody.length == 0 ? -1 : responseBody.length);
+                    try (OutputStream out = exchange.getResponseBody()) {
+                        out.write(responseBody);
                     }
                     return;
                 }
@@ -136,8 +147,9 @@ public class HgHttpWireServer implements HttpHandler {
      * @param permission the {@code ro}/{@code rw} URL segment; the caller is responsible for
      *                   authenticating/authorizing it (real hg maps {@code ro}→pull, {@code rw}→push)
      * @param urlCommand the command name from the URL, which must match the frame's own command name
+     * @return the fully assembled response body, for the caller to send after committing headers
      */
-    private void handleWire2Request(String permission, String urlCommand, InputStream in, OutputStream out) throws IOException {
+    private byte[] handleWire2Request(String permission, String urlCommand, InputStream in) throws IOException {
         boolean isMultirequest = "multirequest".equals(urlCommand);
         List<Wire2Transport.ParsedCommandRequest> commands =
                 Wire2Transport.readAllCommandRequests(in);
@@ -164,8 +176,7 @@ public class HgHttpWireServer implements HttpHandler {
                 combined.write(Wire2Transport.buildCommandErrorResponse(cmd.requestId, String.valueOf(e.getMessage())));
             }
         }
-        out.write(combined.toByteArray());
-        out.flush();
+        return combined.toByteArray();
     }
 
     private List<Object> dispatchWire2Command(String command, Map<String, Object> args) throws IOException {

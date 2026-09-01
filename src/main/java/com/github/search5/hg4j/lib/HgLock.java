@@ -40,6 +40,7 @@ public class HgLock implements AutoCloseable {
     private boolean acquiredJvmLock = false;
     private boolean acquiredFileLock = false;
     private boolean isReentrant = false;
+    private boolean closed = false;
 
     /**
      * Internal constructor for No-op Dummy Lock.
@@ -283,6 +284,16 @@ public class HgLock implements AutoCloseable {
         }
         String absPath = lockFile.getAbsolutePath();
         synchronized (JVM_ACTIVE_LOCKS) {
+            // Idempotency guard: a stray/duplicate close() on an instance that already released
+            // its share of the lock must be a harmless no-op (matching AutoCloseable's documented
+            // recommendation, and real Mercurial's Lock.release(), which no-ops once self.held has
+            // reached 0). Without this, a duplicate close() could reach back into the shared,
+            // path-keyed JVM-wide map and tear down an unrelated, still-active lock later acquired
+            // on the same path.
+            if (closed) {
+                return;
+            }
+            closed = true;
             LockInfo info = JVM_ACTIVE_LOCKS.get(absPath);
             if (info != null) {
                 // Relaxed thread ownership guard: allow close() even if called from another thread

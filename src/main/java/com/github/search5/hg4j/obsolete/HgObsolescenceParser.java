@@ -23,7 +23,10 @@ public final class HgObsolescenceParser {
 
     private static final int FM1_VERSION = 1;
     private static final int FM1_PARENT_NONE = 3;
-    private static final int FLAG_USING_SHA256 = 1 << 2; // usingsha256 (mercurial/obsolete.py)
+    // usingsha256 (mercurial/obsutil.py: `usingsha256 = 2`, i.e. bit 1 — NOT bit 2/value 4).
+    // bumpedfix (mercurial/obsutil.py: `bumpedfix = 1`, bit 0) is the adjacent flag bit and must
+    // not be confused with this one.
+    private static final int FLAG_USING_SHA256 = 1 << 1;
 
     /**
      * Decodes the raw obsstore binary payload into a list of obsolescence markers.

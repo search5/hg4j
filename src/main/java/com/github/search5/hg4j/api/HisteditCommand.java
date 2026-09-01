@@ -24,6 +24,8 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * Porcelain command for Interactive Rebase (histedit) on Mercurial repositories.
@@ -96,13 +98,35 @@ public class HisteditCommand implements AutoCloseable {
             recordAndJournal(mfIdx, fileSizes, journalFile);
             recordAndJournal(mfDat, fileSizes, journalFile);
 
+            // The base for the very first replayed commit must be the true original parent
+            // of the FIRST rule (whatever revision comes right before the edited range) --
+            // NOT the current dirstate tip. Real `hg histedit` only ever rewrites a
+            // contiguous range of history and rebuilds it on top of that range's original
+            // base; using the current tip here would (when some rule in the range is a DROP,
+            // or a rule set doesn't extend all the way to the tip) incorrectly carry forward
+            // manifest entries that belong to revisions the edited range never touches.
+            Rule firstRule = rules.get(0);
+            byte[] firstRuleNode = NodeIdUtil.fromHex(firstRule.hexNode);
+            int firstRuleRev = changelog.findRevision(firstRuleNode);
+            if (firstRuleRev == -1) {
+                throw new IOException("Histedit failed: Revision not found for node " + firstRule.hexNode);
+            }
+            int baseRev = changelog.getIndexRecord(firstRuleRev).getParent1();
+            byte[] rewriteBase = (baseRev != -1) ? changelog.getIndexRecord(baseRev).getNodeId() : new byte[20];
+
             // To support folding/merging revisions, we will parse the target revisions content
             // and perform clean recommits according to actions.
-            byte[] lastCommittedNode = originalParent;
+            byte[] lastCommittedNode = rewriteBase;
             String pendingCommitMsg = null;
-            String lastCommitHex = null;
-            String lastAuthor = "histedit";
-            
+            // All hex nodes belonging to the currently open pick/fold/roll group, in rule
+            // order. Verified against real `hg histedit`: a fold/roll must fold *every*
+            // member's file changes into the resulting commit (not just the last one), while
+            // the resulting commit's author and branch always stay those of the group's
+            // anchor (the pick, or first fold/roll if it opens the group) -- never those of
+            // a later folded-in commit.
+            List<String> pendingHexNodes = new ArrayList<>();
+            String pendingAuthor = null;
+
             for (Rule rule : rules) {
                 byte[] nodeBytes = NodeIdUtil.fromHex(rule.hexNode);
                 int rev = changelog.findRevision(nodeBytes);
@@ -111,66 +135,55 @@ public class HisteditCommand implements AutoCloseable {
                 }
 
                 byte[] clContent = changelog.getRevisionContent(rev);
-                String clText = new String(clContent, StandardCharsets.UTF_8);
-                String[] clLines = clText.split("\n");
-                
-                // Parse commit message
-                String author = "unknown";
-                if (clLines.length > 1) {
-                    author = clLines[1].trim();
-                }
-                StringBuilder msgBuilder = new StringBuilder();
-                int msgStartIdx = -1;
-                for (int i = 3; i < clLines.length; i++) {
-                    if (clLines[i].isEmpty()) {
-                        msgStartIdx = i + 1;
-                        break;
-                    }
-                }
-                if (msgStartIdx != -1) {
-                    for (int i = msgStartIdx; i < clLines.length; i++) {
-                        if (msgBuilder.length() > 0) msgBuilder.append("\n");
-                        msgBuilder.append(clLines[i]);
-                    }
-                } else {
-                    for (int i = 3; i < clLines.length; i++) {
-                        if (msgBuilder.length() > 0) msgBuilder.append("\n");
-                        msgBuilder.append(clLines[i]);
-                    }
-                }
-                String commitMsg = msgBuilder.toString();
+                ParsedChangeset parsed = parseChangeset(clContent);
 
                 if (rule.action == Action.PICK) {
                     if (pendingCommitMsg != null) {
                         // Commit folded changes first
-                        lastCommittedNode = commitNewRev(lastCommittedNode, lastAuthor, pendingCommitMsg, lastCommitHex, fileSizes, journalFile);
+                        lastCommittedNode = commitNewRev(lastCommittedNode, pendingAuthor, pendingCommitMsg, pendingHexNodes, fileSizes, journalFile);
                         pendingCommitMsg = null;
+                        pendingHexNodes = new ArrayList<>();
                     }
-                    pendingCommitMsg = commitMsg;
-                    lastCommitHex = rule.hexNode;
-                    lastAuthor = author;
+                    pendingCommitMsg = parsed.message;
+                    pendingAuthor = parsed.author;
+                    pendingHexNodes.add(rule.hexNode);
                 } else if (rule.action == Action.FOLD) {
                     if (pendingCommitMsg == null) {
-                        pendingCommitMsg = commitMsg;
+                        pendingCommitMsg = parsed.message;
+                        pendingAuthor = parsed.author;
                     } else {
-                        pendingCommitMsg = pendingCommitMsg + "\n" + commitMsg;
+                        pendingCommitMsg = pendingCommitMsg + "\n" + parsed.message;
                     }
-                    lastCommitHex = rule.hexNode;
-                    lastAuthor = author;
+                    pendingHexNodes.add(rule.hexNode);
                 } else if (rule.action == Action.ROLL) {
                     if (pendingCommitMsg == null) {
-                        pendingCommitMsg = commitMsg;
+                        pendingCommitMsg = parsed.message;
+                        pendingAuthor = parsed.author;
                     }
                     // Drop this commit message, keep the accumulated pending CommitMsg
-                    lastCommitHex = rule.hexNode;
-                    lastAuthor = author;
+                    pendingHexNodes.add(rule.hexNode);
                 } else if (rule.action == Action.DROP) {
                     // Skip completely
                 }
             }
 
             if (pendingCommitMsg != null) {
-                lastCommittedNode = commitNewRev(lastCommittedNode, lastAuthor, pendingCommitMsg, lastCommitHex, fileSizes, journalFile);
+                lastCommittedNode = commitNewRev(lastCommittedNode, pendingAuthor, pendingCommitMsg, pendingHexNodes, fileSizes, journalFile);
+            }
+
+            // Real hg's histedit finishes with an implicit checkout of the new tip: any path
+            // that was part of the pre-histedit working copy but is no longer part of the
+            // final manifest (its owning commit got DROPped entirely, or was removed partway
+            // through a fold/roll group) must disappear from the working directory too.
+            // Verified against real `hg histedit`: dropping a commit that added b.txt leaves
+            // b.txt off disk (and out of `hg manifest -r tip`) once histedit finishes.
+            Revlog manifestRevlogForCleanup = repository.getRevlog(mfIdx, mfDat);
+            Map<String, String> oldManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, originalParent);
+            Map<String, String> finalManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, lastCommittedNode);
+            for (String path : oldManifest.keySet()) {
+                if (!finalManifest.containsKey(path)) {
+                    Files.deleteIfExists(new File(repository.getDirectory(), path).toPath());
+                }
             }
 
             // Sync workspace to the last committed node
@@ -236,7 +249,7 @@ public class HisteditCommand implements AutoCloseable {
         }
     }
 
-    private byte[] commitNewRev(byte[] parent, String author, String message, String originalCommitHex,
+    private byte[] commitNewRev(byte[] parent, String author, String message, List<String> originalHexNodes,
                                  Map<File, Long> fileSizes, File journalFile) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
@@ -246,78 +259,84 @@ public class HisteditCommand implements AutoCloseable {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        // 1. Get original manifest and changed files
-        byte[] origNode = NodeIdUtil.fromHex(originalCommitHex);
+        // The group anchor is the first rule of the pick/fold/roll group (verified against
+        // real `hg histedit`: the resulting commit's branch -- and, further below, its
+        // author -- always come from the anchor, never from a later folded-in commit).
+        String anchorHex = originalHexNodes.get(0);
+        byte[] origNode = NodeIdUtil.fromHex(anchorHex);
         int origRev = changelog.findRevision(origNode);
         if (origRev == -1) {
-            throw new IOException("Original commit not found: " + originalCommitHex);
+            throw new IOException("Original commit not found: " + anchorHex);
         }
-        
-        byte[] origClContent = changelog.getRevisionContent(origRev);
-        String origClText = new String(origClContent, StandardCharsets.UTF_8);
-        String[] origClLines = origClText.split("\n");
-        
-        // Find files modified in original commit
-        List<String> filesModified = new ArrayList<>();
-        int msgStartIdx = -1;
-        for (int i = 3; i < origClLines.length; i++) {
-            if (origClLines[i].isEmpty()) {
-                msgStartIdx = i + 1;
-                break;
-            }
-            filesModified.add(origClLines[i]);
-        }
-        
-        // Get original manifest map
-        Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
-        
-        // 2. Get parent manifest map to initialize new manifest
+
+        // 1. Get parent manifest map to initialize new manifest
         Map<String, String> newManifest = getManifestForCommit(changelog, manifestRevlog, parent);
-        
-        // 3. For each modified file, copy the revision from original filelog and commit to new filelog
-        for (String path : filesModified) {
-            String hexAndFlag = originalManifest.get(path);
-            if (hexAndFlag == null) {
-                // File deleted in original commit
-                newManifest.remove(path);
-                continue;
+
+        // 2. Replay every group member's own file changes, in rule order, onto the running
+        // manifest. Verified against real `hg histedit`: folding/rolling several commits
+        // together must combine ALL of their file changes (e.g. folding a commit that adds
+        // b.txt into one that added a.txt must keep both files), not just the last member's.
+        Set<String> filesModifiedSet = new LinkedHashSet<>();
+        for (String hex : originalHexNodes) {
+            byte[] memberNode = NodeIdUtil.fromHex(hex);
+            int memberRev = changelog.findRevision(memberNode);
+            if (memberRev == -1) {
+                throw new IOException("Original commit not found: " + hex);
             }
-            
-            String fileHex = hexAndFlag.substring(0, 40);
-            String flag = hexAndFlag.substring(40);
-            
-            // Get original file content
-            byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
-            
-            // Write content to working directory file to physically update workspace!
-            File wFile = new File(repository.getDirectory(), path);
-            wFile.getParentFile().mkdirs();
-            Files.write(wFile.toPath(), fileContent);
-            
-            // Commit to new filelog
-            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-            flIdx.getParentFile().mkdirs();
-            recordAndJournal(flIdx, fileSizes, journalFile);
-            recordAndJournal(flDat, fileSizes, journalFile);
-            Revlog filelog = repository.getRevlog(flIdx, flDat);
-            
-            int parent1FileRev = -1;
-            byte[] p1FileNode = new byte[20];
-            String parentFileHexAndFlag = newManifest.get(path);
-            if (parentFileHexAndFlag != null) {
-                String parentFileHex = parentFileHexAndFlag.substring(0, 40);
-                p1FileNode = NodeIdUtil.fromHex(parentFileHex);
-                parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
+            byte[] memberClContent = changelog.getRevisionContent(memberRev);
+            ParsedChangeset memberParsed = parseChangeset(memberClContent);
+            Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, memberNode);
+
+            for (String path : memberParsed.filesModified) {
+                filesModifiedSet.add(path);
+                String hexAndFlag = originalManifest.get(path);
+                if (hexAndFlag == null) {
+                    // File deleted in this member's commit. Verified against real hg: a
+                    // deletion folded/rolled in behind an earlier group member that (re)wrote
+                    // this same path onto disk must actually remove it from the working
+                    // directory too, not just from the manifest map.
+                    newManifest.remove(path);
+                    Files.deleteIfExists(new File(repository.getDirectory(), path).toPath());
+                    continue;
+                }
+
+                String fileHex = hexAndFlag.substring(0, 40);
+                String flag = hexAndFlag.substring(40);
+
+                // Get original file content
+                byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
+
+                // Write content to working directory file to physically update workspace!
+                File wFile = new File(repository.getDirectory(), path);
+                wFile.getParentFile().mkdirs();
+                Files.write(wFile.toPath(), fileContent);
+
+                // Commit to new filelog
+                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                flIdx.getParentFile().mkdirs();
+                recordAndJournal(flIdx, fileSizes, journalFile);
+                recordAndJournal(flDat, fileSizes, journalFile);
+                Revlog filelog = repository.getRevlog(flIdx, flDat);
+
+                int parent1FileRev = -1;
+                byte[] p1FileNode = new byte[20];
+                String parentFileHexAndFlag = newManifest.get(path);
+                if (parentFileHexAndFlag != null) {
+                    String parentFileHex = parentFileHexAndFlag.substring(0, 40);
+                    p1FileNode = NodeIdUtil.fromHex(parentFileHex);
+                    parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, p1FileNode);
+                }
+
+                int fileLinkRev = changelog.getRevisionCount();
+                byte[] newFileNode = filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], fileLinkRev);
+
+                newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
             }
-            
-            int newCommitRev = changelog.getRevisionCount();
-            byte[] newFileNode = filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], newCommitRev);
-            
-            newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
         }
-        
-        // 4. Serialize and append new manifest revision
+        List<String> filesModified = new ArrayList<>(filesModifiedSet);
+
+        // 3. Serialize and append new manifest revision
         StringBuilder manifestSb = new StringBuilder();
         for (Map.Entry<String, String> entry : newManifest.entrySet()) {
             manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
@@ -342,7 +361,7 @@ public class HisteditCommand implements AutoCloseable {
         int newCommitRev = changelog.getRevisionCount();
         byte[] manifestNode = manifestRevlog.appendRevision(manifestTextBytes, parent1ManifestRev, -1, p1ManifestNode, new byte[20], newCommitRev);
         
-        // 5. Serialize and append new changelog (commit) revision
+        // 4. Serialize and append new changelog (commit) revision
         StringBuilder clSb = new StringBuilder();
         clSb.append(NodeIdUtil.toHex(manifestNode)).append('\n');
         clSb.append(author).append('\n');
@@ -385,11 +404,14 @@ public class HisteditCommand implements AutoCloseable {
         
         changelog.appendChangeGroupEntry(entry, newCommitRev);
 
-        // Register obsolescence marker linking original commit to histedited commit
-        try {
-            HgObsMarker.writeMarker(repository.getStoreDir(), origNode, List.of(entry.node), "histedit");
-        } catch (Exception e) {
-            // non-blocking
+        // Register an obsolescence marker linking every original commit folded into this
+        // group (not just the anchor) to the histedited commit.
+        for (String hex : originalHexNodes) {
+            try {
+                HgObsMarker.writeMarker(repository.getStoreDir(), NodeIdUtil.fromHex(hex), List.of(entry.node), "histedit");
+            } catch (Exception e) {
+                // non-blocking
+            }
         }
 
         return entry.node;
@@ -424,6 +446,57 @@ public class HisteditCommand implements AutoCloseable {
             }
         }
         return manifestMap;
+    }
+
+    /** Result of parsing a raw changelog revision's text into its constituent fields. */
+    private static final class ParsedChangeset {
+        final String author;
+        final List<String> filesModified;
+        final String message;
+
+        ParsedChangeset(String author, List<String> filesModified, String message) {
+            this.author = author;
+            this.filesModified = filesModified;
+            this.message = message;
+        }
+    }
+
+    // Changelog revision text layout: manifest-node-hex \n author \n date-extra \n
+    // (one line per touched file) \n (blank separator line) \n description.
+    private ParsedChangeset parseChangeset(byte[] clContent) {
+        String clText = new String(clContent, StandardCharsets.UTF_8);
+        String[] clLines = clText.split("\n");
+
+        String author = "unknown";
+        if (clLines.length > 1) {
+            author = clLines[1].trim();
+        }
+
+        List<String> filesModified = new ArrayList<>();
+        int msgStartIdx = -1;
+        for (int i = 3; i < clLines.length; i++) {
+            if (clLines[i].isEmpty()) {
+                msgStartIdx = i + 1;
+                break;
+            }
+            filesModified.add(clLines[i]);
+        }
+
+        StringBuilder msgBuilder = new StringBuilder();
+        if (msgStartIdx != -1) {
+            for (int i = msgStartIdx; i < clLines.length; i++) {
+                if (msgBuilder.length() > 0) msgBuilder.append("\n");
+                msgBuilder.append(clLines[i]);
+            }
+        }
+        // else: no blank separator line was found at all. This only happens when the
+        // original description was empty (or made only of newlines) and Mercurial's
+        // storage layer collapsed the trailing "files...\n\n<empty-desc>" tail entirely --
+        // String.split() drops trailing empty tokens. In that case the description really
+        // is empty; the lines collected above are the file list, not message text, so they
+        // must not be reinterpreted as the message.
+
+        return new ParsedChangeset(author, filesModified, msgBuilder.toString());
     }
 
     private byte[] getFileRevisionContent(HgRepository repository, String path, String nodeHex) throws IOException {

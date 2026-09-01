@@ -117,6 +117,12 @@ public class GcCommand {
             Revlog compressed = new Revlog(tmpIdx, tmpDat);
 
             int count = original.getRevisionCount();
+            if (count == 0) {
+                // Nothing to compact for an empty revlog (e.g. a zero-byte index file left
+                // over from an aborted write): the compressed Revlog's tmp files are only
+                // created lazily on the first append, so there would be nothing to move.
+                return;
+            }
             for (int i = 0; i < count; i++) {
                 Revlog.IndexRecord rec = original.getIndexRecord(i);
                 byte[] content = original.getRawRevisionContent(i);

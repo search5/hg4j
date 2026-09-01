@@ -73,29 +73,36 @@ public class ExportCommand {
             }
         }
 
+        // Use the changeset's actual first parent revision, not rev - 1: revision numbers are
+        // commit order, not DAG order, so a changeset's parent is not necessarily the immediately
+        // preceding revision (e.g. a second head committed on top of an earlier ancestor). Verified
+        // against real `hg export` on a branched history: it reports and diffs against the true
+        // parent, not rev - 1.
+        int parentRev = changelog.getIndexRecord(rev).getParent1();
+
         StringBuilder sb = new StringBuilder();
         sb.append("# HG changeset patch\n");
         sb.append("# User ").append(author).append("\n");
         sb.append("# Date ").append(date).append("\n");
         sb.append("# Node ID ").append(NodeIdUtil.toHex(nodeBytes)).append("\n");
-        if (rev > 0) {
-            sb.append("# Parent  ").append(NodeIdUtil.toHex(changelog.getIndexRecord(rev - 1).getNodeId())).append("\n");
+        if (parentRev != -1) {
+            sb.append("# Parent  ").append(NodeIdUtil.toHex(changelog.getIndexRecord(parentRev).getNodeId())).append("\n");
         }
         sb.append(desc.toString()).append("\n\n");
-        
+
         DiffCommand diffCmd = new DiffCommand(repository);
         diffCmd.setNewRevision(rev);
-        if (rev > 0) {
-            diffCmd.setOldRevision(rev - 1);
+        if (parentRev != -1) {
+            diffCmd.setOldRevision(parentRev);
         } else {
             diffCmd.setOldRevision(-2);
         }
-        
+
         List<DiffCommand.DiffEntry> diffs = diffCmd.call();
         for (DiffCommand.DiffEntry diff : diffs) {
             sb.append("diff -r ");
-            if (rev > 0) {
-                sb.append(NodeIdUtil.toHex(changelog.getIndexRecord(rev - 1).getNodeId()).substring(0, 12));
+            if (parentRev != -1) {
+                sb.append(NodeIdUtil.toHex(changelog.getIndexRecord(parentRev).getNodeId()).substring(0, 12));
             } else {
                 sb.append("000000000000");
             }

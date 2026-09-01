@@ -851,41 +851,81 @@ public class Revlog {
         // Compress rawToWrite
         byte[] dataHunk = DeltaCodec.compress(rawToWrite, useZstd);
 
-        long offset = 0;
-        if (datFile.exists()) {
-            offset = datFile.length();
-        }
-
-        try (FileOutputStream out = new FileOutputStream(datFile, true)) {
-            out.write(dataHunk);
-            out.getFD().sync();
-        }
-
-        long offsetFlags;
-        if (rev == 0) {
-            long formatFlags = 0x0002L;
-            long version = 1L;
-            offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
-        } else {
-            offsetFlags = (offset << 16) | (0 & 0xFFFF);
-        }
-
-        ByteBuffer recordBuf = ByteBuffer.allocate(64);
-        recordBuf.putLong(offsetFlags);
-        recordBuf.putInt(dataHunk.length);
-        recordBuf.putInt(rawToWrite.length); // uncompLen
-        recordBuf.putInt(rev); // baseRev
-        recordBuf.putInt(linkRev);
-        recordBuf.putInt(parent1);
-        recordBuf.putInt(parent2);
-
         byte[] nodeId32 = new byte[32];
         System.arraycopy(node, 0, nodeId32, 0, 20);
-        recordBuf.put(nodeId32);
 
-        try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
-            out.write(recordBuf.array());
-            out.getFD().sync();
+        // BUGFIX: this method used to always write dataHunk to datFile and a bare 64-byte record to
+        // idxFile, ignoring this.inline entirely. For a revlog reopened from an on-disk *inline*
+        // layout (real hg stores small filelogs inline -- exactly what RebaseCommand reopens and
+        // calls this method on when restoring filelog/manifest/changelog backups), that silently
+        // wrote the new revision's data to the wrong place: readHunk()'s inline path ignores the
+        // record's offset field and instead seeks to index.getFileOffset(rev) + 64 inside idxFile,
+        // so the data written to datFile was never found there, corrupting the very next read of
+        // that revision. Fixed by branching on inline exactly like appendRevision()/
+        // appendOptimizedRevision() already do.
+        long offset;
+        if (inline) {
+            offset = 0;
+            if (rev > 0) {
+                IndexRecord prevRec = getIndexRecord(rev - 1);
+                offset = prevRec.getOffset() + prevRec.getCompLen();
+            }
+
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0003L; // inline + generaldelta
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            } else {
+                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+            }
+
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(rawToWrite.length); // uncompLen
+            recordBuf.putInt(rev); // baseRev
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId32);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
+        } else {
+            offset = datFile.exists() ? datFile.length() : 0;
+
+            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
+
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0002L;
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+            } else {
+                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+            }
+
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(rawToWrite.length); // uncompLen
+            recordBuf.putInt(rev); // baseRev
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId32);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.getFD().sync();
+            }
         }
 
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,

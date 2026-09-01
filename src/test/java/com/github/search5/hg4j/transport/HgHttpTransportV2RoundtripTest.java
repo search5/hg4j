@@ -142,4 +142,74 @@ public class HgHttpTransportV2RoundtripTest {
         Exception e = assertThrows(Exception.class, () -> client.push(new byte[]{1, 2, 3}, null));
         assertTrue(e.getMessage().contains("no push/unbundle command"));
     }
+
+    /**
+     * Regression test for a getBundle() bug found via code review (not yet caught by any prior
+     * test): on a SECOND/incremental {@code hg4j fetch()} against a server that has moved forward
+     * since the first pull, {@link HgRemoteClientV2#getBundle} used to delta-encode the very first
+     * new changelog/manifest/file entry against an empty byte array instead of the common root's
+     * actual fulltext. {@link ChangegroupParser#parseBundle} alone can't catch this (it just
+     * stores the raw delta bytes without decoding them), which is why {@code
+     * testV2GetBundleTransfersRealChangegroup} above never noticed it — the corruption only
+     * surfaces once the bundle is actually *applied*: {@link Revlog#appendChangeGroupEntry}
+     * decodes each cg1 entry positionally (against whatever revision already occupies the
+     * immediately preceding slot in local storage) and then verifies the decoded content's SHA-1
+     * against the transmitted node hash, throwing {@code HgCorruptDataException} on any mismatch.
+     * This test therefore drives a real end-to-end fetch()-twice sequence (mirroring an actual
+     * `hg4j pull` used a second time) through {@link com.github.search5.hg4j.api.FetchCommand},
+     * which is the only path that both builds AND applies the bundle.
+     */
+    @Test
+    @DisplayName("두 번째(incremental) fetch()가 changelog/manifest/filelog를 손상시키지 않고 해시 검증을 통과한다")
+    void testV2IncrementalFetchDoesNotCorruptLocalRevlogs() throws Exception {
+        Hg serverHg = Hg.wrap(repository);
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "first content");
+        serverHg.add().addFile("a.txt").call();
+        byte[] commit1 = serverHg.commit().setMessage("first commit").call();
+
+        File clientDir = tempDir.resolve("client_repo").toFile();
+        HgRepository clientRepo = Hg.init().setDirectory(clientDir).call();
+        Hg clientHg = Hg.wrap(clientRepo);
+
+        String url = "http://127.0.0.1:" + port;
+        List<byte[]> firstPull = clientHg.fetch().setSource(url).call();
+        assertEquals(1, firstPull.size(), "첫 pull은 commit1 하나만 가져와야 함");
+
+        // Server moves forward: modifies the already-tracked file (touches changelog, manifest,
+        // AND the a.txt filelog -- all three revlogs already have a prior, common revision
+        // locally, exactly the scenario the buggy empty-array seed corrupted).
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "second content");
+        byte[] commit2 = serverHg.commit().setMessage("second commit").call();
+
+        // This used to throw HgCorruptDataException ("Security Integrity Error: Changegroup
+        // entry hash mismatch") from Revlog.appendChangeGroupEntry before the fix.
+        List<byte[]> secondPull = clientHg.fetch().setSource(url).call();
+        assertEquals(1, secondPull.size(), "두 번째 pull은 commit2 하나만 새로 가져와야 함");
+
+        File clIdx = new File(clientRepo.getStoreDir(), "00changelog.i");
+        File clDat = new File(clientRepo.getStoreDir(), "00changelog.d");
+        Revlog clientChangelog = clientRepo.getRevlog(clIdx, clDat);
+        assertEquals(2, clientChangelog.getRevisionCount(), "로컬 changelog에 두 커밋 모두 있어야 함");
+        assertArrayEquals(Arrays.copyOf(commit1, 20), clientChangelog.getIndexRecord(0).getNodeId());
+        assertArrayEquals(Arrays.copyOf(commit2, 20), clientChangelog.getIndexRecord(1).getNodeId());
+
+        // getRevisionContent() re-derives and would throw on a hash mismatch -- reaching this
+        // point at all (already implied by fetch() not throwing above) plus a correct decoded
+        // body confirms the changelog wasn't silently corrupted.
+        byte[] rev1Content = clientChangelog.getRevisionContent(1);
+        assertTrue(new String(rev1Content, StandardCharsets.UTF_8).contains("second commit"));
+
+        File mfIdx = new File(clientRepo.getStoreDir(), "00manifest.i");
+        File mfDat = new File(clientRepo.getStoreDir(), "00manifest.d");
+        Revlog clientManifest = clientRepo.getRevlog(mfIdx, mfDat);
+        assertEquals(2, clientManifest.getRevisionCount(), "로컬 manifest revlog에도 두 리비전 모두 있어야 함");
+        byte[] mfRev1Content = clientManifest.getRevisionContent(1);
+        assertTrue(new String(mfRev1Content, StandardCharsets.UTF_8).contains("a.txt"));
+
+        File flIdx = com.github.search5.hg4j.api.CommitCommand.getFilelogIndex(clientRepo.getStoreDir(), "a.txt");
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        Revlog clientFilelog = clientRepo.getRevlog(flIdx, flDat);
+        assertEquals(2, clientFilelog.getRevisionCount(), "a.txt filelog에도 두 리비전 모두 있어야 함");
+        assertEquals("second content", new String(clientFilelog.getRevisionContent(1), StandardCharsets.UTF_8));
+    }
 }

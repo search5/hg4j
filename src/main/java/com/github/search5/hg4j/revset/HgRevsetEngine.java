@@ -117,40 +117,22 @@ public final class HgRevsetEngine {
         } else if (lower.equals("merge()")) {
             return evaluateMerge(changelog, totalRevs);
         } else if (lower.startsWith("author(") && lower.endsWith(")")) {
-            String authorPattern = trimmed.substring("author(".length(), trimmed.length() - 1).trim();
-            if (authorPattern.startsWith("\"") && authorPattern.endsWith("\"")) {
-                authorPattern = authorPattern.substring(1, authorPattern.length() - 1);
-            }
+            String authorPattern = stripQuotes(trimmed.substring("author(".length(), trimmed.length() - 1).trim());
             return evaluateAuthor(authorPattern, changelog, totalRevs);
         } else if (lower.startsWith("user(") && lower.endsWith(")")) {
-            String userPattern = trimmed.substring("user(".length(), trimmed.length() - 1).trim();
-            if (userPattern.startsWith("\"") && userPattern.endsWith("\"")) {
-                userPattern = userPattern.substring(1, userPattern.length() - 1);
-            }
+            String userPattern = stripQuotes(trimmed.substring("user(".length(), trimmed.length() - 1).trim());
             return evaluateUser(userPattern, changelog, totalRevs);
         } else if (lower.startsWith("keyword(") && lower.endsWith(")")) {
-            String kw = trimmed.substring("keyword(".length(), trimmed.length() - 1).trim();
-            if (kw.startsWith("\"") && kw.endsWith("\"")) {
-                kw = kw.substring(1, kw.length() - 1);
-            }
+            String kw = stripQuotes(trimmed.substring("keyword(".length(), trimmed.length() - 1).trim());
             return evaluateKeyword(kw, changelog, totalRevs);
         } else if (lower.startsWith("branch(") && lower.endsWith(")")) {
-            String bName = trimmed.substring("branch(".length(), trimmed.length() - 1).trim();
-            if (bName.startsWith("\"") && bName.endsWith("\"")) {
-                bName = bName.substring(1, bName.length() - 1);
-            }
+            String bName = stripQuotes(trimmed.substring("branch(".length(), trimmed.length() - 1).trim());
             return evaluateBranch(bName, changelog, totalRevs);
         } else if (lower.startsWith("file(") && lower.endsWith(")")) {
-            String fPath = trimmed.substring("file(".length(), trimmed.length() - 1).trim();
-            if (fPath.startsWith("\"") && fPath.endsWith("\"")) {
-                fPath = fPath.substring(1, fPath.length() - 1);
-            }
+            String fPath = stripQuotes(trimmed.substring("file(".length(), trimmed.length() - 1).trim());
             return evaluateFile(fPath, changelog, totalRevs);
         } else if (lower.startsWith("date(") && lower.endsWith(")")) {
-            String dPat = trimmed.substring("date(".length(), trimmed.length() - 1).trim();
-            if (dPat.startsWith("\"") && dPat.endsWith("\"")) {
-                dPat = dPat.substring(1, dPat.length() - 1);
-            }
+            String dPat = stripQuotes(trimmed.substring("date(".length(), trimmed.length() - 1).trim());
             return evaluateDate(dPat, changelog, totalRevs);
         } else if (lower.startsWith("parents(") && lower.endsWith(")")) {
             String targetRevStr = trimmed.substring("parents(".length(), trimmed.length() - 1).trim();
@@ -165,16 +147,10 @@ public final class HgRevsetEngine {
             int targetRev = resolveRevisionToInt(targetRevStr, changelog);
             return evaluateDescendants(targetRev, changelog, totalRevs);
         } else if (lower.startsWith("tag(") && lower.endsWith(")")) {
-            String tagName = trimmed.substring("tag(".length(), trimmed.length() - 1).trim();
-            if (tagName.startsWith("\"") && tagName.endsWith("\"")) {
-                tagName = tagName.substring(1, tagName.length() - 1);
-            }
+            String tagName = stripQuotes(trimmed.substring("tag(".length(), trimmed.length() - 1).trim());
             return evaluateTag(tagName, changelog);
         } else if (lower.startsWith("bookmark(") && lower.endsWith(")")) {
-            String bkmkName = trimmed.substring("bookmark(".length(), trimmed.length() - 1).trim();
-            if (bkmkName.startsWith("\"") && bkmkName.endsWith("\"")) {
-                bkmkName = bkmkName.substring(1, bkmkName.length() - 1);
-            }
+            String bkmkName = stripQuotes(trimmed.substring("bookmark(".length(), trimmed.length() - 1).trim());
             return evaluateBookmark(bkmkName, changelog);
         } else if (lower.equals("public()")) {
             return evaluatePublic(changelog, totalRevs);
@@ -225,6 +201,25 @@ public final class HgRevsetEngine {
         }
     }
 
+    /**
+     * Strips a single matching pair of surrounding quotes (single or double) from a
+     * revset function argument. Real Mercurial accepts both {@code 'x'} and {@code "x"}
+     * as equivalent string literals (verified against real hg: author('Bob') and
+     * author("Bob") return identical results) -- previously only double quotes were
+     * stripped here, so a single-quoted argument like author('Bob') would search for
+     * the literal text "'bob'" and silently fail to match.
+     */
+    private static String stripQuotes(String value) {
+        if (value.length() >= 2) {
+            char first = value.charAt(0);
+            char last = value.charAt(value.length() - 1);
+            if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                return value.substring(1, value.length() - 1);
+            }
+        }
+        return value;
+    }
+
     private static int findLogicalKeyword(String query, String keyword) {
         String trimmedKw = keyword.trim();
         int kwLen = trimmedKw.length();
@@ -252,8 +247,21 @@ public final class HgRevsetEngine {
             
             if (!inDoubleQuotes && !inSingleQuotes && bracketDepth == 0) {
                 if (query.substring(i, i + kwLen).equalsIgnoreCase(trimmedKw)) {
-                    boolean leftOk = (i == 0 || Character.isWhitespace(query.charAt(i - 1)) || query.charAt(i - 1) == ')');
-                    boolean rightOk = (i + kwLen == len || Character.isWhitespace(query.charAt(i + kwLen)) || query.charAt(i + kwLen) == '(' || query.charAt(i + kwLen) == '!');
+                    // Word-boundary checks (adjacent whitespace/paren) only make sense for
+                    // word keywords like "and"/"or"/"not" -- they stop "author(" from being
+                    // mistaken for "or". A single-char punctuation separator like the "," used
+                    // to split sort()/limit() arguments has no such ambiguity, and real hg
+                    // happily accepts a comma directly after a bare argument with no space,
+                    // e.g. "sort(0 or 1, 'date')" (verified against real hg 7.2). Requiring a
+                    // preceding whitespace/')' here previously made findLogicalKeyword(inner, ",")
+                    // fail to find the separator whenever the sort()/limit() sub-expression didn't
+                    // end in ')' (e.g. a bare revision or an "or"/"and" expression), silently
+                    // returning an empty result instead of splitting the arguments correctly.
+                    boolean singleCharSeparator = kwLen == 1 && !Character.isLetterOrDigit(trimmedKw.charAt(0));
+                    boolean leftOk = singleCharSeparator
+                            || (i == 0 || Character.isWhitespace(query.charAt(i - 1)) || query.charAt(i - 1) == ')');
+                    boolean rightOk = singleCharSeparator
+                            || (i + kwLen == len || Character.isWhitespace(query.charAt(i + kwLen)) || query.charAt(i + kwLen) == '(' || query.charAt(i + kwLen) == '!');
                     if (leftOk && rightOk) {
                         return i;
                     }

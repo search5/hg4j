@@ -2,6 +2,7 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.HgTestUtils;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
+import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.errors.HgValidationException;
 import com.github.search5.hg4j.lib.HgRcConfig;
 import com.github.search5.hg4j.lib.HgRepository;
@@ -10,10 +11,13 @@ import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import com.github.search5.hg4j.treewalk.SparseConfig;
 import com.github.search5.hg4j.treewalk.TreeWalk;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -618,6 +622,131 @@ public class HgRemainingPorcelainCoverageTest {
             }
         } finally {
             System.setProperty("user.home", originalUserHome);
+        }
+    }
+
+    @Test
+    public void testBranchesFacadeReportsOpenHeadPerBranch(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("branches_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("default head").call();
+
+        new BranchCommand(repo).setBranchName("feature").call();
+        Files.writeString(f.toPath(), "v1");
+        new CommitCommand(repo).setAuthor("dev").setMessage("feature head").call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            List<BranchesCommand.BranchHead> heads = hg.branches().call();
+            assertEquals(2, heads.size());
+            assertTrue(heads.stream().anyMatch(h -> "default".equals(h.getBranch()) && !h.isClosed()));
+            assertTrue(heads.stream().anyMatch(h -> "feature".equals(h.getBranch()) && !h.isClosed()));
+        }
+    }
+
+    @Test
+    public void testTreeMergeFacadeComputesResultWithoutTouchingWorkingCopy(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("treemerge_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File a = new File(repoDir, "a.txt");
+        Files.writeString(a.toPath(), "base");
+        new AddCommand(repo).call();
+        byte[] base = new CommitCommand(repo).setAuthor("dev").setMessage("base").call();
+
+        Files.writeString(a.toPath(), "base");
+        File ourFile = new File(repoDir, "ours.txt");
+        Files.writeString(ourFile.toPath(), "mine");
+        new AddCommand(repo).call();
+        byte[] ours = new CommitCommand(repo).setAuthor("dev").setMessage("ours").call();
+
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.setParents(base, new byte[20]);
+        repo.writeDirstate(dirstate);
+        File theirFile = new File(repoDir, "theirs.txt");
+        Files.writeString(theirFile.toPath(), "yours");
+        new AddCommand(repo).call();
+        byte[] theirs = new CommitCommand(repo).setAuthor("dev").setMessage("theirs").call();
+
+        // Explicitly check out `ours` -- committing `theirs` above only moved the dirstate
+        // parent pointer, it never touched the working copy, so theirs.txt would still
+        // physically exist on disk without this.
+        new UpdateCommand(repo).setRevision(NodeIdUtil.toHex(ours)).call();
+        assertFalse(theirFile.exists());
+
+        try (Hg hg = Hg.wrap(repo)) {
+            TreeMergeCommand.TreeMergeResult result = hg.treeMerge().setOurs(ours).setTheirs(theirs).call();
+            assertFalse(result.isConflicted());
+            assertTrue(result.getChangedFiles().containsKey("theirs.txt"),
+                    "theirs-only file must appear as a change to bring into ours");
+        }
+
+        assertEquals("mine", Files.readString(ourFile.toPath()), "working copy must be untouched by a pure treeMerge computation");
+        assertFalse(theirFile.exists(), "treeMerge must not write theirs.txt into the working copy");
+    }
+
+    @Test
+    public void testCensorFacadeReplacesRevisionContentWithATombstone(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("censor_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "secret.txt");
+        Files.writeString(f.toPath(), "sensitive data");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("oops").call();
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "secret.txt");
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        assertFalse(filelog.isCensored(0));
+        String fileRevHex = NodeIdUtil.toHex(filelog.getIndexRecord(0).getNodeId());
+
+        try (Hg hg = Hg.wrap(repo)) {
+            hg.censor().setFile("secret.txt").setRevision(fileRevHex).setTombstone("leaked credentials").call();
+        }
+
+        Revlog filelogAfter = repo.getRevlog(flIdx, flDat);
+        assertTrue(filelogAfter.isCensored(0));
+    }
+
+    @Test
+    public void testClonebundleFacadeDownloadsAndAppliesFromAPlainHttpUrl(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("clonebundle_facade_src").toFile();
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+        Files.writeString(new File(srcDir, "a.txt").toPath(), "hello");
+        new AddCommand(srcRepo).call();
+        byte[] commitNode = new CommitCommand(srcRepo).setMessage("v1").setAuthor("dev").call();
+
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] changegroupBytes = HgTestUtils.serializeBundleToBytes(bundle);
+        byte[] bundleBytes = new byte[6 + changegroupBytes.length];
+        System.arraycopy("HG10UN".getBytes(StandardCharsets.US_ASCII), 0, bundleBytes, 0, 6);
+        System.arraycopy(changegroupBytes, 0, bundleBytes, 6, changegroupBytes.length);
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/bundles/full.hg", exchange -> {
+                exchange.sendResponseHeaders(200, bundleBytes.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(bundleBytes);
+                }
+            });
+            server.start();
+            String bundleUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/bundles/full.hg";
+
+            File destDir = tempDir.resolve("clonebundle_facade_dest").toFile();
+            HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+
+            try (Hg hg = Hg.wrap(destRepo)) {
+                List<byte[]> imported = hg.clonebundle(bundleUrl);
+                assertEquals(1, imported.size());
+                assertEquals(NodeIdUtil.toHex(commitNode), NodeIdUtil.toHex(imported.get(0)));
+            }
+        } finally {
+            server.stop(0);
         }
     }
 }

@@ -3,6 +3,7 @@ package com.github.search5.hg4j.diff;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
@@ -73,6 +74,46 @@ public class DeltaEngineTest {
         // start > baseText.length
         byte[] delta = buildDelta(100, 200, new byte[0]);
         assertThrows(IOException.class, () -> DeltaEngine.applyDelta(base, delta));
+    }
+
+    @Test
+    @DisplayName("Negative length field in delta header -> throw IOException")
+    void testApplyDelta_negativeLength_throwsIOException() {
+        byte[] base = "data".getBytes(StandardCharsets.UTF_8);
+        // Header: start=0, end=0, length=-1 (negative, corrupt)
+        byte[] badDelta = buildDeltaHeaderOnly(0, 0, -1);
+        assertThrows(IOException.class, () -> DeltaEngine.applyDelta(base, badDelta));
+    }
+
+    @Test
+    @DisplayName("Second hunk start before end of previous hunk (overlap) -> throw IOException")
+    void testApplyDelta_hunkStartBeforeLastCopied_throwsIOException() throws IOException {
+        byte[] base = "0123456789".getBytes(StandardCharsets.UTF_8);
+        // First hunk: start=2, end=6 -> lastCopied becomes 6.
+        // Second hunk: start=3 (< lastCopied=6) -> invalid, must throw.
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(buildDelta(2, 6, "X".getBytes(StandardCharsets.UTF_8)));
+        out.write(buildDelta(3, 8, "Y".getBytes(StandardCharsets.UTF_8)));
+        byte[] badDelta = out.toByteArray();
+        assertThrows(IOException.class, () -> DeltaEngine.applyDelta(base, badDelta));
+    }
+
+    @Test
+    @DisplayName("Hunk end before start (inverted range) -> throw IOException")
+    void testApplyDelta_endBeforeStart_throwsIOException() {
+        byte[] base = "0123456789".getBytes(StandardCharsets.UTF_8);
+        // start=5, end=2 (end < start), both within base bounds but inverted.
+        byte[] badDelta = buildDelta(5, 2, new byte[0]);
+        assertThrows(IOException.class, () -> DeltaEngine.applyDelta(base, badDelta));
+    }
+
+    @Test
+    @DisplayName("Hunk end beyond base text length -> throw IOException")
+    void testApplyDelta_endBeyondBaseLength_throwsIOException() {
+        byte[] base = "0123456789".getBytes(StandardCharsets.UTF_8);
+        // start=2 (valid), end=20 (> baseText.length=10)
+        byte[] badDelta = buildDelta(2, 20, new byte[0]);
+        assertThrows(IOException.class, () -> DeltaEngine.applyDelta(base, badDelta));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -246,6 +287,120 @@ public class DeltaEngineTest {
         // 5. base non-empty / target empty
         byte[] d5 = DeltaEngine.createDelta(base, new byte[0]);
         assertArrayEquals(new byte[0], DeltaEngine.applyDelta(base, d5));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Additional coverage tests
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("createDelta: extremely different large content triggers the d>1000 Myers fallback guard")
+    void testCreateDelta_extremeDifference_triggersFallbackGuard() throws IOException {
+        // Build two texts with entirely disjoint line sets so that no lines ever match,
+        // forcing the Myers edit distance D to reach n+m (well above the d > 1000 guard).
+        StringBuilder sb1 = new StringBuilder();
+        StringBuilder sb2 = new StringBuilder();
+        for (int i = 0; i < 600; i++) {
+            sb1.append("base_only_line_").append(i).append('\n');
+            sb2.append("new_only_line_").append(i).append('\n');
+        }
+        byte[] base = sb1.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] target = sb2.toString().getBytes(StandardCharsets.UTF_8);
+
+        byte[] delta = DeltaEngine.createDelta(base, target);
+
+        // The fallback returns exactly what createSimpleDelta would produce.
+        byte[] expectedFallback = DeltaEngine.createSimpleDelta(base, target);
+        assertArrayEquals(expectedFallback, delta);
+
+        // Round-trip must still be correct.
+        byte[] result = DeltaEngine.applyDelta(base, delta);
+        assertArrayEquals(target, result);
+    }
+
+    @Test
+    @DisplayName("createDelta: pure append at end of base (insertion-only, hits Myers k==-d edge and trailing byteStart/byteEnd branches)")
+    void testCreateDelta_pureAppendAtEnd() throws IOException {
+        byte[] base = "A\nB\n".getBytes(StandardCharsets.UTF_8);
+        byte[] target = "A\nB\nC\nD\n".getBytes(StandardCharsets.UTF_8);
+
+        byte[] delta = DeltaEngine.createDelta(base, target);
+        byte[] result = DeltaEngine.applyDelta(base, delta);
+        assertArrayEquals(target, result);
+    }
+
+    @Test
+    @DisplayName("createDelta: pure insertion in the middle without any deletion (byteEnd == byteStart branch)")
+    void testCreateDelta_pureInsertionInMiddle() throws IOException {
+        byte[] base = "A\nC\n".getBytes(StandardCharsets.UTF_8);
+        byte[] target = "A\nB\nC\n".getBytes(StandardCharsets.UTF_8);
+
+        byte[] delta = DeltaEngine.createDelta(base, target);
+        byte[] result = DeltaEngine.applyDelta(base, delta);
+        assertArrayEquals(target, result);
+    }
+
+    @Test
+    @DisplayName("createDelta: multiple pure insertions around every base line (deep Myers backtracking, k==-d branch)")
+    void testCreateDelta_pureInsertionsSurroundingEveryLine() throws IOException {
+        byte[] base = "A\nB\nC\n".getBytes(StandardCharsets.UTF_8);
+        byte[] target = "X\nA\nY\nB\nZ\nC\nW\n".getBytes(StandardCharsets.UTF_8);
+
+        byte[] delta = DeltaEngine.createDelta(base, target);
+        byte[] result = DeltaEngine.applyDelta(base, delta);
+        assertArrayEquals(target, result);
+    }
+
+    @Test
+    @DisplayName("createDelta: mixed interleaved insertions and deletions across a larger file (diverse Myers backtracking branches)")
+    void testCreateDelta_mixedInsertDeleteInterleaved() throws IOException {
+        StringBuilder sb1 = new StringBuilder();
+        for (int i = 0; i < 50; i++) {
+            sb1.append("L").append(i).append('\n');
+        }
+        byte[] base = sb1.toString().getBytes(StandardCharsets.UTF_8);
+
+        StringBuilder sb2 = new StringBuilder();
+        for (int i = 0; i < 50; i++) {
+            if (i >= 10 && i <= 14) {
+                sb2.append("REPLACED").append(i).append('\n');
+            } else if (i >= 30 && i <= 32) {
+                // deleted: skip these lines entirely
+                continue;
+            } else {
+                sb2.append("L").append(i).append('\n');
+            }
+            if (i == 40) {
+                sb2.append("INSERTED_A\n").append("INSERTED_B\n");
+            }
+        }
+        byte[] target = sb2.toString().getBytes(StandardCharsets.UTF_8);
+
+        byte[] delta = DeltaEngine.createDelta(base, target);
+        byte[] result = DeltaEngine.applyDelta(base, delta);
+        assertArrayEquals(target, result);
+    }
+
+    @Test
+    @DisplayName("createDelta: pure trailing deletion (base longer than target, target still non-empty)")
+    void testCreateDelta_pureTrailingDeletion() throws IOException {
+        byte[] base = "A\nB\nC\nD\n".getBytes(StandardCharsets.UTF_8);
+        byte[] target = "A\nB\n".getBytes(StandardCharsets.UTF_8);
+
+        byte[] delta = DeltaEngine.createDelta(base, target);
+        byte[] result = DeltaEngine.applyDelta(base, delta);
+        assertArrayEquals(target, result);
+    }
+
+    @Test
+    @DisplayName("Line.equals: comparing to a non-Line object directly returns false")
+    void testLineEquals_nonLineObject_returnsFalse() throws Exception {
+        List<?> lines = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
+                .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
+        Object lineObj = lines.get(0);
+
+        assertFalse(lineObj.equals("not a Line instance"));
+        assertFalse(lineObj.equals(42));
     }
 }
 

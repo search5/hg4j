@@ -404,6 +404,51 @@ public class MergeCommandCoverageTest {
         assertTrue(extras.containsKey("ancestorlinknode"));
     }
 
+    /**
+     * Conflicting merge on an executable file: the LCA and both parents' manifest hex strings all
+     * carry the {@code x} flag suffix (length &gt; 40), so both {@code cleanHexOf} and
+     * {@code flagOf} must take their substring branches (as opposed to the plain 40-char hex used
+     * by every other conflict test in this suite).
+     */
+    @Test
+    public void conflictingMergeOnExecutableFilePreservesFlagInMergeState(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File script = new File(repoDir, "run.sh");
+        Files.writeString(script.toPath(), "L1\nL2\nL3\n");
+        script.setExecutable(true, false);
+        byte[] baseNode = commit(repo, "base (executable run.sh)");
+
+        Files.writeString(script.toPath(), "L1\nL2 mine\nL3\n");
+        script.setExecutable(true, false);
+        byte[] yoursNode = commit(repo, "yours");
+
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(baseNode, new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(script.toPath(), "L1\nL2 theirs\nL3\n");
+        script.setExecutable(true, false);
+        commit(repo, "theirs");
+
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(yoursNode).call();
+        assertTrue(res.isConflicted());
+        assertEquals(List.of("run.sh"), res.getConflicts());
+
+        // The executable bit must survive being rewritten with conflict markers.
+        assertTrue(script.canExecute());
+
+        File stateFile = new File(repo.getHgDir(), "merge/state2");
+        MergeState ms = MergeState.read(stateFile);
+        List<String> fields = ms.state.get("run.sh");
+        String ancestorNodeHex = fields.get(4);
+        String otherNodeHex = fields.get(6);
+        String flags = fields.get(7);
+        assertEquals(40, ancestorNodeHex.length(), "cleanHexOf must strip the flag suffix from the LCA hex");
+        assertEquals(40, otherNodeHex.length(), "cleanHexOf must strip the flag suffix from the other-side hex");
+        assertEquals("x", flags, "flagOf must extract the executable flag from local's manifest hex");
+    }
+
     // ---------------------------------------------------------------------
     // Error paths reached before the tree-walk.
     // ---------------------------------------------------------------------
@@ -621,6 +666,64 @@ public class MergeCommandCoverageTest {
                 assertEquals(40, link.length());
             }
         }
+    }
+
+    /**
+     * Criss-cross virtual-base synthesis where both LCA candidates (c1, c2) independently modify
+     * the same executable file on different lines: the virtual base's own 3-way merge of that
+     * file must preserve the {@code x} flag, taking the {@code hC1.length() > 40} branch when
+     * building the synthesized manifest hex (as opposed to every other criss-cross test in this
+     * suite, whose merged files are all flagless).
+     */
+    @Test
+    public void crissCrossVirtualBaseSynthesisPreservesExecutableFlag(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File script = new File(repoDir, "run.sh");
+        Files.writeString(script.toPath(), "A\nB\nC\nD\nE\n");
+        script.setExecutable(true, false);
+        byte[] r0 = commit(repo, "r0");
+
+        // r1: modify a line near the top of the executable file, keep it executable.
+        Files.writeString(script.toPath(), "A\nB1\nC\nD\nE\n");
+        script.setExecutable(true, false);
+        byte[] r1 = commit(repo, "r1");
+
+        // r2: forked from r0, modify a line far from r1's edit so the two hunks are unambiguously
+        // independent (non-conflicting with r1's change).
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(r0, new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(script.toPath(), "A\nB\nC\nD\nE2\n");
+        script.setExecutable(true, false);
+        byte[] r2 = commit(repo, "r2");
+
+        // r3 = merge r1 into r2.
+        MergeCommand.MergeResult r3Res = new MergeCommand(repo).setNodeId(r1).call();
+        assertFalse(r3Res.isConflicted());
+        script.setExecutable(true, false);
+        byte[] r3 = commit(repo, "r3 (merge r1 into r2)");
+
+        // r4 = merge r2 into r1.
+        ds = repo.getDirstate();
+        ds.setParents(r1, new byte[20]);
+        repo.writeDirstate(ds);
+        MergeCommand.MergeResult r4Res = new MergeCommand(repo).setNodeId(r2).call();
+        assertFalse(r4Res.isConflicted());
+        script.setExecutable(true, false);
+        byte[] r4 = commit(repo, "r4 (merge r2 into r1)");
+
+        // Final merge of r3/r4: LCA candidates are {r1, r2} -> forces virtual-base synthesis,
+        // which itself must 3-way merge run.sh (modified differently by both r1 and r2).
+        ds = repo.getDirstate();
+        ds.setParents(r4, new byte[20]);
+        repo.writeDirstate(ds);
+
+        MergeCommand.MergeResult res = new MergeCommand(repo).setNodeId(r3).call();
+        assertFalse(res.isConflicted());
+        assertEquals("A\nB1\nC\nD\nE2\n", Files.readString(script.toPath()));
+        assertTrue(script.canExecute(), "virtual-base synthesis must preserve the executable flag");
     }
 
     private static boolean isAllZero(byte[] bytes) {

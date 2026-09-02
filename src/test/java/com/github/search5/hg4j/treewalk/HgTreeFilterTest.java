@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import com.github.search5.hg4j.treewalk.PathFilter;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 public class HgTreeFilterTest {
@@ -47,5 +49,38 @@ public class HgTreeFilterTest {
 
         assertTrue(filter.accept("src/main/java/Main.java"));
         assertFalse(filter.accept("temp/cache.tmp"));
+    }
+
+    @Test
+    public void testPathPrefixFilterNullCollectionsTreatedAsEmpty() {
+        // Passing null for both includes and excludes should behave like empty
+        // collections (accept everything), exercising the null branches of the
+        // ternaries that build the internal include/exclude sets.
+        HgTreeFilter filter = HgTreeFilter.createPathPrefixFilter(null, null);
+
+        assertTrue(filter.accept("src/main/java/Main.java"));
+        assertTrue(filter.accept("anything/else.txt"));
+        assertFalse(filter.accept(null));
+    }
+
+    @Test
+    public void testFromPathFilterWithNullReturnsAll() {
+        assertSame(HgTreeFilter.ALL, HgTreeFilter.fromPathFilter(null));
+    }
+
+    @Test
+    public void testFromPathFilterWithHgTreeFilterReturnsSameInstance() {
+        HgTreeFilter original = HgTreeFilter.createPathPrefixFilter(List.of("src/"), List.of());
+        assertSame(original, HgTreeFilter.fromPathFilter(original));
+    }
+
+    @Test
+    public void testFromPathFilterWrapsGenericPathFilter() {
+        PathFilter generic = path -> path != null && path.startsWith("wrapped/");
+        HgTreeFilter wrapped = HgTreeFilter.fromPathFilter(generic);
+
+        assertNotSame(generic, wrapped);
+        assertTrue(wrapped.accept("wrapped/file.txt"));
+        assertFalse(wrapped.accept("other/file.txt"));
     }
 }

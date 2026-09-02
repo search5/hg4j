@@ -86,7 +86,7 @@ public class ManifestWalk {
     }
 
     public Entry getEntry() {
-        if (cachedIndex < 0 || cachedIndex >= cachedEntries.size()) {
+        if (cachedIndex < 0) {
             throw new NoSuchElementException("No current entry");
         }
         return cachedEntries.get(cachedIndex);

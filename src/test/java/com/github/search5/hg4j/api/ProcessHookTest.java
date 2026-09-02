@@ -1,13 +1,16 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.lib.HgRepository;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +18,10 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 import com.github.search5.hg4j.errors.HgValidationException;
 import java.lang.reflect.Field;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 public class ProcessHookTest {
 
@@ -107,5 +114,232 @@ public class ProcessHookTest {
         assertEquals("/path/to/my script.sh", commandList.get(0));
         assertEquals("arg1", commandList.get(1));
         assertEquals("arg2 with space", commandList.get(2));
+    }
+
+    @Test
+    public void testProcessHookQuoteSplittingWithMismatchedQuoteInsideQuotes() throws Exception {
+        // A different quote character appearing inside an already-open quote must be kept literally
+        ProcessHook hook = new ProcessHook("'abc\"def' ghi");
+
+        Field cmdField = ProcessHook.class.getDeclaredField("command");
+        cmdField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<String> commandList = (List<String>) cmdField.get(hook);
+
+        assertEquals(2, commandList.size(), "명령어는 2개의 인자로 파싱되어야 합니다.");
+        assertEquals("abc\"def", commandList.get(0), "따옴표 내부의 다른 종류 따옴표 문자는 그대로 유지되어야 합니다.");
+        assertEquals("ghi", commandList.get(1));
+    }
+
+    @Test
+    public void testProcessOutputIsLoggedLineByLine() throws Exception {
+        ProcessHook hook = new ProcessHook(Arrays.asList("sh", "-c", "echo hello-from-hook"));
+        Map<String, Object> context = new HashMap<>();
+
+        Logger logger = Logger.getLogger(ProcessHook.class.getName());
+        List<String> capturedMessages = new java.util.ArrayList<>();
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                capturedMessages.add(record.getMessage());
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        logger.addHandler(handler);
+        boolean previousUseParentHandlers = logger.getUseParentHandlers();
+        Level previousLevel = logger.getLevel();
+        logger.setUseParentHandlers(false);
+        logger.setLevel(Level.ALL);
+        try {
+            boolean result = hook.run(context);
+            assertTrue(result, "정상 종료된 훅은 성공을 반환해야 합니다.");
+        } finally {
+            logger.removeHandler(handler);
+            logger.setUseParentHandlers(previousUseParentHandlers);
+            logger.setLevel(previousLevel);
+        }
+
+        assertTrue(capturedMessages.stream().anyMatch(m -> m.contains("hello-from-hook")),
+                "프로세스의 표준 출력은 로거를 통해 한 줄씩 기록되어야 합니다.");
+    }
+
+    @Test
+    public void testEmptyCommandListSkipsExecution() throws Exception {
+        ProcessHook hook = new ProcessHook(Collections.emptyList());
+        Map<String, Object> context = new HashMap<>();
+        context.put("author", "Tester");
+
+        boolean result = hook.run(context);
+        assertTrue(result, "빈 명령어 리스트는 프로세스를 실행하지 않고 성공을 반환해야 합니다.");
+    }
+
+    @Test
+    public void testNullCommandStringSkipsExecution() throws Exception {
+        ProcessHook hook = new ProcessHook((String) null);
+        Map<String, Object> context = new HashMap<>();
+
+        boolean result = hook.run(context);
+        assertTrue(result, "null 명령어 문자열은 빈 명령어로 처리되어 성공을 반환해야 합니다.");
+    }
+
+    @Test
+    public void testBlankCommandStringSkipsExecution() throws Exception {
+        ProcessHook hook = new ProcessHook("   ");
+        Map<String, Object> context = new HashMap<>();
+
+        boolean result = hook.run(context);
+        assertTrue(result, "공백만 있는 명령어 문자열은 빈 명령어로 처리되어 성공을 반환해야 합니다.");
+    }
+
+    @Test
+    public void testExplicitWorkingDirectoryOverridesRepositoryContext(@TempDir Path tempDir) throws Exception {
+        File explicitDir = tempDir.resolve("explicit").toFile();
+        explicitDir.mkdirs();
+        File logFile = tempDir.resolve("cwd_output.txt").toFile();
+        File scriptFile = tempDir.resolve("pwd_hook.sh").toFile();
+
+        String scriptContent = "#!/bin/sh\n" +
+                "pwd > \"" + logFile.getAbsolutePath() + "\"\n" +
+                "exit 0\n";
+        Files.writeString(scriptFile.toPath(), scriptContent);
+        scriptFile.setExecutable(true);
+
+        ProcessHook hook = new ProcessHook(Arrays.asList("sh", scriptFile.getAbsolutePath()), explicitDir);
+        Map<String, Object> context = new HashMap<>();
+
+        boolean result = hook.run(context);
+        assertTrue(result, "정상 종료된 훅은 성공을 반환해야 합니다.");
+
+        List<String> lines = Files.readAllLines(logFile.toPath());
+        assertEquals(1, lines.size());
+        assertEquals(explicitDir.getCanonicalPath(), new File(lines.get(0)).getCanonicalPath(),
+                "명시적으로 지정된 작업 디렉터리가 프로세스의 cwd로 사용되어야 합니다.");
+    }
+
+    @Test
+    public void testRepositoryContextResolvesWorkingDirectory(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgRepository repository = Hg.init().setDirectory(repoDir).call();
+        File logFile = tempDir.resolve("cwd_output.txt").toFile();
+        File scriptFile = tempDir.resolve("pwd_hook.sh").toFile();
+
+        String scriptContent = "#!/bin/sh\n" +
+                "pwd > \"" + logFile.getAbsolutePath() + "\"\n" +
+                "exit 0\n";
+        Files.writeString(scriptFile.toPath(), scriptContent);
+        scriptFile.setExecutable(true);
+
+        ProcessHook hook = new ProcessHook(Arrays.asList("sh", scriptFile.getAbsolutePath()));
+        Map<String, Object> context = new HashMap<>();
+        context.put("repository", repository);
+
+        boolean result = hook.run(context);
+        assertTrue(result, "정상 종료된 훅은 성공을 반환해야 합니다.");
+
+        List<String> lines = Files.readAllLines(logFile.toPath());
+        assertEquals(1, lines.size());
+        assertEquals(repository.getDirectory().getCanonicalPath(), new File(lines.get(0)).getCanonicalPath(),
+                "컨텍스트의 repository 키로부터 작업 디렉터리가 해석되어야 합니다.");
+    }
+
+    @Test
+    public void testByteArrayContextValueMappedToHexEnvironmentVariable(@TempDir Path tempDir) throws Exception {
+        File logFile = tempDir.resolve("node_output.txt").toFile();
+        File scriptFile = tempDir.resolve("node_hook.sh").toFile();
+
+        String scriptContent = "#!/bin/sh\n" +
+                "echo \"Node:$HG_NODE\" > \"" + logFile.getAbsolutePath() + "\"\n" +
+                "exit 0\n";
+        Files.writeString(scriptFile.toPath(), scriptContent);
+        scriptFile.setExecutable(true);
+
+        byte[] node = new byte[]{(byte) 0xDE, (byte) 0xAD, (byte) 0xBE, (byte) 0xEF};
+        ProcessHook hook = new ProcessHook(Arrays.asList("sh", scriptFile.getAbsolutePath()));
+        Map<String, Object> context = new HashMap<>();
+        context.put("node", node);
+
+        boolean result = hook.run(context);
+        assertTrue(result, "정상 종료된 훅은 성공을 반환해야 합니다.");
+
+        List<String> lines = Files.readAllLines(logFile.toPath());
+        assertEquals(1, lines.size());
+        assertEquals("Node:" + NodeIdUtil.toHex(node), lines.get(0),
+                "byte[] 컨텍스트 값은 16진수 문자열로 변환되어 환경 변수로 전달되어야 합니다.");
+    }
+
+    @Test
+    public void testHgRepositoryContextValueMappedToDirectoryPathEnvironmentVariable(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo2").toFile();
+        HgRepository repository = Hg.init().setDirectory(repoDir).call();
+        File logFile = tempDir.resolve("repopath_output.txt").toFile();
+        File scriptFile = tempDir.resolve("repo_hook.sh").toFile();
+
+        String scriptContent = "#!/bin/sh\n" +
+                "echo \"Source:$HG_SOURCEREPO\" > \"" + logFile.getAbsolutePath() + "\"\n" +
+                "exit 0\n";
+        Files.writeString(scriptFile.toPath(), scriptContent);
+        scriptFile.setExecutable(true);
+
+        ProcessHook hook = new ProcessHook(Arrays.asList("sh", scriptFile.getAbsolutePath()));
+        Map<String, Object> context = new HashMap<>();
+        context.put("sourceRepo", repository);
+
+        boolean result = hook.run(context);
+        assertTrue(result, "정상 종료된 훅은 성공을 반환해야 합니다.");
+
+        List<String> lines = Files.readAllLines(logFile.toPath());
+        assertEquals(1, lines.size());
+        assertEquals("Source:" + repository.getDirectory().getAbsolutePath(), lines.get(0),
+                "HgRepository 컨텍스트 값은 절대 경로 문자열로 변환되어 환경 변수로 전달되어야 합니다.");
+    }
+
+    @Test
+    public void testNullContextValueIsSkipped() throws Exception {
+        ProcessHook hook = new ProcessHook("true");
+        Map<String, Object> context = new HashMap<>();
+        context.put("author", null);
+
+        boolean result = hook.run(context);
+        assertTrue(result, "null 값을 가진 컨텍스트 항목은 무시되고 훅은 정상적으로 실행되어야 합니다.");
+    }
+
+    @Test
+    public void testProcessSpawnFailureThrowsIOException() {
+        ProcessHook hook = new ProcessHook("this-binary-definitely-does-not-exist-12345");
+        Map<String, Object> context = new HashMap<>();
+
+        assertThrows(IOException.class, () -> hook.run(context),
+                "존재하지 않는 실행 파일은 프로세스 생성 시 IOException을 던져야 합니다.");
+    }
+
+    @Test
+    public void testInterruptedWaitForWrapsIOException() throws Exception {
+        ProcessHook hook = new ProcessHook(Arrays.asList("sh", "-c", "sleep 2"));
+        Map<String, Object> context = new HashMap<>();
+
+        final Throwable[] thrown = new Throwable[1];
+        Thread runner = new Thread(() -> {
+            try {
+                hook.run(context);
+            } catch (Throwable t) {
+                thrown[0] = t;
+            }
+        });
+        runner.start();
+        Thread.sleep(300);
+        runner.interrupt();
+        runner.join(10_000);
+
+        assertFalse(runner.isAlive(), "인터럽트 이후 훅 실행 스레드는 종료되어야 합니다.");
+        assertNotNull(thrown[0], "인터럽트가 발생하면 예외가 던져져야 합니다.");
+        assertInstanceOf(IOException.class, thrown[0], "InterruptedException은 IOException으로 감싸져야 합니다.");
+        assertInstanceOf(InterruptedException.class, thrown[0].getCause(), "원본 InterruptedException이 원인으로 유지되어야 합니다.");
     }
 }

@@ -47,6 +47,14 @@ public class HgRemoteConnectionFactoryTest {
     }
 
     @Test
+    @DisplayName("file:// URL → HgLocalClient 인스턴스 반환")
+    public void testCreateConnection_fileUrl_returnsHgLocalClient() throws IOException {
+        HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection("file:///tmp/nonexistent-hg4j-repo");
+        assertNotNull(conn);
+        assertInstanceOf(HgLocalClient.class, conn);
+    }
+
+    @Test
     @DisplayName("null URL → IllegalArgumentException 발생")
     public void testCreateConnection_nullUrl_throwsIllegalArgumentException() {
         assertThrows(IllegalArgumentException.class,

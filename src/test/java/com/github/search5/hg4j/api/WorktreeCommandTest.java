@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -53,5 +54,85 @@ public class WorktreeCommandTest {
         );
         assertEquals(2, mainChangelog.getRevisionCount(), "Main repository must instantly see the worktree's commit via shared store.");
         assertArrayEquals(commitNode2, mainChangelog.getIndexRecord(1).getNodeId());
+    }
+
+    @Test
+    public void testCallRejectsWhenNoWorktreeDirSpecified(@TempDir Path tempDir) throws Exception {
+        HgRepository mainRepo = Hg.init().setDirectory(tempDir.resolve("main_repo").toFile()).call();
+
+        WorktreeCommand cmd = new WorktreeCommand(mainRepo);
+
+        assertThrows(IllegalStateException.class, cmd::call);
+    }
+
+    @Test
+    public void testCallRejectsNonEmptyTargetDirectory(@TempDir Path tempDir) throws Exception {
+        HgRepository mainRepo = Hg.init().setDirectory(tempDir.resolve("main_repo").toFile()).call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        assertTrue(worktreeDir.mkdirs());
+        Files.writeString(worktreeDir.toPath().resolve("preexisting.txt"), "already here");
+
+        WorktreeCommand cmd = new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir);
+
+        IOException ex = assertThrows(IOException.class, cmd::call);
+        assertTrue(ex.getMessage().contains("must be empty or non-existent"));
+    }
+
+    @Test
+    public void testCallAcceptsPreexistingEmptyTargetDirectory(@TempDir Path tempDir) throws Exception {
+        HgRepository mainRepo = Hg.init().setDirectory(tempDir.resolve("main_repo").toFile()).call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        assertTrue(worktreeDir.mkdirs());
+
+        HgRepository worktreeRepo = new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).call();
+
+        assertNotNull(worktreeRepo);
+        assertTrue(new File(worktreeDir, ".hg/sharedpath").exists());
+    }
+
+    @Test
+    public void testCallSkipsRequiresCopyWhenMainHasNone(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        assertTrue(new File(mainRepoDir, ".hg").mkdirs());
+        HgRepository mainRepo = new HgRepository(mainRepoDir);
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        HgRepository worktreeRepo = new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).call();
+
+        assertNotNull(worktreeRepo);
+        assertFalse(new File(worktreeDir, ".hg/requires").exists(),
+                "requires must not be copied when the main repository has none");
+    }
+
+    @Test
+    public void testCallDefaultsDirstateWhenMainHasNone(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        assertTrue(new File(mainRepoDir, ".hg").mkdirs());
+        HgRepository mainRepo = new HgRepository(mainRepoDir);
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).call();
+
+        byte[] newDirstate = Files.readAllBytes(new File(worktreeDir, ".hg/dirstate").toPath());
+        assertArrayEquals(new byte[40], newDirstate,
+                "dirstate must default to 40 zero bytes when the main repository has none");
+    }
+
+    @Test
+    public void testCallDefaultsDirstateWhenMainDirstateIsTooShort(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        File mainHgDir = new File(mainRepoDir, ".hg");
+        assertTrue(mainHgDir.mkdirs());
+        Files.write(new File(mainHgDir, "dirstate").toPath(), new byte[]{1, 2, 3});
+        HgRepository mainRepo = new HgRepository(mainRepoDir);
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).call();
+
+        byte[] newDirstate = Files.readAllBytes(new File(worktreeDir, ".hg/dirstate").toPath());
+        assertArrayEquals(new byte[40], newDirstate,
+                "dirstate must default to 40 zero bytes when the main repository's dirstate is shorter than 40 bytes");
     }
 }

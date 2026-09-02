@@ -127,6 +127,27 @@ public class LogCommandTest {
     }
 
     @Test
+    public void testLogCommandMissingSecondAndThirdNewline(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog changelog = repo.getRevlog(clIdx, clDat);
+
+        String manifestHex = "0000000000000000000000000000000000000000";
+
+        // Valid manifest hex and first newline, but no second newline anywhere in the text.
+        changelog.appendRevision((manifestHex + "\nAuthorOnlyNoSecondNewline").getBytes(), -1, -1, new byte[20], new byte[20], 0);
+
+        // Valid manifest hex, author line and second newline, but no third newline.
+        changelog.appendRevision((manifestHex + "\nAuthor\nDateLineNoThirdNewline").getBytes(), -1, -1, new byte[20], new byte[20], 1);
+
+        List<HgCommit> log = new LogCommand(repo).call();
+        assertTrue(log.isEmpty(), "Both malformed commits missing required newlines should be skipped");
+    }
+
+    @Test
     public void testLogCommandTreeFilter(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();

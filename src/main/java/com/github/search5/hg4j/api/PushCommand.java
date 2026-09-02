@@ -194,6 +194,17 @@ public class PushCommand {
                 bundle.fileGroups = new ArrayList<>();
 
                 // 1a. Pack Changelogs
+                // cg1은 각 엔트리의 델타를 "실제 DAG 부모(p1)"가 아니라 "이 그룹 스트림에서 바로
+                // 직전에 패킹된 엔트리"를 기준으로 인코딩한다(mercurial/changegroup.py의
+                // ChangeGroupPacker01, forcedeltaparentprev=True 실측, 2026-09-01; 같은 규칙이
+                // HgLocalClient.getBundle()에는 이미 반영돼 있었지만 이 메서드는 놓치고 있었다).
+                // p1 기준으로 델타를 만들면, 패킹 순서(changelog rev 순서)가 실제 DAG 부모
+                // 체인과 어긋나는 브랜치/머지 커밋을 포함한 push에서 수신측이 엉뚱한 베이스로
+                // 델타를 복원해 콘텐츠가 깨진다 -- appendChangeGroupEntry()의 해시 검증에 걸려
+                // HgCorruptDataException으로 드러난다(머지 커밋 뒤에 이어지는 증분 push로 재현,
+                // 2026-09-02). incremental push(startRev > 0)면 첫 신규 엔트리의 베이스는 양쪽이
+                // 이미 공유하는 마지막 공통 리비전(startRev-1)의 콘텐츠여야 한다.
+                byte[] prevClContent = (startRev > 0) ? changelog.getRevisionContent(startRev - 1) : new byte[0];
                 for (int r = startRev; r < count; r++) {
                     Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
                     ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
@@ -203,22 +214,34 @@ public class PushCommand {
                     clEntry.cs = clRec.getNodeId();
 
                     byte[] content = changelog.getRevisionContent(r);
-                    byte[] baseContent = new byte[0];
-                    if (clRec.getParent1() != -1) {
-                        baseContent = changelog.getRevisionContent(clRec.getParent1());
-                    }
-                    clEntry.delta = Revlog.createDelta(baseContent, content);
+                    clEntry.delta = Revlog.createDelta(prevClContent, content);
                     bundle.changelogEntries.add(clEntry);
+                    prevClContent = content;
                 }
 
                 // 1b. Pack Manifests
                 Revlog manifest = repository.getManifestRevlog();
                 Set<String> affectedFiles = new HashSet<>();
+                // incremental push면 마지막 공통 changelog 리비전(startRev-1)이 가리키는 manifest
+                // 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다(changelog와 동일한 이유).
+                byte[] prevMfContent = new byte[0];
+                if (startRev > 0) {
+                    byte[] prevClRaw = changelog.getRevisionContent(startRev - 1);
+                    String prevClText = new String(prevClRaw, StandardCharsets.UTF_8);
+                    int nl = prevClText.indexOf('\n');
+                    if (nl > 0) {
+                        byte[] prevMfNode = NodeIdUtil.fromHex(prevClText.substring(0, nl).trim().substring(0, 40));
+                        int prevMfRev = manifest.findRevision(prevMfNode);
+                        if (prevMfRev != -1) {
+                            prevMfContent = manifest.getRevisionContent(prevMfRev);
+                        }
+                    }
+                }
                 for (int r = startRev; r < count; r++) {
                     byte[] clContent = changelog.getRevisionContent(r);
                     String clText = new String(clContent, StandardCharsets.UTF_8);
                     String[] clLines = clText.split("\n");
-                    
+
                     // Track affected files in this push range
                     for (int i = 3; i < clLines.length; i++) {
                         String line = clLines[i].trim();
@@ -238,12 +261,9 @@ public class PushCommand {
                     mfEntry.cs = changelog.getIndexRecord(r).getNodeId();
 
                     byte[] content = manifest.getRevisionContent(mfRev);
-                    byte[] baseContent = new byte[0];
-                    if (mfRec.getParent1() != -1) {
-                        baseContent = manifest.getRevisionContent(mfRec.getParent1());
-                    }
-                    mfEntry.delta = Revlog.createDelta(baseContent, content);
+                    mfEntry.delta = Revlog.createDelta(prevMfContent, content);
                     bundle.manifestEntries.add(mfEntry);
+                    prevMfContent = content;
                 }
 
                 // 1c. Pack Filelogs
@@ -255,6 +275,15 @@ public class PushCommand {
                     Revlog fl = repository.getRevlog(flIdx, flDat);
                     List<ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
 
+                    // incremental push면 이미 공유된 마지막 filelog 리비전(linkRev < startRev 중
+                    // 가장 최근 것)의 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다.
+                    byte[] prevFlContent = new byte[0];
+                    for (int i = fl.getRevisionCount() - 1; i >= 0; i--) {
+                        if (fl.getIndexRecord(i).getLinkRev() < startRev) {
+                            prevFlContent = fl.getRawRevisionContent(i);
+                            break;
+                        }
+                    }
                     for (int i = 0; i < fl.getRevisionCount(); i++) {
                         Revlog.IndexRecord flRec = fl.getIndexRecord(i);
                         // Only pack revision if its linkRev is in our push range
@@ -271,12 +300,9 @@ public class PushCommand {
                             // HgCensoredContentException -- real hg's own changegroup packer
                             // likewise always uses rawdata()/`_chunk()`, never the decoded text.
                             byte[] content = fl.getRawRevisionContent(i);
-                            byte[] baseContent = new byte[0];
-                            if (flRec.getParent1() != -1) {
-                                baseContent = fl.getRawRevisionContent(flRec.getParent1());
-                            }
-                            flEntry.delta = Revlog.createDelta(baseContent, content);
+                            flEntry.delta = Revlog.createDelta(prevFlContent, content);
                             flEntries.add(flEntry);
+                            prevFlContent = content;
                         }
                     }
 

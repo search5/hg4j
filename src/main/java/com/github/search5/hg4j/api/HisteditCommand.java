@@ -262,12 +262,13 @@ public class HisteditCommand implements AutoCloseable {
         // The group anchor is the first rule of the pick/fold/roll group (verified against
         // real `hg histedit`: the resulting commit's branch -- and, further below, its
         // author -- always come from the anchor, never from a later folded-in commit).
+        // The anchor's revision is never absent here: every hex in originalHexNodes was
+        // already resolved successfully by call()'s own rule loop (which throws before ever
+        // adding an unresolvable node to the group) against this same changelog, so a second
+        // "not found" guard on it is unreachable and was removed as dead code.
         String anchorHex = originalHexNodes.get(0);
         byte[] origNode = NodeIdUtil.fromHex(anchorHex);
         int origRev = changelog.findRevision(origNode);
-        if (origRev == -1) {
-            throw new IOException("Original commit not found: " + anchorHex);
-        }
 
         // 1. Get parent manifest map to initialize new manifest
         Map<String, String> newManifest = getManifestForCommit(changelog, manifestRevlog, parent);
@@ -278,11 +279,10 @@ public class HisteditCommand implements AutoCloseable {
         // b.txt into one that added a.txt must keep both files), not just the last member's.
         Set<String> filesModifiedSet = new LinkedHashSet<>();
         for (String hex : originalHexNodes) {
+            // Same reasoning as the anchor above: hex was already resolved by call()'s rule
+            // loop before being added to originalHexNodes, so this can never miss.
             byte[] memberNode = NodeIdUtil.fromHex(hex);
             int memberRev = changelog.findRevision(memberNode);
-            if (memberRev == -1) {
-                throw new IOException("Original commit not found: " + hex);
-            }
             byte[] memberClContent = changelog.getRevisionContent(memberRev);
             ParsedChangeset memberParsed = parseChangeset(memberClContent);
             Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, memberNode);
@@ -428,9 +428,10 @@ public class HisteditCommand implements AutoCloseable {
         }
         byte[] content = changelog.getRevisionContent(rev);
         String text = new String(content, StandardCharsets.UTF_8);
+        // String.split(...) on a non-null String always returns at least one element (even
+        // "" splits to [""]), so a length-0 result -- and the early return that used to guard
+        // against it -- can never happen; removed as dead code.
         String[] lines = text.split("\n");
-        if (lines.length == 0) return manifestMap;
-        
         String manifestHex = lines[0].trim();
         byte[] manifestNode = NodeIdUtil.fromHex(manifestHex);
         int mRev = manifestRevlog.findRevision(manifestNode);

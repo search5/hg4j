@@ -99,7 +99,7 @@ public class SubrepoCommand {
                     // Recursively clone/initialize subrepo in target path from configured URL
                     File subrepoDir = new File(repository.getDirectory(), path);
                     if (!subrepoDir.exists()) {
-                        if (url != null && !url.isEmpty()) {
+                        if (!url.isEmpty()) {
                             Hg.cloneRepository()
                               .setSource(url)
                               .setDirectory(subrepoDir)

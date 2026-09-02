@@ -72,6 +72,67 @@ public class HgLfsTest {
     }
 
     @Test
+    public void testLfsPointerConstructorNullVersionThrows() {
+        assertThrows(IllegalArgumentException.class, () -> new HgLfsPointer(null, OID_64, 4));
+    }
+
+    @Test
+    public void testLfsPointerConstructorNullOidThrows() {
+        assertThrows(IllegalArgumentException.class, () -> new HgLfsPointer("v1", null, 4));
+    }
+
+    @Test
+    public void testLfsPointerConstructorNegativeSizeThrows() {
+        assertThrows(IllegalArgumentException.class, () -> new HgLfsPointer("v1", OID_64, -1));
+    }
+
+    @Test
+    public void testLfsPointerParsingSkipsBlankAndUnrecognizedLines() throws IOException {
+        String pointerText = "\n" +
+                "  \n" +
+                "version https://git-lfs.github.com/spec/v1\n" +
+                "\n" +
+                "some-unrecognized-line\n" +
+                "oid sha256:7b1a2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b\n" +
+                "size 42\n";
+
+        HgLfsPointer pointer = HgLfsPointer.parse(pointerText.getBytes(StandardCharsets.UTF_8));
+        assertEquals("https://git-lfs.github.com/spec/v1", pointer.getVersion());
+        assertEquals("7b1a2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b", pointer.getOid());
+        assertEquals(42L, pointer.getSize());
+    }
+
+    @Test
+    public void testLfsPointerParsingInvalidSizeFormatThrows() {
+        String pointerText = "version https://git-lfs.github.com/spec/v1\n" +
+                "oid sha256:7b1a2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b\n" +
+                "size not-a-number\n";
+
+        HgCorruptDataException ex = assertThrows(HgCorruptDataException.class,
+                () -> HgLfsPointer.parse(pointerText.getBytes(StandardCharsets.UTF_8)));
+        assertTrue(ex.getMessage().contains("Invalid size format in LFS pointer"));
+        assertNotNull(ex.getCause());
+    }
+
+    @Test
+    public void testLfsPointerParsingMissingVersionThrows() {
+        String pointerText = "oid sha256:7b1a2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b\n" +
+                "size 42\n";
+
+        assertThrows(HgCorruptDataException.class,
+                () -> HgLfsPointer.parse(pointerText.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    public void testLfsPointerParsingMissingOidThrows() {
+        String pointerText = "version https://git-lfs.github.com/spec/v1\n" +
+                "size 42\n";
+
+        assertThrows(HgCorruptDataException.class,
+                () -> HgLfsPointer.parse(pointerText.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
     public void testLfsManagerCachingScenario() throws Exception {
         HgLfsManager manager = new HgLfsManager(tempDir);
         assertNotNull(manager.getLfsObjectsDir());

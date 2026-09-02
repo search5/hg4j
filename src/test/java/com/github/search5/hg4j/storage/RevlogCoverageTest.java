@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -912,5 +913,173 @@ public class RevlogCoverageTest {
         Arrays.fill(oversized, (byte) 7);
         Revlog.IndexRecord truncated = new Revlog.IndexRecord(0, 0, 0, 1, 1, 0, 0, -1, -1, oversized);
         assertEquals(20, truncated.getNodeId().length);
+    }
+
+    // ---------------------------------------------------------------------
+    // clearCache() swallowing a failed reload
+    // ---------------------------------------------------------------------
+
+    @Test
+    public void testClearCacheSwallowsCorruptIndexReloadException(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("clearcache-corrupt.i").toFile();
+        File datFile = tempDir.resolve("clearcache-corrupt.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+        byte[] p = new byte[20];
+        revlog.appendRevision("hello\n".getBytes(StandardCharsets.UTF_8), -1, -1, p, p, 0);
+        assertEquals(1, revlog.getRevisionCount());
+
+        // Truncate the on-disk index to an invalid (too-short) length after the Revlog instance
+        // already holds a valid in-memory index -- clearCache()'s reload (RevlogIndex.clearCache()
+        // -> loadIndex()) must then throw HgCorruptDataException internally, which Revlog.clearCache()
+        // is documented to swallow rather than propagate.
+        Files.write(idxFile.toPath(), new byte[10]);
+
+        assertDoesNotThrow(revlog::clearCache);
+        assertEquals(0, revlog.getRevisionCount(),
+                "A failed reload resets the in-memory index to empty rather than leaving stale state");
+    }
+
+    // ---------------------------------------------------------------------
+    // rev==0 inline write path of appendRevision/appendRawRevision/appendOptimizedRevision
+    // ---------------------------------------------------------------------
+
+    /**
+     * hg4j never creates a brand-new inline revlog on its own (see {@link
+     * #buildInlineSingleRevision}'s javadoc: inline-ness is only ever discovered by loading an
+     * existing inline-format file, which by construction already has at least one revision) -- so
+     * the {@code rev == 0 && inline} branch of each append method's write path can't actually be
+     * reached through the public API. It's still real production code guarding real on-disk format
+     * correctness, so it's exercised here by forcing the private {@code inline} field directly (the
+     * same white-box technique {@code RevlogTest#testDecompressHunkHeuristic} already uses via
+     * reflection), then verified end-to-end by reopening the file through a brand new,
+     * non-reflective {@code Revlog} instance.
+     */
+    private static void forceInline(Revlog revlog) throws Exception {
+        Field f = Revlog.class.getDeclaredField("inline");
+        f.setAccessible(true);
+        f.setBoolean(revlog, true);
+    }
+
+    @Test
+    public void testAppendRevisionEncodesInlineFormatFlagsForFreshRevisionZero(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("forcedinline.i").toFile();
+        File datFile = tempDir.resolve("forcedinline.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+        forceInline(revlog);
+
+        byte[] p = new byte[20];
+        byte[] content0 = "Forced inline revision zero\n".getBytes(StandardCharsets.UTF_8);
+        revlog.appendRevision(content0, -1, -1, p, p, 0);
+        assertEquals(1, revlog.getRevisionCount());
+
+        Revlog reopened = new Revlog(idxFile, datFile);
+        assertTrue(reopened.getIndex().isInline(),
+                "The written rev0 record's format flags must actually encode inline=1");
+        assertEquals(1, reopened.getRevisionCount());
+        assertArrayEquals(content0, reopened.getRevisionContent(0));
+    }
+
+    @Test
+    public void testAppendRawRevisionEncodesInlineFormatFlagsForFreshRevisionZero(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("forcedinlineraw.i").toFile();
+        File datFile = tempDir.resolve("forcedinlineraw.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+        forceInline(revlog);
+
+        byte[] p = new byte[20];
+        byte[] node0 = new byte[20];
+        Arrays.fill(node0, (byte) 0x66);
+        byte[] rawContent0 = "Forced inline raw revision zero\n".getBytes(StandardCharsets.UTF_8);
+        revlog.appendRawRevision(rawContent0, node0, -1, -1, p, p, 0);
+        assertEquals(1, revlog.getRevisionCount());
+
+        Revlog reopened = new Revlog(idxFile, datFile);
+        assertTrue(reopened.getIndex().isInline());
+        assertArrayEquals(rawContent0, reopened.getRevisionContent(0));
+        assertArrayEquals(node0, Arrays.copyOf(reopened.getIndexRecord(0).getNodeId(), 20));
+    }
+
+    @Test
+    public void testAppendOptimizedRevisionEncodesInlineFormatFlagsForFreshRevisionZero(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("forcedinlineopt.i").toFile();
+        File datFile = tempDir.resolve("forcedinlineopt.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+        forceInline(revlog);
+
+        byte[] p = new byte[20];
+        byte[] nodeId0 = new byte[32];
+        Arrays.fill(nodeId0, (byte) 0x77);
+        byte[] content0 = "Forced inline optimized revision zero\n".getBytes(StandardCharsets.UTF_8);
+        revlog.appendOptimizedRevision(content0, nodeId0, -1, -1, p, p, 0);
+        assertEquals(1, revlog.getRevisionCount());
+
+        Revlog reopened = new Revlog(idxFile, datFile);
+        assertTrue(reopened.getIndex().isInline());
+        assertArrayEquals(content0, reopened.getRevisionContent(0));
+        assertArrayEquals(Arrays.copyOf(nodeId0, 20), Arrays.copyOf(reopened.getIndexRecord(0).getNodeId(), 20));
+    }
+
+    // ---------------------------------------------------------------------
+    // Defensive baseRev==-1 guard in the chain-length probe loops
+    // ---------------------------------------------------------------------
+
+    @Test
+    public void testChainLengthWalkBreaksOnDefensiveBaseRevMinusOne(@TempDir Path tempDir) throws Exception {
+        // Every append path's chain-length probe walks parent1's baseRev pointers to bound delta
+        // chain depth. Real hg4j writes never produce a record whose baseRev is -1 (full/self and
+        // delta/parent-rev are the only cases it ever emits), but the loop still guards against it
+        // defensively (`currRec.getBaseRev() == -1`) in case of on-disk corruption. Exercised here
+        // via a hand-crafted corrupt rev0, isolated behind a "00changelog.i" filename so the
+        // metadata-log rule (always fulltext) keeps every append below from ever needing to *read*
+        // rev0's content -- which would otherwise recurse into the same corrupt baseRev inside
+        // getRawRevisionContent's own (separate) chain walk and fail for unrelated reasons.
+        File idxFile = tempDir.resolve("00changelog.i").toFile();
+        File datFile = tempDir.resolve("00changelog.d").toFile();
+
+        byte[] node0 = new byte[32];
+        Arrays.fill(node0, 0, 20, (byte) 0xAA);
+        ByteBuffer rec0 = ByteBuffer.allocate(64);
+        rec0.putLong(0x0000000100000000L); // version 1, non-inline
+        rec0.putInt(0); // compLen
+        rec0.putInt(0); // uncompLen
+        rec0.putInt(-1); // baseRev = -1 (the defensive case under test)
+        rec0.putInt(0); // linkRev
+        rec0.putInt(-1); // parent1
+        rec0.putInt(-1); // parent2
+        rec0.put(node0);
+        Files.write(idxFile.toPath(), rec0.array());
+
+        Revlog revlog = new Revlog(idxFile, datFile);
+        assertEquals(1, revlog.getRevisionCount());
+        byte[] node0Short = Arrays.copyOf(node0, 20);
+        byte[] zero = new byte[20];
+
+        byte[] content1 = "changelog rev via appendRevision\n".getBytes(StandardCharsets.UTF_8);
+        revlog.appendRevision(content1, 0, -1, node0Short, zero, 1);
+        assertEquals(1, revlog.getIndexRecord(1).getBaseRev());
+        assertArrayEquals(content1, revlog.getRevisionContent(1));
+
+        byte[] content2 = "changelog rev via appendChangeGroupEntry\n".getBytes(StandardCharsets.UTF_8);
+        byte[] delta2 = Revlog.createSimpleDelta(new byte[0], content2);
+        byte[] node2 = nodeHash(node0Short, zero, content2);
+        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+        entry.node = node2;
+        entry.p1 = node0Short;
+        entry.p2 = zero;
+        entry.deltabase = zero; // explicit all-zero deltabase avoids reading rev0's (unreadable) content
+        entry.delta = delta2;
+        revlog.appendChangeGroupEntry(entry, 2);
+        assertEquals(2, revlog.getIndexRecord(2).getBaseRev());
+        assertEquals(0, revlog.getIndexRecord(2).getParent1());
+        assertArrayEquals(content2, revlog.getRevisionContent(2));
+
+        byte[] content3 = "changelog rev via appendOptimizedRevision\n".getBytes(StandardCharsets.UTF_8);
+        byte[] nodeId3 = new byte[32];
+        Arrays.fill(nodeId3, (byte) 0x99);
+        revlog.appendOptimizedRevision(content3, nodeId3, 0, -1, node0Short, zero, 3);
+        assertEquals(3, revlog.getIndexRecord(3).getBaseRev());
+        assertArrayEquals(content3, revlog.getRevisionContent(3));
+
+        assertEquals(4, revlog.getRevisionCount());
     }
 }

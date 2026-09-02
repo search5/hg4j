@@ -1,15 +1,25 @@
 package com.github.search5.hg4j.api;
 
+import com.github.search5.hg4j.dirstate.Dirstate;
+import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import com.github.search5.hg4j.lib.HgRepository;
+import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -35,6 +45,25 @@ public class HisteditCommandCoverageTest {
                 .filter(c -> message.equals(c.getMessage()))
                 .findFirst()
                 .orElse(null);
+    }
+
+    private static Object invokePrivate(Object target, String name, Class<?>[] types, Object... args) throws Exception {
+        Method m = HisteditCommand.class.getDeclaredMethod(name, types);
+        m.setAccessible(true);
+        try {
+            return m.invoke(target, args);
+        } catch (InvocationTargetException e) {
+            if (e.getCause() instanceof Exception) {
+                throw (Exception) e.getCause();
+            }
+            throw e;
+        }
+    }
+
+    private static Object getField(Object target, String name) throws Exception {
+        Field f = target.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(target);
     }
 
     @Test
@@ -532,5 +561,230 @@ public class HisteditCommandCoverageTest {
                 "The only file, whose only commit was dropped, must be gone from the working copy");
         assertTrue(NodeIdUtil.isAllZero(repo.getDirstate().getParent1()),
                 "Dropping the entire history must leave the working copy parented on the null revision");
+    }
+
+    // A description made only of a newline is non-empty (passes CommitCommand's own
+    // message.isEmpty() guard) but Mercurial's own changelog storage collapses the
+    // resulting trailing empty tokens entirely once written -- exactly the "no blank
+    // separator found at all" case documented on parseChangeset. Verified by inspection of
+    // the raw changelog bytes: "manifest\nauthor\ndate 0\na.txt\n\n\n" round-trips through
+    // String.split("\n") as just 4 lines, with the blank separator and the message itself
+    // both silently dropped as trailing empty tokens.
+    @Test
+    public void pickingACommitWithACollapsedEmptyDescriptionProducesAnEmptyMessage(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File a = new File(repoDir, "a.txt");
+        Files.writeString(a.toPath(), "Content A");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("\n").setAuthor("dev").call();
+        String hexA = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+
+        new HisteditCommand(repo)
+                .addRule(HisteditCommand.Action.PICK, hexA)
+                .call();
+
+        List<HgCommit> log = new LogCommand(repo).call();
+        String newTipHex = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+        HgCommit picked = log.stream()
+                .filter(c -> NodeIdUtil.toHex(c.getNodeId().getBytes()).equals(newTipHex))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Picked commit not found in log"));
+        assertEquals("", picked.getMessage(),
+                "A collapsed empty description must round-trip as an empty message, not resurrect stray content");
+    }
+
+    // Every prior test's commit message is a single line, so parseChangeset's message-joining
+    // loop never exercises its "prepend a newline before this line" branch. A two-line
+    // message forces it on the second line.
+    @Test
+    public void pickingACommitWithAMultiLineMessagePreservesEveryLine(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File a = new File(repoDir, "a.txt");
+        Files.writeString(a.toPath(), "Content A");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Summary line\nDetail line").setAuthor("dev").call();
+        String hexA = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+
+        new HisteditCommand(repo)
+                .addRule(HisteditCommand.Action.PICK, hexA)
+                .call();
+
+        List<HgCommit> log = new LogCommand(repo).call();
+        String newTipHex = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+        HgCommit picked = log.stream()
+                .filter(c -> NodeIdUtil.toHex(c.getNodeId().getBytes()).equals(newTipHex))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Picked commit not found in log"));
+        assertEquals("Summary line\nDetail line", picked.getMessage(),
+                "Every line of a multi-line message must survive a pick unchanged");
+    }
+
+    // A dirstate whose parent points at a revision the changelog has never heard of (stale
+    // or externally-corrupted dirstate) must not abort histedit outright: getManifestForCommit
+    // treats an unresolvable "old" commit node as an empty tree, so the post-histedit cleanup
+    // step (which diffs the old and new manifests to know what to delete from the working
+    // directory) simply has nothing recorded to remove.
+    @Test
+    public void histeditWithStaleDirstateParentTreatsMissingOldManifestAsEmpty(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File a = new File(repoDir, "a.txt");
+        Files.writeString(a.toPath(), "Content A");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit A").setAuthor("dev").call();
+        String hexA = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+
+        Dirstate d = repo.getDirstate();
+        byte[] bogusParent = new byte[20];
+        Arrays.fill(bogusParent, (byte) 0x42);
+        d.setParents(bogusParent, new byte[20]);
+        repo.writeDirstate(d);
+
+        new HisteditCommand(repo)
+                .addRule(HisteditCommand.Action.PICK, hexA)
+                .call();
+
+        assertTrue(new File(repoDir, "a.txt").exists(),
+                "The new tip's own file must survive even when the pre-histedit manifest could not be resolved");
+    }
+
+    // Folding in a commit whose filelog has been physically deleted out from under the
+    // store (corruption, or a concurrent gc) must fail with a clear
+    // HgRepositoryNotFoundException, and -- like every other mid-flight failure -- roll the
+    // whole histedit back rather than leaving a partially-rewritten changelog behind.
+    @Test
+    public void foldingAFileWhoseFilelogWasDeletedFailsAndRollsBackCleanly(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File a = new File(repoDir, "a.txt");
+        Files.writeString(a.toPath(), "Content A");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit A").setAuthor("dev").call();
+        String hexA = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+
+        File b = new File(repoDir, "b.txt");
+        Files.writeString(b.toPath(), "Content B");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit B").setAuthor("dev").call();
+        String hexB = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "b.txt");
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        assertTrue(flIdx.exists(), "Precondition: b.txt's filelog must exist before we delete it");
+        Files.delete(flIdx.toPath());
+        Files.delete(flDat.toPath());
+        repo.clearRevlogCache();
+
+        long clSizeBefore = new File(repo.getStoreDir(), "00changelog.i").length();
+
+        assertThrows(HgRepositoryNotFoundException.class, () ->
+                new HisteditCommand(repo)
+                        .addRule(HisteditCommand.Action.PICK, hexA)
+                        .addRule(HisteditCommand.Action.FOLD, hexB)
+                        .call());
+
+        assertEquals(clSizeBefore, new File(repo.getStoreDir(), "00changelog.i").length(),
+                "A histedit that fails mid-flight must still roll the changelog back to its original size");
+        assertFalse(new File(repo.getStoreDir(), "journal").exists());
+    }
+
+    // Same failure family as above, but the filelog is present and readable -- just missing
+    // the specific revision the manifest says it should contain (a truncated/rolled-back
+    // filelog). This must fail with HgRevisionNotFoundException, distinct from the
+    // "file missing entirely" case.
+    @Test
+    public void foldingAFileWhoseFilelogWasTruncatedFailsAndRollsBackCleanly(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File a = new File(repoDir, "a.txt");
+        Files.writeString(a.toPath(), "Content A");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit A").setAuthor("dev").call();
+        String hexA = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+
+        File b = new File(repoDir, "b.txt");
+        Files.writeString(b.toPath(), "Content B");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit B").setAuthor("dev").call();
+        String hexB = NodeIdUtil.toHex(repo.getDirstate().getParent1());
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "b.txt");
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        assertTrue(flIdx.length() > 0, "Precondition: b.txt's filelog must have real content before truncation");
+        Files.write(flIdx.toPath(), new byte[0]);
+        Files.write(flDat.toPath(), new byte[0]);
+        repo.clearRevlogCache();
+
+        assertThrows(HgRevisionNotFoundException.class, () ->
+                new HisteditCommand(repo)
+                        .addRule(HisteditCommand.Action.PICK, hexA)
+                        .addRule(HisteditCommand.Action.FOLD, hexB)
+                        .call());
+
+        assertFalse(new File(repo.getStoreDir(), "journal").exists());
+    }
+
+    // parseChangeset is defensive against changelog content with fewer than 2 lines (no
+    // author line at all): every real caller in this class only ever feeds it content that
+    // CommitCommand/HisteditCommand themselves wrote (always manifest+author+date at a
+    // minimum), so this branch is unreachable from call() and is exercised directly instead.
+    @Test
+    public void parseChangesetDefensivelyHandlesContentWithNoAuthorOrFileLines(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        HisteditCommand cmd = new HisteditCommand(repo);
+
+        Object parsed = invokePrivate(cmd, "parseChangeset", new Class<?>[]{byte[].class},
+                (Object) "onlyoneline".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals("unknown", getField(parsed, "author"),
+                "With no author line present, the author must default to \"unknown\"");
+        assertEquals(List.of(), getField(parsed, "filesModified"),
+                "With no file lines present, the file list must be empty, not throw");
+        assertEquals("", getField(parsed, "message"),
+                "With no blank separator ever found, the message must default to empty");
+    }
+
+    // getManifestForCommit must treat a changelog/manifest revlog pairing that has gone out
+    // of sync (the changelog names a manifest node the manifest revlog never recorded --
+    // e.g. a manifest revlog restored from an older backup than its changelog) as "no
+    // manifest data available" rather than fail. No real call() caller can trigger this
+    // (this class's own changelog and manifest revlogs are always written together), so it
+    // is exercised directly by pairing a real commit's changelog with an unrelated,
+    // completely empty manifest revlog from a second repository.
+    @Test
+    public void getManifestForCommitReturnsEmptyWhenManifestRevlogNeverRecordedTheNode(
+            @TempDir Path repoDirPath, @TempDir Path otherRepoDirPath) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(repoDirPath.toFile()).call();
+        File a = new File(repoDirPath.toFile(), "a.txt");
+        Files.writeString(a.toPath(), "Content A");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("Commit A").setAuthor("dev").call();
+        byte[] commitNode = repo.getDirstate().getParent1();
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog changelog = repo.getRevlog(clIdx, clDat);
+
+        HgRepository otherRepo = Hg.init().setDirectory(otherRepoDirPath.toFile()).call();
+        File otherMfIdx = new File(otherRepo.getStoreDir(), "00manifest.i");
+        File otherMfDat = new File(otherRepo.getStoreDir(), "00manifest.d");
+        Revlog neverWrittenManifestRevlog = otherRepo.getRevlog(otherMfIdx, otherMfDat);
+
+        HisteditCommand cmd = new HisteditCommand(repo);
+        @SuppressWarnings("unchecked")
+        Map<String, String> result = (Map<String, String>) invokePrivate(cmd, "getManifestForCommit",
+                new Class<?>[]{Revlog.class, Revlog.class, byte[].class},
+                changelog, neverWrittenManifestRevlog, commitNode);
+
+        assertTrue(result.isEmpty(),
+                "An unresolvable manifest node must yield an empty manifest, not throw or return stale data");
     }
 }

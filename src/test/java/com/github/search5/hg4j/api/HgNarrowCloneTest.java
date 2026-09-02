@@ -57,4 +57,53 @@ public class HgNarrowCloneTest {
         String requiresText = Files.readString(requiresFile.toPath(), StandardCharsets.UTF_8);
         assertTrue(requiresText.contains("narrowspec"));
     }
+
+    @Test
+    public void testNarrowCloneWithExcludePathsAndIgnoredNulls() throws Exception {
+        File srcRepoDir = new File(tempDir, "src_repo2");
+        File destRepoDir = new File(tempDir, "narrow_repo2");
+
+        HgRepository srcRepo = Hg.init().setDirectory(srcRepoDir).call();
+        try (Hg hgSrc = Hg.wrap(srcRepo)) {
+            File f1 = new File(srcRepoDir, "src/main/A.java");
+            f1.getParentFile().mkdirs();
+            Files.writeString(f1.toPath(), "Class A");
+
+            File f2 = new File(srcRepoDir, "docs/readme.txt");
+            f2.getParentFile().mkdirs();
+            Files.writeString(f2.toPath(), "Doc readme");
+
+            hgSrc.add().addFile("src/main/A.java").addFile("docs/readme.txt").call();
+            hgSrc.commit().setAuthor("Tester").setMessage("init commit").call();
+        }
+
+        Hg hgNarrow = Hg.narrowClone()
+                .setSource(srcRepoDir.getAbsolutePath())
+                .setDirectory(destRepoDir)
+                .addIncludePath("src/")
+                .addIncludePath(null)
+                .addExcludePath("docs/")
+                .addExcludePath(null)
+                .call();
+
+        assertNotNull(hgNarrow);
+
+        File narrowSpecFile = new File(destRepoDir, ".hg/narrowspec");
+        String specText = Files.readString(narrowSpecFile.toPath(), StandardCharsets.UTF_8);
+        assertTrue(specText.contains("[excludes]"));
+        assertTrue(specText.contains("docs/"));
+    }
+
+    @Test
+    public void testCallThrowsWhenSourceIsNull() {
+        File destRepoDir = new File(tempDir, "narrow_repo3");
+        NarrowCloneCommand cmd = Hg.narrowClone().setDirectory(destRepoDir);
+        assertThrows(IllegalStateException.class, cmd::call);
+    }
+
+    @Test
+    public void testCallThrowsWhenDirectoryIsNull() {
+        NarrowCloneCommand cmd = Hg.narrowClone().setSource("http://example.invalid/repo");
+        assertThrows(IllegalStateException.class, cmd::call);
+    }
 }

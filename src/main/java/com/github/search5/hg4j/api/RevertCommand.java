@@ -85,10 +85,7 @@ public class RevertCommand {
                 
                 Map<String, String> manifestMap = repository.getManifestAtCommit(targetNodeId);
                 String nodeWithFlags = manifestMap.get(file);
-                String flags = "";
-                if (nodeWithFlags != null) {
-                    flags = nodeWithFlags.substring(Math.min(40, nodeWithFlags.length()));
-                }
+                String flags = nodeWithFlags.substring(Math.min(40, nodeWithFlags.length()));
                 if (flags.contains("l")) {
                     mode = 0120000;
                 } else if (flags.contains("x")) {
@@ -104,7 +101,7 @@ public class RevertCommand {
 
             File diskFile = new File(repository.getDirectory(), file);
 
-            if (tracked && targetContent != null) {
+            if (tracked) {
                 diskFile.getParentFile().mkdirs();
                 if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
                     Files.delete(diskFile.toPath());

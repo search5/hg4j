@@ -1077,4 +1077,402 @@ public class HgRemoteClientCoverageTest {
         assertDoesNotThrow(() -> client.setProxy(null));
         }
     }
+
+    // ==========================================================
+    // MercurialChunkedInputStream -- clean full EOF (dropped connection with zero bytes at all,
+    // as opposed to the already-covered "a few bytes of the length prefix, then EOF" case).
+    // ==========================================================
+
+    @Test
+    public void mercurialChunkedInputStreamCleanEofWithNoDataReturnsMinusOne() throws Exception {
+        java.lang.reflect.Constructor<?> constructor = Class.forName(
+                "com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
+                .getDeclaredConstructor(InputStream.class);
+        constructor.setAccessible(true);
+        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(new byte[0]));
+
+        assertEquals(-1, chunkedStream.read(), "A stream that ends with zero bytes (no terminal chunk marker at all) must read as clean EOF");
+    }
+
+    // ==========================================================
+    // unwrapResponseStream -- application/mercurial-0.2 framing edge cases not yet covered:
+    // a completely empty stream, and the real "zlib"/"deflate" named-compression branch (distinct
+    // from the raw-zlib auto-detect tested for application/mercurial-0.1).
+    // ==========================================================
+
+    @Test
+    public void unwrapMercurial02WithCompletelyEmptyStreamReturnsInputUnchanged() throws Exception {
+        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
+        InputStream unwrapped = invokeUnwrap(client, new ByteArrayInputStream(new byte[0]), "application/mercurial-0.2");
+        assertEquals(-1, unwrapped.read());
+        }
+    }
+
+    @Test
+    public void unwrapMercurial02WithZlibCompressionNameInflatesChunkedPayload() throws Exception {
+        assertMercurial02CompressedPayloadRoundTrips("zlib");
+    }
+
+    @Test
+    public void unwrapMercurial02WithDeflateCompressionNameInflatesChunkedPayload() throws Exception {
+        assertMercurial02CompressedPayloadRoundTrips("deflate");
+    }
+
+    private void assertMercurial02CompressedPayloadRoundTrips(String compressionName) throws Exception {
+        String plaintext = "lookup getbundle changegroupsubset\n";
+        ByteArrayOutputStream deflated = new ByteArrayOutputStream();
+        try (DeflaterOutputStream dos = new DeflaterOutputStream(deflated)) {
+            dos.write(plaintext.getBytes(StandardCharsets.UTF_8));
+        }
+        byte[] deflatedBytes = deflated.toByteArray();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] nameBytes = compressionName.getBytes(StandardCharsets.US_ASCII);
+        out.write(nameBytes.length);
+        out.write(nameBytes);
+        // Real application/mercurial-0.2 chunked framing: 4-byte big-endian chunk length, then the
+        // chunk payload; a terminal zero-length chunk ends the stream.
+        int len = deflatedBytes.length;
+        out.write((len >> 24) & 0xFF);
+        out.write((len >> 16) & 0xFF);
+        out.write((len >> 8) & 0xFF);
+        out.write(len & 0xFF);
+        out.write(deflatedBytes);
+        out.write(new byte[]{0, 0, 0, 0});
+
+        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
+        InputStream unwrapped = invokeUnwrap(client, new ByteArrayInputStream(out.toByteArray()), "application/mercurial-0.2");
+        byte[] decoded = unwrapped.readAllBytes();
+
+        assertEquals(plaintext, new String(decoded, StandardCharsets.UTF_8), "compression=" + compressionName);
+        }
+    }
+
+    // ==========================================================
+    // push() -- the v1->v2 delegate branch normally always throws (real wireprotocol v2 has no
+    // push/unbundle command, see allPublicMethodsDelegateToV2AfterAutoUpgrade above), so the
+    // "return delegate.push(...)" statement itself can only ever be observed as *entered*, never
+    // as *completed*, against a real delegate. Substituting a stub delegate via reflection on the
+    // private `delegate` field exercises the same production branch through to a normal return.
+    // ==========================================================
+
+    private static class SucceedingHgRemoteClientV2Stub extends HgRemoteClientV2 {
+        SucceedingHgRemoteClientV2Stub(String url) {
+            super(url);
+        }
+
+        @Override
+        public String push(byte[] bundleBytes, List<String> heads) {
+            return "stubbed-ok:" + bundleBytes.length + ":" + heads;
+        }
+    }
+
+    @Test
+    public void pushDelegatesToV2AndReturnsSuccessfully() throws Exception {
+        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
+        java.lang.reflect.Field delegateField = HgRemoteClient.class.getDeclaredField("delegate");
+        delegateField.setAccessible(true);
+        delegateField.set(client, new SucceedingHgRemoteClientV2Stub("http://127.0.0.1/"));
+
+        String result = client.push(new byte[]{1, 2, 3}, List.of("head1"));
+
+        assertEquals("stubbed-ok:3:[head1]", result);
+        }
+    }
+
+    // ==========================================================
+    // push() -- remaining v1 direct-path branches: null heads, Basic auth header wiring, and the
+    // forceTls+https "check passed" branch (a separate code path from executeGetBinary's and
+    // executePostBinary's own copies of the same check).
+    // ==========================================================
+
+    @Test
+    public void pushWithNullHeadsOmitsHeadsParam() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final String[] capturedQuery = {null};
+        try {
+            server.createContext("/", exchange -> {
+                capturedQuery[0] = exchange.getRequestURI().getQuery();
+                exchange.getRequestBody().readAllBytes();
+                byte[] resp = "ok\n".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, resp.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(resp);
+                }
+            });
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            String result = client.push(new byte[]{1, 2, 3}, null);
+
+            assertEquals("ok\n", result);
+            assertNotNull(capturedQuery[0]);
+            assertFalse(capturedQuery[0].contains("heads="), "heads param must be omitted when heads is null. Query was: " + capturedQuery[0]);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void pushSendsBasicAuthHeaderWhenCredentialsSet() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final String[] authHeader = {null};
+        try {
+            server.createContext("/", exchange -> {
+                authHeader[0] = exchange.getRequestHeaders().getFirst("Authorization");
+                exchange.getRequestBody().readAllBytes();
+                byte[] resp = "ok\n".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, resp.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(resp);
+                }
+            });
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.setCredentials("dave", "pw456");
+            client.push(new byte[]{1, 2, 3}, List.of("head1"));
+
+            assertNotNull(authHeader[0]);
+            String expected = "Basic " + java.util.Base64.getEncoder().encodeToString("dave:pw456".getBytes(StandardCharsets.UTF_8));
+            assertEquals(expected, authHeader[0]);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void pushWithHttpsForceTlsSkipsSecurityCheckAndAttemptsRealConnection() {
+        try (HgRemoteClient client = new HgRemoteClient("https://127.0.0.1:1/repo")) {
+        client.setForceTls(true);
+        // Port 1 is unused (nothing listens there): the forceTls+https check must pass silently
+        // (no SecurityException), and the subsequent real connection attempt must fail with a
+        // plain IOException instead.
+        Exception e = assertThrows(Exception.class, () -> client.push(new byte[]{1, 2, 3}, List.of("head1")));
+        assertFalse(e instanceof SecurityException, "https:// URL with forceTls=true must not be rejected by the security check");
+        }
+    }
+
+    @Test
+    public void pushUnauthorizedWithCredentialsThrowsHgAuthExceptionMentioningTheUsername() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> exchange.sendResponseHeaders(401, -1));
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.setCredentials("erin", "pw789");
+            HgAuthException ex = assertThrows(HgAuthException.class,
+                    () -> client.push(new byte[]{1, 2, 3}, List.of("head1")));
+            assertTrue(ex.getMessage().contains("erin"), "Message was: " + ex.getMessage());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ==========================================================
+    // executePostBinary() -- remaining branch gaps: forceTls+https "check passed" branch, partial
+    // credentials (username set, password null), and the status==403 (rather than 401) auth path
+    // with credentials set (covers the "username != null" side of the exception-message ternary).
+    // ==========================================================
+
+    @Test
+    public void getChangegroupWithHttpsForceTlsSkipsSecurityCheckAndAttemptsRealConnection() {
+        try (HgRemoteClient client = new HgRemoteClient("https://127.0.0.1:1/repo")) {
+        client.setForceTls(true);
+        Exception e = assertThrows(Exception.class, () -> client.getChangegroup(List.of("abc")));
+        assertFalse(e instanceof SecurityException, "https:// URL with forceTls=true must not be rejected by the security check");
+        }
+    }
+
+    @Test
+    public void executePostBinaryWithPartialCredentialsOmitsAuthHeader() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final String[] authHeader = {"unset"};
+        try {
+            server.createContext("/", exchange -> {
+                authHeader[0] = exchange.getRequestHeaders().getFirst("Authorization");
+                exchange.getRequestBody().readAllBytes();
+                byte[] resp = new byte[]{0, 0, 0, 0};
+                exchange.sendResponseHeaders(200, resp.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(resp);
+                }
+            });
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.setCredentials("onlyuser", null);
+            client.getChangegroup(List.of("root1"));
+
+            assertNull(authHeader[0], "Authorization header must not be sent when password is null");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void executePostBinaryForbiddenWithCredentialsThrowsHgAuthExceptionMentioningTheUsername() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> exchange.sendResponseHeaders(403, -1));
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.setCredentials("frank", "pw000");
+            HgAuthException ex = assertThrows(HgAuthException.class,
+                    () -> client.pushkey("bookmarks", "k", "", "v"));
+            assertTrue(ex.getMessage().contains("frank"), "Message was: " + ex.getMessage());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ==========================================================
+    // executeGetBinary() -- the status==403 (rather than 401) auth path with credentials set
+    // (covers the "username != null" side of the exception-message ternary for the GET path;
+    // status==401 with no credentials is already covered by
+    // HgRemoteMockAndServeExtensionTest#testHttp401ThrowsAuthException).
+    // ==========================================================
+
+    @Test
+    public void getHeadsForbiddenWithCredentialsThrowsHgAuthExceptionMentioningTheUsername() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> exchange.sendResponseHeaders(403, -1));
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.setCredentials("grace", "pw111");
+            HgAuthException ex = assertThrows(HgAuthException.class, client::getHeads);
+            assertTrue(ex.getMessage().contains("grace"), "Message was: " + ex.getMessage());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ==========================================================
+    // getCapabilities()/getHeads() with an empty server response -- the "!resp.trim().isEmpty()"
+    // false branch (the redundant "resp != null" half of this check was dead code -- new
+    // String(bytes, ...) never returns null -- and was removed from the production method).
+    // ==========================================================
+
+    @Test
+    public void getCapabilitiesWithEmptyResponseReturnsEmptyList() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> exchange.sendResponseHeaders(200, -1));
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            List<String> caps = client.getCapabilities();
+            assertTrue(caps.isEmpty());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void getHeadsWithEmptyResponseReturnsEmptyList() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> exchange.sendResponseHeaders(200, -1));
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            List<String> heads = client.getHeads();
+            assertTrue(heads.isEmpty());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void getHeadsWithLeadingWhitespaceSkipsTheResultingEmptyToken() throws Exception {
+        // resp.split("\\s+") on a string with LEADING whitespace produces a leading empty-string
+        // token (Java's split() only strips trailing empty strings) -- exercises the
+        // "!clean.isEmpty()" false branch that a plain trailing-whitespace response never hits.
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        try {
+            server.createContext("/", exchange -> {
+                byte[] body = "  realhead1234567890\n".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(body);
+                }
+            });
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            List<String> heads = client.getHeads();
+            assertEquals(List.of("realhead1234567890"), heads);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ==========================================================
+    // listKeys() -- entirely untested v1 direct path: real tab-separated parsing plus the
+    // "line without a tab" skip branch.
+    // ==========================================================
+
+    @Test
+    public void listKeysParsesTabSeparatedEntriesAndSkipsLinesWithoutTab() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final String[] capturedQuery = {null};
+        try {
+            server.createContext("/", exchange -> {
+                capturedQuery[0] = exchange.getRequestURI().getQuery();
+                byte[] body = "bookmark1\tabc123\nmalformed-line-with-no-tab\nbookmark2\tdef456\n"
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(body);
+                }
+            });
+            server.start();
+
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            Map<String, String> keys = client.listKeys("bookmarks");
+
+            assertNotNull(capturedQuery[0]);
+            assertTrue(capturedQuery[0].contains("cmd=listkeys"));
+            assertTrue(capturedQuery[0].contains("namespace=bookmarks"));
+            assertEquals(2, keys.size(), "The malformed line without a tab must be skipped");
+            assertEquals("abc123", keys.get("bookmark1"));
+            assertEquals("def456", keys.get("bookmark2"));
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ==========================================================
+    // tryEstablishV2FromDiscoveryResponse() -- the missing quarter of the credentials-copy
+    // branch: username set but password null (the other 3 combinations -- both null, both set --
+    // are already covered above).
+    // ==========================================================
+
+    @Test
+    public void tryEstablishV2WithUsernameButNoPasswordDoesNotCopyCredentialsToDelegate() throws Exception {
+        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
+        client.setCredentials("onlyuser", null);
+
+        Map<String, Object> descriptor = new LinkedHashMap<>();
+        descriptor.put("apibase", "api/");
+        descriptor.put("apis", Map.of(Wire2Commands.NAMESPACE, Map.of()));
+        byte[] bytes = Cbor.encode(descriptor);
+
+        assertTrue(invokeTryEstablishV2(client, bytes));
+        }
+    }
 }

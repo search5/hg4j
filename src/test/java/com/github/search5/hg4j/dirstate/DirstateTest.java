@@ -417,4 +417,127 @@ public class DirstateTest {
         // Should write atomic without crashing, ignoring corrupted docket
         assertDoesNotThrow(() -> d.write(dirstateFile));
     }
+
+    @Test
+    public void testEntryTimeValidationAndNanos() {
+        // Negative mtime must be rejected (left-hand side of the OR check).
+        assertThrows(IllegalArgumentException.class, () -> new Dirstate.Entry('n', 0644, 10, -1));
+
+        // mtime beyond unsigned 32-bit range must be rejected (right-hand side of the OR check).
+        assertThrows(IllegalArgumentException.class, () -> new Dirstate.Entry('n', 0644, 10, 0x100000000L));
+
+        // Boundary value (max unsigned 32-bit) is valid, and the nanos accessor is exercised.
+        Dirstate.Entry entry = new Dirstate.Entry('n', 0644, 10, 0xFFFFFFFFL, 123);
+        assertEquals(0xFFFFFFFFL, entry.getTime());
+        assertEquals(123, entry.getNanos());
+    }
+
+    @Test
+    public void testSetParentsNullNodeId() {
+        Dirstate dirstate = new Dirstate();
+        NodeId n = NodeId.fromHex("abcdef0123456789abcdef0123456789abcdef01");
+
+        assertThrows(IllegalArgumentException.class, () -> dirstate.setParents((NodeId) null, n));
+        assertThrows(IllegalArgumentException.class, () -> dirstate.setParents(n, (NodeId) null));
+    }
+
+    @Test
+    public void testReadNegativePathLen() {
+        Dirstate dirstate = new Dirstate();
+        byte[] bytes = new byte[40 + 17];
+        ByteBuffer buf = ByteBuffer.wrap(bytes);
+        buf.position(40);
+        buf.put((byte) 'n'); // state
+        buf.putInt(0); // mode
+        buf.putInt(0); // size
+        buf.putInt(0); // time
+        buf.putInt(-1); // negative pathLen must be rejected up front
+        assertThrows(IOException.class, () -> dirstate.read(bytes));
+    }
+
+    @Test
+    public void testReadCopySourceEntryV1() throws IOException {
+        Dirstate dirstate = new Dirstate();
+        byte[] header = new byte[40];
+        String rawPath = "dest.txt\0src.txt";
+        byte[] pathBytes = rawPath.getBytes(StandardCharsets.UTF_8);
+
+        ByteBuffer entryBuf = ByteBuffer.allocate(17 + pathBytes.length);
+        entryBuf.put((byte) 'n');
+        entryBuf.putInt(0644);
+        entryBuf.putInt(10);
+        entryBuf.putInt(100);
+        entryBuf.putInt(pathBytes.length);
+        entryBuf.put(pathBytes);
+
+        byte[] full = new byte[header.length + entryBuf.capacity()];
+        System.arraycopy(header, 0, full, 0, header.length);
+        System.arraycopy(entryBuf.array(), 0, full, header.length, entryBuf.capacity());
+
+        dirstate.read(full);
+        assertEquals(1, dirstate.getEntries().size());
+        assertNotNull(dirstate.getEntries().get("dest.txt"));
+        assertEquals("src.txt", dirstate.getCopyMap().get("dest.txt"));
+    }
+
+    @Test
+    public void testReadFileNotExists(@TempDir Path tempDir) {
+        Dirstate dirstate = new Dirstate();
+        File notExist = tempDir.resolve("does_not_exist").toFile();
+        assertThrows(IOException.class, () -> dirstate.read(notExist));
+    }
+
+    @Test
+    public void testReadFileTooSmallForV2Magic(@TempDir Path tempDir) throws IOException {
+        File f = tempDir.resolve("dirstate").toFile();
+        // Fewer than 12 bytes: the dirstate-v2 magic check itself must short-circuit to false,
+        // then the v1 fallback rejects it for being under the 40-byte header minimum.
+        Files.write(f.toPath(), new byte[5]);
+        Dirstate dirstate = new Dirstate();
+        assertThrows(IOException.class, () -> dirstate.read(f));
+    }
+
+    @Test
+    public void testSerializeWithCopySource() throws IOException {
+        Dirstate dirstate = new Dirstate();
+        dirstate.addEntry("dest.txt", new Dirstate.Entry('n', 0644, 10, 100));
+        dirstate.addCopy("dest.txt", "src.txt");
+
+        byte[] serialized = dirstate.serialize();
+
+        Dirstate parsed = new Dirstate();
+        parsed.read(serialized);
+        assertEquals(1, parsed.getEntries().size());
+        assertNotNull(parsed.getEntries().get("dest.txt"));
+        assertEquals("src.txt", parsed.getCopyMap().get("dest.txt"));
+    }
+
+    @Test
+    public void testWriteV2WithNonV2OldDocket(@TempDir Path tempDir) throws IOException {
+        File dirstateFile = tempDir.resolve("dirstate").toFile();
+        // Existing docket is >= 12 bytes but does not carry the dirstate-v2 magic,
+        // so the old-uid lookup must take the "magic mismatch" branch and skip cleanup.
+        Files.write(dirstateFile.toPath(), new byte[50]);
+
+        Dirstate d = new Dirstate();
+        d.setV2(true);
+        d.addEntry("file1.txt", new Dirstate.Entry('n', 0644, 10, 1000L));
+        assertDoesNotThrow(() -> d.write(dirstateFile));
+        assertTrue(dirstateFile.exists());
+    }
+
+    @Test
+    public void testWriteV2CorruptedOldDocketWithValidMagicTriggersCatch(@TempDir Path tempDir) throws IOException {
+        File dirstateFile = tempDir.resolve("dirstate").toFile();
+        // Exactly the 12-byte magic and nothing else: the magic check passes, but reading the
+        // uid fields afterward runs off the end of the buffer, exercising the catch(Exception) path.
+        byte[] v2Magic = "dirstate-v2\n".getBytes(StandardCharsets.US_ASCII);
+        Files.write(dirstateFile.toPath(), v2Magic);
+
+        Dirstate d = new Dirstate();
+        d.setV2(true);
+        d.addEntry("file1.txt", new Dirstate.Entry('n', 0644, 10, 1000L));
+        assertDoesNotThrow(() -> d.write(dirstateFile));
+        assertTrue(dirstateFile.exists());
+    }
 }

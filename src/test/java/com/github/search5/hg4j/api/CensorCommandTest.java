@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import com.github.search5.hg4j.errors.HgValidationException;
 
 public class CensorCommandTest {
 
@@ -102,5 +103,93 @@ public class CensorCommandTest {
 
         assertThrows(HgRepositoryNotFoundException.class, () ->
                 new CensorCommand(repo).setFile("nope.txt").setRevision("f".repeat(40)).call());
+    }
+
+    @Test
+    public void constructorRejectsANullRepository() {
+        assertThrows(IllegalArgumentException.class, () -> new CensorCommand(null));
+    }
+
+    @Test
+    public void censorThrowsWhenFilePathIsNull(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        assertThrows(HgValidationException.class, () ->
+                new CensorCommand(repo).setRevision("f".repeat(40)).call());
+    }
+
+    @Test
+    public void censorThrowsWhenFilePathIsEmpty(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        assertThrows(HgValidationException.class, () ->
+                new CensorCommand(repo).setFile("").setRevision("f".repeat(40)).call());
+    }
+
+    @Test
+    public void censorThrowsWhenRevisionIsNull(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        assertThrows(HgValidationException.class, () ->
+                new CensorCommand(repo).setFile("a.txt").call());
+    }
+
+    @Test
+    public void censorThrowsWhenRevisionIsEmpty(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        assertThrows(HgValidationException.class, () ->
+                new CensorCommand(repo).setFile("a.txt").setRevision("").call());
+    }
+
+    @Test
+    public void censorRecordsACustomTombstoneMessageInTheRawRevisionContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "secret1\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+
+        File flIdx = filelogIndex(repo, "a.txt");
+        File flDat = filelogData(flIdx);
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        byte[] originalNode = filelog.getIndexRecord(0).getNodeId().clone();
+
+        new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode))
+                .setTombstone("court order 1234").call();
+
+        Revlog reread = repo.getRevlog(flIdx, flDat);
+        assertTrue(reread.isCensored(0));
+        assertArrayEquals(CensorCommand.buildTombstone("court order 1234"), reread.getRawRevisionContent(0),
+                "Tombstone must carry the caller-supplied message using real hg's packmeta format");
+    }
+
+    @Test
+    public void setTombstoneWithNullResetsToTheEmptyDefault(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "secret1\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+
+        File flIdx = filelogIndex(repo, "a.txt");
+        File flDat = filelogData(flIdx);
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        byte[] originalNode = filelog.getIndexRecord(0).getNodeId().clone();
+
+        new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode))
+                .setTombstone("some reason").setTombstone(null).call();
+
+        Revlog reread = repo.getRevlog(flIdx, flDat);
+        assertArrayEquals(CensorCommand.buildTombstone(""), reread.getRawRevisionContent(0),
+                "A null tombstone must reset to the empty-string default, matching real hg");
     }
 }

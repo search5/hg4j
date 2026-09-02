@@ -145,8 +145,6 @@ public class StatusCommand {
                 if (workingState == 'a') {
                     status.getAdded().add(path);
                 }
-            } else if (inParent && !inWorking) {
-                status.getRemoved().add(path);
             } else if (inParent && inWorking) {
                 if (workingState == 'r') {
                     status.getRemoved().add(path);

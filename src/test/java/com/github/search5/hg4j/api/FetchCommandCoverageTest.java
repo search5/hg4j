@@ -386,6 +386,180 @@ public class FetchCommandCoverageTest {
         assertFalse(new File(destRepo.getStoreDir(), "journal").exists());
     }
 
+    @Test
+    public void applyBundleReusesExistingTreemanifestFilesAcrossTwoIncrementalApplies(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("source").toFile();
+        File destDir = tempDir.resolve("dest").toFile();
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+        Files.writeString(new File(srcDir, "a.txt").toPath(), "v1");
+        new AddCommand(srcRepo).call();
+        new CommitCommand(srcRepo).setAuthor("dev").setMessage("v1").call();
+
+        ChangegroupParser.ChangegroupBundle bundle1 = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        List<ChangegroupParser.ManifestGroup> groups1 = new ArrayList<>();
+        ChangegroupParser.ManifestGroup root1 = new ChangegroupParser.ManifestGroup();
+        root1.path = "";
+        root1.entries = bundle1.manifestEntries;
+        groups1.add(root1);
+        ChangegroupParser.ManifestGroup nested1 = new ChangegroupParser.ManifestGroup();
+        nested1.path = "subdir";
+        nested1.entries = bundle1.manifestEntries;
+        groups1.add(nested1);
+        bundle1.manifestGroups = groups1;
+
+        HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+        FetchCommand fetchCmd = new FetchCommand(destRepo);
+        List<byte[]> imported1 = fetchCmd.applyBundle(bundle1);
+        assertEquals(1, imported1.size());
+
+        String nestedIdxRel = NodeIdUtil.encodeFname("meta/subdir/00manifest.i");
+        String nestedDatRel = NodeIdUtil.encodeFname("meta/subdir/00manifest.d");
+        File nestedIdx = new File(destRepo.getStoreDir(), nestedIdxRel);
+        File nestedDat = new File(destRepo.getStoreDir(), nestedDatRel);
+        long nestedIdxLenAfterFirst = nestedIdx.length();
+        assertTrue(nestedIdxLenAfterFirst > 0, "sanity: first apply must have created a non-empty nested manifest index");
+
+        Files.writeString(new File(srcDir, "a.txt").toPath(), "v2");
+        byte[] commitNode2 = new CommitCommand(srcRepo).setAuthor("dev").setMessage("v2").call();
+
+        ChangegroupParser.ChangegroupBundle fullBundle2 = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        assertEquals(2, fullBundle2.manifestEntries.size(), "sanity: manifest must have gained a second revision");
+
+        ChangegroupParser.ChangegroupBundle bundle2 = new ChangegroupParser.ChangegroupBundle();
+        bundle2.changelogEntries = new ArrayList<>(List.of(fullBundle2.changelogEntries.get(1)));
+        bundle2.manifestEntries = new ArrayList<>();
+        bundle2.fileGroups = new ArrayList<>();
+        List<ChangegroupParser.ManifestGroup> groups2 = new ArrayList<>();
+        ChangegroupParser.ManifestGroup root2 = new ChangegroupParser.ManifestGroup();
+        root2.path = "";
+        root2.entries = new ArrayList<>(List.of(fullBundle2.manifestEntries.get(1)));
+        groups2.add(root2);
+        ChangegroupParser.ManifestGroup nested2 = new ChangegroupParser.ManifestGroup();
+        nested2.path = "subdir";
+        nested2.entries = new ArrayList<>(List.of(fullBundle2.manifestEntries.get(1)));
+        groups2.add(nested2);
+        bundle2.manifestGroups = groups2;
+
+        List<byte[]> imported2 = fetchCmd.applyBundle(bundle2);
+        assertEquals(1, imported2.size());
+        assertArrayEquals(commitNode2, imported2.get(0));
+
+        Revlog nestedRevlog = new Revlog(nestedIdx, nestedDat);
+        assertEquals(2, nestedRevlog.getRevisionCount(),
+                "Second apply must add a second revision to the already-existing nested manifest revlog, not recreate it");
+    }
+
+    @Test
+    public void applyBundleRollsBackWhenATreemanifestGroupEntryHasAnUnresolvableLinkCommit(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("source").toFile();
+        File destDir = tempDir.resolve("dest").toFile();
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+        Files.writeString(new File(srcDir, "a.txt").toPath(), "hello");
+        new AddCommand(srcRepo).call();
+        new CommitCommand(srcRepo).setAuthor("dev").setMessage("v1").call();
+
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        List<ChangegroupParser.ManifestGroup> groups = new ArrayList<>();
+        ChangegroupParser.ManifestGroup nested = new ChangegroupParser.ManifestGroup();
+        nested.path = "subdir";
+        List<ChangegroupParser.ChangeGroupEntry> corrupted = new ArrayList<>(bundle.manifestEntries);
+        corrupted.get(0).cs = NodeIdUtil.fromHex("9".repeat(40));
+        nested.entries = corrupted;
+        groups.add(nested);
+        bundle.manifestGroups = groups;
+
+        HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+        FetchCommand fetchCmd = new FetchCommand(destRepo);
+
+        assertThrows(HgCorruptDataException.class, () -> fetchCmd.applyBundle(bundle));
+
+        Revlog cl = new Revlog(new File(destRepo.getStoreDir(), "00changelog.i"), new File(destRepo.getStoreDir(), "00changelog.d"));
+        assertEquals(0, cl.getRevisionCount(), "Changelog must be rolled back when a treemanifest group entry's link commit is unresolvable");
+        assertFalse(new File(destRepo.getStoreDir(), "journal").exists());
+    }
+
+    @Test
+    public void applyBundleSucceedsEvenWhenWritingUndoInfoFails(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("source").toFile();
+        File destDir = tempDir.resolve("dest").toFile();
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+        Files.writeString(new File(srcDir, "a.txt").toPath(), "hello");
+        new AddCommand(srcRepo).call();
+        byte[] commitNode = new CommitCommand(srcRepo).setAuthor("dev").setMessage("v1").call();
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+
+        HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+        File undoDir = new File(destRepo.getStoreDir(), "undo");
+        assertTrue(undoDir.mkdirs());
+        Files.writeString(new File(undoDir, "keep.txt").toPath(), "not empty, so undoFile deletion fails");
+
+        FetchCommand fetchCmd = new FetchCommand(destRepo);
+        List<byte[]> imported = fetchCmd.applyBundle(bundle);
+
+        assertEquals(1, imported.size(), "A failure while writing rollback undo info must not fail the whole apply");
+        assertArrayEquals(commitNode, imported.get(0));
+        assertTrue(undoDir.isDirectory(),
+                "The pre-existing non-empty 'undo' directory must be left in place since it could not be deleted");
+    }
+
+    @Test
+    public void applyBundleTruncatesAlreadyPopulatedStoreFilesBackToTheirPreexistingSizeOnFailure(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("source").toFile();
+        File destDir = tempDir.resolve("dest").toFile();
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+        Files.writeString(new File(srcDir, "a.txt").toPath(), "v1");
+        new AddCommand(srcRepo).call();
+        new CommitCommand(srcRepo).setAuthor("dev").setMessage("v1").call();
+
+        HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+        FetchCommand fetchCmd = new FetchCommand(destRepo);
+        List<byte[]> imported1 = fetchCmd.applyBundle(HgTestUtils.createMockBundleFromRepo(srcRepo));
+        assertEquals(1, imported1.size());
+
+        File clIdx = new File(destRepo.getStoreDir(), "00changelog.i");
+        File clDat = new File(destRepo.getStoreDir(), "00changelog.d");
+        File mfIdx = new File(destRepo.getStoreDir(), "00manifest.i");
+        File mfDat = new File(destRepo.getStoreDir(), "00manifest.d");
+        long clIdxLenBefore = clIdx.length();
+        long clDatLenBefore = clDat.length();
+        long mfIdxLenBefore = mfIdx.length();
+        long mfDatLenBefore = mfDat.length();
+        assertTrue(clIdxLenBefore > 0 && mfIdxLenBefore > 0, "sanity: store files from the first apply must be non-empty");
+
+        Files.writeString(new File(srcDir, "b.txt").toPath(), "new file");
+        new AddCommand(srcRepo).call();
+        new CommitCommand(srcRepo).setAuthor("dev").setMessage("v2").call();
+
+        ChangegroupParser.ChangegroupBundle fullBundle2 = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        assertEquals(2, fullBundle2.changelogEntries.size());
+        assertEquals(2, fullBundle2.manifestEntries.size());
+
+        ChangegroupParser.ChangegroupBundle incremental = new ChangegroupParser.ChangegroupBundle();
+        incremental.changelogEntries = new ArrayList<>(List.of(fullBundle2.changelogEntries.get(1)));
+        incremental.manifestEntries = new ArrayList<>(List.of(fullBundle2.manifestEntries.get(1)));
+        incremental.manifestGroups = new ArrayList<>();
+        ChangegroupParser.FileGroup bGroup = fullBundle2.fileGroups.stream()
+                .filter(fg -> "b.txt".equals(fg.path)).findFirst().orElseThrow();
+        // Corrupt the link commit AFTER the changelog/manifest entries above have already been
+        // captured -- so the changelog and manifest revlogs have already grown on disk by the
+        // time this throws, forcing the rollback path to truncate them back down rather than
+        // just delete freshly-created (zero-size) files, which is what every other rollback
+        // test in this suite exercises.
+        bGroup.entries.get(0).cs = NodeIdUtil.fromHex("9".repeat(40));
+        incremental.fileGroups = new ArrayList<>(List.of(bGroup));
+
+        assertThrows(HgCorruptDataException.class, () -> fetchCmd.applyBundle(incremental));
+
+        assertEquals(clIdxLenBefore, clIdx.length(), "changelog index must be truncated back to its pre-existing non-zero size");
+        assertEquals(clDatLenBefore, clDat.length(), "changelog data must be truncated back to its pre-existing non-zero size");
+        assertEquals(mfIdxLenBefore, mfIdx.length(), "manifest index must be truncated back to its pre-existing non-zero size");
+        assertEquals(mfDatLenBefore, mfDat.length(), "manifest data must be truncated back to its pre-existing non-zero size");
+
+        Revlog cl = new Revlog(clIdx, clDat);
+        assertEquals(1, cl.getRevisionCount(), "Only the first commit must remain in the changelog after rollback");
+        assertFalse(new File(destRepo.getStoreDir(), "journal").exists());
+    }
+
     /**
      * Exercises the "clonebundle imported something AND the catch-up pull also found new
      * commits" branch of {@code mergeClonebundleResults} directly via reflection (it's a private

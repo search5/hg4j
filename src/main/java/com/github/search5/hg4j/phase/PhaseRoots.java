@@ -161,7 +161,9 @@ public class PhaseRoots {
     }
 
     /**
-     * Updates the Phase of a specific node and synchronizes it to the file immediately (functional interface based).
+     * Updates the Phase of a specific node and synchronizes it to the file immediately. A phase
+     * root is recorded/cleared directly by node identity -- it never needs to walk ancestors, so
+     * {@code parentLookup} is accepted only for API symmetry with {@link #getPhase} and is unused.
      */
     public synchronized void setPhase(NodeId node, Phase phase, Function<NodeId, NodeId[]> parentLookup) throws IOException {
         if (node == null || node.isNull()) {
@@ -177,25 +179,12 @@ public class PhaseRoots {
     }
 
     /**
-     * Updates the Phase of a specific node and synchronizes it to the file immediately (dependent on Changelog Revlog).
+     * Updates the Phase of a specific node and synchronizes it to the file immediately. {@code
+     * changelog} is accepted only for API symmetry with {@link #getPhase(NodeId, Revlog)} (same
+     * reason as the {@link #setPhase(NodeId, Phase, Function)} overload) and is unused.
      */
     public void setPhase(NodeId node, Phase phase, Revlog changelog) throws IOException {
-        setPhase(node, phase, n -> {
-            int rev = changelog.findRevision(n.getBytes());
-            if (rev == -1) return new NodeId[0];
-            Revlog.IndexRecord rec = changelog.getIndexRecord(rev);
-            int p1 = rec.getParent1();
-            int p2 = rec.getParent2();
-
-            List<NodeId> list = new ArrayList<>();
-            if (p1 != -1) {
-                list.add(new NodeId(changelog.getIndexRecord(p1).getNodeId()));
-            }
-            if (p2 != -1) {
-                list.add(new NodeId(changelog.getIndexRecord(p2).getNodeId()));
-            }
-            return list.toArray(new NodeId[0]);
-        });
+        setPhase(node, phase, (Function<NodeId, NodeId[]>) null);
     }
 
     public boolean isPublic(NodeId node, Function<NodeId, NodeId[]> parentLookup) {

@@ -459,11 +459,11 @@ public class Hg implements AutoCloseable {
             }
             
             // 3. Local repository configuration
-            if (this.repository != null && this.repository.getHgDir() != null) {
-                File localHgrc = new File(this.repository.getHgDir(), "hgrc");
-                if (localHgrc.exists()) {
-                    cfg.load(localHgrc);
-                }
+            // (this.repository is never null: the only constructor path is the private one,
+            // reached exclusively via wrap()/open(), both of which reject a null repository)
+            File localHgrc = new File(this.repository.getHgDir(), "hgrc");
+            if (localHgrc.exists()) {
+                cfg.load(localHgrc);
             }
         } catch (IOException e) {
             // ignore

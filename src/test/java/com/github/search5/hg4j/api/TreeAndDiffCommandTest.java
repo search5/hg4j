@@ -237,6 +237,47 @@ public class TreeAndDiffCommandTest {
     }
 
     @Test
+    public void testTreeCommandRevisionOutOfRange(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        assertNotNull(repo);
+
+        File fa = new File(repoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Hello Range\n");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Rev 0").call();
+
+        // targetRev >= changelog.getRevisionCount() -> should return empty list (line 81/82)
+        List<TreeCommand.TreeEntry> tooHigh = new TreeCommand(repo).setRevision(999).call();
+        assertTrue(tooHigh.isEmpty());
+
+        // targetRev < 0 (but not the sentinel -1, which is handled separately as "default to tip")
+        List<TreeCommand.TreeEntry> negative = new TreeCommand(repo).setRevision(-5).call();
+        assertTrue(negative.isEmpty());
+    }
+
+    @Test
+    public void testTreeCommandSymlinkMode(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        assertNotNull(repo);
+
+        File target = new File(repoDir, "target.txt");
+        Files.writeString(target.toPath(), "Symlink Target\n");
+
+        File link = new File(repoDir, "link.txt");
+        Files.createSymbolicLink(link.toPath(), Path.of("target.txt"));
+
+        new AddCommand(repo).addFile("target.txt").addFile("link.txt").call();
+        new CommitCommand(repo).setAuthor("tester <test@example.com>").setMessage("Add symlink").call();
+
+        List<TreeCommand.TreeEntry> tree = new TreeCommand(repo).setRevision(0).call();
+        TreeCommand.TreeEntry linkEntry = tree.stream().filter(e -> e.getPath().equals("link.txt")).findFirst().orElse(null);
+        assertNotNull(linkEntry);
+        assertEquals(0120000, linkEntry.getMode());
+    }
+
+    @Test
     public void testDiffCommandTreeFilter(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();

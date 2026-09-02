@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -351,5 +353,209 @@ public class ShelveCommandCoverageTest {
         assertEquals("new line one\nnew line two\n", Files.readString(modified.toPath()));
         assertEquals("added line one\nadded line two\n", Files.readString(added.toPath()));
         assertFalse(removed.exists());
+    }
+
+    @Test
+    public void shelveHandlesARemovedEntryWhenChangelogExistsButHasNoRevisionsYet(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repository = new InitCommand().setDirectory(repoDir).call();
+
+        // 00changelog.i present on disk (unlike the "no changelog file at all" case) but with
+        // zero revisions in it, so getBaselineContent()'s p1-not-found fallback
+        // (lastRev = getRevisionCount() - 1) must itself still be negative, exercising the
+        // "still nothing to fall back to" guard rather than the "no changelog file" early exit.
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        Files.write(clIdx.toPath(), new byte[0]);
+
+        Dirstate dirstate = repository.getDirstate();
+        dirstate.addEntry("ghost.txt", new Dirstate.Entry('r', 0, 0, 0));
+        repository.writeDirstate(dirstate);
+
+        new ShelveCommand(repository).setName("empty-changelog").call();
+
+        File shelvedDir = new File(repository.getHgDir(), "shelved");
+        assertTrue(new File(shelvedDir, "empty-changelog.state").exists());
+        String patch = Files.readString(new File(shelvedDir, "empty-changelog.patch").toPath(), StandardCharsets.UTF_8);
+        assertTrue(patch.contains("@@ -1,0 +0,0 @@"),
+                "An existing but revision-less changelog must fall back to an empty baseline, not crash");
+    }
+
+    @Test
+    public void shelveFallsBackToEmptyBaselineWhenCommittedNodeIdCannotBeFoundInTheFilelog(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repository = new InitCommand().setDirectory(repoDir).call();
+
+        File removed = new File(repoDir, "removed.txt");
+        Files.writeString(removed.toPath(), "original content");
+        File other = new File(repoDir, "other.txt");
+        Files.writeString(other.toPath(), "totally different content, different length");
+        new AddCommand(repository).call();
+        new CommitCommand(repository).setMessage("baseline").call();
+
+        // Splice a sibling file's filelog onto removed.txt's on-disk filelog. The manifest
+        // still names removed.txt's ORIGINAL node id, but the physical filelog backing that
+        // path no longer contains a revision with that id -- getBaselineContent() must
+        // recognize the lookup miss (NodeIdUtil.findRevisionByNodeId returning -1) and return
+        // null rather than mis-reading an unrelated revision.
+        File flIdx = filelogIndex(repository, "removed.txt");
+        File flDat = filelogData(flIdx);
+        File otherFlIdx = filelogIndex(repository, "other.txt");
+        File otherFlDat = filelogData(otherFlIdx);
+        Files.copy(otherFlIdx.toPath(), flIdx.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        Files.copy(otherFlDat.toPath(), flDat.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        repository.clearRevlogCache();
+
+        new RemoveCommand(repository).setFile("removed.txt").setForce(true).call();
+
+        new ShelveCommand(repository).setName("swapped-filelog").call();
+
+        File shelvedDir = new File(repository.getHgDir(), "shelved");
+        assertTrue(new File(shelvedDir, "swapped-filelog.state").exists());
+        String patch = Files.readString(new File(shelvedDir, "swapped-filelog.patch").toPath(), StandardCharsets.UTF_8);
+        assertTrue(patch.contains("@@ -1,0 +0,0 @@"),
+                "Baseline must fall back to empty when the committed node id can no longer be found in the filelog");
+    }
+
+    @Test
+    public void shelveTextDiffToleratesCorruptedFilelogDataForAModifiedFile(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repository = new InitCommand().setDirectory(repoDir).call();
+
+        File modified = new File(repoDir, "modified.txt");
+        Files.writeString(modified.toPath(), "original content");
+        new AddCommand(repository).call();
+        new CommitCommand(repository).setMessage("baseline").call();
+
+        // Same corruption technique as the removed-file case above, but this time the corrupted
+        // file is being MODIFIED rather than removed, exercising generateDiff()'s separate
+        // try/catch around getBaselineContent() for the 'm'/'n' branch (the 'r' branch has its
+        // own, already-covered catch).
+        Files.deleteIfExists(filelogData(filelogIndex(repository, "modified.txt")).toPath());
+
+        Files.writeString(modified.toPath(), "new content");
+        Dirstate dirstate = repository.getDirstate();
+        dirstate.addEntry("modified.txt", new Dirstate.Entry('m', 0644, 11, System.currentTimeMillis() / 1000));
+        repository.writeDirstate(dirstate);
+
+        IOException ex = assertThrows(IOException.class,
+                () -> new ShelveCommand(repository).setName("corrupt-mod").call());
+        assertTrue(ex.getMessage().contains("does not exist"));
+
+        File patchFile = new File(repository.getHgDir(), "shelved/corrupt-mod.patch");
+        String patch = Files.readString(patchFile.toPath(), StandardCharsets.UTF_8);
+        assertTrue(patch.contains("@@ -1,0 +1,1 @@"),
+                "Diff header must reflect the empty fallback baseline for the modified file, not crash");
+    }
+
+    @Test
+    public void stripRevisionsIgnoresACorruptedFilelogListedInFncache(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repository = new InitCommand().setDirectory(repoDir).call();
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "baseline content");
+        new AddCommand(repository).call();
+        new CommitCommand(repository).setMessage("baseline").call();
+
+        Files.writeString(file.toPath(), "modified content");
+        Dirstate dirstate = repository.getDirstate();
+        dirstate.addEntry("a.txt", new Dirstate.Entry('m', 0644, 17, System.currentTimeMillis() / 1000));
+        repository.writeDirstate(dirstate);
+
+        // Register a bogus fncache entry that points at a directory instead of a real filelog
+        // index. stripRevisionsFrom()'s per-filelog truncation loop (run as part of a normal
+        // shelve) must swallow the resulting failure to open it and still finish shelving the
+        // real, unrelated change.
+        File fncacheFile = new File(repository.getStoreDir(), "fncache");
+        List<String> existing = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
+        File bogusIdx = new File(repository.getStoreDir(), "data/bogus.i");
+        bogusIdx.mkdirs();
+        List<String> updated = new ArrayList<>(existing);
+        updated.add("data/bogus.i");
+        Files.write(fncacheFile.toPath(), String.join("\n", updated).getBytes(StandardCharsets.UTF_8));
+
+        new ShelveCommand(repository).setName("bogus-fncache").call();
+
+        assertEquals("baseline content", Files.readString(file.toPath()),
+                "Shelve must still succeed and revert the working copy even though an unrelated fncache entry is corrupted");
+        assertTrue(new File(repository.getHgDir(), "shelved/bogus-fncache.state").exists());
+
+        new ShelveCommand(repository).setName("bogus-fncache").setUnshelve(true).call();
+        assertEquals("modified content", Files.readString(file.toPath()));
+    }
+
+    @Test
+    public void shelveFallsBackToEmptyBaselineWhenThePathIsNotInTheLatestManifestAtAll(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repository = new InitCommand().setDirectory(repoDir).call();
+
+        File other = new File(repoDir, "other.txt");
+        Files.writeString(other.toPath(), "other content");
+        new AddCommand(repository).call();
+        new CommitCommand(repository).setMessage("baseline").call();
+
+        // "ghost.txt" was never part of any commit, so a real manifest walk over the latest
+        // commit (which does exist, unlike the two changelog-fallback cases above) finishes
+        // without ever matching it -- getBaselineContent() must fall through to its final
+        // `return null` rather than short-circuiting earlier.
+        Dirstate dirstate = repository.getDirstate();
+        dirstate.addEntry("ghost.txt", new Dirstate.Entry('r', 0, 0, 0));
+        repository.writeDirstate(dirstate);
+
+        new ShelveCommand(repository).setName("path-not-in-manifest").call();
+
+        File shelvedDir = new File(repository.getHgDir(), "shelved");
+        assertTrue(new File(shelvedDir, "path-not-in-manifest.state").exists());
+        String patch = Files.readString(new File(shelvedDir, "path-not-in-manifest.patch").toPath(), StandardCharsets.UTF_8);
+        assertTrue(patch.contains("ghost.txt"));
+        assertTrue(patch.contains("@@ -1,0 +0,0 @@"),
+                "A path absent from the latest manifest must fall back to an empty baseline, not crash");
+    }
+
+    @Test
+    public void unshelveFallsBackToARegularFileWhenTheStoredSymlinkTargetCannotBeParsedAsAPath(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repository = new InitCommand().setDirectory(repoDir).call();
+
+        File targetFile = new File(repoDir, "MARKERTARGET");
+        Files.writeString(targetFile.toPath(), "target content");
+        File link = new File(repoDir, "link.txt");
+        Files.createSymbolicLink(link.toPath(), Path.of("MARKERTARGET"));
+        new AddCommand(repository).addFile("link.txt").call();
+
+        new ShelveCommand(repository).setName("bad-symlink-target").call();
+
+        // The shelved .hg bundle stores the symlink target as raw, uncompressed bytes
+        // (writeEntryChunk() writes entry.delta verbatim), so a same-length byte substitution
+        // keeps every chunk-length prefix in the bundle valid while making the recovered target
+        // string unparsable as a Path (POSIX rejects an embedded NUL byte). This exercises
+        // performUnshelve()'s createSymbolicLink() failure fallback to a plain file, not just
+        // the happy-path symlink restore already covered elsewhere.
+        File hgBundleFile = new File(repository.getHgDir(), "shelved/bad-symlink-target.hg");
+        byte[] bundleBytes = Files.readAllBytes(hgBundleFile.toPath());
+        byte[] marker = "MARKERTARGET".getBytes(StandardCharsets.UTF_8);
+        int idx = indexOf(bundleBytes, marker);
+        assertTrue(idx >= 0, "Bundle must contain the raw shelved symlink target bytes");
+        bundleBytes[idx + 3] = 0;
+        Files.write(hgBundleFile.toPath(), bundleBytes);
+
+        new ShelveCommand(repository).setName("bad-symlink-target").setUnshelve(true).call();
+
+        assertFalse(Files.isSymbolicLink(link.toPath()),
+                "A target that cannot be parsed as a Path must fall back to a regular file, not crash");
+        assertEquals("MAR\u0000ERTARGET", Files.readString(link.toPath(), StandardCharsets.UTF_8));
+    }
+
+    private static int indexOf(byte[] haystack, byte[] needle) {
+        outer:
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
     }
 }

@@ -1,10 +1,13 @@
 package com.github.search5.hg4j.api;
 
+import com.github.search5.hg4j.HgTestUtils;
+import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.errors.HgValidationException;
 import com.github.search5.hg4j.lib.HgRcConfig;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
+import com.github.search5.hg4j.treewalk.SparseConfig;
 import com.github.search5.hg4j.treewalk.TreeWalk;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import org.junit.jupiter.api.Test;
@@ -427,6 +430,194 @@ public class HgRemainingPorcelainCoverageTest {
             // Local repository has no unpushed changes of its own yet
             List<String> outgoing = localHg.outgoing().setDestination(remoteDir.getAbsolutePath()).call();
             assertNotNull(outgoing);
+        }
+    }
+
+    @Test
+    public void testWrapNullRepositoryThrowsIllegalArgumentException() {
+        assertThrows(IllegalArgumentException.class, () -> Hg.wrap(null));
+    }
+
+    @Test
+    public void testResolveCommandFacadeQueriesAndUpdatesMergeState(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("resolve_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        try (Hg hg = Hg.wrap(repo)) {
+            File f = new File(repoDir, "conflict.txt");
+            Files.writeString(f.toPath(), "line1\n");
+            hg.add().addFile("conflict.txt").call();
+            hg.commit().setAuthor("T").setMessage("c1").call();
+
+            Files.writeString(f.toPath(), "line1-A\n");
+            byte[] other = hg.commit().setAuthor("T").setMessage("c2A").call();
+
+            hg.update().setRevision("0").call();
+            Files.writeString(f.toPath(), "line1-B\n");
+            hg.commit().setAuthor("T").setMessage("c2B").call();
+
+            MergeCommand.MergeResult mergeResult = hg.merge().setNodeId(other).call();
+            assertTrue(mergeResult.isConflicted(), "Setup must actually produce a real conflict");
+
+            // hg.resolve() facade: list shows the conflicted file as unresolved
+            Map<String, Boolean> listed = hg.resolve().list(true).call();
+            assertEquals(1, listed.size());
+            assertFalse(listed.get("conflict.txt"));
+
+            // hg.resolve() facade: mark it resolved and confirm the state round-trips
+            Map<String, Boolean> resolved = hg.resolve().setFile("conflict.txt").markResolved(true).call();
+            assertTrue(resolved.get("conflict.txt"));
+            assertTrue(hg.resolve().list(true).call().get("conflict.txt"));
+        }
+    }
+
+    @Test
+    public void testUnbundleCommandFacadeAppliesChangegroupToRepository(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("unbundle_src_repo").toFile();
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+        try (Hg srcHg = Hg.wrap(srcRepo)) {
+            File f = new File(srcDir, "a.txt");
+            Files.writeString(f.toPath(), "content for unbundle facade test");
+            srcHg.add().addFile("a.txt").call();
+            srcHg.commit().setAuthor("tester").setMessage("only commit").call();
+        }
+
+        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
+        byte[] changegroupBytes = HgTestUtils.serializeBundleToBytes(bundle);
+        // UnbundleCommand requires a recognized container header (HG10UN/HG10GZ/HG10BZ/HG20);
+        // a raw changegroup payload with no header is rejected as corrupt.
+        byte[] header = "HG10UN".getBytes(StandardCharsets.US_ASCII);
+        byte[] bundleBytes = new byte[header.length + changegroupBytes.length];
+        System.arraycopy(header, 0, bundleBytes, 0, header.length);
+        System.arraycopy(changegroupBytes, 0, bundleBytes, header.length, changegroupBytes.length);
+        File bundleFile = tempDir.resolve("out.hg").toFile();
+        Files.write(bundleFile.toPath(), bundleBytes);
+
+        File dstDir = tempDir.resolve("unbundle_dst_repo").toFile();
+        HgRepository dstRepo = Hg.init().setDirectory(dstDir).call();
+        try (Hg dstHg = Hg.wrap(dstRepo)) {
+            List<byte[]> imported = dstHg.unbundle().setBundleFile(bundleFile).call();
+            assertEquals(1, imported.size());
+
+            Revlog dstCl = dstRepo.getRevlog(new File(dstRepo.getStoreDir(), "00changelog.i"), new File(dstRepo.getStoreDir(), "00changelog.d"));
+            assertEquals(1, dstCl.getRevisionCount());
+        }
+    }
+
+    @Test
+    public void testSparseConfigFacadeResolvesIncludesFromWorkingSparseFile(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("sparse_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        try (Hg hg = Hg.wrap(repo)) {
+            new File(repoDir, "a").mkdirs();
+            new File(repoDir, "b").mkdirs();
+            Files.writeString(new File(repoDir, "a/1.txt").toPath(), "x");
+            Files.writeString(new File(repoDir, "b/2.txt").toPath(), "x");
+            hg.add().addFile("a/1.txt").call();
+            hg.add().addFile("b/2.txt").call();
+            hg.commit().setAuthor("T").setMessage("c1").call();
+
+            Files.writeString(new File(repoDir, ".hg/sparse").toPath(), "[include]\na/*.txt\n");
+
+            SparseConfig resolved = hg.sparseConfig(0);
+            assertTrue(resolved.includes.contains("a/*.txt"));
+            assertTrue(resolved.toPathFilter().accept("a/1.txt"));
+            assertFalse(resolved.toPathFilter().accept("b/2.txt"));
+        }
+    }
+
+    @Test
+    public void testConfigLoadsUserHomeHgrcWhenPresent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("user_hgrc_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File fakeUserHome = tempDir.resolve("fake_home_hgrc").toFile();
+        assertTrue(fakeUserHome.mkdirs());
+        Files.writeString(new File(fakeUserHome, ".hgrc").toPath(), "[ui]\nusername = User Home Tester\n");
+
+        String originalUserHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", fakeUserHome.getAbsolutePath());
+            try (Hg hg = Hg.wrap(repo)) {
+                HgRcConfig cfg = hg.config();
+                assertEquals("User Home Tester", cfg.get("ui", "username"));
+            }
+        } finally {
+            System.setProperty("user.home", originalUserHome);
+        }
+    }
+
+    @Test
+    public void testConfigLoadsMercurialIniWhenHgrcAbsent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("mercurial_ini_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File fakeUserHome = tempDir.resolve("fake_home_ini").toFile();
+        assertTrue(fakeUserHome.mkdirs());
+        Files.writeString(new File(fakeUserHome, "mercurial.ini").toPath(), "[ui]\nusername = Ini Tester\n");
+
+        String originalUserHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", fakeUserHome.getAbsolutePath());
+            try (Hg hg = Hg.wrap(repo)) {
+                HgRcConfig cfg = hg.config();
+                assertEquals("Ini Tester", cfg.get("ui", "username"));
+            }
+        } finally {
+            System.setProperty("user.home", originalUserHome);
+        }
+    }
+
+    @Test
+    public void testConfigSkipsUserConfigurationWhenUserHomeSystemPropertyIsAbsent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("no_user_home_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File localHgrc = new File(repo.getHgDir(), "hgrc");
+        Files.writeString(localHgrc.toPath(), "[ui]\nusername = Local Only Tester\n");
+
+        String originalUserHome = System.getProperty("user.home");
+        try {
+            System.clearProperty("user.home");
+            try (Hg hg = Hg.wrap(repo)) {
+                HgRcConfig cfg = assertDoesNotThrow(hg::config,
+                        "Hg.config() must tolerate a missing user.home system property");
+                // The user-wide lookup (step 2) is skipped entirely, but the local repository
+                // hgrc (step 3) is unaffected and still loads.
+                assertEquals("Local Only Tester", cfg.get("ui", "username"));
+            }
+        } finally {
+            if (originalUserHome != null) {
+                System.setProperty("user.home", originalUserHome);
+            }
+        }
+    }
+
+    @Test
+    public void testConfigSwallowsIOExceptionFromUnreadableLocalHgrc(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("malformed_hgrc_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // Point user.home at a directory with no .hgrc/mercurial.ini so only the local
+        // repository hgrc load is exercised below.
+        File fakeUserHome = tempDir.resolve("fake_home_none").toFile();
+        assertTrue(fakeUserHome.mkdirs());
+
+        File localHgrc = new File(repo.getHgDir(), "hgrc");
+        // Files.readString() (used by HgRcConfig.load) throws IOException (MalformedInputException)
+        // on a byte sequence that is not valid UTF-8, so this exercises Hg.config()'s catch block.
+        Files.write(localHgrc.toPath(), new byte[]{(byte) 0xFF, (byte) 0xFE, (byte) 0x00, (byte) 0x80});
+
+        String originalUserHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", fakeUserHome.getAbsolutePath());
+            try (Hg hg = Hg.wrap(repo)) {
+                HgRcConfig cfg = assertDoesNotThrow(hg::config,
+                        "Hg.config() must swallow IOException from an unreadable hgrc file, not propagate it");
+                assertNotNull(cfg);
+                assertNull(cfg.get("ui", "username"), "malformed local hgrc must not have contributed any settings");
+            }
+        } finally {
+            System.setProperty("user.home", originalUserHome);
         }
     }
 }

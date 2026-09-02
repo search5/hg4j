@@ -1,5 +1,6 @@
 package com.github.search5.hg4j.api;
 
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import com.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -8,6 +9,7 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -168,5 +170,35 @@ public class TreeMergeCommandTest {
         assertArrayEquals(parent1Before, repo.getDirstate().getParent1(), "Dirstate parent must be unchanged");
         assertEquals(workingContentBefore, Files.readString(new File(repoDir, "a.txt").toPath()),
                 "The working copy file must be untouched by a tree-level merge computation");
+    }
+
+    @Test
+    public void throwsWhenOursNodeIdIsNotFound(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "a.txt", "base\n");
+        byte[] theirs = commit(repo, "base");
+
+        byte[] fakeNode = new byte[20];
+        Arrays.fill(fakeNode, (byte) 1);
+
+        HgRevisionNotFoundException ex = assertThrows(HgRevisionNotFoundException.class,
+                () -> new TreeMergeCommand(repo).setOurs(fakeNode).setTheirs(theirs).call());
+        assertTrue(ex.getMessage().contains("0101010101010101010101010101010101010101"));
+    }
+
+    @Test
+    public void throwsWhenTheirsNodeIdIsNotFound(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "a.txt", "base\n");
+        byte[] ours = commit(repo, "base");
+
+        byte[] fakeNode = new byte[20];
+        Arrays.fill(fakeNode, (byte) 2);
+
+        HgRevisionNotFoundException ex = assertThrows(HgRevisionNotFoundException.class,
+                () -> new TreeMergeCommand(repo).setOurs(ours).setTheirs(fakeNode).call());
+        assertTrue(ex.getMessage().contains("0202020202020202020202020202020202020202"));
     }
 }

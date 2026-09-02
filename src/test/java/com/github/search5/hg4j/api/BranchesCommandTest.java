@@ -126,4 +126,120 @@ public class BranchesCommandTest {
         assertTrue(byBranch.get("feature").isClosed());
         assertEquals(NodeIdUtil.toHex(featureClose), NodeIdUtil.toHex(byBranch.get("feature").getNode()));
     }
+
+    @Test
+    public void aFreshlyInitializedRepositoryWithNoCommitsHasNoBranches(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+
+        List<BranchesCommand.BranchHead> branches = new BranchesCommand(repo).call();
+        assertTrue(branches.isEmpty(), "A repository with no 00changelog.i at all must report no branches");
+    }
+
+    @Test
+    public void anEmptyChangelogIndexFileReportsNoBranches(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        Files.createFile(clIdx.toPath());
+
+        List<BranchesCommand.BranchHead> branches = new BranchesCommand(repo).call();
+        assertTrue(branches.isEmpty(), "A 00changelog.i file that exists but holds zero revisions must report no branches");
+    }
+
+    @Test
+    public void mergingTwoHeadsOfTheSameBranchLeavesOnlyTheMergeCommitAsThatBranchsHead(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        Files.writeString(new File(tempDir.toFile(), "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("default c0").call();
+
+        repo.setBranch("feature");
+        Files.writeString(new File(tempDir.toFile(), "b.txt").toPath(), "b");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("feature c1").call();
+
+        com.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new com.github.search5.hg4j.lib.NodeId(c0), com.github.search5.hg4j.lib.NodeId.NULL);
+        repo.writeDirstate(forkDirstate);
+        repo.setBranch("feature");
+        Files.writeString(new File(tempDir.toFile(), "c.txt").toPath(), "c");
+        new AddCommand(repo).call();
+        byte[] c2 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("feature c2 (second head)").call();
+
+        com.github.search5.hg4j.dirstate.Dirstate mergeDirstate = repo.getDirstate();
+        mergeDirstate.setParents(new com.github.search5.hg4j.lib.NodeId(c1), new com.github.search5.hg4j.lib.NodeId(c2));
+        repo.writeDirstate(mergeDirstate);
+        repo.setBranch("feature");
+        byte[] merge = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("merge feature heads").call();
+
+        List<BranchesCommand.BranchHead> branches = new BranchesCommand(repo).call();
+        Map<String, BranchesCommand.BranchHead> byBranch = branches.stream()
+                .collect(Collectors.toMap(BranchesCommand.BranchHead::getBranch, h -> h));
+        assertEquals(2, branches.size());
+        assertEquals(NodeIdUtil.toHex(merge), NodeIdUtil.toHex(byBranch.get("feature").getNode()),
+                "A merge of feature's own two heads must leave only the merge commit as feature's head");
+        assertFalse(byBranch.get("feature").isClosed());
+    }
+
+    @Test
+    public void mergingAnotherBranchIntoDefaultDoesNotAffectTheOtherBranchsOwnHead(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        Files.writeString(new File(tempDir.toFile(), "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("default c0").call();
+
+        repo.setBranch("feature");
+        Files.writeString(new File(tempDir.toFile(), "b.txt").toPath(), "b");
+        new AddCommand(repo).call();
+        byte[] featureTip = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("feature c1").call();
+
+        com.github.search5.hg4j.dirstate.Dirstate mergeDirstate = repo.getDirstate();
+        mergeDirstate.setParents(new com.github.search5.hg4j.lib.NodeId(c0), new com.github.search5.hg4j.lib.NodeId(featureTip));
+        repo.writeDirstate(mergeDirstate);
+        repo.setBranch("default");
+        byte[] merge = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("merge feature into default").call();
+
+        List<BranchesCommand.BranchHead> branches = new BranchesCommand(repo).call();
+        Map<String, BranchesCommand.BranchHead> byBranch = branches.stream()
+                .collect(Collectors.toMap(BranchesCommand.BranchHead::getBranch, h -> h));
+        assertEquals(2, branches.size());
+        assertEquals(NodeIdUtil.toHex(merge), NodeIdUtil.toHex(byBranch.get("default").getNode()),
+                "The merge commit lives on default");
+        assertEquals(NodeIdUtil.toHex(featureTip), NodeIdUtil.toHex(byBranch.get("feature").getNode()),
+                "A cross-branch merge must not touch feature's own head, which must remain featureTip");
+    }
+
+    @Test
+    public void branchWithTwoIndependentlyClosedHeadsReportsTheHigherRevisionOneWhenIncludeClosed(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        Files.writeString(new File(tempDir.toFile(), "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("default c0").call();
+
+        repo.setBranch("feature");
+        Files.writeString(new File(tempDir.toFile(), "b.txt").toPath(), "b");
+        new AddCommand(repo).call();
+        byte[] c1Close = new CommitCommand(repo).setAuthor("u <u@example.com>")
+                .setMessage("feature c1, closed").setCloseBranch(true).call();
+
+        com.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new com.github.search5.hg4j.lib.NodeId(c0), com.github.search5.hg4j.lib.NodeId.NULL);
+        repo.writeDirstate(forkDirstate);
+        repo.setBranch("feature");
+        Files.writeString(new File(tempDir.toFile(), "c.txt").toPath(), "c");
+        new AddCommand(repo).call();
+        byte[] c2Close = new CommitCommand(repo).setAuthor("u <u@example.com>")
+                .setMessage("feature c2, closed").setCloseBranch(true).call();
+
+        List<BranchesCommand.BranchHead> withClosed = new BranchesCommand(repo).setIncludeClosed(true).call();
+        Map<String, BranchesCommand.BranchHead> byBranch = withClosed.stream()
+                .collect(Collectors.toMap(BranchesCommand.BranchHead::getBranch, h -> h));
+        assertEquals(2, withClosed.size());
+        assertTrue(byBranch.get("feature").isClosed());
+        assertEquals(NodeIdUtil.toHex(c2Close), NodeIdUtil.toHex(byBranch.get("feature").getNode()),
+                "Both feature heads are independently closed; the higher-revision one (c2Close) must be reported");
+
+        List<BranchesCommand.BranchHead> defaultOnly = new BranchesCommand(repo).call();
+        assertEquals(1, defaultOnly.size());
+        assertEquals("default", defaultOnly.get(0).getBranch());
+    }
 }

@@ -11,6 +11,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
@@ -73,11 +75,124 @@ public class BookmarkCommandTest {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
-        assertThrows(IllegalArgumentException.class, () -> 
+        assertThrows(IllegalArgumentException.class, () ->
                 new BookmarkCommand(repo).setDelete(true).call()); // no name for delete
 
-        assertThrows(IllegalArgumentException.class, () -> 
+        assertThrows(IllegalArgumentException.class, () ->
+                new BookmarkCommand(repo).setBookmarkName("").setDelete(true).call()); // empty (non-null) name for delete
+
+        assertThrows(IllegalArgumentException.class, () ->
                 new BookmarkCommand(repo).setBookmarkName("nonexistent").setActive(true).call()); // activate nonexistent
+    }
+
+    @Test
+    public void testEmptyBookmarkNameIsNoOp(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("c1").call();
+        new BookmarkCommand(repo).setBookmarkName("existing").call();
+
+        Map<String, String> result = new BookmarkCommand(repo).setBookmarkName("").call();
+
+        assertEquals(1, result.size(), "빈 문자열 bookmark 이름은 생성/수정으로 취급되면 안 됨");
+        assertFalse(result.containsKey(""), "빈 이름의 bookmark가 생성돼선 안 됨");
+    }
+
+    @Test
+    public void testSetRevisionIgnoresNullOrEmptyRevision(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "content");
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("c1").call();
+        String hex = toHex(commitNode).substring(0, 40);
+
+        Map<String, String> viaNull = new BookmarkCommand(repo).setBookmarkName("b-null").setRevision(null).call();
+        assertEquals(hex, viaNull.get("b-null"), "revision(null)은 무시되고 현재 부모로 폴백해야 함");
+
+        Map<String, String> viaEmpty = new BookmarkCommand(repo).setBookmarkName("b-empty").setRevision("").call();
+        assertEquals(hex, viaEmpty.get("b-empty"), "revision(\"\")도 무시되고 현재 부모로 폴백해야 함");
+    }
+
+    @Test
+    public void testDeleteNonexistentBookmarkNameOnEmptyRepoIsNoOp(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File bkFile = new File(repo.getHgDir(), "bookmarks");
+        assertFalse(bkFile.exists(), "테스트 전제: bookmark가 하나도 생성된 적 없어 bookmarks 파일이 없어야 함");
+
+        Map<String, String> result = new BookmarkCommand(repo).setBookmarkName("never-existed").setDelete(true).call();
+
+        assertTrue(result.isEmpty());
+        assertFalse(bkFile.exists(), "존재한 적 없는 파일을 지우려 하면 안 됨(writeBookmarks의 file.exists()==false 분기)");
+    }
+
+    @Test
+    public void testDeleteInactiveBookmarkWithNoCurrentFileLeavesNoTrace(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "content");
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("c1").call();
+        String hex = toHex(commitNode).substring(0, 40);
+
+        // setRevision을 명시하면 auto-activate 되지 않으므로 bookmarks.current가 아예 생기지 않는다
+        new BookmarkCommand(repo).setBookmarkName("never-active").setRevision(hex).call();
+        File curBkFile = new File(repo.getHgDir(), "bookmarks.current");
+        assertFalse(curBkFile.exists(), "테스트 전제: 명시적 revision으로 만든 bookmark는 active가 되면 안 됨");
+
+        Map<String, String> result = new BookmarkCommand(repo).setBookmarkName("never-active").setDelete(true).call();
+
+        assertTrue(result.isEmpty());
+        assertFalse(curBkFile.exists(), "애초에 없던 bookmarks.current가 삭제 시도로 새로 생기면 안 됨");
+    }
+
+    @Test
+    public void testExplicitDeactivateWithEmptyNameClearsCurrentFile(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("c1").call();
+        new BookmarkCommand(repo).setBookmarkName("b1").call();
+        new BookmarkCommand(repo).setBookmarkName("b1").setActive(true).call();
+        assertEquals("b1", new BookmarkCommand(repo).getActiveBookmark());
+
+        new BookmarkCommand(repo).setBookmarkName("").setActive(true).call();
+
+        assertNull(new BookmarkCommand(repo).getActiveBookmark(),
+                "빈 문자열 이름으로 setActive(true)를 호출해도 이름 없음과 동일하게 비활성화돼야 함");
+    }
+
+    @Test
+    public void testBookmarksFileParsingSkipsBlankAndMalformedLines(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File bkFile = new File(repo.getHgDir(), "bookmarks");
+        String hex = "6666666666666666666666666666666666666666";
+        Files.writeString(bkFile.toPath(),
+                "\n" +
+                "   \n" +
+                "malformed-line-without-space\n" +
+                hex + " good-bookmark\n",
+                StandardCharsets.UTF_8);
+
+        Map<String, String> result = new BookmarkCommand(repo).call();
+
+        assertEquals(1, result.size(), "빈 줄과 공백이 없는 손상된 줄은 무시되고 정상 항목만 파싱돼야 함");
+        assertEquals(hex, result.get("good-bookmark"));
     }
 
     @Test
@@ -244,6 +359,233 @@ public class BookmarkCommandTest {
         Map<String, String> remoteBks = new BookmarkCommand(remoteRepo).call();
         assertTrue(remoteBks.containsKey("feature-push"));
         assertEquals(localHeadHex, remoteBks.get("feature-push"));
+    }
+
+    @Test
+    public void testDeleteActiveBookmarkClearsCurrentFile(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("c1").call();
+
+        new BookmarkCommand(repo).setBookmarkName("to-delete").call();
+        new BookmarkCommand(repo).setBookmarkName("to-delete").setActive(true).call();
+        assertEquals("to-delete", new BookmarkCommand(repo).getActiveBookmark());
+
+        new BookmarkCommand(repo).setBookmarkName("to-delete").setDelete(true).call();
+
+        assertNull(new BookmarkCommand(repo).getActiveBookmark(),
+                "삭제한 bookmark가 active였다면 bookmarks.current도 함께 제거되어야 함");
+        assertFalse(new BookmarkCommand(repo).call().containsKey("to-delete"));
+    }
+
+    @Test
+    public void testExplicitDeactivateWithoutName(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // active bookmark가 전혀 없는 상태에서 이름 없이 비활성화를 호출해도 예외 없이 무시돼야 함
+        new BookmarkCommand(repo).setActive(true).call();
+        assertNull(new BookmarkCommand(repo).getActiveBookmark());
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("c1").call();
+        new BookmarkCommand(repo).setBookmarkName("b1").call();
+        new BookmarkCommand(repo).setBookmarkName("b1").setActive(true).call();
+        assertEquals("b1", new BookmarkCommand(repo).getActiveBookmark());
+
+        // 이름 없이 setActive(true)를 호출하면 명시적으로 현재 active bookmark를 해제한다
+        Map<String, String> result = new BookmarkCommand(repo).setActive(true).call();
+        assertNull(new BookmarkCommand(repo).getActiveBookmark());
+        assertTrue(result.containsKey("b1"), "비활성화는 bookmark 자체를 지우지 않고 active 표시만 지워야 함");
+    }
+
+    @Test
+    public void testGetActiveBookmarkIgnoresUnreadableCurrentFile(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File curBkFile = new File(repo.getHgDir(), "bookmarks.current");
+        assertTrue(curBkFile.mkdirs(), "테스트 준비: bookmarks.current 자리에 디렉터리를 만들어 읽기 실패를 유발");
+
+        assertNull(new BookmarkCommand(repo).getActiveBookmark(),
+                "bookmarks.current를 읽는 도중 IOException이 나면 조용히 null을 반환해야 함");
+    }
+
+    @Test
+    public void testMergeFromRemoteNoOpOnNullOrEmpty(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        BookmarkCommand.mergeFromRemote(repo, null, null);
+        BookmarkCommand.mergeFromRemote(repo, Collections.emptyMap(), null);
+
+        assertTrue(new BookmarkCommand(repo).call().isEmpty());
+    }
+
+    @Test
+    public void testMergeFromRemoteSkipsWhenValuesAlreadyEqual(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        String sameHash = "4444444444444444444444444444444444444444";
+        new BookmarkCommand(repo).setBookmarkName("same").setRevision(sameHash).call();
+
+        Map<String, String> remote = new HashMap<>();
+        remote.put("same", sameHash);
+        BookmarkCommand.mergeFromRemote(repo, remote, null);
+
+        assertEquals(sameHash, new BookmarkCommand(repo).call().get("same"));
+    }
+
+    @Test
+    public void testMergeFromRemoteAdoptsRemoteWhenLocalRevisionMissing(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "content");
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("c1").call();
+        String hex = toHex(commitNode).substring(0, 40);
+
+        // 로컬 bookmark가 로컬 저장소에 없는(strip된 것과 같은) 리비전을 가리키는 상태를 흉내낸다
+        String goneHash = "5555555555555555555555555555555555555555";
+        new BookmarkCommand(repo).setBookmarkName("stale").setRevision(goneHash).call();
+
+        Map<String, String> remote = new HashMap<>();
+        remote.put("stale", hex);
+        BookmarkCommand.mergeFromRemote(repo, remote, null);
+
+        assertEquals(hex, new BookmarkCommand(repo).call().get("stale"),
+                "로컬 bookmark가 존재하지 않는 리비전을 가리키면 원격 값을 그대로 채택해야 함");
+    }
+
+    @Test
+    public void testMergeFromRemoteKeepsLocalWhenLocalIsAheadOfRemote(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Hg hg = Hg.wrap(repo);
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "one");
+        hg.add().addFile("a.txt").call();
+        byte[] c1 = hg.commit().setMessage("c1").call();
+        String hex1 = toHex(c1).substring(0, 40);
+
+        Files.writeString(file.toPath(), "two");
+        byte[] c2 = hg.commit().setMessage("c2").call();
+        String hex2 = toHex(c2).substring(0, 40);
+
+        new BookmarkCommand(repo).setBookmarkName("ahead").setRevision(hex2).call();
+
+        Map<String, String> remote = new HashMap<>();
+        remote.put("ahead", hex1);
+        BookmarkCommand.mergeFromRemote(repo, remote, null);
+
+        Map<String, String> result = new BookmarkCommand(repo).call();
+        assertEquals(hex2, result.get("ahead"), "로컬이 원격보다 앞서 있으면 그대로 유지해야 함");
+        assertFalse(result.containsKey("ahead@1"), "로컬이 앞서 있을 뿐 진짜 divergence가 아니므로 분기 bookmark를 만들면 안 됨");
+    }
+
+    @Test
+    public void testMergeFromRemoteCreatesDivergentBookmarkOnTrueDivergence(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Hg hg = Hg.wrap(repo);
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "base");
+        hg.add().addFile("a.txt").call();
+        byte[] base = hg.commit().setMessage("base").call();
+        String baseHex = toHex(base).substring(0, 40);
+
+        Files.writeString(file.toPath(), "head-a");
+        byte[] headA = hg.commit().setMessage("head-a").call();
+        String headAHex = toHex(headA).substring(0, 40);
+
+        hg.update().setRevision(baseHex).call();
+        Files.writeString(file.toPath(), "head-b");
+        byte[] headB = hg.commit().setMessage("head-b").call();
+        String headBHex = toHex(headB).substring(0, 40);
+
+        new BookmarkCommand(repo).setBookmarkName("shared").setRevision(headBHex).call();
+
+        Map<String, String> remote = new HashMap<>();
+        remote.put("shared", headAHex);
+        BookmarkCommand.mergeFromRemote(repo, remote, "myremote");
+
+        Map<String, String> result = new BookmarkCommand(repo).call();
+        assertEquals(headBHex, result.get("shared"), "진짜 divergence에서는 로컬 값이 보존돼야 함");
+        assertEquals(headAHex, result.get("shared@myremote"),
+                "remotePathName이 주어지면 그 이름을 접미사로 분기 bookmark가 생성돼야 함");
+    }
+
+    @Test
+    public void testMergeFromRemoteDivergentSuffixDefaultsToOne(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Hg hg = Hg.wrap(repo);
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "base");
+        hg.add().addFile("a.txt").call();
+        byte[] base = hg.commit().setMessage("base").call();
+        String baseHex = toHex(base).substring(0, 40);
+
+        Files.writeString(file.toPath(), "head-a");
+        byte[] headA = hg.commit().setMessage("head-a").call();
+        String headAHex = toHex(headA).substring(0, 40);
+
+        hg.update().setRevision(baseHex).call();
+        Files.writeString(file.toPath(), "head-b");
+        byte[] headB = hg.commit().setMessage("head-b").call();
+        String headBHex = toHex(headB).substring(0, 40);
+
+        new BookmarkCommand(repo).setBookmarkName("shared").setRevision(headBHex).call();
+
+        Map<String, String> remote = new HashMap<>();
+        remote.put("shared", headAHex);
+        BookmarkCommand.mergeFromRemote(repo, remote, null);
+
+        Map<String, String> result = new BookmarkCommand(repo).call();
+        assertEquals(headAHex, result.get("shared@1"), "remotePathName이 null이면 접미사는 기본값 \"1\"이어야 함");
+    }
+
+    @Test
+    public void testMergeFromRemoteDivergentSuffixWithEmptyRemotePathNameFallsBackToOne(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Hg hg = Hg.wrap(repo);
+
+        File file = new File(repoDir, "a.txt");
+        Files.writeString(file.toPath(), "base");
+        hg.add().addFile("a.txt").call();
+        byte[] base = hg.commit().setMessage("base").call();
+        String baseHex = toHex(base).substring(0, 40);
+
+        Files.writeString(file.toPath(), "head-a");
+        byte[] headA = hg.commit().setMessage("head-a").call();
+        String headAHex = toHex(headA).substring(0, 40);
+
+        hg.update().setRevision(baseHex).call();
+        Files.writeString(file.toPath(), "head-b");
+        byte[] headB = hg.commit().setMessage("head-b").call();
+        String headBHex = toHex(headB).substring(0, 40);
+
+        new BookmarkCommand(repo).setBookmarkName("shared").setRevision(headBHex).call();
+
+        Map<String, String> remote = new HashMap<>();
+        remote.put("shared", headAHex);
+        BookmarkCommand.mergeFromRemote(repo, remote, "");
+
+        Map<String, String> result = new BookmarkCommand(repo).call();
+        assertEquals(headAHex, result.get("shared@1"), "remotePathName이 빈 문자열이어도 접미사는 기본값 \"1\"이어야 함");
     }
 
     private static String toHex(byte[] bytes) {

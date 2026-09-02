@@ -335,15 +335,25 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     (`tags`/`paths`는 이미 있는 데이터를 읽어 반환하기만 하면 되는 조회성이라
     작고, `copy`/`bundle`/`locate`/`files`/`manifest`는 신규 로직이 필요해 상대적으로
     크다). 우선순위는 사용자 확인 후 진행.
-13. **`PushCommand`의 증분(2회차) push가 최신 커밋을 누락함** (2026-09-02, 신규 발견,
-    미착수). 항목 10(깨진 symlink) TDD 수정 후 전체 회귀를 돌리다 발견한, 이 세션
-    범위 밖의 무관한 실패: `PushCommandTest.packsBothParentsWhenPushingAMergeCommitAndPropagatesRemoteKnownThroughIt`
-    가 `expected: <5> but was: <4>`로 실패한다 — merge 커밋까지 첫 push(4개 changeset)
-    후, 파일 하나를 더 커밋하고 두 번째 push를 해도 원격에 반영된 changeset 수가
-    4개 그대로다(5개여야 함). `git stash`로 내 변경분을 제거하고 pristine
-    `f3345ce`(직전 라운드3 커밋, "fix real PushCommand CG1 delta-base bug" 포함)에서
-    재현 확인 — **내 symlink 수정과 무관한, 그 라운드3 커밋 자체가 유입시켰을 가능성이
-    있는 회귀**. 원인 조사·수정 미착수, 우선순위는 사용자 확인 후 진행.
+13. ~~**`PushCommand`의 증분(2회차) push가 최신 커밋을 누락함**~~ — ✅ **완료(2026-09-02)**.
+    TDD로 원인 추적 결과, `PushCommand` 자체에는 버그가 없었다 — 진짜 원인은
+    `RevlogIndex.checkAndUpdate()`의 **디스크 재확인 200ms 스로틀**이었다.
+    `PushCommandTest`의 원격 저장소 핸들은 읽기 전용(자기 자신은 changelog에 한 번도
+    안 씀)인데, 첫 push 직후의 첫 읽기가 스로틀 창을 열어버려서, 두 번째 push 직후의
+    두 번째 읽기(빠른 테스트라 밀리초 단위로 붙어있음)가 스로틀에 걸려 조용히
+    스킵되고 스테일(push2 이전) 리비전 카운트를 그대로 반환했다 — 디스크 자체는
+    항상 정확했고 인프로세스 캐시만 뒤쳐진 것. 스로틀을 완전히 제거(`idxFile.length()`
+    는 단순 stat() 한 번, `PerformanceBenchmarkTest`의 2초 SLA에 여유 충분).
+    단, `addedRecords.isEmpty()` 게이트는 그대로 남겨둬야 했다 — 처음엔 이것도
+    제거했더니 `StripCommand`/`RebaseCommand`/`HisteditCommand`가 깨졌다(이들은
+    `RandomAccessFile#setLength`로 revlog `.i`/`.d`를 직접 truncate한 뒤 **같은**
+    Revlog 참조를 계속 써서, 방금 strip한 리비전이 북마크가 가리키던 대상인지
+    `findRevision()`으로 확인하는데, 여기서 자동 리로드가 걸리면 방금 truncate된
+    파일 기준으로 nodeMap이 재구성돼 막 지워진 리비전에 대한 지식을 잃고 북마크를
+    이동 대신 삭제해버림). 결론: **한 번이라도 자체적으로 쓴 적 있는 RevlogIndex는
+    자기 북키핑을 신뢰(기존 동작 유지)하고, 한 번도 안 쓴(순수 읽기 전용) 핸들만
+    스로틀 없이 매번 디스크를 재확인**하도록 정리. `HgRepositoryTest`에 읽기 전용
+    핸들 케이스 회귀 테스트 추가. 커밋 `f0b1eff`.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

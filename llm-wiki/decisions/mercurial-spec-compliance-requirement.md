@@ -347,17 +347,19 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     부수 발견(범위 밖, 새 백로그 — 아래 항목 14): `ManifestCommand` 작업 중
     `CommitCommand`의 미변경 파일 감지가 symlink에서도 `File#length()`를 호출해
     타겟 파일 크기를 잘못 참조하는 버그 발견.
-14. **`CommitCommand`가 symlink의 미변경 여부를 판단할 때 `File#length()`로 타겟
-    파일 크기를 참조함** (2026-09-02, `ManifestCommand` TDD 작업 중 발견, 미착수).
-    symlink 자신의 "크기"는 타겟 경로 문자열의 바이트 길이여야 하는데(다른 곳,
-    예컨대 `AddCommand`/`CopyCommand`/`GraftCommand`/`RebaseCommand`는 이미
+14. ~~**`CommitCommand`가 symlink의 미변경 여부를 판단할 때 `File#length()`로
+    타겟 파일 크기를 참조함**~~ — ✅ **완료(2026-09-02)**. symlink 자신의 "크기"는
+    타겟 경로 문자열의 바이트 길이여야 하는데(다른 곳, 예컨대 `AddCommand`/
+    `CopyCommand`/`GraftCommand`/`RebaseCommand`는 이미
     `Files.readSymbolicLink(...).toString().getBytes(...).length`로 올바르게
-    처리), `CommitCommand`의 미변경(재커밋 스킵) 판정 경로 중 한 곳이 `File#length()`
-    를 그대로 써서 symlink가 가리키는 대상 파일의 크기를 읽어버린다 — 그 결과
-    symlink 자신의 타겟 문자열은 전혀 안 바뀌었는데도 타겟 파일 크기가 바뀌면
-    symlink가 "변경됨"으로 오판되어 불필요한 새 filelog 리비전(부모 체인이 다른
-    새 노드 ID)이 생성됨. 수정 범위는 작을 것으로 예상(해당 지점에 이미 코드베이스
-    전역에서 쓰는 symlink-aware size 계산 패턴 적용) — 아직 미착수.
+    처리), `CommitCommand`의 미변경(재커밋 스킵) 판정 경로(size 비교 + M-2
+    racy-write 콘텐츠 비교 두 곳 모두)가 `File#length()`/`Files.readAllBytes()`를
+    그대로 써서 symlink가 가리키는 대상 파일을 읽어버리고 있었다 — 그 결과 symlink
+    자신의 타겟 문자열은 전혀 안 바뀌었는데도 타겟 파일 크기/내용이 바뀌면 symlink가
+    "변경됨"으로 오판되어 불필요한 새 filelog 리비전(부모 체인이 다른 새 노드 ID)이
+    생성됐다. TDD로 재현(타겟 파일만 키우고 symlink 자체는 안 건드린 뒤 재커밋 →
+    filelog 리비전 수가 그대로 1이어야 함을 실패하는 테스트로 확인) 후 두 지점 모두
+    `Files.readSymbolicLink()` 기반으로 수정. 전체 회귀 클린. 커밋 `1162715`.
 13. ~~**`PushCommand`의 증분(2회차) push가 최신 커밋을 누락함**~~ — ✅ **완료(2026-09-02)**.
     TDD로 원인 추적 결과, `PushCommand` 자체에는 버그가 없었다 — 진짜 원인은
     `RevlogIndex.checkAndUpdate()`의 **디스크 재확인 200ms 스로틀**이었다.

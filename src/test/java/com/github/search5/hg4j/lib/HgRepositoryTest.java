@@ -225,4 +225,49 @@ public class HgRepositoryTest {
             assertFalse(repo.isIgnored("src/config.cfg"));
         }
     }
+
+    /**
+     * A {@code RevlogIndex} that has never itself appended anything (its {@code addedRecords} is
+     * empty) re-checks the on-disk file's length on every access with no time throttle -- so a
+     * read-only {@code HgRepository} handle notices when a completely separate {@code
+     * HgRepository} instance writes to the same on-disk store. This is exactly the read side of
+     * two separate push connections against the same bare remote (e.g.
+     * {@code PushCommandTest.packsBothParentsWhenPushingAMergeCommitAndPropagatesRemoteKnownThroughIt}):
+     * the object that reads back the result never wrote anything itself, so it must not trust a
+     * cached revision count once the underlying file has actually grown.
+     *
+     * <p>Note this deliberately does NOT hold for a repository handle that has performed its own
+     * local write (see {@code RevlogIndex.checkAndUpdate()}'s {@code addedRecords.isEmpty()}
+     * guard) -- that case is intentionally left trusting its own in-memory bookkeeping, because
+     * StripCommand/RebaseCommand/HisteditCommand rely on exactly that to see a revlog's
+     * pre-truncate state after physically truncating it out from under the same object.
+     */
+    @Test
+    public void testGetRevlogDetectsExternalWritesFromADifferentReadOnlyRepositoryInstance(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repoB = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
+        new AddCommand(repoB).call();
+        new CommitCommand(repoB).setMessage("first").call();
+
+        // repoA never writes anything itself -- it only ever reads.
+        HgRepository repoA = new HgRepository(repoDir);
+        File clIdx = new File(repoA.getStoreDir(), "00changelog.i");
+        File clDat = new File(repoA.getStoreDir(), "00changelog.d");
+        assertEquals(1, repoA.getRevlog(clIdx, clDat).getRevisionCount());
+
+        // A second, independent HgRepository instance writes another commit to the same store.
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v2");
+        new CommitCommand(repoB).setMessage("second").call();
+        assertEquals(2, repoB.getRevlog(new File(repoB.getStoreDir(), "00changelog.i"),
+                new File(repoB.getStoreDir(), "00changelog.d")).getRevisionCount());
+
+        // repoA's already-cached (but never self-written) Revlog for the changelog must notice
+        // the external write and refresh -- not keep returning the stale, pre-write count.
+        assertEquals(2, repoA.getRevlog(clIdx, clDat).getRevisionCount(),
+                "repoA must see repoB's externally-written commit, not a stale cached count");
+
+        repoA.close();
+        repoB.close();
+    }
 }

@@ -29,8 +29,10 @@ public class RevlogIndexTest {
         return tempDir.resolve("test_revlog" + suffix).toFile();
     }
 
-    /** checkAndUpdate() throttles disk re-checks to once per 200ms; tests exercising a second
-     *  on-disk-change detection must clear that window first. */
+    /** checkAndUpdate() no longer time-throttles disk re-checks (removed 2026-09-02 -- it caused
+     *  stale reads across separate long-lived repository handles); this sleep is now a harmless
+     *  no-op kept only so the "before" FileOutputStream writes above each call site are clearly
+     *  separated in time from the assertions that follow. */
     private void sleepPastThrottleWindow() {
         try {
             Thread.sleep(210);

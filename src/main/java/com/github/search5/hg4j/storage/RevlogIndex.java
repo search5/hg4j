@@ -36,7 +36,6 @@ public class RevlogIndex {
     private boolean inline = false;
     private int revisionCount = 0;
     private long lastKnownSize = 0;
-    private long lastCheckedTime = 0;
 
     // v2 Docket Fields.
     // 실제 hg CLI(Mercurial 7.2)로 생성한 changelog-v2 저장소를 hexdump/python struct로
@@ -166,16 +165,35 @@ public class RevlogIndex {
             // When the disk file does not exist, in-memory addedRecords and nodeMap must be preserved, so return without clearing the cache.
             return;
         }
-        long now = System.currentTimeMillis();
-        if (now < lastCheckedTime + 200) {
-            // Time-based throttling: Skip disk lookups for frequent calls within 200ms
-            return;
-        }
-        lastCheckedTime = now;
-
+        // No time-based throttling here (removed 2026-09-02): idxFile.length() is a single,
+        // sub-microsecond stat() syscall, and PerformanceBenchmarkTest's 1,000-read SLA (2s
+        // budget) has ample headroom for one extra stat per call. A wall-clock throttle window
+        // instead created a real correctness bug -- a long-lived HgRepository/Revlog handle
+        // (e.g. the remote side of two separate PushCommand.call() invocations against the same
+        // bare repo, each going through its own HgRepository instance) could silently keep
+        // returning a stale revision count for up to the throttle window after another instance
+        // wrote to the same store, with no way for the caller to know its read was stale.
         long currentSize = idxFile.length();
         if (currentSize != lastKnownSize) {
-            // During local write transactions, addedRecords is populated. Reset the cache only when addedRecords is empty to maintain transaction consistency.
+            // During local write transactions, addedRecords is populated. Reset the cache only
+            // when addedRecords is empty to maintain transaction consistency.
+            //
+            // This also turns out to be load-bearing for a very different reason than the name
+            // suggests: StripCommand/RebaseCommand/HisteditCommand physically truncate a revlog's
+            // .i/.d files directly with RandomAccessFile#setLength (bypassing addRecord()
+            // entirely -- see StripCommand.truncateRevlog()), then keep using the SAME already-
+            // held Revlog/RevlogIndex reference afterward (e.g. StripCommand's bookmark-
+            // relocation loop calls changelog.findRevision() on nodes that were just stripped, to
+            // tell "does this bookmark point at what I just removed"). If checkAndUpdate() were
+            // allowed to reload here, it would rebuild nodeMap from the now-truncated file and
+            // lose all knowledge of the just-stripped revisions, silently breaking that lookup
+            // (verified: removing this guard makes
+            // StripCommandCoverageTest#stripMovesBookmarkPointingAtStrippedRevisionToNewTip fail
+            // -- the bookmark gets dropped instead of relocated). Any RevlogIndex that has ever
+            // written locally is presumed to already know its own history and is trusted not to
+            // need an automatic reload; genuinely fresh cross-instance reads (this repository
+            // object has never written anything itself, e.g. the read-only remote side of a
+            // PushCommand) are unaffected and still get picked up below.
             if (addedRecords.isEmpty()) {
                 try {
                     if (currentSize > lastKnownSize && lastKnownSize > 0) {

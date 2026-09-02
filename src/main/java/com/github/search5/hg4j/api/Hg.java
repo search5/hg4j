@@ -432,6 +432,38 @@ public class Hg implements AutoCloseable {
         return new CensorCommand(this.repository);
     }
 
+    public TagsCommand tags() {
+        return new TagsCommand(this.repository);
+    }
+
+    public PathsCommand paths() {
+        return new PathsCommand(this.repository);
+    }
+
+    public FilesCommand files() {
+        return new FilesCommand(this.repository);
+    }
+
+    public LocateCommand locate() {
+        return new LocateCommand(this.repository);
+    }
+
+    public ManifestCommand manifest() {
+        return new ManifestCommand(this.repository);
+    }
+
+    public CopyCommand copy() {
+        return new CopyCommand(this.repository);
+    }
+
+    public BundleCommand bundle() {
+        return new BundleCommand(this.repository);
+    }
+
+    public RecoverCommand recover() {
+        return new RecoverCommand(this.repository);
+    }
+
     /**
      * Downloads a clonebundle from {@code url} (a plain HTTP(S) GET, no wire-protocol framing)
      * and applies it — the client "bypass" half of real hg's Clonebundles mechanism. See

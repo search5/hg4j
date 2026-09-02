@@ -373,6 +373,62 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     hg4j가 어떤 changegroup 버전을 광고하든 조용히 구식 bundle1(cg1)로만 통신하고
     있었던 별개의 실제 버그. 콤마 join + `bundle2=<중첩 blob>` 형태로 수정. 기존
     cg1/cg2/cg3 상호운용성 회귀 없음(전체 회귀 확인). 상세: `ChangegroupV4V5Test`.
+
+    **부수 발견 2 — cg3에도 있던 별개의 실제 버그**: `ChangegroupParser.parseBundle()`
+    의 cg3(트리매니페스트 봉투) 처리가 "루프 첫 반복부터 무조건 경로 청크를 읽는다"는
+    잘못된 가정으로 짜여 있었다. 실제 스펙(`changegroup.py`의 `generatemanifests()`:
+    `if tree: yield _fileheader(tree)`)은 **루트("") 매니페스트 그룹은 경로 청크 없이
+    바로 온다** — 실제 hg가 만든 cg3 바이트를 직접 hexdump/재파싱해 확인. 기존 코드는
+    루트 그룹의 첫 델타 엔트리를 통째로 (엉뚱한) 서브디렉터리 경로 이름으로 먹어버리고
+    나머지 엔트리만 그 밑에 잘못 붙이는 상태였다 — 즉 **cg3로 받은 매니페스트 리비전이
+    항상 최소 1개 누락된 채로 misfiled됐다**. cg3/cg4/cg5 공통 구조라 세 버전 모두
+    같이 고침(먼저 bare 루트 그룹을 파싱한 뒤 선택적 서브디렉터리 그룹 루프). 기존
+    회귀에서 이 경로가 걸리지 않았던 이유: 지금까지 real-hg-interop 테스트들은 전부
+    필로그 콘텐츠만 직접 검증했지(`HgRemoteAndSyncTest#testNativeHgCopyRenamePull`
+    등) cg3 매니페스트 그룹 자체를 pull 후 검증한 테스트가 없었고, 게다가 위 bundlecaps
+    버그로 그 테스트들조차 실제로는 대부분 bundle1(cg1, 매니페스트 그룹 구조 자체가
+    다름)로 통신하고 있었다.
+
+    **부수 발견 3 — 이 항목의 원래 "실사용 위험도" 서술 정정**: 위 배경 요약의
+    "`supportedincomingversions()`가 cg4를 기본 필터링하니 기본 설정 저장소끼리는
+    cg3로 자동 폴백"이라는 판단은 **push(unbundle 받는 방향)에만 해당**한다.
+    pull/getbundle(서버가 클라이언트에게 "보내는" 방향)은 `changegroup.
+    supportedoutgoingversions()`가 쓰이는데, 이건 treemanifest/narrow/lfs 저장소가
+    아닌 한 **cg4를 설정 없이 무조건 포함**한다 — `experimental.changegroup4`도
+    `delta-info-revlog` requirement도 필요 없다. 위 두 버그(bundlecaps 인코딩 +
+    루트 매니페스트)를 고친 뒤 로컬 hg 7.2로 실측 재확인(`GET ?cmd=getbundle`을
+    직접 만들어 응답을 hexdump/zlib로 대조): 기본 설정(아무 config도 안 준) real hg
+    저장소를 그냥 pull만 해도 서버가 **cg3가 아니라 cg4를 고른다**(`version04`
+    응답 확인). 즉 cg4 지원은 "당장 안 깨지는 opt-in 확장"이 아니라 **이 세션의
+    수정 이후 기본 pull 경로에서 바로 쓰이는 실사용 코드**다 — cg5는 여전히
+    `experimental.changegroup5`/revlogv2/changelogv2가 있어야 광고되므로 원래
+    서술대로 opt-in에 가깝다.
+
+    **테스트**: `ChangegroupV4V5Test`(신설, 6건, 모두 협소하게 설계) — 실제 hg가
+    만든 cg4/cg5 페이로드 파싱 검증 2건, hg4j가 패킹한 cg4/cg5를 실제 hg
+    `unbundle`이 정확히 받아들이는지 라운드트립 검증 2건(호스트 native hg 7.2로
+    확인, Docker/Rust 불필요), 협상이 최댓값을 고르는지 real hg로 검증 2건
+    (`experimental.changegroup5=yes` 켠 서버 → `05`, 기본 설정 서버 → `04`). 이
+    작업으로 기존 cg1/cg2/cg3 관련 테스트 3개(`FetchCommandTest`,
+    `HgRemoteClientCoverageTest`, `HgRemoteClientTest`)가 구식(버그 기준) bundlecaps
+    문자열/cg3 루트-매니페스트 구조를 그대로 하드코딩해서 검증하고 있던 것도 같이
+    발견해 실측대로 갱신. 전체 회귀 클린(217개 테스트 클래스, 2230건, failures=0
+    errors=0, skipped=8 — Docker/Rust 필요 등 기존에도 스킵되던 것들).
+
+    **남은 gap**: (1) SSH 경로(`HgSshClient`)도 같은 방식으로 bundlecaps 문자열을
+    고쳤지만, hg4j의 SSH 클라이언트는 실제 hg의 바이너리 length-prefixed 인자
+    프레이밍이 아니라 자체 단순화된 텍스트 라인 프로토콜을 쓰고 있어— 이 문자열
+    수정이 실제로 SSH 경로에서 bundle2/cg4/cg5 협상을 켜는지는 검증 못 했다(회귀는
+    없음 — 실제 hg가 못 알아들으면 기존과 동일하게 무시되고 bundle1로 폴백될
+    뿐). (2) hg4j가 SERVER 역할일 때(`HgHttpWireServer`/`HgSshWireServer` →
+    `Wire1Commands.getbundle` → `HgLocalClient.getBundle()`)는 여전히 cg1만
+    생성한다 — cg2 이상을 만드는 버전별 패커가 아예 없다(이번 세션 이전부터 그랬고,
+    이번 백로그의 "hg4j가 만든 cg4/cg5를 실제 hg가 읽는" 요구는 `ChangegroupParser.
+    writeBundle`로 별도 충족했지만 hg4j의 실제 getbundle 응답 경로에는 배선 안
+    됨). (3) cg5의 sidedata는 파싱은 하지만(entry.sidedata 필드에 원본 바이트
+    보관) 로컬 revlog에 실제로 반영하지 않는다 — sidedata 저장 자체가 revlogv2
+    포맷 전용이고 hg4j는 아직 revlogv2를 못 만듦(문서 항목 4, 별도 백로그). hg4j가
+    패킹하는 cg5는 sidedata 비트를 항상 0으로 보낸다.
 12. ~~**포셀린 명령 노출이 완전하지 않음**~~ — ✅ **완료(2026-09-02)** (사용자 질문
     "포셀린 기능은 모두 노출 끝?"에 답하며 `hg debugcommands`(real hg 7.2.2,
     debug*/admin* 제외 145개 중 핵심 포셀린)와 `Hg` 파사드 메서드 목록을 직접 전수

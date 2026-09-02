@@ -426,8 +426,16 @@ public class HgRemoteClientTest {
         
         // 1. Changelog Entries (empty collection, just length 0 terminal chunk)
         out.write(new byte[]{0, 0, 0, 0});
-        
+
         // 2. Manifest Groups
+        // 실제 스펙(mercurial/changegroup.py의 generatemanifests(): "if tree: yield
+        // _fileheader(tree)") — 루트 매니페스트 그룹(tree == b'')은 경로 청크 없이 먼저
+        // (여기서는 비어 있으므로 곧바로 자신의 종료 청크만) 온다. 이 픽스처는 예전엔 이
+        // 루트 그룹을 아예 안 쓰고 "dir1" 경로 청크로 바로 시작했는데, 그건 실제 hg가
+        // 만든 cg3/cg4/cg5 번들과 다른 구조였다(ChangegroupParser#parseBundle의
+        // 2026-09-03 버그 수정 참고 — 실제 hg 바이트로 직접 확인).
+        out.write(new byte[]{0, 0, 0, 0}); // empty root ("") manifest group
+
         // Dir path chunk "dir1"
         byte[] pathBytes = "dir1".getBytes(StandardCharsets.UTF_8);
         int pathLen = pathBytes.length + 4;
@@ -464,9 +472,12 @@ public class HgRemoteClientTest {
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(out.toByteArray()), "03");
         assertNotNull(bundle);
         assertNotNull(bundle.manifestGroups);
-        assertEquals(1, bundle.manifestGroups.size());
-        
-        ChangegroupParser.ManifestGroup mg = bundle.manifestGroups.get(0);
+        // index 0 is always the bare root ("") group; "dir1" is the first (only) subdirectory group.
+        assertEquals(2, bundle.manifestGroups.size());
+        assertEquals("", bundle.manifestGroups.get(0).path);
+        assertEquals(0, bundle.manifestGroups.get(0).entries.size());
+
+        ChangegroupParser.ManifestGroup mg = bundle.manifestGroups.get(1);
         assertEquals("dir1", mg.path);
         assertEquals(1, mg.entries.size());
         

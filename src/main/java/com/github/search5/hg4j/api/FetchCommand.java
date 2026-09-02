@@ -212,9 +212,21 @@ public class FetchCommand {
                 List<String> bundleCaps = new ArrayList<>();
                 boolean supportsBundle2 = caps.contains("bundle2") || caps.stream().anyMatch(c -> c.startsWith("bundle2"));
                 if (supportsBundle2) {
-                    bundleCaps.add("bundle2");
+                    // 실제 스펙(mercurial/exchange.py): 원격은 changegroup 버전 목록과 자신의
+                    // supportedoutgoingversions()의 교집합 중 max()를 그대로 골라 응답한다
+                    // (별도 우선순위 없이 단순 숫자 최댓값) — hg4j의 ChangegroupParser가 cg4/cg5
+                    // 델타 헤더까지 파싱할 수 있게 된 뒤로는(2026-09-03) 04/05까지 광고해야
+                    // 최신 hg(예: experimental.changegroup4/5=yes 켠 저장소)와 최적 포맷으로
+                    // 주고받는다. 기본 설정 저장소는 여전히 cg4/cg5를 광고하지 않으므로
+                    // 대부분은 그대로 cg3로 협상된다(실사용 회귀 없음).
+                    //
+                    // 실측(2026-09-03, Bundle2Parser#buildChangegroupBundleCaps 주석 참고): 이
+                    // changegroup 버전 목록은 평평한 "changegroup=..." 토큰이 아니라
+                    // "bundle2=<blob>" 토큰 안에 중첩돼야만 실제 hg가 인식한다 — 예전의 평평한
+                    // 토큰 방식으로는 bundle2 자체는 (bare "HG20" 토큰 덕에) 켜져도 버전
+                    // 교집합이 항상 비어 사실상 구식 bundle1(cg1)로 계속 폴백되고 있었다.
                     bundleCaps.add("HG20");
-                    bundleCaps.add("changegroup=01,02,03");
+                    bundleCaps.add(Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05"));
                     bundleCaps.add("compression=GZ,BZ,ZS");
                 }
                 bundleBytes = client.getBundle(common, remoteHeads, bundleCaps);

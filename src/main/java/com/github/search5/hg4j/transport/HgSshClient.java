@@ -329,10 +329,22 @@ public class HgSshClient implements HgRemoteConnection {
 
         writeLine("cg true");
 
+        // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS): bundlecaps는 "scsv" 타입 — 최상위
+        // 토큰 구분자가 콤마다(스페이스 아님, HgRemoteClient에서 실측한 것과 동일한 문제).
+        // 그리고 changegroup 버전 목록은 평평한 "changegroup=..." 토큰이 아니라
+        // "bundle2=<blob>" 토큰 안에 중첩돼야만 urlutil.b2_caps_from_bundle_caps()가 읽는다
+        // (Bundle2Parser#buildChangegroupBundleCaps 주석 참고, HTTP 경로에서 실측·수정
+        // 확인됨(2026-09-03) — SSH 쪽은 hg4j의 자체 단순화된 텍스트 라인 프로토콜이 실제
+        // hg의 바이너리 length-prefixed 인자 프레이밍과 애초에 다르므로, 이 문자열 수정이
+        // 실제로 SSH 경로에서 bundle2/cg4/cg5 협상을 활성화하는지는 별도 검증 못 함 — 적어도
+        // 회귀는 없다: 실제 hg 서버가 이 인자를 못 알아들으면 기존과 동일하게 무시되고
+        // bundle1로 폴백될 뿐이다).
         if (bundleCaps != null && !bundleCaps.isEmpty()) {
-            writeLine("bundlecaps " + String.join(" ", bundleCaps));
+            writeLine("bundlecaps " + String.join(",", bundleCaps));
         } else {
-            writeLine("bundlecaps bundle2 HG20 changegroup=01,02,03");
+            writeLine("bundlecaps "
+                    + com.github.search5.hg4j.bundle.Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
+                    + ",compression=GZ,BZ,ZS");
         }
 
         writeLine("");

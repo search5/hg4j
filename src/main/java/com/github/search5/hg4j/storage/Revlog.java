@@ -814,7 +814,12 @@ public class Revlog {
         int parent2 = findRevision(entry.p2);
 
         byte[] content;
-        if (entry.deltabase != null) {
+        if (entry.fullText) {
+            // cg4 전용(실제 스펙: mercurial/changegroup.py의 cg4unpacker.deltachunk —
+            // protocol_flags & CG_FLAG_FULL_TEXT가 서 있으면 페이로드는 bdiff 델타가 아니라
+            // 압축 없는 원문 그대로다. deltabase 값과 무관하게 그대로 콘텐츠로 쓴다.
+            content = entry.delta;
+        } else if (entry.deltabase != null) {
             int baseRev = findRevision(entry.deltabase);
             if (baseRev == -1) {
                 if (NodeIdUtil.isAllZero(entry.deltabase)) {

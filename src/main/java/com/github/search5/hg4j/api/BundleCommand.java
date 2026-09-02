@@ -6,6 +6,7 @@ import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -21,6 +22,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
 
 /**
  * Porcelain command corresponding to {@code hg bundle} -- writes the same "HG10UN"-prefixed cg1
@@ -69,10 +72,69 @@ import java.util.TreeSet;
  * ancestor", i.e. bundle everything) when there is no real incremental base.</p>
  */
 public class BundleCommand {
+
+    /**
+     * The bundle1 container/compression format to write, matching real {@code hg bundle}'s
+     * {@code --type} values. Verified byte-for-byte against real {@code hg} 7.2.2 output
+     * ({@code hg bundle --all --type <x> out.hg}, inspected with {@code xxd}):
+     *
+     * <ul>
+     *   <li>{@link #NONE_V1} ({@code none-v1}) -- 6-byte ASCII {@code "HG10UN"} header followed by
+     *       the raw (uncompressed) cg1 changegroup bytes.</li>
+     *   <li>{@link #GZIP_V1} ({@code gzip-v1}) -- 6-byte ASCII {@code "HG10GZ"} header followed by
+     *       the cg1 bytes compressed with plain zlib/DEFLATE ({@code zlib.compressobj()} in
+     *       {@code mercurial/utils/compression.py}'s {@code _zlibengine.compressstream} -- a raw
+     *       zlib stream with its 2-byte header, e.g. {@code 78 9c}, and trailing Adler-32, NOT the
+     *       gzip container format {@code java.util.zip.GZIPOutputStream} would produce). This is
+     *       exactly what {@link UnbundleCommand} already decodes an {@code "HG10GZ"} bundle with
+     *       via plain {@code java.util.zip.InflaterInputStream} (zlib-format, not gzip-format), so
+     *       writing must use {@code java.util.zip.Deflater}/{@code DeflaterOutputStream} in their
+     *       default (wrapped/zlib) mode to stay symmetric with that existing read path.</li>
+     *   <li>{@link #BZIP2_V1} ({@code bzip2-v1}) -- real {@code hg}'s {@code bundletypes["HG10BZ"]}
+     *       entry in {@code mercurial/bundle2.py} writes only a 4-byte {@code "HG10"} header, then
+     *       lets the bzip2 stream's own leading {@code "BZh9"} magic supply the rest -- so the file
+     *       reads as {@code "HG10" + "BZh9..." = "HG10BZh9..."}, i.e. the on-disk 6-byte prefix
+     *       {@code "HG10BZ"} is never written as a literal string, it falls out of concatenating a
+     *       4-byte literal with a standard bzip2 stream. Confirmed against real {@code hg}'s output
+     *       ({@code 4847 3130 425a 6839 31...} = {@code "HG10BZh91"}) and against {@link
+     *       UnbundleCommand}'s existing read path, which reads a 6-byte {@code "HG10BZ"} header and
+     *       reconstructs the full bzip2 stream by prepending the literal bytes {@code "BZ"} back
+     *       onto everything after byte 6 -- i.e. it already assumes exactly this layout.</li>
+     * </ul>
+     */
+    public enum BundleType {
+        NONE_V1("none-v1"),
+        GZIP_V1("gzip-v1"),
+        BZIP2_V1("bzip2-v1");
+
+        private final String cliName;
+
+        BundleType(String cliName) {
+            this.cliName = cliName;
+        }
+
+        /** The exact spelling real {@code hg bundle --type <name>} uses for this format. */
+        public String cliName() {
+            return cliName;
+        }
+
+        /** Case-insensitive lookup by {@link #cliName()}, e.g. {@code "gzip-v1"} or {@code "GZIP-V1"}. */
+        public static BundleType fromCliName(String name) {
+            for (BundleType t : values()) {
+                if (t.cliName.equalsIgnoreCase(name)) {
+                    return t;
+                }
+            }
+            throw new IllegalArgumentException("Unsupported bundle --type: " + name
+                    + " (supported: none-v1, gzip-v1, bzip2-v1)");
+        }
+    }
+
     private final HgRepository repository;
     private File outputFile;
     private String revision;
     private String baseRevision;
+    private BundleType type = BundleType.NONE_V1;
 
     public BundleCommand(HgRepository repository) {
         this.repository = repository;
@@ -82,6 +144,22 @@ public class BundleCommand {
     public BundleCommand setOutputFile(File outputFile) {
         this.outputFile = outputFile;
         return this;
+    }
+
+    /**
+     * The container/compression format to write -- {@code hg bundle --type <x>}'s equivalent.
+     * Defaults to {@link BundleType#NONE_V1} ({@code none-v1}, uncompressed {@code "HG10UN"}),
+     * matching this class's original single-format behavior.
+     */
+    public BundleCommand setType(BundleType type) {
+        this.type = (type != null) ? type : BundleType.NONE_V1;
+        return this;
+    }
+
+    /** Convenience overload accepting real {@code hg}'s own {@code --type} spelling, e.g.
+     * {@code "gzip-v1"} (case-insensitive). See {@link BundleType#fromCliName(String)}. */
+    public BundleCommand setType(String type) {
+        return setType(BundleType.fromCliName(type));
     }
 
     /**
@@ -278,12 +356,11 @@ public class BundleCommand {
                 }
             }
 
-            // 2. Serialize to the exact "HG10UN" bundle1 container PushCommand sends over the wire
-            // (verified byte-for-byte against `hg bundle --all --type none-v1 out.hg`'s output).
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            try (DataOutputStream dos = new DataOutputStream(baos)) {
-                dos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
-
+            // 2. Serialize the cg1 changegroup payload -- same PushCommand-derived chunk stream
+            // regardless of container format (verified byte-for-byte against
+            // `hg bundle --all --type none-v1 out.hg`'s output).
+            ByteArrayOutputStream payload = new ByteArrayOutputStream();
+            try (DataOutputStream dos = new DataOutputStream(payload)) {
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                     writeEntryChunk(dos, entry);
                 }
@@ -304,9 +381,39 @@ public class BundleCommand {
                 writeTerminalChunk(dos);
             }
 
-            // 3. Write to disk -- this is the only way BundleCommand differs from PushCommand's
+            // 3. Wrap the payload in the requested bundle1 container/compression format (see
+            // BundleType's javadoc for exactly how each byte layout was verified against real hg)
+            // and write to disk -- this is the only way BundleCommand differs from PushCommand's
             // changegroup-building logic: no HgRemoteConnection dispatch, just a local file.
-            Files.write(outputFile.toPath(), baos.toByteArray());
+            ByteArrayOutputStream fileOut = new ByteArrayOutputStream();
+            byte[] payloadBytes = payload.toByteArray();
+            switch (type) {
+                case NONE_V1:
+                    fileOut.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
+                    fileOut.write(payloadBytes);
+                    break;
+                case GZIP_V1:
+                    fileOut.write("HG10GZ".getBytes(StandardCharsets.US_ASCII));
+                    // Plain zlib/DEFLATE (Deflater's default nowrap=false mode), NOT the gzip
+                    // container GZIPOutputStream would produce -- matches real hg's
+                    // zlib.compressobj() and UnbundleCommand's existing InflaterInputStream read.
+                    try (DeflaterOutputStream defOut = new DeflaterOutputStream(fileOut, new Deflater())) {
+                        defOut.write(payloadBytes);
+                    }
+                    break;
+                case BZIP2_V1:
+                    // Only 4 literal header bytes: the bzip2 stream's own "BZh9..." magic supplies
+                    // the rest of what reads back as the 6-byte "HG10BZ" prefix (see BundleType's
+                    // javadoc).
+                    fileOut.write("HG10".getBytes(StandardCharsets.US_ASCII));
+                    try (BZip2CompressorOutputStream bzOut = new BZip2CompressorOutputStream(fileOut)) {
+                        bzOut.write(payloadBytes);
+                    }
+                    break;
+                default:
+                    throw new IllegalStateException("Unhandled bundle type: " + type);
+            }
+            Files.write(outputFile.toPath(), fileOut.toByteArray());
 
             return selected.size();
         }

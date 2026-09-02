@@ -298,10 +298,10 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
       다만 위 실측대로 기본 포맷 저장소끼리는 즉시 깨지는 문제가 아니므로, cg3까지의
       상호운용성(이미 검증 완료)을 훼손하지 않는 별도 opt-in 확장으로 다뤄야 한다 —
       우선순위는 사용자 확인 후 진행.
-12. **포셀린 명령 노출이 완전하지 않음** (2026-09-02, 사용자 질문 "포셀린 기능은 모두
-    노출 끝?"에 답하며 `hg debugcommands`(real hg 7.2.2, debug*/admin* 제외 145개 중
-    핵심 포셀린)와 `Hg` 파사드 메서드 목록을 직접 전수 대조해 발견). **미착수.** 두
-    갈래 문제가 섞여 있다:
+12. ~~**포셀린 명령 노출이 완전하지 않음**~~ — ✅ **완료(2026-09-02)** (사용자 질문
+    "포셀린 기능은 모두 노출 끝?"에 답하며 `hg debugcommands`(real hg 7.2.2,
+    debug*/admin* 제외 145개 중 핵심 포셀린)와 `Hg` 파사드 메서드 목록을 직접 전수
+    대조해 발견했던 두 갈래 문제 전부 해결:
 
     **(a) 클래스는 있는데 `Hg` 파사드에 안 걸려 있음** — 다른 모든 명령은 예외 없이
     `Hg.xxx()` 형태로 노출되는데 아래는 그 관례에서 벗어나 있다:
@@ -331,10 +331,33 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
       로 내부 소비만 될 뿐 조회 결과를 노출하는 API가 없음) — 전부 대응 클래스가
       없다.
 
-    수정 범위는 (a)가 작고(파사드 메서드 5개 추가), (b)는 명령마다 편차가 있다
-    (`tags`/`paths`는 이미 있는 데이터를 읽어 반환하기만 하면 되는 조회성이라
-    작고, `copy`/`bundle`/`locate`/`files`/`manifest`는 신규 로직이 필요해 상대적으로
-    크다). 우선순위는 사용자 확인 후 진행.
+    (a)는 `BranchesCommand`/`TreeMergeCommand`/`CensorCommand`/`ClonebundlesCommand`에
+    `Hg.branches()`/`Hg.treeMerge()`/`Hg.censor()`/`Hg.clonebundle(url)`을 추가해
+    해결(`RollbackCommand`는 이미 `Hg.rollback()`으로 노출돼 있었음이 드러나 —
+    원래 이 항목의 "미노출" 서술 자체가 틀렸던 것으로 확인). 커밋 `f04edb9`.
+
+    (b)는 `TagsCommand`/`PathsCommand`/`FilesCommand`/`LocateCommand`/
+    `ManifestCommand`/`CopyCommand`/`BundleCommand`/`RecoverCommand` 8개를 병렬
+    격리 빌드 에이전트로 신설, 전부 real hg 7.2 CLI/소스로 검증(예: `hg locate`가
+    `hg files`와 달리 미커밋 삭제 파일도 포함하고 기본 패턴이 relglob이라는 것,
+    `hg copy`의 copy-chain이 커밋 시점에 끊긴다는 것, `hg bundle`의 정확한 cg1
+    델타베이스 규칙과 real hg 양방향 라운드트립 등 — 상세는 커밋 메시지 참고),
+    `Hg` 파사드에 전부 배선. 전체 회귀 2223 테스트, 실패 0. 커밋 `d055084`.
+
+    부수 발견(범위 밖, 새 백로그 — 아래 항목 14): `ManifestCommand` 작업 중
+    `CommitCommand`의 미변경 파일 감지가 symlink에서도 `File#length()`를 호출해
+    타겟 파일 크기를 잘못 참조하는 버그 발견.
+14. **`CommitCommand`가 symlink의 미변경 여부를 판단할 때 `File#length()`로 타겟
+    파일 크기를 참조함** (2026-09-02, `ManifestCommand` TDD 작업 중 발견, 미착수).
+    symlink 자신의 "크기"는 타겟 경로 문자열의 바이트 길이여야 하는데(다른 곳,
+    예컨대 `AddCommand`/`CopyCommand`/`GraftCommand`/`RebaseCommand`는 이미
+    `Files.readSymbolicLink(...).toString().getBytes(...).length`로 올바르게
+    처리), `CommitCommand`의 미변경(재커밋 스킵) 판정 경로 중 한 곳이 `File#length()`
+    를 그대로 써서 symlink가 가리키는 대상 파일의 크기를 읽어버린다 — 그 결과
+    symlink 자신의 타겟 문자열은 전혀 안 바뀌었는데도 타겟 파일 크기가 바뀌면
+    symlink가 "변경됨"으로 오판되어 불필요한 새 filelog 리비전(부모 체인이 다른
+    새 노드 ID)이 생성됨. 수정 범위는 작을 것으로 예상(해당 지점에 이미 코드베이스
+    전역에서 쓰는 symlink-aware size 계산 패턴 적용) — 아직 미착수.
 13. ~~**`PushCommand`의 증분(2회차) push가 최신 커밋을 누락함**~~ — ✅ **완료(2026-09-02)**.
     TDD로 원인 추적 결과, `PushCommand` 자체에는 버그가 없었다 — 진짜 원인은
     `RevlogIndex.checkAndUpdate()`의 **디스크 재확인 200ms 스로틀**이었다.

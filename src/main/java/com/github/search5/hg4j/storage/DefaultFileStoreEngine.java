@@ -24,7 +24,7 @@ public class DefaultFileStoreEngine implements StoreEngine {
         // first time) -- v2-ness can't be auto-detected from nothing, so it must be requested
         // explicitly here.
         boolean createAsGeneralV2 = repository.isRevlogV2() && !indexFile.exists();
-        return new Revlog(indexFile, dataFile, repository.isUseZstdCompression(), createAsGeneralV2);
+        return new Revlog(indexFile, dataFile, repository.isUseZstdCompression(), createAsGeneralV2, repository.isPersistentNodemap());
     }
 
     @Override

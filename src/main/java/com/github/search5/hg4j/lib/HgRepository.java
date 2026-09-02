@@ -146,9 +146,17 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * {@code persistent-nodemap} requirement. hg4j는 아직 {@code .n} 트라이 파일을
-     * 읽지 않고 항상 순차 스캔으로 fallback한다(Mercurial 스펙상 유효한 동작이지만
-     * 속도 이점은 없음) — 인식만 하고 있다는 뜻이다.
+     * {@code persistent-nodemap} requirement. When true, {@link com.github.search5.hg4j.storage.DefaultFileStoreEngine}
+     * attempts to load each non-inline revlog's {@code <radix>.n} trie
+     * ({@link com.github.search5.hg4j.storage.NodeMapFile}) for accelerated node hash to revision
+     * lookups ({@code RevlogIndex.findRevision}) — real hg only ever writes this file for
+     * non-inline revlogs (typically just {@code 00changelog.i} in modest-sized repos), and only a
+     * present, non-stale ({@code .n}'s recorded tip matches the revlog's actual current tip) trie
+     * is used; anything else falls back to the ordinary full-scan lookup. hg4j does not yet write
+     * {@code .n} files itself (Mercurial spec allows a stale/absent nodemap — it's purely a speed
+     * optimization, correctness is unaffected), so a repository hg4j alone commits into will
+     * simply stop benefiting from the acceleration on its own new revisions until some real hg
+     * (or a future write-side implementation here) refreshes it.
      */
     public boolean isPersistentNodemap() {
         return persistentNodemap;

@@ -58,4 +58,45 @@ public class HgAmendTest {
             assertEquals("amend", marker.getMetadata().get("operation"));
         }
     }
+
+    @Test
+    public void testConstructorRejectsNullRepository() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> new AmendCommand(null));
+        assertEquals("Repository cannot be null", ex.getMessage());
+    }
+
+    @Test
+    public void testAmendOnEmptyRepositoryThrows() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            IllegalStateException ex = assertThrows(IllegalStateException.class,
+                    () -> hg.amend().call());
+            assertEquals("No commits exist to amend (empty repository)", ex.getMessage());
+        }
+    }
+
+    @Test
+    public void testAmendWithoutExplicitMessagePropagatesCommitMessageRequirement() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            File file = new File(tempDir, "b.txt");
+
+            Files.writeString(file.toPath(), "Original file text");
+            hg.add().addFile("b.txt").call();
+            hg.commit().setAuthor("Developer").setMessage("Original message").call();
+
+            Files.writeString(file.toPath(), "Second revision text");
+            hg.add().addFile("b.txt").call();
+
+            // Amend without calling setMessage(...) exercises AmendCommand's message == null
+            // branch (the message is not forwarded to the underlying CommitCommand, which then
+            // enforces its own "message must be specified" requirement).
+            IllegalStateException ex = assertThrows(IllegalStateException.class,
+                    () -> hg.amend().setAuthor("Amender <amend@example.com>").call());
+            assertEquals("Commit message must be specified.", ex.getMessage());
+        }
+    }
 }

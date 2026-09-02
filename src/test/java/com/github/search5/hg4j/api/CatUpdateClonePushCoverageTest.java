@@ -469,6 +469,57 @@ public class CatUpdateClonePushCoverageTest {
     }
 
     @Test
+    public void testCatCommandCommitRevisionNotFoundInChangelog(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f1 = new File(repoDir, "a.txt");
+        Files.writeString(f1.toPath(), "content\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("커밋").call();
+
+        // Override getRevlog so that the changelog's findRevision(nodeId) always reports "not found",
+        // even though resolveRevision() (which reads index records directly, not via findRevision)
+        // successfully resolves a real node id. This exercises CatCommand's defensive
+        // "Commit revision not found" branch, which real hg storage never actually triggers.
+        HgRepository spyRepo = new HgRepository(repoDir) {
+            @Override
+            public synchronized Revlog getRevlog(File idxFile, File datFile) throws IOException {
+                if (idxFile.getName().equals("00changelog.i")) {
+                    return new Revlog(idxFile, datFile) {
+                        @Override
+                        public synchronized int findRevision(byte[] nodeId) {
+                            return -1;
+                        }
+                    };
+                }
+                return super.getRevlog(idxFile, datFile);
+            }
+        };
+
+        CatCommand cat = new CatCommand(spyRepo).setFile("a.txt");
+        HgRevisionNotFoundException ex = assertThrows(HgRevisionNotFoundException.class, cat::call);
+        assertTrue(ex.getMessage().contains("Commit revision not found"));
+    }
+
+    @Test
+    public void testCatCommandExecutableFileHexNodeTruncation(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // An executable/symlink manifest entry is stored as "<40-hex-node><flag>" (41 chars) —
+        // this exercises CatCommand's fileHexNode.length() > 40 truncation branch (line 65-66).
+        File script = new File(repoDir, "run.sh");
+        Files.writeString(script.toPath(), "#!/bin/sh\necho hi\n");
+        assertTrue(script.setExecutable(true), "test requires setting the executable bit to work on this platform");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("실행 파일 커밋").call();
+
+        byte[] content = new CatCommand(repo).setFile("run.sh").call();
+        assertEquals("#!/bin/sh\necho hi\n", new String(content));
+    }
+
+    @Test
     public void testCommitDefaultDraftPhase(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();

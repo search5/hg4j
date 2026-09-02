@@ -209,8 +209,10 @@ public class HgRemoteClient implements HgRemoteConnection {
             bytes = executeGetBinary("capabilities");
         }
         List<String> caps = new ArrayList<>();
+        // new String(bytes, ...) never returns null, so the "resp != null" check some earlier
+        // version of this code had here was always true -- dead code, removed.
         String resp = new String(bytes, StandardCharsets.UTF_8);
-        if (resp != null && !resp.trim().isEmpty()) {
+        if (!resp.trim().isEmpty()) {
             for (String cap : resp.split("\\s+")) {
                 String clean = cap.trim();
                 caps.add(clean);
@@ -230,7 +232,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         byte[] bytes = executeGetBinary("heads");
         List<String> heads = new ArrayList<>();
         String resp = new String(bytes, StandardCharsets.UTF_8);
-        if (resp != null && !resp.trim().isEmpty()) {
+        if (!resp.trim().isEmpty()) {
             for (String head : resp.split("\\s+")) {
                 String clean = head.trim();
                 if (!clean.isEmpty()) {
@@ -688,7 +690,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         // Fallback to GET for V1
         String resp = executeGet("listkeys?namespace=" + namespace);
         Map<String, String> map = new HashMap<>();
-        if (resp != null && !resp.trim().isEmpty()) {
+        if (!resp.trim().isEmpty()) {
             for (String line : resp.split("\n")) {
                 int tab = line.indexOf('\t');
                 if (tab != -1) {
@@ -703,7 +705,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     public List<String> between(List<String> pairs) throws IOException {
         String resp = executeGet("between?pairs=" + URLEncoder.encode(String.join(" ", pairs), "UTF-8"));
         List<String> list = new ArrayList<>();
-        if (resp != null && !resp.trim().isEmpty()) {
+        if (!resp.trim().isEmpty()) {
             for (String val : resp.trim().split("\\s+")) {
                 list.add(val.trim());
             }

@@ -347,6 +347,56 @@ public class PhaseRootsCoverageTest {
         assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase(unknown, changelog));
     }
 
+    @Test
+    @DisplayName("setPhase(Revlog) records the phase directly without needing to resolve ancestry via the changelog")
+    void testSetPhase_revlog_realChangelog_directRootAssignment() throws Exception {
+        assumeHgAvailable();
+
+        File repoDir = tempDir.resolve("setphaserepo").toFile();
+        HgRepository repo = HgTestUtils.nativeRepo(repoDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "a.txt").toPath(), "root");
+                HgTestUtils.hg(dir, "add");
+                HgTestUtils.hg(dir, "commit", "-m", "root", "-u", "tester");
+
+                Files.writeString(new File(dir, "b.txt").toPath(), "child");
+                HgTestUtils.hg(dir, "add");
+                HgTestUtils.hg(dir, "commit", "-m", "child", "-u", "tester");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        Revlog changelog = new Revlog(
+                new File(repo.getStoreDir(), "00changelog.i"),
+                new File(repo.getStoreDir(), "00changelog.d"));
+        assertEquals(2, changelog.getRevisionCount());
+
+        NodeId rootNode = new NodeId(changelog.getIndexRecord(0).getNodeId());
+        NodeId childNode = new NodeId(changelog.getIndexRecord(1).getNodeId());
+
+        File phaserootsFile = tempDir.resolve("phaseroots").toFile();
+        PhaseRoots phaseRoots = new PhaseRoots(phaserootsFile);
+
+        // setPhase(Revlog) marks childNode itself as SECRET; the parent (rootNode) stays
+        // PUBLIC since setPhase assigns a direct root boundary rather than walking ancestry.
+        phaseRoots.setPhase(childNode, PhaseRoots.Phase.SECRET, changelog);
+        assertEquals(PhaseRoots.Phase.SECRET, phaseRoots.getPhase(childNode, changelog));
+        assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase(rootNode, changelog));
+
+        String savedContent = Files.readString(phaserootsFile.toPath(), StandardCharsets.UTF_8);
+        assertTrue(savedContent.contains(childNode.toHex()));
+        assertFalse(savedContent.contains(rootNode.toHex()));
+
+        // A subsequent write reverting to PUBLIC removes the persisted root and both
+        // revisions resolve to PUBLIC again through the real changelog-backed lookup.
+        phaseRoots.setPhase(childNode, PhaseRoots.Phase.PUBLIC, changelog);
+        assertEquals(PhaseRoots.Phase.PUBLIC, phaseRoots.getPhase(childNode, changelog));
+
+        PhaseRoots reloaded = new PhaseRoots(phaserootsFile);
+        assertEquals(PhaseRoots.Phase.PUBLIC, reloaded.getPhase(childNode, changelog));
+    }
+
     private static void assumeHgAvailable() {
         org.junit.jupiter.api.Assumptions.assumeTrue(HgTestUtils.isHgInstalled(),
                 "Real 'hg' CLI not available in this environment");

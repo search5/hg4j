@@ -2,12 +2,15 @@ package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.HgTestUtils;
 import com.github.search5.hg4j.lib.HgRepository;
+import com.github.search5.hg4j.merge.MergeState;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -85,6 +88,65 @@ public class HgResolveTest {
         HgRepository repo = new HgRepository(tempDir);
         assertThrows(HgValidationException.class, () ->
                 new ResolveCommand(repo).setFile("unrelated.txt").markResolved(true).call());
+    }
+
+    @Test
+    public void constructorRejectsNullRepository() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> new ResolveCommand(null));
+        assertEquals("Repository cannot be null", ex.getMessage());
+    }
+
+    @Test
+    public void setFileWithoutMarkFlagsIsIgnoredAndListReturnsFullState() throws Exception {
+        createRealConflict();
+        HgRepository repo = new HgRepository(tempDir);
+
+        // fileToMark set, but neither markResolved() nor markUnresolved() requested: the
+        // "fileToMark != null && (markResolved || markUnresolved)" guard must short-circuit
+        // to false here (unlike the all-flags-set cases already covered above) and fall
+        // through to the plain list-building path.
+        Map<String, Boolean> result = new ResolveCommand(repo).setFile("conflict.txt").list(true).call();
+        assertEquals(1, result.size());
+        assertFalse(result.get("conflict.txt"));
+    }
+
+    @Test
+    public void markResolvedWithListTrueInSameCallReturnsFullStateMap() throws Exception {
+        createRealConflict();
+        HgRepository repo = new HgRepository(tempDir);
+
+        // Unlike markResolvedThenUnresolvedRoundTripsThroughState2() (which calls list()
+        // separately), requesting list(true) in the SAME call as markResolved(true) must
+        // skip the single-entry early return and fall through to the full states map.
+        Map<String, Boolean> result = new ResolveCommand(repo)
+                .setFile("conflict.txt").markResolved(true).list(true).call();
+        assertEquals(1, result.size());
+        assertTrue(result.get("conflict.txt"));
+    }
+
+    @Test
+    public void listTreatsEntryWithNoFieldsAsUnresolvedAndRecognizesResolvedPathConflict() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+        File stateFile = new File(repo.getHgDir(), "merge/state2");
+
+        MergeState ms = new MergeState();
+        ms.local = new byte[20];
+        ms.other = new byte[20];
+        // A path with no fields at all (e.g. a legacy/foreign record hg4j doesn't fully
+        // understand): isResolved() must treat this as unresolved via its "fields.isEmpty()"
+        // branch, not the "fields == null" one (every key in mergeState.state always maps to
+        // a real, non-null list — see ResolveCommand.isResolved()).
+        ms.state.put("blank.txt", new ArrayList<>());
+        // A path conflict already marked resolved ("pr"): isResolved() must recognize
+        // MergeState.RESOLVED_PATH, not just MergeState.RESOLVED.
+        ms.state.put("dir", new ArrayList<>(Arrays.asList(MergeState.RESOLVED_PATH, "dir~1", "dir")));
+        ms.write(stateFile);
+
+        Map<String, Boolean> listed = new ResolveCommand(repo).list(true).call();
+        assertEquals(2, listed.size());
+        assertFalse(listed.get("blank.txt"));
+        assertTrue(listed.get("dir"));
     }
 
     @Tag("interop")

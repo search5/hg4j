@@ -52,6 +52,76 @@ public class RollbackCommandTest {
         assertEquals(hex1, toHex(parent1).substring(0, 40));
     }
 
+    @Test
+    public void testRollbackThrowsWhenNoUndoFileExists(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> new RollbackCommand(repo).call());
+        assertTrue(ex.getMessage().contains("No rollback information available"));
+    }
+
+    @Test
+    public void testRollbackDeletesFileWhenOrigSizeIsZeroAndSkipsMalformedLines(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File storeDir = repo.getStoreDir();
+        File toDelete = new File(storeDir, "should-be-deleted.i");
+        Files.writeString(toDelete.toPath(), "some bytes that will be removed entirely");
+        assertTrue(toDelete.exists());
+
+        File toTruncate = new File(storeDir, "should-be-truncated.i");
+        Files.writeString(toTruncate.toPath(), "0123456789");
+
+        File missingTarget = new File(storeDir, "does-not-exist.i");
+
+        File undoFile = new File(storeDir, "undo");
+        Files.writeString(undoFile.toPath(),
+                "\n" +
+                "line-without-a-tab-should-be-skipped\n" +
+                "should-be-deleted.i\t0\n" +
+                "should-be-truncated.i\t4\n" +
+                "does-not-exist.i\t3\n");
+
+        new RollbackCommand(repo).call();
+
+        assertFalse(toDelete.exists(), "origSize=0 항목은 파일이 완전히 삭제되어야 함");
+        assertEquals(4, toTruncate.length(), "origSize>0이고 파일이 존재하면 해당 크기로 truncate되어야 함");
+        assertFalse(missingTarget.exists(), "원래 존재하지 않던 파일은 truncate 시도 없이 무시되어야 함");
+        assertFalse(undoFile.exists(), "rollback 완료 후 undo 파일은 정리되어야 함");
+    }
+
+    @Test
+    public void testRollbackRestoresBookmarksFromBackupAndClearsCurrentPointer(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File storeDir = repo.getStoreDir();
+        File undoFile = new File(storeDir, "undo");
+        Files.writeString(undoFile.toPath(), "");
+
+        File hgDir = new File(repoDir, ".hg");
+        File bookmarksFile = new File(hgDir, "bookmarks");
+        Files.writeString(bookmarksFile.toPath(), "stale-bookmark-content");
+
+        File undoBookmarks = new File(hgDir, "undo.backup.bookmarks");
+        Files.writeString(undoBookmarks.toPath(), "deadbeef00000000000000000000000000000000 restored-bookmark");
+
+        File curBkFile = new File(hgDir, "bookmarks.current");
+        Files.writeString(curBkFile.toPath(), "active-bookmark");
+        assertTrue(curBkFile.exists());
+
+        new RollbackCommand(repo).call();
+
+        assertEquals("deadbeef00000000000000000000000000000000 restored-bookmark",
+                Files.readString(bookmarksFile.toPath()),
+                "bookmarks 백업이 존재하면 그 내용으로 복원되어야 함");
+        assertFalse(curBkFile.exists(), "bookmarks.current 포인터는 항상 정리되어야 함");
+        assertFalse(undoBookmarks.exists(), "rollback 완료 후 undo.backup.bookmarks는 정리되어야 함");
+    }
+
     private static String toHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder(2 * bytes.length);
         for (byte b : bytes) {

@@ -1,6 +1,7 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.dirstate.Dirstate;
+import com.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
@@ -9,11 +10,13 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -400,5 +403,368 @@ public class RebaseCommandCoverageTest {
                 .setTarget(c1);
         byte[] rebasedTip = rebaseCmd.call();
         assertNotNull(rebasedTip, "registering a null hook must be a no-op, not break the rebase");
+    }
+
+    // ------------------------------------------------------------------
+    // A symlink target that legitimately exceeds every real OS's symlink-target length
+    // limit (PATH_MAX, ~4096 bytes on both Linux and macOS -- verified empirically:
+    // creating a real symlink with a 5000-byte target fails with ENAMETOOLONG, while
+    // writing the same 5000 bytes as ordinary file content succeeds) makes
+    // Files.createSymbolicLink fail for a reason that has nothing to do with
+    // permissions, so RebaseCommand.cherryPickBackup's/applyManifestToWorkingCopy's
+    // createSymbolicLink-fails fallback must actually complete (write the target text
+    // as a plain file) rather than being an intentionally-untaken defensive branch.
+    // The filelog content is forged directly (same technique RebaseCommand.restoreBackup
+    // itself uses) because no real symlink of that length can be created on this or any
+    // POSIX filesystem to seed it through the normal add/commit path.
+    // ------------------------------------------------------------------
+    @Test
+    public void rebaseSymlinkCreationFallsBackToPlainFileWhenTargetExceedsOsLimit(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "base.txt").toPath(), "base");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("t").setMessage("c0").call();
+
+        Files.writeString(new File(repoDir, "main.txt").toPath(), "main");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("t").setMessage("c1 (target)").call();
+
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(c0, new byte[20]);
+        repo.writeDirstate(ds);
+        File bigLink = new File(repoDir, "biglink");
+        Files.createSymbolicLink(bigLink.toPath(), Path.of("base.txt"));
+        new AddCommand(repo).call();
+        byte[] c2 = new CommitCommand(repo).setAuthor("t").setMessage("c2 (source, symlink)").call();
+
+        byte[] tooLongTarget = forgeOverLengthSymlinkContent(repo, "biglink");
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
+        byte[] rebasedTip = rebaseCmd.call();
+        assertNotNull(rebasedTip);
+
+        assertFalse(Files.isSymbolicLink(bigLink.toPath()),
+                "an over-length symlink target must fall back to a plain file, not a real symlink");
+        assertEquals(new String(tooLongTarget, StandardCharsets.UTF_8), Files.readString(bigLink.toPath()),
+                "fallback plain file must contain the untruncated target bytes");
+    }
+
+    // ------------------------------------------------------------------
+    // Same over-length-symlink-target fallback as above, but reached through
+    // RebaseCommand.checkoutNode/applyManifestToWorkingCopy instead of
+    // cherryPickBackup: here the REBASE TARGET itself carries the over-length symlink,
+    // so cherryPickBackup's very first step -- checking out the new parent before
+    // writing any of the source's own files -- is what hits the fallback.
+    // ------------------------------------------------------------------
+    @Test
+    public void rebaseTargetCheckoutSymlinkFallsBackToPlainFileWhenTargetExceedsOsLimit(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "base.txt").toPath(), "base");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("t").setMessage("c0").call();
+
+        File bigLink = new File(repoDir, "biglink");
+        Files.createSymbolicLink(bigLink.toPath(), Path.of("base.txt"));
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("t").setMessage("c1 (target, symlink)").call();
+        byte[] tooLongTarget = forgeOverLengthSymlinkContent(repo, "biglink");
+
+        // The real, valid, short-target symlink physically written for c1 above must be
+        // removed from both the working copy and the dirstate before switching to c0's
+        // independent lineage -- left on disk it would linger as an untracked file that
+        // AddCommand below would pick up for c2, re-introducing a real (valid) symlink
+        // that masks the fallback this test means to exercise; left only in the dirstate
+        // (without a parent reset clearing it) CommitCommand would refuse the commit as
+        // a missing tracked file.
+        Files.delete(bigLink.toPath());
+        Dirstate ds = repo.getDirstate();
+        ds.removeEntry("biglink");
+        ds.setParents(c0, new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "feature.txt").toPath(), "feature");
+        new AddCommand(repo).call();
+        byte[] c2 = new CommitCommand(repo).setAuthor("t").setMessage("c2 (source)").call();
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
+        byte[] rebasedTip = rebaseCmd.call();
+        assertNotNull(rebasedTip);
+
+        assertFalse(Files.isSymbolicLink(bigLink.toPath()),
+                "an over-length symlink target must fall back to a plain file when checking out the target, not a real symlink");
+        assertEquals(new String(tooLongTarget, StandardCharsets.UTF_8), Files.readString(bigLink.toPath()),
+                "fallback plain file must contain the untruncated target bytes");
+    }
+
+    private static byte[] forgeOverLengthSymlinkContent(HgRepository repo, String path) throws IOException {
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), path);
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        Revlog originalFilelog = repo.getRevlog(flIdx, flDat);
+        Revlog.IndexRecord origRec = originalFilelog.getIndexRecord(0);
+        byte[] origNode = origRec.getNodeId();
+        int origLinkRev = origRec.getLinkRev();
+
+        Files.deleteIfExists(flIdx.toPath());
+        Files.deleteIfExists(flDat.toPath());
+        repo.clearRevlogCache();
+
+        byte[] tooLongTarget = "a".repeat(5000).getBytes(StandardCharsets.UTF_8);
+        Revlog forgedFilelog = repo.getRevlog(flIdx, flDat);
+        forgedFilelog.appendRawRevision(tooLongTarget, origNode, -1, -1, new byte[20], new byte[20], origLinkRev);
+        repo.clearRevlogCache();
+        return tooLongTarget;
+    }
+
+    // ------------------------------------------------------------------
+    // A target commit whose changelog entry references a manifest node id that the
+    // manifest revlog does not have must fail closed with a clear exception (rather than
+    // NPE-ing or silently checking out an empty tree) -- exercises
+    // RebaseCommand.applyManifestToWorkingCopy's manifest-not-found guard, reached via
+    // checkoutNode when cherry-picking onto that corrupted target. The corruption is
+    // forged directly onto an otherwise-real commit's changelog entry (only its
+    // manifest-hex field is replaced), mirroring the truncate+reappend technique
+    // RebaseCommand.restoreBackup itself relies on.
+    // ------------------------------------------------------------------
+    @Test
+    public void rebaseRollsBackWhenTargetManifestNodeIsMissing(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("t").setMessage("c0 (doomed target)").call();
+
+        byte[] bogusManifestHex = new byte[20];
+        Arrays.fill(bogusManifestHex, (byte) 0xAB);
+        patchLastChangelogRevision(repo, text -> {
+            int firstNl = text.indexOf('\n');
+            return NodeIdUtil.toHex(bogusManifestHex) + text.substring(firstNl);
+        });
+
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(new byte[20], new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "b.txt").toPath(), "b");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("t").setMessage("c1 (source, independent root)").call();
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c1).setTarget(c0);
+        assertThrows(HgRevisionNotFoundException.class, rebaseCmd::call,
+                "checking out a target whose manifest node id doesn't exist must fail, not silently misbehave");
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog cl = new Revlog(clIdx, clDat);
+        assertEquals(2, cl.getRevisionCount(), "physical rollback must restore both revisions");
+        assertFalse(new File(repo.getStoreDir(), "rebase-backup").exists());
+        assertFalse(new File(repo.getStoreDir(), "journal").exists());
+    }
+
+    // ------------------------------------------------------------------
+    // Real hg commits always write a "<time> <offset> <extra>" (or "<time> <offset>")
+    // date line with at least one space, and any offset field they write always parses
+    // as a valid integer -- so RebaseCommand.backupRevision's defensive
+    // NumberFormatException handling and its whole "no space at all" fallback branch are
+    // never exercised by any normally-produced changelog entry. Forging three
+    // independent-root commits' date lines (same truncate+reappend technique as the
+    // other forged-changelog tests here) exercises all three: a non-numeric,
+    // space-less date line (backupRevision's else branch), a malformed offset followed
+    // by an extra field, and a malformed offset with no extra field at all. Only the
+    // date line is corrupted -- manifest/file content stays real and valid, so the
+    // affected revisions still round-trip correctly through backup/restore or
+    // cherry-pick.
+    // ------------------------------------------------------------------
+    @Test
+    public void backupRevisionToleratesMalformedDateLines(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "target.txt").toPath(), "target");
+        new AddCommand(repo).call();
+        byte[] target = new CommitCommand(repo).setAuthor("t").setMessage("rebase target").call();
+
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(new byte[20], new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "src.txt").toPath(), "src");
+        new AddCommand(repo).call();
+        byte[] source = new CommitCommand(repo).setAuthor("t").setMessage("source (rebased)").call();
+        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "not-a-number-no-space"));
+
+        ds = repo.getDirstate();
+        ds.setParents(new byte[20], new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "extra1.txt").toPath(), "extra1");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("t").setMessage("independent root (restored)").call();
+        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "1600000000 BADOFFSET branch:default"));
+
+        ds = repo.getDirstate();
+        ds.setParents(new byte[20], new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "extra2.txt").toPath(), "extra2");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("t").setMessage("independent root 2 (restored)").call();
+        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "1600000000 BADOFFSET2"));
+
+        // A space-less date line that IS purely numeric (unlike "source"'s above) parses
+        // successfully in backupRevision's else branch, exercising that branch's normal
+        // (non-throwing) completion in addition to the throwing case already covered above.
+        ds = repo.getDirstate();
+        ds.setParents(new byte[20], new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "extra3.txt").toPath(), "extra3");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("t").setMessage("independent root 3 (restored)").call();
+        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "9876543210"));
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(source).setTarget(target);
+        byte[] rebasedTip = rebaseCmd.call();
+        assertNotNull(rebasedTip, "malformed date lines on unrelated/rebased revisions must not abort the rebase");
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog cl = new Revlog(clIdx, clDat);
+        assertEquals(5, cl.getRevisionCount(), "target, rebased source, and three restored independent roots");
+    }
+
+    // ------------------------------------------------------------------
+    // backupRevision's message-line reconstruction only exercises its "join with \n"
+    // branch when the commit message spans more than one line -- every other test in
+    // this suite uses single-line messages. A multi-line message rebased through
+    // cherry-pick (which re-commits "[rebase] " + backup.message) must preserve every
+    // line and the newlines between them, not just the first line.
+    // ------------------------------------------------------------------
+    @Test
+    public void rebasePreservesMultiLineCommitMessage(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "base.txt").toPath(), "base");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("t").setMessage("c0").call();
+
+        Files.writeString(new File(repoDir, "main.txt").toPath(), "main");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("t").setMessage("c1 (target)").call();
+
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(c0, new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "feature.txt").toPath(), "feature");
+        new AddCommand(repo).call();
+        String multiLineMessage = "summary line\n\nsecond paragraph\nthird line";
+        byte[] c2 = new CommitCommand(repo).setAuthor("t").setMessage(multiLineMessage).call();
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
+        byte[] rebasedTip = rebaseCmd.call();
+        assertNotNull(rebasedTip);
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog cl = new Revlog(clIdx, clDat);
+        int tipRev = NodeIdUtil.findRevisionByNodeId(cl, rebasedTip);
+        String clText = new String(cl.getRevisionContent(tipRev), StandardCharsets.UTF_8);
+        assertTrue(clText.endsWith("[rebase] " + multiLineMessage),
+                "every line of a multi-line commit message must survive rebase, not just the first: " + clText);
+    }
+
+    // ------------------------------------------------------------------
+    // performPhysicalRollback's own journal cleanup is best-effort: if the rebase fails
+    // for an unrelated reason (here, writeRebaseJournal itself failing because the
+    // journal path is unexpectedly a non-empty directory) and deleteRebaseJournal() is
+    // then retried during rollback, it hits the exact same obstacle and must not let
+    // that second failure mask the original exception or abort the rollback partway
+    // through.
+    // ------------------------------------------------------------------
+    @Test
+    public void rebaseRollbackToleratesJournalDeletionFailure(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "base.txt").toPath(), "base");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("t").setMessage("c0").call();
+
+        Files.writeString(new File(repoDir, "main.txt").toPath(), "main");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("t").setMessage("c1 (target)").call();
+
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(c0, new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "feature.txt").toPath(), "feature");
+        new AddCommand(repo).call();
+        byte[] c2 = new CommitCommand(repo).setAuthor("t").setMessage("c2 (source)").call();
+
+        // writeRebaseJournal() unconditionally deletes then rewrites the "journal" file;
+        // pre-creating it as a non-empty directory makes that first Files.deleteIfExists
+        // throw DirectoryNotEmptyException (triggering rollback), and since nothing ever
+        // clears the obstacle, deleteRebaseJournal()'s own retry during rollback hits the
+        // exact same failure.
+        File journalAsDir = new File(repo.getStoreDir(), "journal");
+        assertTrue(journalAsDir.mkdir());
+        Files.writeString(new File(journalAsDir, "blocker.txt").toPath(), "blocks Files.deleteIfExists");
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
+        assertThrows(IOException.class, rebaseCmd::call);
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog cl = new Revlog(clIdx, clDat);
+        assertEquals(3, cl.getRevisionCount(), "physical rollback of the store must still complete "
+                + "even though the journal itself could not be cleaned up");
+        assertFalse(new File(repo.getStoreDir(), "rebase-backup").exists(), "backup dir must still be cleaned after rollback");
+    }
+
+    private static String replaceDateLine(String changelogText, String newDateLine) {
+        int firstNl = changelogText.indexOf('\n');
+        int secondNl = changelogText.indexOf('\n', firstNl + 1);
+        int thirdNl = changelogText.indexOf('\n', secondNl + 1);
+        return changelogText.substring(0, secondNl + 1) + newDateLine + "\n" + changelogText.substring(thirdNl + 1);
+    }
+
+    private static void patchLastChangelogRevision(HgRepository repo, java.util.function.UnaryOperator<String> transform) throws IOException {
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog changelog = repo.getRevlog(clIdx, clDat);
+
+        int rev = changelog.getRevisionCount() - 1;
+        Revlog.IndexRecord rec = changelog.getIndexRecord(rev);
+        byte[] node = rec.getNodeId();
+        int linkRev = rec.getLinkRev();
+        int parent1 = rec.getParent1();
+        int parent2 = rec.getParent2();
+        byte[] p1Node = parent1 != -1 ? changelog.getIndexRecord(parent1).getNodeId() : new byte[20];
+        byte[] p2Node = parent2 != -1 ? changelog.getIndexRecord(parent2).getNodeId() : new byte[20];
+
+        byte[] rawContent = changelog.getRawRevisionContent(rev);
+        String text = new String(rawContent, StandardCharsets.UTF_8);
+        byte[] newRaw = transform.apply(text).getBytes(StandardCharsets.UTF_8);
+
+        long idxSize = (long) rev * 64;
+        long datSize = rec.getOffset();
+        truncateForTest(clIdx, idxSize);
+        truncateForTest(clDat, datSize);
+        repo.clearRevlogCache();
+
+        Revlog freshChangelog = repo.getRevlog(clIdx, clDat);
+        freshChangelog.appendRawRevision(newRaw, node, parent1, parent2, p1Node, p2Node, linkRev);
+        repo.clearRevlogCache();
+    }
+
+    private static void truncateForTest(File file, long size) throws IOException {
+        if (!file.exists()) return;
+        if (size == 0) {
+            Files.deleteIfExists(file.toPath());
+        } else {
+            try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
+                outChan.truncate(size);
+                outChan.force(true);
+            }
+        }
     }
 }

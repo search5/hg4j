@@ -405,4 +405,203 @@ public class CommitCommandCoverageTest {
     public void testEncodeExtraKeyNullReturnsEmptyString() {
         assertEquals("", CommitCommand.encodeExtraKey(null));
     }
+
+    @Test
+    public void testRenameOfNeverCommittedFileUsesNullSourceRevisionPlaceholder(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File original = new File(repoDir, "fresh.txt");
+            Files.writeString(original.toPath(), "brand new content");
+            new AddCommand(repo).call();
+
+            new RenameCommand(repo).setSource("fresh.txt").setTarget("renamedFresh.txt").call();
+
+            // This is the repository's very first commit -- there is no parent manifest to look
+            // up the rename source in, so the copy metadata's "copyrev" must fall back to the
+            // null-node placeholder rather than a real revision hash.
+            new CommitCommand(repo).setMessage("rename before any commit").call();
+
+            // "renamedFresh.txt" contains uppercase letters, which real hg's store filename
+            // encoding escapes -- resolve the on-disk path the same way CommitCommand does.
+            File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "renamedFresh.txt");
+            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+            Revlog filelog = new Revlog(flIdx, flDat);
+            Map<String, String> meta = filelog.getRevisionMetadata(0);
+
+            assertEquals("fresh.txt", meta.get("copy"));
+            assertEquals("0000000000000000000000000000000000000000", meta.get("copyrev"),
+                    "Copy source never committed before -- copyrev must be the null-node placeholder");
+        }
+    }
+
+    @Test
+    public void testMergeDisambiguationFallsBackToP2WhenP1FileRevisionCannotBeRead(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File divFile = new File(repoDir, "div.txt");
+            Files.writeString(divFile.toPath(), "root value");
+            new AddCommand(repo).call();
+            byte[] rootNode = new CommitCommand(repo).setMessage("root").call();
+
+            Files.writeString(divFile.toPath(), "p1 value");
+            byte[] p1Node = new CommitCommand(repo).setMessage("p1 branch").call();
+
+            Dirstate resetDirstate = repo.getDirstate();
+            resetDirstate.setParents(new NodeId(rootNode), NodeId.NULL);
+            repo.writeDirstate(resetDirstate);
+
+            Files.writeString(divFile.toPath(), "p2 value");
+            byte[] p2Node = new CommitCommand(repo).setMessage("p2 branch").call();
+
+            Map<String, String> p1Manifest = repo.getManifestAtCommit(p1Node);
+            Map<String, String> p2Manifest = repo.getManifestAtCommit(p2Node);
+            assertNotEquals(p1Manifest.get("div.txt"), p2Manifest.get("div.txt"),
+                    "Test setup sanity: the two branches must genuinely diverge on div.txt");
+
+            // Corrupt the physical filelog for div.txt so any attempt to read P1's file revision
+            // throws -- this is the branch under test: the byte-level disambiguation must swallow
+            // that failure and fall back to P2's side rather than propagating the exception.
+            File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "div.txt");
+            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+            Files.delete(flIdx.toPath());
+            Files.delete(flDat.toPath());
+
+            Dirstate mergeDirstate = repo.getDirstate();
+            mergeDirstate.setParents(new NodeId(p1Node), new NodeId(p2Node));
+            repo.writeDirstate(mergeDirstate);
+
+            byte[] mergeNode = new CommitCommand(repo).setMessage("merge branches").call();
+            assertNotNull(mergeNode);
+
+            Map<String, String> mergedManifest = repo.getManifestAtCommit(mergeNode);
+            assertEquals(p2Manifest.get("div.txt"), mergedManifest.get("div.txt"),
+                    "P1's file revision could not be read, so disambiguation must fall back to P2's side");
+        }
+    }
+
+    @Test
+    public void testPhaseAssignmentFailureIsSwallowedAndCommitStillSucceeds(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "v1");
+            new AddCommand(repo).call();
+            new CommitCommand(repo).setMessage("commit 1").call();
+
+            // Corrupt phaseroots into a directory so repository.getPhaseRoots() throws while
+            // parsing it -- the phase-assignment step must swallow that failure (log-and-continue)
+            // rather than aborting an otherwise-successful commit.
+            File phaserootsFile = new File(repo.getStoreDir(), "phaseroots");
+            Files.delete(phaserootsFile.toPath());
+            Files.createDirectory(phaserootsFile.toPath());
+
+            Files.writeString(f1.toPath(), "v2");
+            byte[] secondCommit = new CommitCommand(repo).setMessage("commit 2").call();
+
+            assertNotNull(secondCommit, "Phase assignment failure must not fail the whole commit");
+            Dirstate dirstate = repo.getDirstate();
+            assertArrayEquals(secondCommit, dirstate.getParent1(),
+                    "Commit must still succeed and advance dirstate despite phase-tracking failure");
+        }
+    }
+
+    @Test
+    public void testWriteUndoInfoFailureIsSwallowedAndCommitStillSucceeds(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File f1 = new File(repoDir, "a.txt");
+            Files.writeString(f1.toPath(), "v1");
+            new AddCommand(repo).call();
+
+            // A non-empty directory at undo.backup.bookmarks makes writeUndoInfo's own leading
+            // Files.deleteIfExists(...) throw DirectoryNotEmptyException -- the commit itself
+            // must still succeed since undo-info writing is best-effort (log-and-continue).
+            File undoBookmarks = new File(repoDir, ".hg/undo.backup.bookmarks");
+            Files.createDirectory(undoBookmarks.toPath());
+            Files.writeString(new File(undoBookmarks, "blocker").toPath(), "x");
+
+            byte[] commitNode = new CommitCommand(repo).setMessage("commit despite undo failure").call();
+
+            assertNotNull(commitNode);
+            Dirstate dirstate = repo.getDirstate();
+            assertArrayEquals(commitNode, dirstate.getParent1(),
+                    "Commit must succeed even though undo-info writing failed");
+            assertTrue(Files.isDirectory(undoBookmarks.toPath()),
+                    "The corrupted path is left as-is since writeUndoInfo's own cleanup failed before writing anything");
+        }
+    }
+
+    @Test
+    public void testMergeDisambiguationFallsBackToP2WhenP1FilelogExistsButLacksTheRevision(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File divFile = new File(repoDir, "div2.txt");
+            Files.writeString(divFile.toPath(), "root value");
+            new AddCommand(repo).call();
+            byte[] rootNode = new CommitCommand(repo).setMessage("root").call();
+
+            Files.writeString(divFile.toPath(), "p1 value");
+            byte[] p1Node = new CommitCommand(repo).setMessage("p1 branch").call();
+
+            Dirstate resetDirstate = repo.getDirstate();
+            resetDirstate.setParents(new NodeId(rootNode), NodeId.NULL);
+            repo.writeDirstate(resetDirstate);
+
+            Files.writeString(divFile.toPath(), "p2 value");
+            byte[] p2Node = new CommitCommand(repo).setMessage("p2 branch").call();
+
+            Map<String, String> p1Manifest = repo.getManifestAtCommit(p1Node);
+            Map<String, String> p2Manifest = repo.getManifestAtCommit(p2Node);
+            assertNotEquals(p1Manifest.get("div2.txt"), p2Manifest.get("div2.txt"),
+                    "Test setup sanity: the two branches must genuinely diverge on div2.txt");
+
+            // Replace the physical filelog with an empty-but-present one: getFileRevisionContent
+            // must find the index file exists yet contain zero revisions, exercising the
+            // "revision not found" throw distinctly from the "index missing entirely" throw
+            // exercised by testMergeDisambiguationFallsBackToP2WhenP1FileRevisionCannotBeRead.
+            File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "div2.txt");
+            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+            Files.delete(flIdx.toPath());
+            Files.delete(flDat.toPath());
+            Files.createFile(flIdx.toPath());
+            Files.createFile(flDat.toPath());
+            assertEquals(0, new Revlog(flIdx, flDat).getRevisionCount(),
+                    "Test setup sanity: the replacement filelog must be empty (index present, zero revisions)");
+            // The repository cached the pre-replacement Revlog instance from the p1/p2 commits
+            // above -- drop it so the merge commit re-opens the (now-empty) file from disk
+            // instead of reading stale in-memory index data.
+            repo.clearRevlogCache();
+
+            Dirstate mergeDirstate = repo.getDirstate();
+            mergeDirstate.setParents(new NodeId(p1Node), new NodeId(p2Node));
+            repo.writeDirstate(mergeDirstate);
+
+            byte[] mergeNode = new CommitCommand(repo).setMessage("merge branches").call();
+            assertNotNull(mergeNode);
+
+            Map<String, String> mergedManifest = repo.getManifestAtCommit(mergeNode);
+            assertEquals(p2Manifest.get("div2.txt"), mergedManifest.get("div2.txt"),
+                    "P1's file revision could not be found in the (empty) filelog, so disambiguation must fall back to P2's side");
+        }
+    }
+
+    @Test
+    public void testGetBranchOfRevisionAndIsClosingBranchHandleMalformedChangelogContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        File clIdx = new File(repoDir, "cl.i");
+        File clDat = new File(repoDir, "cl.d");
+        Revlog revlog = new Revlog(clIdx, clDat);
+
+        // A revision with no newline at all: parseExtra must bail out early (lines.length <= 2)
+        // rather than index past the array.
+        revlog.appendRevision("onlyoneline".getBytes(StandardCharsets.UTF_8), -1, -1, new byte[20], new byte[20], 0);
+        assertEquals("default", CommitCommand.getBranchOfRevision(revlog, 0));
+        assertFalse(CommitCommand.isRevisionClosingBranch(revlog, 0));
+
+        // A revision whose date/tz line has no space at all: parseExtra must bail out
+        // (firstSpace == -1) rather than throw or misparse.
+        revlog.appendRevision("mf\nauthor\nnodatespace\n\nmsg".getBytes(StandardCharsets.UTF_8), 0, -1, new byte[20], new byte[20], 1);
+        assertEquals("default", CommitCommand.getBranchOfRevision(revlog, 1));
+        assertFalse(CommitCommand.isRevisionClosingBranch(revlog, 1));
+    }
 }

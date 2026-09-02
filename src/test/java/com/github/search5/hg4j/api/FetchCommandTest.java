@@ -503,6 +503,57 @@ public class FetchCommandTest {
     }
 
     @Test
+    public void fetchDiscoversIndirectCommonNodeAndMarksMergeParentsAsInteriorRevisions(@TempDir Path tempDir) throws Exception {
+        File srcDir = tempDir.resolve("source").toFile();
+        HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
+
+        File f1 = new File(srcDir, "hello.txt");
+        Files.writeString(f1.toPath(), "Line 1\nLine 2\nLine 3\n");
+        new AddCommand(srcRepo).call();
+        byte[] baseNode = new CommitCommand(srcRepo).setAuthor("dev").setMessage("base").call();
+
+        Files.writeString(f1.toPath(), "Line 1 [MINE]\nLine 2\nLine 3\n");
+        byte[] yoursNode = new CommitCommand(srcRepo).setAuthor("dev").setMessage("yours").call();
+
+        Dirstate dirstate = srcRepo.getDirstate();
+        dirstate.setParents(baseNode, new byte[20]);
+        srcRepo.writeDirstate(dirstate);
+        Files.writeString(f1.toPath(), "Line 1\nLine 2\nLine 3 [THEIRS]\n");
+        new CommitCommand(srcRepo).setAuthor("dev").setMessage("theirs").call();
+
+        new MergeCommand(srcRepo).setNodeId(yoursNode).call();
+        byte[] mergeNode = new CommitCommand(srcRepo).setAuthor("dev").setMessage("merge").call();
+
+        File destDir = tempDir.resolve("dest").toFile();
+        HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+        new FetchCommand(destRepo).applyBundle(HgTestUtils.createMockBundleFromRepo(srcRepo));
+
+        Revlog destCl = new Revlog(new File(destRepo.getStoreDir(), "00changelog.i"), new File(destRepo.getStoreDir(), "00changelog.d"));
+        assertEquals(4, destCl.getRevisionCount(), "sanity: base+yours+theirs+merge must all be present locally");
+        // sanity: the merge commit must really carry two parents, so the discovery loop's
+        // parent1 AND parent2 interior-marking branches both get exercised below.
+        Revlog.IndexRecord mergeRec = destCl.getIndexRecord(3);
+        assertTrue(mergeRec.getParent1() >= 0 && mergeRec.getParent2() >= 0);
+
+        String mergeHex = NodeIdUtil.toHex(mergeNode);
+        String baseHex = NodeIdUtil.toHex(baseNode);
+        String unknownHeadHex = "7".repeat(40);
+
+        ScriptedRemoteConnection conn = new ScriptedRemoteConnection();
+        conn.capabilities = List.of("getbundle");
+        conn.heads = List.of(mergeHex, unknownHeadHex);
+        conn.betweenResult = List.of(baseHex); // indirectly discovered node, not already in `common`
+        conn.knownResult = "11";
+        conn.bundleBytesToReturn = new byte[0];
+        String url = registerScripted(conn);
+
+        assertDoesNotThrow(() -> new FetchCommand(destRepo).setSource(url).call());
+        assertNotNull(conn.lastCommonArg);
+        assertTrue(conn.lastCommonArg.contains(baseHex),
+                "The between-discovered base node must be folded into the common set even though it wasn't a remote head");
+    }
+
+    @Test
     public void fetchReturnsEmptyWhenBundleResponseHasNoData(@TempDir Path tempDir) throws Exception {
         File srcDir = tempDir.resolve("source").toFile();
         File destDir = tempDir.resolve("dest").toFile();

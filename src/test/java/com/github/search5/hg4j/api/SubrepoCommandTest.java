@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -119,5 +120,107 @@ public class SubrepoCommandTest {
 
         assertTrue(marker.exists(), "Existing subrepo directory content must be left untouched, not re-cloned over");
         assertFalse(new File(alreadyThere, ".hg").exists(), "No clone should have happened since the directory already existed");
+    }
+
+    @Test
+    public void addAppendsToExistingHgsubAndHgsubstateFiles(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+
+        new SubrepoCommand(repo)
+                .setAction("add")
+                .setSubrepoPath("libs/sub1")
+                .setSubrepoUrl("https://example.invalid/sub1")
+                .setRevision("a".repeat(40))
+                .call();
+        new SubrepoCommand(repo)
+                .setAction("add")
+                .setSubrepoPath("libs/sub2")
+                .setSubrepoUrl("https://example.invalid/sub2")
+                .setRevision("b".repeat(40))
+                .call();
+
+        List<String> hgsub = Files.readAllLines(new File(tempDir.toFile(), ".hgsub").toPath(), StandardCharsets.UTF_8);
+        assertEquals(List.of(
+                "libs/sub1 = https://example.invalid/sub1",
+                "libs/sub2 = https://example.invalid/sub2"
+        ), hgsub);
+
+        List<String> hgsubstate = Files.readAllLines(new File(tempDir.toFile(), ".hgsubstate").toPath(), StandardCharsets.UTF_8);
+        assertEquals(List.of(
+                "a".repeat(40) + " libs/sub1",
+                "b".repeat(40) + " libs/sub2"
+        ), hgsubstate);
+    }
+
+    @Test
+    public void callWithUnrecognizedActionIsNoOp(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+
+        new SubrepoCommand(repo).setAction("bogus").call();
+
+        assertFalse(new File(tempDir.toFile(), ".hgsub").exists());
+        assertFalse(new File(tempDir.toFile(), ".hgsubstate").exists());
+    }
+
+    @Test
+    public void initSkipsBlankCommentAndMalformedHgsubLines(@TempDir Path tempDir) throws Exception {
+        File subSourceDir = tempDir.resolve("sub-source").toFile();
+        HgRepository subSourceRepo = Hg.init().setDirectory(subSourceDir).call();
+        File subFile = new File(subSourceDir, "hello.txt");
+        Files.writeString(subFile.toPath(), "hello from subrepo");
+        new AddCommand(subSourceRepo).addFile("hello.txt").call();
+        new CommitCommand(subSourceRepo).setMessage("sub first commit").setAuthor("Sub <sub@example.com>").call();
+
+        File parentDir = tempDir.resolve("parent").toFile();
+        HgRepository parentRepo = Hg.init().setDirectory(parentDir).call();
+        Files.write(new File(parentDir, ".hgsub").toPath(), List.of(
+                "# subrepo declarations",
+                "",
+                "this-line-has-no-equals-sign",
+                "vendor/sub = " + subSourceDir.getAbsolutePath()
+        ), StandardCharsets.UTF_8);
+
+        new SubrepoCommand(parentRepo).setAction("init").call();
+
+        File clonedSubDir = new File(parentDir, "vendor/sub");
+        assertTrue(clonedSubDir.exists(), "Subrepo should still be cloned despite blank/comment/malformed noise lines in .hgsub");
+        assertEquals("hello from subrepo", Files.readString(new File(clonedSubDir, "hello.txt").toPath()));
+    }
+
+    @Test
+    public void initFindsTabSeparatedRevisionAfterSkippingNonMatchingStateLine(@TempDir Path tempDir) throws Exception {
+        File subSourceDir = tempDir.resolve("sub-source").toFile();
+        HgRepository subSourceRepo = Hg.init().setDirectory(subSourceDir).call();
+        File subFile = new File(subSourceDir, "hello.txt");
+        Files.writeString(subFile.toPath(), "hello from subrepo");
+        new AddCommand(subSourceRepo).addFile("hello.txt").call();
+        new CommitCommand(subSourceRepo).setMessage("sub first commit").setAuthor("Sub <sub@example.com>").call();
+        String subTipNode = new LogCommand(subSourceRepo).call().get(0).getNodeId().toHex();
+
+        File parentDir = tempDir.resolve("parent").toFile();
+        HgRepository parentRepo = Hg.init().setDirectory(parentDir).call();
+        Files.writeString(new File(parentDir, ".hgsub").toPath(), "vendor/sub = " + subSourceDir.getAbsolutePath() + "\n");
+        Files.write(new File(parentDir, ".hgsubstate").toPath(), List.of(
+                "b".repeat(40) + " unrelated/other-sub",
+                subTipNode + "\tvendor/sub"
+        ), StandardCharsets.UTF_8);
+
+        new SubrepoCommand(parentRepo).setAction("init").call();
+
+        File clonedSubDir = new File(parentDir, "vendor/sub");
+        assertTrue(clonedSubDir.exists());
+        HgRepository clonedSubRepo = new HgRepository(clonedSubDir);
+        assertEquals(subTipNode, NodeIdUtil.toHex(clonedSubRepo.getDirstate().getParent1()),
+                "Revision pinned via a tab-separated .hgsubstate entry, found after skipping a non-matching line, should still be applied");
+    }
+
+    @Test
+    public void initThrowsWhenHgsubEntryHasEmptyUrl(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        Files.writeString(new File(tempDir.toFile(), ".hgsub").toPath(), "badsub =\n");
+
+        IOException ex = assertThrows(IOException.class,
+                () -> new SubrepoCommand(repo).setAction("init").call());
+        assertTrue(ex.getMessage().contains("badsub"));
     }
 }

@@ -26,6 +26,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.errors.HgCorruptDataException;
 import com.github.search5.hg4j.errors.HgProtocolException;
 import com.github.search5.hg4j.errors.HgTransportException;
 import com.github.search5.hg4j.transport.wireprotov2.Cbor;
@@ -474,6 +475,205 @@ public class HgRemoteClientTest {
         assertEquals(50, entry.deltabase[0]);
         assertEquals(9, entry.flags);
         assertEquals("Delta", new String(entry.delta, StandardCharsets.US_ASCII));
+    }
+
+    private static void writeChunk(ByteArrayOutputStream out, byte[] payload) {
+        int totalLen = payload.length + 4;
+        out.write((totalLen >> 24) & 0xFF);
+        out.write((totalLen >> 16) & 0xFF);
+        out.write((totalLen >> 8) & 0xFF);
+        out.write(totalLen & 0xFF);
+        out.write(payload, 0, payload.length);
+    }
+
+    private static void writeInt(byte[] chunk, int offset, int value) {
+        chunk[offset] = (byte) ((value >> 24) & 0xFF);
+        chunk[offset + 1] = (byte) ((value >> 16) & 0xFF);
+        chunk[offset + 2] = (byte) ((value >> 8) & 0xFF);
+        chunk[offset + 3] = (byte) (value & 0xFF);
+    }
+
+    @Test
+    public void testChangegroupParserSingleArgParseBundleDefaultsToCg1() throws Exception {
+        // parseBundle(InputStream) is the convenience 1-arg overload used by ShelveCommand/IncomingCommand;
+        // verify it defaults to cg1 parsing (80-byte header, no deltabase) end-to-end through a full bundle.
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] cg1Chunk = new byte[80 + 3];
+        cg1Chunk[0] = 7; // node
+        System.arraycopy("abc".getBytes(StandardCharsets.US_ASCII), 0, cg1Chunk, 80, 3);
+        writeChunk(out, cg1Chunk);
+        out.write(new byte[]{0, 0, 0, 0}); // changelog terminal
+        out.write(new byte[]{0, 0, 0, 0}); // manifest (empty)
+        out.write(new byte[]{0, 0, 0, 0}); // file groups terminal
+
+        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(out.toByteArray()));
+        assertEquals(1, bundle.changelogEntries.size());
+        assertNull(bundle.changelogEntries.get(0).deltabase);
+        assertEquals(7, bundle.changelogEntries.get(0).node[0]);
+        assertNotNull(bundle.manifestEntries);
+        assertTrue(bundle.manifestEntries.isEmpty());
+        assertTrue(bundle.fileGroups.isEmpty());
+    }
+
+    @Test
+    public void testChangegroupParserMalformedHeaderChunkThrows() {
+        // A first (and only) header chunk shorter than the required cg1 header size (80 bytes)
+        // must be rejected as corrupt data rather than silently truncated/misread.
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeChunk(out, new byte[]{1, 2, 3});
+
+        ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
+        HgCorruptDataException ex = assertThrows(HgCorruptDataException.class, () -> ChangegroupParser.parseGroup(in));
+        assertTrue(ex.getMessage().contains("Malformed changegroup header chunk"));
+    }
+
+    @Test
+    public void testChangegroupParserAutoDetectsVersion02FromUnspecifiedHeader() throws Exception {
+        // When version "01" is requested but the first chunk actually carries a plausible cg2 delta
+        // header (offset 100) and NOT a plausible cg3 one (offset 102), auto-detection must upgrade
+        // parsing to cg2 (100-byte header, deltabase present) rather than misreading it as cg1.
+        byte[] chunk = new byte[100 + 12 + 5];
+        chunk[0] = 11; // node
+        chunk[60] = 22; // deltabase
+        chunk[80] = 33; // cs
+        writeInt(chunk, 100, 0);  // delta start
+        writeInt(chunk, 104, 0);  // delta end
+        writeInt(chunk, 108, 5);  // delta len == remaining bytes -> valid v2 header
+        System.arraycopy("HELLO".getBytes(StandardCharsets.US_ASCII), 0, chunk, 112, 5);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeChunk(out, chunk);
+        out.write(new byte[]{0, 0, 0, 0});
+
+        String[] outVersion = new String[1];
+        List<ChangegroupParser.ChangeGroupEntry> group =
+                ChangegroupParser.parseGroup(new ByteArrayInputStream(out.toByteArray()), "01", outVersion);
+        assertEquals("02", outVersion[0]);
+        assertEquals(1, group.size());
+        ChangegroupParser.ChangeGroupEntry entry = group.get(0);
+        assertEquals(11, entry.node[0]);
+        assertNotNull(entry.deltabase);
+        assertEquals(22, entry.deltabase[0]);
+        assertEquals(33, entry.cs[0]);
+    }
+
+    @Test
+    public void testChangegroupParserAutoDetectsVersion03FromDeltaHeader() throws Exception {
+        // A first chunk whose offset-102 window decodes into a structurally plausible delta
+        // header (start<=end, len<=remaining) must be auto-detected as cg3 (102-byte header,
+        // deltabase + flags present) even though "01" was requested.
+        byte[] chunk = new byte[102 + 12 + 5];
+        chunk[0] = 44; // node
+        chunk[60] = 55; // deltabase
+        chunk[80] = 66; // cs
+        chunk[100] = 0; // flags high
+        chunk[101] = 3; // flags low
+        writeInt(chunk, 102, 0); // delta start
+        writeInt(chunk, 106, 0); // delta end
+        writeInt(chunk, 110, 5); // delta len == remaining bytes -> valid v3 header
+        System.arraycopy("WORLD".getBytes(StandardCharsets.US_ASCII), 0, chunk, 114, 5);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeChunk(out, chunk);
+        out.write(new byte[]{0, 0, 0, 0});
+
+        String[] outVersion = new String[1];
+        List<ChangegroupParser.ChangeGroupEntry> group =
+                ChangegroupParser.parseGroup(new ByteArrayInputStream(out.toByteArray()), "01", outVersion);
+        assertEquals("03", outVersion[0]);
+        assertEquals(1, group.size());
+        ChangegroupParser.ChangeGroupEntry entry = group.get(0);
+        assertEquals(44, entry.node[0]);
+        assertEquals(55, entry.deltabase[0]);
+        assertEquals(66, entry.cs[0]);
+        assertEquals(3, entry.flags);
+        assertTrue(new String(entry.delta, StandardCharsets.US_ASCII).endsWith("WORLD"));
+    }
+
+    @Test
+    public void testChangegroupParserAutoDetectFallsBackToCg1ForShortHeader() throws Exception {
+        // A first chunk shorter than 80 bytes can never carry cg2/cg3 delta-header info, so
+        // auto-detection must fall back to cg1 without attempting to inspect offsets 100/102 --
+        // it is then rejected as a malformed cg1 header (too short for even the 80-byte minimum),
+        // which is the only way to observe this branch from the public API without a valid header.
+        byte[] shortChunk = new byte[40];
+        shortChunk[0] = 9;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeChunk(out, shortChunk);
+        out.write(new byte[]{0, 0, 0, 0});
+
+        ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
+        HgCorruptDataException ex = assertThrows(HgCorruptDataException.class,
+                () -> ChangegroupParser.parseGroup(in, "01", new String[1]));
+        assertTrue(ex.getMessage().contains("Malformed changegroup header chunk"));
+        assertTrue(ex.getMessage().contains("version: 01"));
+    }
+
+    @Test
+    public void testChangegroupParserAutoDetectFallsBackToCg1WhenDeltaHeaderImplausible() throws Exception {
+        // A chunk that is >=100 bytes but whose bytes at offset 100/102 do NOT decode into a
+        // plausible (start<=end, len<=remaining) delta header must be treated as cg1, not
+        // misidentified as cg2/cg3 just because it happens to be long enough.
+        byte[] chunk = new byte[100 + 12];
+        chunk[0] = 12;
+        writeInt(chunk, 100, 500); // start
+        writeInt(chunk, 104, 10);  // end < start -> implausible
+        writeInt(chunk, 108, 0);   // len
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeChunk(out, chunk);
+        out.write(new byte[]{0, 0, 0, 0});
+
+        String[] outVersion = new String[1];
+        List<ChangegroupParser.ChangeGroupEntry> group =
+                ChangegroupParser.parseGroup(new ByteArrayInputStream(out.toByteArray()), "01", outVersion);
+        assertEquals("01", outVersion[0]);
+        assertEquals(1, group.size());
+        assertNull(group.get(0).deltabase);
+    }
+
+    @Test
+    public void testChangegroupParserAutoDetectRejectsNegativeStartOrEndFields() throws Exception {
+        // A delta-header start/end field decoded as a negative int (top bit set) must never be
+        // treated as plausible, however "in range" it might look after masking each byte to 0xFF.
+        byte[] chunk = new byte[102 + 12 + 5];
+        chunk[0] = 21;
+        writeInt(chunk, 102, -1); // v3 window start: -1 -> start>=0 is false
+        // These same bytes, read 2 bytes earlier as the v2 window's end field, also decode negative
+        // (0xFFFF0000) while the v2 window's start field (bytes 100-103, mostly zero) stays >=0 --
+        // exercising both the start>=0 false and (separately) end>=0 false branches in one chunk.
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeChunk(out, chunk);
+        out.write(new byte[]{0, 0, 0, 0});
+
+        String[] outVersion = new String[1];
+        List<ChangegroupParser.ChangeGroupEntry> group =
+                ChangegroupParser.parseGroup(new ByteArrayInputStream(out.toByteArray()), "01", outVersion);
+        assertEquals("01", outVersion[0]);
+        assertEquals(1, group.size());
+        assertNull(group.get(0).deltabase);
+        assertEquals(21, group.get(0).node[0]);
+    }
+
+    @Test
+    public void testChangegroupParserAutoDetectRejectsNegativeLenField() throws Exception {
+        // A delta-header length field decoded as negative must be rejected outright, independent
+        // of the start/end/remaining checks.
+        byte[] chunk = new byte[102 + 12 + 5];
+        chunk[0] = 22;
+        writeInt(chunk, 102, 0);  // v3 window start
+        writeInt(chunk, 106, 0);  // v3 window end
+        writeInt(chunk, 110, -1); // v3 window len: -1 -> len>=0 is false
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeChunk(out, chunk);
+        out.write(new byte[]{0, 0, 0, 0});
+
+        String[] outVersion = new String[1];
+        List<ChangegroupParser.ChangeGroupEntry> group =
+                ChangegroupParser.parseGroup(new ByteArrayInputStream(out.toByteArray()), "01", outVersion);
+        assertEquals("01", outVersion[0]);
+        assertEquals(1, group.size());
+        assertNull(group.get(0).deltabase);
+        assertEquals(22, group.get(0).node[0]);
     }
 
     @Test

@@ -245,6 +245,92 @@ public class ManifestTreeIteratorCoverageTest {
     }
 
     // ------------------------------------------------------------------
+    // loadEntries(): internal-inconsistency and malformed-changelog-content
+    // defensive branches, forced via a raw revlog record / a broken Revlog.
+    // ------------------------------------------------------------------
+
+    private static class NeverFindsRevlog extends Revlog {
+        NeverFindsRevlog(File idxFile, File datFile) throws IOException {
+            super(idxFile, datFile);
+        }
+
+        @Override
+        public synchronized int findRevision(byte[] nodeId) {
+            return -1;
+        }
+    }
+
+    private static class ChangelogNeverFoundRepository extends HgRepository {
+        ChangelogNeverFoundRepository(File directory) {
+            super(directory);
+        }
+
+        @Override
+        public synchronized Revlog getRevlog(File idxFile, File datFile) throws IOException {
+            if ("00changelog.i".equals(idxFile.getName())) {
+                return new NeverFindsRevlog(idxFile, datFile);
+            }
+            return super.getRevlog(idxFile, datFile);
+        }
+    }
+
+    @Test
+    public void testReset_ResolvedNodeIdMissingFromChangelogIndexThrowsCommitNotFound() throws Exception {
+        // resolveRevision("0") resolves the target node id straight from the index record,
+        // bypassing findRevision(); the subsequent findRevisionByNodeId(...) lookup normally
+        // finds the very same node in the very same index. Simulate the defensive-only case
+        // where that second lookup fails despite the first one succeeding, by wiring a Revlog
+        // whose findRevision() is broken while getIndexRecord()/getRevisionCount() still work.
+        commitSingleFile("a.txt", "content");
+
+        HgRepository brokenRepository = new ChangelogNeverFoundRepository(tempRepoDir);
+        ManifestTreeIterator it = new ManifestTreeIterator(brokenRepository, "0");
+        HgRevisionNotFoundException ex = assertThrows(HgRevisionNotFoundException.class, it::reset);
+        assertTrue(ex.getMessage().contains("Commit not found in changelog for node"));
+    }
+
+    @Test
+    public void testReset_ChangelogFirstLineNotValidHexFallsBackToRawBinaryManifestNode() throws Exception {
+        // Real hg4j commits always write the manifest node as 40 literal hex chars as the
+        // changelog's first line. Forge a changelog revision whose first line is >= 40 bytes
+        // long but not valid hex text, to exercise the raw-20-byte-binary fallback path. The
+        // fallback bytes ('z' x20) will not match any real manifest revision, so this also
+        // exercises the "manifest not found" error path in the same test.
+        byte[] fakeNode = new byte[20];
+        Arrays.fill(fakeNode, (byte) 0x11);
+        byte[] parentPlaceholder = new byte[20];
+        byte[] fakeChangelogContent = "z".repeat(50).concat("\n").getBytes(StandardCharsets.UTF_8);
+
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        changelog.appendRawRevision(fakeChangelogContent, fakeNode, -1, -1, parentPlaceholder, parentPlaceholder, 0);
+
+        ManifestTreeIterator it = new ManifestTreeIterator(repository, "0");
+        IOException ex = assertThrows(IOException.class, it::reset);
+        assertTrue(ex.getMessage().contains("Manifest not found"));
+    }
+
+    @Test
+    public void testReset_ChangelogContentTooShortToContainManifestNodeThrowsIOException() throws Exception {
+        // No '\n' at all and fewer than 20 bytes total: firstNewLine stays -1, the hex-text
+        // scan is skipped entirely, and the raw-20-byte fallback itself is inapplicable.
+        byte[] fakeNode = new byte[20];
+        Arrays.fill(fakeNode, (byte) 0x22);
+        byte[] parentPlaceholder = new byte[20];
+        byte[] tooShortContent = "short".getBytes(StandardCharsets.UTF_8);
+
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        changelog.appendRawRevision(tooShortContent, fakeNode, -1, -1, parentPlaceholder, parentPlaceholder, 0);
+
+        ManifestTreeIterator it = new ManifestTreeIterator(repository, "0");
+        IOException ex = assertThrows(IOException.class, it::reset);
+        assertTrue(ex.getMessage().contains("Changelog content too short to extract manifest node ID"));
+    }
+
+    // ------------------------------------------------------------------
     // Direct manifest-node constructor
     // ------------------------------------------------------------------
 

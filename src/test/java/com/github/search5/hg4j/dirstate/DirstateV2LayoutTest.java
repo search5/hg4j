@@ -100,4 +100,82 @@ public class DirstateV2LayoutTest {
         assertEquals(1700000000L, wrapper.getInt(36) & 0xFFFFFFFFL);
         assertEquals(888, wrapper.getInt(40));
     }
+
+    @Test
+    public void testConstructor_nullBuffer_throwsIllegalArgumentException() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> new DirstateV2Node((ByteBuffer) null, 0));
+        assertEquals("Backing buffer cannot be null", ex.getMessage());
+    }
+
+    @Test
+    public void testConstructor_negativeOffset_throwsIndexOutOfBoundsException() {
+        ByteBuffer buffer = ByteBuffer.allocate(DirstateV2Node.NODE_SIZE);
+        assertThrows(IndexOutOfBoundsException.class, () -> new DirstateV2Node(buffer, -1));
+    }
+
+    @Test
+    public void testConstructor_offsetPlusNodeSizeExceedsCapacity_throwsIndexOutOfBoundsException() {
+        ByteBuffer buffer = ByteBuffer.allocate(DirstateV2Node.NODE_SIZE);
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> new DirstateV2Node(buffer, DirstateV2Node.NODE_SIZE - 1));
+    }
+
+    @Test
+    public void testGetMode_symlinkFlag_returnsSymlinkMode() {
+        byte[] buffer = new byte[DirstateV2Node.NODE_SIZE];
+        DirstateV2Node node = new DirstateV2Node(buffer, 0);
+        node.setState('n');
+        node.setFlags((short) (node.getFlags() | DirstateV2Node.MODE_IS_SYMLINK));
+
+        assertEquals(0120000, node.getMode());
+    }
+
+    @Test
+    public void testSetMode_symlinkMode_setsSymlinkFlagAndClearsExecFlag() {
+        byte[] buffer = new byte[DirstateV2Node.NODE_SIZE];
+        DirstateV2Node node = new DirstateV2Node(buffer, 0);
+        node.setState('n');
+        node.setMode(0100755); // start executable
+        assertEquals(0100755, node.getMode());
+
+        node.setMode(0120777); // symlink mode (S_IFLNK | permission bits)
+
+        assertEquals(0120000, node.getMode());
+        assertEquals(0, node.getFlags() & DirstateV2Node.MODE_EXEC_PERM);
+        assertEquals(DirstateV2Node.MODE_IS_SYMLINK, node.getFlags() & DirstateV2Node.MODE_IS_SYMLINK);
+    }
+
+    @Test
+    public void testGetState_removedViaP2InfoOnly_returnsRemoved() {
+        byte[] buffer = new byte[DirstateV2Node.NODE_SIZE];
+        DirstateV2Node node = new DirstateV2Node(buffer, 0);
+        node.setFlags((short) DirstateV2Node.P2_INFO);
+
+        assertEquals('r', node.getState());
+    }
+
+    @Test
+    public void testGetState_intermediateDirectory_returnsNulChar() {
+        byte[] buffer = new byte[DirstateV2Node.NODE_SIZE];
+        DirstateV2Node node = new DirstateV2Node(buffer, 0);
+        node.setFlags((short) 0);
+
+        assertEquals('\0', node.getState());
+        assertEquals(0, node.getMode());
+    }
+
+    @Test
+    public void testGetSizeAndMtime_flagsNotSet_returnZero() {
+        byte[] buffer = new byte[DirstateV2Node.NODE_SIZE];
+        DirstateV2Node node = new DirstateV2Node(buffer, 0);
+        node.setState('n');
+        node.setSize(12345);
+        node.setMtime(999999L);
+        node.setMtimeNanoseconds(42);
+
+        assertEquals(0, node.getSize());
+        assertEquals(0, node.getMtime());
+        assertEquals(0, node.getMtimeNanoseconds());
+    }
 }

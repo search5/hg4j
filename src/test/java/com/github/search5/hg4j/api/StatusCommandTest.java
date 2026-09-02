@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -267,5 +268,398 @@ public class StatusCommandTest {
         Status status = new StatusCommand(repo).call();
         assertTrue(status.getModified().contains("link.txt"),
                 "Symlink re-pointed at a different target must be reported modified, got clean=" + status.getClean());
+    }
+
+    @Test
+    public void slowPathReportsFileAbsentFromBothDiskAndDirstateAsUntrackedNotRemoved(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "vanished.txt");
+        Files.writeString(f.toPath(), "will vanish from disk and dirstate");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add vanished.txt").call();
+
+        assertTrue(f.delete());
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.removeEntry("vanished.txt");
+        repo.writeDirstate(dirstate);
+
+        // TreeWalk.getState() defaults to '?' for a tree the path is untracked in, so once
+        // the path is untracked in the working tree (inWorking == false), the "workingState
+        // == '?'" branch always fires first, regardless of whether the path is still present
+        // in the parent manifest (inParent). A "tracked in parent, absent from both disk and
+        // dirstate" file therefore surfaces as Untracked, not Removed -- Removed is reserved
+        // for paths the working tree still knows about (via dirstate state 'r' or a disk-file
+        // check), matching the fast path's dirstate-driven view of "removed".
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();
+        assertTrue(slow.getUntracked().contains("vanished.txt"),
+                "File present in parent manifest but absent from both disk and dirstate is reported Untracked, got: " + slow);
+        assertFalse(slow.getRemoved().contains("vanished.txt"));
+    }
+
+    @Test
+    public void racyCheckWithNoCommitsTreatsSizeMtimeMatchAsCleanBecauseNoParentToCompare(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "orphan.txt");
+        String content = "content with no real commit backing it";
+        Files.writeString(f.toPath(), content);
+        long diskTime = f.lastModified() / 1000;
+
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.addEntry("orphan.txt", new Dirstate.Entry('n', 0644, content.length(), diskTime));
+        repo.writeDirstate(dirstate);
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getClean().contains("orphan.txt"),
+                "With no commits at all, dirstate parent is null so racy check has nothing to compare against and must fall back to clean, got: " + status.getModified());
+        assertFalse(status.getModified().contains("orphan.txt"));
+    }
+
+    @Test
+    public void racyCheckWhenChangelogIndexMissingTreatsAsCleanEvenWithFakeParentHash(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "orphan2.txt");
+        String content = "content with a fake parent hash but no changelog file";
+        Files.writeString(f.toPath(), content);
+        long diskTime = f.lastModified() / 1000;
+
+        Dirstate dirstate = repo.getDirstate();
+        byte[] fakeParent = new byte[20];
+        java.util.Arrays.fill(fakeParent, (byte) 0x7A);
+        dirstate.setParents(fakeParent, new byte[20]);
+        dirstate.addEntry("orphan2.txt", new Dirstate.Entry('n', 0644, content.length(), diskTime));
+        repo.writeDirstate(dirstate);
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        assertFalse(new File(repo.getStoreDir(), "00changelog.i").exists(),
+                "precondition: no commit has ever happened, so store/00changelog.i must not exist");
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getClean().contains("orphan2.txt"),
+                "Missing changelog index must make the racy check fall back to clean, got: " + status.getModified());
+        assertFalse(status.getModified().contains("orphan2.txt"));
+    }
+
+    @Test
+    public void racyCheckWhenParentHashNotInChangelogTreatsAsCleanEvenThoughHistoryExists(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "real.txt");
+        Files.writeString(f.toPath(), "real committed content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add real.txt").call();
+
+        String rewritten = "different content entirely";
+        Files.writeString(f.toPath(), rewritten);
+        long diskTime = f.lastModified() / 1000;
+
+        Dirstate dirstate = repo.getDirstate();
+        Dirstate.Entry entry = dirstate.getEntries().get("real.txt");
+        dirstate.addEntry("real.txt", new Dirstate.Entry(entry.getState(), entry.getMode(), rewritten.length(), diskTime));
+        byte[] bogusParent = new byte[20];
+        java.util.Arrays.fill(bogusParent, (byte) 0xFF);
+        dirstate.setParents(bogusParent, new byte[20]);
+        repo.writeDirstate(dirstate);
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getClean().contains("real.txt"),
+                "A dirstate parent hash absent from the changelog must make the racy check fall back to clean, got: " + status.getModified());
+        assertFalse(status.getModified().contains("real.txt"));
+    }
+
+    @Test
+    public void racyCheckWhenPathAbsentFromParentManifestTreatsAsCleanDespiteMatchingSizeAndTime(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File real = new File(repoDir, "real2.txt");
+        Files.writeString(real.toPath(), "the only file actually committed");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add real2.txt").call();
+
+        File ghost = new File(repoDir, "ghost.txt");
+        String ghostContent = "never committed, only fabricated in dirstate";
+        Files.writeString(ghost.toPath(), ghostContent);
+        long diskTime = ghost.lastModified() / 1000;
+
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.addEntry("ghost.txt", new Dirstate.Entry('n', 0644, ghostContent.length(), diskTime));
+        repo.writeDirstate(dirstate);
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getClean().contains("ghost.txt"),
+                "A path with a valid parent commit but absent from that commit's manifest must fall back to clean, got: " + status.getModified());
+        assertFalse(status.getModified().contains("ghost.txt"));
+    }
+
+    @Test
+    public void racyCheckSwallowsCorruptedFilelogDataAndFallsBackToCleanOnSizeMatch(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "corrupt.txt");
+        String content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789content long enough to compress";
+        Files.writeString(f.toPath(), content);
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add corrupt.txt").call();
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "corrupt.txt");
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        assertTrue(flDat.exists(), "precondition: filelog data file must exist after commit");
+        Files.write(flDat.toPath(), new byte[0]);
+
+        long diskTime = f.lastModified() / 1000;
+        Dirstate dirstate = repo.getDirstate();
+        Dirstate.Entry entry = dirstate.getEntries().get("corrupt.txt");
+        dirstate.addEntry("corrupt.txt", new Dirstate.Entry(entry.getState(), entry.getMode(), entry.getSize(), diskTime));
+        repo.writeDirstate(dirstate);
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        Status status = assertDoesNotThrow(() -> new StatusCommand(repo).call(),
+                "A corrupted filelog during the racy-write content comparison must be swallowed, not propagated");
+        assertTrue(status.getClean().contains("corrupt.txt"),
+                "Corrupted filelog content comparison must fall back to clean on a matching size/mtime, got: " + status.getModified());
+        assertFalse(status.getModified().contains("corrupt.txt"));
+    }
+
+    @Test
+    public void racyCheckSwallowsCorruptedFilelogDataInSlowPathAndFallsBackToCleanOnSizeMatch(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "corrupt2.txt");
+        String content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789content long enough to compress too";
+        Files.writeString(f.toPath(), content);
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add corrupt2.txt").call();
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "corrupt2.txt");
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        assertTrue(flDat.exists(), "precondition: filelog data file must exist after commit");
+        Files.write(flDat.toPath(), new byte[0]);
+
+        long diskTime = f.lastModified() / 1000;
+        Dirstate dirstate = repo.getDirstate();
+        Dirstate.Entry entry = dirstate.getEntries().get("corrupt2.txt");
+        dirstate.addEntry("corrupt2.txt", new Dirstate.Entry(entry.getState(), entry.getMode(), entry.getSize(), diskTime));
+        repo.writeDirstate(dirstate);
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status status = assertDoesNotThrow(() -> new StatusCommand(repo).setTreeFilter(customFilter).call(),
+                "A corrupted filelog during the slow path's racy-write content comparison must be swallowed, not propagated");
+        assertTrue(status.getClean().contains("corrupt2.txt"),
+                "Corrupted filelog content comparison must fall back to clean on a matching size/mtime, got: " + status.getModified());
+        assertFalse(status.getModified().contains("corrupt2.txt"));
+    }
+
+    @Test
+    public void racyCheckWhenFilelogIndexMissingTreatsAsCleanDespiteValidParentHistory(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "noindex.txt");
+        Files.writeString(f.toPath(), "content backed by a manifest entry with no filelog index file");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add noindex.txt").call();
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "noindex.txt");
+        assertTrue(flIdx.exists(), "precondition: filelog index must exist right after commit");
+        assertTrue(flIdx.delete());
+
+        long diskTime = f.lastModified() / 1000;
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getClean().contains("noindex.txt"),
+                "A manifest entry whose filelog index file is missing must make the racy check fall back to clean, got: " + status.getModified());
+        assertFalse(status.getModified().contains("noindex.txt"));
+    }
+
+    @Test
+    public void racyCheckWhenFilelogRevisionMissingTreatsAsCleanDespiteValidParentHistory(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "norev.txt");
+        Files.writeString(f.toPath(), "content whose filelog will be emptied out after commit");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add norev.txt").call();
+
+        File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "norev.txt");
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        assertTrue(flIdx.exists() && flDat.exists(), "precondition: filelog must exist right after commit");
+        Files.write(flIdx.toPath(), new byte[0]);
+        Files.write(flDat.toPath(), new byte[0]);
+        // CommitCommand already populated repo's per-file Revlog cache with the real,
+        // pre-truncation filelog; without invalidating it, getRevlog() below would keep
+        // handing back that stale (still valid) revision instead of the emptied one on disk.
+        repo.clearRevlogCache();
+
+        long diskTime = f.lastModified() / 1000;
+        assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
+
+        Status status = new StatusCommand(repo).call();
+        assertTrue(status.getClean().contains("norev.txt"),
+                "A manifest entry whose filelog no longer contains the referenced revision must make the racy check fall back to clean, got: " + status.getModified());
+        assertFalse(status.getModified().contains("norev.txt"));
+    }
+
+    private static class FirstReadStripsEntryRepository extends HgRepository {
+        private final String pathToStrip;
+        private boolean firstCall = true;
+
+        FirstReadStripsEntryRepository(File directory, String pathToStrip) {
+            super(directory);
+            this.pathToStrip = pathToStrip;
+        }
+
+        @Override
+        public synchronized Dirstate getDirstate() throws IOException {
+            Dirstate dirstate = super.getDirstate();
+            if (firstCall) {
+                firstCall = false;
+                dirstate.removeEntry(pathToStrip);
+            }
+            return dirstate;
+        }
+    }
+
+    @Test
+    public void slowPathTrustsUnionPresenceWithoutRecheckWhenOuterDirstateSnapshotIsMissingTheEntry(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository initRepo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "stale.txt");
+        Files.writeString(f.toPath(), "hello");
+        new AddCommand(initRepo).call();
+        new CommitCommand(initRepo).setMessage("add stale.txt").call();
+
+        // Actually modify the file's size on disk after the commit: if the dEntry-null
+        // short-circuit at the end of StatusCommand's slow path were NOT taken, this would
+        // be reported Modified via the normal size/mtime comparison.
+        Files.writeString(f.toPath(), "hello world, this is now a different size entirely");
+
+        // Simulate two internal dirstate reads within a single call() racing against a
+        // concurrent dirstate rewrite: the outer read (used for the final per-path lookup)
+        // is missing the entry, while the WorkingDirTreeIterator's own (later) read still
+        // has it with state 'n' -- reproducing the only way the dEntry-null branch is reached.
+        FirstReadStripsEntryRepository repo = new FirstReadStripsEntryRepository(repoDir, "stale.txt");
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status status = new StatusCommand(repo).setTreeFilter(customFilter).call();
+
+        assertTrue(status.getClean().contains("stale.txt"),
+                "When the outer dirstate snapshot is missing an entry the working iterator still sees, "
+                        + "status must trust the union presence and report clean without comparing content, got: " + status);
+        assertFalse(status.getModified().contains("stale.txt"));
+    }
+
+    @Test
+    public void setTreeFilterNullIsANoOpAndKeepsTheFastPath(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "untracked.txt").toPath(), "hello");
+
+        Status status = new StatusCommand(repo).setTreeFilter(null).call();
+        assertEquals(1, status.getUntracked().size());
+        assertTrue(status.getUntracked().contains("untracked.txt"),
+                "setTreeFilter(null) must be a no-op, leaving the default ALL filter (fast path) in effect");
+    }
+
+    @Test
+    public void dirstateStateMIsTreatedLikeStateNForCleanDetection(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "merged.txt");
+        Files.writeString(f.toPath(), "merge marker content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add merged.txt").call();
+
+        Dirstate dirstate = repo.getDirstate();
+        Dirstate.Entry entry = dirstate.getEntries().get("merged.txt");
+        dirstate.addEntry("merged.txt", new Dirstate.Entry('m', entry.getMode(), entry.getSize(), entry.getTime()));
+        repo.writeDirstate(dirstate);
+
+        Status fast = new StatusCommand(repo).call();
+        assertTrue(fast.getClean().contains("merged.txt"),
+                "A dirstate entry marked 'm' (merge) with matching size/mtime must be treated as clean just like 'n', got: " + fast.getModified());
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();
+        assertTrue(slow.getClean().contains("merged.txt"));
+    }
+
+    @Test
+    public void directoryReplacingATrackedFileIsReportedRemoved(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "becomesdir.txt");
+        Files.writeString(f.toPath(), "will be replaced by a directory of the same name");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add becomesdir.txt").call();
+
+        assertTrue(f.delete());
+        assertTrue(f.mkdir());
+
+        Status fast = new StatusCommand(repo).call();
+        assertTrue(fast.getRemoved().contains("becomesdir.txt"),
+                "A tracked path replaced on disk by a directory is neither a symlink nor a regular file and must be Removed, got: " + fast);
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();
+        assertTrue(slow.getRemoved().contains("becomesdir.txt"));
+    }
+
+    @Test
+    public void mtimeOnlyChangeWithUnchangedSizeIsReportedModifiedByTheCheapCheck(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "touched.txt");
+        Files.writeString(f.toPath(), "unchanged content, only the mtime moves");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add touched.txt").call();
+
+        long originalTime = f.lastModified() / 1000;
+        long bumpedTime = (originalTime + 1000) * 1000;
+        assertTrue(f.setLastModified(bumpedTime));
+        assertEquals(originalTime + 1000, f.lastModified() / 1000);
+
+        Status fast = new StatusCommand(repo).call();
+        assertTrue(fast.getModified().contains("touched.txt"),
+                "A tracked file whose mtime changed with unchanged size must be Modified via the cheap size/mtime check alone, got: " + fast.getClean());
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();
+        assertTrue(slow.getModified().contains("touched.txt"));
+    }
+
+    @Test
+    public void slowPathTreatsUnresolvableDirstateParentAsEmptyParentManifest(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "existing.txt");
+        Files.writeString(f.toPath(), "committed content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add existing.txt").call();
+
+        Dirstate dirstate = repo.getDirstate();
+        byte[] bogusParent = new byte[20];
+        java.util.Arrays.fill(bogusParent, (byte) 0xEE);
+        dirstate.setParents(bogusParent, new byte[20]);
+        repo.writeDirstate(dirstate);
+
+        HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
+        Status status = new StatusCommand(repo).setTreeFilter(customFilter).call();
+
+        // With a dirstate parent hash that resolves to no revision in a non-empty changelog,
+        // the slow path falls back to treating the parent manifest as empty (parentRev stays
+        // ""), so "existing.txt" is neither in the parent (inParent=false) nor freshly Added
+        // (its dirstate state is 'n', not 'a') -- it lands in none of the status buckets.
+        assertFalse(status.getAdded().contains("existing.txt"));
+        assertFalse(status.getModified().contains("existing.txt"));
+        assertFalse(status.getRemoved().contains("existing.txt"));
+        assertFalse(status.getClean().contains("existing.txt"));
+        assertFalse(status.getUntracked().contains("existing.txt"));
     }
 }

@@ -1,5 +1,39 @@
 # 작업 로그
 
+## [2026-09-02] PushCommand 증분 push 버그 수정 + 포셀린 노출 갭 완전 해소
+- **`RevlogIndex.checkAndUpdate()`의 200ms 디스크 재확인 스로틀 제거.** 원인:
+  `PushCommandTest`의 원격 저장소 핸들(자기 changelog에 한 번도 안 씀)이 push1
+  직후 첫 읽기로 스로틀 창을 열어버려서, push2 직후 두 번째 읽기(밀리초 단위로
+  빠른 테스트)가 스로틀에 걸려 스테일 리비전 카운트를 반환 — 디스크는 항상
+  정확했고 인프로세스 캐시만 뒤처졌음. 시행착오 2회(처음엔 `HgRepository`에
+  별도 캐시 계층을 추가했다가 `HisteditCommand`를 깨뜨려 되돌림, 다음엔
+  `addedRecords.isEmpty()` 게이트까지 제거했다가 `StripCommand`의 북마크 재배치
+  로직 — truncate 직후 같은 Revlog 참조로 "방금 지운 리비전"을 조회하는 패턴 —
+  을 깨뜨려 되돌림) 끝에, 스로틀만 제거하고 `addedRecords` 게이트는 유지하는
+  것으로 정리(한 번이라도 자체 쓴 RevlogIndex는 자기 북키핑 신뢰, 순수 읽기
+  전용 핸들만 매번 재확인). 전체 회귀 2회 연속 클린. 커밋 `f0b1eff`.
+- **깨진(dangling) symlink가 `AddCommand`/`HgRepository`/`CommitCommand` 3곳
+  모두에서 조용히 누락·거부되던 버그 TDD 수정.** 문서에는 2곳만 적혀 있었으나
+  실제로는 `CommitCommand`의 tracked-file 존재 검증도 같은 결함이 있어서 커밋
+  자체가 실패했음 — 세 지점 모두 `Files.isSymbolicLink()` 체크 추가. 타겟이
+  디렉터리인 symlink도 재귀 안 하고 파일로 추적해야 한다는 것까지 real hg로
+  확인. 커밋 `f0244f2`.
+- **포셀린 명령 노출 갭(백로그 항목 12) 완전 해소.** (a) `Hg` 파사드에
+  `branches()`/`treeMerge()`/`censor()`/`clonebundle(url)` 추가(`RollbackCommand`는
+  이미 노출돼 있었음이 확인돼 백로그 서술 자체가 틀렸던 것으로 판명). (b) 대응
+  클래스가 아예 없던 8개 명령(`TagsCommand`/`PathsCommand`/`FilesCommand`/
+  `LocateCommand`/`ManifestCommand`/`CopyCommand`/`BundleCommand`/
+  `RecoverCommand`)을 병렬 격리 빌드 에이전트로 신설, 전부 real hg 7.2 CLI/
+  Python 소스로 검증(`hg locate` vs `hg files`의 relglob/제거파일 포함 여부
+  차이, `hg copy`의 copy-chain이 커밋 시점에 끊기는 정확한 규칙, `hg bundle`의
+  cg1 델타베이스 규칙과 real hg 양방향 라운드트립 등). `Hg` 파사드에 전부 배선,
+  파사드 위임 테스트 8건 추가. 전체 회귀 2223 테스트, 실패 0. 커밋 `f04edb9`,
+  `d055084`.
+- 부수 발견, 새 백로그로 기록만 함(미착수): `CommitCommand`의 미변경 파일 감지가
+  symlink에서 `File#length()`로 타겟 파일 크기를 잘못 참조(symlink 자신의 크기가
+  아님) — `ManifestCommand` TDD 작업 중 발견. 상세는
+  [[mercurial-spec-compliance-requirement]] 항목 14 참고.
+
 ## [2026-09-02] 커버리지 95% 이니셔티브 라운드 2 | 44개 클래스 TDD, 실제 버그 21건 발견·19건 수정
 - 사용자 지시: "미커버 instruction 수 큰 순서부터 TDD로 작업 진행해줘. 여러 에이전트가
   동시에 돌아도 되는데 gradle 출력 디렉터리는 따로 지정해야 해." 라운드 1에서 겪은

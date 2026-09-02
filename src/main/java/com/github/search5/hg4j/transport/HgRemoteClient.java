@@ -291,10 +291,23 @@ public class HgRemoteClient implements HgRemoteConnection {
         params.put("cg", "true"); // include changegroup
         
         if (bundleCaps != null && !bundleCaps.isEmpty()) {
-            params.put("bundlecaps", String.join(" ", bundleCaps));
+            // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS): bundlecaps는 "scsv" 타입 —
+            // 최상위 토큰 구분자가 콤마다(스페이스 아님). 예전에 스페이스로 join하던 코드는
+            // 콤마가 하나도 없는 토큰 하나로 뭉쳐져 "HG2"로 시작하는 토큰이 하나도 안 남아
+            // exchange.bundle2requested()가 항상 false가 되고, 결과적으로 어떤 changegroup
+            // 버전을 광고하든 항상 구식 bundle1(cg1)로 조용히 폴백했다(2026-09-03 발견 —
+            // 실제 hg 7.2.2로 로깅 프록시를 붙여 실제 클라이언트 요청 바이트를 직접 캡처해
+            // 확인, Bundle2Parser#buildChangegroupBundleCaps 주석 참고).
+            params.put("bundlecaps", String.join(",", bundleCaps));
         } else {
-            // Default capabilities compatible with bundle2 and legacy changegroups
-            params.put("bundlecaps", "bundle2 HG20 changegroup=01,02,03");
+            // Default capabilities compatible with bundle2 and legacy changegroups.
+            // changegroup=01..05: 원격이 max(교집합)으로 버전을 고르므로(exchange.py 실측),
+            // hg4j가 cg4/cg5 델타 헤더도 파싱할 수 있게 된 뒤로는(2026-09-03) 04/05까지
+            // 광고해야 최신 hg와 최적 포맷으로 주고받는다. changegroup 버전 목록은
+            // "bundle2=<blob>" 토큰 안에 중첩돼야만 실제로 반영된다 — 위 주석 참고.
+            params.put("bundlecaps",
+                    com.github.search5.hg4j.bundle.Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
+                            + ",compression=GZ,BZ,ZS");
         }
         
         return executePostBinary("getbundle", params);

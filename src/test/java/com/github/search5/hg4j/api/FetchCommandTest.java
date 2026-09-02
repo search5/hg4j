@@ -443,8 +443,14 @@ public class FetchCommandTest {
         withBundle2.bundleBytesToReturn = new byte[0];
         String urlWith = registerScripted(withBundle2);
         new FetchCommand(destRepo).setSource(urlWith).call();
-        assertTrue(withBundle2.lastBundleCapsArg.contains("bundle2"));
+        // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS의 bundlecaps="scsv" 타입, 실제 hg
+        // 클라이언트의 캡처된 요청 실측 2026-09-03): 원래의 bare "bundle2" 토큰은 실제 hg가
+        // 전혀 안 쓰는 토큰이라 제거됐다 — changegroup 버전 목록은 이제
+        // "bundle2=<blob>"(콤마로 중첩된 blob) 토큰 안에 실려 간다. bare "HG20" 토큰은
+        // 여전히 그대로 있다(exchange.bundle2requested()가 확인하는 바로 그 토큰).
         assertTrue(withBundle2.lastBundleCapsArg.contains("HG20"));
+        assertTrue(withBundle2.lastBundleCapsArg.stream().anyMatch(c -> c.startsWith("bundle2=")),
+                "must carry a bundle2=<blob> token instead of the old flat changegroup=... token");
     }
 
     @Test

@@ -362,7 +362,14 @@ public class HgRemoteClientCoverageTest {
             assertTrue(capturedBody[0].contains("common="), "Body was: " + capturedBody[0]);
             assertFalse(capturedBody[0].contains("heads="), "heads param must be omitted when heads is null/empty");
             assertTrue(capturedBody[0].contains("cg=true"));
-            assertTrue(capturedBody[0].contains("bundlecaps=bundle2+HG20+changegroup%3D01%2C02%2C03"),
+            // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS의 bundlecaps="scsv" 타입) 실측
+            // 정정(2026-09-03): changegroup 버전 목록은 평평한 "changegroup=..." 토큰이
+            // 아니라 "bundle2=<blob>" 토큰 안에 콤마로 중첩돼야만 실제 hg가 인식한다 —
+            // Bundle2Parser#buildChangegroupBundleCaps 주석 참고. 예전 어서션의 스페이스
+            // 구분 평평한 형태는 실제 hg 서버에 보내면 협상 자체가 항상 구식 bundle1로
+            // 폴백되던, 검증 안 된(그리고 이번에 실제로 틀렸다고 확인된) 형태였다.
+            assertTrue(capturedBody[0].contains(
+                            "bundlecaps=HG20%2Cbundle2%3DHG20%250Achangegroup%253D01%252C02%252C03%252C04%252C05%2Ccompression%3DGZ%2CBZ%2CZS"),
                     "Default bundlecaps must be sent when none specified. Body was: " + capturedBody[0]);
             }
         } finally {

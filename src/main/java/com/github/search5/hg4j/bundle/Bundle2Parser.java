@@ -174,4 +174,128 @@ public class Bundle2Parser {
         result.cgVersion = extractedVersion;
         return result;
     }
+
+    /**
+     * Builds the wire value for the client's {@code bundlecaps} getbundle/pull request parameter
+     * so that a real hg server actually negotiates bundle2 and picks a changegroup version from
+     * {@code changegroupVersionsCsv} (e.g. {@code "01,02,03,04,05"}) — rather than always silently
+     * falling back to legacy bundle1/cg1 no matter what versions are listed.
+     *
+     * <p><b>Real hg spec, verified against Mercurial 7.2.2 (2026-09-03) by directly capturing a
+     * real {@code hg clone} HTTP request through a logging proxy</b>: the wire protocol's {@code
+     * bundlecaps} argument is typed {@code scsv} ({@code wireprototypes.GETBUNDLE_ARGUMENTS}) —
+     * the server splits its value on top-level commas into a set of tokens. {@code
+     * exchange.bundle2requested()} only checks whether any token starts with {@code "HG2"}, but
+     * the changegroup version LIST is read from a completely different place:  {@code
+     * urlutil.b2_caps_from_bundle_caps()} looks only at tokens starting with the literal {@code
+     * "bundle2="} prefix, percent-decodes the rest, and parses THAT as newline-separated {@code
+     * capability=value1,value2,...} lines ({@code decode_b2_caps}) — the real hg client's own
+     * captured request value looked like {@code HG20,bundle2=HG20%250Abookmarks%250Achangegroup
+     * %253D01%252C02%252C03%250A...} (double percent-encoded: once by {@code urlreq.quote()}
+     * around the blob itself, exactly like this method's {@link #pythonQuote}, and a second time
+     * by whatever transport-level form/query encoding wraps the whole {@code bundlecaps} value —
+     * for HTTP that second pass is already handled by {@code HgRemoteClient}'s existing {@code
+     * URLEncoder.encode()} call, so callers must NOT double-encode here).
+     *
+     * <p>A flat top-level {@code "changegroup=01,02,03"} token (what hg4j used prior to
+     * 2026-09-03) is invisible to {@code b2_caps_from_bundle_caps()} — {@code
+     * getbundlechunks()} then finds {@code usebundle2=True} (from the bare {@code "HG20"} token)
+     * but an empty {@code b2caps}, and in practice real hg's {@code hg serve} was observed to fall
+     * all the way back to a legacy, unversioned bundle1 changegroup stream instead — meaning no
+     * hg4j client has ever actually been able to negotiate cg2/cg3 (let alone cg4/cg5) with a real
+     * hg HTTP server before this fix, regardless of what version list was advertised.
+     *
+     * @return a comma-joined pair of top-level bundlecaps tokens: {@code "HG20"} (satisfies {@code
+     *         bundle2requested()}) and {@code "bundle2=<percent-encoded blob>"} (carries the
+     *         changegroup version list real hg's {@code version = max(intersection)} rule reads).
+     *         Callers still need to append any further tokens (e.g. {@code "compression=..."})
+     *         themselves, joined with a further comma — the overall {@code bundlecaps} wire value
+     *         is comma-separated at the top level, NOT space-separated.
+     */
+    public static String buildChangegroupBundleCaps(String changegroupVersionsCsv) {
+        return "HG20," + buildBundle2CapsToken(changegroupVersionsCsv);
+    }
+
+    /**
+     * Like {@link #buildChangegroupBundleCaps} but returns only the {@code "bundle2=<blob>"}
+     * token by itself — for a caller (e.g. {@code FetchCommand}) that builds its {@code
+     * bundleCaps} as a {@code List<String>} of separate tokens and wants to add the bare {@code
+     * "HG20"} token as its own list element (matching real hg's own client's exact 2-token shape,
+     * captured 2026-09-03) rather than pre-joined into one string.
+     */
+    public static String buildBundle2CapsToken(String changegroupVersionsCsv) {
+        String blob = "HG20\nchangegroup=" + changegroupVersionsCsv;
+        return "bundle2=" + pythonQuote(blob);
+    }
+
+    /**
+     * Percent-encodes exactly like Python's {@code urllib.parse.quote(s)} (default {@code
+     * safe='/'}): every byte except {@code A-Za-z0-9_.~-} and {@code /} becomes {@code %XX}
+     * (uppercase hex). Deliberately NOT {@code java.net.URLEncoder} — that encodes space as
+     * {@code +} (form-encoding, wrong here) and escapes {@code /} (also wrong here).
+     */
+    private static String pythonQuote(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (byte raw : s.getBytes(StandardCharsets.UTF_8)) {
+            int c = raw & 0xFF;
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                    || c == '_' || c == '.' || c == '~' || c == '-' || c == '/') {
+                sb.append((char) c);
+            } else {
+                sb.append('%').append(String.format("%02X", c));
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Wraps raw changegroup bytes (as produced by {@link ChangegroupParser#writeBundle}) into a
+     * minimal, uncompressed HG20/bundle2 envelope with a single mandatory {@code CHANGEGROUP}
+     * part carrying the given {@code version} param — exactly what real hg's {@code unbundle}
+     * command needs to apply a cg4/cg5 bundle (real hg's own {@code bundle2_part_handlers.py}
+     * {@code handlechangegroup} only actually requires the {@code version} param; {@code
+     * nbchanges}/{@code treemanifest}/{@code targetphase}/sidedata params are all optional).
+     *
+     * <p>Byte-for-byte structure verified against a real bundle produced by Mercurial 7.2.2's own
+     * {@code mercurial.bundle2.bundle20} (2026-09-03): {@code "HG20"} + stream-params-size(int32,
+     * 0 here) + partHeaderSize(int32) + [nameSize(1B) name partId(4B) mandatoryCount(1B)
+     * advisoryCount(1B) (keyLen,valLen) pairs... key bytes... value bytes...] + payload
+     * chunkSize(int32, payload length WITHOUT a self-inclusive +4 — unlike the inner changegroup
+     * chunk framing) + payload bytes + terminal chunk(int32 0) + final partHeaderSize(int32 0).
+     */
+    public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version) throws IOException {
+        byte[] partName = "CHANGEGROUP".getBytes(StandardCharsets.US_ASCII);
+        byte[] paramKey = "version".getBytes(StandardCharsets.US_ASCII);
+        byte[] paramVal = version.getBytes(StandardCharsets.US_ASCII);
+
+        java.io.ByteArrayOutputStream header = new java.io.ByteArrayOutputStream();
+        header.write(partName.length);
+        header.write(partName);
+        header.write(new byte[]{0, 0, 0, 0}); // part id (unused by a standalone file-level unbundle)
+        header.write(1); // mandatoryCount
+        header.write(0); // advisoryCount
+        header.write(paramKey.length);
+        header.write(paramVal.length);
+        header.write(paramKey);
+        header.write(paramVal);
+        byte[] headerBytes = header.toByteArray();
+
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        out.write("HG20".getBytes(StandardCharsets.US_ASCII));
+        writeInt32(out, 0); // stream params size (no compression)
+        writeInt32(out, headerBytes.length);
+        out.write(headerBytes);
+        writeInt32(out, changegroupBytes.length); // payload chunk size (NOT self-inclusive)
+        out.write(changegroupBytes);
+        writeInt32(out, 0); // end of this part's payload
+        writeInt32(out, 0); // end of bundle2 stream (no more parts)
+        return out.toByteArray();
+    }
+
+    private static void writeInt32(java.io.OutputStream out, int value) throws IOException {
+        out.write((value >>> 24) & 0xFF);
+        out.write((value >>> 16) & 0xFF);
+        out.write((value >>> 8) & 0xFF);
+        out.write(value & 0xFF);
+    }
 }

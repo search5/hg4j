@@ -65,8 +65,21 @@ public class RevlogIndex {
     // Physical file offset of each revision on disk
     private long[] fileOffsets = new long[1024];
 
+    // persistent-nodemap (.n trie) acceleration -- see NodeMapFile for the on-disk format.
+    // When non-null and it exactly covers the revlog's current revision count (verified against
+    // the actual tip node, not just trusted blindly), loadIndex() skips the full per-record scan
+    // that would otherwise be needed purely to populate nodeMap/hexNodeMap: fileOffsets is
+    // computed analytically (non-inline revlogs place record `rev` at byte `rev*64`) and
+    // nodeMap/hexNodeMap population is deferred. findRevision() then answers node->rev lookups
+    // straight from the trie (with a single-record verification read, never trusted blindly --
+    // see NodeMapFile#findRevision's javadoc on why). findByHexPrefix() cannot be answered from
+    // the trie alone (it doesn't store full node hashes) so it materializes the deferred maps on
+    // first use, exactly like the pre-persistent-nodemap behavior from then on.
+    private NodeMapFile persistentNodeMap;
+    private boolean nodeMapDeferred = false;
+
     public RevlogIndex(File idxFile) throws IOException {
-        this(idxFile, false);
+        this(idxFile, false, null);
     }
 
     /**
@@ -80,7 +93,16 @@ public class RevlogIndex {
      *     back to v1 just because there was nothing on disk yet to detect the format from.
      */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2) throws IOException {
+        this(idxFile, createAsGeneralV2, null);
+    }
+
+    public RevlogIndex(File idxFile, NodeMapFile persistentNodeMap) throws IOException {
+        this(idxFile, false, persistentNodeMap);
+    }
+
+    public RevlogIndex(File idxFile, boolean createAsGeneralV2, NodeMapFile persistentNodeMap) throws IOException {
         this.idxFile = idxFile;
+        this.persistentNodeMap = persistentNodeMap;
         if (idxFile.exists()) {
             loadIndex();
         } else if (createAsGeneralV2) {
@@ -312,6 +334,7 @@ public class RevlogIndex {
         addedRecords.clear();
         revisionCount = 0;
         isV2 = false;
+        nodeMapDeferred = false;
 
         try (FileChannel channel = FileChannel.open(idxFile.toPath(), StandardOpenOption.READ)) {
             long len = channel.size();
@@ -416,6 +439,10 @@ public class RevlogIndex {
                 throw new HgCorruptDataException("Invalid revlog index: too short");
             }
 
+            if (persistentNodeMap != null && tryFastLoadWithPersistentNodeMap(channel, len)) {
+                return;
+            }
+
             ByteBuffer buf = ByteBuffer.allocate(64);
             long currentPos = 0;
 
@@ -462,6 +489,86 @@ public class RevlogIndex {
                 revisionCount++;
             }
         }
+    }
+
+    /**
+     * Attempts an O(1) index load using an already-attached persistent nodemap trie, in place of
+     * scanning every 64-byte record purely to build {@code nodeMap}/{@code hexNodeMap}. Only
+     * non-inline revlogs are eligible -- real hg never persists a nodemap for inline revlogs (see
+     * {@code nodemap.py}'s own {@code persist_nodemap}, which returns immediately when
+     * {@code revlog._inline}) -- and the trie must exactly cover the revlog's current on-disk
+     * revision count with a matching tip node; otherwise this returns {@code false} and the
+     * caller falls back to the unmodified full-scan path.
+     *
+     * <p>On success, {@code fileOffsets} is filled analytically ({@code rev * 64}, valid for any
+     * non-inline v1 revlog -- the same formula {@link #addRecord} already trusts for this case)
+     * and {@code nodeMap}/{@code hexNodeMap} population is deferred: {@link #findRevision} then
+     * answers lookups straight from the trie, and {@link #findByHexPrefix} materializes the maps
+     * lazily on first use.
+     */
+    private boolean tryFastLoadWithPersistentNodeMap(FileChannel channel, long len) throws IOException {
+        if (len % 64 != 0) {
+            return false; // not a clean multiple of the v1 record size -- let the normal path handle/throw
+        }
+        ByteBuffer first = ByteBuffer.allocate(64);
+        channel.position(0);
+        while (first.hasRemaining()) {
+            if (channel.read(first) == -1) break;
+        }
+        if (first.hasRemaining()) {
+            return false;
+        }
+        first.flip();
+        long offsetFlags = first.getLong();
+        int formatFlags = (int) (offsetFlags >>> 48);
+        int version = (int) ((offsetFlags >>> 32) & 0xFFFF);
+        if (version != 1) {
+            return false; // let the normal path raise the appropriate corruption error
+        }
+        boolean firstInline = (formatFlags & 0x0001) != 0;
+        if (firstInline) {
+            return false; // persistent nodemap is never written for inline revlogs -- nothing to accelerate
+        }
+
+        int computedRevisionCount = (int) (len / 64);
+        if (computedRevisionCount == 0 || persistentNodeMap.getTipRev() != computedRevisionCount - 1) {
+            return false; // stale (repo grew/shrank since the .n was written) -- fall back
+        }
+
+        byte[] tipRecordNode;
+        if (persistentNodeMap.getTipRev() == 0) {
+            first.position(32);
+            tipRecordNode = new byte[32];
+            first.get(tipRecordNode);
+        } else {
+            ByteBuffer tipBuf = ByteBuffer.allocate(64);
+            channel.position((long) persistentNodeMap.getTipRev() * 64L);
+            while (tipBuf.hasRemaining()) {
+                if (channel.read(tipBuf) == -1) break;
+            }
+            if (tipBuf.hasRemaining()) {
+                return false;
+            }
+            tipBuf.flip();
+            tipBuf.position(32);
+            tipRecordNode = new byte[32];
+            tipBuf.get(tipRecordNode);
+        }
+        byte[] actualTipNode20 = Arrays.copyOf(tipRecordNode, 20);
+        byte[] docketTipNode20 = NodeMapFile.clip20(persistentNodeMap.getTipNode());
+        if (!Arrays.equals(actualTipNode20, docketTipNode20)) {
+            return false; // docket is stale relative to this on-disk index (e.g. rewritten history)
+        }
+
+        this.inline = false;
+        this.revisionCount = computedRevisionCount;
+        this.lastKnownSize = len;
+        this.fileOffsets = new long[computedRevisionCount];
+        for (int rev = 0; rev < computedRevisionCount; rev++) {
+            this.fileOffsets[rev] = (long) rev * 64L;
+        }
+        this.nodeMapDeferred = true;
+        return true;
     }
 
     private synchronized void loadIndexIncremental(long fromPos) throws IOException {
@@ -655,16 +762,47 @@ public class RevlogIndex {
         if (nodeId == null) return -1;
         byte[] clippedNode = new byte[20];
         System.arraycopy(nodeId, 0, clippedNode, 0, Math.min(nodeId.length, 20));
+
+        if (nodeMapDeferred && persistentNodeMap != null) {
+            Integer candidate = persistentNodeMap.findRevision(clippedNode);
+            if (candidate != null && candidate >= 0 && candidate < revisionCount) {
+                // Never trust a trie hit blindly (see NodeMapFile#findRevision javadoc): confirm
+                // the candidate revision's actual node matches before returning it.
+                Revlog.IndexRecord record = getIndexRecord(candidate);
+                if (record != null && record.getNodeId() != null
+                        && Arrays.equals(Arrays.copyOf(record.getNodeId(), 20), clippedNode)) {
+                    return candidate;
+                }
+            }
+            // Not (verifiably) in the persisted trie -- fall through to nodeMap, which still
+            // covers any revisions appended locally since the trie was loaded (via addRecord()).
+        }
+
         Integer rev = nodeMap.get(ByteBuffer.wrap(clippedNode));
         if (rev != null) {
             return rev;
         }
-        
+
         return -1;
     }
 
     public boolean isInline() {
         return inline;
+    }
+
+    /**
+     * True when this instance loaded via the persistent-nodemap fast path and hasn't yet
+     * materialized its in-memory {@code nodeMap}/{@code hexNodeMap} (i.e. only
+     * {@link #findRevision} has been used so far, answered straight from the {@code .n} trie).
+     * Exposed for tests; not meaningful application state.
+     */
+    public synchronized boolean isNodeMapDeferred() {
+        return nodeMapDeferred;
+    }
+
+    /** The attached persistent nodemap trie reader, or {@code null} if none was provided/usable. */
+    public NodeMapFile getPersistentNodeMap() {
+        return persistentNodeMap;
     }
 
     public synchronized void addRecord(Revlog.IndexRecord record) {
@@ -737,6 +875,7 @@ public class RevlogIndex {
      */
     public synchronized List<byte[]> findByHexPrefix(String prefix) {
         checkAndUpdate();
+        materializeDeferredNodeMap();
         if (prefix == null || prefix.isEmpty()) {
             return Collections.emptyList();
         }
@@ -744,5 +883,27 @@ public class RevlogIndex {
         String endPrefix = lowerPrefix + "\uffff";
         SortedMap<String, byte[]> subMap = hexNodeMap.subMap(lowerPrefix, endPrefix);
         return new ArrayList<>(subMap.values());
+    }
+
+    /**
+     * Fully populates {@code nodeMap}/{@code hexNodeMap} for the persistent-nodemap-deferred
+     * revision range by reading each covered record's node id from disk once. Needed by
+     * {@link #findByHexPrefix} -- unlike an exact-node {@link #findRevision} lookup, prefix
+     * resolution can't be answered from the trie alone (it doesn't persist full node hashes, only
+     * enough of the hex prefix to disambiguate the revisions it was actually built from). After
+     * this runs once, this RevlogIndex behaves exactly as if persistent-nodemap acceleration had
+     * never been used -- it's a one-time fallback cost, not a correctness compromise.
+     */
+    private void materializeDeferredNodeMap() {
+        if (!nodeMapDeferred) {
+            return;
+        }
+        for (int rev = 0; rev < revisionCount; rev++) {
+            Revlog.IndexRecord record = getIndexRecord(rev);
+            byte[] clippedNode = Arrays.copyOf(record.getNodeId(), 20);
+            nodeMap.put(ByteBuffer.wrap(clippedNode), rev);
+            hexNodeMap.put(NodeIdUtil.toHex(clippedNode), clippedNode);
+        }
+        nodeMapDeferred = false;
     }
 }

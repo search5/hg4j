@@ -37,7 +37,8 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
 | store 레이아웃 / fncache 인코딩 | wiki `fncacheRepoFormat`, `mercurial/store.py`(`_pathencode`/`_hashencode` 실측) | `util.NodeIdUtil.encodeFname` | ✅ **구현 완료(2026-09-01)** — `store.py`의 실제 인코딩 알고리즘대로 전면 재작성. 이전에는 Windows `COM#`/`LPT#` 예약어의 세 번째 글자가 아니라 끝자리 숫자를 이스케이프하는 버그와, 긴 경로(120바이트 초과) 해싱 방식이 실제 hg에 없는 방식(255바이트 초과 시 디렉터리 없는 형태로 전환)으로 되어 있던 버그를 발견·수정. 대문자/앞자리 점/Windows 예약어/150바이트 초과 경로 등 7개 까다로운 파일명으로 실제 hg 온디스크 레이아웃과 바이트 단위 일치 검증(`FncacheEncodingInteropTest`). fncache 파일 목록 자체(원본 논리 경로 그대로 저장)는 기존에도 정확했음 |
 | Revlog v1 (인덱스/데이터, generaldelta, inline) | `hg help internals.revlogs`, wiki `FileFormats` | `Revlog`, `RevlogIndex`, `DeltaEngine`, `DeltaCodec` | ✅ v1 구현, **2026-09-01 실제 hg CLI 재검증 중 zstd requirement 문자열 버그 발견·수정**(`revlog-compression=zstd`→`revlog-compression-zstd`) — 상세는 [[revlog]] |
 | Revlog v2 — changelog-v2(`exp-changelog-v2`) | `mercurial/revlogutils/docket.py`+실제 hg 데이터 대조 | `storage.RevlogIndex`, `storage.Revlog` | ✅ **구현 완료(2026-09-01)** — 실제 hg CLI로 생성한 저장소로 읽기/쓰기 검증, `hg verify`로 상호운용성까지 확인. 상세: [[revlog-v2-support-plan]] |
-| Revlog v2 — 일반(`exp-revlogv2.2`, 매니페스트/파일로그) 및 `fileindex-v1` | Rust 확장 포함 실제 Mercurial 7.2.4(Docker) fixture로 바이트 단위 검증 완료 | `RevlogV2GeneralParserTest`, `FileIndexTest`(+ 수동 Docker `hg verify`/`log`/`cat` 왕복) | ✅ **완료(2026-09-02)** — 읽기+쓰기 모두 구현. `persistent-nodemap`(`.n` 트라이)만 인식-only로 남음. 상세: [[revlog-v2-support-plan]] |
+| Revlog v2 — 일반(`exp-revlogv2.2`, 매니페스트/파일로그) 및 `fileindex-v1` | Rust 확장 포함 실제 Mercurial 7.2.4(Docker) fixture로 바이트 단위 검증 완료 | `RevlogV2GeneralParserTest`, `FileIndexTest`(+ 수동 Docker `hg verify`/`log`/`cat` 왕복) | ✅ **완료(2026-09-02)** — 읽기+쓰기 모두 구현. 상세: [[revlog-v2-support-plan]] |
+| persistent-nodemap(`.n` 트라이 파일 가속 조회) | `mercurial/revlogutils/nodemap.py`(docket + trie 인코딩 실측) | `storage.NodeMapFile`, `storage.RevlogIndex`, `storage.Revlog`, `storage.DefaultFileStoreEngine` | ✅ **읽기(가속 조회) 구현 완료(2026-09-03)** — Docker `hg-rust-7.2.4`(Rust 확장 포함, 이 환경의 시스템 hg는 이 requirement의 저장소 자체를 못 만듦)로 40커밋 실제 저장소를 만들어 `.n` docket(62바이트: version/uid_size/tip_rev/data_length/data_unused/tip_node_size 헤더 + uid + tip_node) + `-<uid>.nd` 트라이(64바이트 블록, 16×4바이트 빅엔디안 signed int, 루트는 항상 마지막 블록)를 바이트 단위로 대조(`NodeMapFileFixtureTest`, 40/40 실제 노드 해시 일치). `RevlogIndex`에 `.n`이 신선하고(tip_rev/tip_node가 현재 인덱스와 일치) 비-inline인 경우 전체 레코드 스캔을 건너뛰고 오프셋을 산술적으로 계산하는 fast path를 추가, `findRevision()`이 트라이를 우선 조회(항상 실제 레코드로 재검증 후 반환)하고 stale/부재 시 기존 순차 스캔 fallback으로 안전하게 전환(`RevlogIndexPersistentNodeMapTest`). `findByHexPrefix()`는 트라이가 전체 노드 해시를 저장하지 않아 가속 대상에서 제외 — 최초 호출 시 지연된 맵을 1회 materialize. **쓰기(커밋 시 `.n` 갱신)는 미구현** — hg4j가 만든 신규 리비전은 트라이가 자연히 stale해지고(fallback으로 정확성은 유지, 가속만 못 받음) 순차 스캔으로 처리되는, 스펙상 유효한 절충. 상세는 백로그 15번 참고 |
 | Changelog 포맷 (커밋 메타데이터 인코딩) | wiki `FileFormats`, `mercurial/changelog.py`(`encodeextra`/`add` 실측) | `Revlog` + `api.CommitCommand`/`LogCommand` | ✅ **구현 완료(2026-09-01)** — 다중 부모(p1/p2 정렬 포함 노드 해시 계산) 인코딩은 기존에도 정확했음. **발견·수정한 실제 버그**: default 브랜치 커밋에 항상 "branch:default" extra 필드를 썼는데, 실제 hg는 default 브랜치일 때 이 필드를 아예 안 써서 hg4j가 만든 default 브랜치 커밋의 노드 해시가 동일 내용이라도 실제 hg와 달라지고 있었음. 콜론을 이스케이프하는(실제 hg엔 없는) 가짜 extra-key 인코딩도 제거. 동일 입력에 대해 노드 해시가 실제 hg와 일치함을 확인(`ChangelogExtraFieldInteropTest`) |
 | Manifest 포맷 | wiki `Manifest` | `HgRepository.getManifestRevlog()`, `treewalk.ManifestWalk` | ✅ 존재 |
 | Dirstate v1 | wiki `DirState` | `Dirstate` | ✅ |
@@ -132,7 +133,8 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    별도 fresh pull로 서버에 실제 반영됐는지 재확인)까지 왕복 검증했다. 실제 hg
    클라이언트 → hg4j `HgWireServer` 방향(v1)은 여전히 미검증으로 남음.
 4. ~~**Revlog v2 일반(`exp-revlogv2.2`, 매니페스트/파일로그) + persistent-nodemap**~~
-   — ✅ **완료(2026-09-02)**, `persistent-nodemap`(`.n` 트라이)만 인식-only로 남음.
+   — ✅ **완료(2026-09-02, persistent-nodemap 읽기 가속은 2026-09-03에 추가 완료 —
+   백로그 15번 참고)**.
    이 개발 환경의 hg 바이너리가 Rust 확장 없이는 이 포맷의 저장소 자체를 생성하지
    못해(`abort: accessing ... without associated fast implementation`) 막혀
    있었는데, `docker/hg-rust-7.2.4/Dockerfile`로 Rust 확장이 활성화된 실제
@@ -414,6 +416,27 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     생성됐다. TDD로 재현(타겟 파일만 키우고 symlink 자체는 안 건드린 뒤 재커밋 →
     filelog 리비전 수가 그대로 1이어야 함을 실패하는 테스트로 확인) 후 두 지점 모두
     `Files.readSymbolicLink()` 기반으로 수정. 전체 회귀 클린. 커밋 `1162715`.
+15. ~~**persistent-nodemap(`.n` 트라이 파일) 가속 조회 — 인식만 하고 실제 조회는 항상
+    순차 스캔 fallback**~~ — ✅ **읽기(가속 조회) 완료(2026-09-03)**. Docker
+    `hg-rust-7.2.4`(이 환경의 Rust 미포함 시스템 hg는 이 requirement의 저장소
+    자체를 못 만듦)로 40커밋 실제 저장소를 만들어 `.n` docket(62바이트)과
+    `-<uid>.nd` 트라이(64바이트 블록, 16×4바이트 빅엔디안 signed int, 루트는
+    항상 마지막 블록)를 `mercurial/revlogutils/nodemap.py` 실측 레이아웃대로
+    파싱하는 `storage.NodeMapFile` 신설 — 실제 hg가 만든 바이트로 40/40 노드
+    해시 일치 검증(`NodeMapFileFixtureTest`, 시스템 python의 pure-python
+    `mercurial.revlogutils.nodemap` 모듈로 독립 재검증까지 포함). `RevlogIndex`에
+    신선한(tip_rev/tip_node가 현재 인덱스와 일치) 비-inline 트라이가 있으면 전체
+    레코드 스캔을 건너뛰고 오프셋을 산술 계산(`rev*64`)하는 fast path를 추가,
+    `findRevision()`이 트라이를 먼저 조회하되 항상 실제 레코드로 재검증한 뒤
+    반환(트라이 자체는 부재 노드를 실재하는 다른 노드로 오인할 수 있다는
+    `mercurial/revlogutils/nodemap.py`의 알려진 특성 때문 — 이 재검증이 그 허점을
+    막는다), stale/부재 시 기존 순차 스캔으로 안전하게 fallback
+    (`RevlogIndexPersistentNodeMapTest`, stale-트라이 케이스 포함). `findByHexPrefix`는
+    트라이가 전체 노드 해시를 저장하지 않아(접두사 disambiguation에 필요한 만큼만
+    저장) 가속 대상에서 제외 — 최초 호출 시 지연된 맵을 1회 materialize해 이후부턴
+    기존 방식과 동일하게 동작. **쓰기(`.n` 갱신)는 미구현** — hg4j로 커밋한 신규
+    리비전은 트라이가 stale해지고 fallback으로 처리되는(정확성 유지, 가속만 못
+    받음) 스펙상 유효한 절충으로 남김. 전체 회귀 2231 테스트, 실패 0.
 13. ~~**`PushCommand`의 증분(2회차) push가 최신 커밋을 누락함**~~ — ✅ **완료(2026-09-02)**.
     TDD로 원인 추적 결과, `PushCommand` 자체에는 버그가 없었다 — 진짜 원인은
     `RevlogIndex.checkAndUpdate()`의 **디스크 재확인 200ms 스로틀**이었다.
@@ -433,25 +456,39 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     자기 북키핑을 신뢰(기존 동작 유지)하고, 한 번도 안 쓴(순수 읽기 전용) 핸들만
     스로틀 없이 매번 디스크를 재확인**하도록 정리. `HgRepositoryTest`에 읽기 전용
     핸들 케이스 회귀 테스트 추가. 커밋 `f0b1eff`.
-15. **`persistent-nodemap`(`.n` 트라이 파일) 가속 조회 — 미착수.** `HgRepository.
-    isPersistentNodemap()`으로 requirement 인식은 하지만, 노드 조회는 항상 순차
-    스캔으로 fallback한다(스펙상 유효하나 속도 이점 없음). 원래 백로그 4번(Revlog
-    v2 일반 + persistent-nodemap)에 같이 묶여 있었는데, 2026-09-02에 4번을 완료
-    처리하면서 persistent-nodemap만 별도 번호 없이 gap table에만 남아 있던 것을
-    이 항목으로 승격. `mercurial/revlogutils/nodemap.py`가 실제 스펙 소스.
-    저장소 생성 자체에 Rust 확장이 필요하므로(이 환경 로컬 hg는 불가) 이미 검증된
-    `hg-rust-7.2.4` Docker 이미지(`docker/hg-rust-7.2.4/Dockerfile`) 활용.
-16. **Bundle1 writer 독립 클래스 없음 — 미착수.** `hg bundle --type=none-v1/
-    gzip-v1/bzip2-v1`에 대응하는 파일 저장용 writer가 없다(읽기는 세 압축 형식
-    전부 검증됨). `HgLocalClient.getBundle()`이 내부적으로 HG10UN 스트림을
-    만들지만 이는 wire protocol 응답 전용이지 포셀린 `hg bundle` 대응 명령이
-    아니다. 로컬 시스템 hg(Rust 불필요, Docker 불필요)로 검증 가능.
-17. **Sidedata 실제 활용(copy-tracing 등) — 미착수.** 파싱 골격(sidedata offset/
-    complen 필드 읽기)만 있고 이를 소비하는 기능이 없다. 가장 유력한 후보는
-    `exp-copies-sdc` requirement 하의 changelog sidedata 기반 copy-tracing
-    (`SD_P1COPIES`/`SD_P2COPIES` 등, `mercurial/metadata.py`/`revlogutils/
-    sidedata.py` 실측 필요) — 전체 히스토리를 순회하지 않고도 특정 리비전의
-    copy 정보를 바로 얻을 수 있게 해준다. 정확한 구현 범위는 착수 시 재확인.
+16. ~~**Bundle1 writer 독립 클래스 없음**~~ — ✅ **완료(2026-09-03)**. 진단해보니
+    `api.BundleCommand`(직전 세션에 이미 신설)는 `none-v1`(`"HG10UN"` + 무압축 cg1)만
+    만들 수 있었고, 실제 gap은 서술 그대로 `--type` 파라미터/gzip·bzip2 압축
+    부재였다. `BundleCommand.BundleType`(`NONE_V1`/`GZIP_V1`/`BZIP2_V1`,
+    `setType(BundleType)`/`setType(String)`) 추가로 해결 — `gzip-v1`은 순수
+    zlib/DEFLATE(`java.util.zip.Deflater` 기본 wrapped 모드, `GZIPOutputStream`이
+    아님), `bzip2-v1`은 4바이트 리터럴 `"HG10"` + 표준 bzip2 스트림
+    (`mercurial/bundle2.py`의 `bundletypes["HG10BZ"] = ("HG10", "BZ")` 그대로).
+    실제 hg 7.2.2 CLI로 세 방식 모두 양방향 round-trip 검증(`BundleCommandTest`
+    신규 3건). 상세는 위 gap table "Bundle1" 행 참고. 로컬 시스템 hg만으로 검증,
+    Rust/Docker 불필요했음.
+17. ~~**Sidedata 실제 활용(copy-tracing 등)**~~ — ✅ **decode/조회 완료(2026-09-03)**.
+    `mercurial/revlogutils/sidedata.py`/`metadata.py` 실측 결과, 백로그 노트가
+    언급한 `SD_P1COPIES`/`SD_P2COPIES`/`SD_FILESADDED`/`SD_FILESREMOVED`는 실제
+    hg 7.2 소스에 정의만 있고 아무 데서도 생성/소비되지 않는 죽은 코드임을 확인 —
+    실제로 쓰이는 건 `exp-copies-sidedata-changeset` requirement 하의 단일
+    `SD_FILES` 키(추가/삭제/병합/salvage/touch 플래그 + p1/p2 복사 출처, `hg
+    debugchangedfiles`로 노출)뿐이었다. LFS는 `mercurial/lfs/` 소스 확인 결과
+    포인터 파일 확장이라 sidedata와 무관해 범위에서 제외. 바이트 레이아웃: index
+    레코드의 sidedata offset/complen/compression-mode(3비트, PLAIN/DEFAULT-zstd/
+    INLINE) 필드(hg4j가 필드는 갖고 있었지만 값을 파싱 안 하고 있었음) → outer
+    컨테이너(`count:u16` + entry별 `key:u16,length:u32,sha1:20B`) → `SD_FILES`
+    payload(`totalFiles:u32` + entry별 `flag:byte,fileEnd:u32,copyIdx:u32` +
+    파일명들). `RevlogIndex`/`Revlog`가 세 필드를 실제로 파싱하도록 수정, 신규
+    `storage.SidedataCodec`(컨테이너 디코드) + `api.ChangingFiles`(`SD_FILES`
+    디코드 + `getCopySource(path)`) + 포셀린 `api.SidedataChangedFilesCommand`
+    (dirstate 기반 `CopyCommand`의 과거-리비전 조회 보완). 로컬 hg만으로 검증
+    (`exp-copies-sidedata-changeset`은 Rust 불필요), 실제 3커밋 저장소를
+    `src/test/resources/fixtures/sidedata-copytracing/`에 fixture로 확보해
+    `hg debugchangedfiles <rev>` 출력과 대조 검증(`SidedataCopyTracingTest`,
+    `SidedataChangedFilesCommandTest`, 8건). **남은 gap**: 커밋 시점에 hg4j가
+    `SD_FILES`를 직접 쓰는 writer는 미구현(decode/조회만), `hg log --follow`/
+    annotate 연동도 미배선.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

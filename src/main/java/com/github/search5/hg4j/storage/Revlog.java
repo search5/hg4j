@@ -97,7 +97,7 @@ public class Revlog {
     }
 
     public Revlog(File idxFile, File datFile, boolean useZstd) throws IOException {
-        this(idxFile, datFile, useZstd, false);
+        this(idxFile, datFile, useZstd, false, false);
     }
 
     /**
@@ -107,8 +107,22 @@ public class Revlog {
      *     silently defaulting to v1.
      */
     public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2) throws IOException {
+        this(idxFile, datFile, useZstd, createAsGeneralV2, false);
+    }
+
+    /**
+     * @param createAsGeneralV2 see {@link RevlogIndex#RevlogIndex(File, boolean)}.
+     * @param usePersistentNodeMap when true and this revlog's store has the
+     *     {@code persistent-nodemap} requirement, attempts to load the {@code <radix>.n} trie
+     *     next to {@code idxFile} for accelerated node hash to revision lookups
+     *     ({@link RevlogIndex#findRevision}). Never fails the constructor -- a missing, stale, or
+     *     malformed {@code .n} file is silently ignored and this behaves exactly as if the flag
+     *     were {@code false} (see {@link NodeMapFile#tryLoad}).
+     */
+    public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2, boolean usePersistentNodeMap) throws IOException {
         this.idxFile = idxFile;
-        this.index = new RevlogIndex(idxFile, createAsGeneralV2);
+        NodeMapFile persistentNodeMap = usePersistentNodeMap ? NodeMapFile.tryLoad(idxFile) : null;
+        this.index = new RevlogIndex(idxFile, createAsGeneralV2, persistentNodeMap);
         if (index.isV2()) {
             // v2는 항상 non-inline이며 실제 데이터 파일은 docket의 UUID로부터 발견된다 —
             // 생성자로 넘어온 datFile(예: "00changelog.d")은 v2 저장소에는 존재하지 않는다.

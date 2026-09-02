@@ -229,17 +229,21 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    세션에서 마저 구현됐다(`HgHttpWireServerTest#serverAdvertisesAndServesClonebundlesOnceTheManifestFileExists`
    로 확인: `.hg/clonebundles.manifest` 파일이 없으면 capability 미광고, 생기면 광고 +
    내용 그대로 서빙). 상세 계획과 경위는 아래 "Clonebundles 실행 계획" 절 참고.
-10. **깨진(dangling) symlink가 `AddCommand`/`HgRepository`에서 조용히 누락·거부됨**
-    (2026-09-02, 커버리지 95% 이니셔티브 라운드2 중 `UpdateCommand` 담당 에이전트가
-    부수적으로 발견, 미착수). `HgRepository.scanDirectory()`와 `AddCommand.call()`의
-    명시적 경로 처리 둘 다 `File.isFile()`/`.exists()`로 파일 존재를 판단하는데, 이
-    메서드들은 심볼릭 링크를 **따라가서** 판단하므로 타겟이 존재하지 않는 (깨진)
-    symlink는 `false`를 반환한다 — 결과적으로 전체 저장소 `hg add`(스캔)는 깨진
-    symlink를 조용히 건너뛰고, 특정 경로를 지정한 `hg add <path>`는 아예 거부한다.
-    실제 hg 7.2로 확인: `ln -s missing-target.txt link.txt; hg add` → `A link.txt`
-    (정상 추가, 이후 커밋/업데이트해도 타겟 경로가 그대로 보존됨). 수정 범위는 작을
-    것으로 예상(두 체크 지점에 `Files.isSymbolicLink()` 분기 추가 정도) — 아직
-    미착수.
+10. ~~**깨진(dangling) symlink가 `AddCommand`/`HgRepository`에서 조용히 누락·거부됨**~~
+    — ✅ **완료(2026-09-02)**. `HgRepository.scanDirectory()`, `AddCommand.call()`의
+    명시적 경로 처리, `CommitCommand.call()`의 tracked-file 존재 검증까지 **3곳
+    전부** `File.isFile()`/`.exists()`로만 판단하고 있어서(심볼릭 링크를 따라가
+    타겟이 없거나 디렉터리면 `false`) 깨진 symlink는 전체 스캔에서 조용히
+    누락되고, 명시적 `hg add <path>`/커밋 시엔 아예 거부됐다(세 번째는 커버리지
+    작업 때는 발견 못 하고 이번 수정 중 TDD로 재현하다 추가로 찾음). 실제 hg 7.2로
+    확인(`ln -s missing-target.txt link.txt; hg add` → `A link.txt`, 커밋까지 정상
+    round-trip, 심지어 타겟이 **디렉터리**를 가리키는 symlink도 재귀 안 하고
+    그냥 파일로 추적함)한 뒤 세 지점 전부 `Files.isSymbolicLink()` 체크를 추가.
+    TDD 3건(명시 경로 add, 전체 스캔, add→commit 라운드트립에서 매니페스트 `l`
+    플래그·filelog 콘텐츠 검증) + 기존 `HgRepositoryCoverageTest`의 "symlink-to-
+    directory는 완전히 스킵돼야 한다"는 낡은(버그 기준) 단언을 실측 정정. 전체
+    회귀 클린(사전에 존재하던 무관한 `PushCommandTest` 실패 1건 제외 — 아래 참고).
+    커밋 `f0244f2`.
 11. **Changegroup cg4/cg5 미지원** (2026-09-02, 사용자 제보 후 호스트 native hg 7.2.2
     소스로 직접 대조 확인 — 2016년 논의만 됐다가 폐기된 옛 아이디어가 아니라, 실제로
     Mercurial 7.1(2025-08-04)에서 정식 채택된 최신 포맷). **미착수.**
@@ -331,6 +335,15 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     (`tags`/`paths`는 이미 있는 데이터를 읽어 반환하기만 하면 되는 조회성이라
     작고, `copy`/`bundle`/`locate`/`files`/`manifest`는 신규 로직이 필요해 상대적으로
     크다). 우선순위는 사용자 확인 후 진행.
+13. **`PushCommand`의 증분(2회차) push가 최신 커밋을 누락함** (2026-09-02, 신규 발견,
+    미착수). 항목 10(깨진 symlink) TDD 수정 후 전체 회귀를 돌리다 발견한, 이 세션
+    범위 밖의 무관한 실패: `PushCommandTest.packsBothParentsWhenPushingAMergeCommitAndPropagatesRemoteKnownThroughIt`
+    가 `expected: <5> but was: <4>`로 실패한다 — merge 커밋까지 첫 push(4개 changeset)
+    후, 파일 하나를 더 커밋하고 두 번째 push를 해도 원격에 반영된 changeset 수가
+    4개 그대로다(5개여야 함). `git stash`로 내 변경분을 제거하고 pristine
+    `f3345ce`(직전 라운드3 커밋, "fix real PushCommand CG1 delta-base bug" 포함)에서
+    재현 확인 — **내 symlink 수정과 무관한, 그 라운드3 커밋 자체가 유입시켰을 가능성이
+    있는 회귀**. 원인 조사·수정 미착수, 우선순위는 사용자 확인 후 진행.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

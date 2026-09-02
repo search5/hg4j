@@ -286,7 +286,10 @@ public class CommitCommand {
                         filesModified.add(path);
                     } else if (workingState == 'a' || workingState == 'm' || workingState == 'n') {
                         File diskFile = new File(repository.getDirectory(), path);
-                        if (!diskFile.exists() || !diskFile.isFile()) {
+                        // A symlink is valid to commit even when its target is missing (dangling)
+                        // or not a plain file — real hg tracks it regardless (verified live).
+                        // exists()/isFile() alone follow the link and would reject it.
+                        if (!Files.isSymbolicLink(diskFile.toPath()) && (!diskFile.exists() || !diskFile.isFile())) {
                             throw new HgValidationException("Tracked file not found on disk: " + path);
                         }
 

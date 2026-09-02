@@ -223,6 +223,88 @@ public class BundleCommandTest {
         assertEquals(2, new LogCommand(dstRepo).call().size());
     }
 
+    // -- Compressed bundle1 formats (gzip-v1 / bzip2-v1): real hg reads back what hg4j writes -----
+
+    @Tag("interop")
+    @Test
+    public void realHgReadsBackAGzipV1BundleProducedByHg4j(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping.");
+
+        HgRepository srcRepo = Hg.init().setDirectory(tempDir.resolve("src").toFile()).call();
+        writeAndCommit(srcRepo, "a.txt", "v1", "first");
+        writeAndCommit(srcRepo, "a.txt", "v2", "second");
+
+        File out = tempDir.resolve("hg4j-gzip.hg").toFile();
+        int count = new BundleCommand(srcRepo).setOutputFile(out).setBaseRevision("null")
+                .setType(BundleCommand.BundleType.GZIP_V1).call();
+        assertEquals(2, count);
+
+        byte[] header = Files.readAllBytes(out.toPath());
+        assertEquals("HG10GZ", new String(header, 0, 6, java.nio.charset.StandardCharsets.US_ASCII),
+                "gzip-v1 bundle must start with the HG10GZ container header");
+
+        File nativeDst = tempDir.resolve("native-dst").toFile();
+        nativeDst.mkdirs();
+        HgTestUtils.hg(nativeDst, "init");
+        String log = HgTestUtils.hg(nativeDst, "unbundle", out.getAbsolutePath());
+        assertTrue(log.contains("added 2 changesets"), "real hg must accept hg4j's gzip-v1 bundle file: " + log);
+    }
+
+    @Tag("interop")
+    @Test
+    public void realHgReadsBackABzip2V1BundleProducedByHg4j(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping.");
+
+        HgRepository srcRepo = Hg.init().setDirectory(tempDir.resolve("src").toFile()).call();
+        writeAndCommit(srcRepo, "a.txt", "v1", "first");
+        writeAndCommit(srcRepo, "a.txt", "v2", "second");
+
+        File out = tempDir.resolve("hg4j-bzip2.hg").toFile();
+        int count = new BundleCommand(srcRepo).setOutputFile(out).setBaseRevision("null")
+                .setType("bzip2-v1").call();
+        assertEquals(2, count);
+
+        byte[] header = Files.readAllBytes(out.toPath());
+        assertEquals("HG10BZ", new String(header, 0, 6, java.nio.charset.StandardCharsets.US_ASCII),
+                "bzip2-v1 bundle must start with the HG10BZ container header");
+
+        File nativeDst = tempDir.resolve("native-dst").toFile();
+        nativeDst.mkdirs();
+        HgTestUtils.hg(nativeDst, "init");
+        String log = HgTestUtils.hg(nativeDst, "unbundle", out.getAbsolutePath());
+        assertTrue(log.contains("added 2 changesets"), "real hg must accept hg4j's bzip2-v1 bundle file: " + log);
+    }
+
+    // -- hg4j reads back a real-hg-produced gzip-v1 bundle (round trip in the other direction) ----
+
+    @Tag("interop")
+    @Test
+    public void hg4jReadsBackAGzipV1BundleProducedByRealHg(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping.");
+
+        File nativeSrc = tempDir.resolve("native-src").toFile();
+        HgTestUtils.nativeRepo(nativeSrc, dir -> {
+            try {
+                Files.writeString(new File(dir, "a.txt").toPath(), "v1\n");
+                HgTestUtils.hg(dir, "add", "a.txt");
+                HgTestUtils.hg(dir, "commit", "-m", "first");
+                Files.writeString(new File(dir, "a.txt").toPath(), "v2\n");
+                HgTestUtils.hg(dir, "commit", "-m", "second");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        File out = tempDir.resolve("native-gzip.hg").toFile();
+        HgTestUtils.hg(nativeSrc, "bundle", "--all", "--type", "gzip-v1", out.getAbsolutePath());
+        assertTrue(out.exists());
+
+        HgRepository dstRepo = Hg.init().setDirectory(tempDir.resolve("hg4j-dst").toFile()).call();
+        List<byte[]> imported = new UnbundleCommand(dstRepo).setBundleFile(out).call();
+        assertEquals(2, imported.size());
+        assertEquals(2, new LogCommand(dstRepo).call().size());
+    }
+
     private static byte[] writeAndCommit(HgRepository repo, String fileName, String content, String message)
             throws IOException, HgLockException {
         File f = new File(repo.getDirectory(), fileName);

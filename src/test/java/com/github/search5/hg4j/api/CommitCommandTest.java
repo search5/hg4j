@@ -882,6 +882,54 @@ public class CommitCommandTest {
         }
     }
 
+    /**
+     * The unchanged-file ('n' state) fast path compares the dirstate's recorded size against
+     * {@code File#length()} -- which, for a symlink, follows the link and returns the *target
+     * file's* size rather than the symlink's own target-path-string length (the convention this
+     * codebase otherwise uses consistently, e.g. AddCommand/CopyCommand/GraftCommand/
+     * RebaseCommand's own commit-adjacent code). Real hg only cares whether the symlink's own
+     * target string changed, never the resolved file's size, so touching the resolved file's
+     * content (without touching the symlink itself) must not create a spurious new filelog
+     * revision for the symlink on the next commit.
+     */
+    @Test
+    public void testUnrelatedTargetFileSizeChangeDoesNotSpuriouslyRecommitAnUntouchedSymlink(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            File targetFile = new File(repoDir, "target.txt");
+            Files.writeString(targetFile.toPath(), "short");
+
+            File linkFile = new File(repoDir, "link.txt");
+            Files.createSymbolicLink(linkFile.toPath(), Path.of("target.txt"));
+
+            new AddCommand(repo).call();
+            new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+
+            File flIdx = new File(repo.getStoreDir(), "data/link.txt.i");
+            File flDat = new File(repo.getStoreDir(), "data/link.txt.d");
+            Revlog filelog = repo.getRevlog(flIdx, flDat);
+            assertEquals(1, filelog.getRevisionCount());
+            byte[] originalNode = filelog.getIndexRecord(0).getNodeId().clone();
+
+            // Grow the target file substantially -- the symlink's own text ("target.txt") is
+            // completely untouched, only the file it happens to point at changes size.
+            Files.writeString(targetFile.toPath(), "a much, much longer replacement body");
+            // touch() the symlink's own mtime forward past the commit's tx-start second, so the
+            // M-2 racy-write guard can't mask this by short-circuiting on a stale mtime.
+            Thread.sleep(1100);
+
+            Files.writeString(new File(repoDir, "other.txt").toPath(), "unrelated change");
+            new AddCommand(repo).call();
+            new CommitCommand(repo).setMessage("v2").setAuthor("dev").call();
+
+            Revlog filelogAfter = repo.getRevlog(flIdx, flDat);
+            assertEquals(1, filelogAfter.getRevisionCount(),
+                    "the symlink's own target string never changed, so no new filelog revision should have been committed");
+            assertArrayEquals(originalNode, filelogAfter.getIndexRecord(0).getNodeId(),
+                    "the symlink's filelog node must be untouched by an unrelated change to the file it points at");
+        }
+    }
+
     @Test
     public void testExecutableFileRecordsXFlagInManifestAndDirstate(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();

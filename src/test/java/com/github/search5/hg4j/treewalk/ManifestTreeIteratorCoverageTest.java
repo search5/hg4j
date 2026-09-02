@@ -202,6 +202,37 @@ public class ManifestTreeIteratorCoverageTest {
         assertTrue(linkEntries.get(0).symlink);
     }
 
+    @Test
+    public void testParseManifestContent_TreemanifestDirectoryPointerFlagIsRecognized() {
+        // treemanifest's 't' (subdirectory-pointer) flag is encoded exactly like 'x'/'l': the
+        // single flag byte right after the 40-char hex node id, no separator (verified against a
+        // real experimental.treemanifest=1 repository built with Docker Mercurial 6.0 — see
+        // src/test/resources/fixtures/treemanifest/README.md). Unlike 'x'/'l' it must NOT be
+        // reported as executable/symlink, only as isTreeDir().
+        String hex = "69d5a5d76646b2ecadf92b2e2ee04dc1e1c4d3f4";
+        byte[] content = ("sub\0" + hex + "t\n").getBytes(StandardCharsets.UTF_8);
+
+        List<ManifestTreeIterator.Entry> entries = ManifestTreeIterator.parseManifestContent(content);
+        assertEquals(1, entries.size());
+        ManifestTreeIterator.Entry entry = entries.get(0);
+        assertEquals("sub", entry.path);
+        assertTrue(entry.isTreeDir(), "flag 't' must be recognized as a subdirectory pointer");
+        assertFalse(entry.executable);
+        assertFalse(entry.symlink);
+    }
+
+    @Test
+    public void testParseManifestContent_RegularFileFlagsAreNotMistakenForTreeDir() {
+        String hex = "a".repeat(40);
+        byte[] plain = ("plain.txt\0" + hex + "\n").getBytes(StandardCharsets.UTF_8);
+        byte[] exec = ("exe.txt\0" + hex + "x\n").getBytes(StandardCharsets.UTF_8);
+        byte[] link = ("link.txt\0" + hex + "l\n").getBytes(StandardCharsets.UTF_8);
+
+        assertFalse(ManifestTreeIterator.parseManifestContent(plain).get(0).isTreeDir());
+        assertFalse(ManifestTreeIterator.parseManifestContent(exec).get(0).isTreeDir());
+        assertFalse(ManifestTreeIterator.parseManifestContent(link).get(0).isTreeDir());
+    }
+
     // ------------------------------------------------------------------
     // loadEntries(): "no manifest" revision shortcuts
     // ------------------------------------------------------------------

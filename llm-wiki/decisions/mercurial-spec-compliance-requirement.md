@@ -238,27 +238,43 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    실제 hg4j↔hg4j pull round-trip으로 TDD 검증(`CensorChangegroupTransferTest`):
    censored 리비전이 크래시 없이 전송되고, 수신측에서도 여전히 censored로 인식되며
    내용 접근 시 예외가 발생함을 확인.
-8. **트리매니페스트(`treemanifest`) 읽기 지원** — 조사 결과 **미구현으로 확정**(단순
-   "미검증"이 아니라 관련 파싱 로직 자체가 없음). cg3의 `ManifestGroup`(디렉터리별
-   중첩 매니페스트 그룹) 파싱/적용 골격은 `ChangegroupParser`/`FetchCommand`에 이미
-   있지만, 매니페스트 리비전 콘텐츠 자체를 파싱하는 어느 코드에도 treemanifest의
-   `t`(subdirectory-pointer) 플래그를 인식하는 로직이 없다 — `hg init
-   --config experimental.treemanifest=1`로 실제 저장소를 만들어(`.hg/store/meta/<dir>/
-   00manifest.i`로 디렉터리별 매니페스트 revlog가 생성됨을 실제로 확인) 검증해보니,
-   hg4j의 매니페스트 파싱은 완전히 flat(평면) 구조만 가정한다. 트리매니페스트를 쓰는
-   저장소를 열면 디렉터리 항목을 일반 파일처럼 잘못 해석해 `LogCommand`/`StatusCommand`
-   /체크아웃 등 매니페스트를 쓰는 모든 명령이 조용히 잘못된 결과를 낼 위험이 크다.
-   구현 범위가 크다(재귀적 디렉터리 매니페스트 해석 + 이를 소비하는 모든 명령 배선) —
-   이번 세션 범위 밖으로 남기고 별도 백로그 항목으로 분리.
-   - **(2026-09-02 추가 확인)** 같은 미구현의 구체적 증상 하나를 커버리지 작업 중
-     `HgRemoteClientV2`에서 발견: `getBundle()`이 wireprotocol v2 서버에 항상
-     `"tree": ""`(루트 매니페스트)만 요청하고 서브디렉터리별 `tree=<dir>` 재귀 fetch를
-     전혀 하지 않는다. `"tree": ""` 자체는 정상 요청이지만(hg4j 자체 저장소는 전부
-     flat 매니페스트라 문제 없음), 진짜 treemanifest를 쓰는 제3자 real hg 서버와
-     연동한다면 서브디렉터리 매니페스트/파일 데이터가 통째로 누락된다. 수정하려면
-     재귀적 `tree=<dir>` fetch로 cg3 `ManifestGroup`을 조립해야 하는데, 이는 위
-     항목 자체의 구현 범위와 동일해 별도 항목으로 분리하지 않고 여기 종속시킨다.
-     wireprotocol v2는 hg 6.1부터 제거돼 실질 노출면은 좁다.
+8. ~~**트리매니페스트(`treemanifest`) 읽기 지원** — 조사 결과 미구현으로 확정(단순
+   "미검증"이 아니라 관련 파싱 로직 자체가 없었음).~~ — ✅ **읽기 경로 완료(2026-09-03)**.
+   Docker Mercurial 6.0(Rust 확장 없음 — treemanifest에 불필요, `hg --version`/
+   `hg debuginstall`로 정상 동작 확인)으로 `experimental.treemanifest=1` 저장소를
+   만들어(`a.txt`, `sub/b.txt`, `sub/deep/c.txt`, 이후 `sub2/d.txt` 3커밋, 2단계 중첩)
+   `.hg/store/00manifest.i`(루트)와 각 `.hg/store/meta/<dir>/00manifest.i`(서브디렉터리)의
+   실제 바이트를 `hg debugdata -m`/`hg debugindex --debug -m`(`--dir <path>`)로 직접
+   대조. **실측 결과**: 매니페스트 콘텐츠 포맷은 파일/디렉터리 항목이 완전히 동일하다 —
+   `<path>\0<40자 hex 노드ID><flag>\n` 한 줄, `flag`는 `''`/`x`/`l`/`t` 중 하나(구분자 없이
+   노드ID 바로 뒤에 붙음, `mercurial/manifest.py`의 `_manifestflags`/`treemanifest.parse()`와
+   일치). `t` 플래그가 붙은 항목의 노드ID는 파일 콘텐츠가 아니라
+   `meta/<누적경로>/00manifest.i`(`manifestrevlog.dirlog()`의 `radix = "meta/" + tree +
+   "00manifest"`와 동일 규칙)에 있는 서브매니페스트 revlog 리비전을 가리키고, 그 리비전의
+   콘텐츠 안 경로는 **그 서브디렉터리 기준 상대경로**다(`treemanifest._subpath()`가
+   호출부에서 접두사를 붙이는 구조) — 그래서 재귀 펼침 시 누적된 디렉터리 접두사를
+   직접 복원해야 한다. `ManifestTreeIterator.loadEntries()`가 이 로직의 유일한 병목점임을
+   확인(`ManifestWalk`/`getManifestAtCommit()`을 포함해 `StatusCommand`/`UpdateCommand`가
+   직접 쓰는 것도 결국 다 이 클래스를 거침) — `parseManifestContent()`(순수 라인 파싱
+   함수, 기존 동작 그대로 유지 + `Entry.isTreeDir()` 추가)와 새로 추가한
+   `expandTree()`/`readSubManifestContent()`(재귀적으로 `meta/<dir>/00manifest.i`를 열어
+   펼침)로 구현. 이 지점 하나만 고치는 것으로 `LogCommand`/`StatusCommand`/`UpdateCommand`
+   등 매니페스트를 소비하는 기존 명령 전부가 수정 없이 flat 매니페스트와 동일하게
+   동작한다. 픽스처는 `src/test/resources/fixtures/treemanifest/`(README.md에 생성 명령·
+   전체 노드 해시·raw 매니페스트 바이트 기록), TDD는
+   `ManifestTreeIteratorCoverageTest`(순수 파싱 레벨 `t` 플래그 인식 2건) +
+   `TreemanifestRealFixtureTest`(`getManifestAtCommit()`/`ManifestWalk`/`LogCommand`
+   레벨에서 3커밋 전부 재귀 펼침이 실제 hg `hg manifest --debug` 기준값과 정확히
+   일치함을 확인, 디렉터리 포인터 항목이 flat 결과에 전혀 남지 않음도 검증). 전체
+   회귀 클린(217개 테스트 클래스 전부 failures=0 errors=0).
+
+   **범위 밖으로 명시적으로 남긴 것**: treemanifest **쓰기**(생성/커밋)는 이번에 다루지
+   않았다 — 백로그 제목대로 읽기만 구현. `HgRemoteClientV2.getBundle()`이 wireprotocol v2
+   서버에 항상 `"tree": ""`(루트 매니페스트)만 요청하고 서브디렉터리별 `tree=<dir>` 재귀
+   fetch를 하지 않는 문제(2026-09-02 확인)도 사용자 지시로 그대로 남겨뒀다 — 이건 원격
+   wireprotocol v2 경로 전용 문제이고(hg4j 자체 저장소는 전부 flat이라 무관, 로컬 저장소를
+   직접 여는 이번 구현과는 별개), wireprotocol v2는 실제 hg 6.1부터 제거된 프로토콜이라
+   실사용 노출면이 좁다.
 9. ~~**Clonebundles (대용량 클론 오프로딩) — 아예 미구현.**~~ — ✅ **완료(2026-09-01)**.
    클라이언트(발견·매니페스트 파싱·다운로드·적용·`FetchCommand`/`CloneCommand` 자동
    배선)와 **서버 측(`Wire1Commands`의 조건부 capability 광고 + `?cmd=clonebundles`

@@ -25,12 +25,34 @@ public class ManifestTreeIterator implements TreeIterator {
         final byte[] nodeId;
         final boolean executable;
         final boolean symlink;
+        /**
+         * treemanifest의 {@code t}(subdirectory-pointer) 플래그. true면 {@link #nodeId}는
+         * 실제 파일 콘텐츠가 아니라 {@code meta/<path>/00manifest.i}에 있는 해당 디렉터리
+         * 서브매니페스트 revlog의 리비전을 가리키는 노드ID다(실제 hg
+         * {@code mercurial/manifest.py}의 {@code treemanifest.parse()}: {@code fl == b't'}일
+         * 때 경로에 {@code '/'}를 붙여 lazy subtree로 등록하는 것과 동일한 인코딩,
+         * Docker Mercurial 6.0으로 직접 확인함 — 상세는
+         * {@code src/test/resources/fixtures/treemanifest/README.md} 참고).
+         * {@link #loadEntries()}가 이 항목을 만나면 재귀적으로 펼쳐서 최종
+         * {@link #entries} 목록에는 절대 남지 않는다 — 순수 파싱 함수인
+         * {@link #parseManifestContent(byte[])}의 결과에만 나타난다.
+         */
+        final boolean treeDir;
 
         Entry(String path, byte[] nodeId, boolean executable, boolean symlink) {
+            this(path, nodeId, executable, symlink, false);
+        }
+
+        Entry(String path, byte[] nodeId, boolean executable, boolean symlink, boolean treeDir) {
             this.path = path;
             this.nodeId = nodeId;
             this.executable = executable;
             this.symlink = symlink;
+            this.treeDir = treeDir;
+        }
+
+        public boolean isTreeDir() {
+            return treeDir;
         }
     }
 
@@ -95,7 +117,8 @@ public class ManifestTreeIterator implements TreeIterator {
                             }
                             boolean executable = flag.contains("x");
                             boolean symlink = flag.contains("l");
-                            result.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink));
+                            boolean treeDir = "t".equals(flag);
+                            result.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink, treeDir));
 
                             start = end + 1;
                             continue;
@@ -114,7 +137,8 @@ public class ManifestTreeIterator implements TreeIterator {
                         }
                         boolean executable = flag.contains("x");
                         boolean symlink = flag.contains("l");
-                        result.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink));
+                        boolean treeDir = "t".equals(flag);
+                        result.add(new Entry(path, NodeIdUtil.fromHex(hexNodeId), executable, symlink, treeDir));
                     }
                 }
             }
@@ -192,9 +216,56 @@ public class ManifestTreeIterator implements TreeIterator {
         }
 
         byte[] mfContent = manifestRevlog.getRevisionContent(mfRev);
-        entries.addAll(parseManifestContent(mfContent));
-        
+        entries.addAll(expandTree(mfContent, ""));
+
         entries.sort((e1, e2) -> NodeIdUtil.UTF8_STRING_COMPARATOR.compare(e1.path, e2.path));
+    }
+
+    /**
+     * treemanifest 저장소({@code experimental.treemanifest=1})를 재귀적으로 펼쳐 flat한
+     * 파일 목록으로 만든다. {@code dirPrefix}가 빈 문자열이면 루트 매니페스트 콘텐츠,
+     * 아니면 {@code meta/<dirPrefix>/00manifest.i}의 서브 매니페스트 콘텐츠다.
+     *
+     * <p>{@code t} 플래그가 붙은 각 항목의 경로는 실제 hg의 {@code treemanifest.parse()}
+     * 처럼 해당 서브디렉터리 내부에서는 자기 자신을 기준으로 한 상대 경로만 담고 있다
+     * (예: {@code sub/00manifest.i}의 콘텐츠는 {@code "b.txt"}, {@code "deep"}이지
+     * {@code "sub/b.txt"}가 아니다) — 그래서 재귀 호출할 때마다 누적된 {@code dirPrefix}를
+     * 붙여 완전한 저장소 루트 기준 경로로 복원해야 한다. 이 메서드가 반환하는 목록에는
+     * 디렉터리 포인터 항목이 하나도 남지 않는다 — 오직 실제 파일 항목만 남으므로,
+     * 이 결과를 소비하는 {@link ManifestWalk}/{@code getManifestAtCommit()} 등 기존 코드는
+     * flat 매니페스트를 다루는 것과 완전히 동일하게 동작한다.
+     */
+    private List<Entry> expandTree(byte[] mfContent, String dirPrefix) throws IOException {
+        List<Entry> rawEntries = parseManifestContent(mfContent);
+        List<Entry> result = new ArrayList<>(rawEntries.size());
+        for (Entry e : rawEntries) {
+            String fullPath = dirPrefix.isEmpty() ? e.path : dirPrefix + "/" + e.path;
+            if (e.isTreeDir()) {
+                byte[] subContent = readSubManifestContent(fullPath, e.nodeId);
+                result.addAll(expandTree(subContent, fullPath));
+            } else {
+                result.add(new Entry(fullPath, e.nodeId, e.executable, e.symlink));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * {@code meta/<dirPath>/00manifest.i}에서 서브디렉터리 매니페스트 revlog를 열어
+     * {@code subManifestNode}가 가리키는 리비전의 콘텐츠를 반환한다(실제 hg의
+     * {@code manifestrevlog.dirlog()}: {@code radix = "meta/" + tree + "00manifest"}와
+     * 동일한 경로 규칙, {@code tree}는 트레일링 슬래시를 포함한 전체 경로).
+     */
+    private byte[] readSubManifestContent(String dirPath, byte[] subManifestNode) throws IOException {
+        File subIdx = new File(repository.getStoreDir(), "meta/" + dirPath + "/00manifest.i");
+        File subDat = new File(repository.getStoreDir(), "meta/" + dirPath + "/00manifest.d");
+        Revlog subRevlog = repository.getRevlog(subIdx, subDat);
+        int subRev = NodeIdUtil.findRevisionByNodeId(subRevlog, subManifestNode);
+        if (subRev == -1) {
+            throw new IOException("Sub-manifest revision not found for directory '" + dirPath
+                    + "': " + NodeIdUtil.toHex(subManifestNode));
+        }
+        return subRevlog.getRevisionContent(subRev);
     }
 
 

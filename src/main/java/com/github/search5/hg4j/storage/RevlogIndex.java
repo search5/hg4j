@@ -625,8 +625,20 @@ public class RevlogIndex {
         byte[] nodeId = new byte[32];
         buf.get(nodeId);
 
+        // Sidedata fields immediately follow the node-id section in BOTH INDEX_ENTRY_V2 and
+        // INDEX_ENTRY_CL_V2 (only the padding/rank bytes after them differ, which we don't need):
+        // 8 bytes sidedata offset, 4 bytes sidedata compressed length, 1 byte compression-mode
+        // byte whose bits 0-1 are the main data's compression mode and bits 2-3 are sidedata's
+        // own compression mode (mercurial/pure/parsers.py IndexObject2._unpack_entry: `data_comp
+        // = data[10] & 3`, `sidedata_comp = (data[10] & (3 << 2)) >> 2`).
+        long sidedataOffset = buf.getLong();
+        int sidedataCompLen = buf.getInt();
+        int compressionByte = buf.get() & 0xFF;
+        int sidedataCompressionMode = (compressionByte >> 2) & 3;
+
         return new Revlog.IndexRecord(rev, offset, flags, compLen, uncompLen,
-                baseRev, linkRev, parent1, parent2, nodeId);
+                baseRev, linkRev, parent1, parent2, nodeId,
+                sidedataOffset, sidedataCompLen, sidedataCompressionMode);
     }
 
     public synchronized long getFileOffset(int rev) {

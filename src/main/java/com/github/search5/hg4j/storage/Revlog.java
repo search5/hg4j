@@ -3,6 +3,7 @@ import com.github.search5.hg4j.diff.DeltaEngine;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.util.SafeFileIO;
+import com.github.luben.zstd.Zstd;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -48,11 +49,24 @@ public class Revlog {
     };
 
     public record IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
-                             int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId) {
+                             int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId,
+                             long sidedataOffset, int sidedataCompLen, int sidedataCompressionMode) {
         public IndexRecord {
             if (nodeId != null && nodeId.length > 20) {
                 nodeId = Arrays.copyOf(nodeId, 20);
             }
+        }
+
+        /**
+         * Backward-compatible constructor for v1 revlogs and any other call site that has no
+         * sidedata to report (v1 has no sidedata at all). Equivalent to the full constructor
+         * with {@code sidedataOffset=0}, {@code sidedataCompLen=0} (meaning "no sidedata" — see
+         * {@link Revlog#getSidedata(int)}), {@code sidedataCompressionMode=COMP_MODE_PLAIN}.
+         */
+        public IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
+                           int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId) {
+            this(revision, offset, flags, compLen, uncompLen, baseRev, linkRev, parent1, parent2,
+                    nodeId, 0L, 0, 0);
         }
 
         public int getRevision() { return revision; }
@@ -65,6 +79,17 @@ public class Revlog {
         public int getParent1() { return parent1; }
         public int getParent2() { return parent2; }
         public byte[] getNodeId() { return nodeId; }
+        /** Byte offset of this revision's sidedata chunk in the resolved {@code .sda} file (v2 only). */
+        public long getSidedataOffset() { return sidedataOffset; }
+        /** On-disk (possibly compressed) length of this revision's sidedata chunk; 0 = no sidedata. */
+        public int getSidedataCompLen() { return sidedataCompLen; }
+        /**
+         * Sidedata compression mode: {@code 0}=PLAIN (stored as-is), {@code 1}=DEFAULT
+         * (revlog's default compression, zstd — self-describing frame, no length prefix needed),
+         * {@code 2}=INLINE (legacy per-chunk marker-byte convention). See
+         * {@code mercurial/revlogutils/constants.py} {@code COMP_MODE_*}.
+         */
+        public int getSidedataCompressionMode() { return sidedataCompressionMode; }
     }
 
     public Revlog(File idxFile, File datFile) throws IOException {
@@ -125,6 +150,109 @@ public class Revlog {
 
     public synchronized boolean isCensored(int rev) {
         return (getIndexRecord(rev).getFlags() & REVIDX_ISCENSORED) != 0;
+    }
+
+    /** {@code compressionMode} value meaning "stored as-is, no compression" (real hg's {@code COMP_MODE_PLAIN}). */
+    private static final int COMP_MODE_PLAIN = 0;
+    /** {@code compressionMode} value meaning "revlog's default compression" (real hg's {@code COMP_MODE_DEFAULT} — zstd here). */
+    private static final int COMP_MODE_DEFAULT = 1;
+    /** {@code compressionMode} value meaning "legacy per-chunk marker-byte convention" (real hg's {@code COMP_MODE_INLINE}). */
+    private static final int COMP_MODE_INLINE = 2;
+
+    /**
+     * Reads and decodes revision {@code rev}'s sidedata block from the revlog-v2 {@code .sda}
+     * file (only v2/changelog-v2 revlogs carry sidedata — v1 always returns an empty map).
+     * Sidedata is auxiliary per-revision metadata stored alongside (not part of) the revision's
+     * hashed content; the changelog uses it to cache copy-tracing info when the repository has
+     * the {@code exp-copies-sidedata-changeset} requirement (see {@link
+     * com.github.search5.hg4j.api.SidedataChangedFilesCommand} / {@link
+     * com.github.search5.hg4j.api.ChangingFiles} for the consumer side of the {@code SD_FILES}
+     * key specifically).
+     *
+     * <p>Real hg's on-disk layout (mercurial/revlog.py {@code sidedata()},
+     * mercurial/revlogutils/constants.py): the index record carries a byte offset + on-disk
+     * length into the {@code .sda} file plus a 2-bit compression mode for that chunk (distinct
+     * from the main data chunk's own compression mode — both are packed into the same index
+     * byte, data mode in bits 0-1, sidedata mode in bits 2-3). The decompressed chunk is then an
+     * outer sidedata container (see {@link SidedataCodec}) mapping small integer keys to raw
+     * byte payloads.
+     *
+     * @return an empty map if this revision has no sidedata (v1 revlog, or a v2 revision that
+     *         simply never got any written — sidedataCompLen == 0)
+     */
+    public synchronized Map<Integer, byte[]> getSidedata(int rev) throws IOException {
+        IndexRecord rec = getIndexRecord(rev);
+        if (rec.getSidedataCompLen() <= 0) {
+            return java.util.Collections.emptyMap();
+        }
+        File sdaFile = index.getResolvedSidedataFile();
+        if (sdaFile == null || !sdaFile.exists()) {
+            throw new HgCorruptDataException("Sidedata file does not exist: " + sdaFile
+                    + " (revision " + rev + " claims a sidedata chunk of " + rec.getSidedataCompLen() + " bytes)");
+        }
+
+        byte[] chunk;
+        try (FileChannel channel = FileChannel.open(sdaFile.toPath(), StandardOpenOption.READ)) {
+            ByteBuffer buf = ByteBuffer.allocate(rec.getSidedataCompLen());
+            long position = rec.getSidedataOffset();
+            while (buf.hasRemaining()) {
+                int read = channel.read(buf, position);
+                if (read == -1) break;
+                position += read;
+            }
+            if (buf.hasRemaining()) {
+                throw new HgCorruptDataException("Failed to read complete sidedata chunk for revision " + rev
+                        + " (offset " + rec.getSidedataOffset() + ", length " + rec.getSidedataCompLen()
+                        + ", file " + sdaFile + ")");
+            }
+            chunk = buf.array();
+        }
+
+        byte[] container = decompressSidedataChunk(chunk, rec.getSidedataCompressionMode());
+        return SidedataCodec.deserialize(container);
+    }
+
+    /**
+     * Decompresses one revision's sidedata chunk per its 2-bit compression mode. Unlike the main
+     * data chunk (whose uncompressed length is recorded explicitly in the index via {@code
+     * uncompLen}), the index carries NO explicit uncompressed-length field for sidedata — real
+     * hg's zstd decompressor instead relies on the size embedded in the zstd frame header itself
+     * (frames written by a one-shot {@code compress()} call always embed it), which is exactly
+     * what {@link Zstd#getFrameContentSize(byte[])} reads back out.
+     */
+    private byte[] decompressSidedataChunk(byte[] chunk, int compressionMode) throws IOException {
+        switch (compressionMode) {
+            case COMP_MODE_PLAIN:
+                return chunk;
+            case COMP_MODE_DEFAULT: {
+                long size = Zstd.getFrameContentSize(chunk);
+                if (size < 0) {
+                    throw new HgCorruptDataException("Invalid zstd sidedata frame: could not determine content size");
+                }
+                byte[] dest = new byte[(int) size];
+                long result = Zstd.decompress(dest, chunk);
+                if (Zstd.isError(result)) {
+                    throw new HgCorruptDataException("Failed to decompress zstd sidedata chunk: " + Zstd.getErrorName(result));
+                }
+                return dest;
+            }
+            case COMP_MODE_INLINE: {
+                // Legacy per-hunk marker-byte convention (same one used for v1 data chunks).
+                // Only the zstd branch of that convention needs an explicit size hint; give it
+                // one from the frame header when the marker byte says zstd, otherwise let
+                // DeltaCodec's other branches (zlib/none/uncompressed-prefix/raw) size themselves.
+                int hint = 0;
+                if (chunk.length > 0 && (chunk[0] & 0xFF) == 0x28) {
+                    long frameSize = Zstd.getFrameContentSize(chunk);
+                    if (frameSize > 0) {
+                        hint = (int) frameSize;
+                    }
+                }
+                return DeltaCodec.decompress(chunk, hint);
+            }
+            default:
+                throw new HgCorruptDataException("Unknown sidedata compression mode: " + compressionMode);
+        }
     }
 
     /**

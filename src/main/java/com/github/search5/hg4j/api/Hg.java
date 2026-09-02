@@ -1,5 +1,6 @@
 package com.github.search5.hg4j.api;
 
+import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import com.github.search5.hg4j.errors.HgValidationException;
 import com.github.search5.hg4j.lib.HgLock;
@@ -417,6 +418,30 @@ public class Hg implements AutoCloseable {
 
     public UnbundleCommand unbundle() {
         return new UnbundleCommand(this.repository);
+    }
+
+    public BranchesCommand branches() {
+        return new BranchesCommand(this.repository);
+    }
+
+    public TreeMergeCommand treeMerge() {
+        return new TreeMergeCommand(this.repository);
+    }
+
+    public CensorCommand censor() {
+        return new CensorCommand(this.repository);
+    }
+
+    /**
+     * Downloads a clonebundle from {@code url} (a plain HTTP(S) GET, no wire-protocol framing)
+     * and applies it — the client "bypass" half of real hg's Clonebundles mechanism. See
+     * {@link ClonebundlesCommand} for the full contract, including that a failure here never
+     * silently falls back to a normal pull.
+     *
+     * @return the commits imported from the bundle
+     */
+    public List<byte[]> clonebundle(String url) throws IOException, HgLockException {
+        return ClonebundlesCommand.downloadAndApply(this.repository, url);
     }
 
     /**

@@ -37,7 +37,7 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
 | store 레이아웃 / fncache 인코딩 | wiki `fncacheRepoFormat`, `mercurial/store.py`(`_pathencode`/`_hashencode` 실측) | `util.NodeIdUtil.encodeFname` | ✅ **구현 완료(2026-09-01)** — `store.py`의 실제 인코딩 알고리즘대로 전면 재작성. 이전에는 Windows `COM#`/`LPT#` 예약어의 세 번째 글자가 아니라 끝자리 숫자를 이스케이프하는 버그와, 긴 경로(120바이트 초과) 해싱 방식이 실제 hg에 없는 방식(255바이트 초과 시 디렉터리 없는 형태로 전환)으로 되어 있던 버그를 발견·수정. 대문자/앞자리 점/Windows 예약어/150바이트 초과 경로 등 7개 까다로운 파일명으로 실제 hg 온디스크 레이아웃과 바이트 단위 일치 검증(`FncacheEncodingInteropTest`). fncache 파일 목록 자체(원본 논리 경로 그대로 저장)는 기존에도 정확했음 |
 | Revlog v1 (인덱스/데이터, generaldelta, inline) | `hg help internals.revlogs`, wiki `FileFormats` | `Revlog`, `RevlogIndex`, `DeltaEngine`, `DeltaCodec` | ✅ v1 구현, **2026-09-01 실제 hg CLI 재검증 중 zstd requirement 문자열 버그 발견·수정**(`revlog-compression=zstd`→`revlog-compression-zstd`) — 상세는 [[revlog]] |
 | Revlog v2 — changelog-v2(`exp-changelog-v2`) | `mercurial/revlogutils/docket.py`+실제 hg 데이터 대조 | `storage.RevlogIndex`, `storage.Revlog` | ✅ **구현 완료(2026-09-01)** — 실제 hg CLI로 생성한 저장소로 읽기/쓰기 검증, `hg verify`로 상호운용성까지 확인. 상세: [[revlog-v2-support-plan]] |
-| Revlog v2 — 일반(`exp-revlogv2.2`, 매니페스트/파일로그) 및 persistent-nodemap | 동일 소스, 바이트 레이아웃은 확인했으나 fixture 미검증 | 없음 | ❌ **미구현 · 의도적 보류** — 이 개발 환경의 hg 바이너리가 Rust 확장 없이는 이 두 기능의 저장소를 아예 생성 못 함(`abort: accessing ... without associated fast implementation`), 검증 안 된 구현을 반복하지 않기 위해 보류. Rust 포함 hg 확보 시 재개. 상세: [[revlog-v2-support-plan]] |
+| Revlog v2 — 일반(`exp-revlogv2.2`, 매니페스트/파일로그) 및 `fileindex-v1` | Rust 확장 포함 실제 Mercurial 7.2.4(Docker) fixture로 바이트 단위 검증 완료 | `RevlogV2GeneralParserTest`, `FileIndexTest`(+ 수동 Docker `hg verify`/`log`/`cat` 왕복) | ✅ **완료(2026-09-02)** — 읽기+쓰기 모두 구현. `persistent-nodemap`(`.n` 트라이)만 인식-only로 남음. 상세: [[revlog-v2-support-plan]] |
 | Changelog 포맷 (커밋 메타데이터 인코딩) | wiki `FileFormats`, `mercurial/changelog.py`(`encodeextra`/`add` 실측) | `Revlog` + `api.CommitCommand`/`LogCommand` | ✅ **구현 완료(2026-09-01)** — 다중 부모(p1/p2 정렬 포함 노드 해시 계산) 인코딩은 기존에도 정확했음. **발견·수정한 실제 버그**: default 브랜치 커밋에 항상 "branch:default" extra 필드를 썼는데, 실제 hg는 default 브랜치일 때 이 필드를 아예 안 써서 hg4j가 만든 default 브랜치 커밋의 노드 해시가 동일 내용이라도 실제 hg와 달라지고 있었음. 콜론을 이스케이프하는(실제 hg엔 없는) 가짜 extra-key 인코딩도 제거. 동일 입력에 대해 노드 해시가 실제 hg와 일치함을 확인(`ChangelogExtraFieldInteropTest`) |
 | Manifest 포맷 | wiki `Manifest` | `HgRepository.getManifestRevlog()`, `treewalk.ManifestWalk` | ✅ 존재 |
 | Dirstate v1 | wiki `DirState` | `Dirstate` | ✅ |
@@ -131,10 +131,48 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    `PullCommand`/`PushCommand`가 실시간으로 pull(2커밋 수신) + push(신규 커밋 전송 →
    별도 fresh pull로 서버에 실제 반영됐는지 재확인)까지 왕복 검증했다. 실제 hg
    클라이언트 → hg4j `HgWireServer` 방향(v1)은 여전히 미검증으로 남음.
-4. **Revlog v2 일반(`exp-revlogv2.2`, 매니페스트/파일로그) + persistent-nodemap** —
-   의도적으로 보류 중. 이 개발 환경의 hg 바이너리가 Rust 확장 없이는 이 포맷의
-   저장소 자체를 생성하지 못해(`abort: accessing ... without associated fast
-   implementation`) 검증 불가. Rust 포함 hg 확보 시 재개.
+4. ~~**Revlog v2 일반(`exp-revlogv2.2`, 매니페스트/파일로그) + persistent-nodemap**~~
+   — ✅ **완료(2026-09-02)**, `persistent-nodemap`(`.n` 트라이)만 인식-only로 남음.
+   이 개발 환경의 hg 바이너리가 Rust 확장 없이는 이 포맷의 저장소 자체를 생성하지
+   못해(`abort: accessing ... without associated fast implementation`) 막혀
+   있었는데, `docker/hg-rust-7.2.4/Dockerfile`로 Rust 확장이 활성화된 실제
+   Mercurial 7.2.4를 직접 빌드해(pip sdist + `setup.py --rust build_ext --inplace`
+   + `HGMODULEPOLICY=rust+c`) 이 문제를 해결하고 진행했다. 구현하며 알게 된 것:
+   - hg4j의 기존 `RevlogIndex`/`Revlog` **읽기** 경로는 이미 general v2를 올바르게
+     지원하고 있었다(코드 주석은 "changelog-v2만 지원"이라고 돼 있었지만 stale) —
+     changelog-v2와 general v2는 docket 헤더(59바이트 `S_HEADER`)와
+     `{radix}-{uuid}` 컴패니언 파일 규약은 동일하고, 96바이트 index 레코드
+     레이아웃만 다르다(general v2는 baseRev/linkRev/parent1/parent2를 전부
+     명시적으로 저장, node@32, rank 없음; changelog-v2는 baseRev/linkRev를
+     저장 안 하고 rev 값으로 합성, node@24, rank 있음).
+   - **쓰기** 경로는 실제로 미구현이었다 — `Revlog.appendRevisionV2`가
+     `index.isChangelogV2()`로 분기해 general v2도 처리하도록 확장(항상
+     `COMP_MODE_PLAIN` 풀텍스트로 쓰고 델타는 안 함 — 스펙상 유효하나 실제 hg보다
+     덜 효율적), `RevlogIndex`에 브랜드 뉴(한 번도 존재한 적 없는) revlog가
+     저장소 요구사항상 v2여야 할 때 처음부터 v2 docket으로 초기화하는 생성자
+     추가.
+   - **`fileindex-v1`**은 원래 백로그 문서에 전혀 없던, `exp-revlogv2.2` 저장소가
+     fncache 대신 쓰는 완전히 새로운 바이너리 포맷(방사 트라이, docket +
+     list/meta/tree 3개 컴패니언 파일)이었다 — 발견 후 사용자에게 범위 확장을
+     알리고 "읽기+쓰기 전체 구현" 승인을 받아 진행. 이 개발 환경에 Rust 없는
+     Mercurial의 소스 트리(`/usr/lib/python3/dist-packages/mercurial/store_utils/
+     file_index_util.py`)가 pure-Python 참조 구현으로 존재해 그것을 직접 포트했다
+     (`FileIndex.java`). 다만 쓰기 전략은 실제 hg의 `MutableTree`가 쓰는 증분
+     copy-on-write append(기존 트리 파일 뒤에 이어붙이고 주기적으로만 "vacuum"으로
+     전체 재빌드) 대신, **매번 전체를 새 UUID로 재빌드하는 단순화된 전략**을 쓴다
+     — 이는 실제 hg 자신의 vacuum 결과와 바이트 단위로 동일한 형태이므로 스펙상
+     완전히 유효하지만, 커밋을 거듭할수록 실제 hg보다 디스크 낭비가 크다(첫 구현
+     범위에서는 정확성을 우선, 최적화는 후속 과제).
+   - 검증: `RevlogV2GeneralParserTest`(6 tests, 실제 fixture 바이트 기준
+     docket/index 파싱) + `FileIndexTest`(8 tests, 실제 fixture 읽기 +
+     hg4j 자체 왕복 + snapshot/restore 롤백) + 수동 Docker round-trip(hg4j
+     `CommitCommand`로 기존 파일 수정 커밋과 **브랜드 뉴 파일** 커밋 둘 다 실행 후
+     같은 저장소를 `hg-rust-7.2.4` 컨테이너의 `hg verify`/`hg log --debug`/
+     `hg cat`/`hg files`로 전부 경고 없이 통과 확인 — fileindex 연동 전에는
+     `hg verify`가 "uses revlog format 1; expected 57005" +
+     "not in file index!" 두 경고를 냈으나 연동 후 둘 다 사라짐).
+   - 픽스처: `src/test/resources/fixtures/revlogv2-general/`
+     (`README.md`에 노드 해시/UUID/정확한 바이트 상세 기록).
 5. ~~**Dirstate v2(44바이트 노드) 정확한 바이트 레이아웃 검증**~~ — ✅ **완료(2026-09-01)**,
    그리고 실제로 검증해보니 **3가지 진짜 버그**가 나왔다(실제 hg와 전혀 상호운용
    불가능한 수준):

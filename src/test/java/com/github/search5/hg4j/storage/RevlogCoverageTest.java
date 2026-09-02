@@ -885,19 +885,26 @@ public class RevlogCoverageTest {
     }
 
     // ---------------------------------------------------------------------
-    // Generic (non-changelog) revlog-v2 write guard
+    // Generic (non-changelog) revlog-v2 write support
     // ---------------------------------------------------------------------
 
     @Test
-    public void testAppendRevisionThrowsForGenericNonChangelogRevlogV2(@TempDir Path tempDir) throws Exception {
+    public void testAppendRevisionSucceedsForGenericNonChangelogRevlogV2(@TempDir Path tempDir) throws Exception {
         File idxFile = buildGenericRevlogV2Docket(tempDir, "00manifest");
         Revlog revlog = new Revlog(idxFile, new File(tempDir.toFile(), "00manifest.d"));
         assertTrue(revlog.getIndex().isV2());
         assertFalse(revlog.getIndex().isChangelogV2());
 
         byte[] p = new byte[20];
-        assertThrows(UnsupportedOperationException.class,
-                () -> revlog.appendRevision("content".getBytes(StandardCharsets.UTF_8), -1, -1, p, p, 0));
+        byte[] content = "content".getBytes(StandardCharsets.UTF_8);
+        // linkRev (7) deliberately differs from rev (0) to prove it's genuinely threaded through
+        // rather than silently synthesized from rev, the way changelog-v2 does.
+        revlog.appendRevision(content, -1, -1, p, p, 7);
+
+        assertEquals(1, revlog.getRevisionCount());
+        assertArrayEquals(content, revlog.getRawRevisionContent(0));
+        assertEquals(7, revlog.getIndexRecord(0).getLinkRev(),
+                "general v2 must store the real linkRev, not synthesize it from rev like changelog-v2 does");
     }
 
     // ---------------------------------------------------------------------

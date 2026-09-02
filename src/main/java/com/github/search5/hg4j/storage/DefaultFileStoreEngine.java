@@ -19,7 +19,12 @@ public class DefaultFileStoreEngine implements StoreEngine {
 
     @Override
     public Revlog getRevlog(HgRepository repository, File indexFile, File dataFile) throws IOException {
-        return new Revlog(indexFile, dataFile, repository.isUseZstdCompression());
+        // A repository-wide exp-revlogv2.2 requirement means EVERY revlog must be v2, including
+        // one that's never existed on disk before (e.g. the filelog for a file committed for the
+        // first time) -- v2-ness can't be auto-detected from nothing, so it must be requested
+        // explicitly here.
+        boolean createAsGeneralV2 = repository.isRevlogV2() && !indexFile.exists();
+        return new Revlog(indexFile, dataFile, repository.isUseZstdCompression(), createAsGeneralV2);
     }
 
     @Override

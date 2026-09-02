@@ -66,10 +66,105 @@ public class RevlogIndex {
     private long[] fileOffsets = new long[1024];
 
     public RevlogIndex(File idxFile) throws IOException {
+        this(idxFile, false);
+    }
+
+    /**
+     * @param createAsGeneralV2 if {@code idxFile} does not exist yet AND this is {@code true},
+     *     initializes a brand-new empty general revlog-v2 ({@code exp-revlogv2.2}, magic
+     *     {@code REVLOGV2}/0xDEAD) docket instead of leaving this index in its default empty-v1
+     *     state. Needed because v2-ness can normally only be detected by reading an *existing*
+     *     docket's magic bytes -- a repository whose {@code .hg/store/requires} lists
+     *     {@code exp-revlogv2.2} still needs every *brand-new* revlog (e.g. the filelog for a
+     *     file that has never been committed before) to start out as v2 too, not silently fall
+     *     back to v1 just because there was nothing on disk yet to detect the format from.
+     */
+    public RevlogIndex(File idxFile, boolean createAsGeneralV2) throws IOException {
         this.idxFile = idxFile;
         if (idxFile.exists()) {
             loadIndex();
+        } else if (createAsGeneralV2) {
+            initializeNewGeneralV2Docket();
         }
+    }
+
+    /**
+     * Writes a brand-new, empty general revlog-v2 docket (59-byte S_HEADER + 3 UUIDs, no
+     * revisions yet) plus empty companion .idx/.dat/.sda files, matching the exact byte layout
+     * real hg 7.2.4 (Rust-extension build) writes for a freshly-created {@code exp-revlogv2.2}
+     * revlog -- verified via docker/hg-rust-7.2.4 (see
+     * src/test/resources/fixtures/revlogv2-general/README.md). UUIDs are generated the same way
+     * real hg does (mercurial/utils/docket.py's {@code make_uid()}: 4 random bytes, hex-encoded
+     * to 8 lowercase ascii chars).
+     */
+    private void initializeNewGeneralV2Docket() throws IOException {
+        this.isV2 = true;
+        this.isChangelogV2 = false;
+        this.versionHeader = MAGIC_REVLOGV2;
+        this.radix = deriveRadix(idxFile.getName());
+
+        java.security.SecureRandom rnd = new java.security.SecureRandom();
+        String indexUuid = randomUid(rnd);
+        String dataUuid = randomUid(rnd);
+        String sidedataUuid = randomUid(rnd);
+
+        this.resolvedIndexFile = new File(idxFile.getParentFile(), radix + "-" + indexUuid + ".idx");
+        this.resolvedDataFile = new File(idxFile.getParentFile(), radix + "-" + dataUuid + ".dat");
+        this.resolvedSidedataFile = new File(idxFile.getParentFile(), radix + "-" + sidedataUuid + ".sda");
+
+        File parent = idxFile.getParentFile();
+        if (parent != null) {
+            parent.mkdirs();
+        }
+        SafeFileIO.writeAtomic(resolvedIndexFile, new byte[0]);
+        SafeFileIO.writeAtomic(resolvedDataFile, new byte[0]);
+        SafeFileIO.writeAtomic(resolvedSidedataFile, new byte[0]);
+
+        this.docketIndexEnd = 0;
+        this.docketPendingIndexEnd = 0;
+        this.docketDataEnd = 0;
+        this.docketPendingDataEnd = 0;
+        this.docketSidedataEnd = 0;
+        this.docketPendingSidedataEnd = 0;
+        this.docketDefaultCompression = '(';
+
+        ByteBuffer header = ByteBuffer.allocate(V2_HEADER_SIZE);
+        header.putInt(MAGIC_REVLOGV2);
+        header.put((byte) UID_SIZE); // index_uuid_size
+        header.put((byte) 0);        // older_index_uuid_count
+        header.put((byte) UID_SIZE); // data_uuid_size
+        header.put((byte) 0);        // older_data_uuid_count
+        header.put((byte) UID_SIZE); // sidedata_uuid_size
+        header.put((byte) 0);        // older_sidedata_uuid_count
+        header.putLong(0L); // index_end
+        header.putLong(0L); // pending_index_end
+        header.putLong(0L); // data_end
+        header.putLong(0L); // pending_data_end
+        header.putLong(0L); // sidedata_end
+        header.putLong(0L); // pending_sidedata_end
+        header.put(docketDefaultCompression);
+        header.flip();
+
+        byte[] docketBytes = new byte[V2_HEADER_SIZE + UID_SIZE * 3];
+        System.arraycopy(header.array(), 0, docketBytes, 0, V2_HEADER_SIZE);
+        System.arraycopy(indexUuid.getBytes(StandardCharsets.US_ASCII), 0, docketBytes, V2_HEADER_SIZE, UID_SIZE);
+        System.arraycopy(dataUuid.getBytes(StandardCharsets.US_ASCII), 0, docketBytes, V2_HEADER_SIZE + UID_SIZE, UID_SIZE);
+        System.arraycopy(sidedataUuid.getBytes(StandardCharsets.US_ASCII), 0, docketBytes, V2_HEADER_SIZE + UID_SIZE * 2, UID_SIZE);
+        SafeFileIO.writeAtomic(idxFile, docketBytes);
+
+        this.lastKnownSize = docketBytes.length;
+    }
+
+    private static final int UID_SIZE = 8;
+
+    private static String randomUid(java.security.SecureRandom rnd) {
+        byte[] raw = new byte[UID_SIZE / 2];
+        rnd.nextBytes(raw);
+        StringBuilder sb = new StringBuilder(UID_SIZE);
+        for (byte b : raw) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     public boolean isV2() {

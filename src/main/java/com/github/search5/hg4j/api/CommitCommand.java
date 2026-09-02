@@ -5,6 +5,7 @@ import java.util.logging.Logger;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.lib.HgRepository;
+import com.github.search5.hg4j.storage.FileIndex;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.util.SafeFileIO;
@@ -139,6 +140,8 @@ public class CommitCommand {
         byte[] dirstateV2DataBackup = captureDirstateV2DataBackup(dirstateFile, dirstateBackup);
         File fncacheFile = new File(repository.getStoreDir(), "fncache");
         byte[] fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
+        FileIndex.Snapshot fileIndexBackup = repository.isFileIndexV1()
+                ? FileIndex.snapshot(repository.getStoreDir()) : null;
         File journalFile = new File(repository.getStoreDir(), "journal");
 
         try (HgLock wlock = skipLockAndJournal ? HgLock.noOp() : repository.lockWorkingCopy();
@@ -254,6 +257,15 @@ public class CommitCommand {
             if (fncacheFile.exists()) {
                 fncachePaths.addAll(Files.readAllLines(fncacheFile.toPath()));
             }
+
+            // fileindex-v1 repositories track tracked-file logical paths via the fileindex trie
+            // instead of fncache; loaded/appended/written the same way fncachePaths is above
+            // (monotonic accumulation -- matches real hg's own fncache, which is never pruned on
+            // commit either, only via `hg debugrebuildfncache`).
+            boolean useFileIndex = repository.isFileIndexV1();
+            Set<String> fileIndexPaths = useFileIndex
+                    ? new LinkedHashSet<>(FileIndex.readTrackedPaths(repository.getStoreDir()))
+                    : Collections.emptySet();
 
             // Check for unresolved merge conflicts
             for (Map.Entry<String, Dirstate.Entry> item : dirstate.getEntries().entrySet()) {
@@ -417,6 +429,9 @@ public class CommitCommand {
 
                             // Register only .i file paths in fncache (raw logical path as per native Mercurial specs)
                             fncachePaths.add("data/" + path + ".i");
+                            if (useFileIndex) {
+                                fileIndexPaths.add(path);
+                            }
                         } else {
                             // File has not changed in working directory
                             String hexP1 = manifestP1.get(path);
@@ -458,6 +473,9 @@ public class CommitCommand {
             // Write fncache back atomically
             if (!fncachePaths.isEmpty()) {
                 SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
+            }
+            if (useFileIndex) {
+                FileIndex.writeTrackedPaths(repository.getStoreDir(), fileIndexPaths);
             }
 
             // 4. Serialize and write new manifest revision
@@ -635,7 +653,17 @@ public class CommitCommand {
                     t.addSuppressed(ignored);
                 }
             }
- 
+
+            // Restore fileindex atomically (mirrors the fncache rollback above)
+            if (fileIndexBackup != null) {
+                try {
+                    FileIndex.restore(repository.getStoreDir(), fileIndexBackup);
+                } catch (Exception ignored) {
+                    LOGGER.log(Level.WARNING, "Failed to restore fileindex backup during rollback", ignored);
+                    t.addSuppressed(ignored);
+                }
+            }
+
             // Restore dirstate atomically (N-1 Rollback Refinement with Dirstate V2 garbage collection)
             if (dirstateBackup != null) {
                 try {

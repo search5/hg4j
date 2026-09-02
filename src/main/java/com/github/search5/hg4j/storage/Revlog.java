@@ -72,8 +72,18 @@ public class Revlog {
     }
 
     public Revlog(File idxFile, File datFile, boolean useZstd) throws IOException {
+        this(idxFile, datFile, useZstd, false);
+    }
+
+    /**
+     * @param createAsGeneralV2 see {@link RevlogIndex#RevlogIndex(File, boolean)} -- pass
+     *     {@code true} when the owning repository requires {@code exp-revlogv2.2} and
+     *     {@code idxFile} may not exist yet, so a brand-new revlog starts out as v2 instead of
+     *     silently defaulting to v1.
+     */
+    public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2) throws IOException {
         this.idxFile = idxFile;
-        this.index = new RevlogIndex(idxFile);
+        this.index = new RevlogIndex(idxFile, createAsGeneralV2);
         if (index.isV2()) {
             // v2는 항상 non-inline이며 실제 데이터 파일은 docket의 UUID로부터 발견된다 —
             // 생성자로 넘어온 datFile(예: "00changelog.d")은 v2 저장소에는 존재하지 않는다.
@@ -406,28 +416,32 @@ public class Revlog {
     }
 
     /**
-     * v2(changelog-v2) 저장소에 새 리비전을 append한다. 실제 hg CLI로 생성한 changelog-v2
-     * 픽스처를 hexdump/zstd로 직접 대조해 검증된 레이아웃을 그대로 재현한다 — 각 리비전은
-     * 델타 체인 없이 독립 zstd 프레임(raw, prefix byte 없음)으로 저장된다 (RevlogV2ParserTest,
-     * src/test/resources/fixtures/revlogv2-changelog/README.md 참고).
+     * v2(changelog-v2 또는 일반 revlog-v2) 저장소에 새 리비전을 append한다. 실제 hg CLI로
+     * 생성한 픽스처를 hexdump/struct로 직접 대조해 검증된 레이아웃을 그대로 재현한다 — 두
+     * 포맷 모두 델타 체인 없이 매 리비전을 독립 fulltext로 저장한다(단순화, changelog-v2는
+     * 이미 이렇게 구현돼 있었고 일반 v2도 동일 전략 채택 — RevlogV2ParserTest/
+     * RevlogV2GeneralParserTest, src/test/resources/fixtures/revlogv2-{changelog,general}/
+     * README.md 참고).
      *
-     * <p>changelog-v2만 지원한다. 일반 revlog v2({@code exp-revlogv2.2}, 매니페스트/파일로그)는
-     * 실제 hg 픽스처로 검증할 방법이 이 환경에 없어(영구 nodemap과 마찬가지로 Rust 확장
-     * 필요) 의도적으로 구현하지 않았다 — 검증 안 된 추측으로 파일을 깨뜨리는 것보다
-     * 명시적으로 예외를 던지는 편이 안전하다.</p>
+     * <p>changelog-v2(매직 0xD34D, {@code INDEX_ENTRY_CL_V2})는 각 리비전을 독립 zstd
+     * 프레임(prefix byte 없음, COMP_MODE_DEFAULT)으로 쓴다. 일반 revlog-v2(매직 0xDEAD,
+     * {@code exp-revlogv2.2}, {@code INDEX_ENTRY_V2}, 매니페스트/파일로그에 쓰임)는 대신
+     * COMP_MODE_PLAIN(압축 없이 원본 그대로)으로 쓴다 — 실제 hg 자신도 압축해도 이득이
+     * 없는 작은 리비전에는 PLAIN을 선택하는 정상 인코딩이고(REVLOGV2GeneralParserTest의
+     * 실제 hg 픽스처가 정확히 이 형태), zstd 프레임 포맷을 새로 검증해야 하는 위험 없이
+     * `mercurial/revlog.py`가 명시적으로 지원하는 {@code compression_mode == COMP_MODE_PLAIN
+     * -> uncomp = data} 경로만 쓰면 항상 유효하다. 두 포맷은 레코드 필드 배치도 다르다 —
+     * CL_V2는 baseRev/linkRev를 저장하지 않고(rev==rev로 합성) node가 오프셋 24, rank
+     * 필드가 있음; 일반 V2는 baseRev/linkRev/parent1/parent2를 전부 명시적으로 저장하고
+     * node가 오프셋 32, rank 필드가 없다(패딩만 19바이트).</p>
      */
     private synchronized byte[] appendRevisionV2(int rev, byte[] processedContent, int parent1, int parent2,
-                                                   byte[] nodeId) throws IOException {
-        if (!index.isChangelogV2()) {
-            throw new UnsupportedOperationException(
-                    "hg4j does not yet support writing to a generic revlog-v2 (non-changelog) revlog; "
-                    + "only reading is supported. See decisions/revlog-v2-support-plan.md.");
-        }
-
+                                                   byte[] nodeId, int linkRev) throws IOException {
         File resolvedIndexFile = index.getResolvedIndexFile();
         File resolvedDataFile = index.getResolvedDataFile();
+        boolean changelogV2 = index.isChangelogV2();
 
-        byte[] dataHunk = DeltaCodec.compress(processedContent, true);
+        byte[] dataHunk = changelogV2 ? DeltaCodec.compress(processedContent, true) : processedContent;
 
         long offset = resolvedDataFile.exists() ? resolvedDataFile.length() : 0;
         try (FileOutputStream out = new FileOutputStream(resolvedDataFile, true)) {
@@ -436,28 +450,41 @@ public class Revlog {
         }
 
         long offsetFlags = (rev == 0) ? 0 : ((offset << 16));
+        byte[] node20 = Arrays.copyOf(nodeId, 20);
 
-        // INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x (96바이트, mercurial/revlogutils/constants.py 실측)
         ByteBuffer recordBuf = ByteBuffer.allocate(96);
         recordBuf.putLong(offsetFlags);
         recordBuf.putInt(dataHunk.length);
         recordBuf.putInt(processedContent.length);
-        recordBuf.putInt(parent1);
-        recordBuf.putInt(parent2);
-        byte[] node20 = Arrays.copyOf(nodeId, 20);
-        recordBuf.put(node20);
-        recordBuf.put(new byte[12]); // 패딩
-        recordBuf.putLong(0L); // sidedata offset (미지원)
-        recordBuf.putInt(0);   // sidedata comp length
-        // 압축 모드: 실제 hg 픽스처의 압축 모드 바이트는 9(0b1001) — 하위 2비트가
-        // COMP_MODE_DEFAULT(1, docket의 default_compression_header=zstd 사용)를 가리킨다.
-        // COMP_MODE_PLAIN(0)으로 잘못 쓰면 실제 hg가 zstd 바이트를 평문으로 취급해
-        // `hg verify`에서 integrity check failed가 남을 남 뿐 아니라(id는
-        // computeNodeId 시점에 이미 확정되어 있어 hg4j 자체 판독에는 영향 없지만) 실제
-        // hg와의 상호운용성이 깨진다 — 실제 hg CLI로 재현·확인됨.
-        recordBuf.put((byte) 1); // COMP_MODE_DEFAULT
-        recordBuf.putInt(rev); // rank (단순화: 선형 히스토리 가정)
-        recordBuf.put(new byte[23]); // 패딩
+        if (changelogV2) {
+            // INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x (96바이트, mercurial/revlogutils/constants.py 실측)
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(node20);
+            recordBuf.put(new byte[12]); // 패딩
+            recordBuf.putLong(0L); // sidedata offset (미지원)
+            recordBuf.putInt(0);   // sidedata comp length
+            // 압축 모드: 실제 hg 픽스처의 압축 모드 바이트는 9(0b1001) — 하위 2비트가
+            // COMP_MODE_DEFAULT(1, docket의 default_compression_header=zstd 사용)를 가리킨다.
+            // COMP_MODE_PLAIN(0)으로 잘못 쓰면 실제 hg가 zstd 바이트를 평문으로 취급해
+            // `hg verify`에서 integrity check failed가 남을 뿐 아니라 실제 hg와의
+            // 상호운용성이 깨진다 — 실제 hg CLI로 재현·확인됨.
+            recordBuf.put((byte) 1); // COMP_MODE_DEFAULT
+            recordBuf.putInt(rev); // rank (단순화: 선형 히스토리 가정)
+            recordBuf.put(new byte[23]); // 패딩
+        } else {
+            // INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x (96바이트, mercurial/revlogutils/constants.py 실측)
+            recordBuf.putInt(rev); // baseRev (단순화: 델타 체인 없이 항상 자기 자신 = fulltext)
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(node20);
+            recordBuf.put(new byte[12]); // 패딩
+            recordBuf.putLong(0L); // sidedata offset (미지원)
+            recordBuf.putInt(0);   // sidedata comp length
+            recordBuf.put((byte) 0); // COMP_MODE_PLAIN (dataHunk == processedContent, 압축 안 함)
+            recordBuf.put(new byte[19]); // 패딩 (CL_V2와 달리 rank 필드가 없음)
+        }
         recordBuf.flip();
 
         try (FileOutputStream out = new FileOutputStream(resolvedIndexFile, true)) {
@@ -467,8 +494,9 @@ public class Revlog {
 
         index.updateV2DocketSizes(resolvedIndexFile.length(), resolvedDataFile.length());
 
+        int recordedLinkRev = changelogV2 ? rev : linkRev;
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
-                rev, rev, parent1, parent2, nodeId));
+                rev, recordedLinkRev, parent1, parent2, nodeId));
 
         byte[] hash = new byte[20];
         System.arraycopy(nodeId, 0, hash, 0, 20);
@@ -523,7 +551,7 @@ public class Revlog {
         System.arraycopy(hash, 0, nodeId, 0, 20);
 
         if (index.isV2()) {
-            return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId);
+            return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev);
         }
 
         // Decide whether to write delta or fulltext

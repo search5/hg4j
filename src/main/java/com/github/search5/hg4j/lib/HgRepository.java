@@ -47,6 +47,7 @@ public class HgRepository implements Repository {
     private boolean changelogV2 = false;
     private boolean revlogV2 = false;
     private boolean persistentNodemap = false;
+    private boolean fileIndexV1 = false;
     private StoreEngine storeEngine = new DefaultFileStoreEngine();
     private Dirstate cachedDirstate = null;
     private final HgRcConfig config = new HgRcConfig();
@@ -119,6 +120,8 @@ public class HgRepository implements Repository {
                         this.revlogV2 = true;
                     } else if ("persistent-nodemap".equals(trimmed)) {
                         this.persistentNodemap = true;
+                    } else if ("fileindex-v1".equals(trimmed)) {
+                        this.fileIndexV1 = true;
                     }
                 }
             } catch (Exception ignored) {
@@ -134,9 +137,9 @@ public class HgRepository implements Repository {
 
     /**
      * {@code exp-revlogv2.2} requirement — 매니페스트/파일로그가 일반 revlog v2 포맷임.
-     * hg4j는 아직 읽기/쓰기를 지원하지 않는다(Rust 전용 companion 기능인 fileindex-v1에
-     * 의존해 이 환경에서 실제 hg로 픽스처를 만들 수조차 없었음) — 인식만 하고 있다는
-     * 뜻이며, 이 값이 true인 저장소를 열면 해당 revlog에서 실패할 수 있다.
+     * 읽기/쓰기 모두 지원한다({@link com.github.search5.hg4j.storage.RevlogIndex},
+     * {@link com.github.search5.hg4j.storage.Revlog} 참고, Rust 확장이 활성화된 실제
+     * Mercurial 7.2.4 빌드(docker/hg-rust-7.2.4)로 만든 픽스처로 검증됨).
      */
     public boolean isRevlogV2() {
         return revlogV2;
@@ -149,6 +152,15 @@ public class HgRepository implements Repository {
      */
     public boolean isPersistentNodemap() {
         return persistentNodemap;
+    }
+
+    /**
+     * {@code fileindex-v1} requirement — {@code exp-revlogv2.2} 저장소가 fncache 대신 쓰는
+     * 파일 경로 인덱스({@code .hg/store/fileindex}, 방사 트라이). 읽기/쓰기 모두 지원한다
+     * ({@link com.github.search5.hg4j.storage.FileIndex} 참고).
+     */
+    public boolean isFileIndexV1() {
+        return fileIndexV1;
     }
 
     public boolean isUseZstdCompression() {

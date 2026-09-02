@@ -749,4 +749,126 @@ public class HgRemainingPorcelainCoverageTest {
             server.stop(0);
         }
     }
+
+    @Test
+    public void testTagsFacadeReportsTipOnAFreshRepo(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("tags_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("c0").call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            List<TagsCommand.Tag> tags = hg.tags().call();
+            assertTrue(tags.stream().anyMatch(t -> "tip".equals(t.getName())));
+        }
+    }
+
+    @Test
+    public void testPathsFacadeReadsPathsSection(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("paths_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        repo.getConfig().set("paths", "default", "https://example.invalid/repo");
+
+        try (Hg hg = Hg.wrap(repo)) {
+            Map<String, String> paths = hg.paths().call();
+            assertEquals("https://example.invalid/repo", paths.get("default"));
+        }
+    }
+
+    @Test
+    public void testFilesFacadeListsTrackedWorkingCopyFiles(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("files_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("c0").call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            assertEquals(List.of("a.txt"), hg.files().call());
+        }
+    }
+
+    @Test
+    public void testLocateFacadeMatchesGlobAnywhereInTheTree(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("locate_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File sub = new File(repoDir, "sub");
+        sub.mkdirs();
+        Files.writeString(new File(sub, "b.txt").toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("c0").call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            assertEquals(List.of("sub/b.txt"), hg.locate().setPattern("*.txt").call());
+        }
+    }
+
+    @Test
+    public void testManifestFacadeListsWorkingCopyParentRevisionFiles(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("manifest_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("c0").call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            List<ManifestCommand.ManifestEntry> entries = hg.manifest().call();
+            assertEquals(1, entries.size());
+            assertEquals("a.txt", entries.get(0).getPath());
+        }
+    }
+
+    @Test
+    public void testCopyFacadePreservesOriginalAndTracksDestination(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("copy_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File a = new File(repoDir, "a.txt");
+        Files.writeString(a.toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("c0").call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            hg.copy().setSource("a.txt").setDestination("b.txt").call();
+        }
+
+        assertTrue(a.exists(), "copy must preserve the original file");
+        assertEquals("v0", Files.readString(new File(repoDir, "b.txt").toPath()));
+    }
+
+    @Test
+    public void testBundleFacadeWritesAReadableBundleFile(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("bundle_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("c0").call();
+
+        File out = tempDir.resolve("out.hg").toFile();
+        try (Hg hg = Hg.wrap(repo)) {
+            int count = hg.bundle().setOutputFile(out).setBaseRevision("null").call();
+            assertEquals(1, count);
+        }
+        assertTrue(out.exists());
+
+        File destDir = tempDir.resolve("bundle_facade_dest").toFile();
+        HgRepository destRepo = Hg.init().setDirectory(destDir).call();
+        List<byte[]> imported = new UnbundleCommand(destRepo).setBundleFile(out).call();
+        assertEquals(1, imported.size());
+    }
+
+    @Test
+    public void testRecoverFacadeReportsNoInterruptedTransactionOnAHealthyRepo(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("recover_facade_repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("c0").call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            RecoverCommand.RecoverResult result = hg.recover().call();
+            assertFalse(result.wasInterrupted());
+            assertTrue(result.isSuccess());
+        }
+    }
 }

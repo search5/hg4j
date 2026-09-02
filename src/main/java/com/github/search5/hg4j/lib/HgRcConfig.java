@@ -160,6 +160,27 @@ public final class HgRcConfig {
     }
 
     /**
+     * Returns a snapshot of all key/value pairs in a config section, in the order they
+     * were parsed (matching {@code mercurial/config.py}'s insertion-preserving behavior).
+     * Used to enumerate e.g. the {@code [paths]} section for {@code hg paths}, where the
+     * command itself is responsible for any display-order sorting.
+     *
+     * @param section section name (case-insensitive)
+     * @return an unmodifiable, insertion-ordered map of the section's entries; empty
+     *         (never {@code null}) if the section doesn't exist
+     */
+    public Map<String, String> getSection(String section) {
+        if (section == null) {
+            return Map.of();
+        }
+        Map<String, String> sec = sections.get(section.toLowerCase());
+        if (sec == null || sec.isEmpty()) {
+            return Map.of();
+        }
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(sec));
+    }
+
+    /**
      * Sets a configuration value for a specific section and key.
      *
      * @param section section name (case-insensitive)

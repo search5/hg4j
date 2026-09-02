@@ -293,8 +293,17 @@ public class CommitCommand {
                             throw new HgValidationException("Tracked file not found on disk: " + path);
                         }
 
+                        // A symlink's "size" (and content, for the M-2 racy check below) must be
+                        // its own target-path-string bytes -- File#length()/readAllBytes() follow
+                        // the link and read whatever it points at instead, which is wrong for
+                        // deciding whether the symlink ITSELF changed (matches the convention
+                        // already used elsewhere in this class and in AddCommand/CopyCommand/
+                        // GraftCommand/RebaseCommand).
+                        boolean diskIsSymlink = Files.isSymbolicLink(diskFile.toPath());
                         // Large file support: safely record 32-bit masked size in dirstate v1
-                        long diskSize = diskFile.length();
+                        long diskSize = diskIsSymlink
+                                ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                                : diskFile.length();
 
                         // Check if the file has actually changed compared to the recorded dirstate
                         boolean changed = workingState == 'a' || workingState == 'm';
@@ -312,7 +321,9 @@ public class CommitCommand {
                                     if (flIdx.exists()) {
                                         Revlog filelog = repository.getRevlog(flIdx, flDat);
                                         if (filelog.getRevisionCount() > 0) {
-                                            byte[] fileContent = Files.readAllBytes(diskFile.toPath());
+                                            byte[] fileContent = diskIsSymlink
+                                                    ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
+                                                    : Files.readAllBytes(diskFile.toPath());
                                             byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
                                             if (!Arrays.equals(fileContent, lastContent)) {
                                                 changed = true;

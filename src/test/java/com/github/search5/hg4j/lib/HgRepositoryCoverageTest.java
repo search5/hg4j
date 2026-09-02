@@ -246,8 +246,12 @@ public class HgRepositoryCoverageTest {
             assertTrue(scanned.contains("top.txt"));
             assertTrue(scanned.contains("linkfile"), "symlink to a regular file should be scanned as a file");
             assertFalse(scanned.contains("ignored.txt"));
-            assertFalse(scanned.stream().anyMatch(p -> p.startsWith("linkdir")),
-                    "symlink to a directory must not be recursed into or added");
+            // Real hg (verified live: `ln -s existingdir dir-link; hg add`) tracks a symlink to a
+            // directory as a plain file entry (content = target path text) — it is never
+            // recursed into, but it IS scanned as its own file, just like any other symlink.
+            assertTrue(scanned.contains("linkdir"), "symlink to a directory should be scanned as a file, not recursed into");
+            assertFalse(scanned.stream().anyMatch(p -> p.startsWith("linkdir/")),
+                    "symlink to a directory must not be recursed into");
             assertFalse(scanned.stream().anyMatch(p -> p.contains("somejunk")), ".hg contents must never be scanned");
         }
     }

@@ -455,7 +455,12 @@ public class HgRepository implements Repository {
             
             if (isDir) {
                 scanDirectory(child, root, result);
-            } else if (child.isFile()) {
+            } else if (child.isFile() || Files.isSymbolicLink(child.toPath())) {
+                // A symlink is never recursed into (isDir above already excludes it), but
+                // real hg tracks it as a plain file entry regardless of whether its target
+                // exists, is a file, or is a directory (verified live: real hg `add` accepts
+                // a dangling symlink) — child.isFile() alone follows the link and misses all
+                // three of those cases.
                 result.add(rel);
             }
         }

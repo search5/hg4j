@@ -6,6 +6,8 @@ import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import com.github.search5.hg4j.errors.HgValidationException;
@@ -47,13 +49,24 @@ public class AddCommand {
 
             for (String relPath : filesToAdd) {
                 File diskFile = new File(repository.getDirectory(), relPath);
-                if (!diskFile.exists() || !diskFile.isFile()) {
+                boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
+                // A symlink is tracked as-is even when its target is missing (dangling) or not
+                // a plain file — real hg accepts it (verified live: `ln -s missing.txt l.txt;
+                // hg add` -> "A l.txt"). Only reject non-symlink paths that genuinely aren't a
+                // regular file.
+                if (!isSymlink && (!diskFile.exists() || !diskFile.isFile())) {
                     throw new HgValidationException("File not found or is not a standard file: " + relPath);
                 }
 
-                boolean executable = diskFile.canExecute();
+                boolean executable = !isSymlink && diskFile.canExecute();
                 int mode = executable ? 0755 : 0644;
-                int size = (int) diskFile.length();
+                // A symlink's tracked "size" is the length of its own target path string
+                // (lstat semantics, matching what CommitCommand records for the filelog
+                // content), not File.length(), which follows the link (and returns 0 for a
+                // dangling target).
+                int size = isSymlink
+                        ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                        : (int) diskFile.length();
                 long time = diskFile.lastModified() / 1000;
 
                 Dirstate.Entry entry = new Dirstate.Entry('a', mode, size, time);

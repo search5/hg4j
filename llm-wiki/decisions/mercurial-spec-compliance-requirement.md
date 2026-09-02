@@ -417,6 +417,25 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     자기 북키핑을 신뢰(기존 동작 유지)하고, 한 번도 안 쓴(순수 읽기 전용) 핸들만
     스로틀 없이 매번 디스크를 재확인**하도록 정리. `HgRepositoryTest`에 읽기 전용
     핸들 케이스 회귀 테스트 추가. 커밋 `f0b1eff`.
+15. **`persistent-nodemap`(`.n` 트라이 파일) 가속 조회 — 미착수.** `HgRepository.
+    isPersistentNodemap()`으로 requirement 인식은 하지만, 노드 조회는 항상 순차
+    스캔으로 fallback한다(스펙상 유효하나 속도 이점 없음). 원래 백로그 4번(Revlog
+    v2 일반 + persistent-nodemap)에 같이 묶여 있었는데, 2026-09-02에 4번을 완료
+    처리하면서 persistent-nodemap만 별도 번호 없이 gap table에만 남아 있던 것을
+    이 항목으로 승격. `mercurial/revlogutils/nodemap.py`가 실제 스펙 소스.
+    저장소 생성 자체에 Rust 확장이 필요하므로(이 환경 로컬 hg는 불가) 이미 검증된
+    `hg-rust-7.2.4` Docker 이미지(`docker/hg-rust-7.2.4/Dockerfile`) 활용.
+16. **Bundle1 writer 독립 클래스 없음 — 미착수.** `hg bundle --type=none-v1/
+    gzip-v1/bzip2-v1`에 대응하는 파일 저장용 writer가 없다(읽기는 세 압축 형식
+    전부 검증됨). `HgLocalClient.getBundle()`이 내부적으로 HG10UN 스트림을
+    만들지만 이는 wire protocol 응답 전용이지 포셀린 `hg bundle` 대응 명령이
+    아니다. 로컬 시스템 hg(Rust 불필요, Docker 불필요)로 검증 가능.
+17. **Sidedata 실제 활용(copy-tracing 등) — 미착수.** 파싱 골격(sidedata offset/
+    complen 필드 읽기)만 있고 이를 소비하는 기능이 없다. 가장 유력한 후보는
+    `exp-copies-sdc` requirement 하의 changelog sidedata 기반 copy-tracing
+    (`SD_P1COPIES`/`SD_P2COPIES` 등, `mercurial/metadata.py`/`revlogutils/
+    sidedata.py` 실측 필요) — 전체 히스토리를 순회하지 않고도 특정 리비전의
+    copy 정보를 바로 얻을 수 있게 해준다. 정확한 구현 범위는 착수 시 재확인.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

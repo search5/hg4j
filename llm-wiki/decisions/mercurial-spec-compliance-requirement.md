@@ -832,13 +832,19 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     신규 검증. 이로써 22번 항목의 4개 그룹(1/2/3/4) 전부 완료.
 
 23. **commit/push/branch/merge/tag(+ rebase/shelve/bisect/strip/subrepo) — 실전
-    시나리오 종합 interop 검증, 신규, 2026-09-03 제안, 작업 범위만 확정, 미착수.**
+    시나리오 종합 interop 검증, 신규, 2026-09-03 제안, 작업 범위만 확정, 부분 착수.**
     배경: 백로그 22번(와이어 프로토콜 협상)과 같은 이유 — 이 명령들은 hg의 가장
     기본적이고 가장 자주 쓰이는 포셀린 명령인데, 지금까지의 검증은 "한 가지 대표
     시나리오"(예: 선형 커밋 2개, fast-forward merge 1건) 위주였고 각 명령이
     실전에서 마주치는 조합의 상당수는 아직 실제 hg CLI와 대조된 적이 없다. 아래
     카테고리 각각을 별도 TDD
     배치로 진행 권장.
+
+    **진행 현황(2026-09-04)**: `branch`/`tag` 두 카테고리는 아래에 ✅로 완료 내용을
+    기록(실제 hg CLI 왕복 검증 + 발견된 실제 버그 2건 수정). `commit`/`push`/`merge`/
+    `rebase`/`shelve`/`bisect`/`strip`/`subrepo` 나머지 8개 카테고리는 이 세션과
+    병렬로 도는 별도 작업에서 처리 중이며, 이 항목의 해당 문단은 그 작업의 결과로
+    갱신될 예정이므로 여기서는 건드리지 않았다.
 
     **commit**: 머지 커밋(부모 2개, `p2` 필드 정확성) — 특히 심볼릭
     링크/실행권한/바이너리 파일이 섞인 머지, `hg commit --close-branch`, 빈 커밋
@@ -849,22 +855,92 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     비-fast-forward push, 새 named branch를 원격에 처음 push할 때의 경고/허용
     조건(`hg push --new-branch`), bookmark가 있는 저장소의 push(북마크 이동
     반영), 이미 알려진 커밋만 있어 "no changes found"로 끝나는 push.
-    **branch**: named branch 생성(`hg branch <name>`), 그 브랜치로 커밋 후
-    `hg branches`/`hg branches --closed` 목록 정확성, `hg commit --close-branch`
-    후 해당 브랜치가 목록에서 빠지는지, 한 브랜치에 head가 여러 개 생기는
-    시나리오(브랜치 내부 분기)와 `hg heads <branch>`.
+    **branch**: ✅ **완료(2026-09-04)**. named branch 생성(`hg branch <name>`), 그
+    브랜치로 커밋 후 `hg branches`/`hg branches --closed` 목록 정확성,
+    `hg commit --close-branch` 후 해당 브랜치가 목록에서 빠지는지, 한 브랜치에
+    head가 여러 개 생기는 시나리오(브랜치 내부 분기)와 `hg heads <branch>` 전부
+    real hg 7.2.2(host native)와 왕복 검증했다.
+
+    **발견한 실제 버그(1건, 수정 완료)**: `BranchesCommand`의 `hg branches` 목록
+    정렬이 리비전 내림차순만 보고 있었는데, 실제 hg의 `branchmap.branches_info()`/
+    `commands.branches()`는 `(active, rev, name, isOpen)` 튜플을 내림차순 정렬한다
+    — 여기서 "active"는 "현재 워킹카피 브랜치"가 아니라 "그 브랜치의 최신 열린
+    head가 저장소 전체 기준 위상 head(어디서도 자식이 없는 리비전)인가"라는,
+    브랜치별이 아니라 저장소 전역 기준 개념이다. 리비전 번호만으로 정렬하면, 한
+    브랜치(A)가 다른 브랜치(Z)의 자식 커밋으로 인해 inactive가 되었는데 그 A의
+    리비전 번호가 다른 active 브랜치(Y, 더 낮은 리비전)보다 높은 경우 순서가
+    어긋난다 — 실제 real hg 스크래치 저장소로 재현: `A`(rev2)가 `Z`(rev3)로 인해
+    inactive가 되고 `Y`(rev1)는 그대로 active인 상황에서, real hg는
+    `Z, Y, A, default`로 정렬하는데(active 우선) 옛 hg4j 로직은
+    `Z, A, Y, default`로 정렬했다(리비전 내림차순만). `BranchesCommand.call()`의
+    정렬 비교자를 real hg와 동일한 `(active, rev, name, isOpen)` 기준으로 고치고,
+    `BranchHead`에 `isActive()` 필드를 추가해 이 정보를 노출했다
+    (`src/main/java/io/github/search5/hg4j/api/BranchesCommand.java`).
+
+    **기능 추가**: `HeadsCommand`에 `hg heads <branch>`에 해당하는 `setBranch(String)`/
+    `setIncludeClosed(boolean)`를 새로 추가했다 — 기존에는 branch 필터 기능 자체가
+    없었다(`src/main/java/io/github/search5/hg4j/api/HeadsCommand.java`).
+
+    **아키텍처 수준 확인 필요(사용자 판단 필요, 코드 변경은 하지 않음)**: 조사 중
+    `HeadsCommand.call()`(필터 없는 기본 호출)이 사실 real hg의 `hg heads --topo`와
+    동일한 "저장소 전역 위상 head"만 계산하고 있고, real hg의 인자 없는 기본
+    `hg heads`(브랜치별로 열린 head를 전부 나열 — 위상 리프가 아니어도 그 브랜치의
+    자체 head라면 포함, 예: 다른 브랜치가 자기 위에 커밋을 쌓아 위상 리프는 아니게
+    됐지만 자기 브랜치 안에서는 자식이 없는 head)와는 다르다는 걸 real hg
+    스크래치 저장소로 확인했다(`hg heads`가 rev0/default를 보여주는데
+    `hg heads --topo`는 안 보여주는 경우 재현). `HeadsCommand`는 라이브러리
+    안에서 오직 `Hg.heads()` 포셀린 진입점으로만 쓰이고(내부 push/pull 로직은
+    별도 head 계산을 쓴다) 블라스트 반경은 작지만, 인자 없는 기본 동작 자체를
+    바꾸는 건 기존 공개 API 시맨틱을 바꾸는 것이라 이번 세션에서는 손대지 않고
+    `setBranch`를 통한 명시적 필터 기능만 추가했다. 기본 동작을 real hg의
+    `hg heads` 시맨틱에 맞출지(브레이킹 체인지) 여부는 사용자 확인이 필요하다.
     **merge**: fast-forward(이미 부분 검증됨, 위 항목 참고) 외 진짜 3-way
     merge(공통 조상에서 양쪽이 다른 파일을 수정 — 충돌 없음), 충돌이 실제로
     나서 `resolve`가 필요한 case(백로그 1번 `MergeState` 인프라는 있음, 실전
     시나리오 종합 검증은 별개), rename/copy가 한쪽에 있는 상태의 merge(copy
     추적이 살아남는지), 서로 다른 브랜치 간 merge, merge 중단(`hg merge --abort`
     또는 워킹카피 되돌리기 — 명령 존재 여부부터 확인).
-    **tag**: 전역 태그(`.hgtags`, 커밋되는 파일) 생성 후 `hg tags`로 조회 —
-    이미 `TagCommand`/`TagsCommand`가 있고 오늘 세션에서 BRANCH 커버리지까지
-    채웠지만 **실제 hg CLI와의 왕복 interop 검증은 안 돼 있음**(단위 테스트만
-    있음). 로컬 태그(`.hg/localtags`, 미커밋), 기존 태그를 재태깅(move,
+    **tag**: ✅ **완료(2026-09-04)**. 전역 태그(`.hgtags`, 커밋되는 파일) 생성 후
+    `hg tags`로 조회, 로컬 태그(`.hg/localtags`, 미커밋), 기존 태그를 재태깅(move,
     `.hgtags`에 새 줄 추가되고 이전 줄은 사문화), 태그 삭제(`hg tag --remove`),
-    머지 커밋에 태그를 다는 경우.
+    머지 커밋에 태그를 다는 경우 — 전부 real hg 7.2.2와 양방향(hg4j로 쓰고 real
+    hg로 읽기, real hg로 쓰고 hg4j로 읽기) 왕복 검증했다.
+
+    **기능 추가**: `TagCommand`에 로컬 태그 생성(`setLocal(boolean)`)과 태그 삭제
+    (`setRemove(boolean)`)가 아예 없었다 — `TagsCommand`는 이미 `.hg/localtags`를
+    읽고 nullid를 "삭제됨"으로 처리하는 로직이 있었지만, 그걸 만들어내는 쓰기 쪽
+    (`TagCommand`)에는 그런 옵션 자체가 없어서 로컬 태그/태그 삭제 시나리오를
+    hg4j만으로는 재현할 방법이 없었다. 두 옵션을 추가해 real hg와의 왕복 검증이
+    가능해졌다(`src/main/java/io/github/search5/hg4j/api/TagCommand.java`).
+
+    **발견한 실제 버그(2건, 수정 완료)**:
+    1. `TagCommand`가 태그 커밋 메시지에 40자리 전체 hex를 썼는데, real hg의
+       `commands.tag()`는 `mercurial.node.short()`(12자리 축약 hex)를 쓴다
+       (`"Added tag %s for changeset %s" % (names, short(node))`). real hg
+       interop 테스트(`hg4jGlobalTagIsRecognizedByRealHgTags`)가 커밋 메시지를
+       실제 `hg log`로 대조하다가 이 불일치를 바로 잡아냈다 — hg4j↔hg4j 자체
+       왕복이었다면 두 쪽 다 같은(틀린) 40자리를 썼을 것이므로 못 잡았을 시나리오.
+    (같은 세션에서 위 **branch** 항목의 `BranchesCommand` 정렬 버그도 별도로
+    발견·수정했다 — 태그 자체와는 무관한 문제.)
+
+    **범위 내 확인**: `TagCommand`의 태그 나열(인자 없이 호출)은 여전히 `.hgtags`만
+    읽는 단순화된 모델이고(`TagsCommand`처럼 `.hg/localtags`/`tip` 의사 태그를
+    합치지 않음) — 이는 기존에 이미 클래스 문서에 명시된 의도된 단순화이며 이번
+    범위에서 고치지 않았다(쓰기 경로에만 local/remove를 추가했고, 읽기 경로 검증은
+    `TagsCommand`를 사용). 기존 태그가 있을 때 `-f` 없이 재태깅을 거부하는 real
+    hg의 게이트(`tag '%s' already exists`)도 hg4j에는 없다(항상 허용) — 이 역시
+    기존부터 있던 설계이고 백로그 23번 범위 텍스트가 명시적으로 요구한 부분이
+    아니라 이번 세션에서는 변경하지 않았다.
+
+    **branch/tag 테스트**: 신설 `BranchRealHgInteropTest`(6개 테스트: hg4j 생성
+    브랜치/커밋 인식, 정렬+active 플래그, `--closed` 정렬(별도 시나리오), close-branch
+    후 목록 제외, 브랜치 내부 분기 2-head, closed head 기본 제외)와
+    `TagRealHgInteropTest`(8개 테스트: 전역 태그 양방향, 로컬 태그 양방향+같은
+    이름 전역 태그보다 우선, 재태깅/move, 태그 삭제 양방향, 머지 커밋 태그)를
+    `src/test/java/io/github/search5/hg4j/api/`에 추가, 전부 GREEN. 격리된 빌드
+    디렉터리로 전체 회귀(2371개 테스트, 0 실패/에러, 10 skip은 기존부터 있던
+    무관한 skip) 및 `io.github.search5.hg4j.api.*` 패키지 단독 재확인(1013개 테스트,
+    0 실패/에러)도 통과.
 
     **rebase/shelve/bisect/strip/subrepo — 애초 "이미 다뤄졌으니 제외"로 초안에
     적었다가, 실제로는 아니라는 걸 위키 재확인으로 발견해 정정**: 이 5개는 지금까지

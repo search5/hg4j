@@ -416,20 +416,19 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     발견해 실측대로 갱신. 전체 회귀 클린(217개 테스트 클래스, 2230건, failures=0
     errors=0, skipped=8 — Docker/Rust 필요 등 기존에도 스킵되던 것들).
 
-    **남은 gap**: (1) SSH 경로(`HgSshClient`)도 같은 방식으로 bundlecaps 문자열을
-    고쳤지만, hg4j의 SSH 클라이언트는 실제 hg의 바이너리 length-prefixed 인자
-    프레이밍이 아니라 자체 단순화된 텍스트 라인 프로토콜을 쓰고 있어— 이 문자열
-    수정이 실제로 SSH 경로에서 bundle2/cg4/cg5 협상을 켜는지는 검증 못 했다(회귀는
-    없음 — 실제 hg가 못 알아들으면 기존과 동일하게 무시되고 bundle1로 폴백될
-    뿐). (2) hg4j가 SERVER 역할일 때(`HgHttpWireServer`/`HgSshWireServer` →
-    `Wire1Commands.getbundle` → `HgLocalClient.getBundle()`)는 여전히 cg1만
-    생성한다 — cg2 이상을 만드는 버전별 패커가 아예 없다(이번 세션 이전부터 그랬고,
-    이번 백로그의 "hg4j가 만든 cg4/cg5를 실제 hg가 읽는" 요구는 `ChangegroupParser.
-    writeBundle`로 별도 충족했지만 hg4j의 실제 getbundle 응답 경로에는 배선 안
-    됨). (3) cg5의 sidedata는 파싱은 하지만(entry.sidedata 필드에 원본 바이트
-    보관) 로컬 revlog에 실제로 반영하지 않는다 — sidedata 저장 자체가 revlogv2
-    포맷 전용이고 hg4j는 아직 revlogv2를 못 만듦(문서 항목 4, 별도 백로그). hg4j가
-    패킹하는 cg5는 sidedata 비트를 항상 0으로 보낸다.
+    **남은 gap**: (1) ~~SSH 경로(`HgSshClient`)도 같은 방식으로 bundlecaps 문자열을
+    고쳤지만... 실제로 SSH 경로에서 bundle2/cg4/cg5 협상을 켜는지는 검증 못 했다~~
+    — ✅ **2026-09-04 확인, 이미 검증돼 있었다**. `HgSshClientRealHgInteropTest#
+    getBundleActuallyNegotiatesAgainstARealHgSshServer`가 실제 hg SSH 서버를 상대로
+    `assertNotEquals("01", ext.cgVersion, ...)`로 정확히 이걸 검증하고 있고(다른
+    세션이 이후 SSH 클라이언트를 실제 hg 바이너리 프로토콜대로 전면 재작성하며 같이
+    닫힘), 실행해서 통과 확인함(3/3 GREEN). (2)/(3)은 여전히 미해결 — hg4j가
+    SERVER 역할일 때(`HgHttpWireServer`/`HgSshWireServer` → `Wire1Commands.getbundle`
+    → `HgLocalClient.getBundle()`)는 여전히 cg1만 생성하고(`getBundle()`의
+    `bundleCaps` 파라미터가 시그니처에만 있고 본문에서 전혀 안 쓰임, 2026-09-04
+    재확인), cg5를 통해 받은 sidedata도 파싱만 하고(`entry.sidedata`) 로컬 revlog에
+    실제로 반영하는 코드가 `api` 패키지 어디에도 없음(2026-09-04 재확인) — 상세는
+    백로그 26번.
 12. ~~**포셀린 명령 노출이 완전하지 않음**~~ — ✅ **완료(2026-09-02)** (사용자 질문
     "포셀린 기능은 모두 노출 끝?"에 답하며 `hg debugcommands`(real hg 7.2.2,
     debug*/admin* 제외 145개 중 핵심 포셀린)와 `Hg` 파사드 메서드 목록을 직접 전수
@@ -562,9 +561,11 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     (`exp-copies-sidedata-changeset`은 Rust 불필요), 실제 3커밋 저장소를
     `src/test/resources/fixtures/sidedata-copytracing/`에 fixture로 확보해
     `hg debugchangedfiles <rev>` 출력과 대조 검증(`SidedataCopyTracingTest`,
-    `SidedataChangedFilesCommandTest`, 8건). **남은 gap**: 커밋 시점에 hg4j가
-    `SD_FILES`를 직접 쓰는 writer는 미구현(decode/조회만), `hg log --follow`/
-    annotate 연동도 미배선.
+    `SidedataChangedFilesCommandTest`, 8건). **남은 gap**: ~~커밋 시점에 hg4j가
+    `SD_FILES`를 직접 쓰는 writer는 미구현~~ — ✅ 백로그 19번에서 완료. `hg log
+    --follow`/annotate 연동은 여전히 미배선(2026-09-04 재확인 — `LogCommand`/
+    `AnnotateCommand`에 `SidedataChangedFilesCommand`/`ChangingFiles`/
+    `getCopySource` 참조가 전혀 없음) — 상세는 백로그 27번.
 18. ~~**Treemanifest 쓰기(생성/커밋)**~~ — ✅ **완료(2026-09-03)**. 실제
     `mercurial/manifest.py`의 `manifestlog._addtree`/`treemanifest.writesubtrees`/
     `dirtext()`를 실측(자식 디렉터리부터 bottom-up 재귀 기록, 각 레벨의 파일+
@@ -956,6 +957,44 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     되어야 할 것"을 단언에 넣었던 것이 원인. 백로그 24번의 테스트들은 이 잘못된
     단언을 이미 제거하고 changelog/branch 메타데이터만 검증하도록 수정된 상태라
     문제 없음.
+
+26. **hg4j 자체 changegroup 생성/적용 경로가 cg1/무sidedata로 제한됨 — 신규,
+    2026-09-04 발견(백로그 11번 "남은 gap"에 번호 없이 있던 것을 메인 에이전트가
+    직접 재확인 후 승격), 미착수. 백로그 23번 완료 후 즉시 진행.** `hg4j가 SERVER
+    역할일 때(`HgHttpWireServer`/`HgSshWireServer` → `Wire1Commands.getbundle` →
+    `HgLocalClient.getBundle()`)는 클라이언트가 뭘 요청하든 상관없이 항상 cg1
+    (`HG10UN`)만 만든다 — `getBundle(common, heads, bundleCaps)`의 `bundleCaps`
+    파라미터가 시그니처에만 있고 메서드 본문 어디서도 참조되지 않음(2026-09-04
+    직접 코드 확인). `ChangegroupParser.writeBundle`로 cg4/cg5 **패킹 자체**는
+    가능하지만(백로그 11번에서 "hg4j가 만든 cg4/cg5를 실제 hg가 읽는다"를 검증할
+    때 이 유틸리티를 별도로 썼음) 실제 getbundle 응답 경로에는 안 이어져 있다.
+    같은 뿌리의 별개 증상: cg5로 받은 sidedata는 `ChangegroupParser`가 파싱은
+    하지만(`entry.sidedata`) 그 값을 로컬 `Revlog`/`.sda`에 반영하는 코드가
+    `api` 패키지 어디에도 없다(2026-09-04 직접 코드 확인, `grep -rn ".sidedata"
+    src/main/java/.../api/`) — 백로그 19번이 만든 sidedata 쓰기 능력은
+    `CommitCommand`(hg4j 스스로 새로 커밋할 때)에만 배선돼 있고, changegroup을
+    **적용(unbundle/pull)**하는 경로에는 아직 안 이어져 있다. **범위(제안)**:
+    (1) `HgLocalClient.getBundle()`이 실제로 `bundleCaps`를 읽어서 상대가
+    지원하는 최고 버전을 고르도록 cg2 이상의 패커를 getbundle 응답 경로에 배선,
+    (2) changegroup 적용 경로(`PullCommand`/`FetchCommand`/`Wire1Commands.unbundle`)
+    가 cg5로 받은 `entry.sidedata`를 실제로 로컬 `.sda`에 반영하도록 배선. 둘 다
+    구현 범위/우선순위는 사용자 확인 후 진행.
+
+27. **`hg log --follow`/annotate가 sidedata 기반 copy-tracing과 연동되지 않음 —
+    신규, 2026-09-04 발견(백로그 17번 "남은 gap"에 번호 없이 있던 것을 메인
+    에이전트가 직접 재확인 후 승격), 미착수. 백로그 23번 완료 후 즉시 진행.**
+    백로그 17/19번으로 `SD_FILES`(changelog sidedata 기반 copy-tracing) decode/
+    조회/쓰기가 전부 구현됐지만, 그 복사 이력 정보를 `LogCommand`의 `--follow`나
+    별도 annotate 계열 명령이 실제로 소비하도록 이어진 적은 없다(2026-09-04
+    직접 코드 확인 — `LogCommand`/`AnnotateCommand`에
+    `SidedataChangedFilesCommand`/`ChangingFiles`/`getCopySource` 참조 0건).
+    현재 `LogCommand`의 `followAncestors`는 changelog 부모 관계만 따라가고
+    파일별 rename/copy 경계를 넘어 이력을 추적하지는 못한다. **범위(제안)**:
+    (1) `hg log --follow <path>` 형태(특정 파일의 rename 이력을 넘나드는 추적)가
+    hg4j에 대응 기능 자체가 있는지부터 확인, (2) 있다면 dirstate 기반
+    `CopyCommand` 정보만 쓰고 있는지 sidedata 기반 조회로 보강해야 하는지 판단,
+    (3) annotate 계열 명령이 hg4j에 아예 없다면 "구현 여부 조사"로 범위를 좁힐지
+    사용자 확인 후 진행.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

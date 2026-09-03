@@ -222,4 +222,49 @@ public class TagsCommandTest {
         assertEquals(2, tags.size());
         assertEquals(0, byName.get("v1.0").getRev());
     }
+
+    @Test
+    public void hgtagsEntryInARepositoryWithNoCommitsIsExcludedSinceChangelogIsNull(@TempDir Path tempDir) throws Exception {
+        // A repository with zero commits has no 00changelog.i at all, so `changelog` in call() is
+        // null -- a stray .hgtags file (hand-written, never actually committed) referencing a node
+        // must still be safely excluded rather than NPE-ing on a null changelog lookup.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        byte[] fakeNode = new byte[20];
+        java.util.Arrays.fill(fakeNode, (byte) 0xCD);
+        Files.writeString(new File(repoDir, ".hgtags").toPath(),
+                NodeIdUtil.toHex(fakeNode) + " v0.1\n", StandardCharsets.UTF_8);
+
+        List<TagsCommand.Tag> tags = new TagsCommand(repo).call();
+        assertEquals(1, tags.size(), "only the implicit tip pseudo-tag should remain: " + tags);
+        assertEquals("tip", tags.get(0).getName());
+    }
+
+    @Test
+    public void malformedHgtagsLinesAreSkippedWithoutThrowing(@TempDir Path tempDir) throws Exception {
+        // readTagFile()'s tolerant parser (mirroring real hg's own leniency) must skip: a line
+        // with no space separator at all (spaceIdx == -1), a line whose name part is blank after
+        // the space, and a line whose hex part isn't exactly 40 characters -- none of these are
+        // exercised by the other .hgtags-driven tests, which only ever feed well-formed lines.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("c0").call();
+
+        String hex = NodeIdUtil.toHex(c0);
+        Files.writeString(new File(repoDir, ".hgtags").toPath(),
+                "no-space-at-all-on-this-line\n"
+                        + hex + " \n"
+                        + "abcd v1.0\n"
+                        + hex + " valid\n",
+                StandardCharsets.UTF_8);
+
+        List<TagsCommand.Tag> tags = new TagsCommand(repo).call();
+        Map<String, TagsCommand.Tag> byName = tags.stream()
+                .collect(Collectors.toMap(TagsCommand.Tag::getName, t -> t));
+        assertEquals(2, tags.size(), "only \"tip\" and \"valid\" should have been parsed: " + byName.keySet());
+        assertTrue(byName.containsKey("valid"));
+    }
 }

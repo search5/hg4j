@@ -29,6 +29,25 @@ public class NodeIdTest {
     }
 
     @Test
+    public void testEqualsContractIncludingNullAndDifferentType() {
+        byte[] raw = new byte[20];
+        Arrays.fill(raw, (byte) 0xAB);
+        NodeId a = new NodeId(raw);
+        NodeId sameContent = new NodeId(raw.clone());
+
+        byte[] otherRaw = new byte[20];
+        Arrays.fill(otherRaw, (byte) 0xCD);
+        NodeId differentContent = new NodeId(otherRaw);
+
+        assertEquals(a, a, "identity must be equal");
+        assertEquals(a, sameContent, "same 20 bytes must be equal");
+        assertEquals(a.hashCode(), sameContent.hashCode());
+        assertNotEquals(a, differentContent, "different bytes must not be equal");
+        assertNotEquals(a, null, "must not equal null");
+        assertNotEquals(a, "not a NodeId", "must not equal an instance of a different class");
+    }
+
+    @Test
     public void testInvalidBytesLength() {
         assertThrows(IllegalArgumentException.class, () -> new NodeId(new byte[19]));
         assertThrows(IllegalArgumentException.class, () -> new NodeId(new byte[21]));

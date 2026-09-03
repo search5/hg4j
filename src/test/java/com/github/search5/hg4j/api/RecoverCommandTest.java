@@ -146,6 +146,13 @@ public class RecoverCommandTest {
             assertTrue(result.wasInterrupted(), "a journal was present");
             assertFalse(result.isSuccess(), "rollback of a malformed journal cannot complete");
             assertTrue(journalFile.exists(), "journal must be retained for retry when rollback fails");
+
+            // Even with --verify requested, verify must not run when the rollback itself failed
+            // (the `verify && success` guard's `success == false` side, which the plain call()
+            // above never exercises since verify defaults to false there).
+            RecoverCommand.RecoverResult resultWithVerify = new RecoverCommand(repo).setVerify(true).call();
+            assertFalse(resultWithVerify.isSuccess(), "rollback of a malformed journal still cannot complete");
+            assertNull(resultWithVerify.getVerifyErrors(), "verify must be skipped when rollback did not succeed");
         }
     }
 }

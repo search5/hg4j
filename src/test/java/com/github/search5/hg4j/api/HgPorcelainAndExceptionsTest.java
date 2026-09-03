@@ -135,6 +135,10 @@ public class HgPorcelainAndExceptionsTest {
         assertEquals(files, commit.getFiles());
         assertEquals("Test Message", commit.getMessage());
         assertEquals("default", commit.getBranch());
+
+        HgCommit commitWithNullBranch = new HgCommit(0, nodeId, manifestId, "tester",
+                123456789L, 3600, files, "Test Message", null);
+        assertEquals("default", commitWithNullBranch.getBranch(), "null branch must default to \"default\"");
     }
 
     @Test

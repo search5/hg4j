@@ -50,6 +50,21 @@ public class ProgressMonitorTest {
     }
 
     @Test
+    @DisplayName("TextProgressMonitor.start(null, ...) defaults the title to an empty string instead of NPEing")
+    void testTextProgressMonitor_nullTitleDefaultsToEmptyString() {
+        StringWriter writer = new StringWriter();
+        TextProgressMonitor monitor = new TextProgressMonitor(writer);
+
+        monitor.start(null, 10);
+        String output = writer.toString();
+        assertTrue(output.contains(": start (total 10)"), "Actual output: " + output);
+
+        monitor.update(5);
+        output = writer.toString();
+        assertTrue(output.contains(": 5 / 10"), "Actual output: " + output);
+    }
+
+    @Test
     @DisplayName("Verify TextProgressMonitor status with an UNKNOWN total size task")
     void testTextProgressMonitor_unknownTotal() {
         StringWriter writer = new StringWriter();

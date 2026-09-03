@@ -275,6 +275,36 @@ public class CopyCommandTest {
         }
     }
 
+    /**
+     * A dangling symlink (target missing) is a valid copy source -- {@code File#exists()} would
+     * follow the link and report {@code false} for it, but {@code CopyCommand#existsOnDisk}
+     * falls back to {@code Files.isSymbolicLink} for exactly this case (matching real hg's
+     * {@code hg cp} on a broken link, already relied on elsewhere for
+     * {@code AddCommand}/{@code RenameCommand}). {@link #testCopySymlinkPreservesSymlinkness}
+     * only exercises a symlink whose target exists, where {@code exists()} alone already returns
+     * {@code true}, so this is a genuinely different code path.
+     */
+    @Test
+    public void testCopyDanglingSymlinkSourceSucceeds() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+        try (Hg hg = Hg.wrap(repo)) {
+            File linkFile = new File(tempDir, "broken-link.txt");
+            Files.createSymbolicLink(linkFile.toPath(), new File("missing-target.txt").toPath());
+
+            hg.add().addFile("broken-link.txt").call();
+            hg.commit().setAuthor("Tester").setMessage("add broken link").call();
+
+            new CopyCommand(repo).setSource("broken-link.txt").setDestination("broken-link-copy.txt").call();
+
+            File copiedLink = new File(tempDir, "broken-link-copy.txt");
+            assertTrue(Files.isSymbolicLink(copiedLink.toPath()), "copy of a dangling symlink must itself be a symlink");
+            assertEquals("missing-target.txt", Files.readSymbolicLink(copiedLink.toPath()).toString());
+
+            Dirstate dirstate = repo.getDirstate();
+            assertEquals("broken-link.txt", dirstate.getCopyMap().get("broken-link-copy.txt"));
+        }
+    }
+
     @Test
     public void testCopyPreservesExecuteBit() throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();

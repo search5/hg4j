@@ -333,6 +333,65 @@ public class CloneCommandCoverageTest {
         assertTrue(t.getMessage().contains("File version not found in filelog"));
     }
 
+    @Test
+    public void testCloneOfTipWithEmptyManifestSkipsBlankManifestLine(@TempDir Path tempDir) throws Exception {
+        // The tip commit's manifest can legitimately be empty (every previously-tracked file was
+        // removed), in which case `manifest.getRevisionContent(...)` is empty bytes and
+        // `"".split("\n")` yields a single blank-string element -- checkoutLatest's manifest-line
+        // parser must skip that blank element rather than choking on it.
+        File sourceDir = new File(tempDir.toFile(), "source");
+        HgRepository sourceRepo = Hg.init().setDirectory(sourceDir).call();
+        Files.writeString(new File(sourceDir, "a.txt").toPath(), "hello");
+        new AddCommand(sourceRepo).call();
+        new CommitCommand(sourceRepo).setMessage("add a.txt").call();
+
+        new RemoveCommand(sourceRepo).setFile("a.txt").call();
+        new CommitCommand(sourceRepo).setMessage("remove a.txt").call();
+
+        File destDir = new File(tempDir.toFile(), "dest");
+        HgRepository cloned = Hg.cloneRepository()
+                .setSource(sourceDir.getAbsolutePath())
+                .setDirectory(destDir)
+                .call();
+
+        assertTrue(destDir.exists());
+        String[] entries = destDir.list((dir, name) -> !name.equals(".hg"));
+        assertEquals(0, entries.length, "tip has no tracked files, so nothing should be checked out");
+        assertTrue(cloned.getDirstate().getEntries().isEmpty());
+    }
+
+    @Test
+    public void testCheckoutLatestReplacesPreexistingDanglingSymlinkAtCheckoutPath(@TempDir Path tempDir) throws Throwable {
+        // checkoutLatest's "clear whatever is at this path before writing the checked-out file"
+        // guard (`diskFile.exists() || Files.isSymbolicLink(...)`) must also catch a dangling
+        // symlink squatting on the target path -- File#exists() alone follows the link and
+        // reports false for it, same lstat-aware pattern already established elsewhere
+        // (AddCommand/CopyCommand/RevertCommand). CloneCommand.call() itself refuses to clone
+        // into a non-empty destination directory, so (mirroring
+        // testCheckoutLatestIsIdempotentWhenFileAlreadyExists just above) this re-invokes
+        // checkoutLatest directly on an already-checked-out repo after swapping the checked-out
+        // file for a dangling symlink.
+        File sourceDir = new File(tempDir.toFile(), "source");
+        HgRepository sourceRepo = Hg.init().setDirectory(sourceDir).call();
+        Files.writeString(new File(sourceDir, "a.txt").toPath(), "real content");
+        new AddCommand(sourceRepo).call();
+        new CommitCommand(sourceRepo).setMessage("add a.txt").call();
+
+        File destDir = new File(tempDir.toFile(), "dest");
+        HgRepository dest = Hg.cloneRepository().setSource(sourceDir.getAbsolutePath()).setDirectory(destDir).call();
+
+        File checkedOut = new File(destDir, "a.txt");
+        assertTrue(checkedOut.exists());
+        Files.delete(checkedOut.toPath());
+        Files.createSymbolicLink(checkedOut.toPath(), Path.of("does-not-exist.txt"));
+        assertFalse(checkedOut.exists(), "a dangling symlink must not report as existing");
+
+        invokeCheckoutLatest(dest);
+
+        assertFalse(Files.isSymbolicLink(checkedOut.toPath()), "checkout must replace the dangling symlink");
+        assertEquals("real content", Files.readString(checkedOut.toPath()));
+    }
+
     private static void truncate(File f) throws Exception {
         try (FileOutputStream out = new FileOutputStream(f)) {
             // truncate to zero length

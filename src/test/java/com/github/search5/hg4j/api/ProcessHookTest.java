@@ -250,6 +250,25 @@ public class ProcessHookTest {
     }
 
     @Test
+    public void testRepositoryContextKeyWithNonHgRepositoryValueIsIgnoredForWorkingDirectory(@TempDir Path tempDir) throws Exception {
+        // context.get("repository") instanceof HgRepository must take its false branch here --
+        // testRepositoryContextResolvesWorkingDirectory only exercises the true (real HgRepository)
+        // case. No working directory is derived; pb.directory(null) keeps the JVM's own cwd, so the
+        // hook must still run successfully rather than throwing.
+        File logFile = tempDir.resolve("noop_output.txt").toFile();
+        File scriptFile = tempDir.resolve("noop_hook.sh").toFile();
+        Files.writeString(scriptFile.toPath(), "#!/bin/sh\necho ran > \"" + logFile.getAbsolutePath() + "\"\nexit 0\n");
+        scriptFile.setExecutable(true);
+
+        ProcessHook hook = new ProcessHook(Arrays.asList("sh", scriptFile.getAbsolutePath()));
+        Map<String, Object> context = new HashMap<>();
+        context.put("repository", "not-actually-a-repository");
+
+        assertTrue(hook.run(context));
+        assertTrue(logFile.exists());
+    }
+
+    @Test
     public void testByteArrayContextValueMappedToHexEnvironmentVariable(@TempDir Path tempDir) throws Exception {
         File logFile = tempDir.resolve("node_output.txt").toFile();
         File scriptFile = tempDir.resolve("node_hook.sh").toFile();

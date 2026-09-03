@@ -63,6 +63,36 @@ public class ManifestCommandTest {
     // ------------------------------------------------------------------
 
     @Test
+    public void testCall_ExplicitEmptyStringRevisionBehavesLikeDefault() throws Exception {
+        // setRevision("") is a distinct branch outcome from the plain "never called setRevision"
+        // default (both must resolve the working-copy parent), but only the latter was covered.
+        try (Hg hg = Hg.open(tempRepoDir)) {
+            writeFile("a.txt", "a-content");
+            hg.add().addFile("a.txt").call();
+            hg.commit().setAuthor("tester <test@example.com>").setMessage("rev0").call();
+        }
+
+        List<ManifestEntry> entries = new ManifestCommand(repository).setRevision("").call();
+        assertEquals(1, entries.size());
+        assertEquals("a.txt", entries.get(0).getPath());
+    }
+
+    @Test
+    public void testCall_ChangelogIndexExistsButHasZeroRevisions_ReturnsEmptyList() throws Exception {
+        // Distinct from the brand-new-repo case (00changelog.i doesn't exist at all yet): here the
+        // index file exists (e.g. a store initialized but never committed to) but has zero
+        // revisions, which resolveWorkingCopyParentRevision() must also treat as "no manifest".
+        File storeDir = new File(tempRepoDir, ".hg/store");
+        assertTrue(storeDir.exists() || storeDir.mkdirs());
+        File clIdx = new File(storeDir, "00changelog.i");
+        assertTrue(clIdx.createNewFile());
+
+        List<ManifestEntry> entries = new ManifestCommand(repository).call();
+        assertNotNull(entries);
+        assertTrue(entries.isEmpty());
+    }
+
+    @Test
     public void testCall_NoCommits_DefaultRevisionReturnsEmptyList() throws Exception {
         // Verified against real hg 7.2: `hg manifest` on a brand-new repo (zero commits, no
         // revision checked out) exits 0 with empty output -- never an error.
@@ -242,6 +272,32 @@ public class ManifestCommandTest {
 
         ManifestCommand cmd = new ManifestCommand(repository).setRevision("zzzzzzzz");
         assertThrows(HgRevisionNotFoundException.class, cmd::call);
+    }
+
+    /**
+     * If the working copy's recorded parent1 doesn't correspond to any real changelog revision
+     * (e.g. a stripped/rewritten history left the dirstate pointing at a node that no longer
+     * exists), the default-revision resolution must fall back to the empty-manifest sentinel
+     * rather than throwing -- matching real hg's own leniency here (dirstate corruption is
+     * reported by other commands, not by a plain `hg manifest`).
+     */
+    @Test
+    public void testCall_DefaultRevision_ParentNodeNotInChangelogFallsBackToEmptyManifest() throws Exception {
+        try (Hg hg = Hg.open(tempRepoDir)) {
+            writeFile("a.txt", "content");
+            hg.add().addFile("a.txt").call();
+            hg.commit().setAuthor("tester <test@example.com>").setMessage("rev0").call();
+        }
+
+        com.github.search5.hg4j.dirstate.Dirstate dirstate = repository.getDirstate();
+        byte[] unknownNode = new byte[20];
+        java.util.Arrays.fill(unknownNode, (byte) 0xAB);
+        dirstate.setParents(unknownNode, new byte[20]);
+        repository.writeDirstate(dirstate);
+
+        List<ManifestEntry> entries = new ManifestCommand(repository).call();
+        assertNotNull(entries);
+        assertTrue(entries.isEmpty());
     }
 
     // ------------------------------------------------------------------

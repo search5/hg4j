@@ -79,6 +79,23 @@ public class WorktreeCommandTest {
         assertTrue(ex.getMessage().contains("must be empty or non-existent"));
     }
 
+    /**
+     * {@code newWorktreeDir.list() == null} (target exists but is a plain file, not a directory)
+     * is a distinct branch from both "doesn't exist" and "exists as a non-empty directory" --
+     * File#list() returns null rather than throwing for a non-directory target.
+     */
+    @Test
+    public void testCallRejectsWhenTargetIsAnExistingPlainFile(@TempDir Path tempDir) throws Exception {
+        HgRepository mainRepo = Hg.init().setDirectory(tempDir.resolve("main_repo").toFile()).call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        Files.writeString(worktreeDir.toPath(), "I am a file, not a directory");
+
+        WorktreeCommand cmd = new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir);
+
+        assertThrows(IOException.class, cmd::call);
+    }
+
     @Test
     public void testCallAcceptsPreexistingEmptyTargetDirectory(@TempDir Path tempDir) throws Exception {
         HgRepository mainRepo = Hg.init().setDirectory(tempDir.resolve("main_repo").toFile()).call();

@@ -333,4 +333,11 @@ public class HgRemoteConnectionFactoryTest {
         assertTrue(caps.contains("custom-cap=true"));
         assertEquals(List.of("custom-head"), conn.getHeads());
     }
+
+    @org.junit.jupiter.api.Test
+    public void testRegisterNullProtocolIsANoOp() {
+        int before = HgRemoteConnectionFactory.getRegisteredProtocols().size();
+        HgRemoteConnectionFactory.register(null);
+        assertEquals(before, HgRemoteConnectionFactory.getRegisteredProtocols().size());
+    }
 }

@@ -53,6 +53,26 @@ public class SidedataChangedFilesCommandTest {
     }
 
     @Test
+    @DisplayName("null repository is rejected by the constructor")
+    void constructorRejectsNullRepository() {
+        assertThrows(IllegalArgumentException.class, () -> new SidedataChangedFilesCommand(null));
+    }
+
+    @Test
+    @DisplayName("call() rejects a negative (unset) revision")
+    void callRejectsNegativeRevision() throws IOException {
+        HgRepository repo = setupRealRepository();
+        assertThrows(IllegalStateException.class, () -> new SidedataChangedFilesCommand(repo).call());
+    }
+
+    @Test
+    @DisplayName("call() rejects a revision past the end of the changelog")
+    void callRejectsOutOfRangeRevision() throws IOException {
+        HgRepository repo = setupRealRepository();
+        assertThrows(IllegalArgumentException.class, () -> new SidedataChangedFilesCommand(repo).setRevision(9999).call());
+    }
+
+    @Test
     @DisplayName("rev1: b.txt는 a.txt로부터 p1 copy로 기록됨 — 실제 `hg debugchangedfiles 1` 출력(\"added p1: b.txt, a.txt;\")과 일치")
     void reportsRenameAsCopyFromP1() throws IOException {
         HgRepository repo = setupRealRepository();

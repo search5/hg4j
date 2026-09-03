@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: merge (`com.github.search5.hg4j.merge`)
+# 모듈: merge (`io.github.search5.hg4j.merge`)
 
 3-way 머지 알고리즘 전용 패키지. [[core-package-split-plan]] Phase 2에서 분리됨 —
 순수 알고리즘이라 외부 의존이 거의 없어 초반에 안전하게 뗄 수 있었다. JGit의

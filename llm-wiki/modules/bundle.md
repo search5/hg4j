@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: bundle (`com.github.search5.hg4j.bundle`)
+# 모듈: bundle (`io.github.search5.hg4j.bundle`)
 
 Mercurial bundle2/changegroup 컨테이너 포맷 파서 패키지. [[core-package-split-plan]]
 Phase 8에서 분리됨.

@@ -42,7 +42,7 @@ index/data/sidedata 파일이다.
   `list`, `fileindex-meta.{uuid}` → `meta`, `fileindex-tree.{uuid}` → `tree`로 단순 개명.
   `fileindex-v1` 포맷 스펙은 `mercurial/store_utils/file_index_util.py`(실제 hg 소스,
   이 컨테이너에는 없지만 시스템 `/usr/lib/python3/dist-packages/mercurial/`에 pure-Python
-  구현이 존재해 직접 확인 가능) 참고. `com.github.search5.hg4j.storage.FileIndex`가 이 포맷을
+  구현이 존재해 직접 확인 가능) 참고. `io.github.search5.hg4j.storage.FileIndex`가 이 포맷을
   읽고 쓴다.
 
 ## 커밋별 노드 해시와 압축 해제된 내용

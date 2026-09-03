@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: lfs (`com.github.search5.hg4j.lfs`)
+# 모듈: lfs (`io.github.search5.hg4j.lfs`)
 
 LFS(Large File Storage) 지원 패키지. [[core-package-split-plan]] Phase 9에서 분리됨 —
 JGit이 정확히 `org.eclipse.jgit.lfs` 패키지를 갖고 있어 이름까지 일치.

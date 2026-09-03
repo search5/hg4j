@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: phase (`com.github.search5.hg4j.phase`)
+# 모듈: phase (`io.github.search5.hg4j.phase`)
 
 Mercurial phase(draft/public/secret) 메타데이터 관리 패키지. [[core-package-split-plan]]
 Phase 5에서 분리됨.

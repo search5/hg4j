@@ -305,7 +305,7 @@ instruction 수 큰 순서, `agentBuildDir` 격리, 실제 hg 대조 검증)으�
   달리 이번 구간은 실제 결함이 없었다(코드베이스가 그만큼 이미 안정화됐다는
   신호로 해석).
 - **테스트 스코프를 클래스 단위로 좁히지 않으면 빌드 시간이 크게 늘어난다**:
-  `api` 패키지(50+ 클래스)를 `--tests "com.github.search5.hg4j.api.*"`로 통째로
+  `api` 패키지(50+ 클래스)를 `--tests "io.github.search5.hg4j.api.*"`로 통째로
   스코프하면 매 iteration마다 전체 api 패키지 테스트가 재실행돼 `UnbundleCommand`
   하나에 32분이 걸렸다. 17차 배치부터 `--tests "...ClassName*"` 식으로 클래스
   단위로 좁히도록 프롬프트를 고치자 `MaxCountRevFilter`가 49초 만에 끝났다 —

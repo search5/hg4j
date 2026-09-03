@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: storage (`com.github.search5.hg4j.storage`)
+# 모듈: storage (`io.github.search5.hg4j.storage`)
 
 Revlog 저장 엔진 패키지 — Track A에서 가장 광범위하게 옮긴 대상. [[core-package-split-plan]]
 Phase 10에서 분리됨(마지막 순서로 진행). JGit의 `org.eclipse.jgit.storage`에 대응.

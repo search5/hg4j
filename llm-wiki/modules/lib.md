@@ -3,10 +3,10 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: lib (`com.github.search5.hg4j.lib`)
+# 모듈: lib (`io.github.search5.hg4j.lib`)
 
 JGit의 `org.eclipse.jgit.lib`에 대응하는 최상위 핵심 데이터 구조 및 공통 구성 패키지입니다.
-2026-08-31 리팩토링(Track A)을 통해 기존 `com.github.search5.hg4j.core` 패키지가 완전히 정리되고 남은 핵심 진입점 클래스들이 이 패키지로 통합되었습니다.
+2026-08-31 리팩토링(Track A)을 통해 기존 `io.github.search5.hg4j.core` 패키지가 완전히 정리되고 남은 핵심 진입점 클래스들이 이 패키지로 통합되었습니다.
 
 ## 핵심 데이터 및 공통 유틸리티
 - **`NodeId`**: 20바이트 SHA-1 기반 리비전 식별자 (Mercurial node id) 값 객체. JGit의 `ObjectId`에 대응.

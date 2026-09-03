@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: treewalk (`com.github.search5.hg4j.treewalk`)
+# 모듈: treewalk (`io.github.search5.hg4j.treewalk`)
 
 매니페스트(커밋 시점 트리)와 워킹 디렉터리 순회. JGit의 `org.eclipse.jgit.treewalk`에 대응.
 

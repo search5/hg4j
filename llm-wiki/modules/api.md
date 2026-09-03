@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: api (`com.github.search5.hg4j.api`)
+# 모듈: api (`io.github.search5.hg4j.api`)
 
 Porcelain(고수준 명령) 계층. 사용자가 실제로 호출하는 공개 API.
 

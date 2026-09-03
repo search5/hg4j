@@ -35,9 +35,29 @@ public class PushCommand {
 
     private final HgRepository repository;
     private String destinationUrl;
-    
+    private boolean force = false;
+    private boolean allowNewBranch = false;
+
     private final List<HgHook> prePushHooks = new ArrayList<>();
     private final List<HgHook> postPushHooks = new ArrayList<>();
+
+    /** {@code hg push --force}: bypasses the "creates new remote head(s)" safety check below
+     * (real hg: {@code pushop.force}, skips {@code discovery.checkheads()} entirely). Does NOT
+     * imply {@link #setAllowNewBranch} in real hg, but in practice a force push also always
+     * succeeds against the new-branch check below since {@code force} short-circuits the whole
+     * checkheads pass, matching real hg exactly. */
+    public PushCommand setForce(boolean force) {
+        this.force = force;
+        return this;
+    }
+
+    /** {@code hg push --new-branch}: permits pushing changesets on a named branch the remote
+     * doesn't have yet (real hg: {@code pushop.newbranch}). Without it, such a push aborts with
+     * "push creates new remote branches: ..." -- matches real hg's {@code discovery.checkheads()}. */
+    public PushCommand setAllowNewBranch(boolean allowNewBranch) {
+        this.allowNewBranch = allowNewBranch;
+        return this;
+    }
 
     public PushCommand registerPrePushHook(HgHook hook) {
         if (hook != null) {
@@ -187,6 +207,14 @@ public class PushCommand {
                     }
                 }
 
+                // checkheads: reject a push that would create new remote head(s) or introduce a
+                // brand-new named branch, unless the caller opted in via --force/--new-branch
+                // (mirrors real hg's client-side mercurial/discovery.py checkheads(), which runs
+                // BEFORE the changegroup is even built -- see PushCommand#checkHeads doc).
+                if (!force && !validRemoteHeads.isEmpty()) {
+                    checkHeads(changelog, count, startRev, validRemoteHeads, client);
+                }
+
                 // 1. Pack changesets startRev ~ tip into changegroup bundle
                 ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
                 bundle.changelogEntries = new ArrayList<>();
@@ -194,17 +222,19 @@ public class PushCommand {
                 bundle.fileGroups = new ArrayList<>();
 
                 // 1a. Pack Changelogs
-                // cg1은 각 엔트리의 델타를 "실제 DAG 부모(p1)"가 아니라 "이 그룹 스트림에서 바로
-                // 직전에 패킹된 엔트리"를 기준으로 인코딩한다(mercurial/changegroup.py의
-                // ChangeGroupPacker01, forcedeltaparentprev=True 실측, 2026-09-01; 같은 규칙이
-                // HgLocalClient.getBundle()에는 이미 반영돼 있었지만 이 메서드는 놓치고 있었다).
-                // p1 기준으로 델타를 만들면, 패킹 순서(changelog rev 순서)가 실제 DAG 부모
-                // 체인과 어긋나는 브랜치/머지 커밋을 포함한 push에서 수신측이 엉뚱한 베이스로
-                // 델타를 복원해 콘텐츠가 깨진다 -- appendChangeGroupEntry()의 해시 검증에 걸려
-                // HgCorruptDataException으로 드러난다(머지 커밋 뒤에 이어지는 증분 push로 재현,
-                // 2026-09-02). incremental push(startRev > 0)면 첫 신규 엔트리의 베이스는 양쪽이
-                // 이미 공유하는 마지막 공통 리비전(startRev-1)의 콘텐츠여야 한다.
-                byte[] prevClContent = (startRev > 0) ? changelog.getRevisionContent(startRev - 1) : new byte[0];
+                // cg1은 각 엔트리의 델타를 "이 그룹 스트림에서 바로 직전에 패킹된 엔트리"를
+                // 기준으로 인코딩한다(mercurial/changegroup.py의 ChangeGroupPacker01,
+                // forcedeltaparentprev=True) -- 단, 그룹의 "첫" 엔트리만은 예외로, 그 엔트리
+                // 자신의 실제 DAG 부모(p1)를 기준으로 삼는다(cg1unpacker._deltaheader:
+                // `if prevnode is None: deltabase = p1`, 실제 hg 소스 확인, 2026-09-04).
+                // 이전 수정(2026-09-02)은 이 "첫 엔트리 예외"를 놓치고 모든 엔트리(첫 엔트리
+                // 포함)에 "startRev-1의 콘텐츠"를 베이스로 썼다 -- 그 값이 첫 신규 엔트리의
+                // 실제 p1과 우연히 같을 때만(직전 로컬 rev가 곧 그 부모인 선형 히스토리)
+                // 맞았고, 그렇지 않으면(예: 여러 head가 있는 저장소로의 push에서 startRev의
+                // 진짜 부모가 startRev-1보다 앞선 리비전인 경우) 수신측이 엉뚱한 베이스로
+                // 델타를 복원해 해시가 깨지고 unbundle이 실패한다(실제 hg 서버로 재현,
+                // 2026-09-04: divergent head를 강제 push하면 HTTP 500).
+                byte[] prevClContent = null;
                 for (int r = startRev; r < count; r++) {
                     Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
                     ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
@@ -214,7 +244,10 @@ public class PushCommand {
                     clEntry.cs = clRec.getNodeId();
 
                     byte[] content = changelog.getRevisionContent(r);
-                    clEntry.delta = Revlog.createDelta(prevClContent, content);
+                    byte[] deltaBasis = (r == startRev)
+                            ? ((clRec.getParent1() != -1) ? changelog.getRevisionContent(clRec.getParent1()) : new byte[0])
+                            : prevClContent;
+                    clEntry.delta = Revlog.createDelta(deltaBasis, content);
                     bundle.changelogEntries.add(clEntry);
                     prevClContent = content;
                 }
@@ -222,21 +255,10 @@ public class PushCommand {
                 // 1b. Pack Manifests
                 Revlog manifest = repository.getManifestRevlog();
                 Set<String> affectedFiles = new HashSet<>();
-                // incremental push면 마지막 공통 changelog 리비전(startRev-1)이 가리키는 manifest
-                // 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다(changelog와 동일한 이유).
-                byte[] prevMfContent = new byte[0];
-                if (startRev > 0) {
-                    byte[] prevClRaw = changelog.getRevisionContent(startRev - 1);
-                    String prevClText = new String(prevClRaw, StandardCharsets.UTF_8);
-                    int nl = prevClText.indexOf('\n');
-                    if (nl > 0) {
-                        byte[] prevMfNode = NodeIdUtil.fromHex(prevClText.substring(0, nl).trim().substring(0, 40));
-                        int prevMfRev = manifest.findRevision(prevMfNode);
-                        if (prevMfRev != -1) {
-                            prevMfContent = manifest.getRevisionContent(prevMfRev);
-                        }
-                    }
-                }
+                // changelog와 동일한 규칙: 이 그룹의 "첫" 엔트리만 자신의 실제 p1 manifest
+                // 리비전 콘텐츠를 베이스로 삼고(cg1unpacker._deltaheader의 prevnode==None
+                // 규칙), 이후 엔트리는 직전에 패킹된 엔트리를 베이스로 삼는다.
+                byte[] prevMfContent = null;
                 for (int r = startRev; r < count; r++) {
                     byte[] clContent = changelog.getRevisionContent(r);
                     String clText = new String(clContent, StandardCharsets.UTF_8);
@@ -261,7 +283,10 @@ public class PushCommand {
                     mfEntry.cs = changelog.getIndexRecord(r).getNodeId();
 
                     byte[] content = manifest.getRevisionContent(mfRev);
-                    mfEntry.delta = Revlog.createDelta(prevMfContent, content);
+                    byte[] mfDeltaBasis = bundle.manifestEntries.isEmpty()
+                            ? ((mfRec.getParent1() != -1) ? manifest.getRevisionContent(mfRec.getParent1()) : new byte[0])
+                            : prevMfContent;
+                    mfEntry.delta = Revlog.createDelta(mfDeltaBasis, content);
                     bundle.manifestEntries.add(mfEntry);
                     prevMfContent = content;
                 }
@@ -275,15 +300,13 @@ public class PushCommand {
                     Revlog fl = repository.getRevlog(flIdx, flDat);
                     List<ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
 
-                    // incremental push면 이미 공유된 마지막 filelog 리비전(linkRev < startRev 중
-                    // 가장 최근 것)의 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다.
-                    byte[] prevFlContent = new byte[0];
-                    for (int i = fl.getRevisionCount() - 1; i >= 0; i--) {
-                        if (fl.getIndexRecord(i).getLinkRev() < startRev) {
-                            prevFlContent = fl.getRawRevisionContent(i);
-                            break;
-                        }
-                    }
+                    // 같은 규칙: 각 파일은 자기만의 별도 cg1 그룹이므로, 이 파일에서 이번 push로
+                    // 새로 패킹되는 "첫" 리비전은 그 리비전 자신의 실제 filelog p1 콘텐츠를
+                    // 베이스로 삼아야 한다("linkRev < startRev 중 가장 최근 것"은 틀린 근사치였다
+                    // -- 그 리비전이 첫 신규 리비전의 진짜 부모가 아닐 수 있다. 예: 같은 파일이
+                    // 서로 다른 head에서 각각 수정된 경우). 이후 리비전은 직전에 패킹된 리비전을
+                    // 베이스로 삼는다.
+                    byte[] prevFlContent = null;
                     for (int i = 0; i < fl.getRevisionCount(); i++) {
                         Revlog.IndexRecord flRec = fl.getIndexRecord(i);
                         // Only pack revision if its linkRev is in our push range
@@ -300,7 +323,10 @@ public class PushCommand {
                             // HgCensoredContentException -- real hg's own changegroup packer
                             // likewise always uses rawdata()/`_chunk()`, never the decoded text.
                             byte[] content = fl.getRawRevisionContent(i);
-                            flEntry.delta = Revlog.createDelta(prevFlContent, content);
+                            byte[] flDeltaBasis = flEntries.isEmpty()
+                                    ? ((flRec.getParent1() != -1) ? fl.getRawRevisionContent(flRec.getParent1()) : new byte[0])
+                                    : prevFlContent;
+                            flEntry.delta = Revlog.createDelta(flDeltaBasis, content);
                             flEntries.add(flEntry);
                             prevFlContent = content;
                         }
@@ -381,6 +407,143 @@ public class PushCommand {
                 return response;
             }
         }
+    }
+
+    /**
+     * Mirrors real hg's client-side {@code mercurial/discovery.py checkheads()}: aborts the push
+     * if it would (1) introduce a named branch the remote doesn't have yet (needs {@code
+     * --new-branch}), or (2) increase the head count of any branch it touches, including the
+     * remote's whole topology when the remote doesn't support the {@code branchmap} wire call
+     * (real hg's {@code _oldheadssummary} fallback for old servers). Does nothing (real hg:
+     * "remote is empty, nothing to check") when the remote has no valid heads at all -- callers
+     * are expected to have already skipped calling this in that case.
+     *
+     * <p>This is a simplified port: it does not replicate real hg's obsolescence-marker
+     * postprocessing (successors quietly absorbing predecessor heads) or its bookmark-head
+     * exemption ({@code _nowarnheads}) -- both narrow real hg's rejection further in cases this
+     * port will still (conservatively) reject. It matches real hg exactly for the common cases
+     * this backlog item's push scenarios exercise: a genuinely new remote head, a genuinely new
+     * named branch, and the ordinary fast-forward/no-new-head case that must NOT be rejected.
+     */
+    private void checkHeads(Revlog changelog, int count, int startRev, List<String> validRemoteHeads,
+                             HgRemoteConnection client) throws IOException {
+        Map<String, List<String>> remoteBranchHeads;
+        try {
+            remoteBranchHeads = client.getBranchHeads();
+        } catch (IOException e) {
+            // A REAL hg server always supports branchmap (a core v1 wire command since ancient
+            // versions); a connectivity/protocol hiccup fetching it here is not a reason to
+            // abort an otherwise-valid push over a supplementary safety check -- degrade to the
+            // topological-only check instead (real hg's own fallback path for servers that
+            // don't advertise the capability at all), which is a strictly more conservative
+            // (never more permissive) approximation.
+            LOGGER.log(Level.WARNING, "Failed to fetch remote branch heads for push safety check; "
+                    + "falling back to a topological-only check: " + e.getMessage(), e);
+            remoteBranchHeads = null;
+        }
+        if (remoteBranchHeads != null) {
+            checkHeadsPerBranch(changelog, count, startRev, remoteBranchHeads);
+        } else {
+            checkHeadsTopological(changelog, count, startRev, validRemoteHeads);
+        }
+    }
+
+    private void checkHeadsPerBranch(Revlog changelog, int count, int startRev,
+                                      Map<String, List<String>> remoteBranchHeads) throws IOException {
+        String[] branchByRev = new String[count];
+        for (int i = 0; i < count; i++) {
+            branchByRev[i] = CommitCommand.getBranchOfRevision(changelog, i);
+        }
+
+        java.util.TreeSet<String> touchedBranches = new java.util.TreeSet<>();
+        for (int r = startRev; r < count; r++) {
+            touchedBranches.add(branchByRev[r]);
+        }
+
+        List<String> newBranches = new ArrayList<>();
+        for (String b : touchedBranches) {
+            if (!remoteBranchHeads.containsKey(b)) {
+                newBranches.add(b);
+            }
+        }
+        if (!newBranches.isEmpty() && !allowNewBranch) {
+            throw new HgValidationException("abort: push creates new remote branches: " + String.join(", ", newBranches)
+                    + " (use 'hg push --new-branch' to create new remote branches)");
+        }
+
+        for (String branch : touchedBranches) {
+            List<String> oldHeads = remoteBranchHeads.get(branch);
+            Set<Integer> candidateRevs = new HashSet<>();
+            if (oldHeads != null) {
+                for (String hex : oldHeads) {
+                    int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
+                    if (rev != -1) {
+                        candidateRevs.add(rev);
+                    }
+                }
+            }
+            int unsyncedCount = oldHeads == null ? 0 : (oldHeads.size() - candidateRevs.size());
+            for (int r = startRev; r < count; r++) {
+                if (branch.equals(branchByRev[r])) {
+                    candidateRevs.add(r);
+                }
+            }
+            int newHeadsCount = countTopoHeadsWithinSet(changelog, candidateRevs) + unsyncedCount;
+            int oldHeadsCount = oldHeads == null ? 0 : oldHeads.size();
+            boolean violates = (oldHeads == null) ? (newHeadsCount > 1) : (newHeadsCount > oldHeadsCount);
+            if (violates) {
+                if (oldHeads == null) {
+                    throw new HgValidationException("abort: push creates new branch '" + branch + "' with multiple heads"
+                            + " (merge or see 'hg help push' for details about pushing new heads)");
+                }
+                throw new HgValidationException("abort: push creates new remote head on branch '" + branch + "'"
+                        + " (merge or see 'hg help push' for details about pushing new heads)");
+            }
+        }
+    }
+
+    private void checkHeadsTopological(Revlog changelog, int count, int startRev, List<String> validRemoteHeads) throws IOException {
+        Set<Integer> candidateRevs = new HashSet<>();
+        int knownOldHeadsCount = 0;
+        for (String hex : validRemoteHeads) {
+            int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
+            if (rev != -1) {
+                candidateRevs.add(rev);
+                knownOldHeadsCount++;
+            }
+        }
+        int unsyncedCount = validRemoteHeads.size() - knownOldHeadsCount;
+        for (int r = startRev; r < count; r++) {
+            candidateRevs.add(r);
+        }
+        int newHeadsCount = countTopoHeadsWithinSet(changelog, candidateRevs) + unsyncedCount;
+        if (newHeadsCount > validRemoteHeads.size()) {
+            throw new HgValidationException("abort: push creates new remote head"
+                    + " (merge or see 'hg help push' for details about pushing new heads)");
+        }
+    }
+
+    /** Within {@code candidateRevs}, counts revisions that have no OTHER member of the set as a
+     * child (i.e. this set's own topological heads) -- the core of real hg's {@code
+     * heads(%ln + %ln)} revset call in {@code discovery._oldheadssummary}/{@code _headssummary}. */
+    private int countTopoHeadsWithinSet(Revlog changelog, Set<Integer> candidateRevs) throws IOException {
+        boolean[] isParentWithinSet = new boolean[changelog.getRevisionCount()];
+        for (int r : candidateRevs) {
+            Revlog.IndexRecord rec = changelog.getIndexRecord(r);
+            if (rec.getParent1() >= 0 && candidateRevs.contains(rec.getParent1())) {
+                isParentWithinSet[rec.getParent1()] = true;
+            }
+            if (rec.getParent2() >= 0 && candidateRevs.contains(rec.getParent2())) {
+                isParentWithinSet[rec.getParent2()] = true;
+            }
+        }
+        int headCount = 0;
+        for (int r : candidateRevs) {
+            if (!isParentWithinSet[r]) {
+                headCount++;
+            }
+        }
+        return headCount;
     }
 
     private void writeEntryChunk(DataOutputStream dos, ChangegroupParser.ChangeGroupEntry entry) throws IOException {

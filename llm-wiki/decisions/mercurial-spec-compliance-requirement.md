@@ -132,7 +132,9 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
    `transport.HgHttpV1LiveServerInteropTest`(`@Tag("interop")`)로 hg4j
    `PullCommand`/`PushCommand`가 실시간으로 pull(2커밋 수신) + push(신규 커밋 전송 →
    별도 fresh pull로 서버에 실제 반영됐는지 재확인)까지 왕복 검증했다. 실제 hg
-   클라이언트 → hg4j `HgWireServer` 방향(v1)은 여전히 미검증으로 남음.
+   클라이언트 → hg4j 서버 방향(v1)은 이 시점엔 미검증이었으나, 이후 JGit식 재구성
+   (`HgWireServer`를 `HgHttpWireServer`/`HgSshWireServer`로 교체)과 백로그 22/24번을
+   거치며 완료됨 — 상세는 위 gap table "Wire protocol v1" 행 참고.
 4. ~~**Revlog v2 일반(`exp-revlogv2.2`, 매니페스트/파일로그) + persistent-nodemap**~~
    — ✅ **완료(2026-09-02, persistent-nodemap 읽기 가속은 2026-09-03에 추가 완료 —
    백로그 15번 참고)**.
@@ -509,9 +511,9 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     (`RevlogIndexPersistentNodeMapTest`, stale-트라이 케이스 포함). `findByHexPrefix`는
     트라이가 전체 노드 해시를 저장하지 않아(접두사 disambiguation에 필요한 만큼만
     저장) 가속 대상에서 제외 — 최초 호출 시 지연된 맵을 1회 materialize해 이후부턴
-    기존 방식과 동일하게 동작. **쓰기(`.n` 갱신)는 미구현** — hg4j로 커밋한 신규
-    리비전은 트라이가 stale해지고 fallback으로 처리되는(정확성 유지, 가속만 못
-    받음) 스펙상 유효한 절충으로 남김. 전체 회귀 2231 테스트, 실패 0.
+    기존 방식과 동일하게 동작. **쓰기(`.n` 갱신)는 이 시점엔 미구현이었으나 이후
+    백로그 21번에서 완료됨** — 상세는 이 문서 위쪽의 persistent-nodemap gap table
+    행과 백로그 21번 참고. 전체 회귀 2231 테스트, 실패 0(이 완료 시점 기준).
 13. ~~**`PushCommand`의 증분(2회차) push가 최신 커밋을 누락함**~~ — ✅ **완료(2026-09-02)**.
     TDD로 원인 추적 결과, `PushCommand` 자체에는 버그가 없었다 — 진짜 원인은
     `RevlogIndex.checkAndUpdate()`의 **디스크 재확인 200ms 스로틀**이었다.

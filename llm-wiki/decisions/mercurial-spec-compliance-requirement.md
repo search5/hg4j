@@ -1,11 +1,11 @@
 ---
 updated: 2026-09-04
-status: 백로그 18~22, 24 전부 완료. 25번은 오탐(hg4j 버그 아님)으로 종결. 23번(commit·push·
-  branch·merge·tag+rebase·shelve·bisect·strip·subrepo 실전 interop 검증, subrepo는 근거 없는
-  "✅" 표기라 최우선) 5개 병렬 TDD 작업 진행 중. 26(hg4j 서버가 cg1만 생성/cg5 sidedata 미반영)·
-  27(log --follow/annotate가 sidedata copy-tracing과 미연동)·28(Narrow clone/LFS 실제 hg
-  interop 검증 누락, 전체 문서 재점검 중 subrepo와 같은 패턴으로 발견) 번은 23번 완료 후
-  순서대로 즉시 착수 예정.
+status: 백로그 18~24 전부 완료. 25번은 오탐(hg4j 버그 아님)으로 종결. 23번(commit·push·
+  branch·merge·tag·rebase·shelve·bisect·strip·subrepo 10개 카테고리 실전 interop 검증)도
+  5개 병렬 TDD 작업으로 전부 완료 — 실제 버그 15건 발견·수정, 코드 변경 없이 사용자 확인만
+  필요한 아키텍처 수준 결정 다수 발견(각 카테고리 문단에 표시). 26(hg4j 서버가 cg1만
+  생성/cg5 sidedata 미반영)·27(log --follow/annotate가 sidedata copy-tracing과 미연동)·
+  28(Narrow clone/LFS 실제 hg interop 검증 누락) 번은 다음 착수 대상.
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -831,8 +831,8 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     존재하지 않는 리비전 요청 시 에러 처리, 같은 서버에서의 클라이언트 간 즉시 일관성
     신규 검증. 이로써 22번 항목의 4개 그룹(1/2/3/4) 전부 완료.
 
-23. **commit/push/branch/merge/tag(+ rebase/shelve/bisect/strip/subrepo) — 실전
-    시나리오 종합 interop 검증, 신규, 2026-09-03 제안.**
+23. ~~**commit/push/branch/merge/tag(+ rebase/shelve/bisect/strip/subrepo) — 실전
+    시나리오 종합 interop 검증**~~ — ✅ **완료(2026-09-04, 10개 카테고리 전부)**.
     배경: 백로그 22번(와이어 프로토콜 협상)과 같은 이유 — 이 명령들은 hg의 가장
     기본적이고 가장 자주 쓰이는 포셀린 명령인데, 지금까지의 검증은 "한 가지 대표
     시나리오"(예: 선형 커밋 2개, fast-forward merge 1건) 위주였고 각 명령이

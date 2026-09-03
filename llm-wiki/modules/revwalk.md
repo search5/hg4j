@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: revwalk (`com.github.search5.hg4j.revwalk`)
+# 모듈: revwalk (`io.github.search5.hg4j.revwalk`)
 
 리비전 그래프 순회/필터. JGit의 `org.eclipse.jgit.revwalk`에 대응.
 

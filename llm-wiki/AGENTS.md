@@ -26,7 +26,7 @@ llm-wiki/
 ├── log.md         # chronological work history
 ├── implementation-plan.md  # self-contained master plan handed off to another agent (e.g. Gemini)
 ├── concepts/      # Mercurial domain concepts (revlog, dirstate, bundle2, revset, ...)
-├── modules/       # structural notes per com.github.search5.hg4j.* package
+├── modules/       # structural notes per io.github.search5.hg4j.* package
 ├── decisions/     # architecture decision records (ADR-style) — "why this was done"
 └── sources/       # summarized snapshots of raw research (git log, issues, etc.)
 ```

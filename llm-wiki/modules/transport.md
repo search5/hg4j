@@ -3,7 +3,7 @@ updated: 2026-09-01
 status: current
 ---
 
-# 모듈: transport (`com.github.search5.hg4j.transport`)
+# 모듈: transport (`io.github.search5.hg4j.transport`)
 
 HTTP/SSH 와이어 프로토콜 구현. JGit의 `org.eclipse.jgit.transport`에 대응.
 

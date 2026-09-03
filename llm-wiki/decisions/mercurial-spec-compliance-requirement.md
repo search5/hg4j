@@ -922,7 +922,7 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
 보류했었으나, 이후 "JGit식 재구성"(`HgHttpWireServer`/`HgSshWireServer` 신설) 작업
 중 같은 세션에서 마저 구현됐다 — 아래 목록 참고.
 
-- ✅ `ClonebundlesManifest`(신규, `com.github.search5.hg4j.bundle`) — 매니페스트
+- ✅ `ClonebundlesManifest`(신규, `io.github.search5.hg4j.bundle`) — 매니페스트
   파서(`parse`) + hg4j가 실제로 소화 가능한 BUNDLESPEC만 남기는 필터
   (`filterSupported`: `none-v1`/`gzip-v1`/`bzip2-v1`/`none-v2`/`gzip-v2`/
   `bzip2-v2`/`zstd-v2`). 단위 테스트 7건 GREEN.

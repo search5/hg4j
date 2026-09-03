@@ -95,8 +95,8 @@ Generate the Jacoco code coverage reports:
 
 ### 1. Initialize and Add Files
 ```java
-import com.github.search5.hg4j.api.Hg;
-import com.github.search5.hg4j.core.HgRepository;
+import io.github.search5.hg4j.api.Hg;
+import io.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 
 // Initialize a new repository
@@ -121,14 +121,14 @@ Hg.commit(repository)
     .call();
 
 // Inspect working directory status
-com.github.search5.hg4j.api.Status status = Hg.status(repository).call();
+io.github.search5.hg4j.api.Status status = Hg.status(repository).call();
 System.out.println("Clean files: " + status.getClean());
 System.out.println("Modified files: " + status.getModified());
 ```
 
 ### 3. History Traversal (Log)
 ```java
-import com.github.search5.hg4j.api.HgCommit;
+import io.github.search5.hg4j.api.HgCommit;
 import java.util.List;
 
 // Traverse commit log

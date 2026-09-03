@@ -65,8 +65,8 @@ status: current
    `lib/`로 이동, `package` 선언만 변경 (클래스명 변경 없음).
 2. 기존 `lib/{NodeId,ProgressMonitor,NullProgressMonitor,TextProgressMonitor}.java`는
    그대로 둔다 — 이동 대상 아님, 이미 목적지에 있음.
-3. 전체 프로젝트에서 `com.github.search5.hg4j.core.HgRepository` 등 완전정규화 import를
-   `com.github.search5.hg4j.lib.*`로 일괄 치환 (테스트 코드 포함 — `src/test/java`도
+3. 전체 프로젝트에서 `io.github.search5.hg4j.core.HgRepository` 등 완전정규화 import를
+   `io.github.search5.hg4j.lib.*`로 일괄 치환 (테스트 코드 포함 — `src/test/java`도
    동일 패키지 하위 구조라 영향 큼).
 4. `build.gradle`의 `jacocoTestCoverageVerification`에 `core.*` FQCN이 있다면 `lib.*`로
    갱신 (원칙 3 재확인).

@@ -14,7 +14,7 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 (`llm-wiki/index.md`가 전체 카탈로그입니다).
 
 - 이 저장소는 **hg4j** — Mercurial(hg)을 순수 Java로 재구현한 라이브러리입니다.
-  진입점: `com.github.search5.hg4j.api.Hg`.
+  진입점: `io.github.search5.hg4j.api.Hg`.
 - 작업 전 반드시 `git status`로 현재 상태를 확인하세요. 이 문서가 만들어진 시점의
   HEAD는 `64b1521`입니다.
 - **각 Phase(작업 단위)는 반드시 별도 커밋으로 분리하세요.** 한 커밋에 여러 Phase를
@@ -69,14 +69,14 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 
   | 기존 FQCN | 새 FQCN (이동 후) | 해당 Phase |
   |---|---|---|
-  | `com.github.search5.hg4j.core.Dirstate` | `com.github.search5.hg4j.dirstate.Dirstate` | Phase 1 |
-  | `com.github.search5.hg4j.core.NodeIdUtil` | `com.github.search5.hg4j.util.NodeIdUtil` | Phase 3 |
-  | `com.github.search5.hg4j.core.SafeFileIO` | `com.github.search5.hg4j.util.SafeFileIO` | Phase 3 |
-  | `com.github.search5.hg4j.core.Merge3` | `com.github.search5.hg4j.merge.Merge3` | Phase 2 |
-  | `com.github.search5.hg4j.core.Bundle2Parser` | `com.github.search5.hg4j.bundle.Bundle2Parser` | Phase 8 |
-  | `com.github.search5.hg4j.core.ChangegroupParser` | `com.github.search5.hg4j.bundle.ChangegroupParser` | Phase 8 |
+  | `io.github.search5.hg4j.core.Dirstate` | `io.github.search5.hg4j.dirstate.Dirstate` | Phase 1 |
+  | `io.github.search5.hg4j.core.NodeIdUtil` | `io.github.search5.hg4j.util.NodeIdUtil` | Phase 3 |
+  | `io.github.search5.hg4j.core.SafeFileIO` | `io.github.search5.hg4j.util.SafeFileIO` | Phase 3 |
+  | `io.github.search5.hg4j.core.Merge3` | `io.github.search5.hg4j.merge.Merge3` | Phase 2 |
+  | `io.github.search5.hg4j.core.Bundle2Parser` | `io.github.search5.hg4j.bundle.Bundle2Parser` | Phase 8 |
+  | `io.github.search5.hg4j.core.ChangegroupParser` | `io.github.search5.hg4j.bundle.ChangegroupParser` | Phase 8 |
 
-  (`com.github.search5.hg4j.api.*`로 시작하는 나머지 항목들은 이번 작업과 무관하니
+  (`io.github.search5.hg4j.api.*`로 시작하는 나머지 항목들은 이번 작업과 무관하니
   건드리지 마세요.)
 
 - 클래스를 옮길 때 **메인 소스**(`src/main/java/com/github/search5/hg4j/core/Xxx.java`)와
@@ -86,7 +86,7 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 - 이동 후에는 프로젝트 전체(`src/main`, `src/test`)에서 옛 패키지 경로로 된 import문을
   검색해서 전부 갱신하세요:
   ```bash
-  grep -rl "com.github.search5.hg4j.core.<클래스명>" src/
+  grep -rl "io.github.search5.hg4j.core.<클래스명>" src/
   ```
 
 ## Phase 0 — 사전 정리: `HgLockException` 이원화 해소
@@ -95,8 +95,8 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
   `errors` 쪽 Javadoc에 "기존 core.HgLockException에 대응하는 도메인 예외 레이어
   래퍼"라고 명시되어 있어, 우연한 충돌이 아니라 의도된 어댑터 관계입니다.
 - **작업**:
-  1. `grep -rl "core.HgLockException\|import com.github.search5.hg4j.core.HgLockException"  src/` 로 참조처를 전부 찾는다.
-  2. 모든 참조를 `com.github.search5.hg4j.errors.HgLockException`으로 교체한다
+  1. `grep -rl "core.HgLockException\|import io.github.search5.hg4j.core.HgLockException"  src/` 로 참조처를 전부 찾는다.
+  2. 모든 참조를 `io.github.search5.hg4j.errors.HgLockException`으로 교체한다
      (생성자 시그니처가 다르니 — `core` 판은 `(String message)`/`(String message, Throwable cause)`,
      `errors` 판은 `(String lockName, String message)` — 호출부를 단순 치환이 아니라
      실제로 맞는 인자를 넘기도록 고쳐야 합니다).
@@ -111,7 +111,7 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 |---|---|
 | 이동할 메인 클래스 | `Dirstate.java`, `DirstateV2Parser.java`, `DirstateV2Serializer.java`, `DirstateV2Node.java` |
 | 이동할 테스트 | `DirstateTest.java`, `DirstateV2InitTest.java`, `DirstateV2LayoutTest.java`, `DirstateV2ParserTest.java` |
-| 새 패키지 | `com.github.search5.hg4j.dirstate` |
+| 새 패키지 | `io.github.search5.hg4j.dirstate` |
 | 근거 | 서로만 강하게 결합, `HgRepository`가 단방향으로만 참조 — 가장 안전 |
 | 참고 | `llm-wiki/concepts/dirstate.md` |
 
@@ -120,7 +120,7 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 |---|---|
 | 이동할 메인 클래스 | `Merge3.java` |
 | 이동할 테스트 | `Merge3Test.java` |
-| 새 패키지 | `com.github.search5.hg4j.merge` |
+| 새 패키지 | `io.github.search5.hg4j.merge` |
 | 근거 | 순수 알고리즘, 의존 거의 없음 |
 | build.gradle | FQCN 갱신 표 참고 |
 
@@ -129,7 +129,7 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 |---|---|
 | 이동할 메인 클래스 | `SafeFileIO.java`, `NodeIdUtil.java` |
 | 이동할 테스트 | `SafeFileIOTest.java`, `NodeIdUtilTest.java` |
-| 새 패키지 | `com.github.search5.hg4j.util` |
+| 새 패키지 | `io.github.search5.hg4j.util` |
 | 근거 | 유틸 자체 의존은 낮지만 **참조하는 파일 수가 많음** — import 변경 범위가 크므로 초반에 처리 |
 | build.gradle | FQCN 갱신 표 참고 |
 
@@ -138,7 +138,7 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 |---|---|
 | 이동할 메인 클래스 | `HgSubrepoParser.java`, `HgSubrepoEntry.java` |
 | 이동할 테스트 | `HgSubrepoTest.java` |
-| 새 패키지 | `com.github.search5.hg4j.submodule` |
+| 새 패키지 | `io.github.search5.hg4j.submodule` |
 | 근거 | 독립적 기능 단위 |
 
 ## Phase 5 — `phase` 패키지 신설
@@ -146,7 +146,7 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 |---|---|
 | 이동할 메인 클래스 | `PhaseRoots.java` |
 | 이동할 테스트 | `PhaseRootsTest.java` |
-| 새 패키지 | `com.github.search5.hg4j.phase` |
+| 새 패키지 | `io.github.search5.hg4j.phase` |
 | 주의 | `api.PhaseCommand`(포셀린 명령)와 이름이 비슷하니 혼동하지 말 것 — `PhaseCommand`는 `api`에 그대로 둔다, 옮기지 않는다 |
 
 ## Phase 6 — `obsolete` 패키지 신설
@@ -154,14 +154,14 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 |---|---|
 | 이동할 메인 클래스 | `HgObsolescenceParser.java`, `HgObsMarker.java` |
 | 이동할 테스트 | `HgObsolescenceTest.java` |
-| 새 패키지 | `com.github.search5.hg4j.obsolete` |
+| 새 패키지 | `io.github.search5.hg4j.obsolete` |
 
 ## Phase 7 — `revset` 패키지 신설
 | 항목 | 값 |
 |---|---|
 | 이동할 메인 클래스 | `HgRevsetEngine.java` |
 | 이동할 테스트 | `HgRevsetTest.java` |
-| 새 패키지 | `com.github.search5.hg4j.revset` |
+| 새 패키지 | `io.github.search5.hg4j.revset` |
 | 참고 | `llm-wiki/concepts/revset.md` |
 
 ## Phase 8 — `bundle` 패키지 신설
@@ -169,25 +169,25 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 |---|---|
 | 이동할 메인 클래스 | `Bundle2Parser.java`, `ChangegroupParser.java` |
 | 이동할 테스트 | ⚠️ **core 테스트 디렉터리에 전용 테스트 파일이 안 보임.** `src/test/java/.../api/CHgPushRoundtripTest.java`, `CHgPullRoundtripTest.java` 등 통합 테스트에서 간접적으로만 다뤄지는 것으로 추정 — 이동 전 `grep -rl "Bundle2Parser\|ChangegroupParser" src/test/`로 실제 참조처를 직접 찾아서 확인할 것 |
-| 새 패키지 | `com.github.search5.hg4j.bundle` |
+| 새 패키지 | `io.github.search5.hg4j.bundle` |
 | build.gradle | FQCN 갱신 표 참고 |
 | 참고 | `llm-wiki/concepts/bundle2-changegroup.md` |
 
 ## Phase 9 — `lfs`, `gpg` 패키지 신설
 | 항목 | 값 |
 |---|---|
-| 이동할 메인 클래스 (lfs) | `HgLfsManager.java`, `HgLfsPointer.java` → `com.github.search5.hg4j.lfs` |
+| 이동할 메인 클래스 (lfs) | `HgLfsManager.java`, `HgLfsPointer.java` → `io.github.search5.hg4j.lfs` |
 | 이동할 테스트 (lfs) | `HgLfsTest.java` |
-| 이동할 메인 클래스 (gpg) | `GpgSignature.java` → `com.github.search5.hg4j.gpg` |
+| 이동할 메인 클래스 (gpg) | `GpgSignature.java` → `io.github.search5.hg4j.gpg` |
 | 이동할 테스트 (gpg) | ⚠️ **`GpgSignatureTest.java`가 `core` 테스트 디렉터리가 아니라 `api` 테스트 디렉터리에 있습니다** (`src/test/java/.../api/GpgSignatureTest.java`). 이것도 같이 옮길지, 그대로 둘지 확인 후 결정 — 그대로 둔다면 그 이유(예: api 계층 통합 테스트 성격)를 커밋 메시지에 남길 것 |
 | 근거 | JGit이 정확히 `org.eclipse.jgit.lfs` 패키지를 갖고 있어 이름까지 일치 가능. gpg는 JGit의 `org.eclipse.jgit.gpg.bc` 대응 |
 
 ## Phase 10 — `storage`, `diff` 패키지 신설 (가장 광범위, 마지막에 진행)
 | 항목 | 값 |
 |---|---|
-| 이동할 메인 클래스 (storage) | `Revlog.java`, `RevlogIndex.java`, `DeltaCodec.java`, `StoreEngine.java`, `DefaultFileStoreEngine.java` → `com.github.search5.hg4j.storage` |
+| 이동할 메인 클래스 (storage) | `Revlog.java`, `RevlogIndex.java`, `DeltaCodec.java`, `StoreEngine.java`, `DefaultFileStoreEngine.java` → `io.github.search5.hg4j.storage` |
 | 이동할 테스트 (storage) | `RevlogTest.java`, `RevlogIndexTest.java`, `DeltaCodecTest.java` |
-| 이동할 메인 클래스 (diff) | `DeltaEngine.java` → `com.github.search5.hg4j.diff` |
+| 이동할 메인 클래스 (diff) | `DeltaEngine.java` → `io.github.search5.hg4j.diff` |
 | 이동할 테스트 (diff) | `DeltaEngineTest.java` |
 | ⚠️ 소속 재확인 필요한 테스트 | `PerformanceBenchmarkTest.java`, `JournalingCrashRecoveryTest.java`, `EscapeAndMetadataTest.java`, `MercurialUncoveredAndPerfTest.java` — 이름만으로는 `storage`/`diff` 전용인지 여러 패키지에 걸친 통합 테스트인지 불명확. 파일을 열어 import 대상을 확인하고, 여러 새 패키지의 클래스를 동시에 테스트한다면 **옮기지 말고 원래 위치(또는 별도의 통합 테스트 패키지)에 남겨둘 것** |
 | build.gradle | FQCN 갱신 표 참고 |
@@ -211,11 +211,11 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 - **작업**:
   1. `HgRepository.java`, `Repository.java`, `HgRcConfig.java`, `HgLock.java`를
      `src/main/java/com/github/search5/hg4j/lib/`로 이동, `package` 선언만
-     `com.github.search5.hg4j.lib`로 변경.
+     `io.github.search5.hg4j.lib`로 변경.
   2. 대응 테스트(`HgRepositoryTest.java`, `HgRcConfigTest.java`, `HgLockTest.java`)도
      `src/test/java/.../lib/`로 이동.
-  3. 전체 프로젝트에서 `com.github.search5.hg4j.core.HgRepository` 등 남은 import를
-     `com.github.search5.hg4j.lib.*`로 일괄 치환.
+  3. 전체 프로젝트에서 `io.github.search5.hg4j.core.HgRepository` 등 남은 import를
+     `io.github.search5.hg4j.lib.*`로 일괄 치환.
   4. 이 시점에 `src/main/java/com/github/search5/hg4j/core/` 디렉터리가 완전히
      비어야 합니다 — 디렉터리 삭제.
   5. ⚠️ `HgRemoteClientTest.java`, `HgSshClientTest.java`,

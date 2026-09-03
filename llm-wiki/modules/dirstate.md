@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: dirstate (`com.github.search5.hg4j.dirstate`)
+# 모듈: dirstate (`io.github.search5.hg4j.dirstate`)
 
 워킹카피 상태 추적 담당 패키지. [[core-package-split-plan]] Phase 1에서 `core`로부터
 분리됨 — 서로만 강하게 결합돼 있고 `HgRepository`가 단방향으로만 참조해 가장 먼저

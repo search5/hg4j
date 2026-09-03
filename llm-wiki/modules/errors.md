@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: errors (`com.github.search5.hg4j.errors`)
+# 모듈: errors (`io.github.search5.hg4j.errors`)
 
 `HgException`을 루트로 하는 checked exception 계층. JGit의 `org.eclipse.jgit.errors`에
 대응하며, **패키지명과 계층 형태(공통 루트 + 세부 서브클래스)는 이미 JGit 관례와 일치**.

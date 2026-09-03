@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: util (`com.github.search5.hg4j.util`)
+# 모듈: util (`io.github.search5.hg4j.util`)
 
 의존은 낮지만 참조하는 파일 수가 많은 공용 유틸리티 패키지. [[core-package-split-plan]]
 Phase 3에서 분리됨 — import 변경 범위가 커서 Track A 초반에 처리. JGit의

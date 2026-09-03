@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: revset (`com.github.search5.hg4j.revset`)
+# 모듈: revset (`io.github.search5.hg4j.revset`)
 
 Mercurial revset 질의 언어 엔진 패키지. [[core-package-split-plan]] Phase 7에서 분리됨.
 

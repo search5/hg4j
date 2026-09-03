@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: gpg (`com.github.search5.hg4j.gpg`)
+# 모듈: gpg (`io.github.search5.hg4j.gpg`)
 
 커밋 서명(GPG/OpenPGP) 지원 패키지. [[core-package-split-plan]] Phase 9에서 분리됨 —
 JGit의 `org.eclipse.jgit.gpg.bc`에 대응.

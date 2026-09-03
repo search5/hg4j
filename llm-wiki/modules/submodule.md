@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: submodule (`com.github.search5.hg4j.submodule`)
+# 모듈: submodule (`io.github.search5.hg4j.submodule`)
 
 Mercurial subrepository(`.hgsub`/`.hgsubstate`) 지원 패키지. [[core-package-split-plan]]
 Phase 4에서 분리됨 — 독립적 기능 단위라 이동이 단순했다. JGit의 서브모듈 개념과 유사하나

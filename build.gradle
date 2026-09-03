@@ -124,27 +124,27 @@ jacocoTestCoverageVerification {
         rule {
             element = 'CLASS'
             includes = [
-                'com.github.search5.hg4j.dirstate.Dirstate',
-                'com.github.search5.hg4j.util.NodeIdUtil',
-                'com.github.search5.hg4j.util.SafeFileIO',
-                'com.github.search5.hg4j.merge.Merge3',
-                'com.github.search5.hg4j.bundle.Bundle2Parser',
-                'com.github.search5.hg4j.bundle.ChangegroupParser',
-                'com.github.search5.hg4j.api.AddCommand',
-                'com.github.search5.hg4j.api.BookmarkCommand',
-                'com.github.search5.hg4j.api.BranchCommand',
-                'com.github.search5.hg4j.api.InitCommand',
-                'com.github.search5.hg4j.api.LogCommand',
-                'com.github.search5.hg4j.api.RemoveCommand',
-                'com.github.search5.hg4j.api.RevertCommand',
-                'com.github.search5.hg4j.api.ShelveCommand',
-                'com.github.search5.hg4j.api.StatusCommand',
-                'com.github.search5.hg4j.api.TagCommand',
-                'com.github.search5.hg4j.api.PushCommand',
-                'com.github.search5.hg4j.api.CatCommand',
-                'com.github.search5.hg4j.api.DiffCommand',
-                'com.github.search5.hg4j.api.TreeCommand',
-                'com.github.search5.hg4j.api.UpdateCommand',
+                'io.github.search5.hg4j.dirstate.Dirstate',
+                'io.github.search5.hg4j.util.NodeIdUtil',
+                'io.github.search5.hg4j.util.SafeFileIO',
+                'io.github.search5.hg4j.merge.Merge3',
+                'io.github.search5.hg4j.bundle.Bundle2Parser',
+                'io.github.search5.hg4j.bundle.ChangegroupParser',
+                'io.github.search5.hg4j.api.AddCommand',
+                'io.github.search5.hg4j.api.BookmarkCommand',
+                'io.github.search5.hg4j.api.BranchCommand',
+                'io.github.search5.hg4j.api.InitCommand',
+                'io.github.search5.hg4j.api.LogCommand',
+                'io.github.search5.hg4j.api.RemoveCommand',
+                'io.github.search5.hg4j.api.RevertCommand',
+                'io.github.search5.hg4j.api.ShelveCommand',
+                'io.github.search5.hg4j.api.StatusCommand',
+                'io.github.search5.hg4j.api.TagCommand',
+                'io.github.search5.hg4j.api.PushCommand',
+                'io.github.search5.hg4j.api.CatCommand',
+                'io.github.search5.hg4j.api.DiffCommand',
+                'io.github.search5.hg4j.api.TreeCommand',
+                'io.github.search5.hg4j.api.UpdateCommand',
             ]
             limit {
                 minimum = 0.90
@@ -215,7 +215,7 @@ gradlePlugin {
             displayName = 'hg4j Gradle SCM Plugin'
             description = 'Pure Java Mercurial (hg) Gradle integration plugin modeled after JGit.'
             tags.set(['mercurial', 'hg', 'vcs', 'hg4j'])
-            implementationClass = 'com.github.search5.hg4j.HgPlugin'
+            implementationClass = 'io.github.search5.hg4j.HgPlugin'
         }
     }
 }

@@ -77,4 +77,4 @@ status: current
 ## 프로젝트 기본 정보
 - 저장소 루트: `/Users/mzc01-search5/yona-convert/hg4j`
 - Java 21 / Gradle 9.4.1, `io.github.search5.hg4j` 좌표로 Maven Central + Gradle Plugin Portal 배포
-- 진입점: `com.github.search5.hg4j.api.Hg` (README.md 사용 예제 참고)
+- 진입점: `io.github.search5.hg4j.api.Hg` (README.md 사용 예제 참고)

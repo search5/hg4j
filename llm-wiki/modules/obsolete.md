@@ -3,7 +3,7 @@ updated: 2026-08-31
 status: current
 ---
 
-# 모듈: obsolete (`com.github.search5.hg4j.obsolete`)
+# 모듈: obsolete (`io.github.search5.hg4j.obsolete`)
 
 Obsolescence marker(evolve 메커니즘) 지원 패키지. [[core-package-split-plan]] Phase 6에서
 분리됨.

@@ -1,6 +1,6 @@
 ---
 updated: 2026-09-03
-status: 백로그 18(treemanifest 쓰기)/19(sidedata SD_FILES writer)/20(wireprotocol v2 재귀 tree fetch)/21(persistent-nodemap 쓰기) 전부 완료 — 후속 갭 4개 모두 해소됨
+status: 백로그 18(treemanifest 쓰기)/19(sidedata SD_FILES writer)/20(wireprotocol v2 재귀 tree fetch)/21(persistent-nodemap 쓰기) 전부 완료. 신규 백로그 22(HTTP/SSH 실전 통신·협상 테스트 확충, 2026-09-03 제안) 추가 — 범위만 확정, 미착수
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -707,6 +707,48 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     패키지 전체 회귀 및 CommitCommand 관련 회귀(212개 테스트, 무관한 기존 심볼릭링크
     타이밍 플레이키 1건 제외 전부 GREEN, 단독 재실행 시 그것도 통과)로 기존 동작
     무손상 확인.
+
+22. **HTTP/SSH 와이어 프로토콜 "실전 통신·협상" 테스트 확충 — 신규, 2026-09-03 제안,
+    작업 범위만 확정, 미착수.** 배경: 2026-09-03 세션에서 두 종류의 작업을 병행해봄 —
+    (a) 순수 JaCoCo BRANCH 커버리지 갭 메우기(missed 1~4 롱테일 ~30개 클래스), (b) 그
+    이전에 했던 SSH/HTTP 라이브 interop 검증(백로그 3번, `unbundlehash`, SSH 핸드셰이크
+    전면 재구현 등). **(a)는 실버그를 하나도 못 찾았고**(전부 "이미 맞게 동작하는데
+    테스트만 없었다" 아니면 "도달 불가능한 방어 코드"), **(b)는 실제 프로토콜 버그를
+    다수 찾아냈다**(HTTP `X-HgArg-N`/`-0.2` 프레이밍, SSH 핸드셰이크 전체가 지어낸
+    것이었던 문제 등, 백로그 3번/위 표 참고). 시간 대비 버그 발견율이 압도적으로 높은
+    쪽을 우선하는 게 합리적이라 판단해 다음 세션의 정식 작업 항목으로 백로그에 편입.
+
+    **범위(포함)**:
+    - **hg4j 클라이언트 → 실제 hg 서버**: HTTP v1의 3단계 인자 전송 방식
+      (`httppostargs`/`httpheader=N`/레거시 GET) 각각을 실제로 강제 광고하는 서버
+      설정으로 개별 검증(현재는 한 가지 조합만 확인됨). `x-hgproto-1` 압축 협상
+      (`zlib`/`zstd`/none) 조합별 실제 왕복. SSH의 `unbundlehash` on/off 양쪽 다
+      실제 서버로 push 성공까지 확인(현재는 와이어 바이트만 mock 서버로 검증, 실제
+      hg 서버가 그 sentinel을 accept하는지는 미검증).
+    - **실제 hg 클라이언트 → hg4j 서버 방향(HTTP v1, SSH v1)** — 위 항목 3번에 이미
+      "미검증으로 남음"이라고 명시된 진짜 gap. 실제 `hg clone`/`hg pull`/`hg push`
+      CLI가 hg4j의 `HgHttpWireServer`/`HgSshWireServer`를 상대로 정상 동작하는지
+      양방향 확인.
+    - 서버 구현체: native hg 7.2.2(호스트) + `hg-rust-7.2.4`(Docker) 두 개로 충분 —
+      이번 세션에서 이미 둘 다 쓰고 있었고, 둘 다 wireprotocol v1이 대상이라 v2
+      전용이었던 Mercurial 6.0 Docker(별도 인스턴스)까지는 불필요(v2는 아래
+      "범위(제외)" 참고).
+    - 협상 실패/폴백 경로: 서버가 특정 capability를 광고하지 않을 때 클라이언트가
+      실제로 하위 호환 경로로 정확히 떨어지는지(예: `httppostargs` 미광고 시
+      `httpheader=` 경로로, 그것도 없으면 레거시 GET으로) 각 단계를 개별 강제해
+      확인.
+
+    **범위(제외, 무한정 확장 방지)**: wireprotocol v2(백로그 상 이미 "실사용 가치
+    제한적"으로 결론난 상태, 6.1부터 폐기됨) 관련 협상 확장은 이번 항목에서 제외.
+    clonebundles(백로그 별도 섹션에서 이미 다룸)도 제외. TLS/인증 계층(HTTP Basic
+    auth 이상의 보안 프로토콜 자체)은 제외 — 순수 Mercurial 와이어 프로토콜
+    협상만 대상. 압축 알고리즘 자체의 정확성(zlib/zstd 코덱 버그)은 `DeltaCodec`
+    쪽 BRANCH 커버리지 백로그(별도, `test-coverage-95-percent-initiative.md`)와
+    중복되므로 이 항목에서는 "협상 결과로 올바른 코덱이 선택되는지"까지만 본다.
+
+    **다음 세션 시작점**: 위 "범위(포함)" 4개 그룹을 각각 별도 TDD 배치로 나눠
+    순서대로 진행 권장(실제 hg 클라이언트→hg4j 서버 방향이 가장 검증 안 된 채
+    남아있어 우선순위가 가장 높음).
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

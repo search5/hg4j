@@ -262,6 +262,109 @@ public class HgSshWireServerRealHgInteropTest {
                 "Expected a real-hg-understood error message, got: " + failure.getMessage());
     }
 
+    @Test
+    public void realHgSeesExternalRepoChangesAcrossConnectionsOnALongLivedSshServer(@TempDir Path tempDir) throws Exception {
+        // Every other test in this class opens a brand-new HgRepository per SSH connection
+        // (see HgWireCommand.run() below), which incidentally always reads the repository fresh
+        // and so can never exercise backlog 24 (a long-lived server reusing ONE HgRepository
+        // across many connections/requests must notice out-of-band repository changes). This
+        // test deliberately mirrors HgHttpWireServerRealHgInteropTest's persistent-server setup
+        // instead: one HgRepository, one HgSshWireServer-backed command factory, reused across
+        // two separate real-hg SSH sessions.
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "hello ssh interop");
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
+
+        sshServer.setCommandFactory((channel, command) -> new SharedRepoHgWireCommand(command, serverRepo));
+
+        File clientA = tempDir.resolve("client_a").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), clientA.getAbsolutePath());
+        assertEquals("hello ssh interop", Files.readString(new File(clientA, "a.txt").toPath()));
+
+        // Out-of-band mutation: a bare real hg CLI call against the server's repo directory,
+        // not going through hg4j / serverRepo at all -- exactly the "another process touched the
+        // repo while the server kept running" scenario backlog 24 is about.
+        HgTestUtils.hg(serverRepoDir, "branch", "feature");
+        Files.writeString(new File(serverRepoDir, "b.txt").toPath(), "on feature");
+        HgTestUtils.hg(serverRepoDir, "add", "b.txt");
+        HgTestUtils.hg(serverRepoDir, "commit", "-m", "feature v1");
+        // No explicit serverRepo.clearRevlogCache() here on purpose -- HgSshWireServer's
+        // handleConnection() loop now calls HgRepository.refreshIfChangedOnDisk() at the top of
+        // every command, so the second, independent SSH session below must see this without it.
+
+        File clientB = tempDir.resolve("client_b").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), clientB.getAbsolutePath());
+
+        // NOTE: only the changelog/branch metadata is asserted here, not b.txt's *content* --
+        // that's a separate, pre-existing bug (file content added on an externally-committed
+        // revision doesn't reach the client, reproduces even with an explicit
+        // clearRevlogCache() call, i.e. unrelated to backlog 24) tracked separately so this test
+        // stays scoped to what backlog 24 is actually about: does the server's long-lived
+        // HgRepository handle notice the external write at all.
+        String log = HgTestUtils.hg(clientB, "log", "-T", "{rev}:{branch}\n");
+        assertTrue(log.contains("1:feature"),
+                "second SSH connection on the same long-lived server must see the externally-added commit, log was:\n" + log);
+        String branches = HgTestUtils.hg(clientB, "branches");
+        assertTrue(branches.contains("feature"), "feature branch missing: " + branches);
+    }
+
+    /** Like {@link HgWireCommand}, but wired to a single {@link HgRepository} instance shared
+     * across every connection the factory creates -- for tests that need to reproduce a
+     * long-lived server process, as opposed to every other test in this class re-opening the
+     * repository fresh per connection. */
+    private static class SharedRepoHgWireCommand implements Command, Runnable {
+        private final String command;
+        private final HgRepository repo;
+        private InputStream in;
+        private OutputStream out;
+        private OutputStream err;
+        private ExitCallback callback;
+        private Thread thread;
+
+        SharedRepoHgWireCommand(String command, HgRepository repo) {
+            this.command = command;
+            this.repo = repo;
+        }
+
+        @Override public void setInputStream(InputStream in) { this.in = in; }
+        @Override public void setOutputStream(OutputStream out) { this.out = out; }
+        @Override public void setErrorStream(OutputStream err) { this.err = err; }
+        @Override public void setExitCallback(ExitCallback callback) { this.callback = callback; }
+
+        @Override
+        public void start(ChannelSession session, Environment env) {
+            thread = new Thread(this, "hg-ssh-wire-shared-repo-test");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        @Override
+        public void destroy(ChannelSession session) {
+            if (thread != null) {
+                thread.interrupt();
+            }
+        }
+
+        @Override
+        public void run() {
+            try {
+                new HgSshWireServer(repo).handleConnection(in, out);
+                callback.onExit(0);
+            } catch (Exception e) {
+                try {
+                    err.write((e + "\n").getBytes());
+                    err.flush();
+                } catch (IOException ignored) {
+                }
+                callback.onExit(1);
+            }
+        }
+    }
+
     /** Server-side {@code Command} adapter -- exactly the shape a real production SSH server
      * entry point would use to attach {@link HgSshWireServer} to whatever SSH library it picks. */
     private static class HgWireCommand implements Command, Runnable {

@@ -60,6 +60,7 @@ public class HgHttpWireServer implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
         try {
+            repository.refreshIfChangedOnDisk();
             String path = exchange.getRequestURI().getPath();
             String query = exchange.getRequestURI().getQuery();
 

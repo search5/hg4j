@@ -162,7 +162,9 @@ public class HgHttpWireServerRealHgInteropTest {
         HgTestUtils.hg(serverRepoDir, "commit", "-m", "feature v1");
         HgTestUtils.hg(serverRepoDir, "bookmark", "mybook");
         HgTestUtils.hg(serverRepoDir, "tag", "v1.0");
-        serverRepo.clearRevlogCache();
+        // No explicit clearRevlogCache() here (deliberately removed) -- backlog 24's
+        // HgRepository.refreshIfChangedOnDisk() now detects the external hg CLI writes above
+        // and refreshes automatically at the top of the next request the server handles.
 
         File destDir = tempDir.resolve("client_repo").toFile();
         HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl(), destDir.getAbsolutePath());
@@ -176,6 +178,10 @@ public class HgHttpWireServerRealHgInteropTest {
 
         String tags = HgTestUtils.hg(destDir, "tags");
         assertTrue(tags.contains("v1.0"), "tag missing: " + tags);
+
+        // NOTE: b.txt's *content* delivery is a separate, pre-existing bug (reproduces even with
+        // an explicit clearRevlogCache() call, i.e. unrelated to backlog 24's caching fix) --
+        // tracked separately, not asserted here to keep this test scoped to backlog 24.
     }
 
     @Test

@@ -1104,6 +1104,75 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     남은 9개 카테고리(commit/push/branch/merge/tag/rebase/shelve/bisect/strip)
     는 여전히 미착수 상태로 남아 있음.
 
+    **`shelve`/`bisect`/`strip` — ✅ 완료(2026-09-04, 별도 병렬 에이전트)**. 실제 hg CLI
+    양방향 대조 기준으로 재검증, 실제 버그 4개 발견·수정. `rebase`/`subrepo`는 다른
+    병렬 작업에서 별도로 처리 중(이 세션에서는 건드리지 않음).
+
+    - **`strip`**: `StripCommand.truncateRevlog()`의 `.d`(데이터) 파일 truncate가 정확한
+      오프셋이 아니라 "`datFile.length() * keepCount / (keepCount+1)`"라는 근사치
+      추정("Safe estimation fallback")을 쓰고 있었다 — 리비전 크기가 들쭉날쭉하면 살아남을
+      리비전의 델타 바이트를 잘라버리는 **실데이터 파괴 버그**. `StripRealHgInteropTest`로
+      크기가 크게 다른 리비전들을 strip한 뒤 real `hg verify`를 돌려서 실제로 재현시켰다
+      ("data length off by N bytes"/"partial read of revlog" 등). `changelog.getIndexRecord
+      (keepCount).getOffset()`(이미 `ShelveCommand.stripRevisionsFrom`이 쓰던 정확한 방식)로
+      교체해 수정. 같은 검증 과정에서 발견된 부수 버그 2개도 함께 수정: (1) `StripCommand`가
+      obsolescence marker를 무조건 쓰는데, real hg는 `experimental.evolution.createmarkers`
+      config가 꺼진 채로 markers를 쓰면 `hg debugobsolete` 자체를 거부하고, real hg 7.2.2로
+      직접 확인한 결과 markers가 있는데 그 config가 꺼져 있으면 이후 `hg verify`가 "obsolete
+      feature not enabled but N markers found!"로 플래그한다 — `HgObsMarker.writeMarker()`가
+      최초로 marker를 쓸 때 repo `.hg/hgrc`에 그 config를 심어두도록 고쳤다(amend/graft/
+      rebase/histedit도 같은 헬퍼를 공유하므로 함께 수정됨 — 공유 코드 변경이니 병합 시
+      확인 필요). (2) (미수정, 별도 기록) hg4j는 파일 크기와 무관하게 항상 non-inline
+      filelog(`.i`/`.d` 분리)를 쓰는데 real hg는 작은 revlog를 inline으로 유지한다 — 그
+      차이 때문에 real `hg verify`가 hg4j가 만든 저장소에 대해 "`warning: revlog 'X.d' not
+      in fncache!`" 경고를 내지만(strip과 무관하게 **모든** hg4j 커밋에 존재하는 사전
+      버그), 이건 exit code에 영향 없는 경고(`self._warn`, `self.errors`엔 안 들어감)라
+      strip의 "real hg verify 통과" 기준 자체는 막지 않는다 — fncache에 `.d` 항목을
+      등록하는 CommitCommand 쪽 수정은 이번 범위 밖으로 남겨둠. 테스트:
+      `StripRealHgInteropTest`(2개, real `hg verify`/`hg cat`으로 strip 후 내용 무결성
+      확인) 신설.
+    - **`bisect`**: `BisectCommand`의 이분 탐색 알고리즘(이미 real hg `hbisect.py`와 맞춰
+      구현돼 있었음)을 진짜로 real hg와 나란히(동일 good/bad 오라클로 각자 독립 진행) 15개
+      리비전 선형 히스토리에서 실행 — 후보 리비전 시퀀스(`[7,10,8,9]`)와 최종 culprit이
+      완전히 일치함을 확인. 버그 없음(기존 코드 리뷰 기반 구현이 처음부터 맞았음). 테스트:
+      `BisectRealHgInteropTest`(1개) 신설. **미검증으로 남은 부분(정직히 기록)**: merge
+      커밋이 있는 DAG(브랜치 2개가 합쳐지는 히스토리)에서의 bisect는 real hg와 대조하지
+      않음 — 시간 제약으로 선형 히스토리 1개 시나리오만 검증.
+    - **`shelve`**: 가장 규모가 컸다. 실제 hg가 만든 `.hg`/`.patch`/`.shelve` 파일을
+      hexdump·real hg 소스(`mercurial/shelve.py`/`bundle2.py`/`exchange.py`/
+      `changegroup.py`)와 직접 대조해 **hg4j의 기존 shelve 포맷이 real hg와 완전히
+      호환 불가능**함을 확인했다(자세한 내용은 최종 보고 참고). 다음 실버그 3개를 고쳐
+      "shelve → 다른 작업 → unshelve" 왕복(양방향)이 real hg와 실제로 맞물리게 만들었다:
+      (1) `.hg` 번들이 아예 매직 헤더 없는 hg4j 전용 원시 포맷이라 real hg가 번들로
+      인식조차 못함 → `Bundle2Parser.wrapChangegroupInBundle2()`(기존 push 경로 인프라
+      재사용)로 HG20/bundle2 봉투를 씌우도록 수정. (2) 델타가 항상 "빈 문자열 기준"으로
+      인코딩돼 있어(수정된 파일도 매번 전체 내용을 "복사 없이 삽입"하는 델타), 그 파일이
+      hg4j 자기 자신의 (비표준) 재생 로직과만 맞물렸고 real hg의 표준 cg1 델타 적용
+      의미론(선언된 delta base 기준으로 복원)과는 애초에 안 맞음 → 실제 parent/base
+      콘텐츠 기준으로 정식 델타를 인코딩하도록 `performShelve()` 전면 수정, `performUnshelve
+      ()`도 대응 수정. (3) real hg의 cg02+ changegroup 엔트리는 `p1`(진짜 changelog
+      부모)과 `deltabase`(델타가 실제로 기준하는 리비전, 둘이 다를 수 있음 — real hg
+      shelve가 실제로 `deltabase=null`(full-text 델타)인데 `p1`은 진짜 이전 리비전을
+      가리키는 엔트리를 만드는 것을 real hg CLI로 직접 확인)이 별개 필드인데 hg4j는 이
+      구분을 몰랐음 → `deltaBaseNode()` 헬퍼로 `deltabase` 우선, 없으면 `p1` 폴백하도록
+      수정. real hg의 shelve bundle이 "shelve commit 하나만"이 아니라 draft 상태인 부모
+      커밋까지 함께 묶는다는 것도 발견(`mutableancestors()`가 자기 자신+아직 draft인
+      조상까지 포함) → `.shelve` info 파일(real hg 포맷 `node=<hex>` 그대로, `performShelve
+      ()`가 이제 항상 씀)로 진짜 shelve 커밋 엔트리를 골라내도록 수정. hg4j 자신의
+      `.state` 파일 기반 왕복은 100% 하위 호환 유지(기존 `ShelveCommandTest`/
+      `ShelveCommandCoverageTest` 전부 그대로 GREEN). 테스트: `ShelveRealHgInteropTest`
+      (4개 — hg4j→real hg 수정+추가 파일, real hg→hg4j 수정+추가 파일, 제거 파일 시나리오,
+      모두 "shelve → 중간에 무관한 다른 작업 → unshelve" 형태) 신설, 전부 GREEN.
+      **범위 밖으로 명시적으로 남긴 것(중요 — 조정자가 사용자 확인 필요할 수 있음)**:
+      real hg의 `hg unshelve`는 hg4j처럼 diff를 그대로 재생하는 게 아니라 "임시 커밋 +
+      그 사이 다른 커밋들 위로의 rebase + merge + 정리용 strip"으로 이루어진 완전히 다른
+      알고리즘이다(`mercurial/shelve.py` `_dounshelve()` 확인). 이번에 검증·수정한 것은
+      "그 사이 다른 커밋이 없는(작업 디렉터리 parent가 그대로인) 가장 단순한 왕복"뿐이고,
+      shelve 이후 별도 커밋이 생겨 rebase가 실제로 필요한 경우나 unshelve 도중 충돌이
+      나는 경우는 검증하지 않았다 — 이걸 채우려면 hg4j `ShelveCommand`에 진짜 rebase/merge
+      기반 unshelve를 새로 얹는 아키텍처 수준 작업이 필요해 보인다(현재 hg4j는 그런
+      인프라가 없음). 이 결정(할지/언제 할지)은 사용자 확인 필요.
+
 24. ~~**`HgHttpWireServer`/`HgSshWireServer`가 외부 프로세스의 저장소 변경을 못 보고
     stale `Revlog` 캐시를 계속 서빙함**~~ — ✅ **완료(2026-09-03)**. 백로그 22번
     검증 중 발견된 것을 정식 백로그로 승격 후 바로 수정.

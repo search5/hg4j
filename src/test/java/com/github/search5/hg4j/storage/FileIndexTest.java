@@ -44,6 +44,107 @@ public class FileIndexTest {
     }
 
     @Test
+    @DisplayName("truncated docket (shorter than the fixed 60-byte header) is rejected")
+    void truncatedDocketThrowsCorruptData() throws IOException {
+        File storeDir = tempDir.toFile();
+        Files.write(new File(storeDir, "fileindex").toPath(), new byte[10]);
+        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+                () -> FileIndex.snapshot(storeDir));
+    }
+
+    @Test
+    @DisplayName("writeTrackedPaths with enough paths forces GrowableBuffer past its initial 256-byte capacity")
+    void writeTrackedPathsWithManyPathsGrowsInternalBuffer() throws IOException {
+        File storeDir = tempDir.toFile();
+        List<String> manyPaths = new java.util.ArrayList<>();
+        for (int i = 0; i < 200; i++) {
+            manyPaths.add("some/reasonably/long/directory/structure/file" + i + ".txt");
+        }
+        FileIndex.writeTrackedPaths(storeDir, manyPaths);
+        assertEquals(new LinkedHashSet<>(manyPaths), FileIndex.readTrackedPaths(storeDir));
+    }
+
+    @Test
+    @DisplayName("writeTrackedPaths rejects an empty-string path (TrieBuilder.insert's empty-path guard)")
+    void writeTrackedPathsRejectsEmptyStringPath() {
+        File storeDir = tempDir.toFile();
+        assertThrows(IllegalArgumentException.class,
+                () -> FileIndex.writeTrackedPaths(storeDir, List.of("")));
+    }
+
+    @Test
+    @DisplayName("writeTrackedPaths(emptyList) over an existing fileindex actually rewrites it to empty, unlike the no-fileindex-yet no-op")
+    void writeTrackedPathsWithEmptyListOverExistingFileIndexRewritesToEmpty() throws IOException {
+        File storeDir = tempDir.toFile();
+        FileIndex.writeTrackedPaths(storeDir, Arrays.asList("a.txt", "b.txt"));
+        assertTrue(new File(storeDir, "fileindex").exists());
+
+        FileIndex.writeTrackedPaths(storeDir, List.of());
+
+        assertTrue(new File(storeDir, "fileindex").exists(), "an empty rewrite must still leave a (now-empty) fileindex behind");
+        assertTrue(FileIndex.readTrackedPaths(storeDir).isEmpty());
+    }
+
+    @Test
+    @DisplayName("readTrackedPaths throws when a companion file the docket references is missing from disk")
+    void readTrackedPathsThrowsWhenCompanionFileMissing() throws IOException {
+        File storeDir = tempDir.toFile();
+        FileIndex.writeTrackedPaths(storeDir, Arrays.asList("a.txt", "b.txt"));
+
+        File[] metaFiles = storeDir.listFiles((dir, name) -> name.startsWith("fileindex-meta."));
+        assertNotNull(metaFiles);
+        assertEquals(1, metaFiles.length);
+        assertTrue(metaFiles[0].delete());
+
+        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+                () -> FileIndex.readTrackedPaths(storeDir));
+    }
+
+    @Test
+    @DisplayName("readTrackedPaths throws when a companion file on disk is shorter than the docket's declared size")
+    void readTrackedPathsThrowsWhenCompanionFileTruncated() throws IOException {
+        File storeDir = tempDir.toFile();
+        FileIndex.writeTrackedPaths(storeDir, Arrays.asList("a.txt", "b.txt"));
+
+        File[] metaFiles = storeDir.listFiles((dir, name) -> name.startsWith("fileindex-meta."));
+        assertNotNull(metaFiles);
+        assertEquals(1, metaFiles.length);
+        byte[] full = Files.readAllBytes(metaFiles[0].toPath());
+        Files.write(metaFiles[0].toPath(), Arrays.copyOf(full, full.length - 1));
+
+        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+                () -> FileIndex.readTrackedPaths(storeDir));
+    }
+
+    @Test
+    @DisplayName("readTrackedPaths tolerates a companion file padded longer than the docket's declared size")
+    void readTrackedPathsToleratesPaddedCompanionFile() throws IOException {
+        File storeDir = tempDir.toFile();
+        FileIndex.writeTrackedPaths(storeDir, Arrays.asList("a.txt", "b.txt"));
+
+        File[] listFiles = storeDir.listFiles((dir, name) -> name.startsWith("fileindex-list."));
+        assertNotNull(listFiles);
+        assertEquals(1, listFiles.length);
+        byte[] full = Files.readAllBytes(listFiles[0].toPath());
+        byte[] padded = Arrays.copyOf(full, full.length + 16); // extra trailing garbage bytes
+        Files.write(listFiles[0].toPath(), padded);
+
+        assertEquals(new LinkedHashSet<>(Arrays.asList("a.txt", "b.txt")), FileIndex.readTrackedPaths(storeDir));
+    }
+
+    @Test
+    @DisplayName("docket with a wrong magic marker is rejected")
+    void wrongMarkerDocketThrowsCorruptData() throws IOException {
+        File storeDir = tempDir.toFile();
+        // 60 bytes total, correct length but the first 12 bytes are not "fileindex-v1".
+        byte[] bogus = new byte[60];
+        System.arraycopy("not-the-marker".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, bogus, 0, 12);
+        Files.write(new File(storeDir, "fileindex").toPath(), bogus);
+        assertThrows(com.github.search5.hg4j.errors.HgCorruptDataException.class,
+                () -> FileIndex.snapshot(storeDir));
+    }
+
+    @Test
     @DisplayName("write-then-read round trip preserves a simple path set")
     void writeThenReadRoundTrip() throws IOException {
         File storeDir = Files.createDirectory(tempDir.resolve("store")).toFile();
@@ -134,6 +235,60 @@ public class FileIndexTest {
         FileIndex.restore(storeDir, snapshot);
         assertFalse(new File(storeDir, "fileindex").exists());
         assertTrue(FileIndex.readTrackedPaths(storeDir).isEmpty());
+    }
+
+    @Test
+    @DisplayName("snapshot() tolerates a docket that references a companion file missing from disk")
+    void snapshotToleratesMissingCompanionFile() throws IOException {
+        File storeDir = Files.createDirectory(tempDir.resolve("store")).toFile();
+        FileIndex.writeTrackedPaths(storeDir, Arrays.asList("a.txt", "b.txt"));
+
+        // Simulate partial/corrupted store state: the docket is intact, but one companion file
+        // (e.g. deleted by a concurrent process, or a prior crash mid-cleanup) is gone.
+        File[] listFiles = storeDir.listFiles((dir, name) -> name.startsWith("fileindex-tree."));
+        assertNotNull(listFiles);
+        assertEquals(1, listFiles.length);
+        assertTrue(listFiles[0].delete());
+
+        FileIndex.Snapshot snapshot = FileIndex.snapshot(storeDir);
+        assertNotNull(snapshot);
+    }
+
+    @Test
+    @DisplayName("restore() on a store that never had a fileindex at all takes the docketFile.exists()==false branch")
+    void restoreOnAStoreThatNeverHadAFileIndexIsANoOp() throws IOException {
+        // Distinct from snapshotOfNoFileIndexThenRestoreLeavesNoFileIndex above, which writes a
+        // real fileindex between the empty snapshot and the restore call -- here restore() itself
+        // is invoked while docketFile still has never existed at all.
+        File storeDir = Files.createDirectory(tempDir.resolve("store")).toFile();
+        FileIndex.Snapshot emptySnapshot = FileIndex.snapshot(storeDir);
+
+        FileIndex.restore(storeDir, emptySnapshot);
+
+        assertFalse(new File(storeDir, "fileindex").exists());
+        assertTrue(FileIndex.readTrackedPaths(storeDir).isEmpty());
+    }
+
+    @Test
+    @DisplayName("restoring the same snapshot twice in a row is idempotent (companion names already match, nothing to delete)")
+    void restoringTheSameSnapshotTwiceIsIdempotent() throws IOException {
+        // Companion UIDs are fresh random UUIDs on every write, so a companion name only ever
+        // coincides between "current on-disk state" and "the snapshot being restored" when the
+        // snapshot was itself the thing most recently written -- i.e. a second restore() of the
+        // same snapshot, which must recognize the names already match and delete nothing.
+        File storeDir = Files.createDirectory(tempDir.resolve("store")).toFile();
+        FileIndex.writeTrackedPaths(storeDir, Arrays.asList("a.txt", "b.txt"));
+        FileIndex.Snapshot snapshot = FileIndex.snapshot(storeDir);
+
+        FileIndex.restore(storeDir, snapshot);
+        String[] afterFirstRestore = storeDir.list((dir, name) -> name.startsWith("fileindex-"));
+        FileIndex.restore(storeDir, snapshot);
+        String[] afterSecondRestore = storeDir.list((dir, name) -> name.startsWith("fileindex-"));
+
+        assertNotNull(afterFirstRestore);
+        assertEquals(new java.util.HashSet<>(Arrays.asList(afterFirstRestore)),
+                new java.util.HashSet<>(Arrays.asList(afterSecondRestore)));
+        assertEquals(new LinkedHashSet<>(Arrays.asList("a.txt", "b.txt")), FileIndex.readTrackedPaths(storeDir));
     }
 
     /** Copies the checked-in fixture's simply-named {@code docket/list/meta/tree} files into a

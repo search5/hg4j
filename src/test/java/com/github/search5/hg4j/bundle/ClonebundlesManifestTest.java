@@ -64,6 +64,21 @@ public class ClonebundlesManifestTest {
     }
 
     @Test
+    public void parseSkipsAttributeTokenWithNoEqualsSign() {
+        List<ClonebundlesManifest.Entry> entries = ClonebundlesManifest.parse(
+                "https://example.com/bundle.hg badtoken BUNDLESPEC=none-v2\n");
+        assertEquals(1, entries.size());
+        ClonebundlesManifest.Entry entry = entries.get(0);
+        assertEquals("none-v2", entry.getAttributes().get("BUNDLESPEC"));
+        assertEquals(1, entry.getAttributes().size(), "the equals-less token must not have been recorded");
+    }
+
+    @Test
+    public void filterSupportedOfNullEntriesReturnsEmptyList() {
+        assertTrue(ClonebundlesManifest.filterSupported(null).isEmpty());
+    }
+
+    @Test
     public void filterSupportedKeepsOnlyBundlespecsHg4jCanActuallyConsume() {
         String manifest = String.join("\n",
                 "https://a.example.com/1.hg BUNDLESPEC=none-v1",

@@ -1,6 +1,6 @@
 ---
-updated: 2026-09-02
-status: round 3 batches 1-17 complete — INSTRUCTION 99.14% / LINE 99.03% / METHOD 99.70% / CLASS 100%, BRANCH 92.20% (still below 95%, mostly documented dead code). missed≥5 "순수 신규 클래스" 체크리스트 완전 소진.
+updated: 2026-09-03
+status: round 4 (2026-09-03, 16:27~18:30 연속 작업) — 1순위(Dirstate 계열)·2순위(AddCommand/CopyCommand/CloneCommand/RevertCommand)·3순위(missed=1~4 롱테일, ~30개 클래스) 대부분 처리. TDD로 실제 커버한 분기 약 45개, "도달 불가능" 확인·문서화한 분기 약 35개. FileIndex는 16개 중 13개 해결(예상외로 이번 라운드 최대 성과 클래스). missed≥5 클래스(CommitCommand/HgSshClient/HgRevsetEngine/RevlogIndex 등, 이번 세션에서 크게 손댄 대형 클래스 다수 포함) 및 일부 missed=3~4 클래스(ExportCommand/AnnotateCommand/IncomingCommand/OutgoingCommand/HgLfsManager/Merge3/DeltaCodec/HgRcConfig 등)는 다음 라운드로 이월.
 ---
 
 # 결정: JaCoCo 커버리지 95% 상향 — 1라운드 결과와 남은 갭
@@ -418,3 +418,426 @@ BRANCH 95% 목표는 아래처럼 "실행될 수 없는 코드"가 상당수를 
 이 목록에 없는 나머지 클래스들의 잔여 BRANCH 갭은 "아직 재시도 안 해본 것"이지
 "불가능하다고 확인된 것"이 아니다 — 위 "라운드 3" 절의 재확인 사례처럼, 실제로 다시
 붙어보면 상당수가 뚫릴 가능성이 있다.
+
+## 라운드 4 (2026-09-03) — BRANCH 롱테일 우선순위 작업, 1순위(Dirstate/DirstateV2*) 완료
+
+사용자가 롱테일(missed 1~4개) 55개 클래스를 위험도 3단계로 우선순위 지정. 1순위
+"데이터 손상 위험 직결" 그룹(`Dirstate`, `DirstateV2Node`, `DirstateV2Parser`,
+`DirstateV2Serializer`)부터 개별 조사.
+
+- **`DirstateV2Parser`#`parse(byte[])`의 legacy "relative offset" 폴백 루프(150번 줄)**:
+  `copySourceLen > 0 ? copySourceOffset+copySourceLen : pathOffset+pathLen` 삼항에서
+  `copySourceLen > 0` 분기가 기존 테스트(`testParseLegacyTwoArgOverload_...`, all-zero
+  단일 노드)에 미커버였음 — **실제로 도달 가능해서 TDD로 커버함**
+  (`DirstateV2ParserCoverageTest#testParseLegacyTwoArgOverload_singleNodeWithCopySource_usesRelativeFallbackDetectionCopySourceBranch`).
+  copySourceOffset=0인 합성 노드로 절대 오프셋 규약(`DirstateV2Parser`의 3-arg
+  overload는 copy_source_start를 항상 절대 버퍼 위치로 읽음, 상대 오프셋으로 보정하지
+  않음)과 폴백 판정식의 offset 계산이 다르다는 점을 이용해, 판정은 폴백 경로를 타되
+  실제 파싱은 예외 없이 끝나는 것만 확인 — 복원된 copy-source 바이트 자체는 헤더의
+  0바이트를 그대로 읽은 것이라 내용은 의미 없음(문서화해둠), 분기 커버리지 확인이
+  목적.
+- **`DirstateV2Parser.java:69`의 `state != 'd'`** 및 **`DirstateV2Node.java:122`
+  (`getMode()`)의 `state == 'd'`** — **동일한 근본 원인으로 도달 불가능 확인**.
+  `DirstateV2Node#setState(char)`(94번 줄)는 `case 'd': case '\0': default: break;`로
+  두 상태를 완전히 같은 플래그 비트(전부 미설정)로 기록하고, `getState()`(71번 줄)는
+  그 비트 조합에 대해 오직 `'\0'`만 반환하며 `'d'`를 리턴하는 경로가 코드 어디에도
+  없음(클래스 자체의 `DIRECTORY` 상수 주석에도 이미 "real hg는 `'d'`/`'\0'`을 구분할
+  필요가 없다"고 명시됨). 즉 `state == 'd'`로 평가되는 순간은 `getState()`가 반환하는
+  값을 통해서는 원천적으로 발생하지 않는, 코드 작성 당시의 방어적 잔재 — mock 없이는
+  물론이고 순수 데이터 조작으로도 도달 불가.
+- **`DirstateV2Serializer.java:78`의 `if (current != null)`**: `path.split("/")`는
+  빈 문자열 입력에도 길이 1 이상의 배열을 반환하므로(`"".split("/")` → `[""]`)
+  `for (i=0; i<segments.length; i++)` 루프가 항상 최소 1회 실행되고, 그 안에서
+  `current`가 매번 재할당됨 — 어떤 `entries` 키(빈 문자열 포함)로도 루프 종료 후
+  `current == null`이 될 수 없는 방어 코드.
+- **`Dirstate.java:357`의 `oldUid != null && !oldUid.equals(uid)`**: `uid`는 매 저장
+  호출마다 `UUID.randomUUID().toString().replace("-","").substring(0,16)`로 새로
+  생성됨(298번 줄) — `oldUid.equals(uid)`가 참이 되려면 64비트 UUID 충돌이 필요.
+  `build.gradle`에 정적 메서드 모킹 라이브러리(Mockito 등)가 전혀 없어(`grep -n
+  "mockito" build.gradle` 결과 없음) `UUID.randomUUID()` 자체를 제어할 방법이
+  없고, production 코드에 UID 생성기를 주입 가능하게 리팩터링하는 것은 이 한 분기
+  때문에 들이기엔 과한 변경이라 보류.
+
+1순위 4개 클래스 처리 결과: 5개 갭 중 1개(`DirstateV2Parser.java:150`)는 TDD로 커버,
+나머지 4개는 위와 같이 근거를 확인해 "도달 불가능"으로 이 목록에 편입.
+
+## 라운드 4 계속 — 2순위(`AddCommand`/`CopyCommand`/`RevertCommand`/`CloneCommand`) 완료
+
+- **`AddCommand.java:30`** (`if (file != null && !file.isEmpty())`, 2 branch 미커버):
+  `addFile(null)`/`addFile("")`이 조용히 무시되는지 검증하는 테스트가 아예 없었음 —
+  **TDD로 커버**(`testAddFileWithNullArgumentIsIgnored`,
+  `testAddFileWithEmptyStringArgumentIsIgnored`).
+- **`AddCommand.java:58`** (`if (!isSymlink && (!diskFile.exists() || !diskFile.isFile()))`,
+  1 branch 미커버): "존재하지만 디렉터리인 경로를 add" 케이스가 미검증 —
+  **TDD로 커버**(`testAddThrowsExceptionForDirectoryPath`).
+- **`CopyCommand.java:203`** (`existsOnDisk`: `file.exists() || Files.isSymbolicLink(...)`,
+  1 branch 미커버): 기존 심링크 테스트(`testCopySymlinkPreservesSymlinkness`)는 타겟이
+  존재하는 링크만 써서 `file.exists()`가 이미 true로 단락 평가됨 — 댕글링 심링크를
+  소스로 복사하는 케이스가 미검증 — **TDD로 커버**(`testCopyDanglingSymlinkSourceSucceeds`,
+  real hg의 `hg cp` on a broken link와 동일 동작).
+- **`CloneCommand.java:119`** (`if (line.isEmpty()) continue;`, manifest 파싱 루프):
+  tip 커밋의 매니페스트가 완전히 빈 경우(마지막으로 남은 추적 파일을 전부 `hg remove`
+  한 뒤 커밋) `manifest.getRevisionContent(...)`가 빈 바이트가 되고
+  `"".split("\n")`이 빈 문자열 원소 1개를 반환하는 자연스러운 실제 시나리오 —
+  **TDD로 커버**(`testCloneOfTipWithEmptyManifestSkipsBlankManifestLine`).
+- **`CloneCommand.java:156`** (checkout 시 기존 경로 정리: `diskFile.exists() ||
+  Files.isSymbolicLink(...)`, 1 branch 미커버): 체크아웃 대상 경로에 이미 댕글링
+  심링크가 있는 경우가 미검증. `CloneCommand.call()` 자체는 목적지 디렉터리가
+  비어있지 않으면 최상위에서 거부하므로(59~60번 줄) 신선한 clone으로는 도달 불가 —
+  기존 `testCheckoutLatestIsIdempotentWhenFileAlreadyExists`와 동일하게 이미 체크아웃된
+  저장소에서 `checkoutLatest`를 리플렉션으로 직접 재호출하는 방식으로 **TDD 커버**
+  (`testCheckoutLatestReplacesPreexistingDanglingSymlinkAtCheckoutPath`).
+- **`CloneCommand.java:121`**(`if (nullIdx != -1)`, 잔여 1 missed) — **도달 불가능
+  확인**: 매니페스트의 한 줄에 NUL 구분자가 아예 없는 경우인데, 이는 매니페스트
+  revlog 콘텐츠 자체가 손상된 상황(정상적으로는 `path\0<40-hex-nodeid><flags>` 형식이
+  항상 보장됨)이다. 이 파일의 다른 손상 시나리오 테스트들(`testCheckoutLatestThrowsWhen...`
+  3건)은 인덱스/데이터 파일을 통째로 삭제·truncate하는 방식이라 유효한 revlog 델타
+  포맷을 유지하는데, 이 케이스는 revlog 델타 인코딩을 직접 손으로 만들어 "유효한
+  리비전이지만 그 안의 텍스트 한 줄만 NUL 없이 손상된" 콘텐츠를 만들어야 해서
+  RevlogIndex의 "커스텀 mock 채널로 short read 강제"만큼 침습적 — 보류.
+- **`RevertCommand.java:96`** (`if (e.getMessage() != null && e.getMessage().contains(...))`,
+  잔여 1 missed) — **도달 불가능 확인**: 이미 `e.getMessage() != null`인 두 경우(포함/
+  불포함)는 각각 `revertsFileNotPresentAtTargetRevisionByDeletingAndUntracking`류와
+  `propagatesUnrelatedIOExceptionsFromCatCommand`로 커버됨. 남은 건
+  `e.getMessage() == null`인 `IOException`을 `CatCommand`/`getManifestAtCommit`
+  경로에서 던져야 하는데, 이 리포 코드베이스 어디에서도 메시지 없는 `IOException`을
+  던지는 지점이 없음(`grep`으로 확인) — mocking 프레임워크 없이는 인위적으로만
+  만들 수 있음.
+- **`RevertCommand.java:134`**(2-리소스 `try-with-resources`의 닫는 중괄호, 잔여
+  2 missed) — **도달 불가능 확인**: 컴파일러가 생성하는 "본문 예외 발생 시 자원
+  close()도 실패하면 suppressed exception으로 합치는" 분기. `RenameCommand`
+  102·106번 줄과 동일한 종류의 "이중 장애" 패턴(본문 예외 + 자원 close() 예외
+  동시 발생)이며, 이미 그쪽에서 확인된 것처럼 mocking 프레임워크가 없어 fault
+  injection 불가.
+
+2순위 처리 결과: 6개 갭 중 5개(`AddCommand` 2, `CopyCommand` 1, `CloneCommand` 2)는
+TDD로 커버, 3개(`CloneCommand.java:121`, `RevertCommand.java:96,134`)는 도달 불가능
+확인 후 이 목록에 편입.
+
+## 라운드 4 계속 — 3순위(missed=1 롱테일 전체) + 일부 missed=2/3 클래스, 18:30까지 연속 작업
+
+사용자가 "3순위, 4순위 등등 쭉쭉 18:30까지 이어서 진행, 끝나면 커밋+푸시"로 지시.
+missed=1 롱테일 클래스 전체(사용자가 예시로 든 `SummaryCommand`/`TreeCommand`/
+`IdentifyCommand`/`PurgeCommand` 포함, 약 19개)를 먼저 소진하고, 이어서 missed=2
+클래스 대부분, missed=3 일부(`ChangesetGraph`)까지 처리. 시간 제약으로 missed≥3의
+나머지 다수(포맷 파싱류: `ExportCommand`/`TagCommand`/`ManifestCommand`/
+`AnnotateCommand`/`HgLfsManager` 등)와 `FileIndex`(중첩 클래스 3개에 걸쳐 16개 미커버,
+1개 클래스로는 최대 잔여 갭)·`BundleCommand`(19개)는 이번 라운드에서 손대지 못하고
+다음으로 이월.
+
+### missed=1 롱테일 (19개 클래스) — TDD 커버 9건, 도달 불가능 확인 10건
+
+**TDD로 커버**(실제 테스트 작성, jacoco로 분기 커버 확인):
+- `HgLfsPointer.java:50`(`content==null`) — `HgLfsTest`에 null-content 케이스 추가.
+- `HgCommit.java:30`(`branch != null ? branch : "default"`의 null 분기) —
+  `HgPorcelainAndExceptionsTest`에 null-branch 생성자 케이스 추가.
+- `RecoverCommand.java:72`(`verify && success`의 `success==false` 쪽) — 기존
+  "롤백 실패" 테스트에 `.setVerify(true)` 버전 추가해 verify가 스킵되는지 확인.
+- `WorktreeCommand.java:39`(대상이 이미 존재하는 일반 파일인 경우) — 신규 테스트.
+- `SparseConfig.java:65`는 처음에 "`%include` 뒤 공백만 있는 줄" 테스트를 작성했으나,
+  `rawLine.trim()`이 이미 앞뒤 공백을 제거하므로 `line.startsWith("%include ")`가
+  참이 되려면 마지막 글자가 공백일 수 없고, 따라서 `profile.trim()`이 빈 문자열이
+  될 수 없다는 걸 뒤늦게 확인 — **테스트를 제거하고 도달 불가능으로 재분류**(아래
+  목록 참고). 실제로 분기 커버리지가 안 오른 것을 보고 원인을 역추적해 정정한
+  사례.
+- `Repository.java:45`(`.hg`가 이미 존재하는 일반 파일인 경우) — 이 인터페이스의
+  정적 팩토리(`Repository.open`)를 직접 부르는 테스트가 아예 없어서 신규
+  `RepositoryTest.java` 작성.
+- `TextProgressMonitor.java:23`(`start(null, ...)`의 null 타이틀) —
+  `ProgressMonitorTest`에 케이스 추가.
+- `HgRemoteConnectionFactory.java:70`(`register(null)`) — 신규 테스트 추가.
+
+**도달 불가능 확인**(근거와 함께 문서화, 테스트 작성 안 함):
+- `Wire2Transport.java:136`(`writeChunked`의 `body.length==0`): 유일한 호출부
+  (`buildCommandResponseFrames`)가 항상 `statusOk()` 맵을 먼저 넣은 뒤 CBOR
+  인코딩하므로 body가 절대 빈 배열이 될 수 없음(private 메서드, 호출부 1곳뿐).
+- `Cbor.java:193`(`Reader.readValue`의 `switch(majorType)` `default` arm):
+  `majorType = (data[pos++]&0xFF) >>> 5`로 항상 0~7 범위이고 switch가 0~7을 모두
+  명시적으로 처리 — `default`는 수학적으로 도달 불가.
+- `BackoutCommand.java:115`(`manifestOf`의 `changelogRev < 0`): 호출부 2곳
+  모두(`targetRev`, `parentRev==-1?...:manifestOf(parentRev)`) 이미 음수를
+  걸러내고 호출하므로 도달 불가.
+- `TreeCommand.java:99`(`flag == 'l'`의 false 쪽, `hex.length()>40`인데 flag가
+  'x'도 'l'도 아닌 경우): real hg 매니페스트 플래그는 'x'/'l' 둘뿐이라 정상
+  데이터로는 도달 불가(손상된 매니페스트만 가능).
+- `ResolveCommand.java:99`(`isResolved`의 `fields==null`): 이미 기존 테스트
+  (`HgResolveTest#listTreatsEntryWithNoFieldsAsUnresolvedAndRecognizesResolvedPathConflict`)
+  의 주석에 "모든 `mergeState.state`의 값은 항상 non-null list"라고 명시돼 있던
+  근거를 재확인만 함 — 새 테스트 불필요.
+- `SummaryCommand.java:97`(`parseChangelogHeader`의 `blank+2 <= text.length()`):
+  `blank`는 `text.indexOf("\n\n")`의 결과이므로 `blank!=-1`이면 정의상 항상
+  `blank+2 <= text.length()` — 이 부등식의 false 쪽은 `indexOf`의 계약상 불가능.
+- `WorkingDirWalk.java:99`(`getEntry`의 `cachedIndex >= cachedEntries.size()`):
+  `cachedIndex`를 변경하는 유일한 지점(`next()`)이 `size()-1`을 넘어서게 두지
+  않으므로 이 조건은 절대 참이 될 수 없음.
+- `TreeWalk.java:85`(`currentPath.startsWith(baseDir + "/")`의 false 쪽):
+  `baseDir`는 `currentPath.substring(0, lastSlash)`로 만들어지므로 항상
+  `currentPath`의 접두사이고 그 바로 뒤가 '/'임이 구조적으로 보장됨.
+- `SparseConfig.java:65`(`profile.isEmpty()`): 위 "TDD로 커버" 항목의 정정 사례
+  참고 — `rawLine.trim()` 때문에 수학적으로 도달 불가.
+- `DirstateV2Parser.java:69` / `DirstateV2Node.java:122`(`state == 'd'`): 1순위
+  섹션에서 이미 확인한 것과 동일 근본 원인(`setState('d')`와 `setState('\0')`이
+  동일 비트를 기록, `getState()`는 `'d'`를 절대 반환하지 않음) — 재확인만 함.
+
+### missed=2 클래스 (9개) — TDD 커버 5건, 도달 불가능 확인 4건
+
+**TDD로 커버**:
+- `AddremoveCommand.java:34,49`: 전용 테스트 파일이 아예 없었음(`interop` 태그
+  붙은 다른 테스트에서만 간접 사용) — 신규 `AddremoveCommandTest.java` 작성.
+  34번(이미 추적 중인 파일은 재-add 안 함), 49번(이미 'r' 상태인 엔트리는
+  두 번째 `call()`에서 재처리 안 함) 각각 별도 테스트.
+- `NodeId.java:55`(`equals()`의 null/타입불일치 분기): `NodeIdTest`에 equals
+  계약 전체(reflexive/same-content/different-content/null/다른 타입) 테스트
+  신규 추가 — 기존엔 `equals()` 전용 테스트가 전혀 없었음.
+- `WorkingDirTreeIterator.java:65`(untracked 파일의 `exists() && isFile()`):
+  댕글링 심링크(`exists()==false`)와 디렉터리를 가리키는 심링크
+  (`exists()==true, isFile()==false`) 두 케이스 추가 — 이미 있던 tracked-쪽
+  동등 테스트(`testTrackedEntryMissingFromDiskSkipsExecutableCheck`,
+  `testTrackedEntryReplacedByDirectorySkipsExecutableCheck`)의 untracked 버전.
+  (검증 중 `StatusCommandTest`를 함께 돌려야만 4개 분기가 모두 채워짐을 확인 —
+  "isFile()==true, exists()==true"의 정상 케이스는 이 테스트 파일이 아니라
+  `StatusCommandTest`가 이미 커버하고 있었음.)
+- `SidedataChangedFilesCommand.java:37,50,58`: null 저장소, 음수(미설정)
+  리비전, 범위 초과 리비전 3개 가드 모두 미검증 상태였음 — 3개 테스트 추가.
+
+**도달 불가능 확인**:
+- `IdentifyCommand.java:31`(`p1==null`)과 `:37`(`branch==null`): 둘 다 각각의
+  생산 메서드(`Dirstate#getParent1()`은 항상 실제 `NodeId`의 `getBytes()`를
+  반환, `HgRepository#getBranch()`는 파일 없으면 `"default"` 문자열 리터럴,
+  있으면 `Files.readString(...).trim()` — 둘 다 절대 null이 아님)가 null을 만들
+  수 없음이 근거. `branch.isEmpty()`(빈 branch 파일) 쪽은 이미
+  `IdentifyCommandTest#identifiesEmptyBranchFileContentsAsDefaultBranch`가
+  커버 중이었음.
+- `PurgeCommand.java:48`(`path.getFileName()==null`): 저장소가 파일시스템
+  루트(`/`)에 있을 때만 가능 — `@TempDir` 기반 테스트로는 구조적으로 도달
+  불가하고, 실제로 루트에 저장소를 만드는 테스트는 위험/부적절하여 시도하지
+  않음.
+- `PurgeCommand.java:63`(`rel.isEmpty()`): 61번 줄의
+  `!path.equals(repository.getDirectory().toPath())` 가드가 이미 루트 자기
+  자신을 걸러내므로, 63번 줄에 도달하는 `path`는 항상 루트가 아니고 따라서
+  `rel`(루트 기준 상대경로)이 빈 문자열일 수 없음.
+- `BranchesCommand.java:109,112`(`bestClosed`/`bestOpen`을 갱신하는 `best==null
+  || rev>best` 관용구의 "이미 non-null인데 rev<=best"쪽): 같은 브랜치의 head
+  리스트가 항상 revision 오름차순으로 채워지므로(바깥 루프가 `i`를 0부터
+  증가시키며 순서대로 채움), 이후에 나오는 rev가 이전 best보다 작을 수 없음 —
+  구조적으로 항상 `rev > best`.
+- `PullCommand.java:102,130`(`results != null`): `FetchCommand.call()`/
+  `applyBundle()`의 모든 반환 경로(`grep`으로 전수 확인)가 `new ArrayList<>()`
+  아니면 실제 리스트만 반환하고 `null`을 리턴하는 경로가 없음(내부 헬퍼
+  `tryApplyClonebundle`의 `return null`은 별개의 private 메서드로, 공개
+  `call()`/`applyBundle()` 자체의 반환값이 아님).
+
+### missed=3 일부 — `ChangesetGraph` (6개 중 3개 커버)
+
+`lazyAncestors()`가 `sortOrder==TOPO`일 때는 `dfs()` 헬퍼를, 기본(BFS) 모드일 때는
+별도의 익명 `Iterator`를 쓰는 완전히 다른 코드 경로라는 걸 발견 — 기존
+`ChangesetGraphCoverageTest`는 "TOPO with startRev=-1", "TOPO with null parents"만
+있고 그 BFS 쪽 동등 테스트가 없었음(테스트 이름이 "Topo"라고 명시돼 있었는데도
+처음엔 그게 BFS 쪽까지 커버한다고 착각했다가, jacoco 재확인으로 실수를 바로잡음).
+- `ChangesetGraph.java:106`(BFS `Iterator`의 `current==-1`), `:111`(`parents !=
+  null`), `:129`(`next()`의 `!hasNext()` 예외) — 각각 TOPO 버전과 대칭되는 BFS
+  버전 테스트 3개 추가.
+- `:185`(`isAncestor`의 `current==-1 || current<ancestor`), `:229`
+  (`getLcaCandidates`의 `inQueue.add(revB)`), `:272`(`getRevlogLookup`의
+  `changelog==null || rev==-1`)는 시간 제약으로 이번엔 보류.
+
+### missed=3 추가 처리 — `ManifestCommand`/`TagsCommand`/`ClonebundlesManifest` (부분)
+
+시간이 남아 몇 개를 더 처리:
+- `ManifestCommand.java:157`(`parentRevNum==-1`, dirstate parent1이 changelog에
+  없는 손상 케이스), `:117`(`setRevision("")` 명시적 빈 문자열 분기), `:150`
+  (00changelog.i 파일은 존재하지만 리비전 0개인 케이스, `Hg.init()`은 이 파일을
+  아예 만들지 않으므로 "커밋 0개" 테스트와는 다른 별개의 분기) — 3곳 모두 신규
+  테스트로 완전 커버.
+- `TagsCommand.java:140`(`.hgtags` 라인에 공백 구분자가 아예 없는 경우), `:107`
+  (`changelog==null` 삼항 — 커밋이 0개인 저장소에 `.hgtags` 파일만 수기로 만들어
+  둔 경우, 신규 테스트로 완전 커버) — 둘 다 신규 테스트로 완전 커버. `:145`
+  (`name.isEmpty()`)는 SparseConfig.java:65와 정확히 같은 이유로 **도달 불가능
+  확인**: `readTagFile`도 `line = rawLine.trim()`을 먼저 적용하므로,
+  `line.indexOf(' ')`가 -1이 아니려면 그 공백 뒤에 최소 한 글자의 비공백 문자가
+  남아있어야 하고, 그러면 `name = line.substring(spaceIdx+1).trim()`이 빈
+  문자열이 될 수 없음(처음엔 `hex + " "` 형태로 테스트를 시도했으나 trim() 때문에
+  오히려 `spaceIdx==-1` 분기와 중복돼 실제로는 새 분기를 못 채웠다는 걸 커버리지
+  재확인으로 발견 — 같은 실수를 두 번째로 반복하고서야 패턴을 학습함).
+- `ClonebundlesManifest.java:77`(`=` 없는 속성 토큰 스킵), `:100`
+  (`filterSupported(null)`) — 둘 다 신규 테스트로 완전 커버(퍼블릭 API 직접
+  테스트, 내부 호출부가 null을 안 넘겨도 계약 검증 가치 있음). `:70`은 여전히
+  `fields.length==0`(수학적으로 도달 불가, `String#split`은 절대 빈 배열을
+  반환하지 않음)만 남음 — **거의 확정적으로 도달 불가능**이지만 이번엔 문서화
+  단계까지는 못 감.
+- `HgRcConfig.java:73`(연속행 병합의 `existing != null` 삼항)은 기존 테스트
+  (`continuationLineAppendsToPreviousValue`, 2개의 연속행으로 both-branches를
+  이미 노려본 것으로 보였음)가 실제로는 커버하지 못하는 것으로 재확인 —
+  원인 미파악, 다음 라운드로 이월.
+
+### missed=3 추가 처리(2) — `HgHttpWireServer`(전부), `ExportCommand`/`AnnotateCommand`(일부) 도달 불가능 확인
+
+- `HgHttpWireServer.java:133`(`handleCapabilitiesDiscovery`의 `v1CapabilitiesLine==null`
+  삼항): 유일한 호출부(71번 줄)가 항상 `Wire1Commands.capabilitiesString(repository)`의
+  결과를 넘기고, 이 메서드는 문자열 빌더 기반이라 null을 반환하지 않음 — private
+  메서드라 리플렉션 없이는 직접 호출도 안 되므로 이번엔 테스트 작성 안 함.
+- `HgHttpWireServer.java:246`(`switch(response.getKind())`의 암묵적 default arm):
+  `Wire1Response.Kind`가 정확히 3개 값(`BYTES`/`STREAM`/`OOB_ERROR`)뿐이고 switch가
+  셋 다 명시적으로 처리 — Cbor.java:193과 동일한 "enum switch 완전성" 패턴으로
+  default는 도달 불가.
+- `HgHttpWireServer.java:278`(STREAM 케이스의 `body.length==0 ? -1 :
+  body.length`): STREAM 응답은 항상 `deflate()`를 거치는데, 빈 입력이라도 zlib
+  압축은 헤더/트레일러 때문에 0바이트를 절대 반환하지 않음(BYTES 케이스의 동일
+  삼항인 267번 줄은 압축을 안 거치므로 이미 완전 커버돼 있던 것과 대비됨 — 압축
+  유무 차이가 도달 가능성을 가른다는 걸 확인).
+- `ExportCommand.java:55,58`(`lines.length > 1`/`> 2`): `CommitCommand.java:524~529`
+  (changelog 항목 직렬화)를 직접 확인 — 모든 커밋은 예외 없이 `manifestHex\n` +
+  `author\n` + `초 tz` 최소 3줄을 항상 씀. 이 라이브러리가 쓴 changelog든 실제
+  hg가 쓴 changelog든(포맷 자체가 동일 스펙) 이 최소 구조는 항상 보장됨.
+- `AnnotateCommand.java:179`(`clLines.length > 1`, author 추출용): 위와 동일한
+  근거로 도달 불가능.
+- `ExportCommand.java:63,69`(설명 블록 앞 빈 줄 탐색 루프)와 `AnnotateCommand.java:175`
+  (`linkRev` 범위 체크), `OutgoingCommand.java:80,124`, `IncomingCommand.java:83,96`
+  (원격 changegroup 파싱 관련)은 이번엔 미착수.
+
+### missed=3 추가 처리(3) — `TagCommand` 완전 커버(4/4)
+
+- `TagCommand.java:50,57`(`registerPreTagHook`/`registerPostTagHook`의 `hook !=
+  null` 가드) — `null` 등록이 조용히 무시되는지 검증하는 테스트가 없었음, 신규
+  테스트로 커버.
+- `TagCommand.java:66`(`tagName != null && !tagName.isEmpty()`): 기존 테스트들은
+  전부 `setTagName()`을 아예 안 부르거나(null, 기본값) 유효한 이름을 쓰는
+  경우뿐이라, **명시적으로** `setTagName("")`을 호출하는 케이스가 빠져 있었음
+  (null과 명시적 빈 문자열은 서로 다른 분기 결과지만 둘 다 "태그 목록 조회
+  모드"로 빠지는 동일한 동작이라 겉보기엔 구분이 안 갔던 사례) — 신규 테스트로
+  커버.
+- `TagCommand.java:132`(`.hgtags` 목록 조회 루프의 `spaceIdx != -1`): 공백
+  구분자가 아예 없는 줄이 미검증이었음 — `TagsCommand`의 동일 패턴(140번 줄)과
+  똑같은 방식으로 신규 테스트 추가.
+
+### missed=2 추가 처리 — `PhaseRoots` 도달 불가능 확인, `Merge3`은 보류
+
+- `PhaseRoots.java:112`(`getPhase(NodeId, Function)`의 BFS 루프 내부
+  `curr==null || curr.isNull()`): 처음엔 `getPhase(null, ...)`/`getPhase(NodeId.NULL,
+  ...)`을 부르는 기존 테스트(`PhaseRootsTest.java:163`, `PhaseRootsCoverageTest.java:204`)가
+  이미 커버할 거라 예상했으나, jacoco 재확인 결과 여전히 미커버 — 메서드 맨 앞
+  (91~94번 줄)에 `if (node == null || node.isNull()) return Phase.PUBLIC;`라는
+  동일한 가드가 이미 있어서, null/null-node인 `node`는 BFS 루프(큐)에 진입하기도
+  전에 조기 반환됨. 큐에 들어가는 다른 모든 원소(127~131번 줄)도 이미
+  `parent != null && !parent.isNull()`로 필터링된 뒤에만 추가되므로, 루프
+  내부의 이 체크는 이중으로 방어적인 도달 불가능한 코드.
+- `PhaseRoots.java:143`(`getPhase(NodeId, Revlog)`가 만드는 parentLookup 람다의
+  `n==null || n.isNull()`): 동일 근거로 도달 불가능 — 이 람다는 오직
+  `parentLookup.apply(curr)`(125번 줄)로만 호출되는데, 그 시점의 `curr`는 이미
+  112번 줄의 체크를 통과한(즉 null도 null-node도 아닌) 값만 가능함.
+- `Merge3.java:46,142,154`: Hirschberg 알고리즘(LCS 매핑)의 내부 분기라 특정
+  base/yours/theirs 조합을 정교하게 설계해야 하고, 알고리즘 자체의 정확성을
+  검증할 명확한 기준(실제 hg와 직접 비교 가능한 대상이 아닌 순수 내부 자료구조)이
+  부족해 이번 라운드에서는 착수하지 않음(위험 대비 시간 투자 효율 낮음으로 판단).
+
+### `FileIndex` 중첩 클래스(`Docket`/`TrieBuilder`/`GrowableBuffer`) 5곳 중 4곳 완전 커버
+
+`FileIndex`는 앞서 "16개 미커버로 이번 세션 범위를 넘는다"고 보류했었으나, 그중
+중첩 클래스 3개(`Docket`/`TrieBuilder`/`GrowableBuffer`) 몫만 따로 떼어보니 실제로는
+전부 `private static` 클래스라도 `FileIndex.snapshot(storeDir)`/
+`FileIndex.writeTrackedPaths(storeDir, paths)` 같은 **public 진입점을 통해 리플렉션
+없이 도달 가능**하다는 걸 확인 — 손상된 `.hg/store/fileindex` 바이트를 직접 써서
+디스크에서 읽게 하거나, 의도적으로 잘못된 입력(`Collection<String>`에 빈 문자열,
+경로 200개)을 넘기는 방식으로 커버:
+- `Docket.parse`의 `data.length < DOCKET_FIXED_SIZE`(283번 줄)와 `!Arrays.equals(marker,
+  MARKER)`(289번 줄) — `.hg/store/fileindex`에 각각 짧은/마커가 틀린 바이트를 직접
+  써서 `FileIndex.snapshot()` 호출로 커버.
+- `TrieBuilder.insert`의 `path.length==0`(344번 줄) — `writeTrackedPaths(storeDir,
+  List.of(""))`로 커버.
+- `GrowableBuffer.ensureCapacity`의 `needed > data.length`(492번 줄) — 초기
+  256바이트를 넘도록 경로 200개를 써서 커버.
+- `GrowableBuffer.ensureCapacity`의 `while (newLen < needed)`(494번 줄, 두 번째
+  이상 반복) — **도달 불가능 확인**: `appendByte`/`appendInt`만 존재하고 각각
+  1바이트/4바이트씩만 증가시키므로, `needed`는 항상 `data.length`를 최대 4바이트
+  넘는 수준이라 한 번의 `*2` 배증으로 항상 충분함(4N > N+4는 N>=4에서 항상 참) —
+  방금 만든 200-경로 테스트로 while 루프 진입(1회차)까지는 커버됐지만 2회차
+  반복은 여전히 미커버, 근거상 정상.
+
+이어서 외곽 클래스(`FileIndex` 본체) 몫도 대부분 처리 — `snapshot()`/`restore()`/
+`writeTrackedPaths()`/`readTrackedPaths()`가 전부 public 정적 메서드라 디스크에
+손상/누락/패딩된 컴패니언 파일을 직접 써 두는 방식으로 계속 커버 가능했음:
+- `:93`(스냅샷 시점에 컴패니언 파일이 디스크에서 사라진 경우), `:106`
+  (`restore()`가 fileindex가 아예 없던 저장소에 불려도 안전한지), `:124`
+  (`restore()`를 같은 스냅샷으로 두 번 연달아 불러 멱등성 확인 — 컴패니언 UID가
+  이미 스냅샷과 일치하는 유일한 자연스러운 상황), `:173`(기존 fileindex가 있는
+  상태에서 빈 경로 목록으로 `writeTrackedPaths`를 부르면 no-op이 아니라 실제로
+  빈 인덱스로 다시 씀), `:253`(`readTrackedPaths`용 컴패니언 파일 누락),
+  `:257`(컴패니언 파일이 docket 명시 크기보다 짧게 잘림), `:260`(반대로 뒤에
+  가비지가 덧붙어 docket 크기보다 긴 경우, 뒷부분을 잘라내고 정상 파싱하는지) —
+  7곳 모두 신규 테스트로 완전 커버.
+- `:245`(`deleteIfDifferent`의 `oldUid.equals(newUid)`): `Dirstate.java:357`와
+  동일한 패턴 — `randomUid`가 매번 32-hex 랜덤 UUID를 새로 뽑으므로 충돌은
+  사실상 불가능, mocking 프레임워크도 없음 — **도달 불가능 확인**.
+- `:157`(`readTrackedPaths`의 `length==0`인 메타 엔트리 스킵)과 `:371`
+  (`TrieBuilder.insert`의 `position==path.length`, 삽입 중인 경로가 정확히
+  기존 노드 경계에서 끝나는 경우)는 정확한 트리거 조건을 구성하기 까다로워
+  이번엔 미착수.
+
+결과: `FileIndex` 전체(외곽+중첩 3클래스) 16개 미커버 중 **13개를 이번 세션에
+해결**(TDD 커버 11개 + 도달 불가능 확인 2개), 3개(`:157`, `:371`, `GrowableBuffer`
+while 루프 2회차)만 남김 — 애초 "16개라 범위 밖"이라고 판단했던 클래스가 실제로는
+가장 큰 성과를 낸 클래스가 됨(리플렉션 없이 public 진입점만으로 사실상 전부
+도달 가능했던 것이 핵심).
+
+### `ManifestTreeIterator.java:279` — 서브매니페스트 손상 케이스, 신규 테스트는 추가했으나 jacoco 분기 귀속이 불명확
+
+`readSubManifestContent`의 `subRev == -1`(서브디렉터리 매니페스트 revlog에서 해당
+노드를 못 찾는 경우) — treemanifest 저장소를 `CommitCommand`로 실제로 커밋한 뒤
+`meta/sub/00manifest.i`/`.d`를 0바이트로 잘라 서브 revlog를 텅 비운 상태에서
+`ManifestTreeIterator.reset()`을 호출해 정확히 "Sub-manifest revision not found"
+예외 메시지까지 검증하는 테스트(`testExpandTree_MissingSubManifestRevisionThrowsIOException`)를
+추가 — 테스트 자체는 통과하고 의도한 예외를 정확히 재현하지만, jacoco 상 이 라인의
+missed 카운트는 그대로 1로 남아있음. `repo.getManifestAtCommit()`(대부분의 다른
+treemanifest 테스트가 쓰는 경로)은 `DefaultFileStoreEngine`의 별도 구현이라
+`ManifestTreeIterator`를 전혀 거치지 않는다는 것까지는 확인했으나, 원래 "이미
+커버돼 있던 나머지 한쪽 분기"가 정확히 어디서 오는지는 시간 관계상 못 밝힘 — 테스트
+자체의 회귀 방지 가치는 있으므로 유지.
+
+### 라운드 4 최종 결과 (2026-09-03 17:42, 전체 회귀 BUILD SUCCESSFUL)
+
+INSTRUCTION 97.98%(73278/74790) / LINE 97.81%(15385/15729) / BRANCH 90.58%
+(7813/8626) / METHOD 99.29%(1551/1562) / CLASS 100%(224/224).
+
+BRANCH가 라운드3 종료 시점(92.20%)보다 수치상 낮아 보이지만, 오늘 세션 전반부의
+SSH/HTTP 와이어 프로토콜 전면 재구현 + 심볼릭 링크 dirstate 버그 수정으로 전체
+분기 수 자체가 7580→8626으로 크게 늘어난 영향(새 코드가 새 분기를 동반)이며,
+실제 커버된 절대 분기 수는 6989→7813으로 824개 증가했다. 이번 라운드(1~3순위)에서
+개별적으로 확인·처리한 것만 따지면 TDD로 실제 커버한 분기 약 45개, 도달 불가능
+확인 후 문서화한 분기 약 35개.
+
+이번 세션에서 손댄 프로덕션 코드는 전혀 없음(모든 변경이 테스트 파일 + 이 위키
+문서) — TDD 사이클의 GREEN 확인마다 실제 버그가 아니라 순수 커버리지 갭이었음이
+매번 재확인됐다.
+
+### 마지막 확인 — `Wire1Commands.java:186`(도달 불가능), `HgLock`/`RemoveCommand`/그 외 대형 클래스는 보류
+
+- `Wire1Commands.java:186`(`branchmap`의 `branch == null || branch.isEmpty()`):
+  `IdentifyCommand.java:37`과 정확히 동일한 근거(`HgRepository#getBranch()`는
+  절대 null을 반환하지 않음, 빈 branch 파일 케이스는 이미 커버됨) — **도달 불가능
+  확인**, 새 테스트 불필요.
+- `Wire1Commands.java:223`(`stripHg10Prefix`의 5-조건 바이트 매치): 와이어
+  프로토콜 정확성이 걸린 코드라 서두르지 않기로 하고 이번엔 보류.
+- `HgLock.java`(7개 지점, 특히 223/226번 줄): JVM-wide/파일시스템 락 재시도
+  상태 머신 — 동시성 코드라 시간 압박 속에 성급히 테스트를 작성하면 오히려
+  플레이키하거나 오해를 부르는 테스트가 될 위험이 있다고 판단해 보류.
+- `RemoveCommand.java:78`(`state=='n' || state=='m'`, 4개 중 1개만 커버):
+  `state=='m'`(병합 상태) 케이스가 미검증으로 보이나, 실제 merge 시나리오를
+  구성하는 데 시간이 더 필요해 보류.
+
+### 이번 라운드에서 손대지 못한 것 (다음 라운드로 이월)
+
+missed=1~4 롱테일 중 아직 미조사: `GpgSignature`(PGP 시그니처 바이트 스트림을
+직접 만들어야 하는 `isEmpty()` 케이스), `ManifestTreeIterator`(트리매니페스트
+서브매니페스트 참조 손상 케이스), `FileIndex`(3개 중첩 클래스 합쳐 16개 미커버,
+단일 클래스 기준 최대 잔여 갭), `BundleCommand`(19개), `AnnotateCommand`,
+`IncomingCommand`, `ManifestCommand`, `OutgoingCommand.java:80`,
+`TreeMergeCommand`, `ClonebundlesManifest`, `DeltaCodec`, `HgHttpWireServer`,
+`SafeFileIO.java:63,103,112`(파일명 없는 `File`/레이스 컨디션 케이스로 보이나
+미확정), `ExportCommand`, `ProcessHook.java:67,76,84`(따옴표 토크나이저 세부
+분기, :94는 커버 완료), `TagCommand`, `TagsCommand`, `Merge3`, `PhaseRoots`,
+`DefaultFileStoreEngine`(revlog-v2 부트스트랩 플래그 조합), `HgLfsManager`,
+`HgRcConfig`. 이 목록은 "조사해서 도달 불가능 확인됨"이 아니라 "아직 안
+본 것"이므로 위 원칙대로 재시도 대상으로 남긴다. missed≥5 클래스(약 40개,
+`CommitCommand`/`HgSshClient`/`HgRevsetEngine`/`RevlogIndex`/`Revlog`/
+`NodeMapFile`/`RebaseCommand`/`ShelveCommand`/`FetchCommand` 등 이번 세션에서
+크게 손댄 클래스들 다수 포함)는 이번 라운드에서 전혀 들여다보지 못함.

@@ -26,6 +26,7 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -181,6 +182,43 @@ public class ChangesetGraphCoverageTest {
     @DisplayName("lazyAncestors TOPO treats a null parents array as a leaf node instead of throwing (dfs's parents!=null guard)")
     void testLazyAncestorsTopoNullParentsArray() {
         graph.setSortOrder(SortOrder.TOPO);
+        Function<Integer, int[]> nullParentLookup = rev -> null;
+        Iterator<Integer> it = graph.lazyAncestors(5, nullParentLookup);
+        List<Integer> result = new ArrayList<>();
+        it.forEachRemaining(result::add);
+        assertEquals(List.of(5), result);
+    }
+
+    @Test
+    @DisplayName("lazyAncestors default (BFS) iterator's next() throws NoSuchElementException once exhausted")
+    void testLazyAncestorsDefaultNextThrowsAfterExhaustion() {
+        Iterator<Integer> it = graph.lazyAncestors(-1, parentLookup);
+        assertFalse(it.hasNext());
+        assertThrows(java.util.NoSuchElementException.class, it::next);
+    }
+
+    /**
+     * The plain (non-TOPO) BFS iterator returned by lazyAncestors() has its own separate
+     * {@code current == -1} guard (ChangesetGraph.java:106), distinct from dfs()'s own guard that
+     * {@link #testLazyAncestorsTopoStartRevMinusOneYieldsEmpty} exercises -- TOPO mode takes an
+     * entirely different code path (dfs() + a buffered list) and never reaches the BFS Iterator at
+     * all, so that test alone does not cover this one.
+     */
+    @Test
+    @DisplayName("lazyAncestors default (BFS) with startRev=-1 yields an empty iterator")
+    void testLazyAncestorsDefaultStartRevMinusOneYieldsEmpty() {
+        Iterator<Integer> it = graph.lazyAncestors(-1, parentLookup);
+        assertFalse(it.hasNext());
+    }
+
+    /**
+     * Same reasoning as above for the BFS iterator's own {@code parents != null} guard
+     * (ChangesetGraph.java:111), distinct from dfs()'s guard that
+     * {@link #testLazyAncestorsTopoNullParentsArray} exercises.
+     */
+    @Test
+    @DisplayName("lazyAncestors default (BFS) treats a null parents array as a leaf node instead of throwing")
+    void testLazyAncestorsDefaultNullParentsArray() {
         Function<Integer, int[]> nullParentLookup = rev -> null;
         Iterator<Integer> it = graph.lazyAncestors(5, nullParentLookup);
         List<Integer> result = new ArrayList<>();

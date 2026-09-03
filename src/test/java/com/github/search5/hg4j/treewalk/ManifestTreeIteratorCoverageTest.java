@@ -434,4 +434,46 @@ public class ManifestTreeIteratorCoverageTest {
         // Calling next() again once already finished must keep reporting false, not throw.
         assertFalse(it.next());
     }
+
+    /**
+     * A treemanifest entry's node id must resolve to a real revision in the referenced
+     * subdirectory's own {@code meta/<dir>/00manifest.i} -- if that sub-revlog has been stripped
+     * back to zero revisions (simulating store corruption/an incomplete transaction), expanding
+     * the tree must fail loudly rather than silently skip the subtree.
+     */
+    @Test
+    public void testExpandTree_MissingSubManifestRevisionThrowsIOException() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempRepoDir).call();
+        File requiresFile = new File(tempRepoDir, ".hg/requires");
+        List<String> baseLines = Files.readAllLines(requiresFile.toPath());
+        File storeDir = new File(tempRepoDir, ".hg/store");
+        Files.write(new File(storeDir, "requires").toPath(), baseLines);
+        List<String> lines = new java.util.ArrayList<>(baseLines);
+        lines.add("treemanifest");
+        Files.write(requiresFile.toPath(), lines);
+        repo = new HgRepository(tempRepoDir); // re-open so isTreemanifest() reflects the new requires
+
+        File subFile = new File(tempRepoDir, "sub/b.txt");
+        Files.createDirectories(subFile.getParentFile().toPath());
+        Files.writeString(subFile.toPath(), "sub file content");
+        new com.github.search5.hg4j.api.AddCommand(repo).call();
+        byte[] commitNode = new com.github.search5.hg4j.api.CommitCommand(repo).setMessage("add sub/b.txt").call();
+
+        File subMfIdx = new File(storeDir, "meta/sub/00manifest.i");
+        File subMfDat = new File(storeDir, "meta/sub/00manifest.d");
+        assertTrue(subMfIdx.exists());
+        // Truncate the sub-manifest revlog to zero revisions: the root manifest's "sub" tree-dir
+        // entry still references its (now nonexistent) node id.
+        Files.write(subMfIdx.toPath(), new byte[0]);
+        if (subMfDat.exists()) {
+            Files.write(subMfDat.toPath(), new byte[0]);
+        }
+
+        // Re-open so no stale cached Revlog (opened against the pre-corruption file) is reused.
+        HgRepository freshRepo = new HgRepository(tempRepoDir);
+        String hex = com.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
+        ManifestTreeIterator it = new ManifestTreeIterator(freshRepo, hex);
+        IOException ex = assertThrows(IOException.class, it::reset);
+        assertTrue(ex.getMessage().contains("Sub-manifest revision not found"), ex.getMessage());
+    }
 }

@@ -158,4 +158,48 @@ public class AddCommandTest {
             assertArrayEquals("missing-target.txt".getBytes(StandardCharsets.UTF_8), filelog.getRevisionContent(0));
         }
     }
+
+    @Test
+    public void testAddFileWithNullArgumentIsIgnored(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        assertTrue(new File(repoDir, "a.txt").createNewFile());
+
+        // A null path must be silently ignored (not queued), so the subsequent no-args call()
+        // falls through to the whole-repo scan and only picks up the real file.
+        new AddCommand(repo).addFile(null).addFile("a.txt").call();
+
+        Map<String, Dirstate.Entry> entries = repo.getDirstate().getEntries();
+        assertEquals(1, entries.size());
+        assertNotNull(entries.get("a.txt"));
+    }
+
+    @Test
+    public void testAddFileWithEmptyStringArgumentIsIgnored(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        assertTrue(new File(repoDir, "a.txt").createNewFile());
+
+        new AddCommand(repo).addFile("").addFile("a.txt").call();
+
+        Map<String, Dirstate.Entry> entries = repo.getDirstate().getEntries();
+        assertEquals(1, entries.size());
+        assertNotNull(entries.get("a.txt"));
+    }
+
+    /**
+     * {@code addFile} of a path that exists but is a directory (not a symlink, not a regular
+     * file) must be rejected the same way a non-existent path is -- the existing coverage only
+     * exercised "doesn't exist at all" and "is a regular file", never "exists but is a directory".
+     */
+    @Test
+    public void testAddThrowsExceptionForDirectoryPath(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File subDir = new File(repoDir, "sub");
+        assertTrue(subDir.mkdir());
+
+        AddCommand add = new AddCommand(repo).addFile("sub");
+        assertThrows(IOException.class, add::call);
+    }
 }

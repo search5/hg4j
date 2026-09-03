@@ -134,6 +134,53 @@ public class WorkingDirTreeIteratorCoverageTest {
         }
     }
 
+    @Test
+    public void testUntrackedDanglingSymlinkSkipsExecutableCheck() throws Exception {
+        try (Hg hg = Hg.open(tempRepoDir)) {
+            // Untracked (dEntry == null) branch's own equivalent of
+            // testTrackedEntryMissingFromDiskSkipsExecutableCheck above
+            // (WorkingDirTreeIterator.java:65): scanWorkingCopy() includes a dangling symlink as
+            // a plain file entry, but File#exists() follows the link and reports false for it.
+            File link = new File(tempRepoDir, "broken-link.txt");
+            Files.createSymbolicLink(link.toPath(), new File("missing-target.txt").toPath());
+
+            WorkingDirTreeIterator it = new WorkingDirTreeIterator(hg.getRepository());
+            it.reset();
+
+            assertTrue(it.next());
+            assertEquals("broken-link.txt", it.getEntryPath());
+            assertEquals('?', it.getEntryState());
+            assertFalse(it.isExecutable());
+        }
+    }
+
+    @Test
+    public void testUntrackedSymlinkToDirectorySkipsExecutableCheck() throws Exception {
+        try (Hg hg = Hg.open(tempRepoDir)) {
+            // Untracked (dEntry == null) branch's own equivalent of
+            // testTrackedEntryReplacedByDirectorySkipsExecutableCheck above
+            // (WorkingDirTreeIterator.java:65): a symlink whose target is a directory has
+            // diskFile.exists() == true but diskFile.isFile() == false.
+            File targetDir = new File(tempRepoDir, "real-dir");
+            assertTrue(targetDir.mkdir());
+            File link = new File(tempRepoDir, "dir-link");
+            Files.createSymbolicLink(link.toPath(), new File("real-dir").toPath());
+
+            WorkingDirTreeIterator it = new WorkingDirTreeIterator(hg.getRepository());
+            it.reset();
+
+            boolean foundLink = false;
+            while (it.next()) {
+                if ("dir-link".equals(it.getEntryPath())) {
+                    foundLink = true;
+                    assertEquals('?', it.getEntryState());
+                    assertFalse(it.isExecutable());
+                }
+            }
+            assertTrue(foundLink, "dir-link entry must have been discovered");
+        }
+    }
+
     private void deleteDirRecursively(File file) {
         if (file.isDirectory()) {
             File[] children = file.listFiles();

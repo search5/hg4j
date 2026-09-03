@@ -69,6 +69,11 @@ public class HgLfsTest {
         assertThrows(HgCorruptDataException.class, () -> {
             HgLfsPointer.parse(new byte[0]);
         });
+
+        // Null content
+        assertThrows(HgCorruptDataException.class, () -> {
+            HgLfsPointer.parse(null);
+        });
     }
 
     @Test

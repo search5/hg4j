@@ -139,4 +139,44 @@ public class DirstateV2ParserCoverageTest {
         assertTrue(decoded.isV2());
         assertTrue(decoded.getEntries().isEmpty());
     }
+
+    @Test
+    public void testParseLegacyTwoArgOverload_singleNodeWithCopySource_usesRelativeFallbackDetectionCopySourceBranch() throws Exception {
+        // Same legacy "relative offset" fallback as the all-zero test above, but with
+        // copySourceLen > 0 so the fallback loop's own copy-source ternary
+        // (`copySourceLen > 0 ? copySourceOffset+copySourceLen : pathOffset+pathLen`) takes its
+        // true branch, which the all-zero case above never exercises (copySourceLen there is 0).
+        //
+        // node struct: pathOffset=0/pathLen=0 (no path bytes), copySourceOffset=0/copySourceLen=5.
+        // Primary "absolute offset" probe (n=1): expectedEnd = copySourceOffset+copySourceLen = 5,
+        // which != bytes.length (49), so it fails and falls through as intended.
+        // Fallback "relative offset" probe (n=1): dataOffset=44; expectedEnd =
+        // 44 + copySourceOffset(0) + copySourceLen(5) = 49 == bytes.length -- resolves nodeCount=1.
+        //
+        // copySourceOffset=0 is absolute (the actual node-walk always reads copy_source_start as
+        // an absolute buffer position, never relative to a data block -- see
+        // DirstateV2Parser#parse(byte[],int,int)'s own comment), so the "copy source" bytes it
+        // reads back are simply the node struct's own leading zero bytes (pathOffset's 4 zero
+        // bytes + pathLen's first zero byte) decoded as 5 NUL characters. That is nonsense as
+        // *content*, but harmless (UTF-8 decoding never throws on it) -- this test only needs to
+        // prove the fallback detection's copy-source branch is taken and the resulting parse
+        // completes without exception, not that the recovered bytes are meaningful.
+        byte[] bytes = new byte[49];
+
+        DirstateV2Node node = new DirstateV2Node(bytes, 0);
+        node.setState('a');
+        node.setPathOffset(0);
+        node.setPathLen((short) 0);
+        node.setCopySourceOffset(0);
+        node.setCopySourceLen((short) 5);
+
+        DirstateV2Parser parser = new DirstateV2Parser();
+        Dirstate decoded = parser.parse(bytes);
+
+        assertNotNull(decoded);
+        assertTrue(decoded.isV2());
+        assertEquals(1, decoded.getEntries().size());
+        assertTrue(decoded.getEntries().containsKey(""));
+        assertEquals(1, decoded.getCopyMap().size(), "Copy-source branch of the fallback detection must have been exercised");
+    }
 }

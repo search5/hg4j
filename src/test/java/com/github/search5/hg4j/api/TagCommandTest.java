@@ -81,6 +81,36 @@ public class TagCommandTest {
     }
 
     @Test
+    public void explicitEmptyTagNameFallsBackToListingTags(@TempDir Path tempDir) throws Exception {
+        // tagName != null && !tagName.isEmpty() must take its false branch for an *explicit*
+        // empty string too, not just the never-called-setTagName default (null) case that
+        // testTagLifecycle/listTagsSkipsBlankAndCommentLines already exercise.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Map<String, String> tags = new TagCommand(repo).setTagName("").call();
+        assertTrue(tags.isEmpty());
+    }
+
+    @Test
+    public void registeringNullHooksIsANoOp(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+        byte[] node = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("c0").call();
+
+        // Neither registration should throw or add anything that later breaks tag creation.
+        Map<String, String> result = new TagCommand(repo)
+                .registerPreTagHook(null)
+                .registerPostTagHook(null)
+                .setTagName("v1.0")
+                .setNodeId(node)
+                .call();
+        assertEquals("v1.0", result.keySet().iterator().next());
+    }
+
+    @Test
     public void testInvalidTagParameters(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
@@ -151,6 +181,18 @@ public class TagCommandTest {
         Map<String, String> tags = new TagCommand(repo).call();
         assertEquals(1, tags.size());
         assertEquals("a".repeat(40), tags.get("v1.0"));
+    }
+
+    @Test
+    public void listTagsSkipsALineWithNoSpaceSeparator(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, ".hgtags").toPath(),
+                "no-space-token\n" + "a".repeat(40) + " valid\n");
+
+        Map<String, String> tags = new TagCommand(repo).call();
+        assertEquals(1, tags.size());
+        assertEquals("a".repeat(40), tags.get("valid"));
     }
 
     private static String toHex(byte[] bytes) {

@@ -126,6 +126,142 @@ public class HgSshWireServerRealHgInteropTest {
         assertEquals("hello ssh interop", Files.readString(new File(destDir, "a.txt").toPath()));
     }
 
+    @Test
+    public void realHgPullsIncrementalChangesFromHg4jServedOverSsh(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "hello ssh interop");
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
+
+        File destDir = tempDir.resolve("client_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(),
+                "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), destDir.getAbsolutePath());
+
+        Files.writeString(new File(serverRepoDir, "b.txt").toPath(), "second file");
+        new AddCommand(serverRepo).call();
+        byte[] secondCommit = new CommitCommand(serverRepo).setMessage("v2").setAuthor("dev").call();
+
+        HgTestUtils.hg(destDir, "--config", "ui.ssh=" + remoteCmdForTest(tempDir), "pull");
+        HgTestUtils.hg(destDir, "update");
+
+        String log = HgTestUtils.hg(destDir, "log", "-T", "{node}\n", "-r", "tip");
+        assertEquals(NodeIdUtil.toHex(secondCommit), log.trim());
+        assertTrue(new File(destDir, "b.txt").exists());
+    }
+
+    @Test
+    public void realHgPushesToHg4jServedOverSsh(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "hello ssh interop");
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
+
+        File destDir = tempDir.resolve("client_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(),
+                "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), destDir.getAbsolutePath());
+
+        Files.writeString(new File(destDir, "c.txt").toPath(), "pushed file");
+        HgTestUtils.hg(destDir, "add", "c.txt");
+        HgTestUtils.hg(destDir, "commit", "-m", "pushed commit");
+
+        HgTestUtils.hg(destDir, "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "push", sshUrl(serverRepoDir));
+
+        serverRepo.clearRevlogCache();
+        File clIdx = new File(serverRepo.getStoreDir(), "00changelog.i");
+        File clDat = new File(serverRepo.getStoreDir(), "00changelog.d");
+        var cl = serverRepo.getRevlog(clIdx, clDat);
+        assertEquals(2, cl.getRevisionCount(), "The pushed commit must be applied to the hg4j server repository");
+    }
+
+    @Test
+    public void realHgSeesAnotherRealHgClientsPushImmediatelyOverSsh(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "hello ssh interop");
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
+
+        File clientA = tempDir.resolve("client_a").toFile();
+        HgTestUtils.hg(tempDir.toFile(),
+                "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), clientA.getAbsolutePath());
+        Files.writeString(new File(clientA, "c.txt").toPath(), "pushed by client A");
+        HgTestUtils.hg(clientA, "add", "c.txt");
+        HgTestUtils.hg(clientA, "commit", "-m", "pushed commit");
+        HgTestUtils.hg(clientA, "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "push", sshUrl(serverRepoDir));
+        String pushedNode = HgTestUtils.hg(clientA, "log", "-T", "{node}\n", "-r", "tip").trim();
+
+        // Same self-consistency check as the HTTP equivalent: a second, independent real hg
+        // client clones fresh from the SAME still-running SSH server session factory afterward.
+        File clientB = tempDir.resolve("client_b").toFile();
+        HgTestUtils.hg(tempDir.toFile(),
+                "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), clientB.getAbsolutePath());
+
+        String log = HgTestUtils.hg(clientB, "log", "-T", "{node}\n", "-r", "tip");
+        assertEquals(pushedNode, log.trim(),
+                "A second real-hg client must see the first client's push immediately, without the server needing a restart");
+        assertTrue(new File(clientB, "c.txt").exists());
+    }
+
+    @Test
+    public void realHgClonesMultipleBranchesBookmarksAndTagsFromHg4jServedOverSsh(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "on default");
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("default v1").setAuthor("dev").call();
+
+        HgTestUtils.hg(serverRepoDir, "branch", "feature");
+        Files.writeString(new File(serverRepoDir, "b.txt").toPath(), "on feature");
+        HgTestUtils.hg(serverRepoDir, "add", "b.txt");
+        HgTestUtils.hg(serverRepoDir, "commit", "-m", "feature v1");
+        HgTestUtils.hg(serverRepoDir, "bookmark", "mybook");
+        HgTestUtils.hg(serverRepoDir, "tag", "v1.0");
+
+        File destDir = tempDir.resolve("client_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(),
+                "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), destDir.getAbsolutePath());
+
+        String branches = HgTestUtils.hg(destDir, "branches");
+        assertTrue(branches.contains("default"), "default branch missing: " + branches);
+        assertTrue(branches.contains("feature"), "feature branch missing: " + branches);
+
+        String bookmarks = HgTestUtils.hg(destDir, "bookmarks");
+        assertTrue(bookmarks.contains("mybook"), "bookmark missing: " + bookmarks);
+
+        String tags = HgTestUtils.hg(destDir, "tags");
+        assertTrue(tags.contains("v1.0"), "tag missing: " + tags);
+    }
+
+    @Test
+    public void realHgReceivesUnderstandableErrorForNonexistentRevisionOverSsh(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "hello ssh interop");
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
+
+        File destDir = tempDir.resolve("client_repo").toFile();
+        String bogusRev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+        AssertionError failure = assertThrows(AssertionError.class, () ->
+                assertTimeoutPreemptively(java.time.Duration.ofSeconds(30), () ->
+                        HgTestUtils.hg(tempDir.toFile(),
+                                "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                                "clone", "-r", bogusRev, sshUrl(serverRepoDir), destDir.getAbsolutePath())));
+        assertTrue(failure.getMessage().toLowerCase().contains("unknown revision")
+                        || failure.getMessage().toLowerCase().contains("abort"),
+                "Expected a real-hg-understood error message, got: " + failure.getMessage());
+    }
+
     /** Server-side {@code Command} adapter -- exactly the shape a real production SSH server
      * entry point would use to attach {@link HgSshWireServer} to whatever SSH library it picks. */
     private static class HgWireCommand implements Command, Runnable {

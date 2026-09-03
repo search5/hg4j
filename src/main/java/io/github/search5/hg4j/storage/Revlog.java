@@ -183,6 +183,29 @@ public class Revlog {
     }
 
     /**
+     * True when this revlog stores revision data inline within the {@code .i} file itself
+     * (no separate {@code .d} file) -- real hg's default layout for any revlog small enough to
+     * stay under its inline-size threshold, which in practice covers most manifests/filelogs of
+     * a freshly-created or lightly-populated repository. Callers that need to compute physical
+     * byte offsets within the index file (e.g. to truncate it) must branch on this: for an
+     * inline revlog, consecutive revisions' data is interleaved with their 64-byte headers
+     * directly in the {@code .i} file, so a plain {@code revCount * 64} byte offset (correct
+     * only for the non-inline layout) would silently discard every revision's payload bytes.
+     */
+    public synchronized boolean isInline() {
+        return inline;
+    }
+
+    /**
+     * Physical byte offset of revision {@code rev}'s 64-byte index record within the {@code .i}
+     * file. For a non-inline revlog this is simply {@code rev * 64}; for an inline revlog it
+     * additionally accounts for every preceding revision's interleaved payload bytes.
+     */
+    public synchronized long getFileOffset(int rev) {
+        return index.getFileOffset(rev);
+    }
+
+    /**
      * Completely clears the in-memory content cache and index, and reloads the disk state to maintain cache consistency.
      */
     public synchronized void clearCache() {

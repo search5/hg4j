@@ -840,11 +840,13 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     카테고리 각각을 별도 TDD
     배치로 진행 권장.
 
-    **진행 현황(2026-09-04)**: `branch`/`tag` 두 카테고리는 아래에 ✅로 완료 내용을
-    기록(실제 hg CLI 왕복 검증 + 발견된 실제 버그 2건 수정). `commit`/`push`/`merge`/
-    `rebase`/`shelve`/`bisect`/`strip`/`subrepo` 나머지 8개 카테고리는 이 세션과
-    병렬로 도는 별도 작업에서 처리 중이며, 이 항목의 해당 문단은 그 작업의 결과로
-    갱신될 예정이므로 여기서는 건드리지 않았다.
+    **진행 현황(2026-09-04)**: `branch`/`tag`/`merge`/`rebase`/`subrepo` 다섯
+    카테고리는 아래에 ✅로 완료 내용을 기록(실제 hg CLI 왕복 검증 + 발견된 실제
+    버그 다수 수정 — branch/tag 2건, merge/rebase 3건(그중 1건은 `CommitCommand`
+    공통 로직 버그), subrepo 2건). `commit`/`push`/`shelve`/`bisect`/`strip`
+    나머지 5개 카테고리는 이 세션과 병렬로 도는 별도 작업에서 처리 중이며, 이
+    항목의 해당 문단은 그 작업의 결과로 갱신될 예정이므로 여기서는 건드리지
+    않았다.
 
     **commit**: 머지 커밋(부모 2개, `p2` 필드 정확성) — 특히 심볼릭
     링크/실행권한/바이너리 파일이 섞인 머지, `hg commit --close-branch`, 빈 커밋
@@ -894,12 +896,40 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     바꾸는 건 기존 공개 API 시맨틱을 바꾸는 것이라 이번 세션에서는 손대지 않고
     `setBranch`를 통한 명시적 필터 기능만 추가했다. 기본 동작을 real hg의
     `hg heads` 시맨틱에 맞출지(브레이킹 체인지) 여부는 사용자 확인이 필요하다.
-    **merge**: fast-forward(이미 부분 검증됨, 위 항목 참고) 외 진짜 3-way
-    merge(공통 조상에서 양쪽이 다른 파일을 수정 — 충돌 없음), 충돌이 실제로
-    나서 `resolve`가 필요한 case(백로그 1번 `MergeState` 인프라는 있음, 실전
-    시나리오 종합 검증은 별개), rename/copy가 한쪽에 있는 상태의 merge(copy
-    추적이 살아남는지), 서로 다른 브랜치 간 merge, merge 중단(`hg merge --abort`
-    또는 워킹카피 되돌리기 — 명령 존재 여부부터 확인).
+
+    **merge**: ✅ **완료(2026-09-04)**. fast-forward는 이미 부분 검증돼 있었고,
+    진짜 3-way merge(공통 조상에서 양쪽이 다른 파일을 수정 — 충돌 없음)와 서로
+    다른 브랜치 간 merge는 기존 `CHgMergeInteropTest`가 이미 real hg CLI와
+    양방향 대조 중이었다(dev/default 두 브랜치, real hg `verify`/`cat`으로
+    확인). 충돌이 실제로 나서 `resolve`가 필요한 case도 기존
+    `MergeStateInteropTest`가 이미 양방향(실제 hg가 만든 `.hg/merge/state2`를
+    hg4j가 읽기, hg4j가 만든 걸 real hg `resolve --list`가 읽기) 검증 중이었다
+    — 이 셋은 "미검증"이 아니라 이미 완료돼 있던 것으로 재확인했다.
+
+    남은 두 시나리오를 이번 세션에 신설 `MergeRealHgInteropTest`(3개 테스트)로
+    검증: (1) rename/copy가 한쪽 브랜치에만 있는 상태의 merge — real hg로
+    `a.txt`를 `b.txt`로 rename한 브랜치를 hg4j `MergeCommand`+`CommitCommand`로
+    병합한 뒤, real hg `hg log --follow b.txt`가 rename 이전 이력까지 정상
+    추적함을 확인(copy 추적 생존 확인 — 버그 아님, `CommitCommand`가 내용
+    불변 파일은 원래 filelog 노드를 그대로 재사용하는 기존 로직 덕분에 이미
+    성립하고 있었다). (2) merge 중단 — **`hg merge --abort`에 대응하는 명령이
+    hg4j에 전혀 없었다**(신규 확인). `UpdateCommand.setForce(true)`로 우회하려
+    해도 안 된다: `UpdateCommand`는 "기록된 이전 parent1 manifest"와 "target
+    manifest"를 diff하는데, merge 직후 dirstate의 parent1은 이미 p1 그대로라
+    diff가 텅 비어 아무것도 되돌리지 못한다.
+
+    **기능 추가**: `MergeCommand.abort()` 신설 — real hg `hg merge --abort`와
+    동일하게(real hg 7.2로 직접 재현해 확인: 다른 parent에서만 추가된 파일은
+    삭제되고, 수정된 파일은 p1 내용으로 복원되며, 단일 parent로 복귀하고
+    `.hg/merge/state2`가 삭제됨) 동작하도록 p1 manifest 기준으로 모든 경로를
+    무조건 다시 쓴다(`UpdateCommand`처럼 diff에 의존하지 않는다 — 위 이유로
+    diff가 항상 비어 있기 때문). 병합 중이 아닐 때 호출하면 real hg의
+    `"abort: no merge in progress"`와 같은 취지로 거부한다
+    (`src/main/java/io/github/search5/hg4j/api/MergeCommand.java`).
+
+    **테스트**: `MergeRealHgInteropTest`(3개: copy 추적 생존, merge abort real
+    hg 왕복 대조, 병합 중 아닐 때 abort 거부) 신설, 전부 GREEN.
+
     **tag**: ✅ **완료(2026-09-04)**. 전역 태그(`.hgtags`, 커밋되는 파일) 생성 후
     `hg tags`로 조회, 로컬 태그(`.hg/localtags`, 미커밋), 기존 태그를 재태깅(move,
     `.hgtags`에 새 줄 추가되고 이전 줄은 사문화), 태그 삭제(`hg tag --remove`),
@@ -970,6 +1000,97 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     발산과 범위 밖으로 남긴 것(CloneCommand의 재귀 서브저장소 clone 미구현 등)은
     코드 주석 및 위 gap table `Subrepositories` 행에 상세 기록. 전체 회귀
     2362건 GREEN. 상세 근거는 위 gap table의 `Subrepositories` 행 참고.
+
+    **`rebase` 카테고리 ✅ 완료(2026-09-04)** — 이 5개 중 유일하게 hg4j
+    자체 왕복조차 "커밋 메시지/changelog 부모 연결만 확인, 뒤바뀐 커밋의
+    manifest/파일 내용은 한 번도 assert하지 않음"이었다는 게 실제 hg 대조
+    과정에서 드러났다. 신설 `RebaseRealHgInteropTest`(4개 테스트)로 검증하다가
+    **실제 버그 3건**을 발견·수정했다(전부 real hg가 만든 저장소를 hg4j
+    `RebaseCommand`로 rebase한 뒤 real hg `verify`/`cat`/`debugobsolete`/
+    `log --hidden`으로 대조하다가 나왔다 — hg4j 내부 왕복이었다면 절대 못
+    잡았을 종류):
+
+    1. **`stripRevisionsFrom`이 inline revlog를 전혀 고려하지 않고 있었다**
+       (가장 심각). real hg는 작은 revlog(막 만들어졌거나 커밋이 몇 개 안
+       되는 저장소의 manifest/filelog 대부분)를 별도 `.d` 데이터 파일 없이
+       `.i` 파일 안에 헤더+데이터를 인터리빙해서 저장하는데(real hg 7.2로
+       직접 확인: 2커밋짜리 저장소의 `00manifest.i`엔 `00manifest.d`가
+       아예 없음), `stripRevisionsFrom`은 항상 "리비전 수 × 64바이트"로만
+       `.i`를 자르고 있었다 — inline 저장소에서 이건 앞쪽 리비전들의 데이터
+       바이트를 통째로 잘라버려 revlog를 깨뜨린다. hg4j 자체 테스트는 전부
+       hg4j `CommitCommand`로 만든(항상 non-inline인) 저장소만 써서 이
+       경로를 한 번도 밟지 않았다. `Revlog`에 `isInline()`/`getFileOffset(int)`
+       공개 접근자를 추가하고, `RebaseCommand.stripRevisionsFrom`을 두
+       레이아웃 모두를 올바르게 절단하는 공용 헬퍼로 재작성
+       (`src/main/java/io/github/search5/hg4j/storage/Revlog.java`,
+       `src/main/java/io/github/search5/hg4j/api/RebaseCommand.java`).
+    2. **rebase로 새로 추가된 파일이 결과 커밋의 manifest에서 통째로 사라짐**
+       (데이터 손실, 버그 1을 고친 뒤에야 드러남). `RebaseCommand.cherryPickBackup`은
+       cherry-pick하는 모든 파일을 dirstate 상태 `'n'`(변경 없음)으로 기록하는데,
+       `CommitCommand`의 "변경 없음" 분기는 그 경로가 두 parent 중 어느 쪽
+       manifest에도 없으면(= target에 없던 완전히 새 파일) 그냥 아무것도 안
+       하고 넘어가는 else-분기가 없었다 — 결과 manifest에 그 파일 항목 자체가
+       빠졌다. `CommitCommand`에 "`'n'`으로 기록됐지만 두 parent 어디에도 없는
+       경로는 unchanged일 수 없으니 강제로 해시해서 새 filelog 리비전을
+       만든다"는 가드를 추가해 고쳤다(`RebaseCommand` 전용이 아니라
+       `CommitCommand` 공통 로직 버그였다 —
+       `src/main/java/io/github/search5/hg4j/api/CommitCommand.java`).
+    3. **obsolescence marker를 물리적 strip과 동시에, 항상 무조건 남긴다** —
+       real hg는 evolution이 꺼져 있으면(기본값) rebase 때 marker를 아예 안
+       남기고 strip만 하며, evolution이 켜져 있으면 strip 없이 marker만
+       남긴다(원본이 "hidden revision"으로 남아 `hg log --hidden`에서 보임).
+       hg4j는 이 둘을 동시에 해서, marker가 가리키는 predecessor가 changelog에서
+       완전히 사라진 상태가 된다 — `hg log --hidden`으로 찾으면 "hidden"이
+       아니라 "unknown revision" 에러가 난다(real hg 7.2로 직접 재현해
+       확인). 게다가 evolution을 쓸 생각이 전혀 없는 사용자가 평범한 rebase를
+       기대하고 hg4j를 썼더라도, 이후 그 저장소에 대한 모든 real hg 명령이
+       `"obsolete" feature not enabled but 1 markers found!` 경고를 stdout에
+       찍는 부작용이 생긴다(real hg의 `experimental.evolution` 클라이언트
+       설정에 의해 결정되는 것이라 저장소 쪽 `.hg/requires`로 끌 수 있는
+       종류가 아님도 확인 — `obsstore`를 requires에 넣으면 real hg가 아예
+       "unknown requirement"로 저장소를 못 엶). **이 부분은 고치지 않고 현재
+       동작을 `RebaseRealHgInteropTest`에 그대로 문서화만 해뒀다** — strip과
+       marker 동시 존재는 real hg가 절대 하지 않는 조합이라 (a) marker를
+       아예 안 남기고 순수 strip만 하거나(원래 설계 의도인 "완전한 물리적
+       strip 기반 rebase"에 가장 가까움) (b) strip을 그만두고 marker만
+       남기는 evolution 방식으로 전환하는 두 방향 중 하나를 선택해야 하는데,
+       **이건 이 세션 판단으로 정할 architecture 결정이 아니라 사용자
+       확인이 필요하다**(아래 "아키텍처 수준 확인 필요" 참고).
+
+    **또 다른 확인된 갭(버그 수정과 별개, 구현 안 함)**: `hg rebase --continue`/
+    `--abort`에 대응하는 게 hg4j `RebaseCommand`에 전혀 없다. 이유를 실제 hg와
+    대조해 신설 `conflictingEditIsSilentlyOverwrittenInsteadOfDetectedAsConflict`
+    테스트로 확증: real hg는 rebase 중 source/target이 같은 파일을 다르게
+    고치면 3-way merge를 시도하고 진짜 충돌 시 conflict marker를 남기고 exit 1로
+    멈춰 `hg resolve`/`hg rebase --continue`를 요구한다(real hg 7.2로 직접
+    재현: `<<<<<<< dest ... ======= ... >>>>>>> source`, `hg resolve --list`에
+    "U f.txt"). hg4j `RebaseCommand.cherryPickBackup`은 **3-way merge 로직이
+    코드에 아예 없다** — `MergeCommand`가 쓰는 `Merge3`를 전혀 참조하지 않고,
+    target을 체크아웃한 뒤 원본 커밋의 파일 내용을 무조건 덮어쓴다. 그 결과 이
+    시나리오에서 target의 수정 내용이 아무 경고·충돌 표시도 없이 조용히
+    사라지고 source 내용으로 완전히 덮어써진다(silent data loss — real hg라면
+    여기서 멈춰야 할 상황). `--continue`/`--abort`가 없는 것도 이 때문이다:
+    애초에 충돌을 감지하지 않으니 "충돌로 멈춘 중간 상태"가 존재하지 않고,
+    그래서 all-or-nothing(성공 아니면 물리적 rollback)으로 설계돼 있다. **이건
+    이번 세션에서 고치지 않았다** — 제대로 고치려면 `MergeCommand`가 하는
+    3-way merge+conflict-state 인프라를 cherry-pick 경로에도 통째로 들여와야
+    하는 규모 있는 아키텍처 작업이라, 이 세션 판단으로 구현 여부/방식을
+    정하지 않고 증거(실패 재현 테스트)만 남겨 사용자 확인을 요청한다.
+
+    **아키텍처 수준 확인 필요(사용자 판단 필요, 코드 변경은 하지 않음)**:
+    위 두 항목(obsolescence marker의 strip-and-mark 동시 수행 여부, rebase
+    conflict 감지+3-way merge+`--continue`/`--abort` 구현 여부)은 모두 hg4j
+    `RebaseCommand`의 근본 설계("항상 물리적 strip, 항상 all-or-nothing,
+    충돌은 존재하지 않는다고 가정")를 건드리는 결정이라 이 세션에서 임의로
+    정하지 않았다. 각각 실제 hg 동작과의 구체적 차이를 위에 재현 테스트와 함께
+    기록해뒀다.
+
+    **테스트**: `RebaseRealHgInteropTest`(4개: 충돌 없는 rebase 검증, obsolescence
+    marker가 real hg 관점에서 unknown revision이 됨을 확인, 평범한 real hg
+    명령에 경고가 섞여 나옴을 확인, 충돌 시나리오에서 silent data loss가
+    현재 동작임을 문서화) 신설, 전부 GREEN(문서화 테스트 포함 — 마지막 두
+    개는 "현재 동작이 이렇다"를 고정하는 assert이지 "이게 옳다"는 assert가
+    아니다).
 
     **범위(제외)**: 위 10개 카테고리 전부 **hg4j↔hg4j 자체 왕복이 아니라 실제 hg
     CLI와의 양방향 대조**(hg4j로 만든 결과를 실제 `hg log`/`hg verify`/`hg tags`/

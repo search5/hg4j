@@ -839,6 +839,25 @@ SSH/HTTP 와이어 프로토콜 전면 재구현 + 심볼릭 링크 dirstate 버
   `*`/`**`만 썼음). 부수적으로 `:134`(정규식 특수문자 리터럴 이스케이프, `()` 등)도
   커버.
 
+### `RevsetCommand.java:53` — 도달 불가능 확인 (3중 방어 조건 전부)
+
+`if (openIdx != -1 && closeIdx != -1 && openIdx < closeIdx)`: 이 줄에 도달하려면
+이미 바깥의 `expression.contains("(") && expression.endsWith(")")`가 참이어야
+하는데, `contains("(")`가 참이면 `indexOf('(')`는 절대 -1일 수 없고(`openIdx!=-1`
+항상 참), `endsWith(")")`가 참이면 `lastIndexOf(')')`는 항상 문자열의 마지막
+인덱스(`length-1`)와 같으므로 그 어떤 `(`의 위치도 그보다 클 수 없다(`openIdx <
+closeIdx` 항상 참). 3개 조건 모두 바깥 가드에 의해 이미 참으로 보장되는 완전
+방어적 코드 — **도달 불가능 확인**.
+
+### `ExportCommand.java:63,69` — 빈 커밋 테스트 추가했으나 분기 귀속 불명확 (18:30 마감 임박, 추가 조사 중단)
+
+파일을 하나도 건드리지 않은 빈 커밋(`CommitCommand`가 이를 허용함을 확인)을
+export하는 테스트(`testEmptyCommitBlankLineImmediatelyPrecedesDescription`)를
+추가 — 테스트 자체는 통과하고 "빈 커밋도 export 가능하다"는 실제 동작을
+검증하지만, jacoco 상 63/69번 줄의 missed 카운트는 그대로임(`HgRcConfig.java:73`,
+`ManifestTreeIterator.java:279`와 같은 패턴 — 정확한 분기 귀속 원인을 못 밝힘).
+18:30 마감이 임박해 더 파고들지 않고 유효한 회귀 테스트로서만 유지.
+
 ### 이번 라운드에서 손대지 못한 것 (다음 라운드로 이월)
 
 missed=1~4 롱테일 중 아직 미조사: `GpgSignature`(PGP 시그니처 바이트 스트림을

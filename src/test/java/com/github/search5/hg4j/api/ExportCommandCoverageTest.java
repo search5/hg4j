@@ -51,6 +51,21 @@ public class ExportCommandCoverageTest {
     }
 
     @Test
+    public void testEmptyCommitBlankLineImmediatelyPrecedesDescription(@TempDir Path tempDir) throws Exception {
+        // With zero files touched, CommitCommand's changelog serialization writes the blank
+        // description-separator immediately at line index 3 (no file-list lines precede it) --
+        // the other tests here all touch at least one file, so the search loop in call() always
+        // skips 1+ non-blank lines first before finding it.
+        File dir = tempDir.resolve("repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(dir).call();
+        new CommitCommand(repo).setMessage("empty root commit").setAuthor("dev").call();
+
+        String patch = new ExportCommand(repo).setRevision("0").call();
+
+        assertTrue(patch.contains("empty root commit"), "Expected description in patch, but got:\n" + patch);
+    }
+
+    @Test
     public void testMultilineDescriptionIsJoinedWithNewlines(@TempDir Path tempDir) throws Exception {
         File dir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(dir).call();

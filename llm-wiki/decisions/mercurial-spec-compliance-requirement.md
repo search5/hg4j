@@ -47,7 +47,7 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
 | Bundle1 (레거시 `HG10UN/GZ/BZ`) | wiki `BundleFormat` | `api.UnbundleCommand`, `api.FetchCommand`, `api.BundleCommand` | ✅ **완료(2026-09-03)** — 읽기(HG10UN/HG10GZ/HG10BZ 세 압축 형식 전부)는 이미 실제 `hg bundle --type=none-v1/gzip-v1/bzip2-v1`로 만든 파일로 검증돼 있었음(`TrackCMissingCommandsInteropTest`). 진단해보니 `api.BundleCommand`(직전 세션에 이미 신설)는 `none-v1`(`"HG10UN"` + 무압축 cg1)만 만들 수 있었고, 실제 gap은 `--type` 파라미터/gzip·bzip2 압축 부재였다 — `BundleCommand.BundleType`(`NONE_V1`/`GZIP_V1`/`BZIP2_V1`, `setType(BundleType)`/`setType(String)`, `hg`의 `--type` 철자 그대로) 추가로 해결. 바이트 레이아웃은 real hg 7.2.2 CLI 출력을 `xxd`로 직접 대조해 확정: `gzip-v1`은 순수 zlib/DEFLATE(`java.util.zip.Deflater`의 기본 wrapped 모드 — `GZIPOutputStream`이 만드는 gzip 컨테이너가 아님, `mercurial/utils/compression.py`의 `zlib.compressobj()` 및 기존 `UnbundleCommand`의 `InflaterInputStream` 읽기 경로와 대칭), `bzip2-v1`은 4바이트 리터럴 `"HG10"` 뒤에 표준 bzip2 스트림(`BZip2CompressorOutputStream`, 자체 `"BZh9..."` 매직으로 시작)을 그대로 이어붙여 `"HG10BZh9..."`가 되도록 함(6바이트 `"HG10BZ"` 헤더는 리터럴로 쓰지 않음 — `mercurial/bundle2.py`의 `bundletypes["HG10BZ"] = ("HG10", "BZ")`가 정확히 이 레이아웃임을 소스로 확인). 세 압축 방식 모두 real hg round-trip으로 검증(`BundleCommandTest`: hg4j가 쓴 gzip-v1/bzip2-v1 파일을 real `hg unbundle`이 정확히 읽음, real hg가 만든 gzip-v1 파일을 hg4j `UnbundleCommand`가 정확히 읽음) |
 | Bundle2 컨테이너 | `hg help internals.bundle2` | `Bundle2Parser` | ✅ **버그 2건 발견·수정(2026-09-01)** — 스트림 파라미터 크기 필드가 2바이트가 아니라 실제로는 4바이트(`_fstreamparamsize='>i'`)였던 버그, 파트 헤더의 파라미터를 키/값 교차로 읽던 게 아니라 실제로는 모든 (keylen,vallen) 쌍을 먼저 읽고 그다음 키/값 바이트를 순서대로 읽는 2단계 구조였던 버그. 둘 다 실제 `hg bundle`(기본 bzip2 압축) 결과물로 발견 |
 | Changegroup (cg1~cg5) | `hg help internals.changegroups`, `mercurial/changegroup.py` 실측 | `ChangegroupParser`, `storage.Revlog`, `transport.HgLocalClient`, `transport.HgRemoteClientV2` | ✅ **cg1/cg2/cg3 헤더 구조 버그 발견·수정 완료(2026-09-01)** — (1) cg1 델타 베이스 규칙: 실제 cg1은 `forcedeltaparentprev=True`로 각 엔트리를 "실제 DAG 부모(p1)"가 아니라 "스트림상 바로 직전 엔트리"를 기준으로 델타 인코딩한다(위치 기반, DAG와 무관). `HgLocalClient.getBundle()`이 p1 기준으로 델타를 만들고 있어서 다중 head(branch) 저장소를 pull하면 콘텐츠가 깨지는 실제 버그였음. (2) cg2/cg3 델타 헤더 필드 순서: 실제 구조체는 `node,p1,p2,deltabase,cs`인데 hg4j는 `node,p1,p2,cs,deltabase`로 읽어서 changelog 그룹에서 deltabase가 항상 자기 자신의 node와 같아지는 버그였음(`node`/`cs`가 changelog에서는 같은 값이라 증상이 그렇게 나타남) — 실제 `hg bundle` 결과물의 unbundle 실패로 발견. **cg3의 censor 지원은 ✅ 완료(2026-09-01, 백로그 7번)** — 패킹측 크래시(censored 리비전 포함 저장소를 pull/clone/push하면 무조건 죽던 버그)와 수신측 censored 플래그 소실(censor된 내용이 조용히 복원되는 심각한 버그) 둘 다 발견·수정. **트리매니페스트(treemanifest) 파싱은 읽기 경로만 ✅ 완료(2026-09-03, 백로그 8번)** — cg3의 `ManifestGroup` 파싱 골격 자체는 이미 있었고, 실제 병목은 매니페스트 콘텐츠를 소비하는 `ManifestTreeIterator` 쪽이었다(위 "Manifest 포맷" 행 참고). 쓰기는 백로그 18번. **cg4/cg5는 ✅ 완료(2026-09-03)** — 상세는 백로그 11번. 같은 작업 중 cg3에도 있던 별도의 실제 버그(루트 매니페스트 그룹을 서브디렉터리 경로 청크로 오인하는 버그)와, cg2~cg5 모두에 해당하는 협상 자체가 사실상 항상 무력화돼 있던 버그(bundlecaps 인코딩)도 같이 발견·수정 |
-| Wire protocol v1 (HTTP/SSH, capability 협상) | `hg help internals.wireprotocol` | `HgRemoteClient`, `HgSshClient`, `transport.wireprotov1.Wire1Commands`, `HgHttpWireServer`, `HgSshWireServer` | ✅ **양방향 완전 검증 완료(2026-09-01, 서버 방향 커버리지 2026-09-03에 확장)**. 클라이언트 방향: Docker 실제 Mercurial 6.0 `hg serve` HTTP 서버를 대상으로 hg4j `PullCommand`/`PushCommand`가 실시간 pull+push 왕복 성공(`HgHttpV1LiveServerInteropTest`). **서버 방향(실제 hg 클라이언트 → hg4j 서버)도 완료** — 기존 모놀리식 `HgWireServer`(가짜 SSH stdio 핸들러 포함, 실제 검증된 적 없음)를 JGit의 `UploadPack`/`ReceivePack`+전송별 glue 패턴대로 `Wire1Commands`(전송 무관 v1 코어)+`HgHttpWireServer`(HTTP)+`HgSshWireServer`(SSH, real hg SSH 라인 프로토콜 재구현)로 재구성 후 삭제, 실제 hg CLI를 클라이언트로 clone/pull/push/bookmark(HTTP, `HgHttpWireServerRealHgInteropTest`) 및 clone(SSH, 임베디드 Apache MINA SSHD 경유 진짜 SSH 세션, `HgSshWireServerRealHgInteropTest`)까지 전부 검증 — 이 과정에서 SSH 핸드셰이크의 `between` 커맨드가 빈 응답을 내던 진짜 버그(real hg 클라이언트가 영원히 멈춤)도 발견·수정. **백로그 22번 "실제 hg 클라이언트 → hg4j 서버" 그룹(2026-09-03)**: 그때까지 SSH 쪽은 clone 한 가지만 검증돼 있었던 실제 gap을 메움 — real hg **SSH 증분 pull**(`realHgPullsIncrementalChangesFromHg4jServedOverSsh`)과 real hg **SSH push**(`realHgPushesToHg4jServedOverSsh`) 신규 검증 통과(기존에 알려졌던 대로 SSH push 경로 자체는 이미 정상 동작했음 — 새로운 실버그는 못 찾음), 여러 named branch/bookmark/tag가 있는 저장소의 clone 정확성(HTTP+SSH 둘 다), 존재하지 않는 리비전을 `clone -r`/`pull -r`로 요청했을 때 real hg 클라이언트가 "unknown revision"/"abort" 메시지로 정상 종료(크래시·행 없음, HTTP+SSH 둘 다)까지 신규 검증. 추가로 "첫 번째 real hg 클라이언트가 push한 직후 두 번째 real hg 클라이언트가 같은 살아있는 서버에서 즉시 그 커밋을 보는지"(서버 재시작 없이 자체 일관성 유지되는지)도 신규 검증(HTTP+SSH 둘 다 통과). **테스트 작성 중 발견한 함정(버그 아님)**: `HgHttpWireServer`/`HgSshWireServer`에 넘긴 `HgRepository` 객체가 내부적으로 `Revlog` 인스턴스를 캐싱하므로, 서버가 살아있는 동안 그 저장소 디렉터리를 **hg4j API를 거치지 않고** 별도 `hg` CLI 프로세스로 직접 수정하면(이번 세션의 브랜치/북마크/태그 테스트 셋업이 처음에 그렇게 했다가 걸림) 서버가 그 변경을 못 보고 stale 데이터를 서빙한다 — `serverRepo.clearRevlogCache()`를 명시적으로 호출해야 함(기존 push 테스트도 이미 이 패턴을 쓰고 있었음). 이건 wire protocol 자체의 버그가 아니라 "server가 물고 있는 저장소를 외부 프로세스가 몰래 건드리는" 별개의 아키텍처 이슈라 이번 항목 범위 밖으로 두고 그대로 문서화만 함. 이번 확장분 테스트: `HgHttpWireServerRealHgInteropTest`(4→8건), `HgSshWireServerRealHgInteropTest`(1→6건), 전부 GREEN. 백로그 22번의 나머지 3개 그룹(hg4j 클라이언트→실제 hg 서버 방향의 HTTP 3단계 인자 협상/압축 협상/SSH unbundlehash, 협상 실패 폴백 경로)은 별도 병렬 작업에서 처리 |
+| Wire protocol v1 (HTTP/SSH, capability 협상) | `hg help internals.wireprotocol` | `HgRemoteClient`, `HgSshClient`, `transport.wireprotov1.Wire1Commands`, `HgHttpWireServer`, `HgSshWireServer` | ✅ **양방향 완전 검증 완료(2026-09-01, 서버 방향 및 클라이언트 협상 매트릭스 2026-09-03에 확장)**. 클라이언트 방향: Docker 실제 Mercurial 6.0 `hg serve` HTTP 서버를 대상으로 hg4j `PullCommand`/`PushCommand`가 실시간 pull+push 왕복 성공(`HgHttpV1LiveServerInteropTest`). **서버 방향(실제 hg 클라이언트 → hg4j 서버)도 완료** — 기존 모놀리식 `HgWireServer`(가짜 SSH stdio 핸들러 포함, 실제 검증된 적 없음)를 JGit의 `UploadPack`/`ReceivePack`+전송별 glue 패턴대로 `Wire1Commands`(전송 무관 v1 코어)+`HgHttpWireServer`(HTTP)+`HgSshWireServer`(SSH, real hg SSH 라인 프로토콜 재구현)로 재구성 후 삭제, 실제 hg CLI를 클라이언트로 clone/pull/push/bookmark(HTTP, `HgHttpWireServerRealHgInteropTest`) 및 clone(SSH, 임베디드 Apache MINA SSHD 경유 진짜 SSH 세션, `HgSshWireServerRealHgInteropTest`)까지 전부 검증 — 이 과정에서 SSH 핸드셰이크의 `between` 커맨드가 빈 응답을 내던 진짜 버그(real hg 클라이언트가 영원히 멈춤)도 발견·수정. **백로그 22번 "실제 hg 클라이언트 → hg4j 서버" 그룹(2026-09-03)**: 그때까지 SSH 쪽은 clone 한 가지만 검증돼 있었던 실제 gap을 메움 — real hg **SSH 증분 pull**(`realHgPullsIncrementalChangesFromHg4jServedOverSsh`)과 real hg **SSH push**(`realHgPushesToHg4jServedOverSsh`) 신규 검증 통과(기존에 알려졌던 대로 SSH push 경로 자체는 이미 정상 동작했음 — 새로운 실버그는 못 찾음), 여러 named branch/bookmark/tag가 있는 저장소의 clone 정확성(HTTP+SSH 둘 다), 존재하지 않는 리비전을 `clone -r`/`pull -r`로 요청했을 때 real hg 클라이언트가 "unknown revision"/"abort" 메시지로 정상 종료(크래시·행 없음, HTTP+SSH 둘 다)까지 신규 검증. 추가로 "첫 번째 real hg 클라이언트가 push한 직후 두 번째 real hg 클라이언트가 같은 살아있는 서버에서 즉시 그 커밋을 보는지"(서버 재시작 없이 자체 일관성 유지되는지)도 신규 검증(HTTP+SSH 둘 다 통과). **테스트 작성 중 발견한 함정(버그 아님)**: `HgHttpWireServer`/`HgSshWireServer`에 넘긴 `HgRepository` 객체가 내부적으로 `Revlog` 인스턴스를 캐싱하므로, 서버가 살아있는 동안 그 저장소 디렉터리를 **hg4j API를 거치지 않고** 별도 `hg` CLI 프로세스로 직접 수정하면(이번 세션의 브랜치/북마크/태그 테스트 셋업이 처음에 그렇게 했다가 걸림) 서버가 그 변경을 못 보고 stale 데이터를 서빙한다 — `serverRepo.clearRevlogCache()`를 명시적으로 호출해야 함(기존 push 테스트도 이미 이 패턴을 쓰고 있었음). 이건 wire protocol 자체의 버그가 아니라 "server가 물고 있는 저장소를 외부 프로세스가 몰래 건드리는" 별개의 아키텍처 이슈라 이번 항목 범위 밖으로 두고 그대로 문서화만 함. 이번 확장분 테스트: `HgHttpWireServerRealHgInteropTest`(4→8건), `HgSshWireServerRealHgInteropTest`(1→6건), 전부 GREEN. **백로그 22번 그룹 1/2/4(클라이언트 방향 "실전 통신·협상" 세부 조합) ✅ 완료(2026-09-03)** — HTTP 3단계 인자 전송(`httppostargs`/`httpheader=N`/레거시 GET) 각각을 실제 hg 서버로 개별 강제(레거시 GET은 real hg가 `httpheader=`를 끌 방법이 없어 그 토큰만 투명하게 벗겨내는 신규 `CapabilityStrippingHttpProxy`로 강제), `zlib`/`zstd`/`none` 압축 조합 전부, SSH `unbundlehash` off(신규 `HgSshUnbundleHashOffInteropTest`)까지 전부 real hg 7.2(Docker 불필요, 시스템 hg가 zstd 확장 내장)로 검증 — **새 프로토콜 버그는 못 찾음**(기존 구현이 이미 정확했고 강제 검증만 안 돼 있던 상태였음이 확인됨). 상세는 백로그 22번 항목 참고 |
 | Wire protocol v2 (실험적, cbor+프레임 기반) | `hg help internals.wireprotocolv2`, `mercurial/wireprotoframing.py`/`wireprotov2server.py`/`wireprotov2peer.py` 실측(Mercurial 6.0) | `transport.HgRemoteClientV2`, `transport.HgHttpWireServer`, `transport.wireprotov2.*`(`Wire2Frame`/`Wire2Transport`/`Wire2Commands`/`Cbor`) | ✅ **전면 재구현 완료(2026-09-01)** — 이전 구현은 사실상 전부 가짜였다(존재하지도 않는 `/api/<command>` 평면 HTTP+CBOR 스킴, `changegroup`/`getbundle`/`unbundle`이라는 v2에 없는 명령, 실제로는 모든 문자열이 CBOR byte-string인데 text-string으로 인코딩). Mercurial 6.0(v2 서버 코드가 남아있는 마지막 릴리스 — 6.1에서 완전히 제거됨)을 Docker로 직접 띄워 **양방향** 검증: (1) hg4j 클라이언트 → 실제 hg 6.0 서버로 capabilities/heads/known/listkeys/lookup/pushkey/branchmap 및 changesetdata+manifestdata+filesdata로부터 재구성한 전체 clone까지 노드 해시 일치 확인. (2) 실제 hg 6.0 클라이언트(`hg --config experimental.httppeer.advertise-v2=true clone`) → hg4j의 서버(현재 `HgHttpWireServer`, JGit식 재구성으로 옛 `HgWireServer`에서 이관됨)로 완전한 clone 성공 + `hg verify` 통과. 진짜 프레임 프로토콜(8바이트 헤더, capabilities 발견 핸드셰이크, 실제 명령 집합)을 처음부터 구현. **구조적 한계**: 이 프로토콜 자체가 실제 Mercurial에서 6.1부터 완전히 폐기됐다 — 즉 아무리 정확히 구현해도 현재 배포되는 실제 hg 서버 중 이 프로토콜을 쓰는 것은 사실상 없다(README의 "완전 준수" 요건 충족 목적으로는 의미 있으나 실사용 가치는 제한적). **v1→v2 자동 업그레이드는 ✅ 완료(2026-09-01, 백로그 2번)** — 가짜 `"http-v2"` 플래그 매칭을 제거하고 실제 `X-HgUpgrade-1`/`X-HgProto-1` 핸드셰이크로 교체, CBOR discovery 응답이면 `HgRemoteClientV2`로 자동 위임·아니면 평문 v1 폴백. **추가로 발견·수정한 버그(JGit 재구성 세션, 이후)**: 이 자동 업그레이드 시에도 discovery 응답에 실려오는 `v1capabilities` 필드(`clonebundles` 같은 v2에 없는 v1 전용 토큰)를 클라이언트가 실제로는 파싱하지 않고 버리고 있었음 — 파싱하도록 수정. **`getBundle()`의 재귀적 tree fetch도 ✅ 완료(2026-09-03, 백로그 20번)** — 루트 매니페스트에서 `t` 플래그 서브디렉터리 포인터를 발견하면 BFS로 `manifestdata`를 `tree=<dir>`로 재귀 호출해 깊이 중첩된 포인터까지 전부 수집. 이 과정에서 hg4j 자체 wire2 **서버** 측(`Wire2Commands.manifestdata`)도 비어있지 않은 `tree` 인자를 무조건 거부하던 실제 갭을 발견해 대칭적으로 수정. Mercurial 6.1부터 폐기된 프로토콜이라 real hg 서버로는 검증 못 하고 hg4j↔hg4j 자기 일관성 왕복(`Wire2TreeManifestFetchTest`)으로 검증. 상세: [[wireprotocol-v2-support-plan]] |
 | Phases (draft/public/secret) | `hg help phases` | `PhaseRoots`, `api.PhaseCommand` | ✅ |
 | Bookmarks (이동 가능한 포인터, named branch와 구별) | `hg help bookmarks`, `mercurial/bookmarks.py`(comparebookmarks/validdest 실측) | `api.BookmarkCommand`, `api.CommitCommand`, `api.UpdateCommand`, `api.FetchCommand` | ✅ **구현 완료(2026-09-01)** — commit 자동 전진/update 활성화·비활성화/pull·push 동기화 전부 구현, 실제 hg CLI로 fast-forward·진짜 divergence·원격 push/pull까지 검증(`BookmarkRealHgInteropTest`). 검증 중 데이터 손실 버그 2건 발견·수정: (1) pull 시 ancestor 관계를 안 따져서 로컬의 독자적 bookmark 이동이 조용히 덮어써지던 버그, (2) 새 changeset 없이 bookmark만 이동한 원격을 pull하면 동기화 자체가 생략되던 버그. 상세: [[bookmark-full-support-plan]] |
@@ -708,9 +708,8 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     타이밍 플레이키 1건 제외 전부 GREEN, 단독 재실행 시 그것도 통과)로 기존 동작
     무손상 확인.
 
-22. **HTTP/SSH 와이어 프로토콜 "실전 통신·협상" 테스트 확충 — 2026-09-03 제안,
-    "실제 hg 클라이언트 → hg4j 서버" 그룹 완료(2026-09-03), 나머지 3개 그룹은 별도
-    병렬 작업에서 진행.** 배경: 2026-09-03 세션에서 두 종류의 작업을 병행해봄 —
+22. ~~**HTTP/SSH 와이어 프로토콜 "실전 통신·협상" 테스트 확충**~~ — ✅ **완료(2026-09-03,
+    4개 그룹 전부)**. 배경: 2026-09-03 세션에서 두 종류의 작업을 병행해봄 —
     (a) 순수 JaCoCo BRANCH 커버리지 갭 메우기(missed 1~4 롱테일 ~30개 클래스), (b) 그
     이전에 했던 SSH/HTTP 라이브 interop 검증(백로그 3번, `unbundlehash`, SSH 핸드셰이크
     전면 재구현 등). **(a)는 실버그를 하나도 못 찾았고**(전부 "이미 맞게 동작하는데
@@ -750,6 +749,76 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     **다음 세션 시작점**: 위 "범위(포함)" 4개 그룹을 각각 별도 TDD 배치로 나눠
     순서대로 진행 권장(실제 hg 클라이언트→hg4j 서버 방향이 가장 검증 안 된 채
     남아있어 우선순위가 가장 높음).
+
+    **그룹 1/2/4(클라이언트 방향) 진행 결과, 2026-09-03**: 기존 구현(`HgRemoteClient`/
+    `HgSshClient`)의 3단계 인자 전송·압축 협상·`unbundlehash` 로직 자체는 이미 정확하게
+    구현돼 있었다(코드 재작성 불필요) — 이번 세션이 실제로 한 일은 "각 조합을 real hg
+    상대로 개별 강제해서 실버그가 없는지 확인"뿐이었고, **실제로 새로 발견한 프로토콜
+    버그는 0건**이었다(이 점에서 이번 배치는 이 문서 상단에 적힌 "(a) 순수 커버리지
+    갭 메우기는 실버그를 못 찾는다"는 패턴에 더 가까웠다 — 다만 "이미 구현은 있지만
+    한 번도 real hg로 강제 검증된 적 없는 분기"였다는 점에서 여전히 가치 있는 검증).
+
+    - **httppostargs 강제**: 실제 hg는 `experimental.httppostargs`(기본 false) 설정으로
+      켤 수 있음 확인(`mercurial/wireprotoserver.py addcapabilities()` 실측). 이 config로
+      real `hg serve`를 띄워 capabilities에 `httppostargs`가 실제로 나타나는지, 그리고
+      hg4j `PullCommand`/`PushCommand`가 그 상태에서 실제 pull+push 왕복에 성공하는지
+      확인 — 통과.
+    - **httpheader=N 경로**: 실제 hg는 이 토큰을 **무조건** 광고한다(config로 끌 수
+      없음, `addcapabilities()`에 조건 없이 `caps.append(b'httpheader=%d' % ...)`).
+      기존 `HgHttpV1LiveServerCgNegotiationInteropTest`가 이미 이 경로를 통해 real
+      Rust hg 7.2.4와 실제로 changegroup 버전까지 협상하고 있었으므로 별도 그룹으로
+      중복 검증하지 않음.
+    - **레거시 GET(3번째 티어) 강제**: real hg에 이를 끄는 config가 없어서(위와 동일한
+      이유), real hg 자체는 건드리지 않고 `?cmd=capabilities` 응답 바디에서만
+      `httpheader=` 토큰을 제거하는 투명 리버스 프록시(`CapabilityStrippingHttpProxy`,
+      다른 모든 요청/응답은 바이트 단위로 그대로 통과)를 hg4j와 real hg 사이에 세워
+      강제. 이 상태에서 hg4j가 실제로 쿼리스트링 GET으로 폴백하고(capabilities에
+      `httpheader=`/`httppostargs` 둘 다 없음을 sanity로 확인) real hg의 `_args()`가
+      —원래 querystring도 항상 파싱하므로— 정상적으로 pull을 완주함을 확인.
+    - **압축 협상 `zlib`/`zstd`/`none`**: real hg는 `server.compressionengines=<엔진>`
+      config로 광고 목록을 강제로 한 엔진만으로 좁힐 수 있음 확인
+      (`wireprototypes.supportedcompengines()` 실측). 처음엔 zstd에 별도 `zstandard`
+      PyPI 패키지가 필요한 줄 알았으나, real hg는 자체 번들 C 확장
+      (`mercurial.zstd`, `mercurial/zstd.*.so`)을 쓰므로 호스트 native hg 7.2에 이미
+      포함돼 있어 Docker/재빌드 불필요였음 — 세 엔진 전부 host `hg serve`만으로 강제
+      가능. 세 조합 각각 capabilities의 `compression=` 토큰이 강제한 엔진 하나만
+      담고 있음을 확인 후 실제 pull(0.2 프레이밍 + 해당 코덱 압축해제 왕복) 성공 확인.
+    - **`unbundlehash` off (HTTP+SSH 둘 다)**: real hg는 이 토큰도 무조건 광고
+      (`wireprotov1server.wireprotocaps` 리스트에 조건 없이 포함) — "on" 경로는
+      기존 `HgSshClientRealHgInteropTest#pushEndToEndToARealHgSshServer`(SSH)/
+      `HgHttpV1LiveServerInteropTest#pushes...`(HTTP)가 real hg가 always-on이므로
+      이미 암묵적으로 검증하고 있었음(해시된 sentinel이 실제로 accept됨).
+      "off"는 real hg에 끌 방법이 없어 두 가지 MITM 기법으로 강제: HTTP는 위와 같은
+      `CapabilityStrippingHttpProxy`로 `unbundlehash` 토큰만 제거; SSH는 real
+      `hg serve --stdio` 서브프로세스를 그대로 파이프하되 최초의 framed 응답(`hello`
+      커맨드의 `capabilities: ...` 줄)만 디코드·토큰 제거·재인코드하는
+      `UnbundlehashStrippingHgServeCommand`(Apache MINA SSHD `Command` 어댑터,
+      `HgSshClientRealHgInteropTest`의 `RealHgServeCommand` 패턴 확장)로 구현. 두
+      경우 다 capabilities에서 `unbundlehash`가 실제로 사라졌음을 sanity로 확인한
+      뒤, hg4j가 (해시 대신) literal heads 목록을 보내고 real hg의
+      `exchange.check_heads()`가 이를 정상적으로 accept해 push가 성공함을 확인 —
+      "off"가 단순히 "안 깨진다" 수준이 아니라 진짜 원래(최적화 이전) 경로가 real
+      서버에 여전히 정상 동작함을 증명.
+
+    **강제 못 시킨 조합**: 없음 — 위 "범위(포함)" 1/2/4번 그룹의 모든 하위 조합을
+    real hg(host native 7.2)만으로 전부 강제·검증했다(Docker `hg-rust-7.2.4`는 결국
+    쓰지 않았음 — zstd가 host native hg에도 이미 있었기 때문).
+
+    **테스트**: `HgHttpV1NegotiationForcingInteropTest`(httppostargs 강제/레거시 GET
+    강제/압축 3종 강제/HTTP unbundlehash-off 강제, 6개 테스트) +
+    `HgSshUnbundleHashOffInteropTest`(SSH unbundlehash-off 강제, 1개 테스트) — 신설
+    지원 클래스 `RealHgServeSupport`(host `hg serve` 기동+포트 감지)/
+    `CapabilityStrippingHttpProxy`(capabilities 응답 토큰 제거 투명 프록시)와 함께
+    `src/test/java/io/github/search5/hg4j/transport/`에 추가, 전부 GREEN. 기존
+    `HgHttpV1LiveServerInteropTest`/`HgHttpV1LiveServerCgNegotiationInteropTest`/
+    `HgSshClientRealHgInteropTest` 등은 건드리지 않음(그대로 GREEN 유지, transport
+    패키지 전체 492개 테스트 무손상 확인).
+
+    **미완료**: 없음 — 그룹 3(실제 hg 클라이언트 → hg4j 서버 방향)도 병렬로 진행된
+    별도 작업으로 ✅ 완료(2026-09-03, 위 gap table "Wire protocol v1" 행 참고): SSH
+    증분 pull/push, 여러 branch/bookmark/tag가 있는 저장소의 clone 정확성(HTTP+SSH),
+    존재하지 않는 리비전 요청 시 에러 처리, 같은 서버에서의 클라이언트 간 즉시 일관성
+    신규 검증. 이로써 22번 항목의 4개 그룹(1/2/3/4) 전부 완료.
 
 23. **commit/push/branch/merge/tag(+ rebase/shelve/bisect/strip/subrepo) — 실전
     시나리오 종합 interop 검증, 신규, 2026-09-03 제안, 작업 범위만 확정, 미착수.**

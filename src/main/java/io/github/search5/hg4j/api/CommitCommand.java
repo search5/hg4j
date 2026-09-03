@@ -377,6 +377,29 @@ public class CommitCommand {
                                     }
                                 }
                             }
+
+                            // A tracked path marked 'n' (dirstate says "unchanged") that is
+                            // absent from BOTH candidate parent manifests cannot legitimately be
+                            // "unchanged" -- there is nothing for it to be unchanged FROM. Without
+                            // this, such a path silently vanishes from the new commit's manifest
+                            // entirely (the "!changed" branch below only knows how to reuse an
+                            // *existing* parent manifest entry; when neither parent has one, it
+                            // has no else-case and just drops the path). Real caller that hits
+                            // this: RebaseCommand.cherryPickBackup marks every file it writes as
+                            // 'n' with disk-matching size/mtime (correct fast path for files
+                            // genuinely carried over unchanged from the target), including
+                            // brand-new files added by the very revision being cherry-picked when
+                            // the rebase target never had that path -- caught live against a
+                            // real-hg-created repo by RebaseRealHgInteropTest (hg4j-only round
+                            // trips never exercised this because they never asserted on the
+                            // rebased commit's manifest/file content, only on changelog linkage).
+                            if (!changed) {
+                                boolean presentInP1 = manifestP1.containsKey(path);
+                                boolean presentInP2 = parent2Rev != -1 && manifestP2.containsKey(path);
+                                if (!presentInP1 && !presentInP2) {
+                                    changed = true;
+                                }
+                            }
                         }
 
                         if (changed) {

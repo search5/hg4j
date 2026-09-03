@@ -455,6 +455,55 @@ public class RebaseCommand {
         return backup;
     }
 
+    /**
+     * Computes the {@code .i}/{@code .d} byte sizes needed to truncate {@code revlog} down to
+     * exactly revisions {@code [0, keepCount)}, correctly branching on {@link Revlog#isInline()}.
+     *
+     * <p>Real hg stores any revlog small enough (in practice: most manifests/filelogs of a
+     * freshly-created or lightly-populated repository -- verified live against real hg 7.2,
+     * 2026-09-04: a 2-commit repo's {@code 00manifest.i} has no {@code 00manifest.d} at all)
+     * <em>inline</em>: each revision's compressed payload is written directly after its own
+     * 64-byte header inside the {@code .i} file itself, so a truncation size of {@code
+     * keepCount * 64} (correct only for the non-inline layout, where {@code .i} holds nothing
+     * but fixed-size headers) discards every kept revision's payload bytes and corrupts the
+     * revlog. The previous version of this method assumed non-inline unconditionally, which
+     * silently corrupted the manifest/changelog/filelogs of any real-hg-created repository
+     * rebase touched (caught by {@code RebaseRealHgInteropTest}, which -- unlike every prior
+     * {@code RebaseCommand} test -- exercises a real-hg-created repository).
+     *
+     * @return {@code {idxSize, datSize}}, where {@code datSize == -1} means "inline: there is
+     *         no separate {@code .d} file to truncate", or {@code null} if {@code keepCount}
+     *         already equals the revlog's current revision count (nothing to truncate).
+     */
+    private long[] computeTruncateSizes(Revlog revlog, int keepCount) {
+        int total = revlog.getRevisionCount();
+        if (keepCount < 0 || keepCount >= total) {
+            return null;
+        }
+        if (keepCount == 0) {
+            return new long[]{0, revlog.isInline() ? -1 : 0};
+        }
+        if (revlog.isInline()) {
+            Revlog.IndexRecord lastKept = revlog.getIndexRecord(keepCount - 1);
+            long idxSize = revlog.getFileOffset(keepCount - 1) + 64 + lastKept.getCompLen();
+            return new long[]{idxSize, -1};
+        } else {
+            long idxSize = (long) keepCount * 64;
+            long datSize = revlog.getIndexRecord(keepCount).getOffset();
+            return new long[]{idxSize, datSize};
+        }
+    }
+
+    private void applyTruncate(File idxFile, File datFile, long[] sizes) throws IOException {
+        if (sizes == null) {
+            return;
+        }
+        truncateFile(idxFile, sizes[0]);
+        if (sizes[1] >= 0) {
+            truncateFile(datFile, sizes[1]);
+        }
+    }
+
     private void stripRevisionsFrom(int startRev) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
@@ -464,12 +513,7 @@ public class RebaseCommand {
         Revlog changelog = repository.getRevlog(clIdx, clDat);
         Revlog manifest = repository.getManifestRevlog();
 
-        // Calculate truncate boundaries
-        long clIdxSize = (long) startRev * 64;
-        long clDatSize = 0;
-        if (startRev > 0) {
-            clDatSize = changelog.getIndexRecord(startRev).getOffset();
-        }
+        long[] clSizes = computeTruncateSizes(changelog, startRev);
 
         // We also truncate manifest starting from the linkRev mapping to startRev
         int minMfRev = -1;
@@ -479,17 +523,7 @@ public class RebaseCommand {
                 break;
             }
         }
-
-        long mfIdxSize = manifest.getRevisionCount() * 64L;
-        long mfDatSize = mfDat.exists() ? mfDat.length() : 0L;
-        if (minMfRev != -1) {
-            mfIdxSize = (long) minMfRev * 64;
-            if (minMfRev > 0) {
-                mfDatSize = manifest.getIndexRecord(minMfRev).getOffset();
-            } else {
-                mfDatSize = 0;
-            }
-        }
+        long[] mfSizes = minMfRev != -1 ? computeTruncateSizes(manifest, minMfRev) : null;
 
         // Truncate filelogs registered in fncache (Solve filelog strip defect)
         File fncacheFile = new File(repository.getStoreDir(), "fncache");
@@ -512,13 +546,7 @@ public class RebaseCommand {
                                 }
                             }
                             if (minFileRev != -1) {
-                                long flIdxSize = (long) minFileRev * 64;
-                                long flDatSize = 0;
-                                if (minFileRev > 0) {
-                                    flDatSize = filelog.getIndexRecord(minFileRev).getOffset();
-                                }
-                                truncateFile(flIdx, flIdxSize);
-                                truncateFile(flDat, flDatSize);
+                                applyTruncate(flIdx, flDat, computeTruncateSizes(filelog, minFileRev));
                             }
                         } catch (Exception ignored) {
                             // Ignore load/strip failure of single filelog
@@ -529,10 +557,8 @@ public class RebaseCommand {
         }
 
         // Perform truncate physically
-        truncateFile(clIdx, clIdxSize);
-        truncateFile(clDat, clDatSize);
-        truncateFile(mfIdx, mfIdxSize);
-        truncateFile(mfDat, mfDatSize);
+        applyTruncate(clIdx, clDat, clSizes);
+        applyTruncate(mfIdx, mfDat, mfSizes);
     }
 
     private void truncateFile(File file, long size) throws IOException {

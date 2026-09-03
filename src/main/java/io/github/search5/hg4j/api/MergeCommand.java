@@ -496,7 +496,70 @@ public class MergeCommand {
       }
     }
 
+    /**
+     * Aborts an in-progress merge, mirroring real hg's {@code hg merge --abort} (verified
+     * live against real hg 7.2, 2026-09-04): discards every working-copy change introduced
+     * by the unfinished merge -- including files that exist only because they were added by
+     * the other parent -- and restores the working copy to exactly p1's committed state,
+     * resets dirstate back to a single parent, and clears {@code .hg/merge/state2}.
+     *
+     * <p>Unlike {@link UpdateCommand}, which diffs the <em>recorded</em> previous-parent
+     * manifest against the target manifest, this cannot use a manifest diff to know what to
+     * touch: after {@link #call()}, dirstate's parent1 already <em>is</em> p1, so a manifest
+     * diff against p1 would see no change at all and leave every merge-introduced edit (and
+     * every file added purely by p2) untouched on disk. Every path is therefore rewritten (or
+     * removed) unconditionally against p1's manifest.
+     */
+    public void abort() throws IOException, HgLockException {
+        repository.clearRevlogCache();
+        try (HgLock storeLock = repository.lockStore();
+             HgLock wlock = repository.lockWorkingCopy()) {
 
+            Dirstate dirstate = repository.getDirstate();
+            NodeId p1 = dirstate.getParent1Node();
+            NodeId p2 = dirstate.getParent2Node();
+            if (p2 == null || p2.isNull()) {
+                // Matches real hg's "abort: no merge in progress" (hg 7.2, mergestatemod).
+                throw new HgValidationException("no merge in progress");
+            }
+            if (p1 == null || p1.isNull()) {
+                throw new IllegalStateException("Cannot abort merge in an empty repository.");
+            }
+
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+            int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1.getBytes());
+            if (p1Rev == -1) {
+                throw new HgRevisionNotFoundException(p1.toHex());
+            }
+            Revlog manifestRevlog = repository.getManifestRevlog();
+            Map<String, String> manifestP1 = loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
+
+            Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+            allPaths.addAll(dirstate.getEntries().keySet());
+            allPaths.addAll(manifestP1.keySet());
+
+            for (String path : allPaths) {
+                String hexP1 = manifestP1.get(path);
+                if (hexP1 == null) {
+                    deleteFileFromWorkingCopy(path);
+                    dirstate.removeEntry(path);
+                } else {
+                    int mode = getModeFromManifestHex(hexP1);
+                    byte[] content = getFileRevisionContent(path, hexP1);
+                    writeFileToWorkingCopy(path, content, mode);
+                    dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
+                }
+            }
+
+            dirstate.setParents(p1, NodeId.NULL);
+            repository.writeDirstate(dirstate);
+
+            File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
+            MergeState.clean(mergeStateFile);
+        }
+    }
 
     private static String cleanHexOf(String manifestHex) {
         if (manifestHex == null) {

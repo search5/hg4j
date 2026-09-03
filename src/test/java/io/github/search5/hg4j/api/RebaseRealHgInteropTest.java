@@ -85,15 +85,21 @@ public class RebaseRealHgInteropTest {
 
     /**
      * hg4j RebaseCommand는 매 cherry-pick마다 obsolescence marker를 무조건 남긴다(evolution
-     * 활성화 여부와 무관). 실제 hg는 이 marker의 존재 자체를, evolution을 켜지 않은 일반 클라이언트
-     * 입장에서 "이례적인 상황"으로 보고 명령을 실행할 때마다 경고를 찍는다(마커를 지우거나 무시하지
-     * 않고, 그냥 매번 stdout에 경고 줄을 추가함 -- 스크립트로 `hg log`/`hg cat` 등의 출력을 파싱하는
-     * 도구가 있다면 이 경고 줄 때문에 깨질 수 있다). evolution을 쓸 생각이 전혀 없는 사용자가 평범한
-     * `hg rebase` 대응 동작을 hg4j에 기대했다면 예상 못한 부작용이다. 실제 hg 자신은 evolution이
-     * 꺼져 있으면 rebase 때 marker를 아예 만들지 않으므로 이런 경고가 나지 않는다.
+     * 활성화 여부와 무관). 이 테스트가 원래(2026-09-04 오전) 문서화했던 동작은 "실제 hg는 이
+     * marker의 존재 자체를 evolution을 켜지 않은 일반 클라이언트 입장에서 '이례적인 상황'으로
+     * 보고 매 명령마다 경고를 찍는다"였다 — 그런데 같은 날 병렬로 진행된 백로그 23번의
+     * shelve/bisect/strip 작업이 {@link io.github.search5.hg4j.obsolete.HgObsMarker#writeMarker}
+     * 를 고치면서(marker를 처음 쓸 때 저장소 {@code .hg/hgrc}에
+     * {@code experimental.evolution.createmarkers = true}를 자동으로 심어둠) 이 경고가 실제로
+     * 사라졌다 — 부수 효과로 이 rebase 관련 발견 사항이 부분적으로 해소됨(직접 재현해 확인,
+     * 2026-09-04). 그래서 이 테스트는 이제 "경고가 안 나온다"를 검증하도록 갱신됐다.
+     * strip과 marker를 동시에 쓰는 근본적인 시맨틱 불일치(원본 커밋이 changelog에서 완전히
+     * 사라져 {@code hg log --hidden}에서 "hidden"이 아니라 "unknown revision"이 되는 문제)는
+     * 이 수정과 무관하게 여전히 남아있다 — 그건 별도 테스트
+     * {@link #obsoleteMarkerAfterRebaseStripPointsAtNodeGoneFromChangelog}가 계속 문서화한다.
      */
     @Test
-    public void plainRealHgCommandsWarnAfterHg4jRebase(@TempDir Path tempDir) throws Exception {
+    public void plainRealHgCommandsDoNotWarnAfterHg4jRebase(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = HgTestUtils.nativeRepo(repoDir, dir -> {
             try {
@@ -128,9 +134,10 @@ public class RebaseRealHgInteropTest {
         String output = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
         int exit = p.waitFor();
 
-        assertEquals(0, exit, "명령 자체는 성공해야 함(경고일 뿐, abort 아님): " + output);
-        assertTrue(output.contains("\"obsolete\" feature not enabled but"),
-                "hg4j가 남긴 marker 때문에 evolution을 쓰지 않는 평범한 hg 명령에도 경고가 섞여 나와야 함:\n" + output);
+        assertEquals(0, exit, "명령 자체는 성공해야 함: " + output);
+        assertFalse(output.contains("\"obsolete\" feature not enabled"),
+                "HgObsMarker.writeMarker()가 저장소 .hg/hgrc에 evolution.createmarkers를 자동으로 "
+                        + "심어두므로, 평범한 hg 명령에는 더 이상 이 경고가 섞여 나오면 안 됨:\n" + output);
     }
 
     /**

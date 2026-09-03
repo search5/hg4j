@@ -33,6 +33,59 @@ public class FilesCommandTest {
         assertTrue(files.isEmpty());
     }
 
+    /**
+     * Distinct from {@link #testEmptyRepositoryReturnsEmptyList} above: that test never sets a
+     * revision at all, so it goes through the default working-copy (dirstate) listing path and
+     * never even reaches {@code listRevisionFiles()}'s own "00changelog.i doesn't exist yet"
+     * short-circuit. Real hg resolves any revision reference on a commit-less repo to the null
+     * revision rather than aborting (matches CloneCommand/PullCommand's own empty-source handling).
+     */
+    @Test
+    public void testEmptyRepositoryWithExplicitRevisionReturnsEmptyList(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        List<String> files = new FilesCommand(repo).setRevision("tip").call();
+        assertTrue(files.isEmpty());
+    }
+
+    @Test
+    public void testChangelogIndexExistsButHasZeroRevisionsWithExplicitRevisionReturnsEmptyList(@TempDir Path tempDir) throws Exception {
+        // Distinct from testEmptyRepositoryWithExplicitRevisionReturnsEmptyList: here
+        // 00changelog.i exists on disk (e.g. a store initialized but never committed to) but has
+        // zero revisions, a separate branch outcome from "the index file doesn't exist at all".
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File storeDir = new File(repoDir, ".hg/store");
+        assertTrue(storeDir.exists() || storeDir.mkdirs());
+        assertTrue(new File(storeDir, "00changelog.i").createNewFile());
+
+        List<String> files = new FilesCommand(repo).setRevision("tip").call();
+        assertTrue(files.isEmpty());
+    }
+
+    @Test
+    public void testSetRevisionWithNullNodeIdResetsToWorkingCopyDefault(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+
+        List<String> files = new FilesCommand(repo).setRevision((NodeId) null).call();
+        assertEquals(List.of("a.txt"), files, "null NodeId must fall back to the working-copy default, not throw or resolve a bogus hex");
+    }
+
+    @Test
+    public void testSetTreeFilterWithNullResetsToMatchAll(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "a");
+        new AddCommand(repo).call();
+
+        List<String> files = new FilesCommand(repo).setTreeFilter(null).call();
+        assertEquals(List.of("a.txt"), files);
+    }
+
     @Test
     public void testDefaultListsAllTrackedFilesSortedWithSubdirectories(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();

@@ -25,6 +25,83 @@ public class LocateCommandTest {
     }
 
     @Test
+    public void testExplicitEmptyStringRevisionBehavesLikeDefault(@TempDir Path tempDir) throws Exception {
+        // revision == null (never set) and an explicit empty string are two different branch
+        // outcomes that both fall back to the working-copy listing.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "a.txt", "a");
+        new AddCommand(repo).call();
+
+        List<String> result = new LocateCommand(repo).setRevision("").call();
+        assertEquals(List.of("a.txt"), result);
+    }
+
+    @Test
+    public void testExplicitEmptyStringPatternBehavesLikeNoPattern(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "a.txt", "a");
+        new AddCommand(repo).call();
+
+        List<String> result = new LocateCommand(repo).setPattern("").call();
+        assertEquals(List.of("a.txt"), result);
+    }
+
+    @Test
+    public void testQuestionMarkGlobMatchesExactlyOneCharacter(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "a1.txt", "a");
+        write(repoDir, "a22.txt", "a");
+        new AddCommand(repo).call();
+
+        List<String> result = new LocateCommand(repo).setPattern("a?.txt").call();
+        assertEquals(List.of("a1.txt"), result);
+    }
+
+    @Test
+    public void testDoubleStarNotFollowedBySlashMatchesAcrossDirectoriesWithoutAbsorbingASeparator(@TempDir Path tempDir) throws Exception {
+        // Distinct from testDoubleStarGlobMatchesAcrossDirectories, which only ever uses the
+        // "**/" form (the (?:.*/)? absorbing branch). "**" not immediately followed by '/' takes
+        // the plain ".*" branch instead.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "sub/deep/a.txt", "a");
+        new AddCommand(repo).call();
+
+        List<String> result = new LocateCommand(repo).setPattern("sub**a.txt").call();
+        assertEquals(List.of("sub/deep/a.txt"), result);
+    }
+
+    @Test
+    public void testDoubleStarAtEndOfPatternWithNothingAfterIt(@TempDir Path tempDir) throws Exception {
+        // "**" as the pattern's very last characters: i+1 < n is false (there is no next
+        // character to check for '/'), a distinct branch outcome from "**" followed by more text.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "sub/deep/a.txt", "a");
+        new AddCommand(repo).call();
+
+        List<String> result = new LocateCommand(repo).setPattern("sub/**").call();
+        assertEquals(List.of("sub/deep/a.txt"), result);
+    }
+
+    @Test
+    public void testPatternWithRegexMetacharacterMatchesItLiterally(@TempDir Path tempDir) throws Exception {
+        // compileRelglobPattern's escaping branch for regex-special characters that are not glob
+        // wildcards (e.g. parentheses) -- untested by the other glob-focused tests, which only use
+        // plain names, '*', and '**'.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "file(1).txt", "a");
+        new AddCommand(repo).call();
+
+        List<String> result = new LocateCommand(repo).setPattern("file(1).txt").call();
+        assertEquals(List.of("file(1).txt"), result);
+    }
+
+    @Test
     public void testNoPatternListsEverythingTrackedInWorkingCopy(@TempDir Path tempDir) throws Exception {
         // Verified: `hg locate` with no args prints every file under Mercurial
         // control in the working directory (mercurial/commands.py locate() docstring

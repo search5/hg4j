@@ -3,9 +3,9 @@ updated: 2026-09-04
 status: 백로그 18~22, 24 전부 완료. 25번은 오탐(hg4j 버그 아님)으로 종결. 23번(commit·push·
   branch·merge·tag+rebase·shelve·bisect·strip·subrepo 실전 interop 검증, subrepo는 근거 없는
   "✅" 표기라 최우선) 5개 병렬 TDD 작업 진행 중. 26(hg4j 서버가 cg1만 생성/cg5 sidedata 미반영)·
-  27(log --follow/annotate가 sidedata copy-tracing과 미연동) 번은 23번 완료 후 즉시 착수 예정.
-  전체 문서 재점검(2026-09-04) 중 Narrow clone/LFS 두 행도 subrepo와 같은 "근거 없는 bare
-  ✅" 패턴으로 확인 — 백로그 28번 승격은 사용자 확인 대기 중.
+  27(log --follow/annotate가 sidedata copy-tracing과 미연동)·28(Narrow clone/LFS 실제 hg
+  interop 검증 누락, 전체 문서 재점검 중 subrepo와 같은 패턴으로 발견) 번은 23번 완료 후
+  순서대로 즉시 착수 예정.
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -58,9 +58,9 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
 | Bookmarks (이동 가능한 포인터, named branch와 구별) | `hg help bookmarks`, `mercurial/bookmarks.py`(comparebookmarks/validdest 실측) | `api.BookmarkCommand`, `api.CommitCommand`, `api.UpdateCommand`, `api.FetchCommand` | ✅ **구현 완료(2026-09-01)** — commit 자동 전진/update 활성화·비활성화/pull·push 동기화 전부 구현, 실제 hg CLI로 fast-forward·진짜 divergence·원격 push/pull까지 검증(`BookmarkRealHgInteropTest`). 검증 중 데이터 손실 버그 2건 발견·수정: (1) pull 시 ancestor 관계를 안 따져서 로컬의 독자적 bookmark 이동이 조용히 덮어써지던 버그, (2) 새 changeset 없이 bookmark만 이동한 원격을 pull하면 동기화 자체가 생략되던 버그. 상세: [[bookmark-full-support-plan]] |
 | Obsolescence markers | `mercurial/obsolete.py`(FM1 포맷 실측, 실제 obsstore 픽스처로 검증) | `HgObsolescenceParser`, `HgObsMarker`, `api.AmendCommand`/`RebaseCommand`/`GraftCommand`/`HisteditCommand`/`StripCommand` | ✅ **구현 완료(2026-09-01)** — 5개 명령 전부 마커 생성 확인. **완료 과정에서 obsstore 바이너리 포맷 자체가 완전히 틀렸던 것을 발견** — 파일 버전 바이트 부재, 필드 순서·크기 전부 불일치. 실제 FM1(version=1) 스펙대로 전면 재작성, 실제 hg가 만든 obsstore를 hg4j로 파싱 + hg4j가 쓴 obsstore를 실제 `hg debugobsolete`로 읽기 — 양방향 검증 통과(`HgObsolescenceRealHgInteropTest`). 상세: [[obsolescence-marker-completeness-plan]] |
 | Censor (민감정보 삭제) | `hg help internals.censor` | `Revlog.censorRevision`/`isCensoredText`, `api.CensorCommand` | ✅ **구현 완료(2026-09-01)** — 실제 hg의 `v1_censor` 방식대로 대상 리비전을 tombstone 콘텐츠+`REVIDX_ISCENSORED` 플래그로 재작성, 포셀린 `CensorCommand` 신설, 읽기 시 `HgCensoredContentException`. changegroup 전송 경로(cg3)의 censor 지원도 완료 — 패킹측 크래시와 수신측 플래그 소실 버그 2건 발견·수정(위 Changegroup 행 및 아래 백로그 6/7번 참고). Docker Mercurial 6.0의 실제 censor 확장 산출물과 바이트 단위 대조 + 실제 hg 양방향 interop 검증(`CensorRealHgInteropTest`, `CensorChangegroupTransferTest`) |
-| Narrow clone / narrowspec | wiki 관련 문서 | `NarrowCloneCommand`, `HgTreeFilter` | ⚠️ (README에 명시) — **2026-09-04 재확인: 근거 서술 없는 bare `✅`였다.** `HgNarrowCloneTest`는 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와 대조하는 인터롭 테스트가 없음(`Subrepositories`/`LFS` 행과 같은 패턴) — 사용자 확인 후 백로그 28번 후보 |
+| Narrow clone / narrowspec | wiki 관련 문서 | `NarrowCloneCommand`, `HgTreeFilter` | ⚠️ (README에 명시) — **2026-09-04 재확인: 근거 서술 없는 bare `✅`였다.** `HgNarrowCloneTest`는 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와 대조하는 인터롭 테스트가 없음(`Subrepositories`/`LFS` 행과 같은 패턴) — 백로그 28번으로 승격, 미착수 |
 | Sparse checkout | `mercurial/sparse.py`(`parseconfig`/`patternsforrev` 실측) | `treewalk.SparseConfig`, `treewalk.SparsePathFilter` | ✅ **구현 완료(2026-09-01)** — `.hg/sparse` 파일 파싱(`[include]`/`[exclude]`/`%include` 프로파일 참조, 앞자리 `/` 거부, 섹션 밖 항목 에러 등 실제 hg의 검증 규칙까지 재현) 및 `%include`로 참조된 프로파일을 해당 리비전의 매니페스트에서 읽어 재귀적으로 병합하는 `patternsforrev` 로직 신규 구현. `.hg*` 자동 include 규칙 포함. 실제 hg CLI로 만든 `.hg/sparse` 픽스처와 대조 검증(`SparseConfigInteropTest`) |
-| LFS (largefiles) | 관련 확장 문서 | `HgLfsManager`, `HgLfsPointer` | ⚠️ — **2026-09-04 재확인: 근거 서술 없는 bare `✅`였다.** `HgLfsTest`는 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와 대조하는 인터롭 테스트가 없음(`Subrepositories`/`Narrow clone` 행과 같은 패턴) — 사용자 확인 후 백로그 28번 후보 |
+| LFS (largefiles) | 관련 확장 문서 | `HgLfsManager`, `HgLfsPointer` | ⚠️ — **2026-09-04 재확인: 근거 서술 없는 bare `✅`였다.** `HgLfsTest`는 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와 대조하는 인터롭 테스트가 없음(`Subrepositories`/`Narrow clone` 행과 같은 패턴) — 백로그 28번으로 승격, 미착수 |
 | Subrepositories (`.hgsub`/`.hgsubstate`) | wiki 관련 문서 | `HgSubrepoParser`, `HgSubrepoEntry`, `api.SubrepoCommand` | ✅ |
 | Config 파일 포맷 (`hgrc`, include/`%include`, 섹션) | `hg help internals.config`, `mercurial/config.py`(`parse` 실측) | `HgRcConfig` | ✅ **구현 완료(2026-09-01)** — `%include <path>`(포함 파일의 디렉터리 기준 상대 경로 해석, 없는 파일은 조용히 무시), `%unset <key>`(현재 시점까지 설정된 값 완전 제거), 들여쓰기 연속 줄 지원을 실제 `mercurial/config.py` 소스대로 구현. 실제 `hg config` 명령 출력과 대조 검증(`HgRcConfigTest#testIncludeAndUnsetMatchRealHg`) |
 | Merge state 영속화 (재개 가능한 머지) | `hg help internals.mergestate`, `mercurial/mergestate.py`(`_readrecordsv2`/`_writerecordsv2` 실측) | `merge.MergeState`(`.hg/merge/state2`), `api.MergeCommand`, `api.ResolveCommand` | ✅ **완료(2026-09-01)** — 실제 hg의 `state2` 바이너리 포맷(타입 1바이트+길이 4바이트 프레임, `L`/`O`/`F` 레코드, 비허용 타입은 `t` 오버라이드로 래핑)을 그대로 구현한 `MergeState` 클래스, `MergeCommand`가 충돌 시 실제로 `state2`를 쓰도록 연결 — 양방향 검증(hg4j가 실제 hg의 충돌 상태를 읽고, 실제 hg의 `resolve --list`가 hg4j가 쓴 상태를 읽음, `MergeStateInteropTest`). `ResolveCommand`도 레거시 v1에서 `MergeState`(state2) 기반으로 전면 재작성해 list/markResolved/markUnresolved를 실제 hg와 양방향 interop까지 검증 완료(백로그 1번) |
@@ -81,8 +81,8 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
    `HgLfsTest`는 존재하지만 둘 다 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와
    대조하는 인터롭 테스트(`*RealHgInteropTest`류)가 하나도 없다 — gap table의
    `Narrow clone`/`LFS` 두 행이 근거 서술 없는 bare `✅`인 것도 이 때문(23번 항목이
-   `Subrepositories` 행에 대해 지적한 것과 정확히 같은 패턴). **정식 백로그 번호는
-   아직 안 받음 — 사용자 확인 후 28번으로 승격할지 결정.**
+   `Subrepositories` 행에 대해 지적한 것과 정확히 같은 패턴). ✅ **백로그 28번으로
+   승격됨(2026-09-04).**
 2. **버전 고정 재검증 루틴**: README가 못박은 "SCM v7.2.2" 기준으로, 이 버전의 `hg help
    internals.*` 전문을 한 번 스냅샷해서 [[sources]]에 원문 요약을 남기는 것을 권장.
    **2026-09-04 상태**: 여전히 미착수(문서화 방법론 제안일 뿐 구체적 버그 추적 대상은
@@ -1005,6 +1005,30 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `CopyCommand` 정보만 쓰고 있는지 sidedata 기반 조회로 보강해야 하는지 판단,
     (3) annotate 계열 명령이 hg4j에 아예 없다면 "구현 여부 조사"로 범위를 좁힐지
     사용자 확인 후 진행.
+
+28. **Narrow clone / LFS — 실제 hg CLI interop 검증 누락(근거 없는 bare `✅`),
+    신규, 2026-09-04 발견(전체 문서 재점검 중 메인 에이전트가 직접 확인), 미착수.
+    백로그 23번 완료 후 즉시 진행.** gap table의 `Narrow clone / narrowspec`과
+    `LFS (largefiles)` 두 행이 근거 서술 없는 bare `✅`였다 — 23번 항목이
+    `Subrepositories` 행에 대해 지적한 것과 정확히 같은 패턴. `grep`으로 직접
+    확인(2026-09-04): `HgNarrowCloneTest`/`HgLfsTest`는 존재하지만 둘 다
+    hg4j↔hg4j 자체 왕복만 검증하고, real hg CLI와 대조하는 인터롭 테스트
+    (`*RealHgInteropTest`류)가 하나도 없다.
+
+    **범위**: 23번과 같은 "hg4j↔hg4j 자체 왕복이 아니라 실제 hg CLI와의 양방향
+    대조" 기준을 그대로 적용한다.
+    - **Narrow clone**: 실제 hg CLI로 narrowspec(`--include`/`--exclude` 패턴)을
+      지정해 clone한 결과와 hg4j `NarrowCloneCommand`가 만든 결과를 대조. narrow
+      저장소에 대한 이후 pull(narrowspec 밖 리비전이 필터링되는지)도 실제 hg와
+      왕복 검증. `HgTreeFilter`가 실제 hg의 narrowspec 패턴 매칭 규칙(glob/re
+      문법, 파일 vs 디렉터리 패턴)과 정확히 같은지도 확인.
+    - **LFS**: 실제 hg(+`lfs` 확장, 이 환경에 있는지부터 확인 필요)로 LFS
+      포인터 파일을 만든 저장소를 hg4j `HgLfsManager`/`HgLfsPointer`가 정확히
+      파싱하는지, 그리고 hg4j가 만든 LFS 포인터 파일을 실제 hg가 정확히
+      이해하는지 양방향 확인. LFS는 원격 스토리지(blob store)에 대한 실제 HTTP
+      업로드/다운로드까지 포함하는 확장이라, 이 프로젝트가 이미 검증해온
+      "로컬 저장소 포맷 정확성" 범위로 좁힐지 원격 전송까지 다룰지는 착수 시
+      판단(우선순위는 포인터 파일 포맷 정확성이 더 높음).
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

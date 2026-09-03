@@ -93,6 +93,8 @@ public final class HgObsMarker {
         File obsstoreFile = new File(storeDir, "obsstore");
         boolean writeVersionByte = !obsstoreFile.exists() || obsstoreFile.length() == 0;
 
+        ensureEvolutionConfigEnabled(storeDir);
+
         List<byte[]> succList = successors != null ? successors : List.of();
         int numsuc = succList.size();
         final int NUMPAR_NONE = 3; // _fm1parentnone: 부모 정보를 기록하지 않음
@@ -139,6 +141,44 @@ public final class HgObsMarker {
             }
             out.write(buf.array());
             out.getFD().sync();
+        }
+    }
+
+    /**
+     * Makes sure a real hg CLI plain {@code hg verify} (no special {@code --config}) does not flag
+     * a freshly-written marker as invalid.
+     *
+     * <p>Real hg gates whether obsstore markers are considered legitimate purely by a UI config
+     * check ({@code obsolete.isenabled()} / {@code obsolete._getoptionvalue()} in {@code
+     * mercurial/obsolete.py}, reading {@code experimental.evolution.createmarkers} or the broader
+     * {@code experimental.evolution}) -- NOT by anything recorded in {@code .hg/requires} or in the
+     * obsstore file itself. Confirmed directly against real hg 7.2.2 (2026-09-03): {@code hg
+     * debugobsolete <node>} with no special config aborts outright ("creating obsolete markers is
+     * not enabled on this repo"), and even forcing the write via {@code --config
+     * experimental.evolution.createmarkers=true} still leaves a repo that a subsequent plain {@code
+     * hg verify} (without that same config) reports as broken: {@code "obsolete" feature not
+     * enabled but 1 markers found!}, counted among its integrity errors.
+     *
+     * <p>hg4j has no general hgrc config-parsing layer, so rather than gate marker writes on a
+     * config lookup, it does what a real user enabling evolution would do: persist the enabling
+     * config into the repository's own {@code .hg/hgrc} the first time this repo ever gets a
+     * marker, so every subsequent plain {@code hg} invocation (verify included) picks it up the
+     * same way it would for a real evolve-enabled repository. Idempotent: does nothing once the
+     * setting is already present anywhere in the file.
+     */
+    private static void ensureEvolutionConfigEnabled(File storeDir) throws IOException {
+        File hgDir = storeDir.getParentFile(); // .hg/store -> .hg
+        File hgrc = new File(hgDir, "hgrc");
+        String existing = "";
+        if (hgrc.exists()) {
+            existing = new String(java.nio.file.Files.readAllBytes(hgrc.toPath()), StandardCharsets.UTF_8);
+            if (existing.contains("createmarkers") || existing.contains("evolution")) {
+                return;
+            }
+        }
+        String addition = "[experimental]\nevolution.createmarkers = true\n";
+        try (java.io.FileWriter w = new java.io.FileWriter(hgrc, StandardCharsets.UTF_8, true)) {
+            w.write(addition);
         }
     }
 }

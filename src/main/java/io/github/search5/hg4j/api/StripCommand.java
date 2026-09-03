@@ -102,6 +102,9 @@ public class StripCommand {
             // Back up core changelog and manifest before they get truncated below
             File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
             File mfDat = new File(repository.getStoreDir(), "00manifest.d");
+            // Loaded up-front (before anything below truncates it) purely to read exact
+            // per-revision .d byte offsets for truncateRevlog() -- see its javadoc.
+            Revlog manifest = repository.getRevlog(mfIdx, mfDat);
             backupBeforeMutate(journalFile, backupDir, backupMapping, touchedFiles, clIdx);
             backupBeforeMutate(journalFile, backupDir, backupMapping, touchedFiles, clDat);
             backupBeforeMutate(journalFile, backupDir, backupMapping, touchedFiles, mfIdx);
@@ -148,7 +151,7 @@ public class StripCommand {
                                 flDat.delete();
                             }
                         } else {
-                            truncateRevlog(flIdx, flDat, flKeepCount);
+                            truncateRevlog(filelog, flIdx, flDat, flKeepCount);
                             updatedFncachePaths.add(storePath);
                         }
                     }
@@ -162,8 +165,8 @@ public class StripCommand {
             SafeFileIO.writeLinesAtomic(fncacheFile, updatedFncachePaths);
 
             // 2. Truncate Core Changelog and Manifest
-            truncateRevlog(clIdx, clDat, keepCount);
-            truncateRevlog(mfIdx, mfDat, keepCount);
+            truncateRevlog(changelog, clIdx, clDat, keepCount);
+            truncateRevlog(manifest, mfIdx, mfDat, keepCount);
 
             // 3. Bookmarks pointing at a stripped revision follow it back to the new tip
             // rather than being deleted — real hg's strip.py `strip()` calls
@@ -342,7 +345,25 @@ public class StripCommand {
         file.delete();
     }
 
-    private void truncateRevlog(File idxFile, File datFile, int keepCount) throws IOException {
+    /**
+     * Truncates {@code idxFile}/{@code datFile} to keep only the first {@code keepCount}
+     * revisions.
+     *
+     * <p>The {@code .d} data file MUST be truncated to the exact byte offset of the first
+     * discarded revision ({@code revlog.getIndexRecord(keepCount).getOffset()}), read from
+     * {@code revlog} (loaded from the still-untruncated files by the caller) before either file
+     * is touched. An earlier version of this method instead used a "safe estimation fallback"
+     * (guessing the boundary as {@code datFile.length() * keepCount / (keepCount + 1)}, i.e.
+     * assuming every revision is the same size) -- with revisions of noticeably different sizes
+     * this estimate can land in the middle of a revision that must survive, silently truncating
+     * away trailing delta bytes. Confirmed as a real, reproducible corruption bug (not just a
+     * theoretical concern) via a real-hg-CLI round trip in {@code StripRealHgInteropTest}: after
+     * stripping a revision from a repository whose revisions have uneven sizes, real {@code hg
+     * verify} reported "data length off by N bytes" / "partial read of revlog" errors on the
+     * revisions that were supposed to have survived untouched. Mirrors the exact-offset approach
+     * {@link ShelveCommand#stripRevisionsFrom} already uses for its own (unrelated) truncation.
+     */
+    private void truncateRevlog(Revlog revlog, File idxFile, File datFile, int keepCount) throws IOException {
         if (!idxFile.exists()) return;
 
         long keepIndexLength = (long) keepCount * 64;
@@ -351,14 +372,17 @@ public class StripCommand {
         }
 
         if (datFile.exists()) {
+            long targetDatSize;
+            if (keepCount == 0) {
+                targetDatSize = 0;
+            } else if (keepCount < revlog.getRevisionCount()) {
+                targetDatSize = revlog.getIndexRecord(keepCount).getOffset();
+            } else {
+                // Nothing beyond keepCount to discard -- leave the data file as-is.
+                targetDatSize = datFile.length();
+            }
             try (RandomAccessFile rafDat = new RandomAccessFile(datFile, "rw")) {
-                if (keepCount == 0) {
-                    rafDat.setLength(0);
-                } else {
-                    // Safe estimation fallback based on average revision lengths
-                    long targetDatSize = Math.min(datFile.length(), datFile.length() * keepCount / (keepCount + 1));
-                    rafDat.setLength(targetDatSize);
-                }
+                rafDat.setLength(targetDatSize);
             }
         }
     }

@@ -1,6 +1,6 @@
 ---
 updated: 2026-09-03
-status: 백로그 18(treemanifest 쓰기)/19(sidedata SD_FILES writer)/20(wireprotocol v2 재귀 tree fetch)/21(persistent-nodemap 쓰기) 전부 완료. 신규 백로그 22(HTTP/SSH 실전 통신·협상 테스트 확충)/23(commit·push·branch·merge·tag 실전 시나리오 종합 interop 검증) 추가(둘 다 2026-09-03 제안) — 범위만 확정, 미착수
+status: 백로그 18(treemanifest 쓰기)/19(sidedata SD_FILES writer)/20(wireprotocol v2 재귀 tree fetch)/21(persistent-nodemap 쓰기) 전부 완료. 신규 백로그 22(HTTP/SSH 실전 통신·협상 테스트 확충)/23(commit·push·branch·merge·tag+rebase·shelve·bisect·strip·subrepo 실전 시나리오 종합 interop 검증, subrepo는 근거 없는 "✅" 표기라 최우선 재확인 필요) 추가(둘 다 2026-09-03 제안) — 범위만 확정, 미착수
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -750,12 +750,13 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     순서대로 진행 권장(실제 hg 클라이언트→hg4j 서버 방향이 가장 검증 안 된 채
     남아있어 우선순위가 가장 높음).
 
-23. **commit/push/branch/merge/tag — 실전 시나리오 종합 interop 검증, 신규,
-    2026-09-03 제안, 작업 범위만 확정, 미착수.** 배경: 백로그 22번(와이어 프로토콜
-    협상)과 같은 이유 — 이 5개는 hg의 가장 기본적이고 가장 자주 쓰이는 포셀린
-    명령인데, 지금까지의 검증은 "한 가지 대표 시나리오"(예: 선형 커밋 2개,
-    fast-forward merge 1건) 위주였고 각 명령이 실전에서 마주치는 조합의 상당수는
-    아직 실제 hg CLI와 대조된 적이 없다. 아래 5개 카테고리 각각을 별도 TDD
+23. **commit/push/branch/merge/tag(+ rebase/shelve/bisect/strip/subrepo) — 실전
+    시나리오 종합 interop 검증, 신규, 2026-09-03 제안, 작업 범위만 확정, 미착수.**
+    배경: 백로그 22번(와이어 프로토콜 협상)과 같은 이유 — 이 명령들은 hg의 가장
+    기본적이고 가장 자주 쓰이는 포셀린 명령인데, 지금까지의 검증은 "한 가지 대표
+    시나리오"(예: 선형 커밋 2개, fast-forward merge 1건) 위주였고 각 명령이
+    실전에서 마주치는 조합의 상당수는 아직 실제 hg CLI와 대조된 적이 없다. 아래
+    카테고리 각각을 별도 TDD
     배치로 진행 권장.
 
     **commit**: 머지 커밋(부모 2개, `p2` 필드 정확성) — 특히 심볼릭
@@ -784,18 +785,35 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `.hgtags`에 새 줄 추가되고 이전 줄은 사문화), 태그 삭제(`hg tag --remove`),
     머지 커밋에 태그를 다는 경우.
 
-    **범위(제외)**: `histedit`/`rebase`/`shelve`/`bisect`/`strip` 등 히스토리를
-    재작성하는 고급 명령은 이미 별도로 크게 다뤄졌으므로(위 항목들, journal/크래시
-    복구 포함) 제외. subrepo 관련 병합/커밋 상호작용도 제외(별도 백로그 필요시
-    분리). 5개 카테고리 모두 **hg4j↔hg4j 자체 왕복이 아니라 실제 hg CLI와의
-    양방향 대조**(hg4j로 만든 결과를 실제 `hg log`/`hg verify`/`hg tags`/
+    **rebase/shelve/bisect/strip/subrepo — 애초 "이미 다뤄졌으니 제외"로 초안에
+    적었다가, 실제로는 아니라는 걸 위키 재확인으로 발견해 정정**: 이 5개는 지금까지
+    받은 검증이 전부 "코드 리뷰로 버그 패턴 발견 → TDD RED/GREEN으로 hg4j 내부
+    재현·수정 → hg4j 자체 회귀 테스트 재실행"이었다(예:
+    `StripCommand`/`BisectCommand`의 워킹 브랜치 미복원 버그, `ShelveCommand`의
+    racy-write 감지 버그 — 전부 실제 버그를 잡아낸 유의미한 작업이지만, 결과물을
+    **실제 hg CLI와 대조한 적은 없다**). `Subrepositories` 행은 근거 서술 없이
+    표에 "✅"만 달려 있어 5개 중 가장 불확실 — 최우선 재확인 대상. 그래서 이
+    5개도 아래와 동일한 "실제 hg CLI 왕복" 기준으로 이 항목 범위에 포함한다:
+    `rebase`(충돌 있는/없는 리베이스, `--continue`/`--abort`, obsolescence
+    마커가 실제 hg `hg log --hidden`에서 인식되는지), `shelve`(shelve →
+    다른 작업 → unshelve 왕복이 실제 hg가 만든 shelve와 서로 호환되는지),
+    `bisect`(`hg bisect good/bad`로 실제 hg와 나란히 이분 탐색해 같은 culprit에
+    도달하는지), `strip`(strip 후 저장소를 실제 hg `hg verify`로 확인),
+    `subrepo`(`.hgsub`/`.hgsubstate`를 낀 커밋/업데이트가 실제 hg의 subrepo
+    처리와 일치하는지 — 표의 "✅"부터 재검증).
+
+    **범위(제외)**: 위 10개 카테고리 전부 **hg4j↔hg4j 자체 왕복이 아니라 실제 hg
+    CLI와의 양방향 대조**(hg4j로 만든 결과를 실제 `hg log`/`hg verify`/`hg tags`/
     `hg branches`로 확인, 또는 그 반대)를 검증 기준으로 삼는다 — 이미 이런 형태로
     실제 hg와 대조하지 않고 hg4j 내부끼리만 왕복 검증된 기존 테스트는 이 항목에서
     "미검증"으로 간주하고 다시 본다.
 
-    **다음 세션 시작점**: `tag`부터 시작 권장 — 이미 커버리지 작업으로 코드
-    경로 자체는 오늘 다 확인했으니 여기에 실제 hg interop 껍데기만 씌우면 되어
-    착수 비용이 가장 낮다.
+    **다음 세션 시작점**: 착수 비용 기준으로는 `tag`(코드 경로는 오늘 커버리지
+    작업으로 이미 확인 끝, interop 껍데기만 씌우면 됨)가 가장 낮지만, **위험도
+    기준으로는 `subrepo`가 최우선** — 근거 서술이 전혀 없는 "✅"뿐이라 실제로
+    맞는지조차 모르는 상태(다른 9개는 최소한 "내부 버그 수정은 됐다"는 확인이라도
+    있음). 시간이 제한적이면 `subrepo` 먼저 조사해 "정말 문제없음"인지 "표만
+    ✅고 실제론 미검증"인지부터 가려내는 걸 권장.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

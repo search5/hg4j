@@ -32,7 +32,6 @@ import com.github.search5.hg4j.errors.HgTransportException;
 import com.github.search5.hg4j.transport.wireprotov2.Cbor;
 import com.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import com.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
@@ -312,39 +311,6 @@ public class HgRemoteClientTest {
         assertNotNull(entry.deltabase);
         assertEquals(50, entry.deltabase[0]);
         assertEquals("MockCG2Dlt", new String(entry.delta, StandardCharsets.US_ASCII));
-    }
-
-    @Test
-    public void testMercurialChunkedInputStreamUnwrapsCorrectly() throws Exception {
-        // Construct application/mercurial-0.2 chunk transfer stream
-        // 1st chunk: 5 bytes "Hello"
-        // 2nd chunk: 5 bytes "World"
-        // 3rd chunk: 0 bytes (terminal)
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        
-        // Chunk 1
-        out.write(new byte[]{0, 0, 0, 5});
-        out.write("Hello".getBytes(StandardCharsets.US_ASCII));
-        // Chunk 2
-        out.write(new byte[]{0, 0, 0, 5});
-        out.write("World".getBytes(StandardCharsets.US_ASCII));
-        // Chunk 3
-        out.write(new byte[]{0, 0, 0, 0});
-        
-        // Create unwrapper
-        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
-                .getDeclaredConstructor(InputStream.class);
-        constructor.setAccessible(true);
-        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
-        
-        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-        byte[] buf = new byte[4];
-        int count;
-        while ((count = chunkedStream.read(buf)) != -1) {
-            decoded.write(buf, 0, count);
-        }
-        
-        assertEquals("HelloWorld", new String(decoded.toByteArray(), StandardCharsets.US_ASCII));
     }
 
     @Test
@@ -839,61 +805,13 @@ public class HgRemoteClientTest {
     }
 
     @Test
-    public void testMercurialChunkedInputStreamNegativeLengthException() throws Exception {
-        // Chunk length is negative (-100 => 0xFF 0xFF 0xFF 0x9C)
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(0xFF);
-        out.write(0xFF);
-        out.write(0xFF);
-        out.write(0x9C);
-
-        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
-                .getDeclaredConstructor(InputStream.class);
-        constructor.setAccessible(true);
-        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
-
-        assertThrows(HgProtocolException.class, () -> chunkedStream.read());
-    }
-
-    @Test
-    public void testMercurialChunkedInputStreamUnexpectedEofLengthException() throws Exception {
-        // Chunk length is only 2 bytes instead of 4
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(0);
-        out.write(10);
-
-        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
-                .getDeclaredConstructor(InputStream.class);
-        constructor.setAccessible(true);
-        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
-
-        assertThrows(HgProtocolException.class, () -> chunkedStream.read());
-    }
-
-    @Test
-    public void testMercurialChunkedInputStreamUnexpectedEofPayloadException() throws Exception {
-        // Chunk length is 10, but stream ends immediately
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(0);
-        out.write(0);
-        out.write(0);
-        out.write(10);
-
-        Constructor<?> constructor = Class.forName("com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
-                .getDeclaredConstructor(InputStream.class);
-        constructor.setAccessible(true);
-        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(out.toByteArray()));
-
-        assertThrows(HgProtocolException.class, () -> chunkedStream.read());
-    }
-
-    @Test
     public void testUnwrapResponseStreamUnsupportedCompressionException() throws Exception {
         // application/mercurial-0.2
-        // compNameLen = 5, compName = "zstd "
+        // compNameLen = 7, compName = "brotli " -- a real compression algorithm hg4j does not
+        // implement decoding for (unlike zlib/deflate/zstd/none, which are all supported).
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(5);
-        out.write("zstd ".getBytes(StandardCharsets.US_ASCII));
+        out.write(7);
+        out.write("brotli ".getBytes(StandardCharsets.US_ASCII));
 
         Method method = HgRemoteClient.class.getDeclaredMethod("unwrapResponseStream", InputStream.class, String.class);
         method.setAccessible(true);

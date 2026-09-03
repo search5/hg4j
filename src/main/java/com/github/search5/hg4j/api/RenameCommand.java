@@ -7,6 +7,7 @@ import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
@@ -52,7 +53,10 @@ public final class RenameCommand {
         File srcFile = new File(repository.getDirectory(), sourcePath);
         File destFile = new File(repository.getDirectory(), targetPath);
 
-        if (!srcFile.exists()) {
+        // A symlink is valid to rename even when its target is missing (dangling) -- File#exists()
+        // follows the link and returns false in that case, matching the same lstat-aware
+        // convention AddCommand/CommitCommand already use elsewhere.
+        if (!Files.isSymbolicLink(srcFile.toPath()) && !srcFile.exists()) {
             throw new HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
         }
 
@@ -81,9 +85,16 @@ public final class RenameCommand {
                 // Source: marked as removed ('r')
                 dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
                 
-                // Target: marked as added ('a')
-                int mode = destFile.canExecute() ? 0755 : 0644;
-                dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, (int) destFile.length(), destFile.lastModified() / 1000));
+                // Target: marked as added ('a'). A symlink's dirstate mode/size must reflect the
+                // link itself (lstat semantics) -- File#canExecute()/length() both follow the
+                // link to whatever it points at, matching what AddCommand/CopyCommand already do.
+                boolean destIsSymlink = Files.isSymbolicLink(destFile.toPath());
+                int mode = destIsSymlink ? 0120000 : (destFile.canExecute() ? 0755 : 0644);
+                int size = destIsSymlink
+                        ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                        : (int) destFile.length();
+                long time = SafeFileIO.lastModifiedSeconds(destFile);
+                dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, size, time));
                 
                 // Register Copy-rename linkage in copyMap
                 dirstate.addCopy(targetPath, sourcePath);

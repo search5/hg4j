@@ -242,17 +242,14 @@ public class HgRemoteMockAndServeExtensionTest {
                                 bundle2Out.write(uncompressedBytes);
                                 byte[] payload = bundle2Out.toByteArray();
 
+                                // Real hg's actual -0.2 wire format (confirmed against a real
+                                // Mercurial 7.2.4 server, 2026-09-03): 1-byte compNameLen + name,
+                                // then the payload straight through to end of stream -- no inner
+                                // chunk-length framing on top.
                                 ByteArrayOutputStream body = new ByteArrayOutputStream();
                                 body.write(4); // compNameLen
                                 body.write("none".getBytes(StandardCharsets.US_ASCII)); // compName
-                                
-                                int len = payload.length;
-                                body.write((len >> 24) & 0xFF);
-                                body.write((len >> 16) & 0xFF);
-                                body.write((len >> 8) & 0xFF);
-                                body.write(len & 0xFF);
                                 body.write(payload);
-                                body.write(new byte[]{0, 0, 0, 0}); // EOF Chunk
 
                                 byte[] resp = body.toByteArray();
                                 out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/mercurial-0.2\r\nContent-Length: " + resp.length + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
@@ -284,18 +281,14 @@ public class HgRemoteMockAndServeExtensionTest {
                     String line;
                     while ((line = reader.readLine()) != null && !line.isEmpty()) {}
                     
-                    // Respond with application/mercurial-0.2 framing
+                    // Respond with application/mercurial-0.2 framing: 1-byte compNameLen + name,
+                    // then the payload straight through to end of stream -- real hg's actual
+                    // wire format (confirmed against a real Mercurial 7.2.4 server, 2026-09-03),
+                    // no inner chunk-length framing.
                     ByteArrayOutputStream body = new ByteArrayOutputStream();
                     body.write(4); // compNameLen
                     body.write("none".getBytes(StandardCharsets.US_ASCII)); // compression
-                    
-                    // Chunk 1: "heads" (5 bytes)
-                    byte[] payload = "heads".getBytes(StandardCharsets.US_ASCII);
-                    body.write(new byte[]{0, 0, 0, 5});
-                    body.write(payload);
-                    
-                    // Chunk 2: EOF
-                    body.write(new byte[]{0, 0, 0, 0});
+                    body.write("heads".getBytes(StandardCharsets.US_ASCII));
 
                     byte[] resp = body.toByteArray();
                     OutputStream out = socket.getOutputStream();
@@ -429,18 +422,22 @@ public class HgRemoteMockAndServeExtensionTest {
             public void start(ChannelSession s, Environment env) throws IOException {
                 new Thread(() -> {
                     try {
-                        out.write("capabilities: heads getbundle changegroup\n".getBytes(StandardCharsets.UTF_8));
+                        // Real hg's handshake (see HgSshClient#performHandshake): the client
+                        // sends "hello\nbetween\npairs <len>\n<81 bytes>" first, then reads TWO
+                        // framed responses in order -- hello's (capabilities) and between's.
+                        byte[] capsLine = "capabilities: heads getbundle changegroup\n".getBytes(StandardCharsets.UTF_8);
+                        out.write((capsLine.length + "\n").getBytes(StandardCharsets.US_ASCII));
+                        out.write(capsLine);
+                        byte[] betweenResp = "\n".getBytes(StandardCharsets.UTF_8);
+                        out.write((betweenResp.length + "\n").getBytes(StandardCharsets.US_ASCII));
+                        out.write(betweenResp);
                         out.flush();
 
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-                        String line = reader.readLine();
-                        if (line != null && line.trim().equals("getbundle")) {
-                            // read extra parameters blank line
-                            reader.readLine();
-                            // write incomplete chunk length (e.g. only 2 bytes and then close connection)
-                            out.write(new byte[]{0, 0});
-                            out.flush();
-                        }
+                        // Handshake satisfied -- now respond to whatever command follows
+                        // (getbundle, in this test) with an incomplete chunk-length header (only
+                        // 2 of the required 4 bytes) to exercise the EOF-mid-header path.
+                        out.write(new byte[]{0, 0});
+                        out.flush();
                         callback.onExit(0);
                     } catch (IOException ignored) {}
                 }).start();

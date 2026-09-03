@@ -24,7 +24,13 @@ public class DefaultFileStoreEngine implements StoreEngine {
         // first time) -- v2-ness can't be auto-detected from nothing, so it must be requested
         // explicitly here.
         boolean createAsGeneralV2 = repository.isRevlogV2() && !indexFile.exists();
-        return new Revlog(indexFile, dataFile, repository.isUseZstdCompression(), createAsGeneralV2, repository.isPersistentNodemap());
+        // exp-changelog-v2 is narrower: it only ever applies to the changelog itself (real hg's
+        // own requirement semantics -- manifests/filelogs stay v1 unless exp-revlogv2.2 is
+        // *also* set), so this bootstrap path is gated on the index filename actually being
+        // 00changelog.i, not just the requirement being present.
+        boolean createAsChangelogV2 = !createAsGeneralV2 && repository.isChangelogV2()
+                && "00changelog.i".equals(indexFile.getName()) && !indexFile.exists();
+        return new Revlog(indexFile, dataFile, repository.isUseZstdCompression(), createAsGeneralV2, createAsChangelogV2, repository.isPersistentNodemap());
     }
 
     @Override

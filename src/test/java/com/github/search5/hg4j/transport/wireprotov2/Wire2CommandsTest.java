@@ -492,14 +492,21 @@ public class Wire2CommandsTest {
     // ==================== manifestdata ====================
 
     @Test
-    public void manifestdataRejectsANonEmptyTreeArgument(@TempDir Path tempDir) throws Exception {
+    public void manifestdataRejectsAnUnknownTreeArgument(@TempDir Path tempDir) throws Exception {
+        // backlog item 20 (mercurial-spec-compliance-requirement.md): manifestdata's `tree`
+        // argument now selects a treemanifest subdirectory's own meta/<tree>/00manifest.i revlog
+        // (see Wire2TreeManifestFetchTest for the positive/happy-path coverage of an actual
+        // treemanifest repository) -- a `tree` naming a directory that genuinely has no
+        // submanifest revlog on disk is still correctly rejected, just with a message reflecting
+        // that real reason rather than a blanket "not supported" (this repo is flat, so
+        // "somepath" was never a real subdirectory here either way).
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         Map<String, Object> args = new LinkedHashMap<>();
         args.put("tree", "somepath");
         args.put("nodes", List.of());
         args.put("fields", List.of());
         HgProtocolException e = assertThrows(HgProtocolException.class, () -> Wire2Commands.manifestdata(repo, args));
-        assertTrue(e.getMessage().contains("tree manifests are not supported"), e.getMessage());
+        assertTrue(e.getMessage().contains("unknown tree"), e.getMessage());
     }
 
     @Test

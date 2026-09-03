@@ -3,6 +3,7 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
@@ -188,7 +189,7 @@ public class GraftCommand {
                 if (existingEntry == null) {
                     int mode = symlink ? 0120000 : (executable ? 0755 : 0644);
                     int size = fileContent.length;
-                    long time = wFile.lastModified() / 1000;
+                    long time = SafeFileIO.lastModifiedSeconds(wFile);
                     dirstate.addEntry(path, new Dirstate.Entry('a', mode, size, time));
                 }
             }

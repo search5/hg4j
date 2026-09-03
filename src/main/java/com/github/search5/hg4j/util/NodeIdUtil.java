@@ -359,4 +359,66 @@ public final class NodeIdUtil {
             throw new RuntimeException("SHA-1 digest not available", e);
         }
     }
+
+    /**
+     * Real hg's {@code unbundlehash} wire-encoding optimization for {@code unbundle}'s {@code
+     * heads} argument ({@code mercurial/wireprotov1peer.py}'s {@code unbundle()}, confirmed
+     * against Mercurial 7.2.4 source and verified end-to-end against a real hg server, 2026-09-03):
+     * <pre>
+     * if heads != [b'force'] and self.capable(b'unbundlehash'):
+     *     heads = [b'hashed', sha1(b''.join(sorted(heads))).digest()]
+     * </pre>
+     * When the server advertises {@code unbundlehash}, a SHA1 digest of the sorted, concatenated
+     * raw (20-byte) head node ids is sent instead of the literal list — the server's own {@code
+     * exchange.py} {@code check_heads()} accepts a push whose digest matches its actual current
+     * heads exactly as if the literal list had been sent, so this is purely a wire-size
+     * optimization, not a behavior change. Falls back to the literal {@code heads} list (returned
+     * as-is) whenever the capability isn't present, {@code heads} is empty, or it's literally the
+     * {@code ["force"]} sentinel (real hg never hashes a force-push) — transport-agnostic, shared
+     * by both {@code HgRemoteClient} (HTTP) and {@code HgSshClient} (SSH).
+     *
+     * @param heads hex head node ids the caller believes are the remote's current heads
+     * @param serverSupportsUnbundleHash whether the negotiated capabilities include {@code unbundlehash}
+     * @return either {@code heads} unchanged, or the 2-element {@code [hashed-sentinel-hex, digest-hex]} wire tokens
+     */
+    public static List<String> computeUnbundleHeadsWireValue(List<String> heads, boolean serverSupportsUnbundleHash) {
+        if (heads == null || heads.isEmpty()) {
+            return heads == null ? List.of() : heads;
+        }
+        if (heads.size() == 1 && "force".equals(heads.get(0))) {
+            return heads;
+        }
+        if (!serverSupportsUnbundleHash) {
+            return heads;
+        }
+        try {
+            List<byte[]> raw = new ArrayList<>();
+            for (String h : heads) {
+                raw.add(fromHex(h));
+            }
+            raw.sort(NodeIdUtil::compareBytesUnsigned);
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            for (byte[] n : raw) {
+                sha1.update(n);
+            }
+            String hashedSentinel = toHex("hashed".getBytes(StandardCharsets.US_ASCII));
+            String digestHex = toHex(sha1.digest());
+            return List.of(hashedSentinel, digestHex);
+        } catch (IllegalArgumentException | NoSuchAlgorithmException e) {
+            // heads weren't valid hex node ids, or SHA-1 is somehow unavailable -- fall back to
+            // the always-correct literal list rather than fail the push over an optimization.
+            return heads;
+        }
+    }
+
+    private static int compareBytesUnsigned(byte[] a, byte[] b) {
+        int len = Math.min(a.length, b.length);
+        for (int i = 0; i < len; i++) {
+            int ai = a[i] & 0xFF, bi = b[i] & 0xFF;
+            if (ai != bi) {
+                return ai - bi;
+            }
+        }
+        return a.length - b.length;
+    }
 }

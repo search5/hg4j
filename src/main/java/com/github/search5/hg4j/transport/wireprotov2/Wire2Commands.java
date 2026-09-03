@@ -230,10 +230,23 @@ public final class Wire2Commands {
 
     public static List<Object> manifestdata(HgRepository repo, Map<String, Object> args) throws IOException {
         String tree = Cbor.asString(args.get("tree"));
-        if (tree != null && !tree.isEmpty()) {
-            throw new HgProtocolException("wireprotov2", "tree manifests are not supported");
+        // A non-empty `tree` selects a treemanifest subdirectory's own submanifest revlog
+        // (`meta/<tree>/00manifest.i`) instead of the root `00manifest.i` -- matches real hg's
+        // wireprotov2server.py manifestdata command (client side already needs this, see
+        // HgRemoteClientV2.getBundle()'s recursive tree fetch, backlog item 20). hg4j's own
+        // repositories are always flat (backlog item 8), so this path only activates for a
+        // genuine treemanifest repository being served.
+        Revlog manifest;
+        if (tree == null || tree.isEmpty()) {
+            manifest = repo.getManifestRevlog();
+        } else {
+            File subIdx = new File(repo.getStoreDir(), "meta/" + tree + "/00manifest.i");
+            File subDat = new File(repo.getStoreDir(), "meta/" + tree + "/00manifest.d");
+            if (!subIdx.isFile()) {
+                throw new HgProtocolException("wireprotov2", "unknown tree: " + tree);
+            }
+            manifest = repo.getRevlog(subIdx, subDat);
         }
-        Revlog manifest = repo.getManifestRevlog();
         Set<String> fields = stringSet(Cbor.asList(args.get("fields")));
         List<Object> nodesArg = Cbor.asList(args.get("nodes"));
 

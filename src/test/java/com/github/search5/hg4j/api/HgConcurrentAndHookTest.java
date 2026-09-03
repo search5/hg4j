@@ -33,6 +33,7 @@ import com.github.search5.hg4j.transport.CredentialItem;
 import com.github.search5.hg4j.transport.CredentialsProvider;
 import com.github.search5.hg4j.transport.HgRemoteClient;
 import com.github.search5.hg4j.transport.HgSshClient;
+import com.github.search5.hg4j.transport.HgSshWireServer;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -394,109 +395,69 @@ public class HgConcurrentAndHookTest {
         }
     }
 
+    /** Server-side {@code Command} adapter attaching {@link HgSshWireServer} (already
+     * independently verified against a real hg client, see {@code HgSshWireServerRealHgInteropTest})
+     * to an embedded SSHD server -- see {@code HgSshClientTest}/{@code HgSshClientTransportTest}
+     * for the same pattern used elsewhere. Replaces this test's earlier hand-rolled fake SSH
+     * server, which spoke a simplified line-based protocol matching {@link HgSshClient}'s own
+     * then-incorrect assumptions rather than real hg's actual wire format -- fixed 2026-09-03.
+     */
+    private static class RealSshWireCommand implements Command {
+        private final HgRepository repo;
+        private InputStream in;
+        private OutputStream out;
+        private ExitCallback callback;
+        private Thread thread;
+
+        RealSshWireCommand(HgRepository repo) {
+            this.repo = repo;
+        }
+
+        @Override public void setInputStream(InputStream in) { this.in = in; }
+        @Override public void setOutputStream(OutputStream out) { this.out = out; }
+        @Override public void setErrorStream(OutputStream err) {}
+        @Override public void setExitCallback(ExitCallback callback) { this.callback = callback; }
+
+        @Override
+        public void start(ChannelSession channelSession, Environment env) {
+            thread = new Thread(() -> {
+                try {
+                    new HgSshWireServer(repo).handleConnection(in, out);
+                    callback.onExit(0);
+                } catch (Exception e) {
+                    callback.onExit(1);
+                }
+            }, "real-ssh-wire-test");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        @Override
+        public void destroy(ChannelSession channelSession) {
+            if (thread != null) {
+                thread.interrupt();
+            }
+        }
+    }
+
     @Test
     public void testRealSshRoundtrip() throws Exception {
-        // 1. Prepare changegroup bundle data
         File srcDir = new File(tempDir, "src_repo_ssh_" + System.nanoTime());
         HgRepository srcRepo = Hg.init().setDirectory(srcDir).call();
         Hg srcHg = Hg.wrap(srcRepo);
-        
+
         File dummyFile = new File(srcDir, "test.txt");
         Files.writeString(dummyFile.toPath(), "Hello SSH Real Bundle");
         srcHg.add().addFile("test.txt").call();
         byte[] commitNode = srcHg.commit().setAuthor("tester").setMessage("Initial SSH").call();
         String commitNodeHex = NodeIdUtil.toHex(commitNode);
-        
-        ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
-        byte[] realCgBytes = HgTestUtils.serializeBundleToBytes(bundle);
 
         SshServer sshd = SshServer.setUpDefaultServer();
         sshd.setPort(0);
         sshd.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(new File(tempDir, "hostkey.ser").toPath()));
         sshd.setPasswordAuthenticator((username, password, session) -> true);
-        
-        sshd.setCommandFactory((channel, command) -> new Command() {
-            private InputStream in;
-            private OutputStream out;
-            private ExitCallback callback;
+        sshd.setCommandFactory((channel, command) -> new RealSshWireCommand(srcRepo));
 
-            @Override
-            public void setInputStream(InputStream in) { this.in = in; }
-            @Override
-            public void setOutputStream(OutputStream out) { this.out = out; }
-            @Override
-            public void setErrorStream(OutputStream err) {}
-            @Override
-            public void setExitCallback(ExitCallback callback) { this.callback = callback; }
-
-            @Override
-            public void start(ChannelSession channelSession, Environment env) throws IOException {
-                new Thread(() -> {
-                    try {
-                        out.write("capabilities: heads getbundle between known changegroup\n".getBytes(StandardCharsets.UTF_8));
-                        out.flush();
-                        
-                        BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-                        String line;
-                        while ((line = r.readLine()) != null) {
-                            String cmd = line.trim();
-                            if (cmd.equals("heads")) {
-                                r.readLine(); // read trailing empty line
-                                out.write((commitNodeHex + "\n").getBytes(StandardCharsets.UTF_8));
-                                out.flush();
-                            } else if (cmd.equals("changegroup") || cmd.startsWith("getbundle")) {
-                                while (true) {
-                                    String next = r.readLine();
-                                    if (next == null || next.trim().isEmpty()) {
-                                        break;
-                                    }
-                                }
-                                ByteBuffer lenBuf = ByteBuffer.allocate(4);
-                                lenBuf.putInt(realCgBytes.length);
-                                out.write(lenBuf.array());
-                                out.write(realCgBytes);
-                                
-                                ByteBuffer endBuf = ByteBuffer.allocate(4);
-                                endBuf.putInt(0);
-                                out.write(endBuf.array());
-                                out.flush();
-                            } else if (cmd.equals("listkeys")) {
-                                while (true) {
-                                    String next = r.readLine();
-                                    if (next == null || next.trim().isEmpty()) {
-                                        break;
-                                    }
-                                }
-                                out.write("\n".getBytes(StandardCharsets.UTF_8));
-                                out.flush();
-                            } else if (cmd.equals("known")) {
-                                while (true) {
-                                    String next = r.readLine();
-                                    if (next == null || next.trim().isEmpty()) {
-                                        break;
-                                    }
-                                }
-                                out.write("0\n".getBytes(StandardCharsets.UTF_8));
-                                out.flush();
-                            } else if (cmd.equals("between")) {
-                                while (true) {
-                                    String next = r.readLine();
-                                    if (next == null || next.trim().isEmpty()) {
-                                        break;
-                                    }
-                                }
-                                out.write("\n".getBytes(StandardCharsets.UTF_8));
-                                out.flush();
-                            }
-                        }
-                    } catch (Exception ignored) {}
-                }).start();
-            }
-
-            @Override
-            public void destroy(ChannelSession channelSession) {}
-        });
-        
         sshd.start();
         int port = sshd.getPort();
 

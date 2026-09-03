@@ -48,6 +48,8 @@ public class HgRepository implements Repository {
     private boolean revlogV2 = false;
     private boolean persistentNodemap = false;
     private boolean fileIndexV1 = false;
+    private boolean treemanifest = false;
+    private boolean sidedataCopies = false;
     private StoreEngine storeEngine = new DefaultFileStoreEngine();
     private Dirstate cachedDirstate = null;
     private final HgRcConfig config = new HgRcConfig();
@@ -122,6 +124,10 @@ public class HgRepository implements Repository {
                         this.persistentNodemap = true;
                     } else if ("fileindex-v1".equals(trimmed)) {
                         this.fileIndexV1 = true;
+                    } else if ("treemanifest".equals(trimmed)) {
+                        this.treemanifest = true;
+                    } else if ("exp-copies-sidedata-changeset".equals(trimmed)) {
+                        this.sidedataCopies = true;
                     }
                 }
             } catch (Exception ignored) {
@@ -152,14 +158,42 @@ public class HgRepository implements Repository {
      * lookups ({@code RevlogIndex.findRevision}) — real hg only ever writes this file for
      * non-inline revlogs (typically just {@code 00changelog.i} in modest-sized repos), and only a
      * present, non-stale ({@code .n}'s recorded tip matches the revlog's actual current tip) trie
-     * is used; anything else falls back to the ordinary full-scan lookup. hg4j does not yet write
-     * {@code .n} files itself (Mercurial spec allows a stale/absent nodemap — it's purely a speed
-     * optimization, correctness is unaffected), so a repository hg4j alone commits into will
-     * simply stop benefiting from the acceleration on its own new revisions until some real hg
-     * (or a future write-side implementation here) refreshes it.
+     * is used; anything else falls back to the ordinary full-scan lookup. {@link
+     * com.github.search5.hg4j.storage.Revlog} also maintains the trie on write (after each
+     * appended revision, for non-inline revlogs), via {@link
+     * com.github.search5.hg4j.storage.NodeMapFile#persist} — matches real hg's own incremental
+     * (with periodic full-rebuild fallback) strategy, verified against a real Rust-enabled hg
+     * (docker/hg-rust-7.2.4).
      */
     public boolean isPersistentNodemap() {
         return persistentNodemap;
+    }
+
+    /**
+     * {@code treemanifest} requirement (real hg's {@code experimental.treemanifest=1}) —
+     * manifests are split recursively per-directory ({@code meta/<dir>/00manifest.i}) instead of
+     * one flat listing, with {@code t}-flagged entries in a parent directory's manifest text
+     * pointing at its immediate children's submanifest revisions. Read support (recursive
+     * expansion back into a flat file list) lives in {@link
+     * com.github.search5.hg4j.treewalk.ManifestTreeIterator}; write support (splitting a new flat
+     * manifest into the recursive per-directory revisions on commit) lives in {@link
+     * com.github.search5.hg4j.api.CommitCommand}.
+     */
+    public boolean isTreemanifest() {
+        return treemanifest;
+    }
+
+    /**
+     * {@code exp-copies-sidedata-changeset} requirement (implies {@code exp-changelog-v2}) —
+     * commits should carry a {@code SD_FILES} sidedata record (added/removed/merged/salvaged/
+     * touched paths + per-destination copy source) on the changelog revision itself. Write
+     * support lives in {@link com.github.search5.hg4j.api.CommitCommand} (via {@link
+     * com.github.search5.hg4j.api.ChangingFiles#encode}/{@link
+     * com.github.search5.hg4j.storage.SidedataCodec#serialize}); read support in {@link
+     * com.github.search5.hg4j.api.SidedataChangedFilesCommand}.
+     */
+    public boolean isSidedataCopies() {
+        return sidedataCopies;
     }
 
     /**

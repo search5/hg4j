@@ -2,12 +2,15 @@ package com.github.search5.hg4j.storage;
 
 import com.github.search5.hg4j.errors.HgCorruptDataException;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Codec for the outer "sidedata container" byte format real hg uses inside a revlog-v2
@@ -98,5 +101,49 @@ public final class SidedataCodec {
             result.put(keys[i], payload);
         }
         return result;
+    }
+
+    /**
+     * Encodes a key -&gt; payload map into the outer sidedata container format (the inverse of
+     * {@link #deserialize}), for {@link com.github.search5.hg4j.storage.Revlog#appendRevision}'s
+     * new {@code sidedataContainer} parameter. Keys are written in ascending order (real hg's own
+     * {@code serialize_sidedata()} iterates {@code sorted(sidedata.items())} — matters for
+     * byte-for-byte compatibility with a real hg reader, not just for determinism here).
+     *
+     * @return an empty (zero-length) array if {@code payloadsByKey} is null/empty — matches
+     *         {@link #deserialize}'s treatment of an empty/null blob as "no sidedata".
+     */
+    public static byte[] serialize(Map<Integer, byte[]> payloadsByKey) {
+        if (payloadsByKey == null || payloadsByKey.isEmpty()) {
+            return new byte[0];
+        }
+        Map<Integer, byte[]> sorted = new TreeMap<>(payloadsByKey);
+        MessageDigest sha1;
+        try {
+            sha1 = MessageDigest.getInstance("SHA-1");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-1 unavailable", e);
+        }
+
+        ByteBuffer header = ByteBuffer.allocate(HEADER_SIZE + sorted.size() * ENTRY_SIZE);
+        header.putShort((short) sorted.size());
+        for (Map.Entry<Integer, byte[]> e : sorted.entrySet()) {
+            byte[] payload = e.getValue();
+            header.putShort((short) (int) e.getKey());
+            header.putInt(payload.length);
+            header.put(sha1.digest(payload));
+        }
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream(header.capacity()
+                + sorted.values().stream().mapToInt(v -> v.length).sum());
+        try {
+            out.write(header.array());
+            for (byte[] payload : sorted.values()) {
+                out.write(payload);
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("ByteArrayOutputStream never throws", e);
+        }
+        return out.toByteArray();
     }
 }

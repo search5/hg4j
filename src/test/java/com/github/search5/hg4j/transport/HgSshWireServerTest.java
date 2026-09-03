@@ -25,12 +25,12 @@ import com.github.search5.hg4j.bundle.ChangegroupParser;
 /**
  * Verifies {@link HgSshWireServer} against hand-crafted byte sequences shaped exactly like real
  * hg's own SSH v1 client would send them ({@code mercurial/wireprotoserver.py}'s {@code
- * sshv1protocolhandler.getargs}/{@code _sshv1respondbytes}, Mercurial 6.0) — not hg4j's own {@code
- * HgSshClient}, which turned out to use an entirely different, never-verified wire format (a
- * blank-line arg terminator and unframed responses that don't exist in the real protocol) and so
- * can't serve as a real-spec round-trip partner. Real-hg-as-SSH-client end-to-end interop (which
- * would require either a genuine SSH session or a documented bypass of one) was not set up in
- * this phase; this is a known follow-up, tracked in the JGit-restructuring plan.
+ * sshv1protocolhandler.getargs}/{@code _sshv1respondbytes}, Mercurial 6.0). {@link HgSshClient}
+ * itself used to speak an entirely different, never-verified wire format (a blank-line arg
+ * terminator and unframed responses that don't exist in the real protocol); as of 2026-09-03 it's
+ * been rewritten to match this same real spec and is round-tripped against this server directly
+ * in {@link HgSshClientTest}/{@code HgSshClientTransportTest}. Real-hg-as-client end-to-end
+ * interop lives in {@link HgSshWireServerRealHgInteropTest}.
  */
 public class HgSshWireServerTest {
 
@@ -47,6 +47,30 @@ public class HgSshWireServerTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         new HgSshWireServer(repo).handleConnection(new ByteArrayInputStream(request), out);
         return out.toByteArray();
+    }
+
+    /** Splits a byte stream of concatenated {@code "<len>\n<bytes>"} framed responses (real hg's
+     * {@code unbundle} reply shape is up to three of these back to back: a pre-payload "OK to
+     * continue" check, an error-or-empty check, and -- only on success -- the actual result) into
+     * the individual payload strings. */
+    private static List<String> splitFramedResponses(byte[] response) {
+        List<String> parts = new ArrayList<>();
+        int pos = 0;
+        while (pos < response.length) {
+            int nl = -1;
+            for (int i = pos; i < response.length; i++) {
+                if (response[i] == '\n') {
+                    nl = i;
+                    break;
+                }
+            }
+            if (nl == -1) break;
+            int len = Integer.parseInt(new String(response, pos, nl - pos, StandardCharsets.US_ASCII));
+            int start = nl + 1;
+            parts.add(new String(response, start, len, StandardCharsets.UTF_8));
+            pos = start + len;
+        }
+        return parts;
     }
 
     /** A no-arg command is just its bare name line -- no argument lines follow at all. */
@@ -155,10 +179,16 @@ public class HgSshWireServerTest {
         reqBytes.write("0\n".getBytes(StandardCharsets.US_ASCII));
 
         byte[] response = run(destRepo, reqBytes.toByteArray());
-        String resp = new String(response, StandardCharsets.US_ASCII);
-        int nl = resp.indexOf('\n');
-        String payload = resp.substring(nl + 1);
-        assertTrue(payload.startsWith("1\n"), "unbundle must report new revisions added: " + payload);
+        // Real hg's unbundle reply shape (mercurial/sshpeer.py's _callpush(), confirmed against
+        // Mercurial 7.2.4 source 2026-09-03): a pre-payload "OK to continue" empty frame (already
+        // consumed by the time this request was fully written above -- it's simply the FIRST of
+        // the three responses concatenated here), then an error-or-empty check, then -- since this
+        // push succeeds -- the actual integer result.
+        List<String> parts = splitFramedResponses(response);
+        assertEquals(3, parts.size(), "precheck + error-or-empty + result: " + parts);
+        assertEquals("", parts.get(0), "pre-payload OK-to-continue frame must be empty");
+        assertEquals("", parts.get(1), "no error");
+        assertEquals("1", parts.get(2), "unbundle must report new revisions added");
 
         File clIdx = new File(destRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(destRepo.getStoreDir(), "00changelog.d");
@@ -250,10 +280,14 @@ public class HgSshWireServerTest {
         server.handleConnection(new ByteArrayInputStream(reqBytes.toByteArray()), out);
 
         assertEquals(1, observedContexts.size(), "The pre-changegroup hook must fire exactly once even though it rejects the push");
-        String resp = new String(out.toByteArray(), StandardCharsets.US_ASCII);
-        int nl = resp.indexOf('\n');
-        String payload = resp.substring(nl + 1);
-        assertTrue(payload.startsWith("0\n"), "a rejected push must report zero new revisions: " + payload);
+        // Real hg's unbundle reply shape: pre-payload "OK to continue" empty frame, then -- since
+        // this push is rejected -- a single non-empty error frame (the client, real or hg4j's own,
+        // treats ANY non-empty frame here as the error message and never even attempts the
+        // would-be-third "result" read; see HgSshClient#push).
+        List<String> parts = splitFramedResponses(out.toByteArray());
+        assertEquals(2, parts.size(), "precheck + error (no separate result frame on rejection): " + parts);
+        assertEquals("", parts.get(0), "pre-payload OK-to-continue frame must be empty");
+        assertFalse(parts.get(1).isEmpty(), "a rejected push must report a non-empty error");
 
         File clIdx = new File(destRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(destRepo.getStoreDir(), "00changelog.d");

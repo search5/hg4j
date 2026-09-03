@@ -9,6 +9,7 @@ import com.github.search5.hg4j.transport.wireprotov2.Cbor;
 import com.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import com.github.search5.hg4j.util.NodeIdUtil;
 
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,7 @@ import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -44,9 +46,42 @@ import static org.junit.jupiter.api.Assertions.*;
  * getChangegroup/getBundle, the push() 10MB response guard, and the mercurial-0.1 raw-zlib
  * auto-detect branch in unwrapResponseStream. All server-side mocks follow the exact byte layouts
  * already established in the sibling test files in this package (v1 plain-text capabilities,
- * mercurial-0.2 chunked framing, real X-HgUpgrade-1/X-HgProto-1 CBOR discovery handshake).
+ * real X-HgUpgrade-1/X-HgProto-1 CBOR discovery handshake, and -- since 2026-09-03 -- real hg's
+ * actual GET+X-HgArg-N argument transport, see {@link HgArgProtocolTest}).
  */
 public class HgRemoteClientCoverageTest {
+
+    /** Reassembles a real-hg {@code encodevalueinheaders}-style X-HgArg-N header chain and decodes it. */
+    private static Map<String, String> reassembleXHgArgs(HttpExchange exchange) {
+        StringBuilder sb = new StringBuilder();
+        int n = 1;
+        while (true) {
+            String chunk = exchange.getRequestHeaders().getFirst("X-HgArg-" + n);
+            if (chunk == null) {
+                break;
+            }
+            sb.append(chunk);
+            n++;
+        }
+        Map<String, String> args = new LinkedHashMap<>();
+        String encoded = sb.toString();
+        if (!encoded.isEmpty()) {
+            for (String pair : encoded.split("&")) {
+                int eq = pair.indexOf('=');
+                args.put(URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8),
+                        URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8));
+            }
+        }
+        return args;
+    }
+
+    private static void respondCapabilities(HttpExchange exchange, String capabilities) throws IOException {
+        byte[] resp = capabilities.getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(200, resp.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(resp);
+        }
+    }
 
     // ==========================================================
     // setCredentialsProvider
@@ -218,10 +253,14 @@ public class HgRemoteClientCoverageTest {
     @Test
     public void pushkeySendsAllParamsWithOldAndNewDefaultedFromNull() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        final String[] capturedBody = {null};
+        final Map<String, String>[] capturedArgs = new Map[]{null};
         server.createContext("/", exchange -> {
-            byte[] reqBytes = exchange.getRequestBody().readAllBytes();
-            capturedBody[0] = new String(reqBytes, StandardCharsets.UTF_8);
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null && query.contains("cmd=capabilities")) {
+                respondCapabilities(exchange, "lookup pushkey batch httpheader=1024");
+                return;
+            }
+            capturedArgs[0] = reassembleXHgArgs(exchange);
             byte[] resp = "1".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, resp.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -231,14 +270,15 @@ public class HgRemoteClientCoverageTest {
         server.start();
         try {
             try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.getCapabilities(); // negotiates httpheader= so pushkey uses X-HgArg-N, not the legacy query-string tier
             boolean ok = client.pushkey("bookmarks", "mybook", null, null);
 
             assertTrue(ok, "\"1\" response body must be treated as success");
-            assertNotNull(capturedBody[0]);
-            assertTrue(capturedBody[0].contains("namespace=bookmarks"));
-            assertTrue(capturedBody[0].contains("key=mybook"));
-            assertTrue(capturedBody[0].contains("old="));
-            assertTrue(capturedBody[0].contains("new="));
+            assertNotNull(capturedArgs[0]);
+            assertEquals("bookmarks", capturedArgs[0].get("namespace"));
+            assertEquals("mybook", capturedArgs[0].get("key"));
+            assertEquals("", capturedArgs[0].get("old"));
+            assertEquals("", capturedArgs[0].get("new"));
             }
         } finally {
             server.stop(0);
@@ -287,9 +327,14 @@ public class HgRemoteClientCoverageTest {
     @Test
     public void getChangegroupWithMultipleRootsJoinsThemWithSpace() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        final String[] capturedBody = {null};
+        final Map<String, String>[] capturedArgs = new Map[]{null};
         server.createContext("/", exchange -> {
-            capturedBody[0] = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null && query.contains("cmd=capabilities")) {
+                respondCapabilities(exchange, "lookup getbundle changegroupsubset batch httpheader=1024");
+                return;
+            }
+            capturedArgs[0] = reassembleXHgArgs(exchange);
             byte[] resp = new byte[]{0, 0, 0, 0};
             exchange.sendResponseHeaders(200, resp.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -299,12 +344,12 @@ public class HgRemoteClientCoverageTest {
         server.start();
         try {
             try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.getCapabilities(); // negotiates httpheader= so getChangegroup uses X-HgArg-N, not the legacy query-string tier
             byte[] result = client.getChangegroup(List.of("root1", "root2", "root3"));
 
             assertNotNull(result);
-            assertNotNull(capturedBody[0]);
-            // URL-decoded "+" for spaces from application/x-www-form-urlencoded encoding.
-            assertTrue(capturedBody[0].contains("roots=root1+root2+root3"), "Body was: " + capturedBody[0]);
+            assertNotNull(capturedArgs[0]);
+            assertEquals("root1 root2 root3", capturedArgs[0].get("roots"));
             }
         } finally {
             server.stop(0);
@@ -343,9 +388,14 @@ public class HgRemoteClientCoverageTest {
     @Test
     public void getBundleDefaultsCommonAndBundleCapsWhenNotSpecified() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        final String[] capturedBody = {null};
+        final Map<String, String>[] capturedArgs = new Map[]{null};
         server.createContext("/", exchange -> {
-            capturedBody[0] = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null && query.contains("cmd=capabilities")) {
+                respondCapabilities(exchange, "lookup getbundle batch httpheader=1024");
+                return;
+            }
+            capturedArgs[0] = reassembleXHgArgs(exchange);
             byte[] resp = "bundledata".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, resp.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -355,22 +405,23 @@ public class HgRemoteClientCoverageTest {
         server.start();
         try {
             try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.getCapabilities(); // negotiates httpheader= so getBundle uses X-HgArg-N, not the legacy query-string tier
             byte[] result = client.getBundle(null, null, null);
 
             assertNotNull(result);
-            assertNotNull(capturedBody[0]);
-            assertTrue(capturedBody[0].contains("common="), "Body was: " + capturedBody[0]);
-            assertFalse(capturedBody[0].contains("heads="), "heads param must be omitted when heads is null/empty");
-            assertTrue(capturedBody[0].contains("cg=true"));
+            assertNotNull(capturedArgs[0]);
+            assertEquals("", capturedArgs[0].get("common"));
+            assertFalse(capturedArgs[0].containsKey("heads"), "heads param must be omitted when heads is null/empty");
+            assertEquals("true", capturedArgs[0].get("cg"));
             // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS의 bundlecaps="scsv" 타입) 실측
             // 정정(2026-09-03): changegroup 버전 목록은 평평한 "changegroup=..." 토큰이
             // 아니라 "bundle2=<blob>" 토큰 안에 콤마로 중첩돼야만 실제 hg가 인식한다 —
             // Bundle2Parser#buildChangegroupBundleCaps 주석 참고. 예전 어서션의 스페이스
             // 구분 평평한 형태는 실제 hg 서버에 보내면 협상 자체가 항상 구식 bundle1로
             // 폴백되던, 검증 안 된(그리고 이번에 실제로 틀렸다고 확인된) 형태였다.
-            assertTrue(capturedBody[0].contains(
-                            "bundlecaps=HG20%2Cbundle2%3DHG20%250Achangegroup%253D01%252C02%252C03%252C04%252C05%2Ccompression%3DGZ%2CBZ%2CZS"),
-                    "Default bundlecaps must be sent when none specified. Body was: " + capturedBody[0]);
+            assertEquals("HG20,bundle2=HG20%0Achangegroup%3D01%2C02%2C03%2C04%2C05,compression=GZ,BZ,ZS",
+                    capturedArgs[0].get("bundlecaps"),
+                    "Default bundlecaps must be sent when none specified. Args were: " + capturedArgs[0]);
             }
         } finally {
             server.stop(0);
@@ -380,9 +431,14 @@ public class HgRemoteClientCoverageTest {
     @Test
     public void getBundleWithExplicitCommonHeadsAndBundleCaps() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        final String[] capturedBody = {null};
+        final Map<String, String>[] capturedArgs = new Map[]{null};
         server.createContext("/", exchange -> {
-            capturedBody[0] = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null && query.contains("cmd=capabilities")) {
+                respondCapabilities(exchange, "lookup getbundle batch httpheader=1024");
+                return;
+            }
+            capturedArgs[0] = reassembleXHgArgs(exchange);
             byte[] resp = "bundledata".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, resp.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -392,13 +448,14 @@ public class HgRemoteClientCoverageTest {
         server.start();
         try {
             try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            client.getCapabilities(); // negotiates httpheader= so getBundle uses X-HgArg-N, not the legacy query-string tier
             byte[] result = client.getBundle(List.of("c1", "c2"), List.of("h1", "h2"), List.of("bundle2"));
 
             assertNotNull(result);
-            assertNotNull(capturedBody[0]);
-            assertTrue(capturedBody[0].contains("common=c1+c2"), "Body was: " + capturedBody[0]);
-            assertTrue(capturedBody[0].contains("heads=h1+h2"), "Body was: " + capturedBody[0]);
-            assertTrue(capturedBody[0].contains("bundlecaps=bundle2"), "Body was: " + capturedBody[0]);
+            assertNotNull(capturedArgs[0]);
+            assertEquals("c1 c2", capturedArgs[0].get("common"));
+            assertEquals("h1 h2", capturedArgs[0].get("heads"));
+            assertEquals("bundle2", capturedArgs[0].get("bundlecaps"));
             }
         } finally {
             server.stop(0);
@@ -708,16 +765,13 @@ public class HgRemoteClientCoverageTest {
 
     @Test
     public void unwrapMercurial02WithEmptyCompressionNameSkipsInflate() throws Exception {
+        // Real hg's actual -0.2 wire format (see HgRemoteClient#unwrapResponseStream): 1-byte
+        // namelen + name, then the payload straight through to end of stream -- no inner
+        // chunk-length framing.
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(0); // compression name length = 0 -> empty name, no compression
         String payload = "listkeys";
-        byte[] payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
-        out.write((payloadBytes.length >> 24) & 0xFF);
-        out.write((payloadBytes.length >> 16) & 0xFF);
-        out.write((payloadBytes.length >> 8) & 0xFF);
-        out.write(payloadBytes.length & 0xFF);
-        out.write(payloadBytes);
-        out.write(new byte[]{0, 0, 0, 0}); // terminal chunk
+        out.write(payload.getBytes(StandardCharsets.UTF_8));
 
         try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
         InputStream unwrapped = invokeUnwrap(client, new ByteArrayInputStream(out.toByteArray()), "application/mercurial-0.2");
@@ -1086,22 +1140,6 @@ public class HgRemoteClientCoverageTest {
     }
 
     // ==========================================================
-    // MercurialChunkedInputStream -- clean full EOF (dropped connection with zero bytes at all,
-    // as opposed to the already-covered "a few bytes of the length prefix, then EOF" case).
-    // ==========================================================
-
-    @Test
-    public void mercurialChunkedInputStreamCleanEofWithNoDataReturnsMinusOne() throws Exception {
-        java.lang.reflect.Constructor<?> constructor = Class.forName(
-                "com.github.search5.hg4j.transport.HgRemoteClient$MercurialChunkedInputStream")
-                .getDeclaredConstructor(InputStream.class);
-        constructor.setAccessible(true);
-        InputStream chunkedStream = (InputStream) constructor.newInstance(new ByteArrayInputStream(new byte[0]));
-
-        assertEquals(-1, chunkedStream.read(), "A stream that ends with zero bytes (no terminal chunk marker at all) must read as clean EOF");
-    }
-
-    // ==========================================================
     // unwrapResponseStream -- application/mercurial-0.2 framing edge cases not yet covered:
     // a completely empty stream, and the real "zlib"/"deflate" named-compression branch (distinct
     // from the raw-zlib auto-detect tested for application/mercurial-0.1).
@@ -1133,19 +1171,14 @@ public class HgRemoteClientCoverageTest {
         }
         byte[] deflatedBytes = deflated.toByteArray();
 
+        // Real hg's actual -0.2 wire format (confirmed against a real Mercurial 7.2.4 server,
+        // 2026-09-03): 1-byte namelen + name, then the compressed payload straight through to end
+        // of stream -- no inner chunk-length framing on top.
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] nameBytes = compressionName.getBytes(StandardCharsets.US_ASCII);
         out.write(nameBytes.length);
         out.write(nameBytes);
-        // Real application/mercurial-0.2 chunked framing: 4-byte big-endian chunk length, then the
-        // chunk payload; a terminal zero-length chunk ends the stream.
-        int len = deflatedBytes.length;
-        out.write((len >> 24) & 0xFF);
-        out.write((len >> 16) & 0xFF);
-        out.write((len >> 8) & 0xFF);
-        out.write(len & 0xFF);
         out.write(deflatedBytes);
-        out.write(new byte[]{0, 0, 0, 0});
 
         try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
         InputStream unwrapped = invokeUnwrap(client, new ByteArrayInputStream(out.toByteArray()), "application/mercurial-0.2");

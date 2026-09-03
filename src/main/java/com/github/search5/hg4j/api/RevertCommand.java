@@ -4,6 +4,7 @@ import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.errors.HgLockException;
 
@@ -119,7 +120,7 @@ public class RevertCommand {
                     diskFile.setExecutable(executable, false);
                 }
                 
-                long time = diskFile.lastModified() / 1000;
+                long time = SafeFileIO.lastModifiedSeconds(diskFile);
                 dirstate.addEntry(file, new Dirstate.Entry('n', mode, targetContent.length, time));
             } else {
                 if (diskFile.exists()) {

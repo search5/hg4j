@@ -222,4 +222,60 @@ public class RemoveCommandTest {
             Files.deleteIfExists(lockDir.toPath());
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Symlink handling: RemoveCommand had NO lstat-aware handling at all --
+    // File#isFile()/length()/lastModified() all follow a symlink to whatever
+    // it points at. For a symlink pointing at an EXISTING file, this made the
+    // "is it dirty?" check compare the TARGET's size against the symlink's own
+    // (unrelated) tracked size, spuriously reporting an untouched symlink as
+    // modified. For a DANGLING symlink, File#exists() follows and returns
+    // false, so the physical delete step was skipped entirely -- the link was
+    // marked removed in the dirstate but never actually deleted from disk.
+    // Fixed 2026-09-03.
+    // ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    public void testRemoveUntouchedSymlinkToExistingTargetDoesNotSpuriouslyThrow(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File targetFile = new File(repoDir, "target.txt");
+        // Deliberately NOT the same length as the symlink's own target-path string ("target.txt"
+        // is 10 chars) -- if the dirty check ever compares the TARGET's size instead of the
+        // symlink's own, this reproduces the spurious-dirty bug deterministically.
+        Files.writeString(targetFile.toPath(), "a much longer file body than the symlink's own name");
+
+        File linkFile = new File(repoDir, "link.txt");
+        Files.createSymbolicLink(linkFile.toPath(), Path.of("target.txt"));
+
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+
+        // The symlink itself was never touched after the commit -- removing it without force
+        // must succeed, not throw "uncommitted changes (modified)".
+        RemoveCommand cmd = new RemoveCommand(repo).setFile("link.txt");
+        assertTrue(cmd.call());
+
+        assertEquals('r', repo.getDirstate().getEntries().get("link.txt").getState());
+    }
+
+    @Test
+    public void testRemoveDanglingSymlinkActuallyDeletesItFromDisk(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File linkFile = new File(repoDir, "dangling.txt");
+        Files.createSymbolicLink(linkFile.toPath(), Path.of("does-not-exist.txt"));
+
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+
+        RemoveCommand cmd = new RemoveCommand(repo).setFile("dangling.txt");
+        assertTrue(cmd.call());
+
+        assertFalse(Files.isSymbolicLink(linkFile.toPath()) || linkFile.exists(),
+                "a removed dangling symlink must actually be deleted from disk, not just marked removed in the dirstate");
+        assertEquals('r', repo.getDirstate().getEntries().get("dangling.txt").getState());
+    }
 }

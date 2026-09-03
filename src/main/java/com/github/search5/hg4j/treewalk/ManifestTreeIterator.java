@@ -54,6 +54,21 @@ public class ManifestTreeIterator implements TreeIterator {
         public boolean isTreeDir() {
             return treeDir;
         }
+
+        /** The entry's path exactly as it appears in this directory level's manifest text (a
+         * bare directory name with no trailing slash when {@link #isTreeDir()}, e.g. treemanifest
+         * write support in {@code api.CommitCommand} walks a parent's tree via {@link
+         * #parseManifestContent} to recover per-directory node hashes for correct parent1/parent2
+         * linkage on the new revisions it writes). */
+        public String getPath() {
+            return path;
+        }
+
+        /** This entry's node hash — a file content revision, or (when {@link #isTreeDir()}) the
+         * node of that subdirectory's own {@code meta/<dir>/00manifest.i} revision. */
+        public byte[] getNodeId() {
+            return nodeId;
+        }
     }
 
     public ManifestTreeIterator(HgRepository repository, String revision) {

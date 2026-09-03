@@ -1,16 +1,21 @@
 package com.github.search5.hg4j.api;
 
 import com.github.search5.hg4j.errors.HgCorruptDataException;
+import com.github.search5.hg4j.util.NodeIdUtil;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Decoded form of one changeset revision's {@code SD_FILES} sidedata payload (real hg's {@code
@@ -197,5 +202,107 @@ public final class ChangingFiles {
     public String getCopySource(String path) {
         String source = copiedFromP1.get(path);
         return source != null ? source : copiedFromP2.get(path);
+    }
+
+    /**
+     * Encodes a raw {@code SD_FILES} payload (the inverse of {@link #decode}) for {@link
+     * com.github.search5.hg4j.api.CommitCommand} to attach as changelog sidedata when the
+     * repository has {@code exp-copies-sidedata-changeset}. Every set/map here uses
+     * repo-root-relative paths.
+     *
+     * <p><b>Scope note (documented, not a correctness gap):</b> {@code merged}/{@code salvaged}
+     * are real hg concepts specific to merge-state bookkeeping (a file resolved during a merge
+     * whose content happens to exactly match one parent, vs. one explicitly kept despite the
+     * other side wanting it removed) that {@code CommitCommand} does not currently track
+     * separately from an ordinary content change -- callers pass empty sets for those two today.
+     * A file that is genuinely new, removed, or content-modified (and not new) is still encoded
+     * correctly via {@code added}/{@code removed}/{@code touched}, and copy-tracing (the
+     * headline use case for this sidedata key, per {@code mercurial-spec-compliance-requirement.md}
+     * backlog item 19) is fully supported regardless.
+     *
+     * @param added newly-added paths this revision.
+     * @param removed paths removed this revision.
+     * @param merged paths resolved via merge with content matching a parent exactly (see scope
+     *                note above -- may be empty).
+     * @param salvaged paths explicitly kept during a merge despite a delete on the other side
+     *                  (see scope note above -- may be empty).
+     * @param touched paths with a genuine content change that are not in {@code added} (must not
+     *                 overlap {@code added}/{@code removed}/{@code merged}/{@code salvaged} --
+     *                 each path gets exactly one action classification, matching real hg's own
+     *                 mutually-exclusive {@code ACTION_MASK} bit values).
+     * @param copiedFromP1 destination -&gt; source, for destinations copied from the first parent.
+     * @param copiedFromP2 destination -&gt; source, for destinations copied from the second
+     *                     parent (merge commits only).
+     */
+    public static byte[] encode(Set<String> added, Set<String> removed, Set<String> merged, Set<String> salvaged,
+                                 Set<String> touched, Map<String, String> copiedFromP1, Map<String, String> copiedFromP2) {
+        TreeSet<String> allFiles = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        allFiles.addAll(added);
+        allFiles.addAll(removed);
+        allFiles.addAll(merged);
+        allFiles.addAll(salvaged);
+        allFiles.addAll(touched);
+        allFiles.addAll(copiedFromP1.keySet());
+        allFiles.addAll(copiedFromP1.values());
+        allFiles.addAll(copiedFromP2.keySet());
+        allFiles.addAll(copiedFromP2.values());
+        if (allFiles.isEmpty()) {
+            return new byte[0];
+        }
+
+        List<String> ordered = new ArrayList<>(allFiles);
+        Map<String, Integer> indexOf = new HashMap<>();
+        for (int i = 0; i < ordered.size(); i++) {
+            indexOf.put(ordered.get(i), i);
+        }
+
+        int totalFiles = ordered.size();
+        ByteBuffer entryTable = ByteBuffer.allocate(9 * totalFiles); // flag(1) + fileEnd(4) + copyIndex(4)
+        ByteArrayOutputStream nameBytesOut = new ByteArrayOutputStream();
+        int cumulative = 0;
+        for (String name : ordered) {
+            int flag;
+            if (added.contains(name)) {
+                flag = ADDED_FLAG;
+            } else if (merged.contains(name)) {
+                flag = MERGED_FLAG;
+            } else if (removed.contains(name)) {
+                flag = REMOVED_FLAG;
+            } else if (salvaged.contains(name)) {
+                flag = SALVAGED_FLAG;
+            } else if (touched.contains(name)) {
+                flag = TOUCHED_FLAG;
+            } else {
+                flag = 0; // untouched, present only as a copy source
+            }
+
+            int copyIndex = 0;
+            String p1Source = copiedFromP1.get(name);
+            String p2Source = copiedFromP2.get(name);
+            if (p1Source != null) {
+                flag |= COPIED_FROM_P1_FLAG;
+                copyIndex = indexOf.get(p1Source);
+            } else if (p2Source != null) {
+                flag |= COPIED_FROM_P2_FLAG;
+                copyIndex = indexOf.get(p2Source);
+            }
+
+            byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+            cumulative += nameBytes.length;
+            entryTable.put((byte) flag);
+            entryTable.putInt(cumulative);
+            entryTable.putInt(copyIndex);
+            try {
+                nameBytesOut.write(nameBytes);
+            } catch (IOException e) {
+                throw new IllegalStateException("ByteArrayOutputStream never throws", e);
+            }
+        }
+
+        ByteBuffer out = ByteBuffer.allocate(4 + entryTable.capacity() + nameBytesOut.size());
+        out.putInt(totalFiles);
+        out.put(entryTable.array());
+        out.put(nameBytesOut.toByteArray());
+        return out.array();
     }
 }

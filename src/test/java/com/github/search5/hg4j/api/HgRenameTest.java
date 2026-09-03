@@ -294,4 +294,53 @@ public class HgRenameTest {
         org.junit.jupiter.api.Assumptions.assumeTrue(toggled && file.canExecute(),
                 "Executable bit is not supported on this filesystem");
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Symlink handling: RenameCommand had NO lstat-aware handling at all
+    // (unlike AddCommand/CommitCommand/CopyCommand/...) -- File#exists()/
+    // canExecute()/length()/lastModified() all follow a symlink to whatever
+    // it points at instead of describing the link itself. Fixed 2026-09-03.
+    // ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    public void testRenameSymlinkPreservesLinkAndRecordsLstatAwareDirstate() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+        try (Hg hg = Hg.wrap(repo)) {
+            File targetFile = new File(tempDir, "target.txt");
+            Files.writeString(targetFile.toPath(), "hello");
+            File linkFile = new File(tempDir, "link.txt");
+            Files.createSymbolicLink(linkFile.toPath(), java.nio.file.Path.of("target.txt"));
+
+            hg.rename().setSource("link.txt").setTarget("renamed-link.txt").call();
+
+            File renamed = new File(tempDir, "renamed-link.txt");
+            assertTrue(Files.isSymbolicLink(renamed.toPath()), "the rename must move the symlink itself, not dereference it into a copy of its target's content");
+            assertEquals("target.txt", Files.readSymbolicLink(renamed.toPath()).toString());
+            assertFalse(Files.isSymbolicLink(linkFile.toPath()) || linkFile.exists());
+
+            Dirstate.Entry destEntry = repo.getDirstate().getEntries().get("renamed-link.txt");
+            assertNotNull(destEntry);
+            assertEquals(0120000, destEntry.getMode(), "a renamed symlink's dirstate mode must be the 0120000 symlink sentinel, not derived from File#canExecute() following the link");
+            assertEquals("target.txt".length(), destEntry.getSize(), "a symlink's dirstate size must be its own target-path-string length (lstat), not File#length() of whatever it points at");
+        }
+    }
+
+    @Test
+    public void testRenameDanglingSymlinkDoesNotThrow() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+        try (Hg hg = Hg.wrap(repo)) {
+            File linkFile = new File(tempDir, "dangling-link.txt");
+            Files.createSymbolicLink(linkFile.toPath(), java.nio.file.Path.of("does-not-exist.txt"));
+
+            // File#exists() follows a symlink and returns false for a dangling target -- the
+            // command's own source-existence check must use lstat semantics instead, exactly
+            // like AddCommand already does ("A symlink is valid to commit even when its target
+            // is missing... real hg tracks it regardless").
+            hg.rename().setSource("dangling-link.txt").setTarget("renamed-dangling.txt").call();
+
+            File renamed = new File(tempDir, "renamed-dangling.txt");
+            assertTrue(Files.isSymbolicLink(renamed.toPath()));
+            assertEquals("does-not-exist.txt", Files.readSymbolicLink(renamed.toPath()).toString());
+        }
+    }
 }

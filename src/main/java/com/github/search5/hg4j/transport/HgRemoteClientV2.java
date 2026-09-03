@@ -1,5 +1,6 @@
 package com.github.search5.hg4j.transport;
 
+import com.github.search5.hg4j.bundle.Bundle2Parser;
 import com.github.search5.hg4j.bundle.ChangegroupParser;
 import com.github.search5.hg4j.errors.HgAuthException;
 import com.github.search5.hg4j.errors.HgProtocolException;
@@ -7,6 +8,7 @@ import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.transport.wireprotov2.Cbor;
 import com.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import com.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import com.github.search5.hg4j.util.NodeIdUtil;
 
 import java.io.ByteArrayOutputStream;
@@ -429,18 +431,21 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
             }
         }
 
+        boolean hasTreeManifest = false;
         if (!manifestNodesInOrder.isEmpty()) {
-            Map<String, Object> mfArgs = new LinkedHashMap<>();
-            List<Object> mfNodes = new ArrayList<>(manifestNodesInOrder);
-            mfArgs.put("nodes", mfNodes);
-            mfArgs.put("fields", List.of("parents", "revision"));
-            mfArgs.put("tree", "");
-            List<Object> mfResp = executeCommand("manifestdata", mfArgs, "ro");
-            List<Map<String, Object>> mfRecords = Wire2Transport.decodeRecordsWithFollowing(mfResp.subList(1, mfResp.size()), null);
-
+            List<ChangegroupParser.ChangeGroupEntry> rootEntries = new ArrayList<>();
             Map<String, byte[]> fullTextByNodeHex = new LinkedHashMap<>();
             byte[] prevMfContent = rootManifestSeed;
-            for (Map<String, Object> rec : mfRecords) {
+            // dir path (bare, no trailing slash; e.g. "sub" or "sub/deep") -> its distinct node
+            // hexes referenced from any root manifest revision fetched this pull, in first-seen
+            // order (each root manifest revision's 't'-flagged entries name that subdirectory's
+            // OWN submanifest revision at that point in history -- exactly mirroring how
+            // manifestNodesInOrder itself was seeded from each changelog revision's own manifest
+            // reference above).
+            Map<String, LinkedHashSet<String>> subdirNodeHexesInOrder = new LinkedHashMap<>();
+
+            List<Map<String, Object>> mfArgsResults = fetchManifestData(manifestNodesInOrder, "", List.of("parents", "revision"));
+            for (Map<String, Object> rec : mfArgsResults) {
                 byte[] node = Cbor.asBytes(rec.get("node"));
                 List<Object> parents = Cbor.asList(rec.get("parents"));
                 byte[] revisionText = resolveFullText(rec, fullTextByNodeHex);
@@ -452,8 +457,93 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
                 entry.p2 = parents.size() > 1 ? Cbor.asBytes(parents.get(1)) : new byte[20];
                 entry.cs = manifestLinkNode.get(NodeIdUtil.toHex(node));
                 entry.delta = Revlog.createDelta(prevMfContent, revisionText);
-                bundle.manifestEntries.add(entry);
+                rootEntries.add(entry);
                 prevMfContent = revisionText;
+
+                for (ManifestTreeIterator.Entry me : ManifestTreeIterator.parseManifestContent(revisionText)) {
+                    if (me.isTreeDir()) {
+                        String childHex = NodeIdUtil.toHex(me.getNodeId());
+                        subdirNodeHexesInOrder.computeIfAbsent(me.getPath(), k -> new LinkedHashSet<>()).add(childHex);
+                        // A subdirectory revision's own linknode isn't separately exposed by the
+                        // wire2 manifestdata response -- approximate it with whichever changeset's
+                        // root manifest entry first pointed at it (same real hg semantics: the
+                        // linkrev is "the first changeset for which this content is correct",
+                        // which for cg1-style positional decoding on the receiving end
+                        // (Revlog.appendChangeGroupEntry) only needs to resolve to *some* valid
+                        // changelog revision at or after this content's introduction).
+                        manifestLinkNode.putIfAbsent(childHex, entry.cs);
+                    }
+                }
+            }
+
+            if (subdirNodeHexesInOrder.isEmpty()) {
+                bundle.manifestEntries.addAll(rootEntries);
+            } else {
+                // Real Mercurial's manifestdata/tree wireprotocol v2 command lets a treemanifest
+                // server hand back any subdirectory's own submanifest revlog history -- fetch each
+                // one discovered (breadth-first: a subdirectory's own content can itself reference
+                // further-nested subdirectories) and assemble the cg3/cg4/cg5-capable
+                // `manifestGroups` envelope instead of the flat `manifestEntries` list, matching
+                // real hg's own on-the-wire representation for treemanifest changegroups
+                // (mercurial/changegroup.py generatemanifests()). hg4j's own repositories are
+                // always flat (see backlog item 8), so this path only ever activates when pulling
+                // from a genuine third-party treemanifest server -- there is no seeding from a
+                // pull's common root for these per-directory delta chains (unlike the root
+                // changelog/manifest/files paths above): a subdirectory being incrementally
+                // extended still gets a full from-empty delta chain for its own history, which is
+                // correct (not wrong bytes) but not maximally efficient. Documented, not fixed --
+                // see backlog item 20 in mercurial-spec-compliance-requirement.md.
+                hasTreeManifest = true;
+                bundle.manifestGroups = new ArrayList<>();
+                ChangegroupParser.ManifestGroup rootGroup = new ChangegroupParser.ManifestGroup();
+                rootGroup.path = "";
+                rootGroup.entries = rootEntries;
+                bundle.manifestGroups.add(rootGroup);
+
+                java.util.ArrayDeque<String> queue = new java.util.ArrayDeque<>(subdirNodeHexesInOrder.keySet());
+                java.util.Set<String> queued = new java.util.HashSet<>(subdirNodeHexesInOrder.keySet());
+                while (!queue.isEmpty()) {
+                    String dir = queue.poll();
+                    List<Object> dirNodes = new ArrayList<>();
+                    for (String hex : subdirNodeHexesInOrder.get(dir)) {
+                        dirNodes.add(NodeIdUtil.fromHex(hex));
+                    }
+                    List<Map<String, Object>> dirRecords = fetchManifestData(dirNodes, dir, List.of("parents", "revision"));
+
+                    ChangegroupParser.ManifestGroup mg = new ChangegroupParser.ManifestGroup();
+                    mg.path = dir;
+                    mg.entries = new ArrayList<>();
+                    Map<String, byte[]> dirFullTextByNodeHex = new LinkedHashMap<>();
+                    byte[] prevDirContent = new byte[0];
+                    for (Map<String, Object> rec : dirRecords) {
+                        byte[] node = Cbor.asBytes(rec.get("node"));
+                        List<Object> parents = Cbor.asList(rec.get("parents"));
+                        byte[] revisionText = resolveFullText(rec, dirFullTextByNodeHex);
+                        dirFullTextByNodeHex.put(NodeIdUtil.toHex(node), revisionText);
+
+                        ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+                        entry.node = node;
+                        entry.p1 = parents.size() > 0 ? Cbor.asBytes(parents.get(0)) : new byte[20];
+                        entry.p2 = parents.size() > 1 ? Cbor.asBytes(parents.get(1)) : new byte[20];
+                        entry.cs = manifestLinkNode.get(NodeIdUtil.toHex(node)); // see linknode note above -- approximated the same way for every nesting level
+                        entry.delta = Revlog.createDelta(prevDirContent, revisionText);
+                        mg.entries.add(entry);
+                        prevDirContent = revisionText;
+
+                        for (ManifestTreeIterator.Entry me : ManifestTreeIterator.parseManifestContent(revisionText)) {
+                            if (me.isTreeDir()) {
+                                String childDir = dir + "/" + me.getPath();
+                                String childHex = NodeIdUtil.toHex(me.getNodeId());
+                                subdirNodeHexesInOrder.computeIfAbsent(childDir, k -> new LinkedHashSet<>()).add(childHex);
+                                manifestLinkNode.putIfAbsent(childHex, entry.cs);
+                                if (queued.add(childDir)) {
+                                    queue.add(childDir);
+                                }
+                            }
+                        }
+                    }
+                    bundle.manifestGroups.add(mg);
+                }
             }
         }
 
@@ -509,7 +599,38 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
             }
         }
 
-        return serializeHg10un(bundle);
+        if (!hasTreeManifest) {
+            return serializeHg10un(bundle);
+        }
+        // A treemanifest changegroup needs the tree-capable envelope (root manifest group +
+        // per-directory subgroups, see `manifestGroups` above) -- cg1 (HG10UN) has no such
+        // envelope at all, so switch to cg4 (already implemented by
+        // ChangegroupParser.writeBundle) wrapped in a minimal bundle2 (HG20) container (real hg's
+        // legacy bundle1/HG10 wrapper is definitionally cg1-only), matching the wrapping already
+        // used elsewhere for cg2+ changegroups (Bundle2Parser.wrapChangegroupInBundle2).
+        ByteArrayOutputStream cg4Out = new ByteArrayOutputStream();
+        ChangegroupParser.writeBundle(cg4Out, bundle, "04");
+        return Bundle2Parser.wrapChangegroupInBundle2(cg4Out.toByteArray(), "04");
+    }
+
+    /**
+     * Issues one {@code manifestdata} wire2 command for the given node list against the manifest
+     * revlog rooted at {@code tree} ({@code ""} for the top-level {@code 00manifest.i}, or a bare
+     * repo-root-relative directory path for a treemanifest subdirectory's own submanifest revlog,
+     * e.g. {@code "sub"} or {@code "sub/deep"} -- no trailing slash, matching the on-the-wire
+     * {@code t}-flagged manifest entry path convention already used for local tree reading in
+     * {@link ManifestTreeIterator}) and decodes the response into per-record maps.
+     */
+    private List<Map<String, Object>> fetchManifestData(List<?> nodes, String tree, List<String> fields) throws IOException {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("nodes", nodes);
+        args.put("fields", fields);
+        args.put("tree", tree);
+        List<Object> resp = executeCommand("manifestdata", args, "ro");
+        if (resp.isEmpty()) {
+            return List.of();
+        }
+        return Wire2Transport.decodeRecordsWithFollowing(resp.subList(1, resp.size()), null);
     }
 
     /**

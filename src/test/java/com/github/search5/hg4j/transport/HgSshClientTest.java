@@ -1,52 +1,75 @@
 package com.github.search5.hg4j.transport;
 
+import com.github.search5.hg4j.api.AddCommand;
+import com.github.search5.hg4j.api.CommitCommand;
+import com.github.search5.hg4j.api.Hg;
+import com.github.search5.hg4j.lib.HgRepository;
+import com.github.search5.hg4j.util.NodeIdUtil;
 import org.apache.sshd.server.SshServer;
-import com.github.search5.hg4j.transport.HgSshClient;
 import org.apache.sshd.server.command.Command;
 import org.apache.sshd.server.command.CommandFactory;
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 import org.apache.sshd.server.Environment;
 import org.apache.sshd.server.ExitCallback;
 import org.apache.sshd.server.channel.ChannelSession;
 
+/**
+ * hg4j self-consistency check for {@link HgSshClient}: drives it against {@link
+ * HgSshWireServer} (already independently verified to speak real hg's actual v1 SSH wire
+ * protocol against a real {@code hg} client, see {@link HgSshWireServerRealHgInteropTest}) over
+ * a genuine embedded SSH session, exactly the same shape as {@link
+ * HgHttpWireServerTest}/{@link HgArgProtocolTest} do for the HTTP transport. Real-hg-as-server
+ * verification lives in {@code HgSshClientRealHgInteropTest}.
+ *
+ * <p>An earlier version of this file hand-rolled a fake "hg serve --stdio" protocol
+ * implementation directly in the test (a simple line-based text format, with the server
+ * proactively writing {@code "capabilities: ...\n"} before the client sent anything) that
+ * matched {@link HgSshClient}'s own then-incorrect assumptions rather than real hg's actual
+ * length-prefixed argument framing and {@code hello}/{@code between}-driven handshake — so it
+ * never would have caught the framing bug fixed on 2026-09-03. Driving the real, independently
+ * verified {@link HgSshWireServer} instead closes that gap.</p>
+ */
 public class HgSshClientTest {
 
     private SshServer sshServer;
     private int port;
+    private HgRepository serverRepo;
+    private byte[] headCommit;
 
     @BeforeEach
-    public void startSshServer() throws Exception {
+    public void startSshServer(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("server_repo").toFile();
+        serverRepo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "hello ssh");
+        new AddCommand(serverRepo).call();
+        headCommit = new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
+
         sshServer = SshServer.setUpDefaultServer();
         sshServer.setPort(0); // auto-assign ephemeral port
-        
-        // Simple host key provider
+
         Path tempKey = Files.createTempFile("ssh_host_", ".key");
         sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(tempKey));
         Files.deleteIfExists(tempKey);
 
-        // Simple auth: testuser / testpass
-        sshServer.setPasswordAuthenticator((username, password, session) -> 
-            "testuser".equals(username) && "testpass".equals(password)
+        sshServer.setPasswordAuthenticator((username, password, session) ->
+                "testuser".equals(username) && "testpass".equals(password)
         );
 
-        // CommandFactory to mock 'hg -R /test/repo serve --stdio'
-        sshServer.setCommandFactory(new CommandFactory() {
-            @Override
-            public Command createCommand(ChannelSession channel, String command) throws IOException {
-                return new MockHgStdioCommand(command);
-            }
-        });
+        sshServer.setCommandFactory((CommandFactory) (channel, command) -> new HgWireServerCommand(command, repoDir));
 
         sshServer.start();
         port = sshServer.getPort();
@@ -61,25 +84,24 @@ public class HgSshClientTest {
 
     @Test
     public void testSshClientConnectAndGetHeads() throws Exception {
-        // Given: SSH URL
         String sshUrl = "ssh://testuser@127.0.0.1:" + port + "/test/repo";
-        
-        // When: Initialize HgSshClient and set password
+
         HgSshClient client = new HgSshClient(sshUrl);
         client.setPassword("testpass");
-        
+
         try {
-            // Then: verify capabilities are parsed on connection
             List<String> caps = client.getCapabilities();
             assertNotNull(caps);
-            assertTrue(caps.contains("heads"));
+            // Wire1Commands.capabilitiesString() doesn't advertise "heads" as an explicit
+            // capability token (real hg's own convention: it's an always-available baseline v1
+            // command, not an optional capability) -- assert against what's actually there.
             assertTrue(caps.contains("getbundle"));
+            assertTrue(caps.contains("lookup"));
 
-            // Then: verify getHeads requests are multiplexed correctly over SSH stdio
             List<String> heads = client.getHeads();
             assertNotNull(heads);
             assertEquals(1, heads.size());
-            assertEquals("0000000000000000000000000000000000000000", heads.get(0));
+            assertEquals(NodeIdUtil.toHex(headCommit), heads.get(0));
         } finally {
             client.close();
         }
@@ -101,8 +123,7 @@ public class HgSshClientTest {
                 assertEquals(customPort, port); // custom port verify
                 assertEquals("mockuser", username);
                 assertEquals("mockpass", password);
-                
-                // Return mock SshSession
+
                 return new SshSession() {
                     @Override
                     public void connect(int timeoutMs) throws Exception {}
@@ -112,7 +133,18 @@ public class HgSshClientTest {
 
                     @Override
                     public InputStream getInputStream() throws IOException {
-                        return new ByteArrayInputStream("capabilities: heads\n".getBytes(StandardCharsets.UTF_8));
+                        // Real hg's v1 SSH handshake response shape (see HgSshClient#performHandshake):
+                        // a framed "hello" response containing the capabilities line, followed by a
+                        // framed "between" response (a single "\n" byte for the null-range query).
+                        String helloBody = "capabilities: heads\n";
+                        byte[] helloBytes = helloBody.getBytes(StandardCharsets.UTF_8);
+                        String betweenBody = "\n";
+                        ByteArrayOutputStream out = new ByteArrayOutputStream();
+                        out.write((helloBytes.length + "\n").getBytes(StandardCharsets.US_ASCII));
+                        out.write(helloBytes);
+                        out.write((betweenBody.length() + "\n").getBytes(StandardCharsets.US_ASCII));
+                        out.write(betweenBody.getBytes(StandardCharsets.US_ASCII));
+                        return new ByteArrayInputStream(out.toByteArray());
                     }
 
                     @Override
@@ -127,16 +159,14 @@ public class HgSshClientTest {
         };
 
         try {
-            // 1. Verify injection
             HgSshClient.setSshSessionFactory(mockFactory);
             assertEquals(mockFactory, HgSshClient.getSshSessionFactory());
 
-            // 2. Verify execution (check if createSession is invoked with correct parameters)
             String sshUrl = "ssh://mockuser:mockpass@127.0.0.1:" + customPort + "/test/repo";
             HgSshClient client = new HgSshClient(sshUrl);
-            
+
             try {
-                List<String> caps = client.getCapabilities(); // 트리거 ensureConnected()
+                List<String> caps = client.getCapabilities(); // triggers ensureConnected()
                 assertNotNull(caps);
                 assertTrue(caps.contains("heads"));
             } finally {
@@ -145,54 +175,41 @@ public class HgSshClientTest {
 
             assertTrue(openSessionCalled[0], "SshSessionFactory's createSession must be actively invoked");
         } finally {
-            // 3. Restore
             HgSshClient.setSshSessionFactory(originalFactory);
         }
     }
 
-    /**
-     * Mock Command simulating 'hg serve --stdio' protocol behaviour.
-     */
-    private static class MockHgStdioCommand implements Command, Runnable {
+    /** Server-side {@code Command} adapter attaching {@link HgSshWireServer} to the embedded SSHD server. */
+    private static class HgWireServerCommand implements Command, Runnable {
+        private static final Pattern REPO_PATH = Pattern.compile("-R\\s+'?([^'\\s]+)'?");
+
         private final String command;
+        private final File fallbackRepoDir;
         private InputStream in;
         private OutputStream out;
         private OutputStream err;
         private ExitCallback callback;
         private Thread thread;
 
-        public MockHgStdioCommand(String command) {
+        HgWireServerCommand(String command, File fallbackRepoDir) {
             this.command = command;
+            this.fallbackRepoDir = fallbackRepoDir;
         }
 
-        @Override
-        public void setInputStream(InputStream in) {
-            this.in = in;
-        }
+        @Override public void setInputStream(InputStream in) { this.in = in; }
+        @Override public void setOutputStream(OutputStream out) { this.out = out; }
+        @Override public void setErrorStream(OutputStream err) { this.err = err; }
+        @Override public void setExitCallback(ExitCallback callback) { this.callback = callback; }
 
         @Override
-        public void setOutputStream(OutputStream out) {
-            this.out = out;
-        }
-
-        @Override
-        public void setErrorStream(OutputStream err) {
-            this.err = err;
-        }
-
-        @Override
-        public void setExitCallback(ExitCallback callback) {
-            this.callback = callback;
-        }
-
-        @Override
-        public void start(ChannelSession session, Environment env) throws IOException {
-            thread = new Thread(this);
+        public void start(ChannelSession session, Environment env) {
+            thread = new Thread(this, "hg-ssh-wire-test");
+            thread.setDaemon(true);
             thread.start();
         }
 
         @Override
-        public void destroy(ChannelSession session) throws Exception {
+        public void destroy(ChannelSession session) {
             if (thread != null) {
                 thread.interrupt();
             }
@@ -201,43 +218,28 @@ public class HgSshClientTest {
         @Override
         public void run() {
             try {
-                // Mercurial stdio protocol starts by writing capabilities: to stdout
-                // Let's check command matching to simulate real hg serve --stdio
                 if (command == null || !command.contains("serve --stdio")) {
                     err.write("Invalid mercurial ssh command\n".getBytes(StandardCharsets.UTF_8));
                     err.flush();
                     callback.onExit(1);
                     return;
                 }
-
-                // Write capabilities header
-                out.write("capabilities: heads getbundle changegroup\n".getBytes(StandardCharsets.UTF_8));
-                out.flush();
-
-                BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-                while (true) {
-                    String line = reader.readLine();
-                    if (line == null) {
-                        break;
-                    }
-                    line = line.trim();
-                    if ("heads".equals(line)) {
-                        // Mock heads response: 40-char hash + newline
-                        out.write("0000000000000000000000000000000000000000\n".getBytes(StandardCharsets.UTF_8));
-                        out.flush();
-                    } else if (line.startsWith("changegroup")) {
-                        // Mock empty changegroup chunking
-                        // Standard chunk format (4-byte length + payload)
-                        // Write empty payload terminal chunk (0000)
-                        out.write(new byte[]{0, 0, 0, 0});
-                        out.flush();
-                    } else if ("close".equals(line) || "exit".equals(line)) {
-                        break;
-                    }
-                }
+                // The test URL's repo path ("/test/repo") is a placeholder -- always serve the
+                // one real repository this test actually seeded, regardless of what path the
+                // client requested (matches this file's prior mock behavior).
+                Matcher m = REPO_PATH.matcher(command);
+                File repoDir = m.find() ? new File(m.group(1)) : fallbackRepoDir;
+                HgRepository repo = repoDir.isDirectory() && new File(repoDir, ".hg").isDirectory()
+                        ? new HgRepository(repoDir) : new HgRepository(fallbackRepoDir);
+                new HgSshWireServer(repo).handleConnection(in, out);
                 callback.onExit(0);
             } catch (Exception e) {
-                callback.onExit(1, e.getMessage());
+                try {
+                    err.write((e + "\n").getBytes(StandardCharsets.UTF_8));
+                    err.flush();
+                } catch (IOException ignored) {
+                }
+                callback.onExit(1);
             }
         }
     }

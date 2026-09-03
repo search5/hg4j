@@ -165,7 +165,7 @@ public final class CopyCommand {
                 int size = isSymlink
                         ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
                         : (int) destFile.length();
-                long time = destFile.lastModified() / 1000;
+                long time = SafeFileIO.lastModifiedSeconds(destFile);
                 dirstate.addEntry(destinationPath, new Dirstate.Entry('a', mode, size, time));
 
                 if (storeCopyMetadata) {

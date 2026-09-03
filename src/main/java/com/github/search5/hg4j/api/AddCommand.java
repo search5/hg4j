@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import com.github.search5.hg4j.errors.HgValidationException;
 import com.github.search5.hg4j.lib.HgLock;
+import com.github.search5.hg4j.util.SafeFileIO;
 
 /**
  * Adds untracked files to the repository tracking list.
@@ -67,7 +68,7 @@ public class AddCommand {
                 int size = isSymlink
                         ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
                         : (int) diskFile.length();
-                long time = diskFile.lastModified() / 1000;
+                long time = SafeFileIO.lastModifiedSeconds(diskFile);
 
                 Dirstate.Entry entry = new Dirstate.Entry('a', mode, size, time);
                 dirstate.addEntry(relPath, entry);

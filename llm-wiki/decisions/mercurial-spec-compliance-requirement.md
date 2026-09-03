@@ -1,6 +1,6 @@
 ---
-updated: 2026-09-02
-status: current
+updated: 2026-09-03
+status: 백로그 18(treemanifest 쓰기)/19(sidedata SD_FILES writer)/20(wireprotocol v2 재귀 tree fetch)/21(persistent-nodemap 쓰기) 전부 완료 — 후속 갭 4개 모두 해소됨
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -565,37 +565,148 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `SidedataChangedFilesCommandTest`, 8건). **남은 gap**: 커밋 시점에 hg4j가
     `SD_FILES`를 직접 쓰는 writer는 미구현(decode/조회만), `hg log --follow`/
     annotate 연동도 미배선.
-18. **Treemanifest 쓰기(생성/커밋) — 미착수.** 백로그 8번에서 읽기(재귀적 트리
-    펼치기)만 구현하고 명시적으로 범위 밖으로 남긴 부분. 지금은 평면 매니페스트만
-    쓸 수 있는데, 반대로 평면 매니페스트를 디렉터리별로 쪼개서 각각
-    `meta/<dir>/00manifest.i`에 올바른 부모/linkRev로 커밋하고 루트 매니페스트에
-    `t` 플래그로 연결하는 로직이 필요하다 — `CommitCommand`의 매니페스트 작성
-    경로를 상당 부분 건드리는 작업. `experimental.treemanifest=1` 저장소는
-    Docker `hg6-v2server`(백로그 8번에서 이미 검증된 이미지)로 계속 검증 가능.
-19. **Sidedata `SD_FILES` writer(커밋 시 쓰기) — 미착수.** 백로그 17번에서 decode/
-    조회만 구현하고 남긴 부분. 이게 구현되면 아래 두 gap이 동시에 해결된다: (1)
-    hg4j로 커밋한 리비전 자체에 copy-tracing sidedata가 실리게 됨, (2) 백로그
-    11번(cg4/cg5)에서 지적된 "cg5로 패킹하는 sidedata 비트가 항상 0"인 gap도
-    해소됨(패킹 로직은 이미 있고 원본 sidedata가 비어 있을 뿐이므로). `exp-copies-
-    sidedata-changeset` requirement 하의 changelog-v2 리비전에 `SD_FILES` 인코딩 +
-    붙이는 작업 — decode 쪽 포맷(`storage.SidedataCodec`/`api.ChangingFiles`)은
-    이미 구현·검증돼 있어 그 역방향만 구현하면 된다. 로컬 hg만으로 검증 가능
-    (Rust/Docker 불필요, 백로그 17번에서 이미 확인됨).
-20. **Wireprotocol v2 `getBundle()`의 재귀적 `tree=<dir>` fetch 미구현.** 백로그
-    8번에서 명시적으로 범위 밖으로 남긴 부분 — `HgRemoteClientV2.getBundle()`이
-    항상 `"tree": ""`(루트 매니페스트)만 요청하고 서브디렉터리 재귀 fetch를 안
-    한다. hg4j 자체 저장소는 전부 flat 매니페스트라 문제 없지만, 진짜
-    treemanifest를 쓰는 제3자 real hg 서버와 wireprotocol v2로 연동하면
-    서브디렉터리 매니페스트/파일 데이터가 통째로 누락된다. treemanifest 읽기
-    로직(백로그 8번)과 wireprotocol v2의 manifestdata 명령이 이미 다 있어서
-    재귀 배선만 추가하면 되는 비교적 작은 작업 — 다만 wireprotocol v2는 실제
-    Mercurial 6.1부터 폐기돼 실사용 노출이 낮으므로 우선순위는 낮다.
-21. **persistent-nodemap `.n` 파일 쓰기(커밋 시 갱신) — 미착수.** 백로그 15번에서
-    읽기(가속 조회)만 구현하고 남긴 부분 — 지금은 hg4j로 커밋한 신규 리비전이
-    생기면 트라이가 자연히 stale해지고(정확성은 fallback으로 유지되지만 가속
-    이점은 못 받음) 순차 스캔으로 처리된다. `mercurial/revlogutils/nodemap.py`의
-    쓰기 경로(주기적 재빌드/증분 갱신 로직)를 실측해서 구현해야 함 — 검증은
-    백로그 15번에서 이미 검증된 `hg-rust-7.2.4` Docker 이미지로 계속 가능.
+18. ~~**Treemanifest 쓰기(생성/커밋)**~~ — ✅ **완료(2026-09-03)**. 실제
+    `mercurial/manifest.py`의 `manifestlog._addtree`/`treemanifest.writesubtrees`/
+    `dirtext()`를 실측(자식 디렉터리부터 bottom-up 재귀 기록, 각 레벨의 파일+
+    서브디렉터리 포인터를 파일명 하나의 정렬 리스트로 합쳐 `sorted(dirs+files)`
+    순서로 직렬화 — 파일 먼저, 디렉터리 나중이 아님)해서 `CommitCommand`에
+    `writeTreeManifestDir` 재귀 메서드로 구현. `repository.isTreemanifest()`일
+    때만 활성화(새 `HgRepository.isTreemanifest()` — 실제 hg 픽스처로 확인한 대로
+    `treemanifest` requirement는 `.hg/store/requires`가 아니라 **최상위
+    `.hg/requires`**에 있음, persistent-nodemap 등 store 포맷 플래그와는 다른
+    분류), 기존 평면 매니페스트 경로는 완전히 무수정·무영향. 부모 커밋의 트리에서
+    각 디렉터리의 기존 노드를 찾기 위한 `collectDirNodes`(`ManifestTreeIterator`의
+    재귀 펼치기와 동일한 순회를 쓰되 디렉터리 노드 자체를 보존 — 이를 위해
+    `ManifestTreeIterator.Entry`에 `getPath()`/`getNodeId()` public getter 추가)도
+    신설. **의도적 단순화(문서화, 정확성엔 무관)**: 실제 hg는 서브트리 전체가
+    부모와 바이트 단위로 동일하면 그 디렉터리의 새 리비전 작성을 건너뛰고
+    부모 노드를 재사용하는 최적화(`m.unmodifiedsince(m1)`)가 있는데, hg4j는
+    이 최적화 없이 커밋마다 변경된 파일 경로상의 모든 디렉터리에 항상 새
+    리비전을 쓴다(루트 레벨 평면 매니페스트가 원래도 매번 새로 쓰던 것과 동일한
+    수준) — 결과 바이트는 여전히 완전히 유효한 부모/콘텐츠 해시이고 실제 hg가
+    문제없이 읽지만, 저장 중복 제거가 덜 됨.
+    검증(`TreeManifestWriteTest`, 2건 GREEN): (1) 중첩 디렉터리(`sub/`,
+    `sub/deep/`, `sub2/`) 커밋 후 자체 `ManifestTreeIterator`/`getManifestAtCommit`
+    왕복 정확 + 두 번째(증분) 커밋에서 안 건드린 서브디렉터리의 부모-링크 정확성
+    확인, (2) **hg4j로 커밋한 저장소를 실제 hg-rust-7.2.4(Docker)에 넘겨 `hg
+    verify`/`hg log`/`hg cat -r 0 sub/deep/c.txt`(3단 중첩 경로)/`hg cat -r 1
+    sub2/d.txt`(안 건드린 서브트리) 전부 성공** — real hg가 hg4j가 쓴
+    `meta/sub/00manifest.i`+`meta/sub/deep/00manifest.i`를 실제로 타고 내려가며
+    파일을 정확히 찾아냄을 증명. CommitCommand/treewalk 패키지 전체 회귀로 기존
+    평면 매니페스트 동작 무손상 확인.
+19. ~~**Sidedata `SD_FILES` writer(커밋 시 쓰기)**~~ — ✅ **완료(2026-09-03)**.
+    `SidedataCodec.serialize`(바깥 컨테이너 인코딩, 기존 `deserialize`의 역방향)와
+    `ChangingFiles.encode`(added/removed/touched + copiedFromP1/P2 → `SD_FILES`
+    페이로드, 파일명 알파벳 정렬 + flag 비트 조합, 기존 `decode`의 역방향) 신설,
+    `CommitCommand`에서 `repository.isSidedataCopies()`(신규 accessor,
+    `exp-copies-sidedata-changeset` requirement)일 때 기존 파일 추적 루프에서
+    added/removed/touched/copy 정보를 수집해 인코딩 후 `Revlog.appendRevision`의
+    새 `sidedataContainer` 파라미터로 전달. `Revlog.appendRevisionV2`가
+    `.sda` 파일에 append하고 인덱스 레코드의 sidedata offset/length 필드를 채운다.
+    **의도적 단순화(문서화)**: `merged`/`salvaged` 두 액션 분류(병합 상태 전용
+    세부 구분)는 `CommitCommand`가 현재 별도로 추적하지 않아 항상 빈 집합으로
+    전달 — added/removed/touched 3분류와 copy-tracing(이 백로그의 핵심 목적)은
+    완전히 지원됨.
+    **버그 발견·수정**: 구현 중 real hg로 검증하다가 실제 결함을 하나 발견 —
+    v2 docket 헤더의 `sidedata_end`/`pending_sidedata_end` 필드(offset 42~58,
+    기존 `updateV2DocketSizes`가 index_end/data_end만 갱신하고 이 두 필드는
+    손도 안 대고 있었음)를 갱신하지 않으면, `.sda` 파일에 바이트를 실제로 다
+    append했어도 real hg가 **파일 자체 크기가 아니라 이 docket 필드를 신뢰**해서
+    `"cannot read from revlog ...sda; expected N bytes from offset M, data size
+    is <stale값>"`로 거부한다(hg4j 자체 read 경로는 이 필드를 안 쓰고 파일을
+    직접 읽어서 자기 자신에게는 정상으로 보였음 — 자기일관성만으로는 못 잡는
+    전형적 사례). `updateV2DocketSizes`에 3-인자 오버로드를 추가해 수정.
+    **발견 당시 인접 갭이었으나 같은 날 별도로 완료됨**: hg4j는 `exp-changelog-v2`
+    저장소를 처음부터(`Hg.init()`) 생성하는 경로가 당시엔 전혀 없어서, 이 항목
+    검증은 실제 local hg CLI로 rev0을 만들고 그 위에 hg4j가 rev1을 이어붙이는
+    방식으로 진행했다(백로그 19가 실제로 다루는 시나리오와는 일치하지만, hg4j
+    스스로 저장소를 처음부터 만드는 건 별도 갭으로 문서화해뒀었다) — ✅ 바로 이어서
+    **완료(2026-09-03)**. `RevlogIndex.initializeNewV2Docket(boolean
+    asChangelogV2)`로 기존 `exp-revlogv2.2` 부트스트랩 로직을 일반화(도켓/컴패니언
+    파일 바이트 구조는 완전히 동일, magic값과 `isChangelogV2()`만 다름),
+    `DefaultFileStoreEngine.getRevlog()`가 파일명이 정확히 `00changelog.i`이고
+    `repository.isChangelogV2()`이며 파일이 아직 없을 때만 이 경로를 요청하도록
+    배선(`exp-changelog-v2`는 매니페스트/파일로그가 아니라 changelog에만 적용되는
+    좁은 requirement이므로).
+    **이 작업 중 실제 심각한 버그를 하나 더 발견·수정**: `appendRevisionV2`의
+    CL_V2(changelog-v2) 분기가 압축 모드를 항상 `COMP_MODE_DEFAULT`(zstd)로
+    하드코딩하고 있었는데, 실제 hg는 리비전마다 **동적으로** zstd 압축이 실제로
+    콘텐츠를 줄였을 때만 DEFAULT를, 안 줄었으면(작은 커밋 메시지 등) 원본 그대로
+    `COMP_MODE_PLAIN`(마커 바이트 없이)을 쓴다 — 기존 hg4j 코드는 이때
+    `DeltaCodec.compress`의 **v1 revlog 전용 관례**(`'u'`+원본바이트 폴백 마커)를
+    그대로 재사용하면서 레코드의 압축모드 바이트는 여전히 DEFAULT로 잘못 표시해,
+    real hg가 `'u'`로 시작하는 바이트열을 zstd 프레임으로 오인해 `"zstd
+    decompressor error: Unknown frame descriptor"`로 거부하는 상태였다(실제 hg
+    픽스처 `sidedata-copytracing/data.idx`의 3개 리비전 중 2개가 compbyte=0x00
+    PLAIN임을 직접 바이트 단위로 대조해 확정). 이전 세션들의 changelog-v2 관련
+    테스트가 전부 우연히 "충분히 긴" 콘텐츠만 다뤄서 이 버그를 피해갔던 것 — 이번
+    작업의 짧은 첫 커밋(rev0)에서 처음 노출됨. `Zstd.compress` 결과가 원본보다
+    작을 때만 그 결과+COMP_MODE_DEFAULT(1)를, 아니면 원본 그대로+COMP_MODE_PLAIN(0)를
+    쓰도록 동적 선택으로 수정.
+    검증(`ChangelogV2BootstrapTest`, GREEN): (1) hg4j가 처음부터 만든
+    `exp-changelog-v2` 저장소에 2회 커밋(자체 read 경로로 왕복 확인), (2) **real
+    local hg가 hg4j로 A부터 Z까지 만든 저장소에서 `hg verify`/`hg log` 둘 다 성공**
+    (수정 전엔 정확히 이 시나리오에서 압축 버그가 터졌었음). storage/api/transport
+    패키지 전체 회귀(963개 중 3개 실패 — 전부 기존에도 있던 무관한 동시성/타이밍
+    플레이키로 단독 재실행 시 통과 확인) GREEN.
+    검증(`SidedataFilesWriteTest`, GREEN): local hg(Rust 불필요, 백로그 17에서
+    이미 확인된 대로)로 `format.exp-use-copies-side-data-changeset=yes`
+    저장소를 만들고 rev0 커밋 → hg4j가 rename(copy+remove)+신규파일 추가로 rev1
+    커밋 → hg4j 자체 `SidedataChangedFilesCommand`로 정확히 디코드 확인 +
+    **real hg `hg debugchangedfiles 1`/`hg verify`가 hg4j가 쓴 바이트를 그대로
+    정확히 읽음**(`removed: a.txt; added p1: b.txt, a.txt; added: c.txt` 실측
+    출력 일치). storage/CommitCommand/sidedata 관련 패키지 전체 회귀+api 패키지
+    전체 회귀(963개 중 962개 GREEN, 유일한 실패는 기존에도 있던 무관한 타이밍
+    플레이키 `ProcessHookTest`) 확인.
+20. ~~**Wireprotocol v2 `getBundle()`의 재귀적 `tree=<dir>` fetch 미구현**~~ — ✅
+    **완료(2026-09-03)**. `HgRemoteClientV2.getBundle()`이 루트 매니페스트에서
+    `t`플래그 서브디렉터리 포인터를 발견하면 BFS로 `manifestdata`를
+    `tree=<dir>`(트레일링 슬래시 없는 bare 경로, 예: `"sub"`/`"sub/deep"`)를 재귀
+    호출해 더 깊이 중첩된 포인터까지 전부 수집, `ChangegroupParser.ChangegroupBundle`
+    의 기존 `manifestGroups`(cg3/4/5용 봉투, 이미 구현돼 있었음) 필드로 조립한 뒤
+    `writeBundle(..., "04")`+`Bundle2Parser.wrapChangegroupInBundle2`로 HG20/cg4
+    번들을 생성한다(cg1/HG10UN은 트리 봉투 자체가 없어 flat 매니페스트일 때만
+    그대로 사용, 서브디렉터리 발견 시에만 전환 — 기존 flat 경로 완전 무영향).
+    **발견한 실제 갭 하나 더**: 백로그 문서가 "manifestdata 명령이 이미 있어서
+    재귀 배선만 추가하면 됨"이라고 적어놨던 전제가 틀렸음을 확인 —
+    `Wire2Commands.manifestdata`(hg4j 자체 wire2 **서버** 측)가 실제로는 비어있지
+    않은 `tree` 인자를 무조건 거부하고 있었음(`"tree manifests are not
+    supported"`). 클라이언트 수정을 실제로 검증할 방법이 없어서 서버 측도 대칭적으로
+    `meta/<tree>/00manifest.i`를 찾아 서빙하도록 같이 고쳤다(존재하지 않는 tree는
+    여전히 명확한 에러로 거부). 실제 Mercurial 6.0 wireprotocol v2 서버(6.1부터
+    폐기돼 이 환경의 Docker 이미지들엔 남아있지 않음)로는 검증 못 했고, 대신
+    hg4j↔hg4j 자기 일관성 왕복으로 검증: 서버 측에 treemanifest 저장소(`sub/`,
+    `sub/deep/`, `sub2/` 3단 중첩, 백로그 18번 쓰기 지원으로 실제 커밋)를
+    `HgHttpWireServer`로 띄우고, 클라이언트가 v1→v2 자동 업그레이드를 거쳐
+    `FetchCommand`로 pull한 뒤 로컬에 `meta/sub/00manifest.i`+
+    `meta/sub/deep/00manifest.i`+`meta/sub2/00manifest.i`가 실제로 생성되고
+    4개 파일 콘텐츠가 정확히 재구성됨을 확인(`Wire2TreeManifestFetchTest`, GREEN).
+    **의도적 단순화(문서화)**: 서브디렉터리의 linknode는 wire2 응답이 별도로
+    안 실어주므로 그 서브디렉터리 포인터를 처음 발견한 상위 엔트리의 linknode로
+    근사(cg1 포지셔널 디코딩엔 유효한 changelog rev이기만 하면 되므로 정확성엔
+    영향 없음), 증분(common-root seeding) 최적화는 루트 경로만 적용하고
+    서브디렉터리 델타체인은 매번 처음부터 구성(정확하지만 최적은 아님).
+    transport/bundle/FetchCommand 패키지 전체 회귀(540개+ 테스트) GREEN.
+21. ~~**persistent-nodemap `.n` 파일 쓰기(커밋 시 갱신)**~~ — ✅ **완료(2026-09-03)**.
+    `mercurial/revlogutils/nodemap.py`를 실측(전체 재빌드 `_build_trie`/`_persist_trie`/
+    `_walk_trie`, 증분 갱신 `_update_trie`/`_insert_into_block`, docket 직렬화, 실제
+    hg의 "새 길이가 unused*10 이하면 포기하고 전체 재빌드로 폴백" 10% 임계값까지)해서
+    `NodeMapFile`에 두 경로 모두 구현. `Revlog`의 리비전 append 진입점 5곳(v1/v2
+    changelog/일반 revlog, changegroup 적용, raw/optimized 경로) 전부가 공통으로
+    거치는 유일한 지점 `RevlogIndex.addRecord()` 직후에 단일 훅
+    (`updatePersistentNodeMapAfterAppend()`)을 걸어 changelog/manifest/filelog 전체에
+    자동 적용(개별 명령 코드는 전혀 건드리지 않음 — `DefaultFileStoreEngine`이 이미
+    모든 Revlog를 `repository.isPersistentNodemap()` 플래그로 균일하게 생성하고
+    있었던 기존 아키텍처 덕분). requirement 미설정이거나 inline revlog면 즉시
+    no-op(기존 동작 100% 보존). 검증 3단계: (1) 백로그 15번의 실제 hg-rust-7.2.4
+    픽스처(40리비전)로 전체 재빌드 후 40개 노드 해시 전부 정확히 조회됨, (2) 10→25→40
+    3단계 증분 확장에서 매 단계 정확 + uid 보존(진짜 증분 경로임을 증명), (3) **hg4j로
+    브랜드뉴 저장소를 만들어 persistent-nodemap requirement를 켜고 실제
+    `CommitCommand`로 8회 커밋 → 실제 Rust 확장 hg-rust-7.2.4(Docker)에 그대로 넘겨
+    `hg verify`/`hg log` 둘 다 성공 확인**(`NodeMapFileWriterTest`, 4건 GREEN). storage
+    패키지 전체 회귀 및 CommitCommand 관련 회귀(212개 테스트, 무관한 기존 심볼릭링크
+    타이밍 플레이키 1건 제외 전부 GREEN, 단독 재실행 시 그것도 통과)로 기존 동작
+    무손상 확인.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.
@@ -864,6 +975,206 @@ INSTRUCTION 99.14%/LINE 99.03%/METHOD 99.70%/CLASS 100%까지 끌어올렸다(BR
 missed≥5 기준 순수 신규 클래스 체크리스트는 17차로 완전히 소진됐다. 전체 배치별
 전후 수치, 새로 확인된 도달불가 잔여 갭 목록은 [[test-coverage-95-percent-initiative]]
 "라운드 3 계속(배치 8~17)" 절에 상세 기록.
+
+## HTTP v1 인자 전송(X-HgArg-N) 버그 발견·수정 + mercurial-0.2 프레이밍 버그 (2026-09-03)
+
+사용자 요청("interop 통신과정에서 광고하는 버전으로 협상하는지 면밀하게 확인해줘")에 따라
+`getbundle`의 changegroup 버전 협상이 실제 hg 서버와의 라이브 통신에서 진짜로 광고한 버전에
+수렴하는지 검증하다가, 그 협상 자체를 무력화시키는 훨씬 근본적인 버그를 발견했다.
+
+### 버그 1 (SEVERE): `HgRemoteClient`가 인자 전달에 POST를 쓰고 있었다 — 실제 hg는 GET+헤더
+
+실제 hg의 `mercurial/httppeer.py`(`makev1commandrequest()`)를 직접 읽고, 로컬 TCP 로깅
+프록시로 실제 `hg --debug clone` 세션의 원본 바이트를 캡처해 확인한 실제 스펙: 인자를 가진
+v1 명령(`getbundle`/`changegroup`/`pushkey`)은 3단계 폴백으로 전송된다.
+1. 서버가 `httppostargs` 광고 시: POST 바디 = urlencode(정렬된 인자), 헤더
+   `X-HgArgs-Post: <len>`.
+2. 서버가 `httpheader=<N>` 광고 시(실제 hg 서버 기본값): **GET** 요청, 인자 없는 쿼리스트링,
+   urlencode된 인자 문자열을 `X-HgArg-1`, `X-HgArg-2`, ... 요청 헤더로 쪼개 전송(각 청크는
+   `N - len("X-HgArg-0") - 4`바이트), `Vary: X-HgArg-1,...` 헤더 동반.
+3. 둘 다 없으면(구식/최소 서버): 레거시 — 인자를 그대로 쿼리스트링에 붙인 평범한 GET.
+
+hg4j의 `HgRemoteClient`는 이 셋 중 어느 것도 구현하지 않고 **항상 POST 폼바디**로 보내고
+있었다 — 실제 hg 서버의 v1 인자 파서는 이 명령들에 대해 POST 바디를 전혀 읽지 않으므로,
+서버는 `bundlecaps` 등 인자를 아예 못 받은 것으로 보고 조용히 구식 bundle1(cg1)로
+폴백했다. 즉 이전 세션에서 "01~05까지 광고하도록" 고친 것 자체는 틀리지 않았지만, 전송
+메커니즘이 잘못돼 있어 실사용 효과가 사실상 전무했다.
+
+**수정**: `HgRemoteClient`에 `executeArgsCommand()`(3단계 분기), `negotiateV2()`가
+`httppostargs`/`httpmediatype=`/`compression=` 토큰도 파싱하도록 확장, 서버가 실제로
+`httpheader=`를 광고했을 때만 헤더 tier를 쓰고 그렇지 않으면 레거시 쿼리스트링 tier로
+폴백(`sawHttpHeaderCap` 플래그) — 이 폴백 분기 자체도 최초 구현에서 누락되어 있었다가
+회귀 테스트(`HgRemoteAndSyncTest`, capabilities가 비어 있는 최소 mock 서버)에서 곧바로
+발각·수정됨. `x-hgproto-1` 헤더(`buildXHgProto1Header()`)도 처음 구현해 real hg의
+`sorted(protoparams)` 방식대로 동일하게 헤더분할·전송. 서버 측(`HgHttpWireServer`)에는
+`X-HgArg-N` 재조립 로직을 추가하고 `Wire1Commands.capabilitiesString()`에
+`httpheader=1024`를 광고에 추가. 검증: `HgArgProtocolTest`(mock 서버로 GET/POST/헤더분할/
+x-hgproto-1 내용을 바이트 단위로 확인), `HgHttpWireServerTest`(hg4j↔hg4j 자기 정합성),
+`HgHttpV1LiveServerCgNegotiationInteropTest`(`hg-rust-7.2.4` 실 서버로 라이브 검증 — 응답을
+직접 압축 해제해 CHANGEGROUP 파트의 `version=` 파라미터를 읽어 실제로 `04`가 협상됨을
+확인; 서버의 `changegroup=01,02,03` capabilities 토큰만으로 예측한 `03`보다 높은 값이었다 —
+서버 측 버전 선택이 평평한 리스트의 단순 max가 아니라 요청별 실시간 판단이라는 뜻).
+
+### 버그 2 (별도, 위 수정의 부산물로 발견): `application/mercurial-0.2` 응답 프레이밍이 스펙과 달랐다
+
+위 수정으로 `x-hgproto-1`이 처음 제대로 전송되자, 실제 hg 서버가 사상 처음으로 hg4j
+클라이언트에게 `application/mercurial-0.2` + zstd/zlib 압축 응답을 실제로 보내왔고, 이
+과정에서 `HgRemoteClient`의 -0.2 파싱이 실제 hg 서버 응답과 맞지 않는다는 것이 드러났다.
+`curl`로 원본 응답 바이트를 직접 캡처해 확인: 압축명(`zstd`/`zlib`) 뒤에 hg4j가 가정하던
+"4바이트 길이 프리픽스 청크 프레이밍"이 전혀 없이 압축 매직바이트(zstd `28 b5 2f fd`, zlib
+`78 9c`)가 곧바로 이어짐 — 실제 포맷은 `[1바이트 이름길이][이름][압축된 페이로드가 스트림
+끝까지 그대로]`뿐이었다. hg4j 자체 서버(`HgHttpWireServer`)는 -0.2를 절대 안 보내므로(항상
+-0.1만 응답) 이 파싱 경로는 지금까지 실제 hg 서버 상대로 한 번도 검증된 적이 없었다 — 이번
+수정 전까지는 x-hgproto-1 자체가 안 나갔으니 실제 서버가 -0.2를 골라줄 일도 없었다.
+
+**수정**: `unwrapResponseStream`에서 `MercurialChunkedInputStream`(스펙에 없는 클래스)
+사용을 제거하고 이름 뒤 바이트를 곧바로 압축 해제하도록 변경, zstd 지원도 추가(zstd-jni는
+이미 의존성으로 있었음). 해당 클래스 및 그 클래스만을 대상으로 하던 리플렉션 유닛테스트
+전부(`HgRemoteClientTest`/`HgRemoteClientStreamTest`/`HgRemoteClientCoverageTest`, 총
+13개) 삭제, 나머지 -0.2 통합 테스트들의 mock 바디를 실제 포맷대로 재작성. 이 스코프
+확장(클래스 삭제 포함)은 사용자에게 `AskUserQuestion`으로 먼저 확인 후 진행.
+
+### 결과
+
+전체 회귀(2270 테스트) 100% 통과, real Mercurial 7.2.4(Rust 확장 포함, `hg-rust-7.2.4`
+이미지) 라이브 서버 대상 changegroup 버전 협상 및 -0.2 압축 응답 둘 다 실제로 검증됨.
+
+## SSH 전송 계층 전면 재구현 — HgSshClient가 실제로는 전혀 다른(발명된) 프로토콜을 쓰고 있었다 (2026-09-03)
+
+위 HTTP 작업 완료 후, 사용자가 코드리뷰에서 지적한 두 항목("SSH bundlecaps 콤마는 고쳐졌지만
+실제 SSH 협상에서 작동하는지 미검증", "push()의 heads `+` 구분자가 버그인지 의도인지 불명")을
+검증하다가, 애초 예상보다 훨씬 근본적인 문제를 발견했다.
+
+### 사전 확인: `+` 구분자는 버그가 아니었다
+
+`mercurial/wireprotov1peer.py`(`unbundle()`)를 직접 확인: 실제 hg도 heads를 `encodelist()`
+(기본 구분자 공백)로 인코딩한 뒤 그 문자열을 HTTP 폼 인코딩(`urlencode`)하면서 공백이
+자동으로 `+`로 변환된다 — hg4j가 직접 `+`로 join하는 것은 그 결과와 바이트 단위로 동일해
+버그가 아니었다(다만 `unbundlehash` capability가 있을 때 real hg가 heads 목록 대신 SHA1
+해시로 대체하는 별도 최적화는 hg4j에 없음 — 별개의 저우선순위 갭으로 기록만 함).
+
+### 발견한 진짜 문제: `HgSshClient`의 SSH v1 인자 전송 프로토콜 자체가 실제 hg와 다르다
+
+`mercurial/sshpeer.py`(`_sendrequest`)를 직접 확인한 결과, 실제 hg SSH v1은 인자별로
+`"<key> <바이트길이(4바이트 헤더 자신 포함 아님, 텍스트 줄)>\n"` + 그만큼의 **raw 바이트**(값
+뒤에 개행 없음)를 정렬된 키 순서로 보낸다. `*` 와일드카드 인자명은 `"* <count>\n"` +
+`count`개의 `"<name> <len>\n<bytes>"` 트리플로 중첩 인코딩된다. 그런데 `HgSshClient`는
+클라이언트·서버 양쪽에서 서로 짜맞춘, 스펙에 없는 단순 `"key value\n"` 줄 기반 포맷을 쓰고
+있었다 — HTTP의 -0.2 청크 버그와 동일한 패턴(자기 자신끼리는 일관되지만 실제 hg와는 한 번도
+검증된 적 없음)이되, 이번엔 심지어 **hg4j 자신의 서버(`HgSshWireServer`)와도 안 맞았다** —
+`HgSshWireServer`는 이미 실제 hg 스펙대로(`"<argname> <len>\n<bytes>"`) 올바르게 구현돼
+있었고(class javadoc에 "Mercurial 6.0 대조 검증" 명시), `HgSshClient`만 다른 프로토콜을
+말하고 있었던 것. 즉 두 클래스를 실제로 연결하면 **핸드셰이크부터 데드락**이었다(사용자
+확인: "생각보다 범위가 큽니다" → `AskUserQuestion`으로 전면 재구현 여부 확인 후 진행).
+
+### 재구현 중 실제로 캡처한 데드락 4건 (각각 real hg 소스 확인 후 수정)
+
+1. **핸드셰이크 자체가 틀림**: 기존 코드는 서버가 아무 명령 없이 먼저
+   `"capabilities: ...\n"`을 쓴다고 가정. 실제 hg는 `_performhandshake()`에서 클라이언트가
+   먼저 `"hello\n" + "between\n" + "pairs 81\n" + <81바이트 null-range 값>`을 한 번에 보내고,
+   `hello`의 framed 응답(`capabilities: ...` 포함)과 `between`의 framed 응답(null-range라
+   1바이트 `"\n"`)을 순서대로 읽는다 — hg4j 서버는 명령을 받을 때까지 기다리므로, 기존
+   클라이언트와 연결하면 양쪽 다 상대가 먼저 말하길 기다리며 영원히 블로킹.
+2. **`unbundle`(push)에 서버의 사전 확인 응답이 빠져 있었다**: 실제 hg는 `heads` 인자를 읽은
+   직후 **빈 프레임을 먼저 보내** "페이로드 보내도 됨"을 알린 뒤에야 페이로드를 읽는다
+   (`wireprotoserver.py`의 `getpayload()`). `HgSshWireServer`는 이 사전 확인 응답 없이 바로
+   페이로드를 읽으려 해서, 새로 고친 클라이언트(사전 확인을 기다림)와 맞물려 서버는 페이로드를,
+   클라이언트는 응답을 기다리며 데드락. 서버 쪽에 사전 확인 프레임 전송 +
+   응답을 "에러-또는-empty 확인" + "성공 시에만 결과값" 2단계로 분리하도록 수정.
+3. **cg1 changegroup 자체의 내부 청크 길이가 "헤더 포함(inclusive)" 규칙인데 "헤더 제외"로
+   읽고 있었다**: `HgLocalClient`의 실제 writer(`writeEntryChunk`)를 확인하니
+   `totalLen = 4(자기 자신) + 80 + delta.length` — 즉 length 필드 자신의 4바이트까지 포함한
+   값이다. 기존 리더는 `len`바이트를 그대로 데이터로 읽어 매번 4바이트씩 밀려 다음 청크의
+   length 필드를 쓰레기값으로 오독, 그 쓰레기값만큼 읽기를 기다리며 블로킹. changelog
+   그룹 → manifest 그룹 → 파일별 그룹(각각 0000 종료) 순서로 구조를 이해하는 리더로 재작성.
+4. **`getbundle` 응답이 bundle2(`"HG20"`)일 수 있는데 raw cg1 리더만 있었다**: real hg SSH
+   서버(`hg-rust-7.2.4`가 아니라 이번엔 host의 native hg 7.2.2, `hg -R <repo> serve --stdio`를
+   서브프로세스로 실행해 진짜 SSH 세션으로 검증)를 상대로 실제 pull/push 테스트를 돌리자마자
+   재발견 — bundle2는 cg1과 완전히 다른 자기 서술 구조(매직 + 파라미터 + 파트 시퀀스, 파트
+   페이로드 청크는 오히려 "헤더 제외(exclusive)" 길이 규칙)라 별도 워크가 필요했다. 응답 첫
+   4바이트를 봐서 `"HG20"`이면 bundle2 워크, 아니면 cg1 워크로 분기하도록 수정(단, 이미 읽은
+   4바이트를 cg1 경로에서 그냥 버리면 changelog 그룹 첫 청크의 length 필드를 잃어버리므로,
+   그 4바이트를 "이미 읽은 첫 청크 길이"로 재사용하도록 별도 처리).
+
+### 검증
+
+- `HgSshClientTest`/`HgSshClientTransportTest`: hg4j 클라이언트 ↔ hg4j 서버(이미 실제 hg
+  대조 검증된 `HgSshWireServer`) 자기정합성 — capabilities/heads/changegroup/getbundle(null
+  파라미터 포함)/push/pushkey/listkeys(다중 엔트리 — 기존 줄 기반 읽기의 "첫 줄만 읽혀 다중
+  키 응답이 잘리는" 별도 버그도 이번에 같이 해소)/between/known 전부.
+- `HgSshWireServerTest`: unbundle 성공/실패(pre-changegroup hook 거부) 양쪽 다 새 3단계 프레임
+  응답 형태로 검증.
+- **`HgSshClientRealHgInteropTest`(신규)**: host의 native 실제 hg 7.2.2를 `serve --stdio`
+  서브프로세스로 띄워 진짜 SSH 세션(Apache MINA SSHD, JSch)으로 hg4j 클라이언트와 연결 —
+  capabilities/heads/getbundle(실제로 cg1이 아닌 버전으로 협상됨을 직접 확인)/clone
+  전체(pull, 커밋 메시지·이력 일치)/push 전체(hg4j에서 만든 커밋이 실제 hg 서버에 실제로
+  반영됨, `hg log`로 확인) — 이 세션에서 애초 사용자가 요청한 "SSH 경로를 실제 hg로
+  재검증"이 최종적으로 완료된 지점.
+- SSH 관련 테스트 전체(82개) + 전체 회귀 재실행, 0 실패.
+- 위 재구현 과정에서 노출된, 실제로는 **이 SSH 재구현과 별개로 이미 있던** 회귀 4건도 같은
+  세션에서 발견·수정: `HgConcurrentAndHookTest.testRealSshRoundtrip`, `HgSshTransportRoundtripTest`
+  3건, `HgRemoteMockAndServeExtensionTest`의 SSH 관련 3개 테스트 — 전부 옛 hg4j 프로토콜
+  가정(단순 줄 기반, `readCapabilities` 즉시 배너, "헤더 제외" 청크 길이)으로 손으로 만든
+  가짜 서버/응답 바이트를 쓰고 있었다. 가능한 곳은 `HgSshWireServer`(이미 실제 hg로 검증됨)를
+  직접 백엔드로 쓰는 방식으로 교체, 나머지는 실제 프레이밍에 맞게 바이트를 다시 구성.
+
+## unbundlehash 최적화 구현 (2026-09-03, 같은 세션 후속)
+
+코드리뷰에서 지적된 나머지 한 항목 — "`unbundlehash` capability가 있을 때 실제 hg는 heads
+목록 대신 SHA1 해시 sentinel을 보내는 별도 메커니즘이 있는데, hg4j는 구현 안 함" — 도 TDD로
+마저 처리했다. `mercurial/wireprotov1peer.py`의 `unbundle()`을 확인:
+```python
+if heads != [b'force'] and self.capable(b'unbundlehash'):
+    heads = wireprototypes.encodelist([b'hashed', hashutil.sha1(b''.join(sorted(heads))).digest()])
+```
+서버(`exchange.py`의 `check_heads()`)는 `their_heads`가 서버의 실제 현재 heads와 문자 그대로
+같거나, `[b'hashed', sha1(정렬된 자기 현재 heads 이어붙인 것)]`와 같으면 수락한다 — 즉 클라
+이언트가 (잠재적으로 훨씬 긴) 리터럴 heads 목록 대신 20바이트 SHA1 다이제스트만 보내도
+되는 순수 와이어 크기 최적화다. `NodeIdUtil.computeUnbundleHeadsWireValue(heads,
+serverSupportsUnbundleHash)`로 HTTP(`HgRemoteClient`)·SSH(`HgSshClient`) 양쪽에 공유
+구현으로 추가, `capabilities`에 `unbundlehash` 토큰이 있을 때만 발동(없으면 기존과 동일하게
+리터럴 heads 전송 — 회귀 없음).
+
+**검증**: `HgSshUnbundleHashTest`/`HgHttpUnbundleHashTest`(신규, mock 서버로 정확한 와이어
+바이트 확인) + `HgSshClientRealHgInteropTest`의 기존 push 테스트가 실제 hg SSH 서버로
+그대로 재검증(다이제스트가 틀렸다면 실제 서버의 `check_heads()`가 `PushRaced`로 거부했을
+것). 추가로 hg4j 코드를 전혀 거치지 않는 독립 Python 스크립트로 SSH(`serve --stdio`
+서브프로세스)·HTTP(`hg serve --config web.push_ssl=false`) 양쪽에 hg4j와 동일한 형태의
+요청을 직접 보내 재확인 — SSH는 `hashed` sentinel 전송 후 precheck 빈 프레임→error-or-empty
+빈 프레임→`result=1`(성공), HTTP는 `"1\nadding changesets..."` 성공 응답을 실제로 받았다.
+전체 회귀(2278 테스트) 재실행 결과 실패 1건(`CommitCommandTest`의 심링크 테스트, 트랜스포트와
+무관 — 단독 재실행 시 통과, 이 세션 앞부분에서 이미 조사된 기존 타이밍성 플레이키와 동일)
+외 전부 통과.
+
+## 심볼릭 링크 dirstate mtime 버그 (2026-09-03, 별개 발견 — 프로토콜과 무관)
+
+위 SSH/unbundlehash 작업 완료 후, 회귀에서 우연히 나온 `CommitCommandTest`의 심링크 관련
+테스트 1건을 "플레이키"로 넘기려다 사용자가 제동을 걸어("재실행시 통과라는 말이 웃기잖아")
+격리 재실행(8회 중 1회 실패)으로 재현성을 직접 확인, 근본 원인을 찾았다: `java.io.File`의
+`lastModified()`/`length()`/`canExecute()`/`isFile()`/`exists()`는 심볼릭 링크를 항상
+**따라가서**(follow) 링크 자신이 아니라 타겟의 정보를 반환한다(NIO의 `NOFOLLOW_LINKS`
+같은 옵션이 legacy `File` API엔 없음). dirstate에 mtime을 기록/비교하는 코드가 이걸
+모르고 썼다가, 심링크 자신은 안 건드렸는데 타겟 파일만 커지면 조용히 재커밋되거나
+(반대로) 실제 변경을 놓치는 타이밍 의존적 버그였다.
+
+**영향 범위**: `size`는 이미 lstat 인식(NIO `readSymbolicLink`)으로 처리하던 파일이
+대부분이었지만 `mtime`만 buggy `File#lastModified()`를 그대로 쓰고 있었다 —
+`CommitCommand`/`StatusCommand`/`AddCommand`/`UpdateCommand`/`RebaseCommand`(2곳)/
+`ShelveCommand`(3곳)/`RevertCommand`/`CopyCommand`/`GraftCommand`/`CloneCommand` 총
+10개 파일 12곳. `RenameCommand`/`RemoveCommand` 2개는 아예 lstat 인식 자체가 없어서
+(size도 target을 따라감) 별도로 더 깊게 고쳐야 했다 — `RenameCommand`는 `exists()`가
+dangling 심링크를 거짓으로 판단해 존재하는 파일도 rename 거부, mode/size/mtime 전부
+타겟 기준으로 오염; `RemoveCommand`는 (1) 타겟 크기와 심링크 자신의 기록 크기를 비교해
+손 안 댄 심링크를 "수정됨"으로 오판하고, (2) dangling 심링크는 `exists()`가 false라
+물리 삭제 자체를 건너뛰어 dirstate엔 제거로 기록되지만 디스크엔 파일이 남는 버그가
+있었다.
+
+**수정**: `SafeFileIO.lastModifiedSeconds(File)` 공유 헬퍼(NIO
+`Files.getLastModifiedTime(path, NOFOLLOW_LINKS)`) 신설, 12개 호출부 전부 교체.
+`RenameCommand`/`RemoveCommand`는 `isSymbolicLink` 분기를 추가해 mode/size/mtime/삭제
+로직을 다른 9개 파일과 같은 lstat 인식 패턴으로 맞춤. 각 버그를 TDD로(먼저 실패하는
+테스트로 재현 확인 후 수정) 처리, `CommitCommandTest`의 원래 실패 테스트는 8/8 반복
+실행으로 결정성 확정. 전체 회귀 2282 테스트, 0 실패.
 
 ## 관련 페이지
 - [[jgit-parity-requirement]] — 구조/네이밍 요건 (이 문서와는 독립적인 축)

@@ -373,7 +373,10 @@ public class HgRemoteAndSyncTest {
                     try (OutputStream os = exchange.getResponseBody()) {
                         os.write(respBytes);
                     }
-                } else if ("POST".equalsIgnoreCase(method) && query != null && query.contains("cmd=changegroup")) {
+                } else if (query != null && query.contains("cmd=changegroup")) {
+                    // Real hg's actual v1 arg transport (see HgRemoteClient#executeArgsCommand):
+                    // a server that never advertised httpheader=/httppostargs gets the legacy 3rd
+                    // tier -- a plain GET with args appended to the query string, not a POST.
                     cgCalled[0] = true;
                     exchange.sendResponseHeaders(200, rawCgBytes.length);
                     try (OutputStream os = exchange.getResponseBody()) {

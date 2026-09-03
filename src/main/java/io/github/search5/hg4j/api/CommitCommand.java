@@ -62,6 +62,33 @@ public class CommitCommand {
     private boolean closeBranch = false;
     private boolean subrepos = false;
 
+    // Amend support (set only by AmendCommand, package-private): the changeset/manifest
+    // revision this commit *declares* as its parent(s) can differ from the dirstate's actual
+    // current parent -- e.g. `hg commit --amend` keeps computing "what changed" against the
+    // commit being amended (dirstate's real parent, so unchanged-file reuse/racy-check logic
+    // below all stays correct unmodified) but must *record* the amended commit's parent(s) as
+    // the ORIGINAL commit's own parent(s) (real hg: `base = old.p1()` in
+    // mercurial/cmdutil.py's `amend()`) so the amended commit REPLACES the original as a
+    // sibling rather than becoming its child. Null (the default) means "same as dirstate's
+    // actual parent" -- i.e. normal commit behavior, completely unaffected by this field.
+    private boolean hasDeclaredParents = false;
+    private NodeId declaredParent1 = NodeId.NULL;
+    private NodeId declaredParent2 = NodeId.NULL;
+
+    /**
+     * Amend-only (package-private): overrides the parent(s) *recorded* in the new changelog and
+     * manifest revisions, independently of the dirstate-derived parent used everywhere else in
+     * {@link #call()} to determine which files changed and what an unchanged file's manifest
+     * entry should reuse. See the {@link #hasDeclaredParents} field doc for why these must be
+     * allowed to differ.
+     */
+    CommitCommand setAmendDeclaredParents(NodeId p1, NodeId p2) {
+        this.hasDeclaredParents = true;
+        this.declaredParent1 = (p1 != null) ? p1 : NodeId.NULL;
+        this.declaredParent2 = (p2 != null) ? p2 : NodeId.NULL;
+        return this;
+    }
+
     public CommitCommand setGpgSignature(GpgSignature gpgSignature) {
         this.gpgSignature = gpgSignature;
         return this;
@@ -550,20 +577,45 @@ public class CommitCommand {
                 FileIndex.writeTrackedPaths(repository.getStoreDir(), fileIndexPaths);
             }
 
+            // Amend support: resolve the DECLARED parent(s) for the new changelog/manifest
+            // revisions separately from the dirstate-derived parent(s) used above (and still
+            // used below for the treemanifest sub-directory reuse map) to determine what
+            // changed and what an unchanged file's manifest entry should reuse -- see
+            // hasDeclaredParents' field doc for why these must be allowed to differ.
+            int declaredClRev1 = parent1Rev;
+            int declaredClRev2 = parent2Rev;
+            byte[] declaredClNode1 = p1CommitNode != null ? p1CommitNode.getBytes() : new byte[20];
+            byte[] declaredClNode2 = p2CommitNode != null ? p2CommitNode.getBytes() : new byte[20];
+            byte[] declaredMfNode1 = p1ManifestNode;
+            byte[] declaredMfNode2 = p2ManifestNode;
+            int declaredMfRev1 = parent1ManifestRev;
+            int declaredMfRev2 = parent2ManifestRev;
+            if (hasDeclaredParents) {
+                declaredClNode1 = declaredParent1.getBytes();
+                declaredClRev1 = declaredParent1.isNull() ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, declaredClNode1);
+                declaredClNode2 = declaredParent2.getBytes();
+                declaredClRev2 = declaredParent2.isNull() ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, declaredClNode2);
+
+                declaredMfNode1 = declaredClRev1 != -1 ? extractManifestNode(changelog.getRevisionContent(declaredClRev1)) : new byte[20];
+                declaredMfRev1 = isNullNode(declaredMfNode1) ? -1 : NodeIdUtil.findRevisionByNodeId(manifestRevlog, declaredMfNode1);
+                declaredMfNode2 = declaredClRev2 != -1 ? extractManifestNode(changelog.getRevisionContent(declaredClRev2)) : new byte[20];
+                declaredMfRev2 = isNullNode(declaredMfNode2) ? -1 : NodeIdUtil.findRevisionByNodeId(manifestRevlog, declaredMfNode2);
+            }
+
             // 4. Serialize and write new manifest revision
             byte[] manifestNode;
             if (repository.isTreemanifest()) {
                 Map<String, byte[]> p1DirNodes = collectDirNodes(p1ManifestNode);
                 Map<String, byte[]> p2DirNodes = collectDirNodes(p2ManifestNode);
                 manifestNode = writeTreeManifestDir("", newManifest, p1DirNodes, p2DirNodes,
-                        p1ManifestNode, p2ManifestNode, manifestRevlog, newCommitRev);
+                        declaredMfNode1, declaredMfNode2, manifestRevlog, newCommitRev);
             } else {
                 StringBuilder manifestSb = new StringBuilder();
                 for (Map.Entry<String, String> entry : newManifest.entrySet()) {
                     manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
                 }
                 byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
-                manifestNode = manifestRevlog.appendRevision(manifestTextBytes, parent1ManifestRev, parent2ManifestRev, p1ManifestNode, p2ManifestNode, newCommitRev);
+                manifestNode = manifestRevlog.appendRevision(manifestTextBytes, declaredMfRev1, declaredMfRev2, declaredMfNode1, declaredMfNode2, newCommitRev);
             }
 
             // 5. Serialize and write new changelog (commit) revision
@@ -600,8 +652,11 @@ public class CommitCommand {
             clSb.append(message);
             byte[] changelogTextBytes = clSb.toString().getBytes(StandardCharsets.UTF_8);
 
-            byte[] p1CommitNodeHash = p1CommitNode != null ? p1CommitNode.getBytes() : new byte[20];
-            byte[] p2CommitNodeHash = p2CommitNode != null ? p2CommitNode.getBytes() : new byte[20];
+            // See the hasDeclaredParents field doc: an amend commit records its parent(s) as
+            // the amended commit's own parent(s) (declaredClNode1/2), not the dirstate's actual
+            // (pre-amend) parent -- both are identical for a normal (non-amend) commit.
+            byte[] p1CommitNodeHash = declaredClNode1;
+            byte[] p2CommitNodeHash = declaredClNode2;
 
             Map<String, String> clMeta = new HashMap<>();
             if (this.gpgSignature != null) {
@@ -617,7 +672,7 @@ public class CommitCommand {
                             Map.of(io.github.search5.hg4j.storage.SidedataCodec.SD_FILES, sdFiles));
                 }
             }
-            byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, parent1Rev, parent2Rev, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
+            byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, declaredClRev1, declaredClRev2, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
 
             // 6. Update and save Dirstate
             dirstate.setParents(new NodeId(commitNode), NodeId.NULL);

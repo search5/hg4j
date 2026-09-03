@@ -78,7 +78,9 @@ public class HgAmendTest {
     }
 
     @Test
-    public void testAmendWithoutExplicitMessagePropagatesCommitMessageRequirement() throws Exception {
+    public void testAmendWithoutExplicitMessageOrAuthorReusesOriginalCommitValues() throws Exception {
+        // Verified against real hg 7.2.2: `hg commit --amend` with neither `-m` nor `-u` reuses
+        // the amended-away commit's own message and user unchanged (2026-09-04).
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
 
         try (Hg hg = Hg.wrap(repo)) {
@@ -91,12 +93,19 @@ public class HgAmendTest {
             Files.writeString(file.toPath(), "Second revision text");
             hg.add().addFile("b.txt").call();
 
-            // Amend without calling setMessage(...) exercises AmendCommand's message == null
-            // branch (the message is not forwarded to the underlying CommitCommand, which then
-            // enforces its own "message must be specified" requirement).
-            IllegalStateException ex = assertThrows(IllegalStateException.class,
-                    () -> hg.amend().setAuthor("Amender <amend@example.com>").call());
-            assertEquals("Commit message must be specified.", ex.getMessage());
+            // Amend without calling setAuthor(...)/setMessage(...) must reuse "Developer" /
+            // "Original message" from the commit being amended, not throw and not fall back to
+            // CommitCommand's own generic default author.
+            byte[] amendedNode = hg.amend().call();
+            assertNotNull(amendedNode);
+
+            io.github.search5.hg4j.storage.Revlog changelog = new io.github.search5.hg4j.storage.Revlog(
+                    new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
+            byte[] content = changelog.getRevisionContent(changelog.getRevisionCount() - 1);
+            String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
+            String[] lines = text.split("\n", -1);
+            assertEquals("Developer", lines[1], "author must be reused from the amended-away commit");
+            assertTrue(text.endsWith("Original message"), "message must be reused from the amended-away commit: " + text);
         }
     }
 }

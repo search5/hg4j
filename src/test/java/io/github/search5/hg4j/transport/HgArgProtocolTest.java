@@ -200,7 +200,18 @@ public class HgArgProtocolTest {
     }
 
     @Test
-    public void pushkeyAlsoUsesXHgArgHeadersInsteadOfPostBody() throws Exception {
+    public void pushkeyUsesXHgArgHeadersButAlwaysPostsRegardlessOfHttpMethod() throws Exception {
+        // pushkey is a documented EXCEPTION to this file's general "GET + X-HgArg headers"
+        // rule above: real hg's HTTP server enforces POST for every push-permission command
+        // regardless of httppostargs (mercurial/hgweb/common.py checkauthz: "push requires
+        // POST request"), and real hg's own client special-cases exactly this
+        // (mercurial/httppeer.py makev1commandrequest: `if cmd == b'pushkey': args[b'data'] =
+        // b''`, forcing urllib to POST even with an empty body). So pushkey's ARGUMENTS still
+        // travel via X-HgArg headers when httppostargs isn't advertised (same as any other
+        // argument-bearing v1 command), but the HTTP METHOD is always POST, never GET --
+        // confirmed against real hg 7.2.2 over HTTP, 2026-09-04 (a push whose bookmark-move
+        // silently no-op'd because the GET was rejected 405 by the real server, since
+        // PushCommand only logs a bookmark-sync failure as a non-fatal warning).
         RequestCapture capture = new RequestCapture();
         HttpServer server = startServer("lookup pushkey batch httpheader=1024 unbundle=HG10UN", capture);
         try {
@@ -209,7 +220,7 @@ public class HgArgProtocolTest {
 
             client.pushkey("bookmarks", "mybookmark", "", "cccc000000000000000000000000000000000c");
 
-            assertEquals("GET", capture.method);
+            assertEquals("POST", capture.method);
             String reassembled = reassemble(capture.headers, "X-HgArg");
             Map<String, String> args = decodeArgs(reassembled);
             assertEquals("bookmarks", args.get("namespace"));

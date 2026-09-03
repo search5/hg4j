@@ -372,7 +372,14 @@ public class CatUpdateClonePushCoverageTest {
 
         try {
             // 3. Try to push
-            PushCommand push = new PushCommand(repo).setDestination(remoteUrl);
+            // Commit B (rev 1, on branch-B) is a sibling of C/D (rev 2/3, on default) --
+            // genuinely disconnected from the remote's only reported head D. Since 2026-09-04,
+            // PushCommand's checkheads-style safety check (backlog item 23) correctly rejects
+            // that as "creates a new remote head/branch" the same way real hg would, so this
+            // now needs --force to reach the actual unbundle call this test is really about
+            // (verifying startRev is computed via a correct ancestor walk, not just "highest
+            // known local rev + 1" -- unrelated to the force/head-count check).
+            PushCommand push = new PushCommand(repo).setDestination(remoteUrl).setForce(true);
             String result = push.call();
 
             // In the bug state, since maxRemoteRev = 3, startRev = 4 (under count = 4).

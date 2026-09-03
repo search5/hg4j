@@ -87,6 +87,53 @@ public class HgLocalClient implements HgRemoteConnection {
         return heads;
     }
 
+    /**
+     * A revision is a "branch head" if it has no child on the SAME named branch (closed heads
+     * included -- matches real hg's own {@code branchmap} wire command, which always passes
+     * {@code closed=True}). This is the core of real hg's branch-head definition; it doesn't
+     * replicate every nuance of {@code mercurial/branchmap.py} (e.g. its incremental-update
+     * caching), only the observable result for a fully-materialized local changelog, which is
+     * all {@link io.github.search5.hg4j.api.PushCommand}'s checkheads-style logic needs.
+     */
+    @Override
+    public Map<String, List<String>> getBranchHeads() throws IOException {
+        File clIdx = new File(remoteRepo.getStoreDir(), "00changelog.i");
+        File clDat = new File(remoteRepo.getStoreDir(), "00changelog.d");
+        Map<String, List<String>> result = new HashMap<>();
+        if (!clIdx.exists()) {
+            return result;
+        }
+        Revlog changelog = remoteRepo.getRevlog(clIdx, clDat);
+        int count = changelog.getRevisionCount();
+        if (count == 0) {
+            return result;
+        }
+
+        String[] branchByRev = new String[count];
+        for (int i = 0; i < count; i++) {
+            branchByRev[i] = CommitCommand.getBranchOfRevision(changelog, i);
+        }
+        boolean[] hasSameBranchChild = new boolean[count];
+        for (int i = 0; i < count; i++) {
+            Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+            int p1 = rec.getParent1();
+            int p2 = rec.getParent2();
+            if (p1 >= 0 && branchByRev[p1].equals(branchByRev[i])) {
+                hasSameBranchChild[p1] = true;
+            }
+            if (p2 >= 0 && branchByRev[p2].equals(branchByRev[i])) {
+                hasSameBranchChild[p2] = true;
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            if (!hasSameBranchChild[i]) {
+                result.computeIfAbsent(branchByRev[i], b -> new ArrayList<>())
+                        .add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
+            }
+        }
+        return result;
+    }
+
     @Override
     public byte[] getChangegroup(List<String> roots) throws IOException {
         return getBundle(roots, null, null);

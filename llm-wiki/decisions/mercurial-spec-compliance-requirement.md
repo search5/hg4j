@@ -832,7 +832,7 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     신규 검증. 이로써 22번 항목의 4개 그룹(1/2/3/4) 전부 완료.
 
 23. **commit/push/branch/merge/tag(+ rebase/shelve/bisect/strip/subrepo) — 실전
-    시나리오 종합 interop 검증, 신규, 2026-09-03 제안, 작업 범위만 확정, 부분 착수.**
+    시나리오 종합 interop 검증, 신규, 2026-09-03 제안.**
     배경: 백로그 22번(와이어 프로토콜 협상)과 같은 이유 — 이 명령들은 hg의 가장
     기본적이고 가장 자주 쓰이는 포셀린 명령인데, 지금까지의 검증은 "한 가지 대표
     시나리오"(예: 선형 커밋 2개, fast-forward merge 1건) 위주였고 각 명령이
@@ -840,23 +840,88 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     카테고리 각각을 별도 TDD
     배치로 진행 권장.
 
-    **진행 현황(2026-09-04)**: `branch`/`tag`/`merge`/`rebase`/`subrepo` 다섯
-    카테고리는 아래에 ✅로 완료 내용을 기록(실제 hg CLI 왕복 검증 + 발견된 실제
-    버그 다수 수정 — branch/tag 2건, merge/rebase 3건(그중 1건은 `CommitCommand`
-    공통 로직 버그), subrepo 2건). `commit`/`push`/`shelve`/`bisect`/`strip`
-    나머지 5개 카테고리는 이 세션과 병렬로 도는 별도 작업에서 처리 중이며, 이
-    항목의 해당 문단은 그 작업의 결과로 갱신될 예정이므로 여기서는 건드리지
-    않았다.
+    **진행 현황(2026-09-04)**: 10개 카테고리 전부 ✅로 완료(commit/push/branch/
+    merge/tag/rebase/shelve/bisect/strip/subrepo — 병렬 진행된 5개 배치가 각각
+    실제 hg CLI 왕복 검증 + 실제 버그 다수 발견·수정: commit/push 4건,
+    branch/tag 2건, merge/rebase 3건(그중 1건은 `CommitCommand` 공통 로직
+    버그), shelve/bisect/strip 4건, subrepo 2건 — 총 15건). **여러 항목에서
+    코드 변경 없이 사용자 확인만 필요한 아키텍처 수준 결정이 발견돼 아래 각
+    카테고리 문단에 표시해뒀다** — 코디네이터가 정리해 별도로 보고할 예정.
 
-    **commit**: 머지 커밋(부모 2개, `p2` 필드 정확성) — 특히 심볼릭
-    링크/실행권한/바이너리 파일이 섞인 머지, `hg commit --close-branch`, 빈 커밋
-    (파일 변경 없이 메시지만), extra 필드가 여러 개 겹칠 때(`branch`+`close`
-    동시) 정렬/인코딩 순서, `hg commit --amend`(현재 hg4j에 이 명령 자체가
-    있는지부터 확인 필요 — 없으면 범위를 "구현 여부 조사"로 좁힘).
-    **push**: 여러 head가 있는 저장소로 push(reject vs 성공 조건), `--force`로
-    비-fast-forward push, 새 named branch를 원격에 처음 push할 때의 경고/허용
-    조건(`hg push --new-branch`), bookmark가 있는 저장소의 push(북마크 이동
-    반영), 이미 알려진 커밋만 있어 "no changes found"로 끝나는 push.
+    **commit**: ✅ **완료(2026-09-04)**. 머지 커밋(부모 2개, `p2` 필드 정확성) —
+    특히 심볼릭 링크/실행권한/바이너리 파일이 섞인 머지, `hg commit
+    --close-branch`, 빈 커밋(파일 변경 없이 메시지만), extra 필드가 여러 개
+    겹칠 때(`branch`+`close` 동시) 정렬/인코딩 순서, `hg commit --amend`(hg4j에
+    `AmendCommand`가 이미 있었음) — 전부 실제 hg CLI(host native 7.2.2)와
+    왕복 대조로 재검증했다. **실제 버그 발견 및 수정**: `AmendCommand`가
+    (1) amend 시 dirstate의 현재 부모(=amend 대상 커밋 자신)를 그대로 새
+    커밋의 부모로 써서, 실제 hg처럼 "같은 부모를 공유하는 형제 리비전으로
+    교체"가 아니라 amend 대상 커밋의 **자식**이 되는 DAG 형태 오류가 있었다
+    (실제 hg로 `hg commit --amend` 후 `hg log -G`/`{p1node}` 대조해 발견,
+    2026-09-04) — `CommitCommand`에 `setAmendDeclaredParents(p1, p2)`를
+    신설해 "무엇이 바뀌었는지 판단하는 기준(dirstate의 실제 부모)"과
+    "changelog/manifest에 기록되는 선언된 부모"를 분리함으로써 해결(파일
+    콘텐츠 계산 로직 자체는 전혀 건드리지 않음 — 그대로도 정확했음). (2)
+    `-m`/`-u` 없이 amend하면 무조건 예외를 던졌다(실제 hg는 amend 대상
+    커밋의 메시지/작성자를 그대로 재사용) — 기존 테스트
+    `HgAmendTest#testAmendWithoutExplicitMessagePropagatesCommitMessageRequirement`가
+    이 버그를 "정상 동작"으로 문서화하고 있었던 것도 함께 바로잡음
+    (`testAmendWithoutExplicitMessageOrAuthorReusesOriginalCommitValues`로
+    교체). **테스트**: `CommitRealHgInteropTest`(신설,
+    `src/test/java/io/github/search5/hg4j/api/`) 6개 — 혼합 파일타입 머지
+    커밋, close-branch, 빈 커밋, branch+close 동시 extra, amend(단순/머지
+    커밋 amend) — 전부 GREEN.
+
+    **push**: ✅ **완료(2026-09-04)**. 여러 head가 있는 저장소로 push(reject
+    vs 성공 조건), `--force`로 비-fast-forward push, 새 named branch를
+    원격에 처음 push할 때의 경고/허용 조건(`hg push --new-branch`), bookmark가
+    있는 저장소의 push(북마크 이동 반영), 이미 알려진 커밋만 있어 "no changes
+    found"로 끝나는 push — 전부 실제 hg CLI와의 **양방향** interop으로
+    검증했다: hg4j가 pusher, 실제 `hg serve`(HTTP)가 accept/reject를 판정하는
+    authority(`RealHgServeSupport` 재사용). **범위 확장(설계 판단, 사용자
+    확인 필요)**: 기존 `PushCommand`에는 head-count/새 브랜치 거부 로직이
+    전혀 없었다(`--force`/`--new-branch` 옵션 자체가 없었음 — push는 항상
+    무조건 성공) — 담당 에이전트는 이를 architecture-level 변경까지는 아니라고
+    판단해 직접 구현했다: `PushCommand.setForce()`/`setAllowNewBranch()` 신설 +
+    실제 hg `mercurial/discovery.py checkheads()`를 간소화 포팅한
+    client-side 체크(그룹 3까지: 존재하지 않던 원격 브랜치 정보 조회를 위해
+    `HgRemoteConnection.getBranchHeads()` 신설 및 `HgLocalClient`/
+    `HgRemoteClient`(HTTP)에 구현 — SSH는 기본 폴백만, 미구현). **이 판단이
+    맞는지, 또는 obsolescence-marker 예외 처리·bookmark-head 예외 등 real hg의
+    나머지 세부 규칙까지 완전히 포팅해야 하는지는 사용자 확인이 필요하다.**
+    **실제 버그 발견 및 수정(architecture-level 아님, PushCommand 내부
+    로직 수정)**: (1) cg1 changegroup 패킹 시 각 그룹(changelog/manifest/
+    파일별 filelog)의 **첫 엔트리**의 델타 베이스를 "로컬 rev 인덱스상
+    바로 이전 리비전"으로 잘못 계산하고 있었다 — 실제 hg
+    (`cg1unpacker._deltaheader`: `if prevnode is None: deltabase = p1`)는
+    그룹의 첫 엔트리만 그 리비전 **자신의 실제 p1**을 베이스로 삼는다.
+    선형 히스토리에서는 두 값이 우연히 같아 안 드러났지만, 여러 head가
+    있는 저장소로의 push(특히 `--force`로 새 head를 만드는 push)처럼 첫
+    신규 리비전의 진짜 부모가 "그 직전 로컬 rev"보다 앞선 경우 수신측
+    해시 검증이 깨져 실제 hg 서버가 unbundle에 HTTP 500으로 응답했다(실제
+    hg 서버로 재현, 2026-09-04). (2) HTTP `pushkey`가 `httppostargs` capability
+    협상 결과에 따라 GET으로 나갈 수 있었는데, 실제 hg HTTP 서버는
+    push 권한이 필요한 모든 명령을 **무조건 POST로만** 허용한다
+    (`hgweb/common.py checkauthz`: `push requires POST request`; 실제 hg
+    클라이언트도 `httppeer.py`에서 pushkey만 따로
+    `args['data']=b''`로 강제 POST) — httppostargs 미협상 환경(host
+    native hg 7.2의 기본 `hg serve`)에서 실제 hg 서버로 push하면 bookmark
+    이동이 405로 조용히 실패했다(`PushCommand`가 bookmark 동기화 실패를
+    비차단 경고로만 처리하는 기존 설계 때문에 예외가 삼켜져 있었음).
+    `HgRemoteClient.pushkey()`를 항상 POST하도록 수정(인자 전달 위치는
+    기존 GET-tier 로직 그대로 유지, HTTP 메서드만 강제 POST). 이 두
+    버그를 고치기 전엔 기존 `PushCommandTest`/`HgArgProtocolTest` 등도
+    이 경로를 실제 hg로 왕복 검증한 적이 없어 놓치고 있었다(하나는
+    `resp.isEmpty()`를 성공으로 처리하는 관대한 폴백 때문에, 다른 하나는
+    선형 히스토리만 다뤄서). **테스트**: `PushRealHgInteropTest`(신설,
+    `src/test/java/io/github/search5/hg4j/transport/`) 5개 — 다중 head
+    저장소로의 성공/거부/force, 새 branch 거부/허용, HTTP를 통한 실제 hg
+    서버로의 bookmark 이동, no-changes push — 전부 GREEN. 기존
+    `HgArgProtocolTest`/`CatUpdateClonePushCoverageTest`의 관련 테스트
+    1개씩을 새로 확인된 정확한 스펙에 맞게 갱신(전자는 pushkey가 POST를
+    써야 함을 반영, 후자는 `--force` 없이는 새 head 생성 push가 거부되는
+    게 맞는 동작임을 반영).
+
     **branch**: ✅ **완료(2026-09-04)**. named branch 생성(`hg branch <name>`), 그
     브랜치로 커밋 후 `hg branches`/`hg branches --closed` 목록 정확성,
     `hg commit --close-branch` 후 해당 브랜치가 목록에서 빠지는지, 한 브랜치에
@@ -1097,6 +1162,11 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `hg branches`로 확인, 또는 그 반대)를 검증 기준으로 삼는다 — 이미 이런 형태로
     실제 hg와 대조하지 않고 hg4j 내부끼리만 왕복 검증된 기존 테스트는 이 항목에서
     "미검증"으로 간주하고 다시 본다.
+
+    **진행 상황(2026-09-04)**: `commit`/`push` ✅ 완료(각 섹션 참고, 병렬 세션).
+    나머지 `branch`/`merge`/`tag`/`rebase`/`shelve`/`bisect`/`strip`/`subrepo`
+    8개는 다른 병렬 작업에서 처리 중이거나 아래 "다음 세션 시작점" 그대로
+    미착수.
 
     **다음 세션 시작점**: 착수 비용 기준으로는 `tag`(코드 경로는 오늘 커버리지
     작업으로 이미 확인 끝, interop 껍데기만 씌우면 됨)가 가장 낮지만, **위험도

@@ -23,6 +23,7 @@ import java.io.PushbackInputStream;
 import java.net.Proxy;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.Base64;
 import java.util.Collections;
@@ -552,7 +553,12 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     /** POST tier of {@link #executeArgsCommand} — raw body + caller-supplied headers, no arg-encoding of its own. */
     private byte[] executePostBinaryWithHeaders(String cmd, byte[] body, Map<String, String> extraHeaders) throws IOException {
-        String fullUrl = baseUrl + "?cmd=" + cmd;
+        String fullUrl = baseUrl;
+        if (cmd.contains("?")) {
+            fullUrl += "?cmd=" + cmd.substring(0, cmd.indexOf("?")) + "&" + cmd.substring(cmd.indexOf("?") + 1);
+        } else {
+            fullUrl += "?cmd=" + cmd;
+        }
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
         }
@@ -785,6 +791,45 @@ public class HgRemoteClient implements HgRemoteConnection {
         return map;
     }
 
+    /** Real hg wireproto v1 {@code branchmap} response: one line per branch, {@code
+     * "<url-quoted-branch-name> <hex1> <hex2> ..."}, lines joined by {@code \n} (mercurial's own
+     * {@code wireprotov1server.branchmap}). */
+    @Override
+    public Map<String, List<String>> getBranchHeads() throws IOException {
+        if (delegate != null) {
+            return delegate.getBranchHeads();
+        }
+        String resp = executeGet("branchmap");
+        Map<String, List<String>> map = new HashMap<>();
+        if (resp == null || resp.trim().isEmpty()) {
+            return map;
+        }
+        for (String line : resp.split("\n")) {
+            line = line.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            int sp = line.indexOf(' ');
+            if (sp == -1) {
+                continue;
+            }
+            String branch;
+            try {
+                branch = URLDecoder.decode(line.substring(0, sp), "UTF-8");
+            } catch (Exception e) {
+                branch = line.substring(0, sp);
+            }
+            List<String> heads = new ArrayList<>();
+            for (String h : line.substring(sp + 1).trim().split("\\s+")) {
+                if (!h.isEmpty()) {
+                    heads.add(h);
+                }
+            }
+            map.put(branch, heads);
+        }
+        return map;
+    }
+
     @Override
     public List<String> between(List<String> pairs) throws IOException {
         String resp = executeGet("between?pairs=" + URLEncoder.encode(String.join(" ", pairs), "UTF-8"));
@@ -812,9 +857,56 @@ public class HgRemoteClient implements HgRemoteConnection {
         params.put("key", key);
         params.put("old", oldVal != null ? oldVal : "");
         params.put("new", newVal != null ? newVal : "");
-        byte[] bytes = executeArgsCommand("pushkey", params);
+        byte[] bytes = executePushkeyCommand(params);
         String resp = new String(bytes, StandardCharsets.UTF_8).trim();
         return "1".equals(resp) || "true".equalsIgnoreCase(resp) || resp.isEmpty();
+    }
+
+    /**
+     * {@code pushkey} needs its own request builder rather than the generic {@link
+     * #executeArgsCommand}: real hg's HTTP server enforces POST for ANY push-permission command
+     * ({@code mercurial/hgweb/common.py checkauthz}: {@code "push requires POST request"}) --
+     * NOT conditionally on whether {@code httppostargs} was negotiated, which only controls
+     * where the ARGUMENTS travel (POST body vs query string/{@code X-HgArg} headers), not the
+     * HTTP method itself. Real hg's own client special-cases exactly this
+     * ({@code mercurial/httppeer.py makev1commandrequest}: {@code if cmd == b'pushkey':
+     * args[b'data'] = b''}, which forces urllib to POST even with an empty body) -- without it,
+     * a push against a real hg server that hasn't negotiated {@code httppostargs} (the common
+     * case: it's an experimental, off-by-default feature) would fall back to {@link
+     * #executeArgsCommand}'s GET-based tiers, get a 405 from the server, and (since {@link
+     * io.github.search5.hg4j.api.PushCommand} treats a failed bookmark-sync as a non-fatal,
+     * logged-only warning) silently fail to move the remote's bookmark at all -- reproduced
+     * against real hg 7.2.2 over HTTP, 2026-09-04.
+     */
+    private byte[] executePushkeyCommand(Map<String, String> params) throws IOException {
+        String encodedArgs = encodeArgsSorted(params);
+
+        if (supportsHttpPostArgs) {
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("X-HgArgs-Post", String.valueOf(encodedArgs.length()));
+            return executePostBinaryWithHeaders("pushkey", encodedArgs.getBytes(StandardCharsets.UTF_8), headers);
+        }
+
+        // Same arg-placement tiers as executeArgsCommand's non-postargsok branch (X-HgArg
+        // headers if the server advertised httpheader=, else the query string), but always
+        // POSTed with an empty body instead of GET.
+        Map<String, String> headers = new LinkedHashMap<>();
+        List<String> varyNames = new ArrayList<>();
+        if (sawHttpHeaderCap && !encodedArgs.isEmpty()) {
+            varyNames.addAll(splitIntoHeaders("X-HgArg", encodedArgs, maxHttpHeaderLimit, headers));
+        }
+        String proto1 = buildXHgProto1Header();
+        if (!proto1.isEmpty()) {
+            varyNames.addAll(splitIntoHeaders("X-HgProto", proto1, maxHttpHeaderLimit, headers));
+        }
+        if (!varyNames.isEmpty()) {
+            headers.put("Vary", String.join(",", varyNames));
+        }
+        String cmd = "pushkey";
+        if (!sawHttpHeaderCap && !encodedArgs.isEmpty()) {
+            cmd = cmd + "?" + encodedArgs;
+        }
+        return executePostBinaryWithHeaders(cmd, new byte[0], headers);
     }
 
     @Override

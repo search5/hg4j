@@ -66,6 +66,25 @@ public interface HgRemoteConnection extends Closeable {
     }
 
     /**
+     * Executes the 'branchmap' wire command: for each named branch the remote knows about,
+     * returns its current (topological) head node hexes, closed heads included -- mirrors real
+     * hg's own {@code branchmap} wire command ({@code mercurial/wireprotov1server.py}), used by
+     * {@link io.github.search5.hg4j.api.PushCommand} the same way real hg's own push-side
+     * {@code discovery.checkheads()} uses {@code remote.branchmap()}: to detect a push that
+     * would introduce a brand-new named branch on the remote (needs {@code --new-branch}) or
+     * that would increase a branch's head count (needs {@code --force}).
+     *
+     * @return {@code null} if the remote doesn't support this call (real hg's own {@code
+     *         remote.capable(b'branchmap')} equivalent -- callers must fall back to a
+     *         topological-only, branch-unaware check), otherwise a map of branch name to that
+     *         branch's current head node hexes (never {@code null} values, possibly an empty
+     *         map for a genuinely empty remote).
+     */
+    default Map<String, List<String>> getBranchHeads() throws IOException {
+        return null;
+    }
+
+    /**
      * Sets the credentials provider for authenticating with the remote repository.
      */
     default void setCredentialsProvider(CredentialsProvider provider) {

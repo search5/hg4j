@@ -39,6 +39,7 @@ public class Revlog {
     private final RevlogIndex index;
     private boolean inline = false;
     private boolean useZstd = false;
+    private final boolean persistentNodeMapEnabled;
 
     // In-memory LRU revision content cache (max 100 entries)
     private final Map<Integer, byte[]> contentCache = new LinkedHashMap<>(16, 0.75f, true) {
@@ -120,9 +121,21 @@ public class Revlog {
      *     were {@code false} (see {@link NodeMapFile#tryLoad}).
      */
     public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2, boolean usePersistentNodeMap) throws IOException {
+        this(idxFile, datFile, useZstd, createAsGeneralV2, false, usePersistentNodeMap);
+    }
+
+    /**
+     * @param createAsChangelogV2 see {@link RevlogIndex#RevlogIndex(File, boolean, boolean,
+     *     NodeMapFile)} -- pass {@code true} instead of (never together with) {@code
+     *     createAsGeneralV2} when {@code idxFile} may not exist yet and this repository's
+     *     requires declare {@code exp-changelog-v2} specifically (the changelog, not a general
+     *     {@code exp-revlogv2.2} manifest/filelog).
+     */
+    public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2, boolean createAsChangelogV2, boolean usePersistentNodeMap) throws IOException {
         this.idxFile = idxFile;
+        this.persistentNodeMapEnabled = usePersistentNodeMap;
         NodeMapFile persistentNodeMap = usePersistentNodeMap ? NodeMapFile.tryLoad(idxFile) : null;
-        this.index = new RevlogIndex(idxFile, createAsGeneralV2, persistentNodeMap);
+        this.index = new RevlogIndex(idxFile, createAsGeneralV2, createAsChangelogV2, persistentNodeMap);
         if (index.isV2()) {
             // v2는 항상 non-inline이며 실제 데이터 파일은 docket의 UUID로부터 발견된다 —
             // 생성자로 넘어온 datFile(예: "00changelog.d")은 v2 저장소에는 존재하지 않는다.
@@ -137,6 +150,28 @@ public class Revlog {
 
     public synchronized RevlogIndex getIndex() {
         return index;
+    }
+
+    /**
+     * Best-effort persistent-nodemap maintenance, called right after a new revision has been
+     * durably appended to this revlog (see the {@code appendXxx} methods below) -- mirrors real
+     * hg's transaction-finalize {@code persist_nodemap()} (mercurial/revlogutils/nodemap.py), but
+     * triggered per-append here since hg4j has no equivalent transaction-batching abstraction at
+     * this layer (a single multi-revision operation like a clone/pull thus does several small
+     * incremental appends instead of real hg's one larger batched write -- same final on-disk
+     * state, more syscalls). Only active when this revlog's owning repository declared the
+     * {@code persistent-nodemap} requirement <em>and</em> this revlog is non-inline, matching real
+     * hg's own {@code revlog._nodemap_file is None}/{@code revlog._inline} gates (inline revlogs
+     * are considered too small for this to be worth it). Never throws -- see {@link
+     * NodeMapFile#persist}'s own best-effort contract.
+     */
+    private void updatePersistentNodeMapAfterAppend() {
+        if (!persistentNodeMapEnabled || inline) {
+            return;
+        }
+        NodeMapFile updated = NodeMapFile.persist(idxFile, index.getPersistentNodeMap(), index.getRevisionCount(),
+                rev -> index.getIndexRecord(rev).getNodeId());
+        index.setPersistentNodeMap(updated);
     }
 
     public synchronized int getRevisionCount() {
@@ -579,16 +614,67 @@ public class Revlog {
      */
     private synchronized byte[] appendRevisionV2(int rev, byte[] processedContent, int parent1, int parent2,
                                                    byte[] nodeId, int linkRev) throws IOException {
+        return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev, null);
+    }
+
+    /**
+     * @param sidedataContainer already-serialized {@link SidedataCodec} outer-container bytes
+     *     (see {@link SidedataCodec#serialize}) to attach to this revision, or {@code null} for
+     *     none. Written to the {@code .sda} file uncompressed (real hg's {@code COMP_MODE_PLAIN}
+     *     — no need to also validate a zstd sidedata frame format, and real hg accepts plain
+     *     sidedata chunks equally validly; only used by the changelog when the repository has
+     *     {@code exp-copies-sidedata-changeset} — see {@code api.CommitCommand}).
+     */
+    private synchronized byte[] appendRevisionV2(int rev, byte[] processedContent, int parent1, int parent2,
+                                                   byte[] nodeId, int linkRev, byte[] sidedataContainer) throws IOException {
         File resolvedIndexFile = index.getResolvedIndexFile();
         File resolvedDataFile = index.getResolvedDataFile();
         boolean changelogV2 = index.isChangelogV2();
 
-        byte[] dataHunk = changelogV2 ? DeltaCodec.compress(processedContent, true) : processedContent;
+        // CL_V2 compression is chosen dynamically per revision, real hg's own way: try zstd, and
+        // only actually use it when it genuinely shrinks the content -- otherwise store the
+        // revision's raw bytes as-is (COMP_MODE_PLAIN, complen==uncomplen, NO marker byte) rather
+        // than DeltaCodec.compress's v1-revlog-style 'u'+rawdata fallback (that extra marker byte
+        // is invalid here: CL_V2 readers expect either a genuine zstd frame or exactly the raw
+        // content, decided purely by the per-record compression-mode bits, never a payload-level
+        // marker). A prior implementation always hardcoded COMP_MODE_DEFAULT and always ran
+        // content through DeltaCodec.compress -- this silently produced 'u'-prefixed garbage for
+        // any revision short enough that zstd's frame overhead didn't pay for itself (real hg's
+        // own fixture, src/test/resources/fixtures/sidedata-copytracing/data.idx, confirms two of
+        // its three revisions are genuinely stored PLAIN this way: complen==uncomplen, compression
+        // byte 0x00) -- real hg's zstd decompressor then rejected the bogus frame with "Unknown
+        // frame descriptor" (found and fixed 2026-09-03, verified against real hg on a from-
+        // scratch-bootstrapped changelog-v2 repository, see ChangelogV2BootstrapTest).
+        boolean changelogUsesZstd = false;
+        byte[] dataHunk;
+        if (changelogV2) {
+            byte[] zstdAttempt = com.github.luben.zstd.Zstd.compress(processedContent);
+            if (zstdAttempt.length < processedContent.length) {
+                dataHunk = zstdAttempt;
+                changelogUsesZstd = true;
+            } else {
+                dataHunk = processedContent;
+            }
+        } else {
+            dataHunk = processedContent;
+        }
 
         long offset = resolvedDataFile.exists() ? resolvedDataFile.length() : 0;
         try (FileOutputStream out = new FileOutputStream(resolvedDataFile, true)) {
             out.write(dataHunk);
             out.getFD().sync();
+        }
+
+        long sidedataOffset = 0L;
+        int sidedataCompLen = 0;
+        if (sidedataContainer != null && sidedataContainer.length > 0) {
+            File sdaFile = index.getResolvedSidedataFile();
+            sidedataOffset = sdaFile.exists() ? sdaFile.length() : 0L;
+            try (FileOutputStream sdaOut = new FileOutputStream(sdaFile, true)) {
+                sdaOut.write(sidedataContainer);
+                sdaOut.getFD().sync();
+            }
+            sidedataCompLen = sidedataContainer.length;
         }
 
         long offsetFlags = (rev == 0) ? 0 : ((offset << 16));
@@ -604,14 +690,15 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(node20);
             recordBuf.put(new byte[12]); // 패딩
-            recordBuf.putLong(0L); // sidedata offset (미지원)
-            recordBuf.putInt(0);   // sidedata comp length
-            // 압축 모드: 실제 hg 픽스처의 압축 모드 바이트는 9(0b1001) — 하위 2비트가
-            // COMP_MODE_DEFAULT(1, docket의 default_compression_header=zstd 사용)를 가리킨다.
-            // COMP_MODE_PLAIN(0)으로 잘못 쓰면 실제 hg가 zstd 바이트를 평문으로 취급해
-            // `hg verify`에서 integrity check failed가 남을 뿐 아니라 실제 hg와의
-            // 상호운용성이 깨진다 — 실제 hg CLI로 재현·확인됨.
-            recordBuf.put((byte) 1); // COMP_MODE_DEFAULT
+            recordBuf.putLong(sidedataOffset);
+            recordBuf.putInt(sidedataCompLen);
+            // 압축 모드(하위 2비트, main data): 위에서 실제로 zstd를 써서 줄어들었을 때만
+            // COMP_MODE_DEFAULT(1), 아니면 원본 그대로 저장했으므로 COMP_MODE_PLAIN(0) —
+            // 실제 hg 픽스처(sidedata-copytracing/data.idx)로 3개 리비전 다 대조해 확인된
+            // 대로 리비전마다 동적으로 다르다(하드코딩 금지, 2026-09-03에 발견·수정된 버그).
+            // 상위 2비트(2-3)는 sidedata의 압축 모드(COMP_MODE_PLAIN=0을 쓰므로 00 그대로,
+            // 값 변경 불필요) — RevlogIndex의 `(compressionByte >> 2) & 3` 파싱과 대칭.
+            recordBuf.put((byte) (changelogUsesZstd ? 1 : 0));
             recordBuf.putInt(rev); // rank (단순화: 선형 히스토리 가정)
             recordBuf.put(new byte[23]); // 패딩
         } else {
@@ -622,9 +709,9 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(node20);
             recordBuf.put(new byte[12]); // 패딩
-            recordBuf.putLong(0L); // sidedata offset (미지원)
-            recordBuf.putInt(0);   // sidedata comp length
-            recordBuf.put((byte) 0); // COMP_MODE_PLAIN (dataHunk == processedContent, 압축 안 함)
+            recordBuf.putLong(sidedataOffset);
+            recordBuf.putInt(sidedataCompLen);
+            recordBuf.put((byte) 0); // COMP_MODE_PLAIN (dataHunk == processedContent, 압축 안 함; sidedata도 PLAIN이므로 상위비트 불변)
             recordBuf.put(new byte[19]); // 패딩 (CL_V2와 달리 rank 필드가 없음)
         }
         recordBuf.flip();
@@ -634,11 +721,16 @@ public class Revlog {
             out.getFD().sync();
         }
 
-        index.updateV2DocketSizes(resolvedIndexFile.length(), resolvedDataFile.length());
+        if (sidedataContainer != null && sidedataContainer.length > 0) {
+            index.updateV2DocketSizes(resolvedIndexFile.length(), resolvedDataFile.length(), sidedataOffset + sidedataCompLen);
+        } else {
+            index.updateV2DocketSizes(resolvedIndexFile.length(), resolvedDataFile.length());
+        }
 
         int recordedLinkRev = changelogV2 ? rev : linkRev;
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
-                rev, recordedLinkRev, parent1, parent2, nodeId));
+                rev, recordedLinkRev, parent1, parent2, nodeId, sidedataOffset, sidedataCompLen, 0));
+        updatePersistentNodeMapAfterAppend();
 
         byte[] hash = new byte[20];
         System.arraycopy(nodeId, 0, hash, 0, 20);
@@ -647,6 +739,18 @@ public class Revlog {
 
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
+        return appendRevision(content, metadata, parent1, parent2, p1Node, p2Node, linkRev, null);
+    }
+
+    /**
+     * @param sidedataContainer already-serialized {@link SidedataCodec} bytes to attach to this
+     *     revision (only meaningful for a v2 revlog -- silently ignored otherwise, matching real
+     *     hg where sidedata is a revlog-v2-only feature), or {@code null} for none. Used by {@code
+     *     api.CommitCommand} to write {@code SD_FILES} copy-tracing sidedata on the changelog
+     *     revision when the repository has {@code exp-copies-sidedata-changeset}.
+     */
+    public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
+                                 byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer) throws IOException {
         int rev = index.getRevisionCount();
 
         // Escaping logic for content and metadata
@@ -693,7 +797,7 @@ public class Revlog {
         System.arraycopy(hash, 0, nodeId, 0, 20);
 
         if (index.isV2()) {
-            return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev);
+            return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev, sidedataContainer);
         }
 
         // Decide whether to write delta or fulltext
@@ -797,6 +901,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
+        updatePersistentNodeMapAfterAppend();
 
         return hash;
     }
@@ -964,6 +1069,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, flags, dataHunk.length, content.length,
                 baseRev, linkRev, parent1, parent2, entry.node));
+        updatePersistentNodeMapAfterAppend();
 
         clearCache();
     }
@@ -1105,6 +1211,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
                 rev, linkRev, parent1, parent2, node));
+        updatePersistentNodeMapAfterAppend();
 
         clearCache();
         return node;
@@ -1213,6 +1320,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
+        updatePersistentNodeMapAfterAppend();
 
         clearCache();
     }

@@ -16,12 +16,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.github.search5.hg4j.api.AddCommand;
+import com.github.search5.hg4j.api.CommitCommand;
 import com.github.search5.hg4j.api.Hg;
 import com.github.search5.hg4j.errors.HgAuthException;
 import com.github.search5.hg4j.errors.HgProtocolException;
 import com.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.lib.Repository;
 import com.jcraft.jsch.JSchException;
 import java.lang.reflect.Field;
@@ -30,6 +35,7 @@ import java.lang.reflect.Method;
 import org.apache.sshd.server.Environment;
 import org.apache.sshd.server.ExitCallback;
 import org.apache.sshd.server.channel.ChannelSession;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Detailed unit tests for HgSshClient in the com.github.search5.hg4j.transport package.
@@ -40,9 +46,16 @@ public class HgSshClientTransportTest {
 
     private SshServer sshServer;
     private int port;
+    private File serverRepoDir;
 
     @BeforeEach
-    public void startSshServer() throws Exception {
+    public void startSshServer(@TempDir Path tempDir) throws Exception {
+        serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "hello ssh transport");
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
+
         sshServer = SshServer.setUpDefaultServer();
         sshServer.setPort(0);
 
@@ -53,7 +66,7 @@ public class HgSshClientTransportTest {
         sshServer.setPasswordAuthenticator((username, password, session) ->
                 "hg4juser".equals(username) && "hg4jpass".equals(password));
 
-        sshServer.setCommandFactory((channel, command) -> new FullFeaturedMockHgCommand(command));
+        sshServer.setCommandFactory((channel, command) -> new HgWireServerCommand(command, serverRepoDir));
         sshServer.start();
         port = sshServer.getPort();
     }
@@ -139,9 +152,13 @@ public class HgSshClientTransportTest {
             client.setPassword("hg4jpass");
             List<String> caps = client.getCapabilities();
             assertNotNull(caps);
-            assertTrue(caps.contains("heads"));
+            // Wire1Commands.capabilitiesString() -- "heads"/"changegroup" aren't advertised as
+            // explicit capability tokens (real hg's own convention: they're always-available
+            // baseline v1 commands, not optional capabilities), so assert against what's actually
+            // in that string rather than what an earlier hand-rolled fake server happened to send.
             assertTrue(caps.contains("getbundle"));
-            assertTrue(caps.contains("changegroup"));
+            assertTrue(caps.contains("lookup"));
+            assertTrue(caps.contains("pushkey"));
         }
     }
 
@@ -214,13 +231,25 @@ public class HgSshClientTransportTest {
         }
     }
 
+    /** Minimal valid empty HG10UN bundle1 payload -- real hg's server actually parses "push"
+     * payloads now that the SSH wire framing is correct, unlike an earlier hand-rolled fake
+     * server that echoed "push ok" back regardless of what bytes were sent. */
+    private static byte[] minimalEmptyBundle1() {
+        return new byte[]{
+                'H', 'G', '1', '0', 'U', 'N',
+                0, 0, 0, 0, // changelog group: empty
+                0, 0, 0, 0, // manifest group: empty
+                0, 0, 0, 0, // no filelogs follow
+        };
+    }
+
     @Test
     @DisplayName("push 호출 성공")
     public void testPush_success() throws Exception {
         String url = "ssh://hg4juser@127.0.0.1:" + port + "/test/repo";
         try (HgSshClient client = new HgSshClient(url)) {
             client.setPassword("hg4jpass");
-            String result = client.push(new byte[]{0x01, 0x02}, List.of("head1"));
+            String result = client.push(minimalEmptyBundle1(), List.of("head1"));
             assertNotNull(result);
         }
     }
@@ -231,7 +260,7 @@ public class HgSshClientTransportTest {
         String url = "ssh://hg4juser@127.0.0.1:" + port + "/test/repo";
         try (HgSshClient client = new HgSshClient(url)) {
             client.setPassword("hg4jpass");
-            String result = client.push(new byte[]{0x01}, List.of());
+            String result = client.push(minimalEmptyBundle1(), List.of());
             assertNotNull(result);
         }
     }
@@ -253,16 +282,25 @@ public class HgSshClientTransportTest {
     // Embedded Mercurial stdio Mock Command
     // ─────────────────────────────────────────────────────────────────────
 
-    private static class FullFeaturedMockHgCommand implements Command, Runnable {
+    /** Server-side {@code Command} adapter attaching {@link HgSshWireServer} to the embedded
+     * SSHD server -- speaks real hg's actual v1 SSH wire protocol (independently verified against
+     * a real {@code hg} client, see {@link HgSshWireServerRealHgInteropTest}), replacing an
+     * earlier hand-rolled fake that matched {@link HgSshClient}'s then-incorrect assumptions
+     * instead (a simple line-based text format with no real length-prefixed argument framing). */
+    private static class HgWireServerCommand implements Command, Runnable {
+        private static final Pattern REPO_PATH = Pattern.compile("-R\\s+'?([^'\\s]+)'?");
+
         private final String command;
+        private final File fallbackRepoDir;
         private InputStream in;
         private OutputStream out;
         private OutputStream err;
         private ExitCallback callback;
         private Thread thread;
 
-        public FullFeaturedMockHgCommand(String command) {
+        HgWireServerCommand(String command, File fallbackRepoDir) {
             this.command = command;
+            this.fallbackRepoDir = fallbackRepoDir;
         }
 
         @Override public void setInputStream(InputStream in) { this.in = in; }
@@ -271,15 +309,14 @@ public class HgSshClientTransportTest {
         @Override public void setExitCallback(ExitCallback cb) { this.callback = cb; }
 
         @Override
-        public void start(ChannelSession session,
-                          Environment env) throws IOException {
-            thread = new Thread(this);
+        public void start(ChannelSession session, Environment env) {
+            thread = new Thread(this, "hg-ssh-wire-test");
             thread.setDaemon(true);
             thread.start();
         }
 
         @Override
-        public void destroy(ChannelSession session) throws Exception {
+        public void destroy(ChannelSession session) {
             if (thread != null) thread.interrupt();
         }
 
@@ -292,68 +329,72 @@ public class HgSshClientTransportTest {
                     callback.onExit(1);
                     return;
                 }
-
-                // Mercurial stdio protocol: Print the capabilities header first
-                out.write("capabilities: heads getbundle changegroup\n".getBytes(StandardCharsets.UTF_8));
-                out.flush();
-
-                BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-
-                while (!Thread.currentThread().isInterrupted()) {
-                    String line = reader.readLine();
-                    if (line == null) break;
-                    line = line.trim();
-
-                    if ("heads".equals(line)) {
-                        // 40-character hash response
-                        out.write("0000000000000000000000000000000000000000\n".getBytes(StandardCharsets.UTF_8));
-                        out.flush();
-
-                    } else if (line.startsWith("changegroup") || line.startsWith("getbundle")) {
-                        // Consume argument lines (until an empty line is encountered)
-                        String argLine;
-                        while ((argLine = reader.readLine()) != null && !argLine.trim().isEmpty()) {
-                            // consume args
-                        }
-                        // 빈 청크(터미널) 응답
-                        out.write(new byte[]{0, 0, 0, 0});
-                        out.flush();
-
-                    } else if (line.startsWith("unbundle")) {
-                        // push: Consume arguments, then return OK response
-                        String argLine;
-                        while ((argLine = reader.readLine()) != null && !argLine.trim().isEmpty()) {
-                            // consume args
-                        }
-                        // Read bundle data (ignored in practice)
-                        // Text response
-                        out.write("push ok\n".getBytes(StandardCharsets.UTF_8));
-                        out.flush();
-
-                    } else if ("close".equals(line) || "exit".equals(line)) {
-                        break;
-                    }
-                }
+                Matcher m = REPO_PATH.matcher(command);
+                File repoDir = m.find() ? new File(m.group(1)) : fallbackRepoDir;
+                HgRepository repo = repoDir.isDirectory() && new File(repoDir, ".hg").isDirectory()
+                        ? new HgRepository(repoDir) : new HgRepository(fallbackRepoDir);
+                new HgSshWireServer(repo).handleConnection(in, out);
                 callback.onExit(0);
             } catch (Exception e) {
-                callback.onExit(1, e.getMessage());
+                try {
+                    err.write((e + "\n").getBytes(StandardCharsets.UTF_8));
+                    err.flush();
+                } catch (IOException ignored) {
+                }
+                callback.onExit(1);
             }
         }
     }
 
     @Test
-    @DisplayName("SSH capabilities 헤더 오류 시 HgProtocolException 발생")
-    public void testReadCapabilities_invalidHeader_throwsProtocolException() throws Exception {
-        byte[] invalidHeader = "invalidheader: something\n".getBytes(StandardCharsets.UTF_8);
+    @DisplayName("SSH 첫 framed 응답이 길이 헤더가 아니면 HgProtocolException 발생")
+    public void testPerformHandshake_notAFramedLength_throwsProtocolException() throws Exception {
+        // Real hg's handshake expects the FIRST response line to be a byte-count (the framed
+        // "hello" response) -- arbitrary text there must fail cleanly, not silently misparse.
+        byte[] garbage = "invalidheader: something\n".getBytes(StandardCharsets.UTF_8);
         HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
-        
+
         Field inField = HgSshClient.class.getDeclaredField("in");
         inField.setAccessible(true);
-        inField.set(client, new ByteArrayInputStream(invalidHeader));
-        
-        Method method = HgSshClient.class.getDeclaredMethod("readCapabilities");
+        inField.set(client, new ByteArrayInputStream(garbage));
+        Field outField = HgSshClient.class.getDeclaredField("out");
+        outField.setAccessible(true);
+        outField.set(client, new ByteArrayOutputStream());
+
+        Method method = HgSshClient.class.getDeclaredMethod("performHandshake");
         method.setAccessible(true);
-        
+
+        assertThrows(HgProtocolException.class, () -> {
+            try {
+                method.invoke(client);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("SSH hello 응답에 capabilities: 줄이 없으면 HgProtocolException 발생")
+    public void testPerformHandshake_missingCapabilitiesLine_throwsProtocolException() throws Exception {
+        // A well-formed framed response that simply doesn't contain a "capabilities:" line --
+        // distinct from the not-a-number case above.
+        String helloBody = "not a capabilities line\n";
+        byte[] helloBytes = helloBody.getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        stream.write((helloBytes.length + "\n").getBytes(StandardCharsets.US_ASCII));
+        stream.write(helloBytes);
+
+        HgSshClient client = new HgSshClient("ssh://hg4juser@127.0.0.1/repo");
+        Field inField = HgSshClient.class.getDeclaredField("in");
+        inField.setAccessible(true);
+        inField.set(client, new ByteArrayInputStream(stream.toByteArray()));
+        Field outField = HgSshClient.class.getDeclaredField("out");
+        outField.setAccessible(true);
+        outField.set(client, new ByteArrayOutputStream());
+
+        Method method = HgSshClient.class.getDeclaredMethod("performHandshake");
+        method.setAccessible(true);
+
         assertThrows(HgProtocolException.class, () -> {
             try {
                 method.invoke(client);
@@ -521,14 +562,24 @@ public class HgSshClientTransportTest {
         }
     }
 
-    private static void invokeReadCapabilities(HgSshClient client) throws Throwable {
-        Method m = HgSshClient.class.getDeclaredMethod("readCapabilities");
+    private static void invokePerformHandshake(HgSshClient client) throws Throwable {
+        Method m = HgSshClient.class.getDeclaredMethod("performHandshake");
         m.setAccessible(true);
         try {
             m.invoke(client);
         } catch (InvocationTargetException e) {
             throw e.getCause();
         }
+    }
+
+    /** {@code "<len>\n<bytes>"} -- real hg's v1 "framed" response format. */
+    private static byte[] framed(String content) {
+        byte[] body = content.getBytes(StandardCharsets.UTF_8);
+        byte[] header = (body.length + "\n").getBytes(StandardCharsets.US_ASCII);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header, 0, header.length);
+        out.write(body, 0, body.length);
+        return out.toByteArray();
     }
 
     private static void writeBigEndianLen(ByteArrayOutputStream out, int len) {
@@ -538,11 +589,13 @@ public class HgSshClientTransportTest {
         out.write(len & 0xFF);
     }
 
+    /** {@code connected=true} skips the handshake entirely, so the fake {@code in} stream here
+     * only ever needs to satisfy ONE subsequent command's framed response -- {@link #framed}. */
     private static HgSshClient createConnectedClientWithResponse(String response) throws Exception {
         HgSshClient client = new HgSshClient("ssh://user@127.0.0.1/repo");
         setField(client, "connected", true);
         setField(client, "capabilities", List.of("lookup", "listkeys", "known", "pushkey", "between"));
-        setField(client, "in", new ByteArrayInputStream(response.getBytes(StandardCharsets.UTF_8)));
+        setField(client, "in", new ByteArrayInputStream(framed(response)));
         setField(client, "out", new ByteArrayOutputStream());
         return client;
     }
@@ -860,7 +913,7 @@ public class HgSshClientTransportTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // readCapabilities() SSH V2 upgrade Tests
+    // performHandshake() SSH V2 upgrade Tests
     // ─────────────────────────────────────────────────────────────────────
 
     /**
@@ -875,8 +928,14 @@ public class HgSshClientTransportTest {
 
         UpgradeSimulatingInputStream(ByteArrayOutputStream capturedOut) {
             this.capturedOut = capturedOut;
-            this.current = new ByteArrayInputStream(
-                    "capabilities: heads exp-ssh-v2-0003\n".getBytes(StandardCharsets.UTF_8));
+            // performHandshake() always does the real v1 hello+between handshake FIRST (both
+            // framed responses) before it even attempts the v2 upgrade dance below.
+            byte[] hello = framed("capabilities: heads exp-ssh-v2-0003\n");
+            byte[] between = framed("\n");
+            byte[] combined = new byte[hello.length + between.length];
+            System.arraycopy(hello, 0, combined, 0, hello.length);
+            System.arraycopy(between, 0, combined, hello.length, between.length);
+            this.current = new ByteArrayInputStream(combined);
         }
 
         private String extractToken() {
@@ -924,8 +983,8 @@ public class HgSshClientTransportTest {
     }
 
     @Test
-    @DisplayName("readCapabilities - v2 업그레이드 성공 시 protocolVersion=2로 전환")
-    public void testReadCapabilities_v2Upgrade_success() throws Throwable {
+    @DisplayName("performHandshake - v2 업그레이드 성공 시 protocolVersion=2로 전환")
+    public void testPerformHandshake_v2Upgrade_success() throws Throwable {
         System.setProperty("hg4j.ssh.v2.enabled", "true");
         try {
             HgSshClient client = new HgSshClient("ssh://user@127.0.0.1/repo");
@@ -933,7 +992,7 @@ public class HgSshClientTransportTest {
             setField(client, "out", capturedOut);
             setField(client, "in", new UpgradeSimulatingInputStream(capturedOut));
 
-            invokeReadCapabilities(client);
+            invokePerformHandshake(client);
 
             assertEquals(2, client.getProtocolVersion());
             @SuppressWarnings("unchecked")
@@ -945,16 +1004,19 @@ public class HgSshClientTransportTest {
     }
 
     @Test
-    @DisplayName("readCapabilities - v2 업그레이드 거부 시 protocolVersion 유지, 잔여 데이터 스킵")
-    public void testReadCapabilities_v2Upgrade_rejected_skipsResidualData() throws Throwable {
+    @DisplayName("performHandshake - v2 업그레이드 거부 시 protocolVersion 유지, 잔여 데이터 스킵")
+    public void testPerformHandshake_v2Upgrade_rejected_skipsResidualData() throws Throwable {
         System.setProperty("hg4j.ssh.v2.enabled", "true");
         try {
             HgSshClient client = new HgSshClient("ssh://user@127.0.0.1/repo");
             setField(client, "out", new ByteArrayOutputStream());
-            String stream = "capabilities: heads exp-ssh-v2-0003\n" + "upgrade rejected\n" + "RESIDUAL_JUNK_DATA";
-            setField(client, "in", new ByteArrayInputStream(stream.getBytes(StandardCharsets.UTF_8)));
+            ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            stream.write(framed("capabilities: heads exp-ssh-v2-0003\n"));
+            stream.write(framed("\n")); // between's null-range response
+            stream.write("upgrade rejected\nRESIDUAL_JUNK_DATA".getBytes(StandardCharsets.UTF_8));
+            setField(client, "in", new ByteArrayInputStream(stream.toByteArray()));
 
-            invokeReadCapabilities(client);
+            invokePerformHandshake(client);
 
             assertEquals(1, client.getProtocolVersion());
             @SuppressWarnings("unchecked")
@@ -971,14 +1033,17 @@ public class HgSshClientTransportTest {
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("listKeys - 정상 응답 파싱 (readLine은 첫 줄만 읽으므로 단일 엔트리)")
+    @DisplayName("listKeys - 다중 엔트리 응답 전부 파싱 (framed 읽기로 임베디드 개행 보존)")
     public void testListKeys_success() throws Exception {
-        // readLine() reads only up to the first '\n', so listKeys can only ever
-        // observe a single "key\tvalue" entry per response in this implementation.
-        HgSshClient client = createConnectedClientWithResponse("key1\tvalue1\n");
+        // Fixed 2026-09-03: an earlier version read the response with a plain line-reader that
+        // stopped at the FIRST embedded '\n', so a real multi-key listkeys response (which is
+        // inherently multi-line) could only ever yield a single entry. The real framed read
+        // (length-prefixed, not newline-terminated) preserves every entry.
+        HgSshClient client = createConnectedClientWithResponse("key1\tvalue1\nkey2\tvalue2\n");
         Map<String, String> result = client.listKeys("bookmarks");
-        assertEquals(1, result.size());
+        assertEquals(2, result.size());
         assertEquals("value1", result.get("key1"));
+        assertEquals("value2", result.get("key2"));
     }
 
     @Test
@@ -1046,15 +1111,17 @@ public class HgSshClientTransportTest {
     }
 
     @Test
-    @DisplayName("pushkey - oldVal/newVal null이면 빈 문자열 전송")
+    @DisplayName("pushkey - oldVal/newVal null이면 빈 문자열 전송 (length=0 헤더)")
     public void testPushkey_nullOldAndNewVal_sendsEmptyStrings() throws Exception {
         HgSshClient client = createConnectedClientWithResponse("1\n");
         assertTrue(client.pushkey("bookmarks", "mybook", null, null));
 
+        // Real hg's per-arg wire format: "<name> <byte-length>\n<bytes>" -- an empty value is
+        // "<name> 0\n" with nothing following (not "<name> \n", the old line-based assumption).
         ByteArrayOutputStream out = (ByteArrayOutputStream) getField(client, "out");
         String sent = out.toString(StandardCharsets.UTF_8);
-        assertTrue(sent.contains("old \n"));
-        assertTrue(sent.contains("new \n"));
+        assertTrue(sent.contains("old 0\n"), "sent was: " + sent);
+        assertTrue(sent.contains("new 0\n"), "sent was: " + sent);
     }
 }
 

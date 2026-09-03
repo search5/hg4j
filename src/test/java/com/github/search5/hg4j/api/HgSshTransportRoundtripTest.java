@@ -31,20 +31,31 @@ import java.lang.reflect.Method;
 
 public class HgSshTransportRoundtripTest {
 
+    /** Real hg's v1 "framed" response format: {@code "<len>\n<bytes>"}. */
+    private static void writeFramed(ByteArrayOutputStream out, byte[] payload) {
+        byte[] header = (payload.length + "\n").getBytes(StandardCharsets.US_ASCII);
+        out.write(header, 0, header.length);
+        out.write(payload, 0, payload.length);
+    }
+
     @Test
     public void testSshInvalidHeaderThrowsHgProtocolException() throws Exception {
         String url = "ssh://hg4juser@127.0.0.1:22/test/repo";
         try (HgSshClient client = new HgSshClient(url)) {
-            // Inject invalid header response in the stream
+            // Real hg's handshake expects the very first response to be a framed length line
+            // ("<len>\n..."); arbitrary text there must fail cleanly.
             Field inField = HgSshClient.class.getDeclaredField("in");
             inField.setAccessible(true);
             inField.set(client, new ByteArrayInputStream("invalid response format\n".getBytes(StandardCharsets.UTF_8)));
+            Field outField = HgSshClient.class.getDeclaredField("out");
+            outField.setAccessible(true);
+            outField.set(client, new ByteArrayOutputStream());
 
-            Method readCapabilities = HgSshClient.class.getDeclaredMethod("readCapabilities");
-            readCapabilities.setAccessible(true);
+            Method performHandshake = HgSshClient.class.getDeclaredMethod("performHandshake");
+            performHandshake.setAccessible(true);
 
             InvocationTargetException ex = assertThrows(InvocationTargetException.class, () -> {
-                readCapabilities.invoke(client);
+                performHandshake.invoke(client);
             });
             assertTrue(ex.getCause() instanceof HgProtocolException);
         }
@@ -96,28 +107,23 @@ public class HgSshTransportRoundtripTest {
         ChangegroupParser.ChangegroupBundle bundle = HgTestUtils.createMockBundleFromRepo(srcRepo);
         byte[] rawCg = HgTestUtils.serializeBundleToBytes(bundle);
         
+        // Real hg's v1 SSH wire format (see HgSshClient#readFramedResponse/#readBinaryResponse):
+        // "heads" is a simple framed response ("<len>\n<bytes>"); getbundle/changegroup responses
+        // are the raw changegroup bytes with NO extra outer framing at all -- the cg1 format's
+        // own changelog/manifest/file-group structure (each 0000-terminated, INCLUSIVE chunk
+        // lengths -- exactly what HgTestUtils#serializeBundleToBytes already produces) is the only
+        // self-delimiting signal, so it's written here completely unwrapped.
         ByteArrayOutputStream serverResponse = new ByteArrayOutputStream();
-        // Heads response: c2 + "\n"
-        serverResponse.write((NodeIdUtil.toHex(c2) + "\n").getBytes(StandardCharsets.UTF_8));
-        
-        // Wrap getbundle response in Mercurial SSH binary chunked format
-        byte[] payload = new byte[6 + rawCg.length];
-        System.arraycopy("HG10UN".getBytes(StandardCharsets.US_ASCII), 0, payload, 0, 6);
-        System.arraycopy(rawCg, 0, payload, 6, rawCg.length);
+        String headsBody = NodeIdUtil.toHex(c2) + "\n";
+        byte[] headsBodyBytes = headsBody.getBytes(StandardCharsets.UTF_8);
+        serverResponse.write((headsBodyBytes.length + "\n").getBytes(StandardCharsets.US_ASCII));
+        serverResponse.write(headsBodyBytes);
 
-        int len = payload.length;
-        serverResponse.write((len >> 24) & 0xFF);
-        serverResponse.write((len >> 16) & 0xFF);
-        serverResponse.write((len >> 8) & 0xFF);
-        serverResponse.write(len & 0xFF);
-        serverResponse.write(payload);
+        // Wire1Commands.getbundle() strips the "HG10UN" magic server-side before sending (real
+        // hg's v1 getbundle response over the wire is the bare cg1 bytes, no format marker) --
+        // so the mock response here must match that, not include it.
+        serverResponse.write(rawCg);
 
-        // Terminal chunk (length 0)
-        serverResponse.write(0);
-        serverResponse.write(0);
-        serverResponse.write(0);
-        serverResponse.write(0);
-        
         // 3. Prepare local destination repository
         File destDir = tempDir.resolve("dest_repo").toFile();
         new InitCommand().setDirectory(destDir).call();
@@ -149,11 +155,10 @@ public class HgSshTransportRoundtripTest {
             assertEquals(NodeIdUtil.toHex(c2), heads.get(0));
             
             byte[] pulledBundle = client.getBundle(List.of(), List.of(NodeIdUtil.toHex(c2)), List.of("bundle2"));
-            
-            // 6. Apply pulled bundle to destination repository
-            byte[] cgBytes = new byte[pulledBundle.length - 6];
-            System.arraycopy(pulledBundle, 6, cgBytes, 0, cgBytes.length);
-            ChangegroupParser.ChangegroupBundle parsedBundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(cgBytes), "01");
+
+            // 6. Apply pulled bundle to destination repository (no "HG10UN" prefix to strip --
+            // see the mock response construction above).
+            ChangegroupParser.ChangegroupBundle parsedBundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(pulledBundle), "01");
             
             PullCommand pullCmd = new PullCommand(destRepo);
             List<byte[]> imported = pullCmd.applyBundle(parsedBundle);
@@ -198,22 +203,30 @@ public class HgSshTransportRoundtripTest {
             capabilitiesField.setAccessible(true);
             capabilitiesField.set(client, List.of("lookup", "changegroupsubsets", "branchmap", "unbundle"));
             
+            // Real hg's actual unbundle reply shape (mercurial/sshpeer.py's _callpush(), see
+            // HgSshClient#push): a pre-payload "OK to continue" empty framed response, then (once
+            // the payload has been sent) an error-or-empty framed response, then -- since this
+            // push succeeds -- the actual integer result, itself framed.
+            ByteArrayOutputStream serverResponse = new ByteArrayOutputStream();
+            writeFramed(serverResponse, new byte[0]); // precheck: OK to continue
+            writeFramed(serverResponse, new byte[0]); // no error
+            writeFramed(serverResponse, "1".getBytes(StandardCharsets.US_ASCII)); // result
+
             Field inField = HgSshClient.class.getDeclaredField("in");
             inField.setAccessible(true);
-            // Inject successful unbundle response matching Mercurial spec (1 line message follows)
-            inField.set(client, new ByteArrayInputStream("1\nno errors\n".getBytes(StandardCharsets.UTF_8)));
-            
+            inField.set(client, new ByteArrayInputStream(serverResponse.toByteArray()));
+
             Field outField = HgSshClient.class.getDeclaredField("out");
             outField.setAccessible(true);
             ByteArrayOutputStream clientSentBytes = new ByteArrayOutputStream();
             outField.set(client, clientSentBytes);
-            
+
             // 4. Test SSH Push operation client protocol
             String pushResult = client.push(localBundleBytes, List.of(NodeIdUtil.toHex(c1)));
-            
+
             // 5. Verify pushed commands and data
-            assertEquals("1\nno errors", pushResult.trim());
-            
+            assertEquals("1", pushResult.trim());
+
             byte[] sentData = clientSentBytes.toByteArray();
             assertTrue(sentData.length > 0);
             

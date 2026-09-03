@@ -7,6 +7,7 @@ import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.storage.FileIndex;
 import com.github.search5.hg4j.storage.Revlog;
+import com.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import com.github.search5.hg4j.util.NodeIdUtil;
 import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.errors.HgLockException;
@@ -253,6 +254,14 @@ public class CommitCommand {
             List<String> filesModified = new ArrayList<>();
             Set<String> fncachePaths = new LinkedHashSet<>();
 
+            // SD_FILES sidedata bookkeeping (backlog item 19) -- only actually encoded/attached
+            // below when repository.isSidedataCopies() is true; harmless to always populate.
+            Set<String> sdAdded = new LinkedHashSet<>();
+            Set<String> sdRemoved = new LinkedHashSet<>();
+            Set<String> sdTouched = new LinkedHashSet<>();
+            Map<String, String> sdCopiedFromP1 = new LinkedHashMap<>();
+            Map<String, String> sdCopiedFromP2 = new LinkedHashMap<>();
+
             // Load existing fncache if any
             if (fncacheFile.exists()) {
                 fncachePaths.addAll(Files.readAllLines(fncacheFile.toPath()));
@@ -296,6 +305,7 @@ public class CommitCommand {
                     char workingState = tw.getState(2);
                     if (workingState == 'r') {
                         filesModified.add(path);
+                        sdRemoved.add(path);
                     } else if (workingState == 'a' || workingState == 'm' || workingState == 'n') {
                         File diskFile = new File(repository.getDirectory(), path);
                         // A symlink is valid to commit even when its target is missing (dangling)
@@ -320,7 +330,7 @@ public class CommitCommand {
                         // Check if the file has actually changed compared to the recorded dirstate
                         boolean changed = workingState == 'a' || workingState == 'm';
                         if (workingState == 'n') {
-                            long diskTime = diskFile.lastModified() / 1000;
+                            long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
                             Dirstate.Entry dEntry = dirstate.getEntries().get(path);
                             if (dEntry != null) {
                                 if (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime) {
@@ -412,6 +422,22 @@ public class CommitCommand {
                                 copyMeta = new LinkedHashMap<>();
                                 copyMeta.put("copy", originalPath);
                                 copyMeta.put("copyrev", hexSource);
+
+                                // SD_FILES copy-tracing (backlog item 19): classify by which
+                                // parent's manifest actually contains the copy source -- mirrors
+                                // the sourceEntry lookup just above (P1 first, matching real hg's
+                                // own preference for p1 when a source exists in both).
+                                if (manifestP1.containsKey(originalPath)) {
+                                    sdCopiedFromP1.put(path, originalPath);
+                                } else if (manifestP2.containsKey(originalPath)) {
+                                    sdCopiedFromP2.put(path, originalPath);
+                                }
+                            }
+
+                            if (workingState == 'a') {
+                                sdAdded.add(path);
+                            } else {
+                                sdTouched.add(path);
                             }
 
                             byte[] newFileNode = filelog.appendRevision(fileContent, copyMeta, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
@@ -479,12 +505,20 @@ public class CommitCommand {
             }
 
             // 4. Serialize and write new manifest revision
-            StringBuilder manifestSb = new StringBuilder();
-            for (Map.Entry<String, String> entry : newManifest.entrySet()) {
-                manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
+            byte[] manifestNode;
+            if (repository.isTreemanifest()) {
+                Map<String, byte[]> p1DirNodes = collectDirNodes(p1ManifestNode);
+                Map<String, byte[]> p2DirNodes = collectDirNodes(p2ManifestNode);
+                manifestNode = writeTreeManifestDir("", newManifest, p1DirNodes, p2DirNodes,
+                        p1ManifestNode, p2ManifestNode, manifestRevlog, newCommitRev);
+            } else {
+                StringBuilder manifestSb = new StringBuilder();
+                for (Map.Entry<String, String> entry : newManifest.entrySet()) {
+                    manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
+                }
+                byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
+                manifestNode = manifestRevlog.appendRevision(manifestTextBytes, parent1ManifestRev, parent2ManifestRev, p1ManifestNode, p2ManifestNode, newCommitRev);
             }
-            byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
-            byte[] manifestNode = manifestRevlog.appendRevision(manifestTextBytes, parent1ManifestRev, parent2ManifestRev, p1ManifestNode, p2ManifestNode, newCommitRev);
 
             // 5. Serialize and write new changelog (commit) revision
             StringBuilder clSb = new StringBuilder();
@@ -529,7 +563,15 @@ public class CommitCommand {
                 clMeta.put("gpgfingerprint", this.gpgSignature.getKeyFingerprint());
             }
 
-            byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, parent1Rev, parent2Rev, p1CommitNodeHash, p2CommitNodeHash, newCommitRev);
+            byte[] sidedataContainer = null;
+            if (repository.isSidedataCopies()) {
+                byte[] sdFiles = ChangingFiles.encode(sdAdded, sdRemoved, Set.of(), Set.of(), sdTouched, sdCopiedFromP1, sdCopiedFromP2);
+                if (sdFiles.length > 0) {
+                    sidedataContainer = com.github.search5.hg4j.storage.SidedataCodec.serialize(
+                            Map.of(com.github.search5.hg4j.storage.SidedataCodec.SD_FILES, sdFiles));
+                }
+            }
+            byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, parent1Rev, parent2Rev, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
 
             // 6. Update and save Dirstate
             dirstate.setParents(new NodeId(commitNode), NodeId.NULL);
@@ -551,7 +593,7 @@ public class CommitCommand {
                     int size = isSymlink
                             ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
                             : (int) diskFile.length();
-                    long time = diskFile.lastModified() / 1000;
+                    long time = SafeFileIO.lastModifiedSeconds(diskFile);
                     dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
                 }
             }
@@ -773,6 +815,148 @@ public class CommitCommand {
         }
         return filelog.getRevisionContent(rev);
     }
+    private static boolean isNullNode(byte[] node) {
+        if (node == null) {
+            return true;
+        }
+        for (byte b : node) {
+            if (b != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * For a {@code treemanifest} repository: walks the manifest tree rooted at {@code
+     * manifestNode} and returns a map of repo-root-relative directory path (bare, no trailing
+     * slash; {@code ""} for the root itself, mapping to {@code manifestNode} unchanged) to that
+     * directory's own {@code meta/<dir>/00manifest.i} (or, for {@code ""}, {@code
+     * 00manifest.i}) revision node hash. {@link #writeTreeManifestDir} needs this to correctly
+     * set parent1/parent2 on each per-directory revision it (re)writes this commit -- mirrors
+     * {@link ManifestTreeIterator#expandTree} but records directory nodes instead of discarding
+     * them once expanded into flat file entries.
+     *
+     * @return an empty map if {@code manifestNode} is the all-zero "no such parent" sentinel
+     *         (first commit / no such parent side of a merge).
+     */
+    private Map<String, byte[]> collectDirNodes(byte[] manifestNode) throws IOException {
+        Map<String, byte[]> result = new HashMap<>();
+        if (isNullNode(manifestNode)) {
+            return result;
+        }
+        result.put("", manifestNode);
+        Revlog manifestRevlog = repository.getManifestRevlog();
+        int rev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, manifestNode);
+        if (rev == -1) {
+            return result;
+        }
+        collectDirNodesRecursive(manifestRevlog.getRevisionContent(rev), "", result);
+        return result;
+    }
+
+    private void collectDirNodesRecursive(byte[] mfContent, String dirPrefix, Map<String, byte[]> result) throws IOException {
+        for (ManifestTreeIterator.Entry e : ManifestTreeIterator.parseManifestContent(mfContent)) {
+            if (!e.isTreeDir()) {
+                continue;
+            }
+            String fullPath = dirPrefix.isEmpty() ? e.getPath() : dirPrefix + "/" + e.getPath();
+            result.put(fullPath, e.getNodeId());
+            File subIdx = new File(repository.getStoreDir(), "meta/" + fullPath + "/00manifest.i");
+            File subDat = new File(repository.getStoreDir(), "meta/" + fullPath + "/00manifest.d");
+            Revlog subRevlog = repository.getRevlog(subIdx, subDat);
+            int subRev = NodeIdUtil.findRevisionByNodeId(subRevlog, e.getNodeId());
+            if (subRev == -1) {
+                continue;
+            }
+            collectDirNodesRecursive(subRevlog.getRevisionContent(subRev), fullPath, result);
+        }
+    }
+
+    /**
+     * Recursively splits the flat new manifest ({@code flatManifest}: full repo-root-relative
+     * path -> {@code "<40-hex-node><flag>"}, exactly what the non-treemanifest path already
+     * builds) into per-directory revisions for a {@code treemanifest} repository, writing
+     * bottom-up (a directory's own revision can only be written once every subdirectory it
+     * references has already been written and its new node hash is known) — mirrors real hg's
+     * {@code mercurial/manifest.py} {@code manifestlog._addtree}/{@code writesubtrees} recursion.
+     *
+     * <p>Entries within one directory level are combined and sorted together by their bare name
+     * (files and subdirectory pointers interleaved in one list, matching real hg's {@code
+     * treemanifest.dirtext()}: {@code sorted(dirs + files)}), NOT files-then-directories.
+     *
+     * <p><b>Known simplification vs. real hg</b> (documented, not a correctness gap): real hg
+     * skips writing a fresh revision for a subdirectory whose entire subtree is byte-identical to
+     * one parent's ({@code m.unmodifiedsince(m1)}), reusing that parent's node instead. This
+     * method always writes a fresh revision for every directory touched by the recursion (i.e.
+     * every directory on the path from the root to any changed file, exactly matching root-level
+     * flat-manifest behavior, which already always writes a fresh revision every commit
+     * regardless of whether content changed). The result is fully spec-valid (every node hash is
+     * still a correct hash of its own real parents+content, verified byte-for-byte readable by
+     * real hg in {@code TreemanifestWriteRealFixtureTest}) — just less storage-deduplicated than
+     * real hg's own output for a commit that only touches one leaf directory in a deep tree.
+     *
+     * @param dir "" for the root (written to {@code manifestRevlog}/{@code 00manifest.i}), or a
+     *            repo-root-relative bare directory path (written to {@code
+     *            meta/<dir>/00manifest.i}) for a recursive sub-call.
+     * @param p1DirNodes/p2DirNodes from {@link #collectDirNodes} for each parent.
+     * @param p1RootNode/p2RootNode the root manifest's own parent node hashes (used only when
+     *                               {@code dir} is {@code ""}, since the root revlog is always
+     *                               {@code manifestRevlog} regardless of directory recursion).
+     * @return the new node hash written for this directory's own revision.
+     */
+    private byte[] writeTreeManifestDir(String dir, Map<String, String> flatManifest,
+                                         Map<String, byte[]> p1DirNodes, Map<String, byte[]> p2DirNodes,
+                                         byte[] p1RootNode, byte[] p2RootNode, Revlog manifestRevlog, int linkRev) throws IOException {
+        String prefix = dir.isEmpty() ? "" : dir + "/";
+        Map<String, String> lines = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        java.util.TreeSet<String> subdirNames = new java.util.TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        for (Map.Entry<String, String> e : flatManifest.entrySet()) {
+            String path = e.getKey();
+            if (!path.startsWith(prefix)) {
+                continue;
+            }
+            String rest = path.substring(prefix.length());
+            int slash = rest.indexOf('/');
+            if (slash < 0) {
+                lines.put(rest, e.getValue());
+            } else {
+                subdirNames.add(rest.substring(0, slash));
+            }
+        }
+        for (String sub : subdirNames) {
+            String subFullPath = prefix + sub;
+            byte[] childNode = writeTreeManifestDir(subFullPath, flatManifest, p1DirNodes, p2DirNodes,
+                    p1RootNode, p2RootNode, manifestRevlog, linkRev);
+            lines.put(sub, NodeIdUtil.toHex(childNode) + "t");
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> e : lines.entrySet()) {
+            sb.append(e.getKey()).append('\0').append(e.getValue()).append('\n');
+        }
+        byte[] content = sb.toString().getBytes(StandardCharsets.UTF_8);
+
+        Revlog dirRevlog;
+        byte[] p1;
+        byte[] p2;
+        if (dir.isEmpty()) {
+            dirRevlog = manifestRevlog;
+            p1 = p1RootNode;
+            p2 = p2RootNode;
+        } else {
+            File subIdx = new File(repository.getStoreDir(), "meta/" + dir + "/00manifest.i");
+            File subDat = new File(repository.getStoreDir(), "meta/" + dir + "/00manifest.d");
+            Files.createDirectories(subIdx.getParentFile().toPath());
+            dirRevlog = repository.getRevlog(subIdx, subDat);
+            p1 = p1DirNodes.getOrDefault(dir, new byte[20]);
+            p2 = p2DirNodes.getOrDefault(dir, new byte[20]);
+        }
+        int p1Rev = isNullNode(p1) ? -1 : NodeIdUtil.findRevisionByNodeId(dirRevlog, p1);
+        int p2Rev = isNullNode(p2) ? -1 : NodeIdUtil.findRevisionByNodeId(dirRevlog, p2);
+        return dirRevlog.appendRevision(content, p1Rev, p2Rev, p1, p2, linkRev);
+    }
+
     private static byte[] extractManifestNode(byte[] clContent) {
         if (clContent == null || clContent.length == 0) {
             return new byte[20];

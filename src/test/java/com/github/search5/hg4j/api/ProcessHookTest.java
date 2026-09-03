@@ -333,7 +333,11 @@ public class ProcessHookTest {
             }
         });
         runner.start();
-        Thread.sleep(300);
+        // Wide grace margin before interrupting: under heavy concurrent load (e.g. running the
+        // full test suite) thread scheduling delays can eat into a tight window, so use a chunk
+        // of the subprocess's 2-second sleep rather than a fixed 300ms that assumes prompt
+        // scheduling (found via a real, reproducible failure under full-suite load, 2026-09-03).
+        Thread.sleep(800);
         runner.interrupt();
         runner.join(10_000);
 

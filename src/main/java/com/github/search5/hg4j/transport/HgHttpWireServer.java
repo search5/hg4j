@@ -208,6 +208,14 @@ public class HgHttpWireServer implements HttpHandler {
 
     private void handleV1Command(HttpExchange exchange, String cmd, String query) throws Exception {
         Map<String, String> args = parseQueryParams(query);
+        // Real hg's primary v1 arg transport for GET requests: the urlencoded arg string is split
+        // across X-HgArg-1, X-HgArg-2, ... request headers (see HgRemoteClient#executeArgsCommand)
+        // rather than appended to the query string. Reassemble and merge them in first so a
+        // present query string or POST body (below) can still take precedence on collision.
+        String reassembledArgHeaders = reassembleHeaderChain(exchange, "X-HgArg");
+        if (!reassembledArgHeaders.isEmpty()) {
+            args.putAll(parseQueryParams(reassembledArgHeaders));
+        }
 
         Wire1Response response;
         if ("unbundle".equals(cmd)) {
@@ -227,6 +235,9 @@ public class HgHttpWireServer implements HttpHandler {
                 try (InputStream in = exchange.getRequestBody()) {
                     body = in.readAllBytes();
                 }
+                // Same urlencoded-args format whether this is the legacy form-encoded body or the
+                // httppostargs tier's raw arg string (signalled by X-HgArgs-Post) -- one parse
+                // covers both.
                 args.putAll(parseQueryParams(new String(body, StandardCharsets.UTF_8)));
             }
             response = dispatch(cmd, args);
@@ -286,6 +297,26 @@ public class HgHttpWireServer implements HttpHandler {
             dos.write(data);
         }
         return baos.toByteArray();
+    }
+
+    /**
+     * Reassembles a real hg {@code encodevalueinheaders}-split header chain ({@code <prefix>-1},
+     * {@code <prefix>-2}, ...) back into the single urlencoded string it was split from. Headers
+     * are read in order starting at 1 and stop at the first missing index (real hg never leaves a
+     * gap). {@code HttpExchange}'s header map is case-insensitive, matching real HTTP semantics.
+     */
+    private static String reassembleHeaderChain(HttpExchange exchange, String prefix) {
+        StringBuilder sb = new StringBuilder();
+        int n = 1;
+        while (true) {
+            String chunk = exchange.getRequestHeaders().getFirst(prefix + "-" + n);
+            if (chunk == null) {
+                break;
+            }
+            sb.append(chunk);
+            n++;
+        }
+        return sb.toString();
     }
 
     private static String queryParam(String query, String name) {

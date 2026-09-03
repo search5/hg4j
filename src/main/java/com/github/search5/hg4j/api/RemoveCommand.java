@@ -7,6 +7,7 @@ import com.github.search5.hg4j.errors.HgLockException;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import com.github.search5.hg4j.errors.HgValidationException;
 import com.github.search5.hg4j.storage.Revlog;
@@ -76,9 +77,18 @@ public class RemoveCommand {
                         throw new HgValidationException("File has uncommitted changes (added): " + file + ". Use force to remove.");
                     } else if (state == 'n' || state == 'm') {
                         File diskFile = new File(repository.getDirectory(), file);
-                        if (diskFile.exists() && diskFile.isFile()) {
-                            long diskSize = diskFile.length();
-                            long diskTime = diskFile.lastModified() / 1000;
+                        // A symlink's own lstat size/mtime/content, not whatever it points at --
+                        // File#isFile()/length()/lastModified() all follow the link, which
+                        // compared the TARGET's size against the symlink's own tracked size and
+                        // spuriously flagged an untouched symlink as modified whenever its target
+                        // happened to be a different length (matches AddCommand/StatusCommand's
+                        // already-established lstat-aware convention).
+                        boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
+                        if (isSymlink || (diskFile.exists() && diskFile.isFile())) {
+                            long diskSize = isSymlink
+                                    ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                                    : diskFile.length();
+                            long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
                             boolean isDirty = entry.getSize() != diskSize || entry.getTime() != diskTime;
                             if (!isDirty) {
                                 // Racy-hg check: content level comparison
@@ -88,7 +98,9 @@ public class RemoveCommand {
                                     try {
                                         Revlog filelog = repository.getRevlog(flIdx, flDat);
                                         if (filelog.getRevisionCount() > 0) {
-                                            byte[] fileContent = Files.readAllBytes(diskFile.toPath());
+                                            byte[] fileContent = isSymlink
+                                                    ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
+                                                    : Files.readAllBytes(diskFile.toPath());
                                             byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
                                             if (!Arrays.equals(fileContent, lastContent)) {
                                                 isDirty = true;
@@ -105,7 +117,10 @@ public class RemoveCommand {
                 }
 
                 File diskFile = new File(repository.getDirectory(), file);
-                if (diskFile.exists() && diskFile.isFile()) {
+                // File#exists() follows a symlink and returns false for a dangling target, which
+                // silently skipped deleting the link itself -- it was marked removed in the
+                // dirstate but physically left on disk.
+                if (Files.isSymbolicLink(diskFile.toPath()) || (diskFile.exists() && diskFile.isFile())) {
                     Files.delete(diskFile.toPath());
                 }
 

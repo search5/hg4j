@@ -3,6 +3,7 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.storage.Revlog;
 
 import java.io.File;
@@ -66,7 +67,7 @@ public class StatusCommand {
                         status.getRemoved().add(path);
                     } else {
                         long diskSize = effectiveSize(diskFile, isSymlink);
-                        long diskTime = diskFile.lastModified() / 1000;
+                        long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
                         if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
                             status.getModified().add(path);
                         } else {
@@ -157,7 +158,7 @@ public class StatusCommand {
                         Dirstate.Entry dEntry = dirstate.getEntries().get(path);
                         if (dEntry != null) {
                             long diskSize = effectiveSize(diskFile, isSymlink);
-                            long diskTime = diskFile.lastModified() / 1000;
+                            long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
                             if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
                                 status.getModified().add(path);
                             } else {

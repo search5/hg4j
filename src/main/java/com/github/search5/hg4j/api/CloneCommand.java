@@ -3,6 +3,7 @@ package com.github.search5.hg4j.api;
 import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.lib.ProgressMonitor;
 import com.github.search5.hg4j.lib.NullProgressMonitor;
@@ -174,7 +175,7 @@ public class CloneCommand {
             }
 
             int size = fileContent.length;
-            long time = diskFile.lastModified() / 1000;
+            long time = SafeFileIO.lastModifiedSeconds(diskFile);
 
             dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
         }

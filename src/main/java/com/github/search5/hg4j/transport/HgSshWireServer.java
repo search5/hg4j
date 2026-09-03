@@ -88,6 +88,10 @@ public class HgSshWireServer {
                 return;
             }
             try {
+                if ("unbundle".equals(cmd)) {
+                    handleUnbundle(in, out);
+                    continue;
+                }
                 Wire1Response response = dispatch(cmd, in);
                 writeResponse(out, response);
             } catch (Exception e) {
@@ -95,6 +99,41 @@ public class HgSshWireServer {
                 return;
             }
         }
+    }
+
+    /**
+     * {@code unbundle}'s real hg wire shape is distinct from every other command's simple
+     * one-request/one-response exchange ({@code mercurial/wireprotoserver.py}'s {@code
+     * getpayload()} + {@code sshserver}'s push handling, confirmed against Mercurial 7.2.4 source
+     * 2026-09-03): after reading the {@code heads} arg, the server must send an <em>empty framed
+     * response first</em> — this is the real protocol's "OK to start streaming the payload"
+     * signal a real hg client (and, since this fix, {@link HgSshClient}) waits for before writing
+     * a single byte of bundle data; skipping it deadlocks both sides (server blocked reading a
+     * payload the client hasn't been told it may send, client blocked reading a response the
+     * server hasn't been told to send). Only after that does the server read the payload, then
+     * reply with up to two more framed responses: an error-or-empty check, and — only if that was
+     * empty — the actual result value.
+     */
+    private void handleUnbundle(InputStream in, OutputStream out) throws Exception {
+        Map<String, String> args = readArgs(in, ARG_SPECS.get("unbundle"));
+        writeLengthPrefixed(out, new byte[0]); // "OK to continue" -- real hg sends this before any payload byte
+        byte[] bundleBytes = readPayload(in);
+
+        Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
+        // Wire1Commands.unbundle()'s payload is always "1\n<status>" (success) or "0\n<error>"
+        // (failure) -- the shared HTTP/SSH string convention. Real hg's SSH client, though, reads
+        // this outcome as two SEPARATE framed values (an error-or-empty check, then a bare
+        // integer result on success), so split it back apart here.
+        String text = new String(resp.getPayload(), StandardCharsets.UTF_8);
+        int nl = text.indexOf('\n');
+        String retDigit = nl == -1 ? text : text.substring(0, nl);
+        String rest = nl == -1 ? "" : text.substring(nl + 1);
+        if (!"1".equals(retDigit)) {
+            writeLengthPrefixed(out, (rest.isEmpty() ? retDigit : rest).getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        writeLengthPrefixed(out, new byte[0]);
+        writeLengthPrefixed(out, retDigit.getBytes(StandardCharsets.UTF_8));
     }
 
     private Wire1Response dispatch(String cmd, InputStream in) throws Exception {
@@ -106,10 +145,6 @@ public class HgSshWireServer {
         }
         Map<String, String> args = readArgs(in, spec);
 
-        if ("unbundle".equals(cmd)) {
-            byte[] bundleBytes = readPayload(in);
-            return Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
-        }
         if ("batch".equals(cmd)) {
             return Wire1Commands.batch(repository, args);
         }

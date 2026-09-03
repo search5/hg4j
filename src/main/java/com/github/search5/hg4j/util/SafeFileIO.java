@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.io.RandomAccessFile;
@@ -11,6 +12,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.StandardOpenOption;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Provides production-grade safe and atomic file I/O operations.
@@ -19,6 +21,22 @@ public final class SafeFileIO {
 
     private SafeFileIO() {
         // Prevent instantiation
+    }
+
+    /**
+     * A file's own last-modified time, in whole epoch seconds — for a symlink, its own mtime,
+     * <b>not</b> whatever it points at. {@code java.io.File#lastModified()} always follows a
+     * symlink (there is no {@code NOFOLLOW_LINKS} equivalent for the legacy {@code File} API),
+     * so calling it on a symlink silently returns the TARGET's mtime instead. For dirstate
+     * bookkeeping this is a real, timing-dependent bug — not just wrong for a dangling symlink —
+     * since it makes an untouched symlink look "changed" (or "unchanged" by coincidence)
+     * whenever its target's mtime happens to floor to a different whole second than what was
+     * last recorded, confirmed by reproducing it in isolated test runs (2026-09-03). Every
+     * porcelain command that records a file's mtime into the dirstate must use this instead of
+     * {@code File#lastModified()}.
+     */
+    public static long lastModifiedSeconds(File file) throws IOException {
+        return Files.getLastModifiedTime(file.toPath(), LinkOption.NOFOLLOW_LINKS).to(TimeUnit.SECONDS);
     }
 
     /**

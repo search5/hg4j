@@ -113,8 +113,18 @@ public class BundleCommandTest {
 
     @Test
     public void baseRevisionExcludesItsAncestorsAndIncludesAllDescendantBranches(@TempDir Path tempDir) throws Exception {
+        // r0 is independently re-created (same author/content/message) in both repos below, and
+        // the bundle-apply step needs its node hash to match byte-for-byte across the two -- node
+        // hashing folds in the commit date, which CommitCommand defaults to wall-clock "now" when
+        // unset. Under a fast/isolated run the handful of intervening steps between the two r0
+        // commits (r1/r2 commits, writing the bundle) reliably finish inside the same second, so
+        // this coincidentally passed; under load (e.g. the full suite) that gap can cross a
+        // 1-second boundary and the two r0s silently diverge, breaking the bundle-apply's delta
+        // base match with a genuine (not flaky) HgCorruptDataException hash mismatch. Pin an
+        // explicit, identical date on both to make this test deterministic regardless of timing.
+        long fixedDateSecs = 1756857600L; // 2026-09-03T00:00:00Z, arbitrary but fixed
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        byte[] r0 = writeAndCommit(repo, "a.txt", "v1", "r0");
+        byte[] r0 = writeAndCommit(repo, "a.txt", "v1", "r0", fixedDateSecs);
         writeAndCommit(repo, "a.txt", "v2", "r1 (linear child of r0)");
 
         Dirstate dirstate = repo.getDirstate();
@@ -130,7 +140,7 @@ public class BundleCommandTest {
         // for: it must contain enough context (r0 as an existing common ancestor) to reconstruct
         // both descendant branches without needing r0's own bytes in the bundle.
         HgRepository dstRepo = Hg.init().setDirectory(tempDir.resolve("dst").toFile()).call();
-        writeAndCommit(dstRepo, "a.txt", "v1", "r0");
+        writeAndCommit(dstRepo, "a.txt", "v1", "r0", fixedDateSecs);
         List<byte[]> imported = new UnbundleCommand(dstRepo).setBundleFile(out).call();
         assertEquals(2, imported.size());
         assertEquals(3, new LogCommand(dstRepo).call().size());
@@ -314,5 +324,20 @@ public class BundleCommandTest {
             new AddCommand(repo).call();
         }
         return new CommitCommand(repo).setMessage(message).setAuthor("tester").call();
+    }
+
+    /** Like {@link #writeAndCommit(HgRepository, String, String, String)} but with an explicit,
+     * fixed commit date -- use whenever two independently-created commits (in different repos)
+     * must hash identically, since node hashing folds in the date and CommitCommand otherwise
+     * defaults to wall-clock "now". */
+    private static byte[] writeAndCommit(HgRepository repo, String fileName, String content, String message, long dateSecs)
+            throws IOException, HgLockException {
+        File f = new File(repo.getDirectory(), fileName);
+        boolean isNew = !f.exists();
+        Files.writeString(f.toPath(), content);
+        if (isNew) {
+            new AddCommand(repo).call();
+        }
+        return new CommitCommand(repo).setMessage(message).setAuthor("tester").setDate(dateSecs, 0).call();
     }
 }

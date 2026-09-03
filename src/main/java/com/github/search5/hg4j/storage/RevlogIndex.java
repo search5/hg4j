@@ -101,28 +101,50 @@ public class RevlogIndex {
     }
 
     public RevlogIndex(File idxFile, boolean createAsGeneralV2, NodeMapFile persistentNodeMap) throws IOException {
+        this(idxFile, createAsGeneralV2, false, persistentNodeMap);
+    }
+
+    /**
+     * @param createAsChangelogV2 when {@code true} and {@code idxFile} does not exist yet,
+     *     bootstrap a brand-new {@code exp-changelog-v2} docket (CHANGELOGV2 magic, {@code
+     *     isChangelogV2()} true) instead of a general {@code exp-revlogv2.2} one -- ignored if
+     *     {@code createAsGeneralV2} is also true (that already implies v2; changelog-v2 takes
+     *     precedence since it is the more specific format). Used by {@code
+     *     DefaultFileStoreEngine} to originate {@code 00changelog.i} for a repository whose
+     *     requires declare {@code exp-changelog-v2} but has never been committed to yet.
+     */
+    public RevlogIndex(File idxFile, boolean createAsGeneralV2, boolean createAsChangelogV2, NodeMapFile persistentNodeMap) throws IOException {
         this.idxFile = idxFile;
         this.persistentNodeMap = persistentNodeMap;
         if (idxFile.exists()) {
             loadIndex();
         } else if (createAsGeneralV2) {
-            initializeNewGeneralV2Docket();
+            initializeNewV2Docket(false);
+        } else if (createAsChangelogV2) {
+            initializeNewV2Docket(true);
         }
     }
 
     /**
-     * Writes a brand-new, empty general revlog-v2 docket (59-byte S_HEADER + 3 UUIDs, no
-     * revisions yet) plus empty companion .idx/.dat/.sda files, matching the exact byte layout
-     * real hg 7.2.4 (Rust-extension build) writes for a freshly-created {@code exp-revlogv2.2}
-     * revlog -- verified via docker/hg-rust-7.2.4 (see
+     * Writes a brand-new, empty v2 docket (59-byte S_HEADER + 3 UUIDs, no revisions yet) plus
+     * empty companion .idx/.dat/.sda files, matching the exact byte layout real hg 7.2.4
+     * (Rust-extension build) writes for a freshly-created {@code exp-revlogv2.2} revlog --
+     * verified via docker/hg-rust-7.2.4 (see
      * src/test/resources/fixtures/revlogv2-general/README.md). UUIDs are generated the same way
      * real hg does (mercurial/utils/docket.py's {@code make_uid()}: 4 random bytes, hex-encoded
      * to 8 lowercase ascii chars).
+     *
+     * <p>{@code asChangelogV2} selects between the two v2 flavors: the on-disk docket/companion
+     * -file bootstrap bytes are byte-for-byte identical either way (same header shape, same
+     * empty companions) -- only the docket's own magic value and {@link #isChangelogV2} differ.
+     * {@link Revlog#appendRevisionV2} is what actually picks {@code INDEX_ENTRY_CL_V2} vs {@code
+     * INDEX_ENTRY_V2} per-record layout based on {@link #isChangelogV2()} for every revision
+     * appended after this bootstrap.
      */
-    private void initializeNewGeneralV2Docket() throws IOException {
+    private void initializeNewV2Docket(boolean asChangelogV2) throws IOException {
         this.isV2 = true;
-        this.isChangelogV2 = false;
-        this.versionHeader = MAGIC_REVLOGV2;
+        this.isChangelogV2 = asChangelogV2;
+        this.versionHeader = asChangelogV2 ? MAGIC_CHANGELOGV2 : MAGIC_REVLOGV2;
         this.radix = deriveRadix(idxFile.getName());
 
         java.security.SecureRandom rnd = new java.security.SecureRandom();
@@ -151,7 +173,7 @@ public class RevlogIndex {
         this.docketDefaultCompression = '(';
 
         ByteBuffer header = ByteBuffer.allocate(V2_HEADER_SIZE);
-        header.putInt(MAGIC_REVLOGV2);
+        header.putInt(this.versionHeader);
         header.put((byte) UID_SIZE); // index_uuid_size
         header.put((byte) 0);        // older_index_uuid_count
         header.put((byte) UID_SIZE); // data_uuid_size
@@ -805,6 +827,16 @@ public class RevlogIndex {
         return persistentNodeMap;
     }
 
+    /**
+     * Replaces the in-memory persistent-nodemap snapshot, e.g. right after {@link
+     * NodeMapFile#persist} has written a fresh/updated {@code .n}+{@code .nd} pair to disk for
+     * this revlog, so subsequent {@link #findRevision} calls within this same process benefit
+     * from the just-written trie instead of the (now stale) one loaded at construction time.
+     */
+    public synchronized void setPersistentNodeMap(NodeMapFile persistentNodeMap) {
+        this.persistentNodeMap = persistentNodeMap;
+    }
+
     public synchronized void addRecord(Revlog.IndexRecord record) {
         checkAndUpdate();
         int rev = record.getRevision();
@@ -846,21 +878,41 @@ public class RevlogIndex {
     }
 
     /**
-     * v2 docket 헤더의 index_end/data_end(및 pending 쌍) 필드를 갱신한다.
-     * 헤더의 나머지 필드(uuid, sidedata 크기, 압축 헤더)는 그대로 유지한다.
-     * 물리 companion 파일에 이미 데이터를 쓴 뒤 {@code Revlog.appendRevisionV2()}에서 호출된다.
+     * v2 docket 헤더의 index_end/data_end(및 pending 쌍) 필드를 갱신한다. {@code
+     * docketSidedataEnd}/{@code docketPendingSidedataEnd}는 그대로 유지한다 — sidedata를
+     * 함께 쓴 append라면 {@link #updateV2DocketSizes(long, long, long)}를 대신 쓸 것.
+     * 헤더의 나머지 필드(uuid, 압축 헤더)는 그대로 유지한다. 물리 companion 파일에 이미
+     * 데이터를 쓴 뒤 {@code Revlog.appendRevisionV2()}에서 호출된다.
      */
     synchronized void updateV2DocketSizes(long newIndexEnd, long newDataEnd) throws IOException {
+        updateV2DocketSizes(newIndexEnd, newDataEnd, this.docketSidedataEnd);
+    }
+
+    /**
+     * {@link #updateV2DocketSizes(long, long)}와 같지만 {@code sidedata_end}(및 pending)도
+     * 함께 갱신한다 — real hg의 {@code hg verify}/{@code hg debugchangedfiles}가 {@code .sda}
+     * 파일의 실제 바이트가 아니라 <b>이 docket 헤더에 기록된 값</b>을 "유효한 sidedata
+     * 길이"로 신뢰하기 때문에(실측: 이 필드를 갱신하지 않고 sidedata를 append만 하면
+     * "expected N bytes from offset M, data size is <stale sidedata_end>"로 거부됨 —
+     * SidedataFilesWriteTest에서 재현·확인), sidedata를 쓸 때마다 반드시 같이 갱신해야
+     * 한다. {@code newSidedataEnd}는 이번 append로 이 revlog 전체 sidedata 파일에 누적된
+     * 총 유효 바이트 수(= 이번 청크의 offset + length)여야 한다.
+     */
+    synchronized void updateV2DocketSizes(long newIndexEnd, long newDataEnd, long newSidedataEnd) throws IOException {
         this.docketIndexEnd = newIndexEnd;
         this.docketPendingIndexEnd = newIndexEnd;
         this.docketDataEnd = newDataEnd;
         this.docketPendingDataEnd = newDataEnd;
+        this.docketSidedataEnd = newSidedataEnd;
+        this.docketPendingSidedataEnd = newSidedataEnd;
 
-        ByteBuffer buf = ByteBuffer.allocate(32);
+        ByteBuffer buf = ByteBuffer.allocate(48);
         buf.putLong(docketIndexEnd);
         buf.putLong(docketPendingIndexEnd);
         buf.putLong(docketDataEnd);
         buf.putLong(docketPendingDataEnd);
+        buf.putLong(docketSidedataEnd);
+        buf.putLong(docketPendingSidedataEnd);
         buf.flip();
         try (FileChannel ch = FileChannel.open(idxFile.toPath(), StandardOpenOption.WRITE)) {
             ch.position(10); // index_end 오프셋 (S_HEADER: version_header(4)+6*B(6)=10)

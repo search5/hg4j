@@ -25,6 +25,7 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.zip.InflaterInputStream;
@@ -42,8 +43,20 @@ public class HgRemoteClient implements HgRemoteConnection {
     private Proxy proxy = Proxy.NO_PROXY;
     
     private int maxHttpHeaderLimit = 1024; // 기본 1024바이트 제한
+    // Real hg only uses the GET+X-HgArg-N tier when the server actually advertised
+    // httpheader=<N>; a server that never mentions it (very old, or minimal/test servers) gets
+    // the 3rd, legacy tier -- args appended straight to the query string -- instead. Tracking
+    // this separately from maxHttpHeaderLimit (which keeps its 1024 default either way, as a
+    // sizing fallback for that legacy tier's own X-HgProto-1 splitting) matters: defaulting to
+    // "httpheader capability present" would make hg4j send X-HgArg-N headers a server never
+    // asked for and never parses.
+    private boolean sawHttpHeaderCap = false;
     private boolean supportsV2 = false;
     private boolean supportsClonebundles = false;
+    private boolean supportsHttpPostArgs = false;
+    private boolean supportsUnbundleHash = false;
+    private List<String> httpMediaTypes = Collections.emptyList();
+    private List<String> compressionEngines = Collections.emptyList();
     private boolean hasNegotiated = false;
     private HgRemoteClientV2 delegate = null;
 
@@ -70,10 +83,23 @@ public class HgRemoteClient implements HgRemoteConnection {
             if (cap.startsWith("httpheader=")) {
                 try {
                     this.maxHttpHeaderLimit = Integer.parseInt(cap.substring("httpheader=".length()).trim());
+                    this.sawHttpHeaderCap = true;
                 } catch (NumberFormatException ignored) {}
             }
             if ("clonebundles".equals(cap)) {
                 this.supportsClonebundles = true;
+            }
+            if ("httppostargs".equals(cap)) {
+                this.supportsHttpPostArgs = true;
+            }
+            if ("unbundlehash".equals(cap)) {
+                this.supportsUnbundleHash = true;
+            }
+            if (cap.startsWith("httpmediatype=")) {
+                this.httpMediaTypes = Arrays.asList(cap.substring("httpmediatype=".length()).split(","));
+            }
+            if (cap.startsWith("compression=")) {
+                this.compressionEngines = Arrays.asList(cap.substring("compression=".length()).split(","));
             }
         }
         return this.supportsV2;
@@ -259,7 +285,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             }
             params.put("roots", sb.toString());
         }
-        return executePostBinary("changegroup", params);
+        return executeArgsCommand("changegroup", params);
     }
 
     /**
@@ -310,7 +336,7 @@ public class HgRemoteClient implements HgRemoteConnection {
                             + ",compression=GZ,BZ,ZS");
         }
         
-        return executePostBinary("getbundle", params);
+        return executeArgsCommand("getbundle", params);
     }
 
     private String executeGet(String cmd) throws IOException {
@@ -408,7 +434,124 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
     }
 
-    private byte[] executePostBinary(String cmd, Map<String, String> params) throws IOException {
+    /**
+     * Sends an argument-bearing v1 command using real hg's {@code makev1commandrequest()}
+     * fallback chain (from {@code mercurial/httppeer.py}), captured directly from a real
+     * {@code hg --debug clone} session via a raw TCP logging proxy: hg4j previously always sent
+     * these as an HTTP POST with a form body, which a real server's {@code cgi.FieldStorage}-based
+     * arg parser never reads for a v1 GET-oriented command like {@code getbundle} — the server
+     * silently saw no {@code bundlecaps} argument at all and fell back to legacy bundle1 (cg1)
+     * regardless of what version list hg4j advertised (2026-09-03 discovery).
+     *
+     * <ol>
+     * <li>Server advertises {@code httppostargs}: POST body = urlencoded args, header
+     * {@code X-HgArgs-Post: <len>}.</li>
+     * <li>Otherwise, if the server advertised {@code httpheader=<N>} (the common case for a real
+     * hg server): GET request with no query-string args; the urlencoded arg string is instead
+     * split across {@code X-HgArg-1}, {@code X-HgArg-2}, ... request headers sized to fit the
+     * server's byte budget, exactly matching real hg's actual captured request shape.</li>
+     * <li>Otherwise (neither capability was seen — a very old or minimal/test server): the
+     * legacy 3rd tier, args appended straight onto the query string as plain GET.</li>
+     * </ol>
+     *
+     * <p>Whichever GET tier is used, the request also carries an {@code X-HgProto-1} header
+     * (itself header-split the same way) built from the negotiated {@code httpmediatype=}/
+     * {@code compression=} capability tokens, real hg's {@code protoparams} construction.</p>
+     */
+    private byte[] executeArgsCommand(String cmd, Map<String, String> params) throws IOException {
+        String encodedArgs = encodeArgsSorted(params);
+
+        if (supportsHttpPostArgs) {
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("X-HgArgs-Post", String.valueOf(encodedArgs.length()));
+            return executePostBinaryWithHeaders(cmd, encodedArgs.getBytes(StandardCharsets.UTF_8), headers);
+        }
+
+        Map<String, String> headers = new LinkedHashMap<>();
+        List<String> varyNames = new ArrayList<>();
+        if (sawHttpHeaderCap && !encodedArgs.isEmpty()) {
+            varyNames.addAll(splitIntoHeaders("X-HgArg", encodedArgs, maxHttpHeaderLimit, headers));
+        }
+        String proto1 = buildXHgProto1Header();
+        if (!proto1.isEmpty()) {
+            varyNames.addAll(splitIntoHeaders("X-HgProto", proto1, maxHttpHeaderLimit, headers));
+        }
+        if (!varyNames.isEmpty()) {
+            headers.put("Vary", String.join(",", varyNames));
+        }
+        if (sawHttpHeaderCap) {
+            return executeGetBinary(cmd, headers);
+        }
+        // Legacy 3rd tier: no httpheader= capability seen, so append args straight to the query
+        // string instead of using X-HgArg-N headers the server never asked for.
+        String cmdWithArgs = encodedArgs.isEmpty() ? cmd : cmd + "?" + encodedArgs;
+        return executeGetBinary(cmdWithArgs, headers);
+    }
+
+    /** {@code urlencode(sorted(args.items()))} — matches real hg's own arg-encoding order. */
+    private static String encodeArgsSorted(Map<String, String> params) {
+        List<String> keys = new ArrayList<>(params.keySet());
+        Collections.sort(keys);
+        StringBuilder sb = new StringBuilder();
+        for (String key : keys) {
+            if (sb.length() > 0) {
+                sb.append("&");
+            }
+            sb.append(URLEncoder.encode(key, StandardCharsets.UTF_8));
+            sb.append("=");
+            sb.append(URLEncoder.encode(params.get(key), StandardCharsets.UTF_8));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Real hg's {@code encodevalueinheaders(value, header, limit)}: splits {@code value} into
+     * {@code <headerPrefix>-1}, {@code <headerPrefix>-2}, ... chunks sized so each header line
+     * (name + {@code ": "} + value + {@code "\r\n"}) stays within {@code limit} bytes, using the
+     * same (slightly conservative, single-digit-index) overhead estimate real hg uses.
+     */
+    private static List<String> splitIntoHeaders(String headerPrefix, String value, int limit,
+            Map<String, String> outHeaders) {
+        int overhead = (headerPrefix + "-0").length() + 4; // ": " + "\r\n"
+        int chunkSize = Math.max(1, limit - overhead);
+        List<String> names = new ArrayList<>();
+        int n = 0;
+        for (int i = 0; i < value.length(); i += chunkSize) {
+            n++;
+            String name = headerPrefix + "-" + n;
+            outHeaders.put(name, value.substring(i, Math.min(i + chunkSize, value.length())));
+            names.add(name);
+        }
+        return names;
+    }
+
+    /**
+     * Real hg's {@code protoparams} construction (httppeer.py), built only once the server's
+     * {@code httpmediatype=} token is known: always {@code "0.1"} + {@code "partial-pull"}, plus
+     * {@code "0.2"} (and {@code "comp=<engines>"} if the server also has a {@code compression=}
+     * token) when the server's media type list includes {@code "0.2tx"}. Joined sorted, matching
+     * real hg's {@code b' '.join(sorted(protoparams))} — confirmed against a captured real
+     * request: {@code "0.1 0.2 comp=zstd,zlib,none,bzip2 partial-pull"}.
+     */
+    private String buildXHgProto1Header() {
+        if (httpMediaTypes.isEmpty()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        parts.add("0.1");
+        parts.add("partial-pull");
+        if (httpMediaTypes.contains("0.2tx")) {
+            parts.add("0.2");
+            if (!compressionEngines.isEmpty()) {
+                parts.add("comp=" + String.join(",", compressionEngines));
+            }
+        }
+        Collections.sort(parts);
+        return String.join(" ", parts);
+    }
+
+    /** POST tier of {@link #executeArgsCommand} — raw body + caller-supplied headers, no arg-encoding of its own. */
+    private byte[] executePostBinaryWithHeaders(String cmd, byte[] body, Map<String, String> extraHeaders) throws IOException {
         String fullUrl = baseUrl + "?cmd=" + cmd;
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
             throw new SecurityException("TLS is enforced but the URL is not secure: " + fullUrl);
@@ -429,6 +572,9 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setDoOutput(true);
         conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+        for (Map.Entry<String, String> header : extraHeaders.entrySet()) {
+            conn.setRequestProperty(header.getKey(), header.getValue());
+        }
 
         if (username != null && password != null) {
             String credentials = username + ":" + password;
@@ -436,21 +582,10 @@ public class HgRemoteClient implements HgRemoteConnection {
             conn.setRequestProperty("Authorization", "Basic " + encoded);
         }
 
-        byte[] postData;
-        StringBuilder bodyBuilder = new StringBuilder();
-        for (Map.Entry<String, String> entry : params.entrySet()) {
-            if (bodyBuilder.length() > 0) {
-                bodyBuilder.append("&");
-            }
-            bodyBuilder.append(URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8));
-            bodyBuilder.append("=");
-            bodyBuilder.append(URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8));
-        }
-        postData = bodyBuilder.toString().getBytes(StandardCharsets.UTF_8);
-        conn.setRequestProperty("Content-Length", String.valueOf(postData.length));
+        conn.setRequestProperty("Content-Length", String.valueOf(body.length));
 
         try (OutputStream os = conn.getOutputStream()) {
-            os.write(postData);
+            os.write(body);
             os.flush();
         }
 
@@ -493,80 +628,6 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
     }
 
-    private static class MercurialChunkedInputStream extends InputStream {
-        private final InputStream in;
-        private int remaining = 0;
-        private boolean eof = false;
-
-        public MercurialChunkedInputStream(InputStream in) {
-            this.in = in;
-        }
-
-        @Override
-        public int read() throws IOException {
-            if (eof) return -1;
-            if (remaining == 0) {
-                if (!readNextChunk()) {
-                    return -1;
-                }
-            }
-            int b = in.read();
-            if (b == -1) {
-                eof = true;
-                throw new HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
-            }
-            remaining--;
-            return b;
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            if (eof) return -1;
-            if (remaining == 0) {
-                if (!readNextChunk()) {
-                    return -1;
-                }
-            }
-            int toRead = Math.min(len, remaining);
-            int read = in.read(b, off, toRead);
-            if (read == -1) {
-                eof = true;
-                throw new HgProtocolException("", "Unexpected EOF inside mercurial-0.2 chunk payload");
-            }
-            remaining -= read;
-            return read;
-        }
-
-        private boolean readNextChunk() throws IOException {
-            byte[] lenBytes = new byte[4];
-            int read = 0;
-            while (read < 4) {
-                int count = in.read(lenBytes, read, 4 - read);
-                if (count == -1) {
-                    if (read == 0) {
-                        eof = true;
-                        return false;
-                    }
-                    throw new HgProtocolException("", "Unexpected EOF while reading mercurial-0.2 chunk length");
-                }
-                read += count;
-            }
-            int len = ((lenBytes[0] & 0xFF) << 24) |
-                      ((lenBytes[1] & 0xFF) << 16) |
-                      ((lenBytes[2] & 0xFF) << 8)  |
-                      (lenBytes[3] & 0xFF);
-            if (len == 0) {
-                eof = true;
-                return false;
-            }
-            if (len < 0) {
-                throw new HgProtocolException("", "Invalid negative chunk length: " + len);
-            }
-            remaining = len;
-            return true;
-        }
-    }
-
     private InputStream unwrapResponseStream(InputStream in, String contentType) throws IOException {
         if (contentType != null && contentType.contains("application/mercurial-0.2")) {
             int compNameLen = in.read();
@@ -583,14 +644,23 @@ public class HgRemoteClient implements HgRemoteConnection {
                 read += count;
             }
             String compName = new String(compNameBytes, StandardCharsets.US_ASCII).trim();
-            
-            // application/mercurial-0.2 ALWAYS uses chunked framing for the rest of the payload
-            InputStream chunkedIn = new MercurialChunkedInputStream(in);
 
+            // Real hg's actual v1 -0.2 wire format (confirmed 2026-09-03 by capturing a real
+            // Mercurial 7.2.4 server's raw response bytes): [1-byte namelen][name][compressed
+            // payload straight through to end of stream] -- there is NO additional inner
+            // chunk-length framing on top; the payload's own magic bytes (zstd's 28 B5 2F FD,
+            // zlib's 78 9C) begin immediately after the name. An earlier version of this method
+            // assumed an extra 4-byte-length-prefixed chunk layer here that real hg never sends;
+            // that was never caught because hg4j's own server (HgHttpWireServer) never emits -0.2
+            // responses at all (always -0.1), so the two ends of this codebase were only ever
+            // tested against each other -- this path had literally never been exercised against a
+            // real server until the X-HgArg-N / X-HgProto-1 fix above made one finally choose -0.2.
             if ("zlib".equalsIgnoreCase(compName) || "deflate".equalsIgnoreCase(compName)) {
-                return new InflaterInputStream(chunkedIn);
+                return new InflaterInputStream(in);
+            } else if ("zstd".equalsIgnoreCase(compName)) {
+                return new com.github.luben.zstd.ZstdInputStream(in);
             } else if ("none".equalsIgnoreCase(compName) || compName.isEmpty()) {
-                return chunkedIn;
+                return in;
             } else {
                 throw new HgProtocolException("", "Unsupported compression format in application/mercurial-0.2 framing: " + compName);
             }
@@ -633,8 +703,9 @@ public class HgRemoteClient implements HgRemoteConnection {
             return delegate.push(bundleBytes, heads);
         }
         String fullUrl = baseUrl + "?cmd=unbundle";
-        if (heads != null && !heads.isEmpty()) {
-            fullUrl += "&heads=" + String.join("+", heads);
+        List<String> wireHeads = NodeIdUtil.computeUnbundleHeadsWireValue(heads, supportsUnbundleHash);
+        if (!wireHeads.isEmpty()) {
+            fullUrl += "&heads=" + String.join("+", wireHeads);
         }
         
         if (forceTls && !fullUrl.toLowerCase().startsWith("https://")) {
@@ -741,7 +812,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         params.put("key", key);
         params.put("old", oldVal != null ? oldVal : "");
         params.put("new", newVal != null ? newVal : "");
-        byte[] bytes = executePostBinary("pushkey", params);
+        byte[] bytes = executeArgsCommand("pushkey", params);
         String resp = new String(bytes, StandardCharsets.UTF_8).trim();
         return "1".equals(resp) || "true".equalsIgnoreCase(resp) || resp.isEmpty();
     }

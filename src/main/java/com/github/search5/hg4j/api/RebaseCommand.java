@@ -5,6 +5,7 @@ import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.errors.HgLockException;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.storage.Revlog;
 
 import java.io.File;
@@ -585,7 +586,7 @@ public class RebaseCommand {
             }
 
             int mode = symlink ? 0120000 : (executable ? 0755 : 0644);
-            dirstate.addEntry(path, new Dirstate.Entry('n', mode, fileContent.length, diskFile.lastModified() / 1000));
+            dirstate.addEntry(path, new Dirstate.Entry('n', mode, fileContent.length, SafeFileIO.lastModifiedSeconds(diskFile)));
         }
 
         dirstate.setParents(newParentNode, new byte[20]);
@@ -749,7 +750,7 @@ public class RebaseCommand {
                 }
             }
 
-            dirstate.addEntry(path, new Dirstate.Entry('n', mode, fileContent.length, diskFile.lastModified() / 1000));
+            dirstate.addEntry(path, new Dirstate.Entry('n', mode, fileContent.length, SafeFileIO.lastModifiedSeconds(diskFile)));
         }
 
         repository.writeDirstate(dirstate);

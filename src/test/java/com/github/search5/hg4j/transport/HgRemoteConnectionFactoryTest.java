@@ -2,8 +2,10 @@ package com.github.search5.hg4j.transport;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -52,6 +54,32 @@ public class HgRemoteConnectionFactoryTest {
         HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection("file:///tmp/nonexistent-hg4j-repo");
         assertNotNull(conn);
         assertInstanceOf(HgLocalClient.class, conn);
+    }
+
+    @Test
+    @DisplayName("스킴 없는 순수 로컬 디렉터리 경로 → HgLocalClient 인스턴스 반환 (4번째 기본 프로토콜)")
+    public void testCreateConnection_bareLocalDirectoryPath_returnsHgLocalClient(@TempDir Path tempDir) throws IOException {
+        HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection(tempDir.toAbsolutePath().toString());
+        assertNotNull(conn);
+        assertInstanceOf(HgLocalClient.class, conn);
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 스킴 없는 경로 → 어떤 기본 프로토콜도 처리 안 하고 HTTP 폴백으로 떨어진다")
+    public void testCreateConnection_nonexistentBarePath_fallsBackToHttpClient() throws IOException {
+        HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection("/tmp/hg4j-nonexistent-path-" + System.nanoTime());
+        assertNotNull(conn);
+        assertInstanceOf(HgRemoteClient.class, conn);
+    }
+
+    @Test
+    @DisplayName("존재하지만 디렉터리가 아닌(일반 파일) 스킴 없는 경로 → HTTP 폴백으로 떨어진다")
+    public void testCreateConnection_barePathExistsButIsNotDirectory_fallsBackToHttpClient(@TempDir Path tempDir) throws IOException {
+        java.io.File plainFile = new java.io.File(tempDir.toFile(), "not-a-directory.txt");
+        assertTrue(plainFile.createNewFile());
+        HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection(plainFile.getAbsolutePath());
+        assertNotNull(conn);
+        assertInstanceOf(HgRemoteClient.class, conn);
     }
 
     @Test

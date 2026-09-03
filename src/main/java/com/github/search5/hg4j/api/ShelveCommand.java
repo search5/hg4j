@@ -5,6 +5,7 @@ import com.github.search5.hg4j.dirstate.Dirstate;
 import com.github.search5.hg4j.lib.HgLock;
 import com.github.search5.hg4j.lib.HgRepository;
 import com.github.search5.hg4j.util.NodeIdUtil;
+import com.github.search5.hg4j.util.SafeFileIO;
 import com.github.search5.hg4j.storage.Revlog;
 import com.github.search5.hg4j.errors.HgLockException;
 
@@ -241,7 +242,7 @@ public class ShelveCommand {
                     boolean isSym = Files.isSymbolicLink(file.toPath());
                     if (file.exists() || isSym) {
                         long diskSize = isSym ? Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8).length : file.length();
-                        long diskTime = file.lastModified() / 1000;
+                        long diskTime = SafeFileIO.lastModifiedSeconds(file);
                         byte[] content = isSym
                                 ? Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8)
                                 : Files.readAllBytes(file.toPath());
@@ -531,7 +532,7 @@ public class ShelveCommand {
                 }
 
                 int size = content.length;
-                long time = diskFile.lastModified() / 1000;
+                long time = SafeFileIO.lastModifiedSeconds(diskFile);
 
                 dirstate.addEntry(path, new Dirstate.Entry(state, mode, size, time));
             }
@@ -630,7 +631,7 @@ public class ShelveCommand {
                 }
 
                 int size = originalContent.length;
-                long time = diskFile.lastModified() / 1000;
+                long time = SafeFileIO.lastModifiedSeconds(diskFile);
 
                 dirstate.addEntry(sf.path, new Dirstate.Entry('n', mode, size, time));
             }

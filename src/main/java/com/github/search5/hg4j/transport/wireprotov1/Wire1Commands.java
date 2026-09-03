@@ -42,7 +42,11 @@ public final class Wire1Commands {
      * {@code file://} local peer role — and changing it could affect unrelated call sites).
      */
     public static String capabilitiesString() {
-        return "lookup changegroupsubset branchmap pushkey known getbundle batch "
+        // httpheader=1024: tells the client to send argument-bearing v1 commands (getbundle,
+        // pushkey, ...) as a GET with args split across X-HgArg-N request headers rather than a
+        // legacy query string -- HgHttpWireServer#handleV1Command reassembles them. Matches real
+        // hg's own default server advertisement (confirmed via a real hg --debug clone capture).
+        return "lookup changegroupsubset branchmap pushkey known getbundle batch httpheader=1024 "
                 + "unbundle=HG10UN,HG10GZ";
     }
 

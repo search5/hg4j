@@ -512,11 +512,48 @@ public class HgRepository implements Repository {
     public synchronized List<String> scanWorkingCopy() {
         ignorePatterns = null;
         List<String> result = new ArrayList<>();
-        scanDirectory(directory, directory, result);
+        scanDirectory(directory, directory, result, loadSubrepoPaths());
         return result;
     }
 
-    private void scanDirectory(File dir, File root, List<String> result) {
+    /**
+     * Reads {@code .hgsub}'s declared subrepo paths so {@link #scanDirectory} can treat them as
+     * an opaque boundary -- real hg never walks into a declared subrepo directory when scanning
+     * the parent's own working copy (that subtree belongs to the subrepo's own dirstate, not the
+     * parent's). Without this, a plain {@code hg add}/commit-time working-copy scan would slurp
+     * every file physically sitting under a checked-out subrepo directory into the *parent*
+     * repository's own tracked manifest -- verified live against real hg 7.2, where {@code hg
+     * status}/{@code hg add} at the parent level never see inside a subrepo path at all.
+     * Best-effort: any parse failure yields an empty set rather than failing the whole scan.
+     */
+    private java.util.Set<String> loadSubrepoPaths() {
+        File hgsubFile = new File(directory, ".hgsub");
+        if (!hgsubFile.exists()) {
+            return java.util.Collections.emptySet();
+        }
+        java.util.Set<String> paths = new java.util.HashSet<>();
+        try {
+            for (String line : Files.readAllLines(hgsubFile.toPath(), StandardCharsets.UTF_8)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    continue;
+                }
+                int eq = trimmed.indexOf('=');
+                if (eq == -1) {
+                    continue;
+                }
+                String path = trimmed.substring(0, eq).trim();
+                if (!path.isEmpty()) {
+                    paths.add(path);
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to read .hgsub while scanning working copy", e);
+        }
+        return paths;
+    }
+
+    private void scanDirectory(File dir, File root, List<String> result, java.util.Set<String> subrepoPaths) {
         File[] children = dir.listFiles();
         if (children == null) {
             return;
@@ -527,7 +564,7 @@ public class HgRepository implements Repository {
             }
             String rel = root.toURI().relativize(child.toURI()).getPath();
             rel = rel.replace('\\', '/');
-            
+
             boolean isDir = child.isDirectory() && !Files.isSymbolicLink(child.toPath());
             if (isDir) {
                 if (!rel.endsWith("/")) {
@@ -538,13 +575,22 @@ public class HgRepository implements Repository {
                     rel = rel.substring(0, rel.length() - 1);
                 }
             }
-            
+
             if (isIgnored(rel)) {
                 continue;
             }
-            
+
+            if (isDir && !subrepoPaths.isEmpty()) {
+                String dirPathNoSlash = rel.endsWith("/") ? rel.substring(0, rel.length() - 1) : rel;
+                if (subrepoPaths.contains(dirPathNoSlash)) {
+                    // Declared subrepo boundary -- do not walk into it; its contents belong to
+                    // the subrepo's own dirstate, never to the parent's.
+                    continue;
+                }
+            }
+
             if (isDir) {
-                scanDirectory(child, root, result);
+                scanDirectory(child, root, result, subrepoPaths);
             } else if (child.isFile() || Files.isSymbolicLink(child.toPath())) {
                 // A symlink is never recursed into (isDir above already excludes it), but
                 // real hg tracks it as a plain file entry regardless of whether its target

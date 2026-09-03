@@ -109,6 +109,31 @@ public class HgHttpWireServerRealHgInteropTest {
     }
 
     @Test
+    public void realHgSeesAnotherRealHgClientsPushImmediatelyOverHttp(@TempDir Path tempDir) throws Exception {
+        File clientA = tempDir.resolve("client_a").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl(), clientA.getAbsolutePath());
+        Files.writeString(new File(clientA, "c.txt").toPath(), "pushed by client A");
+        HgTestUtils.hg(clientA, "add", "c.txt");
+        HgTestUtils.hg(clientA, "commit", "-m", "pushed commit");
+        HgTestUtils.hg(clientA, "push", baseUrl());
+        String pushedNode = HgTestUtils.hg(clientA, "log", "-T", "{node}\n", "-r", "tip").trim();
+
+        // A second, independent real hg client clones fresh from the SAME still-running hg4j
+        // server -- this exercises the server's own live repository state after a wire-protocol
+        // push (as opposed to the push test above, which only checks the on-disk result via a
+        // brand-new Revlog read), i.e. whether unbundle's write path leaves the shared
+        // HgRepository object the running server keeps using self-consistent for the very next
+        // request, with no explicit cache-clear needed on the server's side.
+        File clientB = tempDir.resolve("client_b").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl(), clientB.getAbsolutePath());
+
+        String log = HgTestUtils.hg(clientB, "log", "-T", "{node}\n", "-r", "tip");
+        assertEquals(pushedNode, log.trim(),
+                "A second real-hg client must see the first client's push immediately, without the server needing a restart");
+        assertTrue(new File(clientB, "c.txt").exists());
+    }
+
+    @Test
     public void realHgManagesABookmarkOnHg4jServedOverHttp(@TempDir Path tempDir) throws Exception {
         File destDir = tempDir.resolve("client_repo").toFile();
         HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl(), destDir.getAbsolutePath());
@@ -127,5 +152,56 @@ public class HgHttpWireServerRealHgInteropTest {
 
         String remoteBookmarks = HgTestUtils.hg(tempDir.toFile(), "bookmarks", "-R", serverRepoDir.getAbsolutePath());
         assertTrue(remoteBookmarks.contains("mybook"), "The pushed bookmark must show up server-side: " + remoteBookmarks);
+    }
+
+    @Test
+    public void realHgClonesMultipleBranchesBookmarksAndTagsFromHg4jServedOverHttp(@TempDir Path tempDir) throws Exception {
+        HgTestUtils.hg(serverRepoDir, "branch", "feature");
+        Files.writeString(new File(serverRepoDir, "b.txt").toPath(), "on feature");
+        HgTestUtils.hg(serverRepoDir, "add", "b.txt");
+        HgTestUtils.hg(serverRepoDir, "commit", "-m", "feature v1");
+        HgTestUtils.hg(serverRepoDir, "bookmark", "mybook");
+        HgTestUtils.hg(serverRepoDir, "tag", "v1.0");
+        serverRepo.clearRevlogCache();
+
+        File destDir = tempDir.resolve("client_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl(), destDir.getAbsolutePath());
+
+        String branches = HgTestUtils.hg(destDir, "branches");
+        assertTrue(branches.contains("default"), "default branch missing: " + branches);
+        assertTrue(branches.contains("feature"), "feature branch missing: " + branches);
+
+        String bookmarks = HgTestUtils.hg(destDir, "bookmarks");
+        assertTrue(bookmarks.contains("mybook"), "bookmark missing: " + bookmarks);
+
+        String tags = HgTestUtils.hg(destDir, "tags");
+        assertTrue(tags.contains("v1.0"), "tag missing: " + tags);
+    }
+
+    @Test
+    public void realHgReceivesUnderstandableErrorForNonexistentRevisionOverHttp(@TempDir Path tempDir) throws Exception {
+        File destDir = tempDir.resolve("client_repo").toFile();
+        String bogusRev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+        AssertionError failure = assertThrows(AssertionError.class, () ->
+                assertTimeoutPreemptively(java.time.Duration.ofSeconds(30), () ->
+                        HgTestUtils.hg(tempDir.toFile(), "clone", "-r", bogusRev, baseUrl(), destDir.getAbsolutePath())));
+        assertTrue(failure.getMessage().toLowerCase().contains("unknown revision")
+                        || failure.getMessage().toLowerCase().contains("abort"),
+                "Expected a real-hg-understood error message, got: " + failure.getMessage());
+    }
+
+    @Test
+    public void realHgPullReceivesUnderstandableErrorForNonexistentRevisionOverHttp(@TempDir Path tempDir) throws Exception {
+        File destDir = tempDir.resolve("client_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl(), destDir.getAbsolutePath());
+
+        String bogusRev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        AssertionError failure = assertThrows(AssertionError.class, () ->
+                assertTimeoutPreemptively(java.time.Duration.ofSeconds(30), () ->
+                        HgTestUtils.hg(destDir, "pull", "-r", bogusRev)));
+        assertTrue(failure.getMessage().toLowerCase().contains("unknown revision")
+                        || failure.getMessage().toLowerCase().contains("abort"),
+                "Expected a real-hg-understood error message, got: " + failure.getMessage());
     }
 }

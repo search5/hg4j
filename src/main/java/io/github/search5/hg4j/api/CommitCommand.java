@@ -60,6 +60,7 @@ public class CommitCommand {
     private final List<HgHook> postCommitHooks = new ArrayList<>();
     private GpgSignature gpgSignature;
     private boolean closeBranch = false;
+    private boolean subrepos = false;
 
     public CommitCommand setGpgSignature(GpgSignature gpgSignature) {
         this.gpgSignature = gpgSignature;
@@ -69,6 +70,17 @@ public class CommitCommand {
     /** {@code hg commit --close-branch}: marks the new commit as closing the named branch head it becomes. */
     public CommitCommand setCloseBranch(boolean closeBranch) {
         this.closeBranch = closeBranch;
+        return this;
+    }
+
+    /**
+     * {@code hg commit -S}/{@code --subrepos}: allow a recursive commit when a subrepo declared
+     * in {@code .hgsub} has uncommitted local changes -- committing the subrepo first, then
+     * recording its new tip in {@code .hgsubstate}. Without this, real hg (and this command)
+     * aborts the parent commit instead ({@code uncommitted changes in subrepository "..."}).
+     */
+    public CommitCommand setSubrepos(boolean subrepos) {
+        this.subrepos = subrepos;
         return this;
     }
 
@@ -117,6 +129,17 @@ public class CommitCommand {
         if (message == null || message.isEmpty()) {
             throw new IllegalStateException("Commit message must be specified.");
         }
+
+        // Subrepo bookkeeping (real hg's subrepoutil.precommitstate / commitctx.set_hgsubstate):
+        // if .hgsub declares subrepos, refuse the commit when one has uncommitted local changes
+        // (unless -S/--subrepos was requested, in which case commit it recursively first), then
+        // regenerate .hgsubstate from every subrepo's current checked-out revision and make sure
+        // it is tracked -- all BEFORE this method's own backup/journal machinery below captures
+        // "the state this commit starts from", so a later rollback of THIS commit correctly
+        // leaves any already-completed recursive subrepo commits in place (matching real hg,
+        // which never rolls back a subrepo it already committed just because the parent commit
+        // subsequently failed).
+        applySubrepoStateBeforeCommit();
 
         // PRE_COMMIT hooks trigger
         if (!preCommitHooks.isEmpty()) {
@@ -774,6 +797,154 @@ public class CommitCommand {
             repository.clearRevlogCache();
             throw t;
         }
+    }
+
+    /**
+     * Real hg's {@code hg commit} automatically manages {@code .hgsubstate} whenever {@code
+     * .hgsub} is present in the working directory -- the user never runs a separate "record
+     * subrepo state" step, and {@code .hgsubstate} does not need to be {@code hg add}ed by hand
+     * (verified live against Mercurial 7.2's {@code subrepoutil.precommitstate}/{@code
+     * hgsubrepo.dirty}/{@code hgsubrepo.basestate}): for every path declared in {@code .hgsub}
+     * (processed in sorted order, matching {@code subrepoutil.writestate}'s {@code sorted(state)}),
+     * if the subrepo has uncommitted local changes, the parent commit aborts with {@code
+     * uncommitted changes in subrepository "&lt;path&gt;"} unless {@link #subrepos} (real hg's
+     * {@code -S}/{@code --subrepos}) is set, in which case the subrepo is committed first;
+     * otherwise the subrepo's current checked-out revision (dirty or not) becomes its recorded
+     * state. Git subrepos are left alone entirely (skipped), mirroring the parser's existing
+     * git-subrepo handling elsewhere in this codebase (e.g. {@code UpdateCommand}).
+     *
+     * <p><b>Deliberate divergence from real hg</b> (documented, not an oversight): when a
+     * declared subrepo path is not checked out locally as an hg4j repository, real Mercurial
+     * 7.2 silently auto-vivifies an *empty* repository there and resets its recorded
+     * {@code .hgsubstate} entry to the null revision -- verified live, this actually discards
+     * any previously-recorded (real, non-null) revision for that path. Replicating that verbatim
+     * would silently corrupt the extremely common hg4j workflow (exercised by
+     * {@code HgSubrepoTest}/{@code UpdateCommandTest}) of hand-writing/committing {@code
+     * .hgsub}+{@code .hgsubstate} with the subrepo's real pinned revision *before* ever checking
+     * it out locally, then letting {@code UpdateCommand}'s existing recursive-checkout logic
+     * clone it on demand. Instead, a path that is not checked out locally is left untouched here
+     * (its previous {@code .hgsubstate} entry, if any, is carried forward unchanged).
+     */
+    private void applySubrepoStateBeforeCommit() throws IOException, HgLockException {
+        File hgsubFile = new File(repository.getDirectory(), ".hgsub");
+        if (!hgsubFile.exists()) {
+            return;
+        }
+
+        Map<String, String> subUrls = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        Set<String> gitPaths = new LinkedHashSet<>();
+        for (String line : Files.readAllLines(hgsubFile.toPath(), StandardCharsets.UTF_8)) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                continue;
+            }
+            int eq = trimmed.indexOf('=');
+            if (eq == -1) {
+                continue;
+            }
+            String path = trimmed.substring(0, eq).trim();
+            String url = trimmed.substring(eq + 1).trim();
+            if (url.startsWith("[git]")) {
+                gitPaths.add(path);
+            }
+            subUrls.put(path, url);
+        }
+        if (subUrls.isEmpty()) {
+            return;
+        }
+
+        File hgsubstateFileForOldState = new File(repository.getDirectory(), ".hgsubstate");
+        Map<String, String> priorState = new HashMap<>();
+        if (hgsubstateFileForOldState.exists()) {
+            for (String line : Files.readAllLines(hgsubstateFileForOldState.toPath(), StandardCharsets.UTF_8)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    continue;
+                }
+                int sp = trimmed.indexOf(' ');
+                if (sp == -1) {
+                    continue;
+                }
+                priorState.put(trimmed.substring(sp + 1).trim(), trimmed.substring(0, sp).trim());
+            }
+        }
+
+        Map<String, String> newState = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        for (String path : subUrls.keySet()) {
+            if (gitPaths.contains(path)) {
+                continue;
+            }
+            File subDir = new File(repository.getDirectory(), path);
+            if (!new File(subDir, ".hg").exists()) {
+                // Not checked out locally -- carry forward whatever was already recorded (see
+                // the divergence note above), rather than dropping or nulling out the entry.
+                String prior = priorState.get(path);
+                if (prior != null) {
+                    newState.put(path, prior);
+                }
+                continue;
+            }
+
+            HgRepository subRepo = new HgRepository(subDir);
+            Status subStatus = new StatusCommand(subRepo).call();
+            boolean dirty = !subStatus.getAdded().isEmpty()
+                    || !subStatus.getModified().isEmpty()
+                    || !subStatus.getRemoved().isEmpty();
+
+            String revHex;
+            if (dirty) {
+                if (!this.subrepos) {
+                    throw new HgValidationException(
+                            "uncommitted changes in subrepository \"" + path
+                                    + "\" (use --subrepos for recursive commit)");
+                }
+                CommitCommand subCommit = new CommitCommand(subRepo)
+                        .setMessage(this.message)
+                        .setAuthor(this.author)
+                        .setSubrepos(true);
+                if (forcedTime != null && forcedOffset != null) {
+                    subCommit.setDate(forcedTime, forcedOffset);
+                }
+                revHex = NodeIdUtil.toHex(subCommit.call());
+            } else {
+                NodeId subParent1 = subRepo.getDirstate().getParent1Node();
+                if (subParent1 == null || subParent1.isNull()) {
+                    continue; // Subrepo has no commits checked out -- nothing to record.
+                }
+                revHex = subParent1.toHex();
+            }
+            newState.put(path, revHex);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> e : newState.entrySet()) {
+            sb.append(e.getValue()).append(' ').append(e.getKey()).append('\n');
+        }
+        byte[] newContent = sb.toString().getBytes(StandardCharsets.UTF_8);
+
+        File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");
+        byte[] oldContent = hgsubstateFile.exists() ? Files.readAllBytes(hgsubstateFile.toPath()) : null;
+        if (oldContent == null && newState.isEmpty()) {
+            return; // Nothing recorded before, nothing to record now -- do not conjure the file
+                     // out of nowhere (e.g. .hgsub declares only subrepos that are neither
+                     // checked out locally nor previously recorded).
+        }
+        if (oldContent != null && Arrays.equals(oldContent, newContent)) {
+            return; // No subrepo state changes since the last commit -- leave everything as-is.
+        }
+
+        Files.write(hgsubstateFile.toPath(), newContent);
+
+        Dirstate dirstate = repository.getDirstate();
+        if (!dirstate.getEntries().containsKey(".hgsubstate")) {
+            // Auto-track .hgsubstate the first time it is written, exactly like real hg -- the
+            // user is never expected to `hg add .hgsubstate` by hand.
+            dirstate.addEntry(".hgsubstate", new Dirstate.Entry('a', 0, 0, 0));
+            repository.writeDirstate(dirstate);
+        }
+        // If already tracked ('n' state from a prior commit), the size/mtime-vs-disk change
+        // detection this class's own commit loop already performs (see the workingState == 'n'
+        // branch above) picks up the freshly written content without any further dirstate edit.
     }
 
     /**

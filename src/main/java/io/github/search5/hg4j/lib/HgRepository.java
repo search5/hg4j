@@ -348,6 +348,42 @@ public class HgRepository implements Repository {
         revlogCache.clear();
     }
 
+    private volatile long lastObservedChangelogSize = -1;
+    private volatile long lastObservedChangelogMtime = -1;
+
+    /**
+     * Detects whether the changelog has been externally modified since the last check and, if
+     * so, clears the whole revlog cache so the next read rebuilds fresh {@link Revlog}/
+     * {@link com.github.search5.hg4j.storage.RevlogIndex} instances.
+     *
+     * <p>This exists for long-lived {@code HgRepository} handles -- specifically the ones
+     * {@code HgHttpWireServer}/{@code HgSshWireServer} keep open for the lifetime of the server
+     * process -- whose cached {@code Revlog}s would otherwise never notice a repository mutated
+     * out-of-band (a bare {@code hg} CLI call, a backup/restore tool, another process). It is a
+     * deliberately blunt, cheap, server-facing check: two {@code stat()}-equivalent calls
+     * ({@code length()}/{@code lastModified()}) on {@code 00changelog.i}, comparing both size
+     * <em>and</em> mtime -- size alone is not enough for a v2/changelog-v2 store, where the
+     * docket file's own length stays fixed while its {@code index_end}/{@code data_end} fields
+     * are rewritten in place as more revisions are appended.
+     *
+     * <p>This intentionally does <em>not</em> touch {@code RevlogIndex.checkAndUpdate()}'s
+     * existing incremental-reload logic (its {@code addedRecords}-emptiness guard is load-bearing
+     * for StripCommand/RebaseCommand/HisteditCommand reusing a handle right after a local
+     * truncate -- see that method's own comment) -- it instead forces a full, fresh reconstruction
+     * of every cached {@code Revlog}, which naturally starts with an empty {@code addedRecords}
+     * and so isn't affected by that guard's "has this instance ever written locally" state.
+     */
+    public synchronized void refreshIfChangedOnDisk() {
+        File clIdx = new File(storeDir, "00changelog.i");
+        long size = clIdx.exists() ? clIdx.length() : -1L;
+        long mtime = clIdx.exists() ? clIdx.lastModified() : -1L;
+        if (size != lastObservedChangelogSize || mtime != lastObservedChangelogMtime) {
+            lastObservedChangelogSize = size;
+            lastObservedChangelogMtime = mtime;
+            clearRevlogCache();
+        }
+    }
+
     /**
      * Loads the phase roots from the repository.
      * 

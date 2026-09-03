@@ -88,6 +88,7 @@ public class HgSshWireServer {
                 return;
             }
             try {
+                repository.refreshIfChangedOnDisk();
                 if ("unbundle".equals(cmd)) {
                     handleUnbundle(in, out);
                     continue;

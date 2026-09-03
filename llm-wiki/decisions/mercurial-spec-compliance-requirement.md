@@ -1,6 +1,6 @@
 ---
 updated: 2026-09-03
-status: 백로그 18(treemanifest 쓰기)/19(sidedata SD_FILES writer)/20(wireprotocol v2 재귀 tree fetch)/21(persistent-nodemap 쓰기) 전부 완료. 신규 백로그 22(HTTP/SSH 실전 통신·협상 테스트 확충, 2026-09-03 제안) 추가 — 범위만 확정, 미착수
+status: 백로그 18(treemanifest 쓰기)/19(sidedata SD_FILES writer)/20(wireprotocol v2 재귀 tree fetch)/21(persistent-nodemap 쓰기) 전부 완료. 신규 백로그 22(HTTP/SSH 실전 통신·협상 테스트 확충)/23(commit·push·branch·merge·tag 실전 시나리오 종합 interop 검증) 추가(둘 다 2026-09-03 제안) — 범위만 확정, 미착수
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -749,6 +749,53 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     **다음 세션 시작점**: 위 "범위(포함)" 4개 그룹을 각각 별도 TDD 배치로 나눠
     순서대로 진행 권장(실제 hg 클라이언트→hg4j 서버 방향이 가장 검증 안 된 채
     남아있어 우선순위가 가장 높음).
+
+23. **commit/push/branch/merge/tag — 실전 시나리오 종합 interop 검증, 신규,
+    2026-09-03 제안, 작업 범위만 확정, 미착수.** 배경: 백로그 22번(와이어 프로토콜
+    협상)과 같은 이유 — 이 5개는 hg의 가장 기본적이고 가장 자주 쓰이는 포셀린
+    명령인데, 지금까지의 검증은 "한 가지 대표 시나리오"(예: 선형 커밋 2개,
+    fast-forward merge 1건) 위주였고 각 명령이 실전에서 마주치는 조합의 상당수는
+    아직 실제 hg CLI와 대조된 적이 없다. 아래 5개 카테고리 각각을 별도 TDD
+    배치로 진행 권장.
+
+    **commit**: 머지 커밋(부모 2개, `p2` 필드 정확성) — 특히 심볼릭
+    링크/실행권한/바이너리 파일이 섞인 머지, `hg commit --close-branch`, 빈 커밋
+    (파일 변경 없이 메시지만), extra 필드가 여러 개 겹칠 때(`branch`+`close`
+    동시) 정렬/인코딩 순서, `hg commit --amend`(현재 hg4j에 이 명령 자체가
+    있는지부터 확인 필요 — 없으면 범위를 "구현 여부 조사"로 좁힘).
+    **push**: 여러 head가 있는 저장소로 push(reject vs 성공 조건), `--force`로
+    비-fast-forward push, 새 named branch를 원격에 처음 push할 때의 경고/허용
+    조건(`hg push --new-branch`), bookmark가 있는 저장소의 push(북마크 이동
+    반영), 이미 알려진 커밋만 있어 "no changes found"로 끝나는 push.
+    **branch**: named branch 생성(`hg branch <name>`), 그 브랜치로 커밋 후
+    `hg branches`/`hg branches --closed` 목록 정확성, `hg commit --close-branch`
+    후 해당 브랜치가 목록에서 빠지는지, 한 브랜치에 head가 여러 개 생기는
+    시나리오(브랜치 내부 분기)와 `hg heads <branch>`.
+    **merge**: fast-forward(이미 부분 검증됨, 위 항목 참고) 외 진짜 3-way
+    merge(공통 조상에서 양쪽이 다른 파일을 수정 — 충돌 없음), 충돌이 실제로
+    나서 `resolve`가 필요한 case(백로그 1번 `MergeState` 인프라는 있음, 실전
+    시나리오 종합 검증은 별개), rename/copy가 한쪽에 있는 상태의 merge(copy
+    추적이 살아남는지), 서로 다른 브랜치 간 merge, merge 중단(`hg merge --abort`
+    또는 워킹카피 되돌리기 — 명령 존재 여부부터 확인).
+    **tag**: 전역 태그(`.hgtags`, 커밋되는 파일) 생성 후 `hg tags`로 조회 —
+    이미 `TagCommand`/`TagsCommand`가 있고 오늘 세션에서 BRANCH 커버리지까지
+    채웠지만 **실제 hg CLI와의 왕복 interop 검증은 안 돼 있음**(단위 테스트만
+    있음). 로컬 태그(`.hg/localtags`, 미커밋), 기존 태그를 재태깅(move,
+    `.hgtags`에 새 줄 추가되고 이전 줄은 사문화), 태그 삭제(`hg tag --remove`),
+    머지 커밋에 태그를 다는 경우.
+
+    **범위(제외)**: `histedit`/`rebase`/`shelve`/`bisect`/`strip` 등 히스토리를
+    재작성하는 고급 명령은 이미 별도로 크게 다뤄졌으므로(위 항목들, journal/크래시
+    복구 포함) 제외. subrepo 관련 병합/커밋 상호작용도 제외(별도 백로그 필요시
+    분리). 5개 카테고리 모두 **hg4j↔hg4j 자체 왕복이 아니라 실제 hg CLI와의
+    양방향 대조**(hg4j로 만든 결과를 실제 `hg log`/`hg verify`/`hg tags`/
+    `hg branches`로 확인, 또는 그 반대)를 검증 기준으로 삼는다 — 이미 이런 형태로
+    실제 hg와 대조하지 않고 hg4j 내부끼리만 왕복 검증된 기존 테스트는 이 항목에서
+    "미검증"으로 간주하고 다시 본다.
+
+    **다음 세션 시작점**: `tag`부터 시작 권장 — 이미 커버리지 작업으로 코드
+    경로 자체는 오늘 다 확인했으니 여기에 실제 hg interop 껍데기만 씌우면 되어
+    착수 비용이 가장 낮다.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

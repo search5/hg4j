@@ -176,11 +176,20 @@ public class UpdateCommandCoverageTest {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         File repoDir = tempDir.toFile();
         Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
-        // .hgsub without a matching .hgsubstate: subrepo checkout must be skipped
-        // entirely (neither file alone is enough to trigger it).
-        Files.writeString(new File(repoDir, ".hgsub").toPath(), "vendor/x = /nonexistent\n");
         new AddCommand(repo).call();
         byte[] committed = new CommitCommand(repo).setMessage("rev0").call();
+
+        // .hgsub without a matching .hgsubstate: subrepo checkout must be skipped
+        // entirely (neither file alone is enough to trigger it). This is deliberately left
+        // untracked/uncommitted in the working directory rather than routed through
+        // CommitCommand -- committing a .hgsub declaring a non-git subrepo path now always
+        // makes CommitCommand auto-synthesize a matching .hgsubstate entry for it (reset to
+        // the null revision when the path isn't checked out locally; see
+        // mercurial-spec-compliance-requirement.md, backlog 23/24, decided 2026-09-04), which
+        // would defeat the "no .hgsubstate at all" scenario this test needs.
+        // UpdateCommand's recursive-checkout step only ever reads these two files straight off
+        // disk, so an uncommitted .hgsub still exercises the exact same guard.
+        Files.writeString(new File(repoDir, ".hgsub").toPath(), "vendor/x = /nonexistent\n");
 
         byte[] updated = new UpdateCommand(repo).setRevision("0").setForce(true).call();
         assertEquals(NodeIdUtil.toHex(committed), NodeIdUtil.toHex(updated));
@@ -367,10 +376,15 @@ public class UpdateCommandCoverageTest {
         new CommitCommand(repo).setMessage("rev0").call();
 
         // "vendor/gitmod" is flagged [git] and must be skipped outright (no directory
-        // created for it). "vendor/emptyish" is declared in .hgsub but has no recorded
-        // source URL and is absent from .hgsubstate entirely, so it falls back to an
-        // entry with both an empty source URL and an empty revision: the local repo
-        // must still be initialized for it, but neither pull nor update is attempted.
+        // created for it). "vendor/emptyish" is declared in .hgsub with no recorded source
+        // URL and is hand-written here as absent from .hgsubstate, but since it isn't
+        // checked out locally either, CommitCommand's own subrepo-state management
+        // overwrites that with an explicit null-revision entry at commit time (matching real
+        // hg; see mercurial-spec-compliance-requirement.md, backlog 23/24, decided
+        // 2026-09-04) -- so by the time UpdateCommand parses it, it has an empty source URL
+        // but a non-empty (null) revision. The local repo must still be initialized for it;
+        // the subsequent update-to-null-revision attempt then fails against the still-empty
+        // repo and is caught/logged, same net effect as if update had been skipped outright.
         Files.writeString(new File(repoDir, ".hgsub").toPath(),
                 "vendor/gitmod = [git]https://example.com/whatever.git\n" +
                         "vendor/emptyish =\n");
@@ -384,7 +398,7 @@ public class UpdateCommandCoverageTest {
         assertFalse(new File(repoDir, "vendor/gitmod").exists(),
                 "Git-flagged subrepo entries must be skipped entirely");
         assertTrue(new File(repoDir, "vendor/emptyish/.hg").exists(),
-                "Subrepo with no source URL or recorded revision must still be locally initialized");
+                "Subrepo with no source URL and a null recorded revision must still be locally initialized");
     }
 
     @Test

@@ -878,17 +878,63 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     있는 저장소의 push(북마크 이동 반영), 이미 알려진 커밋만 있어 "no changes
     found"로 끝나는 push — 전부 실제 hg CLI와의 **양방향** interop으로
     검증했다: hg4j가 pusher, 실제 `hg serve`(HTTP)가 accept/reject를 판정하는
-    authority(`RealHgServeSupport` 재사용). **범위 확장(설계 판단, 사용자
-    확인 필요)**: 기존 `PushCommand`에는 head-count/새 브랜치 거부 로직이
-    전혀 없었다(`--force`/`--new-branch` 옵션 자체가 없었음 — push는 항상
-    무조건 성공) — 담당 에이전트는 이를 architecture-level 변경까지는 아니라고
-    판단해 직접 구현했다: `PushCommand.setForce()`/`setAllowNewBranch()` 신설 +
-    실제 hg `mercurial/discovery.py checkheads()`를 간소화 포팅한
-    client-side 체크(그룹 3까지: 존재하지 않던 원격 브랜치 정보 조회를 위해
+    authority(`RealHgServeSupport` 재사용). **범위 확장(설계 판단)**: 기존
+    `PushCommand`에는 head-count/새 브랜치 거부 로직이 전혀 없었다
+    (`--force`/`--new-branch` 옵션 자체가 없었음 — push는 항상 무조건 성공) —
+    담당 에이전트는 이를 architecture-level 변경까지는 아니라고 판단해 직접
+    구현했다: `PushCommand.setForce()`/`setAllowNewBranch()` 신설 + 실제 hg
+    `mercurial/discovery.py checkheads()`를 간소화 포팅한 client-side
+    체크(그룹 3까지: 존재하지 않던 원격 브랜치 정보 조회를 위해
     `HgRemoteConnection.getBranchHeads()` 신설 및 `HgLocalClient`/
-    `HgRemoteClient`(HTTP)에 구현 — SSH는 기본 폴백만, 미구현). **이 판단이
-    맞는지, 또는 obsolescence-marker 예외 처리·bookmark-head 예외 등 real hg의
-    나머지 세부 규칙까지 완전히 포팅해야 하는지는 사용자 확인이 필요하다.**
+    `HgRemoteClient`(HTTP)에 구현 — SSH는 기본 폴백만, 미구현).
+
+    **→ 결정(2026-09-04): 나머지 규칙까지 마저 포팅하는 쪽으로 확정 → ✅
+    완료(2026-09-04)**. 이 머신에 설치된 실제 hg 7.2의
+    `mercurial/discovery.py`(`checkheads`/`_postprocessobsolete`/
+    `_nowarnheads`)와 `mercurial/bookmarks.py`(`validdest`)를 직접 읽어 남은
+    두 예외를 마저 포팅했다.
+    1. **obsolescence-marker 예외**(`discovery._postprocessobsolete`/
+       `pushingmarkerfor`): 후보 새 head가 로컬 저장소 자신의 obsstore
+       (`HgObsMarker`/`HgObsolescenceParser`로 읽음)에 predecessor로 기록돼
+       있고 그 successor 체인이 이 체크의 후보 리비전 집합(이번에 push되는
+       리비전 + 이미 아는 원격 head) 안의 다른 리비전에 닿으면, public
+       phase가 아닌 한 새 head로 세지 않는다. 실제 hg 7.2로 직접 검증
+       (2026-09-04): 이미 push된 head를 amend한 뒤 그 successor를
+       `--force` 없이 push하면 성공하며, 심지어
+       `experimental.evolution.exchange=no`로 obsolescence marker 자체를
+       원격과 전혀 교환하지 않아도 성공한다 — 실제 hg의 client-side
+       accept/reject 판단은 오직 push하는 쪽 저장소 자신의 obsstore에만
+       의존하기 때문이다. hg4j의 push도 obsmarker를 전혀 교환하지
+       않으므로(bundle1 한정) 이는 근사가 아니라 정확히 일치하는 동작이다.
+    2. **bookmark-head 예외**(`discovery._nowarnheads`/
+       `bookmarks.validdest`): 로컬 bookmark의 원격 쪽 이전 위치가 로컬에
+       알려져 있고, 그 위치에서 현재 로컬 위치까지 "changelog 자식 관계"와
+       "로컬 obsstore successor 관계"를 자유롭게 섞어 도달 가능하면
+       (`obsutil.foreground`에 대응), 그 위치는 새 head 카운트를 늘리더라도
+       거부 사유(blame)에서 제외한다. 단 이 예외는 새 named branch의
+       multi-head 서브케이스(`remoteheads is None`)에는 적용되지 않는다 —
+       실제 hg 소스가 그 분기에서는 `nowarnheads`를 빼지 않고 그대로
+       씀(`checkHeadsPerBranch`가 이 구분을 그대로 반영). 실제 hg 7.2로
+       직접 검증(2026-09-04): bookmark를 amend된 successor로 전진시키는
+       push는 `--force` 없이 성공하지만, bookmark를 obsolescence 연결이
+       전혀 없는 무관한 divergent head로 강제 이동하는 push는 여전히
+       거부된다("push creates new remote head ... with bookmark") — 즉
+       "bookmark가 달린 head는 무조건 봐준다"가 아니라 실제로 유효한
+       forward move일 때만 예외가 적용됨을 확인했다.
+
+    `PushCommand`의 head-count 로직을 개수(int) 비교에서 리비전 집합(Set)
+    비교로 재작성해 두 예외를 반영했다(`applyObsolescenceDiscard`,
+    `computeNowarnRevs`, `isInForeground`, `hasLiveSuccessorAmongCandidates`,
+    `loadObsSuccessorMap`, `buildChildrenMap` 신설). **테스트**:
+    `PushRealHgInteropTest`에 3개 추가 —
+    `testPushSucceedsWhenObsoleteHeadReplacedBySuccessorWithoutForce`(obsolescence
+    예외로 무강제 성공, 원격에 신구 head 2개가 그대로 남는 것까지 실제 hg로
+    확인), `testPushOfBookmarkAdvancedAcrossAmendSucceedsWithoutForce`
+    (obsolescence 기반 rewrite를 가로지르는 bookmark 전진 성공),
+    `testPushRejectedWhenBookmarkMovedToDivergentSiblingWithoutObsolescenceLink`
+    (obsolescence 연결이 없는 무관한 head로의 bookmark 이동은 여전히 거부) —
+    전부 실제 hg 서버(`hg serve`)를 상대로 GREEN, 기존 5개 포함 전체
+    GREEN. 전체 회귀 스위트(gradle test 전체)도 GREEN.
     **실제 버그 발견 및 수정(architecture-level 아님, PushCommand 내부
     로직 수정)**: (1) cg1 changegroup 패킹 시 각 그룹(changelog/manifest/
     파일별 filelog)의 **첫 엔트리**의 델타 베이스를 "로컬 rev 인덱스상

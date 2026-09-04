@@ -13,15 +13,18 @@ import java.util.Set;
 /**
  * Heads command for querying SCM repository heads.
  *
- * <p>With no branch filter, {@link #call()} returns pure topological heads (revisions with no
- * children anywhere in the repository) -- this matches real hg's {@code hg heads --topo}, verified
- * directly against hg 7.2.2 (2026-09-04). Real hg's plain {@code hg heads} (no {@code --topo}) is
- * actually a <em>different</em>, broader query: the highest-revision open head of <em>every</em>
- * named branch, which can include revisions that are not pure topological leaves (e.g. a branch
- * whose own tip has since been merged into a different branch, leaving it without a same-branch
- * child but with a cross-branch one). This class does not currently reproduce that broader
- * no-argument behavior -- see the class javadoc history / backlog notes for the confirmed
- * repro. {@link #setBranch} below only covers the narrower, explicitly-filtered
+ * <p>With no branch filter and {@link #setTopo} left at its default ({@code false}), {@link #call()}
+ * reproduces real hg's plain {@code hg heads} (no {@code --topo}): for every named branch that has
+ * at least one open head, that branch's own head(s) -- revisions with no <em>same-branch</em> child
+ * -- are included, even when such a revision is not a repo-wide topological leaf (e.g. a branch
+ * whose own tip has since been merged into or built upon by a different branch, leaving it without
+ * a same-branch child but with a cross-branch one). This mirrors real hg's
+ * {@code mercurial/commands.py heads()}: {@code for branch in repo.branchmap(): heads +=
+ * bm.branchheads(branch, closed=...)}, verified directly against hg 7.2.2 (2026-09-04). Passing
+ * {@link #setTopo}{@code (true)} switches to real hg's {@code hg heads --topo}: pure repo-wide
+ * topological leaves (revisions with no children anywhere in the repository), ignoring branch
+ * mechanics entirely -- this was this class's unconditional behavior before 2026-09-04 and remains
+ * available as an explicit opt-in. {@link #setBranch} covers the narrower, explicitly-filtered
  * {@code hg heads <branch>} form, which real hg defines identically whether or not {@code --topo}
  * is layered on top of a branch filter: it returns exactly that branch's own topological heads
  * (per-branch, not repo-wide), open ones only unless {@link #setIncludeClosed} is set.</p>
@@ -30,6 +33,7 @@ public class HeadsCommand {
     private final HgRepository repository;
     private String branch;
     private boolean includeClosed = false;
+    private boolean topo = false;
 
     public HeadsCommand(HgRepository repository) {
         this.repository = repository;
@@ -50,9 +54,12 @@ public class HeadsCommand {
 
     /**
      * Real hg's {@code hg heads --closed}: also include heads closed via
-     * {@code hg commit --close-branch}. Only meaningful together with {@link #setBranch}; the
-     * unfiltered topological {@link #call()} has no notion of "closed" (a closed head with no
-     * children is still a topological leaf and is always included).
+     * {@code hg commit --close-branch}. Applies both to the unfiltered no-argument default (each
+     * branch's closed heads are then also included alongside its open ones, matching real hg's
+     * {@code bm.branchheads(branch, closed=True)}) and to {@link #setBranch}-filtered queries.
+     * Meaningless together with {@link #setTopo}{@code (true)}: a closed head with no children is
+     * still a topological leaf and is always included there, exactly as real hg's
+     * {@code --topo --closed} combination behaves (closed is simply a no-op).
      */
     public HeadsCommand setIncludeClosed(boolean includeClosed) {
         this.includeClosed = includeClosed;
@@ -60,8 +67,21 @@ public class HeadsCommand {
     }
 
     /**
-     * Traverses the changelog and finds all leaf nodes in SCM commit history, or -- when
-     * {@link #setBranch} has been called -- that one branch's own heads.
+     * Real hg's {@code hg heads --topo}: ignore named-branch mechanics and return only pure
+     * repo-wide topological heads (revisions with no children anywhere in the repository).
+     * Default {@code false}, matching real hg's own default (plain {@code hg heads} is
+     * branch-aware, not purely topological).
+     */
+    public HeadsCommand setTopo(boolean topo) {
+        this.topo = topo;
+        return this;
+    }
+
+    /**
+     * Traverses the changelog and finds heads per the configured mode: one explicit branch's own
+     * heads ({@link #setBranch}), pure repo-wide topological leaves ({@link #setTopo}), or --
+     * the default -- every branch's own open (or, with {@link #setIncludeClosed}, also closed)
+     * head(s), matching real hg's plain {@code hg heads}.
      *
      * @return List of head node IDs in hex representation
      * @throws IOException if changelog IO fails
@@ -81,6 +101,15 @@ public class HeadsCommand {
             return branchHeads(changelog, count);
         }
 
+        if (topo) {
+            return topoHeads(changelog, count);
+        }
+
+        return allBranchHeads(changelog, count);
+    }
+
+    /** Real hg's {@code hg heads --topo}: pure repo-wide topological leaves. */
+    private List<String> topoHeads(Revlog changelog, int count) throws IOException {
         // Parent tracking: any revision that is a parent of another revision is not a head
         Set<Integer> parents = new HashSet<>();
         for (int i = 0; i < count; i++) {
@@ -91,6 +120,7 @@ public class HeadsCommand {
             if (p2 != -1) parents.add(p2);
         }
 
+        List<String> headList = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             if (!parents.contains(i)) {
                 headList.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
@@ -99,24 +129,40 @@ public class HeadsCommand {
         return headList;
     }
 
+    /**
+     * Real hg's plain {@code hg heads} (no arguments): every named branch's own open head(s),
+     * aggregated across all branches and sorted by revision descending -- real hg's
+     * {@code commands.heads()} does {@code heads = sorted(heads, key=lambda x: -(x.rev()))} over
+     * the combined list from every branch, not a per-branch grouping.
+     */
+    private List<String> allBranchHeads(Revlog changelog, int count) throws IOException {
+        String[] branchOfRev = new String[count];
+        for (int i = 0; i < count; i++) {
+            branchOfRev[i] = CommitCommand.getBranchOfRevision(changelog, i);
+        }
+
+        boolean[] hasBranchChild = branchChildFlags(changelog, count, branchOfRev);
+
+        List<String> result = new ArrayList<>();
+        for (int i = count - 1; i >= 0; i--) {
+            if (hasBranchChild[i]) {
+                continue;
+            }
+            if (!includeClosed && CommitCommand.isRevisionClosingBranch(changelog, i)) {
+                continue;
+            }
+            result.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
+        }
+        return result;
+    }
+
     private List<String> branchHeads(Revlog changelog, int count) throws IOException {
         String[] branchOfRev = new String[count];
         for (int i = 0; i < count; i++) {
             branchOfRev[i] = CommitCommand.getBranchOfRevision(changelog, i);
         }
 
-        boolean[] hasBranchChild = new boolean[count];
-        for (int i = 0; i < count; i++) {
-            Revlog.IndexRecord rec = changelog.getIndexRecord(i);
-            int p1 = rec.getParent1();
-            int p2 = rec.getParent2();
-            if (p1 >= 0 && branchOfRev[p1].equals(branchOfRev[i])) {
-                hasBranchChild[p1] = true;
-            }
-            if (p2 >= 0 && branchOfRev[p2].equals(branchOfRev[i])) {
-                hasBranchChild[p2] = true;
-            }
-        }
+        boolean[] hasBranchChild = branchChildFlags(changelog, count, branchOfRev);
 
         // Real hg lists heads highest-revision first (verified against hg 7.2.2, 2026-09-04).
         List<String> result = new ArrayList<>();
@@ -130,5 +176,22 @@ public class HeadsCommand {
             result.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
         }
         return result;
+    }
+
+    private static boolean[] branchChildFlags(Revlog changelog, int count, String[] branchOfRev)
+            throws IOException {
+        boolean[] hasBranchChild = new boolean[count];
+        for (int i = 0; i < count; i++) {
+            Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+            int p1 = rec.getParent1();
+            int p2 = rec.getParent2();
+            if (p1 >= 0 && branchOfRev[p1].equals(branchOfRev[i])) {
+                hasBranchChild[p1] = true;
+            }
+            if (p2 >= 0 && branchOfRev[p2].equals(branchOfRev[i])) {
+                hasBranchChild[p2] = true;
+            }
+        }
+        return hasBranchChild;
     }
 }

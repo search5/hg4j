@@ -1378,17 +1378,122 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
       `ShelveCommandCoverageTest` 전부 그대로 GREEN). 테스트: `ShelveRealHgInteropTest`
       (4개 — hg4j→real hg 수정+추가 파일, real hg→hg4j 수정+추가 파일, 제거 파일 시나리오,
       모두 "shelve → 중간에 무관한 다른 작업 → unshelve" 형태) 신설, 전부 GREEN.
-      **범위 밖으로 명시적으로 남긴 것(중요 — 조정자가 사용자 확인 필요할 수 있음)**:
-      real hg의 `hg unshelve`는 hg4j처럼 diff를 그대로 재생하는 게 아니라 "임시 커밋 +
-      그 사이 다른 커밋들 위로의 rebase + merge + 정리용 strip"으로 이루어진 완전히 다른
-      알고리즘이다(`mercurial/shelve.py` `_dounshelve()` 확인). 이번에 검증·수정한 것은
-      "그 사이 다른 커밋이 없는(작업 디렉터리 parent가 그대로인) 가장 단순한 왕복"뿐이고,
-      shelve 이후 별도 커밋이 생겨 rebase가 실제로 필요한 경우나 unshelve 도중 충돌이
-      나는 경우는 검증하지 않았다 — 이걸 채우려면 hg4j `ShelveCommand`에 진짜 rebase/merge
-      기반 unshelve를 새로 얹는 아키텍처 수준 작업이 필요해 보인다(현재 hg4j는 그런
-      인프라가 없음). 이 결정(할지/언제 할지)은 사용자 확인 필요.
-      **→ 결정(2026-09-04): 지금 구현하는 쪽으로 확정**(rebase 3-way merge
-      인프라 이식과 함께 진행, 위 "아키텍처 결정 6건" 참고).
+      **→ 결정(2026-09-04): 지금 구현하는 쪽으로 확정**(rebase 3-way merge 인프라
+      이식과 함께 진행, 위 "아키텍처 결정 6건" 참고) — **✅ 완료(2026-09-04, 같은 날
+      후속 세션)**.
+
+      **진짜 rebase 기반 unshelve ✅ 완료** — `ShelveCommand.performUnshelve()`가
+      real hg의 실제 `_dounshelve()` 알고리즘(`mercurial/shelve.py`)으로 전면 재작성됐다:
+      (1) 셸브 번들을 원래 shelve 당시의 parent(`p1Hex`) 위에 **진짜(그러나 일회용)
+      커밋**으로 복원(기존 per-file 번들 디코드 로직은 그대로 재사용 — 이번엔 그 결과를
+      working copy에 바로 노출하는 대신 `CommitCommand`로 실제 커밋한다), (2) 그 사이
+      작업 디렉터리 parent가 이동했으면(다른 커밋이 생겼으면) `RebaseCommand.setSource
+      (tempCommit).setTarget(currentWdParent).call()`로 **진짜 rebase**(3-way merge
+      충돌 감지 포함, 새로 구현하지 않고 항목 5의 `RebaseCommand`를 그대로 구동) —
+      아무 일도 없었으면(parent가 그대로면) no-op. (3) 결과를 real hg의 `cmdutil.revert
+      (shelvectx)`와 동일하게 **"uncommit"**: 최종(rebase 성공 시 rebase 결과, 아니면
+      복원 커밋 자체)의 매니페스트를 진짜 현재 작업 디렉터리 parent의 매니페스트와
+      diff해서 그 차이만 working copy에 pending 변경(added/modified/removed)으로
+      다시 얹는다 — 이 diff는 shelve 당시 캡처해둔 파일 상태(`.state` 파일의
+      add/modify/remove 분류)가 아니라 **매번 새로 계산**하므로, 그 사이 커밋이 같은
+      파일을 건드린 경우도 올바르게 처리된다. (4) 일회용 복원/rebase 커밋은 **완전히
+      지운다** — real hg CLI로 직접 확인(2026-09-04): real hg 자신의 unshelve는 이
+      전체 과정을 트랜잭션 안에서 수행하고 마지막에 그 트랜잭션을 abort하므로, 임시
+      커밋이 hidden/obsolete 리비전으로도 전혀 남지 않는다(`RebaseCommand`가 평소
+      쓰는 evolution-only 방식과 달리, 이번엔 marker 없이 `stripRevisionsFrom`으로
+      물리적 truncate). 새 hg4j 전용 상태 파일 `.hg/shelvedstate-hg4j`(name/
+      tempCommitNode/originalWdParent 3줄)에 진행 상황을 영속화해, **`RebaseCommand`와
+      동일한 패턴**(새 `ShelveCommand` 인스턴스로도 재개 가능)으로 두 공개 메서드를
+      추가했다: `unshelveContinue()`(충돌 해결 후 재개 — 내부적으로
+      `RebaseCommand.continueRebase()`를 그대로 위임 호출한 뒤 같은 uncommit+strip
+      마무리를 수행) / `unshelveAbort()`(real hg의 `hg unshelve --abort`와 동일 —
+      `RebaseCommand.abort()`로 진행 중이던 rebase를 걷어낸 뒤 임시 커밋도 strip하고
+      작업 디렉터리를 진짜 unshelve 시작 전 상태로 완전히 되돌리되, **완료된 unshelve와
+      달리 shelve 자체는 지우지 않아** 나중에 다시 시도할 수 있게 남겨둔다 — 직접
+      검증). 두 메서드 모두 `.hg/rebasestate-hg4j`/`.hg/shelvedstate-hg4j`만으로
+      동작하므로 이름/상태를 다시 지정할 필요가 없다.
+      - **불변식 하나 새로 추가**: unshelve 시작 시 현재 작업 디렉터리에 pending
+        변경(added/modified/removed)이 있으면 `HgValidationException`으로 거부한다
+        (real hg는 `_commitworkingcopychanges()`로 그런 변경까지 임시 커밋해서 흡수하는
+        일반화된 경로가 있지만, hg4j는 아직 그 일반화를 구현하지 않음 — 명시적 범위
+        축소, 새 아키텍처 갈림길은 아님). 현재 parent2가 0이 아니면(미해결 merge 진행
+        중) 마찬가지로 거부.
+      - **공유 코드에서 발견·수정한 실제 버그 3개(이번 재작성이 처음 밟은 코드
+        경로라 여태 안 걸렸던 것들)**:
+        1. `ShelveCommand.stripRevisionsFrom()`(옛날부터 있던, `performShelve()`
+           자신의 일회용 임시 커밋을 지우는 헬퍼)가 `.i` truncate 크기를 항상
+           `rev * 64`로 계산 — real hg의 **inline revlog**(작은 revlog는 리비전
+           데이터를 `.d` 파일 없이 `.i` 파일 안에 헤더 바로 뒤에 직접 붙여 쓰는 기본
+           포맷)에서는 완전히 틀린 오프셋이라 레코드 중간을 잘라 저장소를 깨뜨린다.
+           이 버그는 지금까지 **hg4j 자신이 만든(항상 non-inline) 저장소에서만
+           `stripRevisionsFrom`이 호출됐기 때문에** 한 번도 걸리지 않았다 — unshelve가
+           **real hg가 만든(따라서 inline인) 저장소** 위에서 처음으로 실제 임시
+           커밋+strip을 수행하면서 `ShelveRealHgInteropTest.realHgShelveCanBeUnshelvedByHg4j`
+           가 `HgCorruptDataException: Truncated inline revlog data`로 바로 재현시켰다.
+           `Revlog.isInline()`/`Revlog.getFileOffset(rev)`(이미 읽기 경로에 존재하던
+           API)로 changelog/manifest/파일별 filelog 전부 inline 여부에 따라 분기하도록
+           수정.
+        2. `CommitCommand.call()`의 "M-2 racy-hg 체크"(같은 초 안에 재기록된 파일을
+           dirstate 캐시만으로 오탐지하지 않기 위한 보정)가 "현재 filelog의 **위치상
+           마지막** 리비전"과 디스크 내용을 비교해 다르면 "변경됨"으로 판정하고
+           있었다 — 이 리비전이 지금 커밋 중인 리비전의 **진짜 parent가 아닌** 경우
+           (예: 이번 unshelve의 rebase 단계에서, 목적지가 안 건드린 파일을 shelve
+           쪽 내용으로 fast-forward할 때, 그 filelog가 그 사이 생겼다 지워질 임시
+           복원 커밋 때문에 이미 최신 리비전을 하나 더 갖고 있는 경우) "마지막
+           리비전과 같으면 무변경"이라는 잘못된 결론을 내려 fast-forward된 내용이
+           통째로 드롭됐다(`ShelveRealHgInteropTest.unshelveRebasesOntoAnUnrelatedInterveningCommit`
+           로 재현). "위치상 마지막"이 아니라 **실제 parent(들)이 그 경로에 대해
+           기록한 매니페스트 해시**(`manifestP1`/`manifestP2`)의 콘텐츠와 비교하도록
+           수정 — 병합 커밋에서는 P1/P2 중 **어느 한쪽이라도** 일치하면 무변경으로
+           남겨 기존 바이트 단위 disambiguation 로직에 그대로 맡기고, 어느 쪽도
+           읽을 수 없으면(filelog가 지워지는 등, 기존 커버리지 테스트가 의도적으로
+           재현하는 상황) 마찬가지로 무변경으로 남겨 disambiguation의 기존 관용적
+           fallback에 위임 — 전체 회귀(`CommitCommandCoverageTest` 포함) 그대로
+           GREEN 확인.
+        3. `StatusCommand`가 dirstate 엔트리의 mtime을 real hg의 표준 "ambiguous
+           time" 센티널(32비트 "-1", 즉 `0xFFFFFFFF` — real hg가 내부적으로 워킹
+           카피를 재작성한 직후 등, 캐시된 타임스탬프를 신뢰할 수 없을 때 쓰는 값)을
+           전혀 특별 취급하지 않고 디스크 mtime과 그냥 숫자 비교해, real hg가 만든
+           그런 엔트리를 hg4j가 읽을 때마다 무조건 "modified"로 오판했다
+           (`ShelveRealHgInteropTest.realHgShelveCanBeUnshelvedByHg4j`가 이번에
+           `new StatusCommand().call()`을 unshelve 시작 시 실제로 호출하면서 처음
+           노출됨). 해당 센티널이면 무조건 실제 부모 커밋 내용과 바이트 비교하도록
+           고쳤고, 거꾸로 `ShelveCommand` 자신도 unshelve가 새로 만들어내는 pending
+           변경 엔트리(`finishUnshelve`, 상태 `'n'`인 것)에 이제 이 센티널을 쓴다 —
+           실제 mtime을 즉시 기록해 "운 좋게 시간 창 안에 들어오면 통과"하던 기존
+           방식(real hg의 `hg status`가 오탐하는 별도 타이밍 경쟁까지 새로 만들어냄,
+           일회성 diff-replay보다 이번 rebase 기반 알고리즘이 I/O를 훨씬 많이 하므로
+           그 경쟁을 더 자주 놓침)을 real hg 자신의 관례로 완전히 대체해 경쟁 자체를
+           없앴다.
+
+      **테스트**: `ShelveRealHgInteropTest`에 3개 신설 —
+      `unshelveRebasesOntoAnUnrelatedInterveningCommit`(shelve → 무관한 커밋 →
+      unshelve 성공, 진짜 rebase가 실행됨을 real hg `status`/`verify`/`log`로 확인,
+      작업 디렉터리 parent가 그 무관한 커밋 그대로 유지됨도 확인), `unshelveWithConflictingInterveningCommitPausesResolvesAndContinues`
+      (shelve → 같은 줄을 다르게 고치는 충돌 커밋 → unshelve가 `HgMergeConflictException`
+      으로 일시정지, 마커가 real hg 7.2 `internal:merge`와 byte-for-byte 일치, real
+      `hg resolve --list`로 확인 → 수동 해결 → **새 `ShelveCommand` 인스턴스**의
+      `unshelveContinue()`로 완료, real `hg verify`/`status`로 확인), `unshelveAbortRestoresPreUnshelveStateAndKeepsShelfUsable`
+      (같은 충돌 시나리오에서 `unshelveAbort()`로 작업 디렉터리/dirstate가 unshelve
+      시작 전 상태로 완전히 복원되고 shelve 자체는 그대로 남아 재시도 가능함을 확인).
+      기존 `ShelveCommandTest`/`ShelveCommandCoverageTest`/`HgAdvancedHistoryTest`/
+      `ShelveRealHgInteropTest` 기존 3개도 전부 그대로 GREEN(단, `ShelveCommandTest`의
+      "손상된 parent1/parent2로 unshelve 시도" 서브케이스 2개는 옛 "shelve 당시
+      parent와 정확히 일치해야 함" 검증이 이번에 rebase 기반으로 대체되며 의미가
+      바뀌어 기대 예외 메시지만 갱신 — "does not match shelved parent" → 존재하지
+      않는 리비전에 대한 "not found", "does not match shelved parent2" → "unresolved
+      merge"; `ShelveCommandCoverageTest`의 `unshelveDefaultsToModifiedStateWhenFileMissingFromStateMetadata`
+      도 최종 dirstate 상태 기대값만 `'m'`(hg4j 자체 관례, real hg에 없는 상태 문자)
+      → `'n'`(real hg의 표준 "추적+수정됨" 상태, 위 diff 재계산 방식이 자연스럽게
+      만들어냄)으로 갱신). 격리된 빌드 디렉터리(`/tmp/backlog-shelve-unshelve`)로
+      `Shelve`/`Commit`/`Status`/`Rebase`/`Graft`/`Merge` 전체 및 전체 테스트
+      스위트(249개 테스트 클래스) 재실행해 GREEN 확인.
+
+      상세 구현 위치: `src/main/java/io/github/search5/hg4j/api/ShelveCommand.java`
+      (`performUnshelve`/`finishUnshelve`/`checkoutFullClean`/`unshelveContinue`/
+      `unshelveAbort`/`stripRevisionsFrom`), `src/main/java/io/github/search5/hg4j/api/CommitCommand.java`
+      (M-2 racy 체크), `src/main/java/io/github/search5/hg4j/api/StatusCommand.java`
+      (`AMBIGUOUS_TIME`).
 
 24. ~~**`HgHttpWireServer`/`HgSshWireServer`가 외부 프로세스의 저장소 변경을 못 보고
     stale `Revlog` 캐시를 계속 서빙함**~~ — ✅ **완료(2026-09-03)**. 백로그 22번

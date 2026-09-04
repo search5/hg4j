@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import io.github.search5.hg4j.errors.HgMergeConflictException;
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import io.github.search5.hg4j.errors.HgValidationException;
@@ -26,10 +27,28 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Porcelain command to shelve and unshelve local working copy changes.
  * Supports saving modified, added, and removed files and restoring them with full dirstate fidelity.
+ *
+ * <p>Since 2026-09-04, {@link #performUnshelve} follows real hg's own {@code _dounshelve()}
+ * algorithm (mercurial/shelve.py) instead of a simple diff-replay: the shelved changegroup is
+ * first restored as a real (throwaway) commit on top of the parent it was originally shelved
+ * from, that commit is rebased -- via {@link RebaseCommand}, reusing its 3-way-merge conflict
+ * detection rather than reimplementing one here -- onto whatever the working directory's parent
+ * actually is now (a no-op when nothing has landed there since the shelve), and the result is
+ * finally "uncommitted" back onto the working copy as pending changes while every trace of the
+ * throwaway commit(s) is erased (verified against real hg CLI, 2026-09-04: they are NOT left
+ * behind even as hidden/obsolete revisions -- real hg builds them inside a transaction it then
+ * aborts, which is why this class strips them outright rather than leaving an evolution marker
+ * the way {@link RebaseCommand} normally would for a user-visible rebase). A conflict during that
+ * rebase step pauses exactly like a real {@code hg rebase} would; see {@link #unshelveContinue()}
+ * and {@link #unshelveAbort()}.
  */
 public class ShelveCommand {
 
@@ -53,7 +72,7 @@ public class ShelveCommand {
         return this;
     }
 
-    public void call() throws IOException, HgLockException {
+    public void call() throws IOException, HgLockException, HgMergeConflictException {
         File shelvedDir = new File(repository.getHgDir(), "shelved");
         shelvedDir.mkdirs();
         File stateFile = new File(shelvedDir, name + ".state");
@@ -469,7 +488,7 @@ public class ShelveCommand {
         }
     }
 
-    private void performUnshelve(File stateFile) throws IOException, HgLockException {
+    private void performUnshelve(File stateFile) throws IOException, HgLockException, HgMergeConflictException {
         File shelvedDir = stateFile.getParentFile();
         File patchFile = new File(shelvedDir, name + ".patch");
         File hgBundleFile = new File(shelvedDir, name + ".hg");
@@ -592,24 +611,74 @@ public class ShelveCommand {
             }
         }
 
+        byte[] p1Node = NodeIdUtil.fromHex(p1Hex);
+        byte[] p2Node = NodeIdUtil.fromHex(p2Hex);
+
         try (HgLock wlock = repository.lockWorkingCopy();
              HgLock storeLock = repository.lockStore()) {
 
             Dirstate dirstate = repository.getDirstate();
 
-            // Validate parent hash consistency (W1)
-            String currentP1Hex = NodeIdUtil.toHex(dirstate.getParent1());
-            if (!currentP1Hex.equalsIgnoreCase(p1Hex)) {
-                throw new HgValidationException("Cannot unshelve: Working directory parent (" + currentP1Hex
-                    + ") does not match shelved parent (" + p1Hex + ")");
-            }
-            String currentP2Hex = NodeIdUtil.toHex(dirstate.getParent2());
-            if (!currentP2Hex.equalsIgnoreCase(p2Hex)) {
-                throw new HgValidationException("Cannot unshelve: Working directory parent2 (" + currentP2Hex
-                    + ") does not match shelved parent2 (" + p2Hex + ")");
+            // Real hg's `hg unshelve` refuses to start while another merge/graft/rebase etc. is
+            // already mid-flight (`cmdutil.checkunfinished`); hg4j approximates that here with the
+            // one kind of in-progress state it can actually detect from the dirstate alone -- an
+            // unresolved second parent.
+            byte[] currentP2 = dirstate.getParent2();
+            if (currentP2 != null && !NodeIdUtil.isAllZero(currentP2)) {
+                throw new HgValidationException("Cannot unshelve: an unresolved merge is already in progress");
             }
 
-            // Restore files from bundle
+            // Real hg's unshelve (mercurial/shelve.py _commitworkingcopychanges) tolerates pending
+            // working-copy changes by temporarily committing them too, then folding the shelved
+            // changes on top of that temp commit as well. hg4j doesn't implement that
+            // generalization yet -- require a clean working copy relative to its current parent
+            // instead of silently clobbering unrelated pending changes in the diff-based restore
+            // below.
+            Status wdStatus = new StatusCommand(repository).call();
+            if (!wdStatus.getAdded().isEmpty() || !wdStatus.getModified().isEmpty() || !wdStatus.getRemoved().isEmpty()) {
+                throw new HgValidationException("Cannot unshelve: the working copy has pending uncommitted changes "
+                        + "(commit or shelve them first -- hg4j does not yet support unshelving onto pending changes)");
+            }
+
+            // The TRUE current working-directory parent -- may differ from the shelve's own
+            // original parent (p1Hex/p1Node above) if other work has landed since the shelve was
+            // taken. This is real hg's `pctx`.
+            byte[] originalWdParent = dirstate.getParent1();
+
+            // Fail fast (before touching anything) if the current parent doesn't even resolve to
+            // a real revision -- real hg would already have failed resolving `repo['.']` long
+            // before reaching any shelve logic in that case. Checking this upfront, rather than
+            // only discovering it later when the rebase step tries to target it, avoids building
+            // (and then having to unwind) a throwaway restore commit against a working copy whose
+            // own notion of "current parent" cannot be trusted in the first place.
+            if (!NodeIdUtil.isAllZero(originalWdParent)) {
+                File clIdxCheck = new File(repository.getStoreDir(), "00changelog.i");
+                File clDatCheck = new File(repository.getStoreDir(), "00changelog.d");
+                Revlog clCheck = repository.getRevlog(clIdxCheck, clDatCheck);
+                if (NodeIdUtil.findRevisionByNodeId(clCheck, originalWdParent) == -1) {
+                    throw new HgRevisionNotFoundException("Cannot unshelve: working directory parent revision not found: "
+                            + NodeIdUtil.toHex(originalWdParent));
+                }
+            }
+
+            // Step 1: recreate the shelved commit as a real (throwaway) commit on top of the
+            // parent it was ORIGINALLY shelved from -- checkout that parent first so the shelved
+            // bundle's per-file deltas (encoded against p1's own local filelog revisions) apply
+            // cleanly, exactly like a fresh `hg update` to that commit followed by unpacking the
+            // shelve's changegroup on top (real hg's own `_unshelverestorecommit`).
+            checkoutFullClean(p1Node);
+            dirstate = repository.getDirstate();
+            if (!NodeIdUtil.isAllZero(p2Node)) {
+                // Preserve the exact (p1, p2) pairing the shelve was taken from (e.g. a shelve
+                // made mid-merge) -- checkoutFullClean() above only ever moves a single parent.
+                dirstate.setParents(p1Node, p2Node);
+                repository.writeDirstate(dirstate);
+                dirstate = repository.getDirstate();
+            }
+
+            // Restore files from bundle (verbatim per-file bundle decode -- this is what builds
+            // the throwaway restore commit's content, unchanged from before this class was
+            // rewritten to use the real rebase-based algorithm).
             for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
                 String path = fg.path;
                 // As with the changelog/manifest groups above, a file this bundle's OTHER
@@ -682,11 +751,390 @@ public class ShelveCommand {
 
             repository.writeDirstate(dirstate);
 
-            Files.deleteIfExists(stateFile.toPath());
-            Files.deleteIfExists(shelveInfoFile.toPath());
-            Files.deleteIfExists(hgBundleFile.toPath());
-            Files.deleteIfExists(patchFile.toPath());
+            CommitCommand commitCmd = new CommitCommand(repository)
+                    .setAuthor("hg4j <hg4j@example.com>")
+                    .setMessage("[unshelve] " + name)
+                    .setSkipLockAndJournal(true);
+            byte[] tempCommitNode = commitCmd.call();
+
+            // Step 2: rebase the restored commit onto the TRUE current working-directory parent,
+            // if anything has landed there since the shelve was taken -- a no-op (rebasing onto
+            // the parent it's already on) otherwise. Reuses RebaseCommand's own cherry-pick + real
+            // 3-way-merge conflict detection wholesale rather than reimplementing one here.
+            byte[] finalNode;
+            String currentP1HexNow = NodeIdUtil.toHex(originalWdParent);
+            if (currentP1HexNow.equalsIgnoreCase(p1Hex)) {
+                finalNode = tempCommitNode;
+            } else {
+                try {
+                    finalNode = new RebaseCommand(repository)
+                            .setSource(tempCommitNode)
+                            .setTarget(originalWdParent)
+                            .call();
+                } catch (HgMergeConflictException e) {
+                    // Paused: RebaseCommand has already persisted its own resumable state
+                    // (.hg/rebasestate-hg4j). Remember just enough on our side (which shelve, and
+                    // where the final result should land once it's done) so a fresh ShelveCommand
+                    // instance can pick this back up later via unshelveContinue()/unshelveAbort(),
+                    // then propagate -- mirroring real hg pausing exactly like `hg rebase` would.
+                    writeUnshelveState(name, tempCommitNode, originalWdParent);
+                    throw e;
+                } catch (Exception e) {
+                    // Anything else (e.g. a corrupted/invalid current parent1 that doesn't even
+                    // resolve to a real revision): undo the throwaway restore commit so a failed
+                    // unshelve attempt never leaves stray store state or a half-moved working copy
+                    // behind.
+                    rollbackFailedUnshelveAttempt(tempCommitNode, originalWdParent);
+                    if (e instanceof IOException io) throw io;
+                    if (e instanceof HgLockException lk) throw lk;
+                    if (e instanceof RuntimeException re) throw re;
+                    throw new IOException(e);
+                }
+            }
+
+            // Step 3: "uncommit" the result back onto the working copy as pending changes, and
+            // erase every trace of the throwaway commit(s).
+            finishUnshelve(name, stateFile, hgBundleFile, shelveInfoFile, patchFile,
+                    tempCommitNode, finalNode, originalWdParent);
         }
+    }
+
+    /**
+     * Resumes an unshelve paused by {@link #performUnshelve} (via {@link #call()}) on a rebase
+     * conflict, after the caller has resolved every unresolved file reported by
+     * {@code hg resolve --list} and staged the resolution on disk -- mirrors real hg's
+     * {@code hg unshelve --continue}. Delegates the actual resume to the paused
+     * {@link RebaseCommand}'s own {@link RebaseCommand#continueRebase()} (a fresh instance, driven
+     * purely by {@code .hg/rebasestate-hg4j}), then finishes the same uncommit+cleanup sequence
+     * {@link #performUnshelve} itself would have on a conflict-free rebase.
+     *
+     * @throws HgValidationException    if no unshelve is in progress, or unresolved files remain
+     * @throws HgMergeConflictException if resolving still leaves a further conflict (not expected
+     *                                   for unshelve's single-revision rebase, but handled the same
+     *                                   way {@link RebaseCommand} itself would)
+     */
+    public void unshelveContinue() throws IOException, HgLockException, HgMergeConflictException {
+        File unshelveStateFile = unshelveStateFile();
+        if (!unshelveStateFile.exists()) {
+            throw new HgValidationException("no unshelve in progress");
+        }
+
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
+
+            UnshelveState state = readUnshelveState();
+
+            byte[] finalNode = new RebaseCommand(repository).continueRebase();
+
+            File shelvedDir = new File(repository.getHgDir(), "shelved");
+            File stateFile = new File(shelvedDir, state.name + ".state");
+            File hgBundleFile = new File(shelvedDir, state.name + ".hg");
+            File shelveInfoFile = new File(shelvedDir, state.name + ".shelve");
+            File patchFile = new File(shelvedDir, state.name + ".patch");
+
+            finishUnshelve(state.name, stateFile, hgBundleFile, shelveInfoFile, patchFile,
+                    state.tempCommitNode, finalNode, state.originalWdParent);
+        }
+    }
+
+    /**
+     * Aborts an in-progress (paused-on-conflict) unshelve, mirroring real hg's
+     * {@code hg unshelve --abort}: discards the throwaway restore/rebase commit(s) this attempt
+     * created, restores the working copy and dirstate to exactly their pre-unshelve state, and --
+     * unlike a completed unshelve -- leaves the shelve itself untouched so a future unshelve
+     * attempt can still use it.
+     *
+     * @throws HgValidationException if no unshelve is in progress
+     */
+    public void unshelveAbort() throws IOException, HgLockException {
+        File unshelveStateFile = unshelveStateFile();
+        if (!unshelveStateFile.exists()) {
+            throw new HgValidationException("no unshelve in progress");
+        }
+
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
+
+            UnshelveState state = readUnshelveState();
+
+            File rebaseStateFile = new File(repository.getHgDir(), "rebasestate-hg4j");
+            if (rebaseStateFile.exists()) {
+                new RebaseCommand(repository).abort();
+            }
+
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog cl = repository.getRevlog(clIdx, clDat);
+            int tempRev = cl.findRevision(state.tempCommitNode);
+            if (tempRev != -1) {
+                stripRevisionsFrom(tempRev);
+                repository.clearRevlogCache();
+            }
+
+            checkoutFullClean(state.originalWdParent);
+            deleteUnshelveStateFile();
+        }
+    }
+
+    /**
+     * Diffs {@code finalNode}'s manifest (the restored, possibly-rebased shelve commit) against
+     * {@code originalWdParent}'s (the TRUE working-directory parent, unaffected by whatever the
+     * shelve's own original parent was) and materializes the difference onto the working copy as
+     * pending, uncommitted changes -- real hg's own {@code cmdutil.revert(ui, repo, shelvectx)}
+     * step (mercurial/shelve.py {@code mergefiles()}). Every trace of the throwaway commit(s) this
+     * unshelve attempt created is then erased (see the class javadoc for why this strips outright
+     * rather than leaving an evolution marker), and the shelve's own on-disk files plus hg4j's
+     * private in-progress bookkeeping are cleaned up.
+     */
+    private void finishUnshelve(String shelveName, File stateFile, File hgBundleFile, File shelveInfoFile,
+                                 File patchFile, byte[] tempCommitNode, byte[] finalNode, byte[] originalWdParent)
+            throws IOException, HgLockException {
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        Revlog cl = repository.getRevlog(clIdx, clDat);
+        Revlog mf = repository.getManifestRevlog();
+        MergeCommand helper = new MergeCommand(repository);
+
+        int finalRev = cl.findRevision(finalNode);
+        if (finalRev == -1) {
+            throw new HgRevisionNotFoundException("Unshelve: rebased/restored commit vanished before it could be finalized.");
+        }
+        Map<String, String> finalManifest = helper.loadManifestAtCommit(cl, mf, finalRev);
+
+        int destRev = NodeIdUtil.isAllZero(originalWdParent) ? -1 : cl.findRevision(originalWdParent);
+        Map<String, String> destManifest = destRev == -1 ? Collections.emptyMap() : helper.loadManifestAtCommit(cl, mf, destRev);
+
+        // Gather every path's pending content/mode BEFORE stripping below -- once the throwaway
+        // commit(s) are erased their filelog revisions are gone too.
+        Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        allPaths.addAll(finalManifest.keySet());
+        allPaths.addAll(destManifest.keySet());
+
+        Map<String, byte[]> pendingContent = new HashMap<>();
+        Map<String, Integer> pendingMode = new HashMap<>();
+        Map<String, Character> pendingState = new HashMap<>();
+        for (String path : allPaths) {
+            String hFinal = finalManifest.get(path);
+            String hDest = destManifest.get(path);
+            if (Objects.equals(hFinal, hDest)) {
+                continue;
+            }
+            if (hFinal == null) {
+                pendingState.put(path, 'r');
+            } else {
+                pendingContent.put(path, helper.getFileRevisionContent(path, hFinal));
+                pendingMode.put(path, helper.getModeFromManifestHex(hFinal));
+                pendingState.put(path, hDest == null ? 'a' : 'n');
+            }
+        }
+
+        // Erase every trace of the throwaway restore/rebase commit(s) -- verified against real hg
+        // CLI (2026-09-04): after `hg unshelve` completes, the temp commit(s) it built internally
+        // are gone entirely, not left behind even as hidden/obsolete revisions (real hg builds
+        // them inside a single transaction it then aborts -- mercurial/shelve.py
+        // _finishunshelve -> _aborttransaction -- which physically erases them; this truncation-
+        // based strip achieves the same end state).
+        int tempRev = cl.findRevision(tempCommitNode);
+        if (tempRev != -1) {
+            stripRevisionsFrom(tempRev);
+            repository.clearRevlogCache();
+        }
+
+        checkoutFullClean(originalWdParent);
+        Dirstate dirstate = repository.getDirstate();
+        for (Map.Entry<String, Character> e : pendingState.entrySet()) {
+            String path = e.getKey();
+            char state = e.getValue();
+            File diskFile = new File(repository.getDirectory(), path);
+            if (state == 'r') {
+                if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                    Files.delete(diskFile.toPath());
+                }
+                dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
+                continue;
+            }
+
+            byte[] content = pendingContent.get(path);
+            int mode = pendingMode.get(path);
+            diskFile.getParentFile().mkdirs();
+            if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                Files.delete(diskFile.toPath());
+            }
+            if (mode == 0120000) {
+                String target = new String(content, StandardCharsets.UTF_8).trim();
+                try {
+                    Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
+                } catch (Exception ex) {
+                    Files.write(diskFile.toPath(), content);
+                }
+            } else {
+                Files.write(diskFile.toPath(), content);
+                diskFile.setExecutable(mode == 0755, false);
+            }
+            int size = content.length;
+            // Real hg's own dirstate ambiguous-mtime sentinel (mercurial/dirstate.py; the 32-bit
+            // "-1", i.e. 0xFFFFFFFF) rather than a freshly-stat'd real mtime: this entry's content
+            // was just fabricated by unshelve itself (from the restored/rebased commit), not
+            // genuinely re-typed by a user at this instant, so its on-disk mtime otherwise happens
+            // to exactly match what's recorded here -- indistinguishable from "unmodified" by a
+            // naive size+mtime dirstate check alone. Real hg writes this same sentinel after its
+            // own internal working-copy rewrites for exactly this reason (confirmed live: a real
+            // `hg shelve`'s own revert-to-parent step does the same, see StatusCommand's matching
+            // AMBIGUOUS_TIME handling). Using a real mtime here instead worked only by the
+            // coincidence of running fast enough to land inside whatever racy-write window the
+            // READING tool (real hg's own `hg status`, or hg4j's StatusCommand) happens to apply --
+            // genuinely flaky, and more likely to be missed the more work this method does before
+            // reaching this write. The sentinel makes every reader always re-verify by content,
+            // eliminating the race outright.
+            long time = state == 'n' ? 0xFFFFFFFFL : SafeFileIO.lastModifiedSeconds(diskFile);
+            dirstate.addEntry(path, new Dirstate.Entry(state, mode, size, time));
+        }
+        repository.writeDirstate(dirstate);
+
+        Files.deleteIfExists(stateFile.toPath());
+        Files.deleteIfExists(shelveInfoFile.toPath());
+        Files.deleteIfExists(hgBundleFile.toPath());
+        Files.deleteIfExists(patchFile.toPath());
+        deleteUnshelveStateFile();
+    }
+
+    /**
+     * Best-effort cleanup after an unshelve attempt fails for a reason OTHER than a rebase
+     * conflict (which persists its own resumable state instead, see {@link #performUnshelve}):
+     * strips the throwaway restore commit back out of the store and tries to move the working
+     * copy back toward {@code originalWdParent}. Failures here are swallowed -- this is already
+     * running from inside a failure path, and the original exception takes priority.
+     */
+    private void rollbackFailedUnshelveAttempt(byte[] tempCommitNode, byte[] originalWdParent) {
+        try {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog cl = repository.getRevlog(clIdx, clDat);
+            int tempRev = cl.findRevision(tempCommitNode);
+            if (tempRev != -1) {
+                stripRevisionsFrom(tempRev);
+                repository.clearRevlogCache();
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            checkoutFullClean(originalWdParent);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * Moves the working copy and dirstate cleanly to {@code node} -- a full, union-of-paths
+     * manifest diff against whatever is CURRENTLY tracked in the dirstate (deleting any path not
+     * part of {@code node}'s manifest, writing/overwriting every path that is), or -- when {@code
+     * node} is null/the null revision -- back to the empty, pre-first-commit state.
+     *
+     * <p>Deliberately does NOT delegate to {@link UpdateCommand} (which diffs against whatever the
+     * CURRENT dirstate parent resolves to): by the time this runs a second time within a single
+     * unshelve attempt (see {@link #finishUnshelve}), the dirstate's parent is the throwaway
+     * restore/rebase commit that has *already been stripped* a few lines earlier, so it can no
+     * longer be resolved to a revision at all -- {@link UpdateCommand} would treat that as "no
+     * current manifest" and silently fail to delete paths the stripped commit had added. Diffing
+     * against the dirstate's own tracked-paths set instead (mirrors {@link
+     * RebaseCommand}'s own {@code restoreWorkingCopyCleanTo}) sidesteps that entirely.
+     */
+    private void checkoutFullClean(byte[] node) throws IOException {
+        Map<String, String> targetManifest;
+        if (node == null || NodeIdUtil.isAllZero(node)) {
+            targetManifest = Collections.emptyMap();
+        } else {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+            int rev = NodeIdUtil.findRevisionByNodeId(changelog, node);
+            if (rev == -1) {
+                throw new HgRevisionNotFoundException("Unshelve: checkout target revision not found: " + NodeIdUtil.toHex(node));
+            }
+            targetManifest = new MergeCommand(repository).loadManifestAtCommit(changelog, repository.getManifestRevlog(), rev);
+        }
+
+        Dirstate dirstate = repository.getDirstate();
+        Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        allPaths.addAll(dirstate.getEntries().keySet());
+        allPaths.addAll(targetManifest.keySet());
+
+        MergeCommand helper = new MergeCommand(repository);
+        for (String path : allPaths) {
+            String hexFlag = targetManifest.get(path);
+            File f = new File(repository.getDirectory(), path);
+            if (hexFlag == null) {
+                if (f.exists() || Files.isSymbolicLink(f.toPath())) {
+                    Files.delete(f.toPath());
+                }
+                dirstate.removeEntry(path);
+                continue;
+            }
+
+            byte[] content = helper.getFileRevisionContent(path, hexFlag);
+            int mode = helper.getModeFromManifestHex(hexFlag);
+            f.getParentFile().mkdirs();
+            if (f.exists() || Files.isSymbolicLink(f.toPath())) {
+                Files.delete(f.toPath());
+            }
+            if (mode == 0120000) {
+                String target = new String(content, StandardCharsets.UTF_8).trim();
+                try {
+                    Files.createSymbolicLink(f.toPath(), Path.of(target));
+                } catch (Exception ex) {
+                    Files.write(f.toPath(), content);
+                }
+            } else {
+                Files.write(f.toPath(), content);
+                f.setExecutable(mode == 0755, false);
+            }
+            int size = content.length;
+            long time = SafeFileIO.lastModifiedSeconds(f);
+            dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
+        }
+
+        byte[] parent1 = (node == null) ? new byte[20] : node;
+        dirstate.setParents(parent1, new byte[20]);
+        repository.writeDirstate(dirstate);
+    }
+
+    /** On-disk (hg4j-private) record of a paused, resumable unshelve -- see {@link #unshelveStateFile()}. */
+    private static final class UnshelveState {
+        String name;
+        byte[] tempCommitNode;
+        byte[] originalWdParent;
+    }
+
+    private File unshelveStateFile() {
+        return new File(repository.getHgDir(), "shelvedstate-hg4j");
+    }
+
+    private void writeUnshelveState(String shelveName, byte[] tempCommitNode, byte[] originalWdParent) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("name=").append(shelveName).append('\n');
+        sb.append("tempCommitNode=").append(NodeIdUtil.toHex(tempCommitNode)).append('\n');
+        sb.append("originalWdParent=").append(NodeIdUtil.toHex(originalWdParent)).append('\n');
+        Files.writeString(unshelveStateFile().toPath(), sb.toString(), StandardCharsets.UTF_8);
+    }
+
+    private UnshelveState readUnshelveState() throws IOException {
+        UnshelveState state = new UnshelveState();
+        for (String line : Files.readAllLines(unshelveStateFile().toPath(), StandardCharsets.UTF_8)) {
+            int eq = line.indexOf('=');
+            if (eq == -1) continue;
+            String key = line.substring(0, eq);
+            String val = line.substring(eq + 1);
+            switch (key) {
+                case "name" -> state.name = val;
+                case "tempCommitNode" -> state.tempCommitNode = NodeIdUtil.fromHex(val);
+                case "originalWdParent" -> state.originalWdParent = NodeIdUtil.fromHex(val);
+                default -> { /* forward-compatible: ignore unknown keys */ }
+            }
+        }
+        return state;
+    }
+
+    private void deleteUnshelveStateFile() throws IOException {
+        Files.deleteIfExists(unshelveStateFile().toPath());
     }
 
     /** Path -&gt; "&lt;40-hex-node&gt;&lt;flags&gt;" (flags: "" regular, "x" exec, "l" symlink), real hg manifest text layout. */
@@ -894,11 +1342,26 @@ public class ShelveCommand {
         Revlog changelog = repository.getRevlog(clIdx, clDat);
         Revlog manifest = repository.getManifestRevlog();
 
-        // Calculate truncate boundaries
-        long clIdxSize = (long) startRev * 64;
-        long clDatSize = 0;
-        if (startRev > 0) {
-            clDatSize = changelog.getIndexRecord(startRev).getOffset();
+        // Calculate truncate boundaries. Real hg's "inline" revlog format (the default for a
+        // small revlog -- confirmed the common case for a real-hg-authored repo's
+        // changelog/manifest/filelogs, e.g. ShelveRealHgInteropTest's realHgShelveCanBeUnshelvedByHg4j,
+        // 2026-09-04) packs each revision's compressed DATA directly after its own 64-byte index
+        // header, all within the single .i file -- there is no .d file at all until/unless the
+        // revlog later crosses hg's inline-size threshold and gets rewritten as non-inline. A
+        // plain `rev * 64` byte offset (correct only for a NON-inline revlog, whose .i file holds
+        // nothing but fixed-size 64-byte headers) truncates mid-record for an inline one,
+        // corrupting it -- this method previously always used that formula, which was never
+        // exercised against a real-hg-authored (inline) revlog before this class started actually
+        // creating and stripping a real temporary commit during unshelve. Use the revlog's own
+        // recorded per-revision file offset (Revlog.getFileOffset(), tracked by RevlogIndex's own
+        // reader precisely for this purpose) instead, whenever Revlog.isInline() says so.
+        long clIdxSize;
+        long clDatSize = clDat.exists() ? clDat.length() : 0L;
+        if (changelog.isInline()) {
+            clIdxSize = changelog.getFileOffset(startRev);
+        } else {
+            clIdxSize = (long) startRev * 64;
+            clDatSize = (startRev > 0) ? changelog.getIndexRecord(startRev).getOffset() : 0;
         }
 
         // We also truncate manifest starting from the linkRev mapping to startRev
@@ -910,14 +1373,14 @@ public class ShelveCommand {
             }
         }
 
-        long mfIdxSize = manifest.getRevisionCount() * 64L;
+        long mfIdxSize = mfIdx.exists() ? mfIdx.length() : 0L;
         long mfDatSize = mfDat.exists() ? mfDat.length() : 0L;
         if (minMfRev != -1) {
-            mfIdxSize = (long) minMfRev * 64;
-            if (minMfRev > 0) {
-                mfDatSize = manifest.getIndexRecord(minMfRev).getOffset();
+            if (manifest.isInline()) {
+                mfIdxSize = manifest.getFileOffset(minMfRev);
             } else {
-                mfDatSize = 0;
+                mfIdxSize = (long) minMfRev * 64;
+                mfDatSize = (minMfRev > 0) ? manifest.getIndexRecord(minMfRev).getOffset() : 0;
             }
         }
 
@@ -942,10 +1405,13 @@ public class ShelveCommand {
                                 }
                             }
                             if (minFileRev != -1) {
-                                long flIdxSize = (long) minFileRev * 64;
-                                long flDatSize = 0;
-                                if (minFileRev > 0) {
-                                    flDatSize = filelog.getIndexRecord(minFileRev).getOffset();
+                                long flIdxSize;
+                                long flDatSize = flDat.exists() ? flDat.length() : 0L;
+                                if (filelog.isInline()) {
+                                    flIdxSize = filelog.getFileOffset(minFileRev);
+                                } else {
+                                    flIdxSize = (long) minFileRev * 64;
+                                    flDatSize = (minFileRev > 0) ? filelog.getIndexRecord(minFileRev).getOffset() : 0;
                                 }
                                 truncateFile(flIdx, flIdxSize);
                                 truncateFile(flDat, flDatSize);

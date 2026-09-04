@@ -149,11 +149,14 @@ public class NarrowCloneRealHgInteropTest {
      * {@link HgTreeFilter#createNarrowSpecFilter}로 파싱/매칭했을 때, 실제 hg가 체크아웃한
      * 워킹 카피의 파일 목록과 정확히 같은 판정을 내리는지 확인한다.
      *
-     * <p>hg4j는 narrowspec을 다른 명령(pull/status/update 등)에서 다시 읽어들이는 통합 코드가
-     * 없으므로(narrow clone을 한 번 수행할 때만 그 자리에서 필터를 만들어 쓴다), 이 테스트는
+     * <p>(2026-09-04 갱신: 아래 검증 당시엔 hg4j가 narrowspec을 pull/update에서 다시 읽어들이는
+     * 통합이 없었으나, 백로그 30번에서 {@link HgTreeFilter#loadFromRepository}가 추가돼
+     * {@code PullCommand}/{@code UpdateCommand}/{@code FetchCommand}가 명시적 treeFilter 없이도
+     * 저장소 자신의 narrowspec을 자동으로 존중하게 됐다 -- 그 통합 자체에 대한 end-to-end 검증은
+     * {@link #hg4jNarrowCloneScopeIsRespectedOnSubsequentPlainPull} 참고. 이 테스트는 여전히
      * "실제로 존재하는" 두 프리미티브({@code normalizeNarrowPattern}, {@code createNarrowSpecFilter})
      * 가 실제 hg의 narrowspec 텍스트와 매칭 판정 양쪽 모두에 대해 정확히 일치함을 확인하는 선에서
-     * 검증한다.
+     * 유효하다.)
      */
     @Test
     public void hg4jNarrowSpecFilterMatchesRealHgNarrowCloneDecisions(@TempDir Path tempDir) throws Exception {
@@ -213,6 +216,66 @@ public class NarrowCloneRealHgInteropTest {
         assertFalse(filter.accept("srcdir/sub/B.java"), "excluded by real hg's narrowspec");
         assertFalse(filter.accept("docs/readme.txt"), "outside the include set real hg used");
         assertFalse(filter.accept("other/o.txt"), "outside the include set real hg used");
+    }
+
+    /**
+     * Backlog 30 (narrow clone wire-level 재통합): 위 시나리오 3의 javadoc이 "narrowspec을 pull/
+     * update에서 다시 읽어들이는 통합이 없다"고 적어뒀던 gap이 실제로 메워졌는지 검증한다 --
+     * narrow clone 이후 소스에 새 커밋(narrow 범위 안/밖 파일 각각 하나씩)을 real hg로 만들고,
+     * hg4j {@code PullCommand}를 명시적 treeFilter 없이(plain {@code .pull()}) 호출했을 때
+     * narrow 범위 밖 파일이 워킹 카피/추적 목록에 전혀 나타나지 않는지, 그리고 real hg CLI
+     * 자신이 그 결과 저장소를 열었을 때도 여전히 narrow 범위가 일관되게 유지된 것으로 보이는지
+     * 확인한다.
+     */
+    @Test
+    public void hg4jNarrowCloneScopeIsRespectedOnSubsequentPlainPull(@TempDir Path tempDir) throws Exception {
+        File srcRepoDir = tempDir.resolve("src4").toFile();
+        File destRepoDir = tempDir.resolve("narrow_dest4").toFile();
+
+        HgRepository srcRepo = Hg.init().setDirectory(srcRepoDir).call();
+        try (Hg hgSrc = Hg.wrap(srcRepo)) {
+            writeFile(srcRepoDir, "srcdir/A.java", "class A");
+            writeFile(srcRepoDir, "docs/readme.txt", "doc readme");
+            hgSrc.add().addFile("srcdir/A.java").addFile("docs/readme.txt").call();
+            hgSrc.commit().setAuthor("Tester").setMessage("init commit").call();
+        }
+
+        Hg.narrowClone()
+                .setSource(srcRepoDir.getAbsolutePath())
+                .setDirectory(destRepoDir)
+                .addIncludePath("srcdir")
+                .call();
+        assertEquals("srcdir/A.java", hgNarrow(destRepoDir, "files"), "sanity: initial narrow clone scope");
+
+        // A later commit on the source adds one in-scope file and one out-of-scope file.
+        writeFile(srcRepoDir, "srcdir/C.java", "class C");
+        writeFile(srcRepoDir, "docs/more.txt", "more docs");
+        HgTestUtils.hg(srcRepoDir, "add");
+        HgTestUtils.hg(srcRepoDir, "commit", "-u", "T", "-m", "second commit");
+
+        // A plain pull -- no explicit setTreeFilter -- must still respect the narrow scope this
+        // repository was cloned with, purely from what's already recorded in .hg/store/narrowspec.
+        HgRepository destRepo = new HgRepository(destRepoDir);
+        new PullCommand(destRepo).setSource(srcRepoDir.getAbsolutePath()).call();
+        new UpdateCommand(destRepo).call();
+
+        assertTrue(new File(destRepoDir, "srcdir/C.java").exists(),
+                "the new in-scope file must be checked out by a plain update after a plain pull");
+        assertFalse(new File(destRepoDir, "docs/more.txt").exists(),
+                "the new out-of-scope file must NOT be checked out -- narrow scope must survive a plain pull/update");
+        assertFalse(new File(destRepoDir, "docs").exists(),
+                "the out-of-scope docs/ directory must not even be materialized");
+
+        Status status = new StatusCommand(destRepo).call();
+        assertTrue(status.getAdded().isEmpty() && status.getModified().isEmpty() && status.getClean().stream()
+                        .noneMatch(p -> p.startsWith("docs/")),
+                "hg4j's own status must not consider any docs/ path part of this narrow working copy: " + status.getClean());
+
+        // Ground truth: real hg CLI opening the same hg4j-pulled repository must agree.
+        assertEquals("srcdir/A.java\nsrcdir/C.java", hgNarrow(destRepoDir, "files"),
+                "real hg must see exactly the two in-scope files after hg4j's plain pull+update, and nothing from docs/");
+        assertEquals("", hgNarrow(destRepoDir, "status"),
+                "real hg must consider the hg4j-pulled narrow working copy clean");
     }
 
     private static void writeFile(File repoDir, String relPath, String content) throws Exception {

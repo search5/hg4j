@@ -79,6 +79,14 @@ public class UpdateCommand {
     }
 
     public byte[] call() throws IOException, HgLockException {
+        // Backlog 30: when the caller hasn't explicitly narrowed this update (still the default
+        // HgTreeFilter.ALL), pick up whatever narrowspec the repository itself was narrow cloned
+        // with -- so checkout keeps respecting the narrow scope on every later `update`, not just
+        // right after NarrowCloneCommand's own initial checkout.
+        if (this.treeFilter == HgTreeFilter.ALL) {
+            this.treeFilter = HgTreeFilter.loadFromRepository(repository);
+        }
+
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
 

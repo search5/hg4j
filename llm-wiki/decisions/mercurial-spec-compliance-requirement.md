@@ -1891,16 +1891,49 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     진짜 미지의 requirement는 거부)로 검증, 기존
     `HgPorcelainAndExceptionsTest`의 관련 테스트도 회귀 없이 통과.
 
-30. **Narrow clone의 wire-protocol 수준 재통합 (narrow pull/update)**. 신규,
-    2026-09-04 발견(백로그 28번 완료 후 재검증 중 승격) — 미착수. `PullCommand`/
-    `UpdateCommand`/`FetchCommand` 어디에도 narrowspec 참조가 없다(2026-09-04 코드
-    확인). 현재 narrowspec은 `NarrowCloneCommand` 최초 clone 시점에만 그 자리에서
-    필터를 만들어 쓰고, 이후 `pull`/`update`가 narrow 상태를 다시 읽어 범위 밖
-    리비전을 걸러내는 로직이 전혀 없다 — narrow clone한 저장소에 이후 pull을 하면
-    사실상 full clone과 동일하게 전체 히스토리를 받아버릴 가능성이 높다(미검증).
-    실제 hg의 wire-protocol ellipsis node 메커니즘까지 구현 범위로 잡지 않더라도,
-    최소한 "narrow clone 이후 pull 시 hg4j가 무엇을 받는지"를 real hg CLI(`hg
-    --config extensions.narrow= pull`)와 나란히 실행해 대조 검증 필요.
+30. ~~**Narrow clone의 wire-protocol 수준 재통합 (narrow pull/update)**~~ —
+    ✅ **완료(2026-09-04)**. `PullCommand`/`UpdateCommand`/`FetchCommand` 어디에도
+    narrowspec 참조가 없어(narrow clone 시점에만 그 자리에서 필터를 만들어 쓰고
+    이후 `pull`/`update`가 narrow 상태를 다시 읽지 않던 문제) narrow clone한
+    저장소에 plain `pull`/`update`를 하면 범위 밖 파일까지 받아버릴 위험이 있었다.
+
+    **구현**: `HgTreeFilter.loadFromRepository(HgRepository)` 신설 — `.hg/store/
+    narrowspec`을 읽어(`NarrowCloneCommand.formatNarrowSpec`이 쓰는 `[include]`/
+    `[exclude]` 포맷을 그대로 파싱) 클론 시점과 동일한 `createNarrowSpecFilter`
+    매처를 재구성한다(narrowspec이 없으면 `HgTreeFilter.ALL`). `FetchCommand.call()`/
+    `applyBundle()`과 `UpdateCommand.call()`이 각각 시작 시점에 "자신의 treeFilter가
+    여전히 기본값 `ALL`인 경우에만" 이걸로 자동 대체하도록 배선 — 명시적으로
+    `setTreeFilter()`를 호출한 기존 호출자(`NarrowCloneCommand` 자신 포함)는 전혀
+    영향받지 않는다. `PullCommand`는 자신의 필터가 기본값일 때 `FetchCommand`에
+    아예 전달하지 않아 `FetchCommand` 자신의 자동 로딩이 작동하도록 함(오버라이드
+    사고 방지).
+
+    **부수적으로 발견·수정한 진짜 버그(NarrowCloneCommand 자체, backlog 30과
+    무관하게 이미 존재하던 결함)**: 검증 도중 기존 `NarrowCloneRealHgInteropTest`의
+    선행 시나리오까지 `HgCorruptDataException`("Failed to read complete hunk ...
+    at offset 64")으로 깨지는 걸 발견 — `git stash`로 순정 코드에 대조해도 100%
+    동일하게 재현되어 이번 변경과 무관한 사전 존재 버그임을 확인했다. 근본 원인은
+    `NarrowCloneCommand.call()`이 `hg.pull()` 직후 캐시 무효화 없이 바로
+    `hg.update()`를 호출해서, pull이 방금 쓴 매니페스트 revlog를 update가 그
+    이전(또는 `Hg.init()` 중 우연히 캐시된) stale `Revlog` 인스턴스로 읽어버리던
+    것 — `FetchCommand`의 clonebundle 경로가 이미 쓰고 있던
+    `repository.clearRevlogCache()` 패턴이 이 한 호출부에서만 빠져 있었다. 같은
+    한 줄 추가로 수정, narrow clone 전체(narrow clone을 쓰는 모든 사용자)에
+    영향을 미치던 결함이라 이번 검증이 아니었으면 계속 잠복해 있었을 것.
+
+    **범위 밖으로 남긴 것(정직하게 기록)**: 실제 hg의 wire-protocol ellipsis node
+    메커니즘(서버가 narrow 범위 밖 리비전 자체를 아예 전송하지 않는 것)은 여전히
+    미구현 — 이번 항목은 "이미 로컬에 받은 changegroup을 적용/체크아웃할 때
+    narrow 필터를 존중하는 것"까지만 다룬다(이미 백로그 28번에서도 같은 경계로
+    문서화됨).
+
+    **검증**: `NarrowCloneRealHgInteropTest`에 신규 시나리오
+    `hg4jNarrowCloneScopeIsRespectedOnSubsequentPlainPull` 추가 — narrow clone
+    이후 real hg로 범위 안/밖 파일을 각각 하나씩 추가 커밋하고, hg4j로 **명시적
+    treeFilter 없이** plain `pull`+`update`를 실행했을 때 범위 밖 파일이 워킹
+    카피/추적 목록에 전혀 안 나타나는지, real hg CLI 자신이 그 결과를 열었을 때도
+    일관되게 보는지 확인. 기존 시나리오 1~3 포함 전체 4개 테스트 GREEN, 전체
+    회귀(`test`+`interopTest`) `BUILD SUCCESSFUL`(22분48초, 새 실패 없음).
 
 31. **LFS 커밋/체크아웃 파이프라인 연동**. 신규, 2026-09-04 발견(백로그 28번에서
     "정직하게 기록"만 하고 범위 밖으로 남긴 것을 별도 항목으로 승격) — 미착수.

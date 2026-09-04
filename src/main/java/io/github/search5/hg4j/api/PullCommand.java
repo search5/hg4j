@@ -90,7 +90,13 @@ public class PullCommand {
 
         // 1. Delegate core metadata network fetching and database store sync to FetchCommand
         FetchCommand fetchCmd = new FetchCommand(repository);
-        fetchCmd.setTreeFilter(this.treeFilter);
+        // Backlog 30: only forward an explicit override -- if this PullCommand itself was never
+        // given one, leave FetchCommand's own default so it can auto-load the repository's own
+        // narrowspec (see FetchCommand#resolveNarrowTreeFilterIfDefault) instead of us silently
+        // clobbering that with ALL.
+        if (this.treeFilter != HgTreeFilter.ALL) {
+            fetchCmd.setTreeFilter(this.treeFilter);
+        }
         fetchCmd.setProgressMonitor(this.monitor);
         fetchCmd.setSource(resolvedUrl);
         if (this.credentialsProvider != null) {
@@ -119,7 +125,13 @@ public class PullCommand {
 
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
         FetchCommand fetchCmd = new FetchCommand(repository);
-        fetchCmd.setTreeFilter(this.treeFilter);
+        // Backlog 30: only forward an explicit override -- if this PullCommand itself was never
+        // given one, leave FetchCommand's own default so it can auto-load the repository's own
+        // narrowspec (see FetchCommand#resolveNarrowTreeFilterIfDefault) instead of us silently
+        // clobbering that with ALL.
+        if (this.treeFilter != HgTreeFilter.ALL) {
+            fetchCmd.setTreeFilter(this.treeFilter);
+        }
         fetchCmd.setProgressMonitor(this.monitor);
         if (this.credentialsProvider != null) {
             fetchCmd.setCredentialsProvider(this.credentialsProvider);

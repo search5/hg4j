@@ -135,7 +135,7 @@ public class Revlog {
         this.idxFile = idxFile;
         this.persistentNodeMapEnabled = usePersistentNodeMap;
         NodeMapFile persistentNodeMap = usePersistentNodeMap ? NodeMapFile.tryLoad(idxFile) : null;
-        this.index = new RevlogIndex(idxFile, createAsGeneralV2, createAsChangelogV2, persistentNodeMap);
+        this.index = new RevlogIndex(idxFile, createAsGeneralV2, createAsChangelogV2, persistentNodeMap, useZstd);
         if (index.isV2()) {
             // v2는 항상 non-inline이며 실제 데이터 파일은 docket의 UUID로부터 발견된다 —
             // 생성자로 넘어온 datFile(예: "00changelog.d")은 v2 저장소에는 존재하지 않는다.
@@ -641,6 +641,31 @@ public class Revlog {
     }
 
     /**
+     * Raw zlib/DEFLATE compression with no marker byte prefix (unlike {@link DeltaCodec#compress})
+     * -- CL_V2's COMP_MODE_DEFAULT payload is either a genuine compressed frame or exactly the raw
+     * content, decided purely by the record's own compression-mode bits, never a leading marker
+     * byte. Used only by {@link #appendRevisionV2} when the repository's default engine is zlib
+     * (no {@code revlog-compression-zstd} requirement), matching {@code java.util.zip.Deflater}'s
+     * default settings -- the same codec real hg itself falls back to.
+     */
+    private static byte[] deflateNoMarker(byte[] data) {
+        java.util.zip.Deflater deflater = new java.util.zip.Deflater();
+        deflater.setInput(data);
+        deflater.finish();
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(data.length);
+        byte[] buf = new byte[1024];
+        try {
+            while (!deflater.finished()) {
+                int count = deflater.deflate(buf);
+                baos.write(buf, 0, count);
+            }
+        } finally {
+            deflater.end();
+        }
+        return baos.toByteArray();
+    }
+
+    /**
      * @param sidedataContainer already-serialized {@link SidedataCodec} outer-container bytes
      *     (see {@link SidedataCodec#serialize}) to attach to this revision, or {@code null} for
      *     none. Written to the {@code .sda} file uncompressed (real hg's {@code COMP_MODE_PLAIN}
@@ -654,27 +679,42 @@ public class Revlog {
         File resolvedDataFile = index.getResolvedDataFile();
         boolean changelogV2 = index.isChangelogV2();
 
-        // CL_V2 compression is chosen dynamically per revision, real hg's own way: try zstd, and
-        // only actually use it when it genuinely shrinks the content -- otherwise store the
-        // revision's raw bytes as-is (COMP_MODE_PLAIN, complen==uncomplen, NO marker byte) rather
-        // than DeltaCodec.compress's v1-revlog-style 'u'+rawdata fallback (that extra marker byte
-        // is invalid here: CL_V2 readers expect either a genuine zstd frame or exactly the raw
-        // content, decided purely by the per-record compression-mode bits, never a payload-level
-        // marker). A prior implementation always hardcoded COMP_MODE_DEFAULT and always ran
-        // content through DeltaCodec.compress -- this silently produced 'u'-prefixed garbage for
-        // any revision short enough that zstd's frame overhead didn't pay for itself (real hg's
-        // own fixture, src/test/resources/fixtures/sidedata-copytracing/data.idx, confirms two of
-        // its three revisions are genuinely stored PLAIN this way: complen==uncomplen, compression
-        // byte 0x00) -- real hg's zstd decompressor then rejected the bogus frame with "Unknown
-        // frame descriptor" (found and fixed 2026-09-03, verified against real hg on a from-
-        // scratch-bootstrapped changelog-v2 repository, see ChangelogV2BootstrapTest).
-        boolean changelogUsesZstd = false;
+        // CL_V2 compression is chosen dynamically per revision, real hg's own way: try the
+        // repository's actual default engine, and only actually use it when it genuinely shrinks
+        // the content -- otherwise store the revision's raw bytes as-is (COMP_MODE_PLAIN,
+        // complen==uncomplen, NO marker byte) rather than DeltaCodec.compress's v1-revlog-style
+        // 'u'+rawdata fallback (that extra marker byte is invalid here: CL_V2 readers expect
+        // either a genuine compressed frame or exactly the raw content, decided purely by the
+        // per-record compression-mode bits, never a payload-level marker). A prior implementation
+        // always hardcoded COMP_MODE_DEFAULT and always ran content through DeltaCodec.compress --
+        // this silently produced 'u'-prefixed garbage for any revision short enough that zstd's
+        // frame overhead didn't pay for itself (real hg's own fixture,
+        // src/test/resources/fixtures/sidedata-copytracing/data.idx, confirms two of its three
+        // revisions are genuinely stored PLAIN this way: complen==uncomplen, compression byte
+        // 0x00) -- real hg's zstd decompressor then rejected the bogus frame with "Unknown frame
+        // descriptor" (found and fixed 2026-09-03, verified against real hg on a from-scratch-
+        // bootstrapped changelog-v2 repository, see ChangelogV2BootstrapTest).
+        //
+        // COMP_MODE_DEFAULT does NOT mean "zstd" unconditionally -- it means "whatever this
+        // repository's own default revlog compression engine is", which real hg's reader infers
+        // purely from the `revlog-compression-zstd` requirement string (there is no per-record
+        // codec discriminator bit), not from anything this method writes. A repository created
+        // without that requirement (real hg's own `--config format.usezstd=false`/
+        // `format.revlog-compression=zlib`, still a fully valid changelog-v2 repository) uses
+        // zlib for COMP_MODE_DEFAULT instead -- unconditionally attempting zstd here produced a
+        // zstd frame real hg's zlib-only reader could never decompress ("revlog decompress error:
+        // Error -3 while decompressing data: incorrect header check"), a real interop bug found
+        // 2026-09-04 by the requirement matrix (see decisions/exhaustive-interop-matrix-plan.md)
+        // while committing on top of a real-hg-bootstrapped, non-zstd changelog-v2 repository --
+        // `this.useZstd` (populated from that exact requirement string, see the constructor) must
+        // gate which codec is attempted, matching real hg's own engine choice byte for byte.
+        boolean changelogUsesCompression = false;
         byte[] dataHunk;
         if (changelogV2) {
-            byte[] zstdAttempt = com.github.luben.zstd.Zstd.compress(processedContent);
-            if (zstdAttempt.length < processedContent.length) {
-                dataHunk = zstdAttempt;
-                changelogUsesZstd = true;
+            byte[] compressAttempt = useZstd ? Zstd.compress(processedContent) : deflateNoMarker(processedContent);
+            if (compressAttempt.length < processedContent.length) {
+                dataHunk = compressAttempt;
+                changelogUsesCompression = true;
             } else {
                 dataHunk = processedContent;
             }
@@ -721,7 +761,7 @@ public class Revlog {
             // 대로 리비전마다 동적으로 다르다(하드코딩 금지, 2026-09-03에 발견·수정된 버그).
             // 상위 2비트(2-3)는 sidedata의 압축 모드(COMP_MODE_PLAIN=0을 쓰므로 00 그대로,
             // 값 변경 불필요) — RevlogIndex의 `(compressionByte >> 2) & 3` 파싱과 대칭.
-            recordBuf.put((byte) (changelogUsesZstd ? 1 : 0));
+            recordBuf.put((byte) (changelogUsesCompression ? 1 : 0));
             recordBuf.putInt(rev); // rank (단순화: 선형 히스토리 가정)
             recordBuf.put(new byte[23]); // 패딩
         } else {

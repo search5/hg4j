@@ -285,13 +285,11 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   zstd/zlib 혼동, dirstate-v2 트리 손상, narrow clone 캐시 버그, LFS 노드
   해시 계산 오류, `Hg.open()`의 낡은 requirement 허용목록, SSH push
   checkheads 미구현)까지 전부 수정·커밋됨.
-- **미검증 상태로 커밋됨(주의)**: 백로그 35(revlog 항상 non-inline)의 재시도
-  결과가 `Revlog.java` 등에 반영돼 있으나, 정지 시각까지 독립적인 전체 회귀
-  재확인을 못 마쳤다. 코드 내 주석은 완료를 시사하지만(3개 append* 메서드
-  모두 inline-aware하게 고쳤다는 기록) **다음 세션이 반드시 가장 먼저
-  `./gradlew test && ./gradlew interopTest`를 다른 gradle 빌드 없이 단독
-  으로 완주시켜 확인해야 한다**. 문제가 있으면 커밋 `9aba692`(그 이전, 안전
-  검증된 지점)로 해당 파일들만 되돌리는 것을 고려할 것.
+- **완료·검증됨(추가, 17:55)**: 백로그 35(revlog 항상 non-inline)도
+  `appendChangeGroupEntry`(pull/push 경로가 inline 상태를 아예 무시하고
+  항상 non-inline으로 쓰던 근본 원인) 수정 완료, 전체 회귀 2268 테스트 중
+  실패 1건(무관한 기존 `PerformanceBenchmarkTest` 타이밍 플레이크)만 남고
+  독립 재확인 끝남. 커밋 `906cdd6`.
 - **완전히 미착수**: 백로그 32(subrepo 4건 — 31 완료로 이제 착수 가능),
   38(동시 push 레이스 컨디션), 39(매트릭스를 나머지 60개 명령으로 확장),
   40(narrow clone 진짜 wire-protocol ellipsis node).
@@ -326,14 +324,11 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   같이 죽인 사고가 있었다 — 특정 프로세스를 정리할 땐 반드시 정확한 PID로만
   죽일 것, 패턴 매칭으로 넓게 죽이지 말 것.
 
-### 다음에 할 일 순서(권장)
-1. `./gradlew test && ./gradlew interopTest` 단독 완주로 백로그 35의 안전성
-   확인(가장 시급 — 이미 커밋된 상태라 방치하면 다음 작업이 이 위에 계속
-   쌓인다).
-2. 백로그 32(subrepo 4건) — `CommitCommand.java`/`UpdateCommand.java`를
+### 다음에 할 일 순서(권장, 2026-09-04 17:55 갱신 — 백로그 35는 완료·검증됨)
+1. 백로그 32(subrepo 4건) — `CommitCommand.java`/`UpdateCommand.java`를
    31/35가 이미 여러 번 고쳐놨으니 최신 상태를 반드시 먼저 읽고 시작할 것.
-3. 백로그 38(동시 push 레이스 컨디션).
-4. 백로그 39(매트릭스 확장) — §3의 우선순위(PushCommand/RebaseCommand/
+2. 백로그 38(동시 push 레이스 컨디션).
+3. 백로그 39(매트릭스 확장) — §3의 우선순위(PushCommand/RebaseCommand/
    ShelveCommand/StripCommand부터) 참고.
-5. 백로그 40(narrow ellipsis node) — 범위가 크므로 별도 세션에서 범위
+4. 백로그 40(narrow ellipsis node) — 범위가 크므로 별도 세션에서 범위
    산정부터.

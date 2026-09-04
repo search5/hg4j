@@ -368,37 +368,69 @@ public class UpdateCommandCoverageTest {
     }
 
     @Test
-    public void subrepoCheckoutSkipsGitEntriesAndHandlesUnrecordedRevisionAndSource(@TempDir Path tempDir) throws Exception {
+    public void subrepoCheckoutHandlesUnrecordedRevisionAndSource(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("main").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("rev0").call();
 
-        // "vendor/gitmod" is flagged [git] and must be skipped outright (no directory
-        // created for it). "vendor/emptyish" is declared in .hgsub with no recorded source
-        // URL and is hand-written here as absent from .hgsubstate, but since it isn't
-        // checked out locally either, CommitCommand's own subrepo-state management
-        // overwrites that with an explicit null-revision entry at commit time (matching real
-        // hg; see mercurial-spec-compliance-requirement.md, backlog 23/24, decided
-        // 2026-09-04) -- so by the time UpdateCommand parses it, it has an empty source URL
-        // but a non-empty (null) revision. The local repo must still be initialized for it;
-        // the subsequent update-to-null-revision attempt then fails against the still-empty
-        // repo and is caught/logged, same net effect as if update had been skipped outright.
+        // "vendor/emptyish" is declared in .hgsub with no recorded source URL and is
+        // hand-written here as absent from .hgsubstate, but since it isn't checked out
+        // locally either, CommitCommand's own subrepo-state management overwrites that with
+        // an explicit null-revision entry at commit time (matching real hg; see
+        // mercurial-spec-compliance-requirement.md, backlog 23/24, decided 2026-09-04) -- so
+        // by the time UpdateCommand parses it, it has an empty source URL but a non-empty
+        // (null) revision. The local repo must still be initialized for it; the subsequent
+        // update-to-null-revision attempt then fails against the still-empty repo and is
+        // caught/logged, same net effect as if update had been skipped outright.
+        //
+        // (A [git]-flagged sibling entry used to be part of this same fixture to additionally
+        // cover "git subrepo entries are skipped during checkout" -- that expectation is now
+        // backwards per backlog 32 gap #3 (verified live against real hg 7.2): a *declared but
+        // not locally checked out* git subrepo makes the parent commit itself abort instead of
+        // silently skipping, so it can no longer share a fixture commit with a scenario that
+        // needs the commit to succeed. See subrepoCommitAbortsForNotCheckedOutGitSubrepo below
+        // for that behavior, and SubrepoRealHgInteropTest for the full git-subrepo
+        // checkout/commit round trip against an actual local git checkout.)
         Files.writeString(new File(repoDir, ".hgsub").toPath(),
-                "vendor/gitmod = [git]https://example.com/whatever.git\n" +
-                        "vendor/emptyish =\n");
-        Files.writeString(new File(repoDir, ".hgsubstate").toPath(),
-                "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b vendor/gitmod\n");
+                "vendor/emptyish =\n");
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("rev1 with subrepos").call();
 
         new UpdateCommand(repo).setRevision("tip").setForce(true).call();
 
-        assertFalse(new File(repoDir, "vendor/gitmod").exists(),
-                "Git-flagged subrepo entries must be skipped entirely");
         assertTrue(new File(repoDir, "vendor/emptyish/.hg").exists(),
                 "Subrepo with no source URL and a null recorded revision must still be locally initialized");
+    }
+
+    /**
+     * Backlog 32 gap #3 (verified live against real hg 7.2, see SubrepoRealHgInteropTest for the
+     * full real-hg-CLI-verified round trip): unlike an hg subrepo -- which silently falls back to
+     * recording the null revision when it isn't checked out locally -- a {@code [git]}-flagged
+     * subrepo declared in {@code .hgsub} but not actually checked out locally (no {@code .git}
+     * under it) makes the WHOLE parent commit abort, matching real hg's own
+     * {@code No such file or directory: '<abspath>'} failure (real hg has no null-revision
+     * fallback for git subrepos).
+     */
+    @Test
+    public void subrepoCommitAbortsForNotCheckedOutGitSubrepo(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("main").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("rev0").call();
+
+        Files.writeString(new File(repoDir, ".hgsub").toPath(),
+                "vendor/gitmod = [git]https://example.com/whatever.git\n");
+        new AddCommand(repo).call();
+
+        HgValidationException ex = assertThrows(HgValidationException.class,
+                () -> new CommitCommand(repo).setMessage("rev1 with git subrepo").call());
+        assertTrue(ex.getMessage().contains("No such file or directory"),
+                "hg4j must abort with the same message shape as real hg for a not-checked-out git subrepo: " + ex.getMessage());
+        assertFalse(new File(repoDir, "vendor/gitmod").exists(),
+                "A not-checked-out git subrepo must never get a directory auto-vivified for it (unlike hg subrepos)");
     }
 
     @Test

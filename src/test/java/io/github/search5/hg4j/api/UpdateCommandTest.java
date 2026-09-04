@@ -197,10 +197,21 @@ public class UpdateCommandTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("rev0").call();
 
+        // Check out the subrepo locally before declaring/committing .hgsub -- real hg only
+        // records a non-null revision in .hgsubstate for a subrepo that is actually present
+        // in the working directory at commit time (a declared-but-not-checked-out path
+        // instead has its .hgsubstate entry reset to the null revision; see
+        // mercurial-spec-compliance-requirement.md, backlog 23/24, decided 2026-09-04).
+        File vendorSubDir = new File(repoDir, "vendor/sub");
+        new CloneCommand().setSource(subSourceDir.getAbsolutePath()).setDirectory(vendorSubDir).call();
+
         Files.writeString(new File(repoDir, ".hgsub").toPath(), "vendor/sub = " + subSourceDir.getAbsolutePath() + "\n");
-        Files.writeString(new File(repoDir, ".hgsubstate").toPath(), subTipHex + " vendor/sub\n");
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("rev1 with subrepo").call();
+
+        // Sanity: the commit auto-recorded the checked-out subrepo's real revision (not the
+        // null revision) because "vendor/sub" was checked out beforehand.
+        assertEquals(subTipHex + " vendor/sub\n", Files.readString(new File(repoDir, ".hgsubstate").toPath()));
 
         new UpdateCommand(repo).setRevision("0").setForce(true).call();
         new UpdateCommand(repo).setRevision("tip").setForce(true).call();

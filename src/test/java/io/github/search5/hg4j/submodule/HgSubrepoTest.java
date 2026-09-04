@@ -114,21 +114,39 @@ public class HgSubrepoTest {
                 hgParent.add().addFile("init.txt").call();
                 hgParent.commit().setMessage("Initial empty commit").call();
 
-                // Commit revision 1: Write .hgsub and .hgsubstate
+                // Check out the subrepo locally BEFORE declaring/committing .hgsub. Real hg
+                // only records a non-null revision in .hgsubstate for a subrepo that is
+                // actually present in the working directory at commit time -- a
+                // declared-but-not-checked-out path instead has its .hgsubstate entry reset
+                // to the null revision (see mercurial-spec-compliance-requirement.md, backlog
+                // 23/24, decided 2026-09-04). Committing .hgsub without checking "subpath"
+                // out first would therefore record the null revision, and the later
+                // recursive-checkout-during-update step below would restore an *empty*
+                // subrepo instead of the real content this test is meant to verify.
+                File checkedOutSubDir = new File(parentDir, "subpath");
+                Hg.cloneRepository().setSource(childDir.getAbsolutePath()).setDirectory(checkedOutSubDir).call();
+                assertTrue(new File(checkedOutSubDir, "sub.txt").exists(), "Subrepo must be checked out before commit");
+
+                // Commit revision 1: Write .hgsub (.hgsubstate is now auto-managed by commit)
                 File hgsubFile = new File(parentDir, ".hgsub");
                 Files.writeString(hgsubFile.toPath(), "subpath = " + childDir.getAbsolutePath());
-                
-                File hgsubstateFile = new File(parentDir, ".hgsubstate");
-                Files.writeString(hgsubstateFile.toPath(), childCommitHex + " subpath\n");
 
-                hgParent.add().addFile(".hgsub").addFile(".hgsubstate").call();
+                hgParent.add().addFile(".hgsub").call();
                 byte[] parentCommitNode = hgParent.commit().setMessage("Parent commit with subrepo").call();
 
-                // 3. Clear working copy by force-updating parent to revision 0 (which has no subrepos configured)
+                // Sanity: the commit auto-recorded the checked-out subrepo's real revision
+                // (not the null revision) because "subpath" was checked out beforehand.
+                File hgsubstateFile = new File(parentDir, ".hgsubstate");
+                assertEquals(childCommitHex + " subpath\n", Files.readString(hgsubstateFile.toPath()));
+
+                // 3. Simulate the subrepo no longer being present locally (e.g. a fresh clone
+                // of the parent that has not run its own subrepo checkout yet) by deleting it
+                // outright, then force-update parent to revision 0 (which has no subrepos
+                // configured).
+                deleteRecursively(checkedOutSubDir);
                 hgParent.update().setRevision("0").setForce(true).call();
-                
-                File checkedOutSubDir = new File(parentDir, "subpath");
-                assertFalse(new File(checkedOutSubDir, "sub.txt").exists(), "Subrepo file should be deleted on empty update");
+
+                assertFalse(new File(checkedOutSubDir, "sub.txt").exists(), "Subrepo file should be absent after moving away");
 
                 // 4. Update back to parent commit: this must trigger subrepo checkout!
                 hgParent.update().setRevision(NodeIdUtil.toHex(parentCommitNode)).setForce(true).call();
@@ -139,5 +157,15 @@ public class HgSubrepoTest {
                 assertEquals("Subrepo Payload Content", Files.readString(checkedOutSubFile.toPath()));
             }
         }
+    }
+
+    private static void deleteRecursively(File file) {
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        file.delete();
     }
 }

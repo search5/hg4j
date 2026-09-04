@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-31
+updated: 2026-09-04
 status: current
 ---
 
@@ -74,7 +74,33 @@ JGit 기준 여러 패키지를 이미 합쳐놓은 상태**라는 점이다.
 - ❌ 요구하지 않음: 클래스명에서 `Hg` 접두어 제거, Mercurial 고유 개념(changeset, revset,
   phase, bundle, obsolescence 등)의 이름을 JGit 용어로 바꾸는 것.
 
+## 2026-09-04 업데이트: `core` 패키지 분리 완료, 격차표 재확인
+[[core-package-split-plan]]의 전 단계(Phase 0~12)가 실행 완료되어, 위 "현재(2026-08-31)
+hg4j ↔ JGit 패키지 격차표"에서 "❌ 패키지 자체가 없음"으로 표시했던 항목들이 대부분
+해소됐다. `core` 패키지 자체가 더 이상 존재하지 않는다. 실제 코드 기준 재확인:
+
+| JGit 패키지 | 2026-08-31 상태 | 2026-09-04 상태 |
+|---|---|---|
+| `lib` | `core`에 대부분 존재 | ✅ 해소 — `Repository`/`HgRepository`/`HgRcConfig`/`HgLock`/`NodeId`/`ProgressMonitor`가 `lib` 패키지로 병합됨(Phase 12) |
+| `dircache` | 패키지 자체 없음 | ⚠️ **부분 해소** — `Dirstate`가 이제 `dirstate` 독립 패키지로 분리됨(Phase 1). 다만 JGit은 이 개념을 `dircache`로 부르고 hg4j는 Mercurial 자체 용어 `dirstate`를 쓰므로 이름 자체는 여전히 다름 — 이건 격차가 아니라 위 "결정된 사항 2"에 따라 의도된 것(Mercurial 고유 개념은 Mercurial 용어 유지) |
+| `storage` | 패키지 자체 없음 | ✅ 해소 — `StoreEngine`/`DefaultFileStoreEngine`/`Revlog`/`RevlogIndex`/`FileIndex`가 `storage` 패키지로 분리됨(Phase 10) |
+| `merge` | 패키지 자체 없음 | ✅ 해소 — `Merge3`가 `merge` 패키지로 분리됨(Phase 2) |
+| `diff` | 패키지 자체 없음 | ✅ 해소 — `DeltaEngine`이 `diff` 패키지로 분리됨(Phase 10) |
+| `util` | 패키지 자체 없음 | ✅ 해소 — `SafeFileIO`/`NodeIdUtil`이 `util` 패키지로 분리됨(Phase 3) |
+| `submodule` | 패키지 자체 없음 | ✅ 해소 — `HgSubrepoParser`/`HgSubrepoEntry`가 `submodule` 패키지로 분리됨(Phase 4) |
+| `ignore` | 패키지 자체 없음, 클래스로도 분리 안 됨 | ❌ **미해소 그대로** — `loadIgnorePatterns()`/`isIgnored()`가 여전히 `lib.HgRepository` 내부 메서드로만 존재. 이 계획 범위 밖(core-package-split-plan에 `ignore` 관련 Phase가 아예 없었음) |
+| `hooks` | `api`에 위치(JGit과 다른 위치) | ⚠️ **미해소 그대로** — `HgHook`/`HgHookType`/`ProcessHook`이 여전히 `api` 패키지. core-package-split-plan 대상이 아니었음(애초에 `core`가 아니라 `api`에 있었으므로) |
+| `attributes` | 대응 기능 없음 | 변화 없음 — 여전히 N/A |
+
+**남은 격차는 2개뿐**: `ignore`(패키지 분리 안 됨)와 `hooks`(JGit과 다른 위치). 둘 다
+`core-package-split-plan`의 계획 범위에 없었던 항목이라 별도 후속 결정이 필요하면
+새 계획 문서를 만들어야 한다 — 이 문서 자체에서 새로 승격하지는 않는다(범위 확장은
+사용자 판단 필요).
+
 ## 관련 페이지
-- [[core]], [[lib]], [[transport]], [[treewalk]], [[revwalk]], [[errors]] — 현재 구조 상세
+- [[lib]], [[transport]], [[treewalk]], [[revwalk]], [[errors]], [[storage]], [[merge]],
+  [[diff]], [[util]], [[submodule]], [[dirstate]] — 현재 구조 상세 (2026-09-04부터 `core`
+  링크는 제거됨 — 패키지가 더 이상 존재하지 않음)
+- [[core-package-split-plan]] — 이 격차표를 해소한 실행 계획, 완료 확인
 - [[package-namespace-and-dual-publishing]] — 과거에도 네임스페이스를 손댄 이력이 있어
   참고할 것 (그때는 배포 좌표 문제, 이번엔 구조적 정합성 문제로 성격이 다름)

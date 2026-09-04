@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-31
+updated: 2026-09-04
 status: current
 ---
 
@@ -16,6 +16,19 @@ status: current
   JGit의 `FileTreeIterator`에 대응.
 - `PathFilter` / `SparsePathFilter`: 경로 필터링. JGit도 `org.eclipse.jgit.treewalk.filter`
   하위에 `PathFilter`가 동일 이름으로 존재.
+- **`HgTreeFilter`**: `PathFilter`를 구현하는 추상 클래스, Javadoc에 "Inspired by JGit's
+  TreeFilter api"라고 명시 — JGit의 `org.eclipse.jgit.treewalk.filter.TreeFilter`에
+  대응. [[core-package-split-plan]] Phase 11 계획대로 이미 이 패키지로 이동 완료(더 이상
+  `core`에 없음). `createPathPrefixFilter()`(단순 prefix 기반 narrow/sparse)에 더해,
+  실제 hg의 narrowspec 포맷(`.hg/store/narrowspec`, requirement
+  `narrowhg-experimental`, `[include]`/`[exclude]` 단수 섹션, `path:`/`rootfilesin:`
+  패턴 타입)을 그대로 정규화·매칭하는 `NarrowPattern`(중첩 static 클래스),
+  `normalizeNarrowPattern()`, `createNarrowSpecFilter()`가 추가됨(백로그 22~28 상호운용
+  검증 과정에서).
+- **`SparseConfig`**: `.hg/sparse`(추적 안 되는 워킹카피 파일, `.hg/hgrc`처럼 직접 읽음)와
+  `%include`로 참조되는 프로파일 파일(매니페스트에서 추적되는 파일이라 리비전에 따라
+  달라질 수 있음)을 실제 hg의 `mercurial/sparse.py`(`parseconfig()`/`patternsforrev()`)와
+  동일하게 파싱해 유효 include/exclude 패턴 집합으로 해석.
 
 ## 관찰된 네이밍 차이
 - JGit은 `TreeIterator`가 아니라 `AbstractTreeIterator`(추상 클래스)를 사용. hg4j는
@@ -24,11 +37,5 @@ status: current
 - JGit의 `PathFilter`는 `org.eclipse.jgit.treewalk.filter` **하위 패키지**에 위치하지만
   hg4j는 `treewalk` 패키지에 바로 둠 — 서브패키지 분리 여부도 검토 대상.
 
-## 향후 편입 예정 클래스
-- **`HgTreeFilter`** (현재 `core` 패키지에 위치): `treewalk.PathFilter`를 구현하며
-  Javadoc에 "Inspired by JGit's TreeFilter api"라고 명시되어 있어, JGit의
-  `org.eclipse.jgit.treewalk.filter.TreeFilter`에 대응. [[core-package-split-plan]]
-  Phase 11에서 이 패키지로 이동하기로 결정됨(2026-08-31) — **아직 미실행**.
-
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/treewalk/`
+`src/main/java/io/github/search5/hg4j/treewalk/`

@@ -20,4 +20,4 @@ Phase 4에서 분리됨 — 독립적 기능 단위라 이동이 단순했다. J
 - [[mercurial-spec-compliance-requirement]] gap table의 "Subrepositories" 항목(✅ 존재)
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/submodule/`
+`src/main/java/io/github/search5/hg4j/submodule/`

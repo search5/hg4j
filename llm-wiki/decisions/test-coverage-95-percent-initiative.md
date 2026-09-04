@@ -1,6 +1,6 @@
 ---
-updated: 2026-09-03
-status: round 4 (2026-09-03, 16:27~18:30 연속 작업) — 1순위(Dirstate 계열)·2순위(AddCommand/CopyCommand/CloneCommand/RevertCommand)·3순위(missed=1~4 롱테일, ~30개 클래스) 대부분 처리. TDD로 실제 커버한 분기 약 45개, "도달 불가능" 확인·문서화한 분기 약 35개. FileIndex는 16개 중 13개 해결(예상외로 이번 라운드 최대 성과 클래스). missed≥5 클래스(CommitCommand/HgSshClient/HgRevsetEngine/RevlogIndex 등, 이번 세션에서 크게 손댄 대형 클래스 다수 포함) 및 일부 missed=3~4 클래스(ExportCommand/AnnotateCommand/IncomingCommand/OutgoingCommand/HgLfsManager/Merge3/DeltaCodec/HgRcConfig 등)는 다음 라운드로 이월.
+updated: 2026-09-04
+status: round 4 완료(2026-09-03) 이후 대규모 pull 2회 유입 — BRANCH 기준선 재측정 필요(라운드4의 74.7%는 stale). 첫 pull 직후 미커버 분기 +85 확인, 두 번째(더 큰) pull 이후 수치는 미측정. 다음 착수 시 clean test jacocoTestReport부터 재실행할 것. 상세는 하단 "2026-09-04 업데이트" 섹션.
 ---
 
 # 결정: JaCoCo 커버리지 95% 상향 — 1라운드 결과와 남은 갭
@@ -875,3 +875,32 @@ missed=1~4 롱테일 중 아직 미조사: `GpgSignature`(PGP 시그니처 바�
 `CommitCommand`/`HgSshClient`/`HgRevsetEngine`/`RevlogIndex`/`Revlog`/
 `NodeMapFile`/`RebaseCommand`/`ShelveCommand`/`FetchCommand` 등 이번 세션에서
 크게 손댄 클래스들 다수 포함)는 이번 라운드에서 전혀 들여다보지 못함.
+
+## 2026-09-04 업데이트: 현재 알려진 잔여 격차 (2회 pull로 유입된 신규 코드의 커버리지 부채)
+
+라운드4(위 상태) 종료 이후, 다른 Claude 세션이 백로그 22~28번 항목 및 아키텍처 결정
+6건을 처리하며 82개 파일(약 10,926줄 추가, 1,414줄 삭제)에 걸친 대규모 변경을
+두 차례 `git pull`로 반영했다(주요 대상: `PushCommand`/`RebaseCommand`/
+`ShelveCommand`/`StripCommand`/`MergeCommand`/`AmendCommand`/`CommitCommand`/
+`BranchesCommand`/`TagCommand` 등 `api` 패키지 명령군, `Bundle2Parser`/
+`ChangegroupParser`, `HgTreeFilter`의 narrowspec 지원, `HgObsMarker`, LFS/전송
+계층 다수). 이 작업은 실제 hg CLI와의 상호운용 검증을 동반해 여러 실버그를
+찾아 고쳤지만(상세는 [[mercurial-spec-compliance-requirement]]), **새 코드에
+대한 BRANCH 커버리지 확보는 별도 작업으로 남아 있다.**
+
+- 첫 번째 pull 직후 확인한 수치: BRANCH 전체 8626→9028(+402), 커버된 분기
+  7823→8140(+317), 미커버 분기 803→888(+85). 즉 새로 추가된 분기 402개 중
+  317개는 이미 딸려온 테스트로 커버됐고 85개가 순수 신규 미커버 분기로 남았다.
+- 두 번째(더 큰) pull 이후의 정확한 수치는 **아직 측정하지 않았다** — 이 wiki
+  현행화 작업 시점 기준 `build/reports/jacoco/test/jacocoTestReport.xml`이
+  2026-09-02 18:37 생성본으로, 두 pull(2026-09-04 04:03 `core` 패키지 관련 커밋
+  포함, 이후 커밋 c336561까지) 이전 상태를 반영한 **낡은 리포트**라 이번
+  업데이트에서 재사용하지 않았다. 정확한 현재 BRANCH 수치를 알려면
+  `./gradlew clean test jacocoTestReport`를 새로 돌려야 한다(과장·축소 없이
+  "미측정"으로 정직하게 남김).
+- LFS 쓰기 경로(write-side) 갭이 이 세션에서 자체적으로 인지된 채 아직
+  해소되지 않은 상태로 남아있다(이전 라운드 기록 참고, `HgLfsManager` 관련).
+- 결론: **라운드4 수치(BRANCH 74.7%)는 이 시점 기준 더 이상 "현재값"이 아니다**
+  — 그 이후 유입된 대량의 신규 코드가 분모에 더해졌고, 위 85개(이상)의 신규
+  미커버 분기가 아직 라운드5로 이월된 채 남아있다. 다음 라운드 착수 시 반드시
+  새 jacocoTestReport부터 실행해 정확한 기준선을 다시 잡을 것.

@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-31
+updated: 2026-09-04
 status: current
 ---
 
@@ -25,13 +25,13 @@ Builder 스타일(`setXxx().call()`)로 통일되어 있다.
 
 | 카테고리 | 명령 클래스 |
 |---|---|
-| 저장소 초기화/기록 | `InitCommand`, `CommitCommand`, `AmendCommand`, `AddCommand`, `RemoveCommand`, `RevertCommand` |
-| 조회 | `StatusCommand`, `LogCommand`, `CatCommand`, `DiffCommand`, `TreeCommand`, `AnnotateCommand`, `GrepCommand`, `IdentifyCommand`, `DescribeCommand` |
-| 브랜치/태그/북마크/페이즈 | `BranchCommand`, `TagCommand`, `BookmarkCommand`, `PhaseCommand` |
-| 머지/재배치 | `MergeCommand`, `RebaseCommand`, `GraftCommand`, `HisteditCommand`, `ResolveCommand` |
+| 저장소 초기화/기록 | `InitCommand`, `CommitCommand`, `AmendCommand`, `AddCommand`, `AddremoveCommand`, `RemoveCommand`, `RevertCommand`, `CopyCommand`, `ForgetCommand`, `CensorCommand` |
+| 조회 | `StatusCommand`, `LogCommand`, `CatCommand`, `DiffCommand`, `TreeCommand`, `TreeMergeCommand`, `AnnotateCommand`, `GrepCommand`, `IdentifyCommand`, `DescribeCommand`, `FilesCommand`, `LocateCommand`, `ManifestCommand`, `ParentsCommand`, `PathsCommand`, `RootCommand`, `SummaryCommand`, `TipCommand`, `VerifyCommand`, `SidedataChangedFilesCommand` |
+| 브랜치/태그/북마크/페이즈 | `BranchCommand`, `BranchesCommand`, `TagCommand`, `TagsCommand`, `BookmarkCommand`, `PhaseCommand` |
+| 머지/재배치 | `MergeCommand`, `RebaseCommand`, `GraftCommand`, `HisteditCommand`, `ResolveCommand`, `BackoutCommand` |
 | 워킹카피 | `UpdateCommand`, `WorktreeCommand`, `ShelveCommand`, `PurgeCommand`, `RenameCommand` |
-| 원격 동기화 | `PushCommand`, `PullCommand`, `FetchCommand`, `CloneCommand`, `IncomingCommand`, `OutgoingCommand` |
-| 히스토리 정리 | `StripCommand`, `BisectCommand`, `GcCommand` |
+| 원격 동기화 | `PushCommand`, `PullCommand`, `FetchCommand`, `CloneCommand`, `IncomingCommand`, `OutgoingCommand`, `ClonebundlesCommand`, `BundleCommand`, `UnbundleCommand` |
+| 히스토리 정리 | `StripCommand`, `BisectCommand`, `GcCommand`, `RecoverCommand`, `RollbackCommand` |
 | import/export | `ExportCommand`, `ImportCommand`, `ArchiveCommand` |
 | 기타 | `SubrepoCommand`, `NarrowCloneCommand`, `RevsetCommand`, `HeadsCommand` |
 
@@ -47,4 +47,4 @@ Builder 스타일(`setXxx().call()`)로 통일되어 있다.
 `PushCommand`, `CatCommand`, `DiffCommand`, `TreeCommand`, `UpdateCommand`.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/api/`
+`src/main/java/io/github/search5/hg4j/api/`

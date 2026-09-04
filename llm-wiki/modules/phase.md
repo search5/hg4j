@@ -23,4 +23,4 @@ phase 커밋의 push를 차단하는 것까지 실제로 연동돼 있음을 코
 달리 phase는 반쪽짜리가 아니라 정상 구현.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/phase/`
+`src/main/java/io/github/search5/hg4j/phase/`

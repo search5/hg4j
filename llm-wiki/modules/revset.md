@@ -16,4 +16,4 @@ Mercurial revset 질의 언어 엔진 패키지. [[core-package-split-plan]] Pha
 이 페이지는 패키지 구조만 다룬다.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/revset/`
+`src/main/java/io/github/search5/hg4j/revset/`

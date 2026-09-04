@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.HgTestUtils;
+import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -154,7 +155,8 @@ public class TagRealHgInteropTest {
         Files.writeString(new File(repoDir, "b.txt").toPath(), "two");
         new AddCommand(repo).call();
         byte[] c1 = new CommitCommand(repo).setAuthor("T").setMessage("c1").call();
-        new TagCommand(repo).setTagName("v1.0").setNodeId(c1).call(); // move (hg4j never gates on -f)
+        // Moving an existing tag now requires -f (backlog #36, matches real hg's own gate).
+        new TagCommand(repo).setTagName("v1.0").setNodeId(c1).setForce(true).call();
 
         String hgtagsContent = Files.readString(new File(repoDir, ".hgtags").toPath(), StandardCharsets.UTF_8);
         long v10Lines = hgtagsContent.lines().filter(l -> l.endsWith(" v1.0")).count();
@@ -216,6 +218,112 @@ public class TagRealHgInteropTest {
         List<TagsCommand.Tag> hg4jTags = new TagsCommand(repo).call();
         assertTrue(hg4jTags.stream().noneMatch(t -> t.getName().equals("gone")),
                 "hg4j must recognize a real-hg-removed tag as gone");
+    }
+
+    /** Backlog #36: hg4j must reject a retag without {@code -f}, matching real hg's own gate
+     * message byte-for-byte (verified against the CLI, 2026-09-04: {@code abort: tag '<name>'
+     * already exists (use -f to force)}, exit 255). */
+    @Test
+    public void hg4jRejectsRetaggingWithoutForceMatchingRealHgsAbortMessage(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        new InitCommand().setDirectory(repoDir).call();
+        HgRepository repo = new HgRepository(repoDir);
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "one");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("T").setMessage("c0").call();
+        new TagCommand(repo).setTagName("v1.0").setNodeId(c0).call();
+
+        Files.writeString(new File(repoDir, "b.txt").toPath(), "two");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("T").setMessage("c1").call();
+
+        HgValidationException ex = assertThrows(HgValidationException.class,
+                () -> new TagCommand(repo).setTagName("v1.0").setNodeId(c1).call());
+        assertEquals("tag 'v1.0' already exists (use -f to force)", ex.getMessage());
+
+        // Real hg CLI, same scenario, must abort with the identical message.
+        Files.writeString(repoDir.toPath().resolve("real-abort-check.txt"), "x");
+        String nativeAbort = "";
+        try {
+            HgTestUtils.hg(repoDir, "tag", "-u", "T", "v1.0");
+            fail("real hg must also abort retagging an existing tag without -f");
+        } catch (AssertionError expected) {
+            nativeAbort = expected.getMessage();
+        }
+        assertTrue(nativeAbort.contains("tag 'v1.0' already exists (use -f to force)"),
+                "real hg abort message: " + nativeAbort);
+
+        // The tag must genuinely be untouched -- still resolves to c0, not moved or duplicated.
+        String hgtagsContent = Files.readString(new File(repoDir, ".hgtags").toPath(), StandardCharsets.UTF_8);
+        assertEquals(1, hgtagsContent.lines().filter(l -> l.endsWith(" v1.0")).count(),
+                "a rejected retag must not append a line");
+        List<TagsCommand.Tag> hg4jTags = new TagsCommand(repo).call();
+        TagsCommand.Tag v10 = hg4jTags.stream().filter(t -> t.getName().equals("v1.0")).findFirst().orElseThrow();
+        assertEquals(NodeIdUtil.toHex(c0), NodeIdUtil.toHex(v10.getNode()));
+    }
+
+    /** Backlog #36, other half: with {@code -f}/{@code setForce(true)}, the move must still
+     * succeed exactly as before this gate was added. */
+    @Test
+    public void hg4jRetagWithForceStillSucceedsAndRealHgSeesTheNewTarget(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        new InitCommand().setDirectory(repoDir).call();
+        HgRepository repo = new HgRepository(repoDir);
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "one");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("T").setMessage("c0").call();
+        new TagCommand(repo).setTagName("v1.0").setNodeId(c0).call();
+
+        Files.writeString(new File(repoDir, "b.txt").toPath(), "two");
+        new AddCommand(repo).call();
+        byte[] c1 = new CommitCommand(repo).setAuthor("T").setMessage("c1").call();
+        new TagCommand(repo).setTagName("v1.0").setNodeId(c1).setForce(true).call();
+
+        String nativeTags = HgTestUtils.hg(repoDir, "tags");
+        assertTrue(nativeTags.contains(NodeIdUtil.toHex(c1).substring(0, 12)),
+                "real hg must resolve v1.0 to the forced new target: " + nativeTags);
+    }
+
+    /** Backlog #36: real hg's own gate also spans local vs. global -- a local tag colliding with
+     * an existing global name (or vice versa) is rejected without {@code -f} too (verified
+     * against the CLI, 2026-09-04). */
+    @Test
+    public void hg4jRejectsLocalTagCollidingWithExistingGlobalTagWithoutForce(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        new InitCommand().setDirectory(repoDir).call();
+        HgRepository repo = new HgRepository(repoDir);
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "one");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("T").setMessage("c0").call();
+        new TagCommand(repo).setTagName("shared").setNodeId(c0).call(); // global
+
+        HgValidationException ex = assertThrows(HgValidationException.class,
+                () -> new TagCommand(repo).setTagName("shared").setNodeId(c0).setLocal(true).call());
+        assertEquals("tag 'shared' already exists (use -f to force)", ex.getMessage());
+    }
+
+    /** Backlog #36: removal is exempt from the force gate -- an existing tag can always be
+     * removed (verified against the CLI, 2026-09-04: {@code hg tag --remove} on a live tag exits
+     * 0 without {@code -f}). */
+    @Test
+    public void hg4jTagRemovalDoesNotRequireForceEvenThoughTagCurrentlyExists(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        new InitCommand().setDirectory(repoDir).call();
+        HgRepository repo = new HgRepository(repoDir);
+
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "one");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setAuthor("T").setMessage("c0").call();
+        new TagCommand(repo).setTagName("gone").setNodeId(c0).call();
+
+        // No setForce(true) here -- must not throw.
+        new TagCommand(repo).setTagName("gone").setRemove(true).call();
+
+        List<TagsCommand.Tag> hg4jTags = new TagsCommand(repo).call();
+        assertTrue(hg4jTags.stream().noneMatch(t -> t.getName().equals("gone")));
     }
 
     @Test

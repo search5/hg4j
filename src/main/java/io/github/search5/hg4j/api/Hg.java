@@ -115,10 +115,23 @@ public class Hg implements AutoCloseable {
             throw new HgRepositoryNotFoundException("Repository not found at: " + directory.getAbsolutePath());
         }
 
-        // Robustness: Validate repository requirements format to prevent silent data corruption
+        // Robustness: Validate repository requirements format to prevent silent data corruption.
+        // 2026-09-04: this allowlist had drifted badly out of sync with real hg's actual
+        // requirement strings AND with what HgRepository.loadRequires() itself already
+        // understands -- see HgOpenRequirementValidationTest for the empirical proof (a vanilla
+        // `hg init` repository, with no special config at all, was being rejected outright).
         Set<String> SUPPORTED = Set.of(
             "dotencode", "fncache", "generaldelta", "revlogv1", "store", "dirstate-v2", "share-safe",
-            "revlog-compression", "narrowspec"
+            "sparserevlog", "revlog-compression-zstd",
+            // The 6 advanced-format requirements HgRepository.loadRequires() already fully
+            // supports (real strings confirmed empirically against actual hg 7.2/hg-rust-7.2.4
+            // output throughout this session, mercurial/requirements.py).
+            "exp-changelog-v2", "exp-revlogv2.2", "persistent-nodemap", "fileindex-v1",
+            "treemanifest", "exp-copies-sidedata-changeset",
+            // The real narrow-clone requirement token (NarrowCloneCommand writes exactly this) --
+            // "narrowspec" (the old value here) is actually the on-disk *filename* of the
+            // narrowspec data file, not a requirement string; never a valid entry in requires.
+            "narrowhg-experimental"
         );
 
         File[] requiresFiles = {

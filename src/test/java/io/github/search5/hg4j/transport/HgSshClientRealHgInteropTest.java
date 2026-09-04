@@ -158,6 +158,86 @@ public class HgSshClientRealHgInteropTest {
         assertTrue(log.contains(marker), "real hg server must see the pushed commit, log was: " + log);
     }
 
+    /**
+     * Backlog 33 (mercurial-spec-compliance-requirement.md): {@link HgSshClient#getBranchHeads()}
+     * must actually return the real hg server's per-branch head map, not the
+     * {@link HgRemoteConnection#getBranchHeads()} interface default ({@code null}) that made
+     * {@link io.github.search5.hg4j.api.PushCommand}'s checkheads safety net silently degrade to
+     * a branch-unaware topological check whenever the remote was SSH.
+     */
+    @Test
+    public void getBranchHeadsReturnsRealHgsBranchMapOverSsh(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "init", serverRepoDir.getAbsolutePath());
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "default branch tip");
+        HgTestUtils.hg(serverRepoDir, "add");
+        HgTestUtils.hg(serverRepoDir, "commit", "-m", "default-tip", "-u", "dev");
+        HgTestUtils.hg(serverRepoDir, "branch", "feature");
+        Files.writeString(new File(serverRepoDir, "b.txt").toPath(), "feature branch tip");
+        HgTestUtils.hg(serverRepoDir, "add");
+        HgTestUtils.hg(serverRepoDir, "commit", "-m", "feature-tip", "-u", "dev");
+        String defaultTipHex = HgTestUtils.hg(serverRepoDir, "log", "-r", "0", "--template", "{node}");
+        String featureTipHex = HgTestUtils.hg(serverRepoDir, "log", "-r", "1", "--template", "{node}");
+
+        HgSshClient client = new HgSshClient(sshUrl(serverRepoDir));
+        client.setPassword("testpass");
+        try {
+            var branchHeads = client.getBranchHeads();
+            assertNotNull(branchHeads, "getBranchHeads() must no longer fall back to the null default over SSH");
+            assertEquals(List.of(defaultTipHex), branchHeads.get("default"),
+                    "default branch head must match real hg: " + branchHeads);
+            assertEquals(List.of(featureTipHex), branchHeads.get("feature"),
+                    "feature branch head must match real hg: " + branchHeads);
+        } finally {
+            client.close();
+        }
+    }
+
+    /**
+     * Backlog 33: the SSH equivalent of {@link PushRealHgInteropTest
+     * #testPushRejectedWhenCreatingNewHeadThenForceSucceeds} -- with {@link
+     * #getBranchHeadsReturnsRealHgsBranchMapOverSsh} confirming the data path works, this proves
+     * the end-to-end effect: {@code PushCommand}'s checkheads rejection now actually fires over
+     * SSH exactly like it already did over HTTP, instead of the safety net being silently absent.
+     */
+    @Test
+    public void pushCreatingNewHeadIsRejectedOverSshThenForceSucceeds(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "init", serverRepoDir.getAbsolutePath());
+        Files.writeString(new File(serverRepoDir, "base.txt").toPath(), "base");
+        HgTestUtils.hg(serverRepoDir, "add");
+        HgTestUtils.hg(serverRepoDir, "commit", "-u", "T", "-m", "base");
+        String baseHex = HgTestUtils.hg(serverRepoDir, "log", "-r", "0", "--template", "{node}");
+        Files.writeString(new File(serverRepoDir, "base.txt").toPath(), "remote-head");
+        HgTestUtils.hg(serverRepoDir, "commit", "-u", "T", "-m", "remote head");
+
+        File clientDir = tempDir.resolve("client_repo").toFile();
+        HgRepository client = Hg.init().setDirectory(clientDir).call();
+        new PullCommand(client).setSource(sshUrl(serverRepoDir)).call();
+        new io.github.search5.hg4j.api.UpdateCommand(client).setRevision(baseHex).call();
+        Files.writeString(new File(clientDir, "other.txt").toPath(), "divergent");
+        new AddCommand(client).call();
+        new CommitCommand(client).setAuthor("T").setMessage("divergent local head").call();
+
+        io.github.search5.hg4j.errors.HgValidationException ex = assertThrows(
+                io.github.search5.hg4j.errors.HgValidationException.class,
+                () -> new PushCommand(client).setDestination(sshUrl(serverRepoDir)).call(),
+                "push creating a new remote head over SSH must be rejected without --force");
+        assertTrue(ex.getMessage().contains("new remote head") || ex.getMessage().contains("new heads"),
+                "rejection message should mention new head(s): " + ex.getMessage());
+
+        String headsAfterReject = HgTestUtils.hg(serverRepoDir, "heads", "--template", "{node} ");
+        assertEquals(1, headsAfterReject.trim().split("\\s+").length,
+                "rejected push must not have changed the remote's head count: " + headsAfterReject);
+
+        String response = new PushCommand(client).setDestination(sshUrl(serverRepoDir)).setForce(true).call();
+        assertNotNull(response);
+
+        String headsAfterForce = HgTestUtils.hg(serverRepoDir, "heads", "--template", "{node} ");
+        assertEquals(2, headsAfterForce.trim().split("\\s+").length,
+                "forced push must have landed the new head, giving the remote 2 heads: " + headsAfterForce);
+    }
+
     /** Server-side {@code Command} adapter that execs the REAL {@code hg} CLI's own {@code serve
      * --stdio} as a subprocess and pipes the SSH channel's stdin/stdout straight through to it --
      * as opposed to {@link HgSshWireServer}, this is genuinely real hg on the other end. */

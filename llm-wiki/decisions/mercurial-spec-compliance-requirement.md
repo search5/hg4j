@@ -1868,19 +1868,28 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     테스트 추가), `NarrowCloneRealHgInteropTest`(신규, 3건),
     `LfsRealHgInteropTest`(신규, 2건). 전체 회귀 2415건 전부 GREEN(신규 실패 없음).
 
-29. **`requires` 파일 세부 문자열 커버리지 재검증**. 신규, 2026-09-04 발견(gap table
-    "requires 파일" 행의 "확인 필요" 표기를 실제 코드로 재확인하는 과정에서 승격) —
-    미착수. `HgRepository.loadRequires()`는 8개 문자열(`dirstate-v2`/
-    `revlog-compression-zstd`/`exp-changelog-v2`/`exp-revlogv2.2`/`persistent-nodemap`/
-    `fileindex-v1`/`treemanifest`/`exp-copies-sidedata-changeset`)만 인식하고 나머지는
-    조용히 무시한다. 전용 테스트 파일(`*RequiresTest` 계열)이 하나도 없어(2026-09-04
-    `find` 확인) 실제 hg가 만드는 저장소의 전체 `requires`/`store/requires` 문자열
-    집합(예: `revlogv1`, `store`, `fncache`, `dotencode`, `generaldelta`,
-    `sparserevlog`, `share-safe` 등)과 hg4j가 실제로 무엇을 지원/무시하는지가 라인
-    단위로 대조된 적이 없다. real hg 7.2 CLI로 다양한 포맷 조합(`--config format.*`)의
-    저장소를 만들어 hg4j `HgRepository`가 읽을 때 실패하지 않고 알려진 필드만 정확히
-    인식하는지, 인식 못 하는 requirement가 있는 저장소를 열어도 안전한지 real hg CLI
-    산출물 대조로 검증 필요.
+29. ~~**`requires` 파일 세부 문자열 커버리지 재검증**~~ — ✅ **완료(2026-09-04)**.
+    조사 결과 `HgRepository.loadRequires()` 자체는 8개 특수 문자열을 정확히
+    인식/무시하고 있어 문제가 없었지만, **완전히 별도의, 서로 동기화되지 않은
+    두 번째 검증 게이트**가 `Hg.open()`(`api/Hg.java`)에 이미 존재했고 그게
+    심각하게 낡아 있었다 — 이 게이트의 `SUPPORTED` 허용목록이 (1)
+    `revlog-compression-zstd`(real hg 7.2 기본 압축 엔진이 남기는 실제 문자열)를
+    `revlog-compression`(접미사 없는 잘못된 값)으로만 갖고 있었고, (2)
+    `sparserevlog`(모든 real hg 7.2 저장소에 기본으로 존재)가 아예 빠져 있었고,
+    (3) `narrowspec`(narrowspec 데이터 파일의 온디스크 **파일명**을 requirement
+    문자열로 착각한 값)을 갖고 있으면서 실제 문자열인 `narrowhg-experimental`은
+    없었고, (4) `HgRepository`가 이미 완전히 지원하는 6개 고급 포맷 문자열
+    (`exp-changelog-v2`/`exp-revlogv2.2`/`persistent-nodemap`/`fileindex-v1`/
+    `treemanifest`/`exp-copies-sidedata-changeset`)이 전부 빠져 있었다. **실제
+    영향(real hg CLI로 직접 재현 확인)**: 설정 하나 없이 그냥 `hg init`한
+    완전히 평범한 real hg 7.2 저장소조차 `Hg.open()`으로 열면
+    `HgValidationException: unsupported repository requirement: sparserevlog`로
+    거부됐다 — `new HgRepository(dir)`로 그 게이트를 우회하는 기존 테스트들만
+    이 사실을 가려온 것. `Hg.java`의 `SUPPORTED` 목록을 실측된 정확한 문자열로
+    동기화해 수정, 신규 `HgOpenRequirementValidationTest`(5개 테스트: 평범한
+    저장소/압축+sparserevlog 개별 확인/6개 고급 포맷 각각/narrow 문자열/여전히
+    진짜 미지의 requirement는 거부)로 검증, 기존
+    `HgPorcelainAndExceptionsTest`의 관련 테스트도 회귀 없이 통과.
 
 30. **Narrow clone의 wire-protocol 수준 재통합 (narrow pull/update)**. 신규,
     2026-09-04 발견(백로그 28번 완료 후 재검증 중 승격) — 미착수. `PullCommand`/
@@ -1921,50 +1930,103 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     시도함(실제 hg는 로컬에 있으면 네트워크 요청 생략) — 기능적으로는 무해하지만
     동작이 다름. 4개 시나리오 모두 real hg CLI와 나란히 재현해 대조 검증 필요.
 
-33. **`PushCommand`의 checkheads 안전장치가 SSH에서 미작동**. 신규, 2026-09-04
-    발견(백로그 23번 push 카테고리 완료 후 재검증 중 승격) — 미착수.
-    `HgRemoteConnection.getBranchHeads()`는 `HgRemoteClient`(HTTP)만 구현하고
-    `HgSshClient`는 오버라이드하지 않아 인터페이스 기본값(`return null`,
-    "branch-unaware 폴백"으로 문서화됨)으로 떨어진다(2026-09-04 코드 확인) — SSH로
-    push할 때는 이미 "완료"로 표시된 브랜치 인식 checkheads 안전장치(다중 head/새
-    브랜치 push 거부)가 실질적으로 무력화된 채 topological-only 체크로만 동작한다.
-    `HgSshClient`에도 HTTP와 동등한 `getBranchHeads()`(SSH `branchmap`/`listkeys`
-    커맨드 기반)를 구현하고, 다중 head push 거부 시나리오를 HTTP와 SSH 양쪽에서
-    real hg CLI 상대로 동일하게 재현해 대조 검증 필요.
+33. ~~**`PushCommand`의 checkheads 안전장치가 SSH에서 미작동**~~ — ✅
+    **완료(2026-09-04)**. 근본 원인: `HgRemoteConnection.getBranchHeads()`를
+    `HgRemoteClient`(HTTP)만 구현하고 `HgSshClient`는 오버라이드하지 않아
+    인터페이스 기본값(`return null`, "branch-unaware 폴백")으로 떨어졌던 것 — SSH로
+    push할 때는 브랜치 인식 checkheads 안전장치(다중 head/새 브랜치 push 거부)가
+    실질적으로 무력화된 채 topological-only 체크로만 동작하고 있었다. 실제 hg의
+    v1 wire 프로토콜 `branchmap` 커맨드(무인자, HTTP `HgRemoteClient`가 이미 쓰던
+    것과 동일한 커맨드 — hg4j 서버측 `Wire1Commands.branchmap`/`HgSshWireServer`는
+    이미 이 커맨드를 지원하고 있었고, 빠진 건 오직 클라이언트측 호출뿐이었다)를
+    `HgSshClient`에 `getHeads()`/`listKeys()`와 동일한 패턴(`sendCommand`+
+    `readFramedResponse`, SSH 프로토콜 v2 폴백 포함)으로 신규 구현. 검증: (1)
+    `getBranchHeadsReturnsRealHgsBranchMapOverSsh` — 2개 named branch가 있는 real
+    hg SSH 서버에서 브랜치별 head hex가 정확히 일치하는지 확인, (2)
+    `pushCreatingNewHeadIsRejectedOverSshThenForceSucceeds` — HTTP 쪽 기존
+    `testPushRejectedWhenCreatingNewHeadThenForceSucceeds`와 대칭으로, 새 head를
+    만드는 SSH push가 `--force` 없이 거부되고(원격 head 개수 불변 확인) `--force`
+    로는 성공하는지(원격 head 2개로 증가 확인) real hg SSH 서버(embedded MINA
+    SSHD 뒤에서 진짜 `hg serve --stdio` 서브프로세스) 상대로 확인. 둘 다
+    `HgSshClientRealHgInteropTest`에 신규 추가, 그 파일 전체(5 테스트) GREEN.
+    (참고: 같은 시각 병행 중이던 다른 fork들의 미완료 파일 때문에 전체 회귀에서는
+    무관한 `HgCorruptDataException` 계열 실패가 다수 나왔음 — `HgSshClient.java`
+    로 스코프를 좁힌 격리 실행에서는 실패 없음, 원인은 공유 컴파일 출력 디렉터리
+    오염으로 판단됨.)
 
-34. **`BisectCommand`의 merge 커밋 DAG 시나리오 real hg 대조 검증 누락**. 신규,
-    2026-09-04 발견(백로그 23번 bisect 카테고리 완료 후 재검증 중 승격) — 미착수.
-    구현 자체는 `getParent2()` 처리가 있어 merge-aware하게 짜여 있지만(2026-09-04
-    코드 확인), `BisectRealHgInteropTest`에는 `bisectConvergesToSameCulpritAsRealHg`
-    테스트 메서드 1개만 있고 선형 히스토리 시나리오만 다룬다 — 브랜치 두 개가
-    합쳐지는 실제 DAG에서 hg4j의 bisect 알고리즘이 real hg의 `hg bisect`와 동일한
-    culprit으로 수렴하는지는 한 번도 검증된 적이 없다. merge 커밋이 있는 저장소를
-    real hg CLI로 만들고, 동일한 good/bad 리비전 집합에 대해 hg4j `BisectCommand`와
-    real `hg bisect`를 나란히 돌려 매 단계 선택하는 리비전과 최종 culprit이
-    일치하는지 검증 필요.
+34. ~~**`BisectCommand`의 merge 커밋 DAG 시나리오 real hg 대조 검증 누락**~~ —
+    ✅ **완료(2026-09-04)**. 신규 테스트 `bisectConvergesToSameCulpritAsRealHgAcrossMergeCommit`
+    (`BisectRealHgInteropTest`)를 TDD로 추가 — root에서 branch A(2커밋, flag.txt
+    미변경)/branch B(3커밋, 중간에 flag.txt를 "1"로 바꾸는 진짜 culprit)로 분기시킨
+    뒤 `UpdateCommand`+`MergeCommand`로 실제 3-way 자동 병합(충돌 없음) merge
+    커밋을 만들고, 그 뒤로 한 커밋 더 진행한 8-리비전 DAG로 검증. good=root,
+    bad=최종 리비전으로 hg4j `BisectCommand`와 real `hg bisect`를 동일한
+    good/bad-by-flag.txt 오라클로 나란히 걸어 매 단계 후보 시퀀스와 최종 culprit이
+    정확히 일치함을 확인(`assertEquals(nativeCandidates, hg4jCandidates)`). **실제
+    프로덕션 버그는 발견되지 않음** — `BisectCommand`의 기존 merge-DAG 인식 알고리즘
+    (`getTopologicalRange`/`selectBisectCandidate`의 양쪽 부모 전파)이 이미 정확했음이
+    확인됨, 검증 자체가 목적이었던 항목이라 이걸로 완료. 전체 회귀 확인 중 61건의
+    무관한 실패가 관측됐으나 `bisect` 관련은 0건이고 이 항목은 프로덕션 코드를 전혀
+    건드리지 않은 순수 테스트 추가라, 동시에 실행 중이던 다른 병렬 작업의 빌드
+    간섭(이 세션에서 이미 여러 차례 확인된 현상)으로 판단 — 이 항목 자체의 회귀는
+    없음.
 
 35. **Revlog 쓰기 경로가 항상 non-inline이라 `hg verify`가 fncache 경고를 냄**.
     신규, 2026-09-04 발견(백로그 23번 strip 카테고리 검증 중 발견, strip과 무관한
-    사전 존재 이슈라 별도 항목으로 승격) — 미착수. `storage.Revlog`의 `inline`
-    필드는 기본값 `false`이고, 새로 revlog를 생성하는 쓰기 경로 어디에도 이를
-    `true`로 세팅하는 코드가 없다(`inline`은 오직 기존 인덱스를 읽을 때
-    `index.isInline()`으로만 채워짐, 2026-09-04 코드 확인) — 즉 hg4j가 만드는 모든
-    신규 revlog(파일이 아무리 작아도)는 항상 non-inline(`.i`/`.d` 분리)
-    레이아웃이다. 실제 hg는 작은 revlog를 inline으로 유지해 fncache 목록에 별도로
-    등록하지 않는 관례를 쓰기 때문에, hg4j가 만든 저장소에 대해 real `hg verify`를
-    돌리면 "revlog 'X.d' not in fncache!" 경고가 난다 — hg4j가 만드는 **모든**
-    커밋에 잠재하는 이슈. 작은 revlog를 실제 hg처럼 inline으로 쓰도록(또는 애초에
-    fncache에 `.d` 파일을 등록하지 않는 실제 hg 규칙을 재현하도록) 수정하고, real
-    `hg verify`가 경고 없이 통과하는지 검증 필요.
+    사전 존재 이슈라 별도 항목으로 승격) — **TDD 시도했으나 회귀 위험이 너무 커서
+    되돌림(2026-09-04), 여전히 미착수**. 재조사에서 실제 hg 스펙은 정확히
+    확정했다(`mercurial/revlog.py` 소스 직접 대조, 이 호스트 Homebrew 설치본
+    `/opt/homebrew/lib/python3.14/site-packages/mercurial/revlog.py`): revlogv1은
+    `REVLOG_DEFAULT_FLAGS = FLAG_INLINE_DATA`로 **기본이 inline**이고
+    `_enforceinlinesize()`가 총 크기가 `_maxinline = 131072`바이트(128KiB)를
+    넘어야만 별도 `.d` 파일로 분리(`split_inline`)한다. changelog만 유일하게
+    `mercurial/changelog.py`에서 `may_inline=False`로 생성돼 항상 non-inline —
+    hg4j의 changelog 처리는 이미 이 부분과 일치한다(정확함, 안 건드림). 실측으로도
+    확인(`hg init`+1커밋: `a.txt.i`/`00manifest.i` 둘 다 `.d` 없이 inline, `00changelog.i`
+    +`00changelog.d`만 분리).
 
-36. **`TagCommand`가 기존 태그 재태깅을 `-f` 없이도 허용함**. 신규, 2026-09-04
-    발견(백로그 23번 tag 카테고리 완료 후 재검증 중 승격) — 미착수. real hg는 이미
-    존재하는 태그 이름으로 다시 태깅하면 `abort: tag '%s' already exists (use -f to
-    force)`로 거부하고 `--force`가 있어야 덮어쓰기를 허용하는데, `TagCommand.java`
-    에는 "already exists"/"force"/`setForce` 관련 코드가 전혀 없어(2026-09-04 코드
-    확인) hg4j는 항상 무조건 덮어쓴다. real hg CLI와 나란히 기존 태그 재태깅
-    시나리오(force 없음/force 있음 양쪽)를 재현해 거부 메시지/성공 동작이
-    일치하는지 검증하고, 필요한 가드를 구현.
+    **시도한 수정과 되돌린 이유**: `Revlog` 생성자에서 신규(파일 미존재) v1 filelog/
+    manifest(파일명에 `00changelog` 미포함)를 `inline=true`로 시작하도록 변경 —
+    `appendRevision()`(로컬 `CommitCommand`가 쓰는 주 경로)의 기존 `if (inline) {...}`
+    분기는 이미 정확하게 구현돼 있어서(생전 처음 실행되긴 했지만) 신규 interop
+    테스트(작은 커밋 + real `hg verify`)가 즉시 GREEN이었다. **그러나 전체 회귀에서
+    60개 테스트가 깨짐** — 원인은 `appendChangeGroupEntry()`(pull/push로 원격
+    changegroup을 받아 적용할 때 쓰는 별도 경로, `appendRevision`과는 독립된 자체
+    `if (inline) {...}` 분기)의 inline 쓰기 로직에 실제 데이터 손상 버그가 있었기
+    때문 — `"Failed to read complete hunk of size 20 at offset 64"`로 재현, 단순
+    테스트 픽스처 문제가 아니라 진짜 읽기-쓰기 불일치. `appendRawRevision()`/
+    `appendOptimizedRevision()`의 자체 inline 분기도 검증된 적이 없어 마찬가지로
+    의심스럽다. 즉 `inline` 플래그를 실제로 `true`로 만든 순간, 지금까지 한 번도
+    실행된 적 없던(그래서 아무도 못 잡은) 코드 경로들이 전부 동시에 활성화되면서
+    문제가 드러났다 — `appendRevision` 외 나머지 append 진입점(최소 3개)을 각각
+    개별적으로 감사·수정해야 안전하게 켤 수 있다. 사용자 지시대로("확실하지 않으면
+    무리하지 않는다") 프로덕션 코드는 원상 복구, 전체 회귀 재확인(2268개 중 1개만
+    실패 — 이 세션 내내 존재해온 무관한 `PerformanceBenchmarkTest` 플레이키, 되돌리기
+    전과 동일).
+
+    **후속 세션을 위한 정확한 착수 지점**: `Revlog` 생성자에서 신규 v1 filelog/
+    manifest를 `inline=true`로(changelog는 계속 `false`), `RevlogIndex`에도 같은 값
+    동기화(두 클래스가 각자 별도 `inline` 필드를 갖고 있어 반드시 함께 맞춰야 함) —
+    이 부분까지는 검증됨. 그다음 `appendChangeGroupEntry`/`appendRawRevision`/
+    `appendOptimizedRevision` 각각의 `if (inline)` 분기를 `appendRevision`의 이미
+    검증된 구현과 나란히 대조해 버그를 찾아 고치는 게 남은 작업. 128KiB 초과 시
+    non-inline으로 전환하는 `_enforceinlinesize` 상당 로직은 이번에 아예 시도하지
+    않음(더 큰 별도 범위) — 우선순위는 "append 경로들 안전하게 만들기"가 먼저.
+
+36. ~~**`TagCommand`가 기존 태그 재태깅을 `-f` 없이도 허용함**~~ — ✅
+    **완료(2026-09-04)**. 신규 발견(백로그 23번 tag 카테고리 완료 후 재검증 중
+    승격). real hg는 이미 존재하는 태그 이름으로 다시 태깅하면 `abort: tag '%s'
+    already exists (use -f to force)`로 거부하고 `--force`가 있어야 덮어쓰기를
+    허용하는데, `TagCommand.java`에는 관련 가드가 전혀 없어 hg4j는 항상 무조건
+    덮어쓰고 있었다. `TagCommand`에 `setForce(boolean)` 신설, 기존 태그로 재태깅
+    시도 시 `force`가 false면 real hg와 동일한 메시지(`"tag '<name>' already
+    exists (use -f to force)"`)로 `HgValidationException`을 던지도록 구현.
+    `TagRealHgInteropTest`에 신규 테스트 4건(force 없이 거부, `-f`로 성공, 로컬
+    태그가 기존 전역 태그와 충돌 시 force 없이 거부, 태그 제거는 force 불필요)
+    추가 — real hg CLI와 거부 메시지까지 일치 확인. 기존
+    `hg4jRetaggingMovesTheTagAndRealHgSeesTheNewTargetWithOldLineStale` 테스트는
+    (원래 "hg4j never gates on -f"를 전제로 통과하던 테스트) `setForce(true)`를
+    명시적으로 넣도록 조정해 원래 검증 의도(태그 이동 자체)를 보존.
 
 37. ~~**dirstate-v2 저장소에서 hg4j 커밋이 기존 파일을 트리 구조에서 유실시킴**~~ —
     ✅ **완료(2026-09-04)**. 신규 발견([[exhaustive-interop-matrix-plan]]의

@@ -81,10 +81,23 @@ public class FetchCommand {
         return this;
     }
 
+    /**
+     * Backlog 30: when the caller hasn't explicitly narrowed this fetch (still the default
+     * {@link HgTreeFilter#ALL}), pick up whatever narrowspec the repository itself was narrow
+     * cloned with -- so a narrow clone's scope keeps being honored on every later {@code pull},
+     * not just at the initial {@code NarrowCloneCommand} call site.
+     */
+    private void resolveNarrowTreeFilterIfDefault() throws IOException {
+        if (this.treeFilter == HgTreeFilter.ALL) {
+            this.treeFilter = HgTreeFilter.loadFromRepository(repository);
+        }
+    }
+
     public List<byte[]> call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");
         }
+        resolveNarrowTreeFilterIfDefault();
 
         monitor.start("Fetching changes", 3);
         monitor.update(1);
@@ -376,6 +389,7 @@ public class FetchCommand {
     }
 
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
+        resolveNarrowTreeFilterIfDefault();
         List<byte[]> importedCommits = new ArrayList<>();
         if (bundle.changelogEntries.isEmpty()) {
             return importedCommits;

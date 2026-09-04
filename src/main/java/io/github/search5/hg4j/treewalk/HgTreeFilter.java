@@ -1,10 +1,15 @@
 package io.github.search5.hg4j.treewalk;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.treewalk.PathFilter;
 
 /**
@@ -248,6 +253,50 @@ public abstract class HgTreeFilter implements PathFilter {
                 return false;
             }
         };
+    }
+
+    /**
+     * Backlog 30 (narrow clone wire-level re-integration): rebuilds the same matcher
+     * {@link #createNarrowSpecFilter} built at narrow-clone time, from the narrowspec real hg
+     * itself stores on disk ({@code .hg/store/narrowspec}, written by {@code NarrowCloneCommand}
+     * -- see its {@code formatNarrowSpec}, whose {@code "[include]"}/{@code "[exclude]"} format
+     * this parses back). {@link io.github.search5.hg4j.api.PullCommand}/
+     * {@link io.github.search5.hg4j.api.FetchCommand}/
+     * {@link io.github.search5.hg4j.api.UpdateCommand} call this so a narrow clone's scope is
+     * automatically honored on every later {@code pull}/{@code update} too, not just at the
+     * initial {@code NarrowCloneCommand} call site -- without callers having to remember to pass
+     * the same filter by hand every time. Returns {@link #ALL} when the repository has no stored
+     * narrowspec (not a narrow clone), so callers can apply this result unconditionally.
+     *
+     * <p>Scope note (still out of scope, tracked in backlog 30's own writeup): this only affects
+     * what hg4j does with content already present locally (skips narrow-excluded files/dirs when
+     * applying an already-fetched changegroup, or when checking out) -- true wire-protocol-level
+     * ellipsis-node narrow pull (server-side history rewriting so excluded paths' revisions are
+     * never even transferred) remains unimplemented, as already documented for backlog 28.
+     */
+    public static HgTreeFilter loadFromRepository(HgRepository repository) throws IOException {
+        File narrowSpecFile = new File(repository.getStoreDir(), "narrowspec");
+        if (!narrowSpecFile.exists()) {
+            return ALL;
+        }
+        List<NarrowPattern> includes = new ArrayList<>();
+        List<NarrowPattern> excludes = new ArrayList<>();
+        List<NarrowPattern> current = null;
+        String raw = Files.readString(narrowSpecFile.toPath(), StandardCharsets.UTF_8);
+        for (String rawLine : raw.split("\n", -1)) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (line.equals("[include]")) {
+                current = includes;
+            } else if (line.equals("[exclude]")) {
+                current = excludes;
+            } else if (current != null) {
+                current.add(normalizeNarrowPattern(line));
+            }
+        }
+        return createNarrowSpecFilter(includes, excludes);
     }
 
     private static boolean matchesPattern(NarrowPattern pattern, String path) {

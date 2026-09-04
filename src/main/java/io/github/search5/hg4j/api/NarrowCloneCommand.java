@@ -105,6 +105,18 @@ public final class NarrowCloneCommand {
         // Perform the standard SCM clone/pull
         hg.pull().setSource(sourceUrl).setTreeFilter(pathFilter).call();
 
+        // Pre-existing bug found while working on backlog 30 (2026-09-04): without this, the
+        // manifest Revlog instance the pull just wrote to stays cached from before the write
+        // (or from an earlier incidental read during Hg.init()), and the very next `hg.update()`
+        // reads it with stale index/offset state -- deterministically throwing
+        // HgCorruptDataException ("Failed to read complete hunk ... at offset 64") while decoding
+        // the manifest it just fetched. 100% reproducible on unmodified code (bisected via git
+        // stash against a pristine checkout), affecting every narrow clone, not anything
+        // backlog-30-specific. FetchCommand's own clonebundle path already does this same
+        // invalidation after writing (see its `repository.clearRevlogCache()` call) -- this was
+        // simply the one write-then-immediately-read call site that had been missed.
+        repo.clearRevlogCache();
+
         // 6. sparse working copy update
         hg.update().setTreeFilter(pathFilter).call();
 

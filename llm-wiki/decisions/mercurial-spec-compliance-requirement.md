@@ -1,11 +1,13 @@
 ---
 updated: 2026-09-04
-status: 백로그 18~24 전부 완료. 25번은 오탐(hg4j 버그 아님)으로 종결. 23번(commit·push·
+status: 백로그 18~25, 27번 전부 완료. 25번은 오탐(hg4j 버그 아님)으로 종결. 23번(commit·push·
   branch·merge·tag·rebase·shelve·bisect·strip·subrepo 10개 카테고리 실전 interop 검증)도
   5개 병렬 TDD 작업으로 전부 완료 — 실제 버그 15건 발견·수정, 코드 변경 없이 사용자 확인만
-  필요한 아키텍처 수준 결정 다수 발견(각 카테고리 문단에 표시). 26(hg4j 서버가 cg1만
-  생성/cg5 sidedata 미반영)·27(log --follow/annotate가 sidedata copy-tracing과 미연동)·
-  28(Narrow clone/LFS 실제 hg interop 검증 누락) 번은 다음 착수 대상.
+  필요한 아키텍처 수준 결정 다수 발견(각 카테고리 문단에 표시). 27번(log --follow <path>
+  신규 옵션 + annotate의 rename-crossing)은 완료(2026-09-04) — 조사 결과 real hg의 이
+  기능 자체가 기본 설정에서는 sidedata가 아니라 filelog 수준 copy 메타데이터를 쓴다는
+  것이 밝혀져 그 계층으로 구현(상세는 27번 문단). 26(hg4j 서버가 cg1만 생성/cg5
+  sidedata 미반영)·28(Narrow clone/LFS 실제 hg interop 검증 누락) 번은 다음 착수 대상.
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -572,10 +574,12 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `src/test/resources/fixtures/sidedata-copytracing/`에 fixture로 확보해
     `hg debugchangedfiles <rev>` 출력과 대조 검증(`SidedataCopyTracingTest`,
     `SidedataChangedFilesCommandTest`, 8건). **남은 gap**: ~~커밋 시점에 hg4j가
-    `SD_FILES`를 직접 쓰는 writer는 미구현~~ — ✅ 백로그 19번에서 완료. `hg log
-    --follow`/annotate 연동은 여전히 미배선(2026-09-04 재확인 — `LogCommand`/
-    `AnnotateCommand`에 `SidedataChangedFilesCommand`/`ChangingFiles`/
-    `getCopySource` 참조가 전혀 없음) — 상세는 백로그 27번.
+    `SD_FILES`를 직접 쓰는 writer는 미구현~~ — ✅ 백로그 19번에서 완료. ~~`hg log
+    --follow`/annotate 연동은 여전히 미배선~~ — ✅ 백로그 27번에서 완료(2026-09-04)
+    — 단, 백로그 27번 조사 결과 real hg의 `--follow`/`annotate` 자체가 기본
+    설정에서는 이 `SD_FILES` sidedata를 전혀 읽지 않는다는 것이 밝혀져(별도의
+    filelog 수준 `copy`/`copyrev` 메타데이터가 진짜 메커니즘), 실제 연동은 그
+    계층으로 이뤄졌다 — 상세는 백로그 27번.
 18. ~~**Treemanifest 쓰기(생성/커밋)**~~ — ✅ **완료(2026-09-03)**. 실제
     `mercurial/manifest.py`의 `manifestlog._addtree`/`treemanifest.writesubtrees`/
     `dirtext()`를 실측(자식 디렉터리부터 bottom-up 재귀 기록, 각 레벨의 파일+
@@ -1589,21 +1593,81 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     가 cg5로 받은 `entry.sidedata`를 실제로 로컬 `.sda`에 반영하도록 배선. 둘 다
     구현 범위/우선순위는 사용자 확인 후 진행.
 
-27. **`hg log --follow`/annotate가 sidedata 기반 copy-tracing과 연동되지 않음 —
+~~27. **`hg log --follow`/annotate가 sidedata 기반 copy-tracing과 연동되지 않음 —
     신규, 2026-09-04 발견(백로그 17번 "남은 gap"에 번호 없이 있던 것을 메인
-    에이전트가 직접 재확인 후 승격), 미착수. 백로그 23번 완료 후 즉시 진행.**
-    백로그 17/19번으로 `SD_FILES`(changelog sidedata 기반 copy-tracing) decode/
-    조회/쓰기가 전부 구현됐지만, 그 복사 이력 정보를 `LogCommand`의 `--follow`나
-    별도 annotate 계열 명령이 실제로 소비하도록 이어진 적은 없다(2026-09-04
-    직접 코드 확인 — `LogCommand`/`AnnotateCommand`에
-    `SidedataChangedFilesCommand`/`ChangingFiles`/`getCopySource` 참조 0건).
-    현재 `LogCommand`의 `followAncestors`는 changelog 부모 관계만 따라가고
-    파일별 rename/copy 경계를 넘어 이력을 추적하지는 못한다. **범위(제안)**:
-    (1) `hg log --follow <path>` 형태(특정 파일의 rename 이력을 넘나드는 추적)가
-    hg4j에 대응 기능 자체가 있는지부터 확인, (2) 있다면 dirstate 기반
-    `CopyCommand` 정보만 쓰고 있는지 sidedata 기반 조회로 보강해야 하는지 판단,
-    (3) annotate 계열 명령이 hg4j에 아예 없다면 "구현 여부 조사"로 범위를 좁힐지
-    사용자 확인 후 진행.
+    에이전트가 직접 재확인 후 승격), 미착수. 백로그 23번 완료 후 즉시 진행.**~~
+    ✅ **완료(2026-09-04)**.
+
+    **조사 경과 — 사용자가 지정한 "sidedata로 보강"이라는 전제가 실제로는
+    틀렸음을 확인**: 실제 `hg`(7.2) 소스(`mercurial/copies.py`
+    `usechangesetcentricalgo()`, `mercurial/filelog.py` `renamed()`,
+    `mercurial/context.py` `filectx._copied`)를 직접 읽고, 로컬 시스템 `hg`로
+    평범한 `hg init` 저장소를 만들어 `hg debugformat`을 찍어 확인한 결과
+    (`copies-sdc: no`, `changelog-v2: no`) — **real hg의 `--follow`/`annotate`는
+    기본적으로 changelog sidedata(`SD_FILES`, 백로그 17/19번)를 전혀 읽지 않는다.**
+    `usechangesetcentricalgo()`는 저장소가 `format.use-changelog-v2`+
+    `exp-copies-sidedata-changeset` requirement로 명시적으로 만들어진 경우에만
+    참이 되고, 평범한 `hg init` 저장소(이번 검증에 쓴 것 포함, 사실상 실사용
+    중인 거의 모든 저장소)는 항상 거짓이다. 실제로 쓰이는 기본 메커니즘은 **파일로그
+    수준의 `copy`/`copyrev` 메타데이터**(`filelog.renamed()`) — 각 filelog
+    리비전 데이터 앞에 붙는 `\x01\n...\x01\n` 메타데이터 헤더에 저장되며,
+    rename/copy 대상 파일은 항상 새 filelog를 리비전 0부터 시작하므로(부모
+    파일리비전과 내용이 무관하다고 보고 델타를 안 만듦) 이 메타데이터는 항상
+    그 filelog의 리비전 0에만 존재한다. 다행히 **이 계층은 hg4j에 이미 절반
+    구현돼 있었다** — `CommitCommand`(551-556행 근처)가 `dirstate.getCopyMap()`을
+    보고 커밋 시 이미 `copy`/`copyrev` 메타데이터를 filelog에 쓰고 있었고(백로그
+    17/19번보다 먼저 존재), `storage.Revlog.getRevisionMetadata(rev)`도 이미
+    그 헤더를 파싱해 되돌려주고 있었다 — 다만 `api` 패키지의 그 무엇도 그
+    reader를 소비하지 않고 있었다(이번에 직접 확인). 즉 실제 gap은 "sidedata
+    연동 부재"가 아니라 "이미 존재하는 filelog 메타데이터 reader를
+    `LogCommand`/`AnnotateCommand`가 안 쓰고 있었다"였다 — 사용자에게 이
+    발견을 있는 그대로 보고하고, 사용자 지시대로 "실제 hg가 안 쓰는 계층을
+    억지로 sidedata 기반으로 구현"하지 않고 real hg와 실제로 일치하는 filelog
+    메커니즘으로 구현했다.
+
+    **구현**: (1) `LogCommand.setFollowPath(String path)` 신규(빌더 패턴,
+    `setFollowAncestors(true)`를 암묵적으로 켬) — 지정한 경로의 filelog를
+    조회해 그 리비전들의 linkRev가 시작 리비전(옵션 미지정 시 tip)의 조상
+    집합(`ChangesetGraph.getAllAncestors`) 안에 있는 것만 모으고, 그 filelog의
+    리비전 0의 linkRev까지 조상 범위 안에 들어오면(= 실제로 그 파일의 origin까지
+    거슬러 올라갔으면) 리비전 0의 `copy` 메타데이터를 읽어 이전 경로로 갈아타
+    반복 — 이렇게 모은 리비전 집합을 새 `computeFollowPathRevs()` 헬퍼로 계산해
+    `call()`의 기존 `allowedRevs` 필터링 경로에 그대로 꽂았다(기존
+    `followAncestors`용 필터링 로직과 나란히 배치, 서로 배타적). (2)
+    `AnnotateCommand`는 내부적으로 `(path, targetRev)`별 순수 재귀 헬퍼
+    `traceLines()`/`tryCrossRenameBoundary()`로 리팩터링 — 기존엔 "origin
+    리비전"을 **현재 filelog 안의 리비전 인덱스**로만 추적하다 맨 마지막에
+    한 번 linkRev로 변환했는데, 그 방식은 베이스라인이 다른 filelog(rename
+    source)에서 온 경우 표현이 불가능했다. 새 방식은 "origin changelog linkRev"를
+    처음부터 끝까지 직접 들고 다니고, 파일 리비전 0의 `copy` 메타데이터가
+    있으면 그 `copyrev`가 가리키는 정확한 소스 filelog 리비전으로 재귀
+    호출해 그 결과를 베이스라인으로 삼은 뒤 나머지는 기존 LCS 기반 forward
+    diff 알고리즘을 그대로 재사용한다 — 별도 `--follow` 플래그 없이 항상 이렇게
+    동작(실제 `hg annotate`에 그런 플래그가 없는 것과 동일).
+
+    **검증**: 실제 `hg` 7.2 CLI로 `add old.txt` → 커밋 → `hg mv old.txt new.txt`
+    → 커밋 → `new.txt` 내용 수정 → 커밋 시나리오를 만들어 오라클로 사용.
+    `hg log --follow new.txt --template "{rev} {desc}\n"`은 `2 modify new.txt`/
+    `1 rename to new.txt`/`0 add old.txt` 세 리비전 전부(rename 이전 리비전
+    포함)를 반환했고, `hg annotate -u new.txt`는 rename에서 살아남은 두 줄을
+    rename 전 커미터(Alice)에게 정확히 귀속시켰다(`Alice: line1`/`Alice: line2`/
+    `Carol: line3`) — hg4j의 동일 시나리오(`LogCommandTest.followPathCrossesRenameBoundaryToOldPath`,
+    `AnnotateCommandCoverageTest.annotateFollowsRenameBoundaryToOriginalAuthor`)가
+    바이트 단위로 이 출력과 일치함을 확인. `hg copy`(rename 아닌 순수 copy)
+    경계도 별도 케이스로 검증(`annotateFollowsCopyBoundaryButLeavesOriginalUntouched`
+    — 복사본은 원본 커미터로 귀속되고, 원본 파일 자신의 annotate는 영향받지
+    않음). rename 없는 평범한 `--follow <path>`(`followPathWithoutRenameBehavesLikePlainFollow`)와
+    존재한 적 없는 경로(`followPathOnNeverExistingPathReturnsEmpty`)도 커버.
+    전체 회귀 2405 테스트, 실패 0.
+
+    **알려진 스코프 한계(문서화, 정확성 결함 아님)**: 이 구현은 rename 목적지의
+    filelog 리비전 0(=그 filelog의 유일한 origin, 실제 hg의 `filelog.renamed()`가
+    지원하는 정확히 그 범위)에서만 copy 경계를 확인한다 — 이는 "출발 경로가
+    같은 조상 라인 안에서 한 번 이상 재사용된" 병적인 케이스(예: 나중에 무관한
+    커밋이 같은 옛 경로명을 다시 만드는 경우)까지 완벽하게 `copyrev` 노드
+    단위로 구분하지는 않는다(대신 조상 집합 필터링에 의존). 실제 hg의
+    `_tracefile`/`_fullcopytracing`이 다루는 병합 커밋의 양쪽 부모 서로 다른
+    copy 등 더 복잡한 케이스도 이번 스코프 밖.
 
 28. ~~**Narrow clone / LFS — 실제 hg CLI interop 검증 누락(근거 없는 bare `✅`)**~~
     — ✅ **완료(2026-09-04)**. gap table의 `Narrow clone / narrowspec`과

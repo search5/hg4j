@@ -1,32 +1,22 @@
 ---
 updated: 2026-09-04
-status: 번호 매겨진 백로그 1~28번 전부 완료(25번은 오탐으로 종결). 23번(commit·
-  push·branch·merge·tag·rebase·shelve·bisect·strip·subrepo 10개 카테고리 실전
-  interop 검증)은 5개 병렬 TDD 작업으로 완료 — 실제 버그 15건 발견·수정, 코드
-  변경 없이 사용자 확인만 필요한 아키텍처 수준 결정 다수 발견(각 카테고리 문단에
-  표시). 26번(hg4j 자체 changegroup 생성/적용 경로가 cg1/무sidedata로 제한되던
-  문제 — 근본 원인은 `Wire1Commands.capabilitiesString()`이 `bundle2=`를 광고하지
-  않아 실제 hg 클라이언트가 항상 legacy cg1 경로로만 빠지던 것)도 완료
-  (2026-09-04) — 상세는 아래 gap table "Changegroup (cg1~cg5)" 행 및 26번 문단.
-  27번(log --follow <path> 신규 옵션 + annotate의 rename-crossing)도 완료
-  (2026-09-04) — 조사 결과 real hg의 이 기능 자체가 기본 설정에서는 sidedata가
-  아니라 filelog 수준 copy 메타데이터를 쓴다는 것이 밝혀져 그 계층으로 구현
-  (상세는 27번 문단). 28번(Narrow clone/LFS 실제 hg interop 검증 누락)도 완료
-  (2026-09-04) — 상세는 아래 gap table "Narrow clone / narrowspec"/"LFS" 행.
-  **29~36번은 신규 — 2026-09-04에 "완료된 항목 안에 남은 캐비어트"를 사용자
-  지시로 코드까지 직접 재확인해 승격한 항목들로, 전부 미착수**: requires 문자열
-  커버리지(29), narrow clone wire-level 재통합(30), LFS 커밋/체크아웃 파이프라인
-  연동(31), subrepo 잔여 gap 4건(32), push checkheads SSH 미작동(33), bisect
-  merge DAG 검증 누락(34), revlog 항상 non-inline이라 fncache 경고(35), tag
-  재태깅 -f 가드 부재(36) — 전부 real hg CLI interop 검증까지 완료 기준에 포함.
-  **37번도 신규 — 완료(2026-09-04)**: dirstate-v2 저장소에 hg4j가 커밋하면 기존
-  파일이 트리 구조에서 유실되던 버그 — [[exhaustive-interop-matrix-plan]]의
-  requirement 매트릭스 TDD 중 발견. 근본 원인은 real hg의 dirstate-v2 자식 노드
-  배열이 basename 정렬을 전제로 이진 탐색하는데 hg4j가 정렬 없이 썼던 것
-  (`hg-rust-7.2.4` 컨테이너의 Rust 소스 직접 대조로 확정), `DirstateV2Serializer`
-  정렬 로직 추가로 수정, 60개 매트릭스 케이스 전부 GREEN. **38번은 신규 —
-  미착수**: 동시 push 레이스 컨디션이 real hg와 완전히 동일하게 동작하는지
-  미검증 — 특히 서버 방향, 사용자 지시로 등록.
+status: 번호 매겨진 백로그 1~30번, 33·34·36·37번 전부 완료(25번은 오탐으로
+  종결). 요약: 1~21 완료 → 재검증에서 22~25 발견·완료(25는 오탐) → 재검증에서
+  26~28 발견·완료 → "완료 항목 안에 남은 캐비어트" 재확인으로 29~36 발견 →
+  [[exhaustive-interop-matrix-plan]] TDD 중 37 발견, 사용자 지시로 38~40 등록.
+  **완료**: 29(requires 허용목록이 낡아 평범한 저장소도 거부되던 버그),
+  30(narrow wire-level 재통합 + 사전 존재 캐시 버그), 33(SSH push checkheads
+  미구현), 34(bisect merge DAG 검증, 새 버그는 없었음), 36(tag 재태깅 `-f`
+  가드), 37(dirstate-v2 트리 손상 — real hg의 이진 탐색 리더가 정렬 안 된
+  자식 배열을 못 찾던 것, `hg-rust-7.2.4` 컨테이너의 Rust 소스 대조로 근본
+  원인 확정). **진행 중**: 31(LFS 커밋/체크아웃 파이프라인), 32(subrepo
+  잔여 gap 4건, 31 완료 후 순차 착수 — `CommitCommand`/`UpdateCommand` 공유로
+  동시 진행 불가), 35(revlog 항상 non-inline — 1차 시도에서 `appendChangeGroupEntry`
+  데이터 손상 발견 후 안전 롤백, 사용자 지시로 재시도 중). **미착수**:
+  38(동시 push 레이스 컨디션), 39([[exhaustive-interop-matrix-plan]] 매트릭스
+  범위 확장 — 현재 67개 명령 중 7개만 검증됨), 40(narrow clone의 진짜
+  wire-protocol ellipsis node 왕복 — 지금은 로컬 필터링만 있고 전송량 절감
+  효과가 없음).
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -2108,6 +2098,44 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     자신의 동일 시나리오(두 real hg 서버 프로세스 등)와 일치하는지, (3) lock 대기
     타임아웃 설정이 real hg의 기본값(`ui.timeout`, 기본 600초)과 동일하게 동작하는지
     real hg CLI와 나란히 검증. 상세 범위 산정과 실제 구현은 별도 세션에서 착수.
+
+39. **[[exhaustive-interop-matrix-plan]] 매트릭스 범위 확장 — 명령 커버리지가
+    극히 일부에 머물러 있음**. 신규, 2026-09-04 사용자 지시로 등록 — 미착수.
+    requirement 매트릭스(36개 조합, native 6 + Docker 30, 전부 GREEN 확정)는
+    현재 `CommitCommand`/`LogCommand`/`StatusCommand`/`CatCommand` **4개 명령**
+    에만 적용돼 있고, 나머지 로컬/저장소 전용 명령 55개(`AddCommand`,
+    `AmendCommand`, `BookmarkCommand`, `MergeCommand`, `RebaseCommand`,
+    `ShelveCommand`, `StripCommand`, `SubrepoCommand` 등, 전체 목록은
+    [[exhaustive-interop-matrix-plan]] §3-2)는 이 36개 조합 전체를 통과한 적이
+    없다. wire 매트릭스(21개 조합, HTTP 18 + SSH 3, 전부 GREEN 확정)도
+    `CloneCommand`/`PullCommand`/`PushCommand` **3개 명령**에만 적용돼 있고,
+    `FetchCommand`/`IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/
+    `NarrowCloneCommand` 5개는 미착수([[exhaustive-interop-matrix-plan]] §4).
+    즉 "67개 명령 × 매트릭스" 전체 목표 중 실제로 완주된 것은 명령 기준
+    7/67(4+3)뿐 — 나머지 60개 명령을 우선순위대로 점진적으로 확장하는 것이
+    이 항목의 목표. 특히 `PushCommand`/`RebaseCommand`/`ShelveCommand`/
+    `StripCommand`처럼 이번 세션에서 이미 여러 실버그가 나왔던 명령들을
+    우선순위로 두는 것을 권장.
+
+40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
+    구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
+    각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도
+    번호로 승격) — 미착수. 백로그 30번 완료로 narrow clone 이후 로컬에서
+    pull/update 시 narrowspec 필터를 다시 읽어 범위 밖 파일을 걸러내는
+    것까지는 구현됐지만(로컬 changegroup 적용 단계에서 필터링), 이건 진짜
+    wire-protocol 수준 narrow pull(실제 hg의 `narrow` 확장이 서버·클라이언트
+    간에 협상하는 `ellipsis node` — 범위 밖 리비전을 실제 조상 정보를 보존한
+    "가짜" 압축 노드로 대체해서 전송량 자체를 줄이는 메커니즘)과는 다르다.
+    hg4j는 narrowspec을 clone/pull 요청 시점에 서버로 전달해 서버가 실제로
+    범위를 좁혀 전송하게 만드는 프로토콜 수준 협상이 없고, 대신 항상 전체
+    changegroup을 받은 뒤 로컬에서 걸러내는 방식이다 — 기능적으로는 워킹
+    디렉터리/추적 목록 결과가 real hg와 일치하지만(백로그 30번에서 검증됨),
+    "narrow clone으로 전송량을 줄인다"는 narrow clone의 원래 목적 자체는
+    달성하지 못한다(대역폭/저장 절감 효과 없음). 실제 hg의 wire protocol v1
+    `narrow` capability 협상(`narrow=`, `depth=` 파라미터, ellipsis 노드
+    생성 로직 — `mercurial/narrowbundle2.py` 실측 필요)을 구현하는 것이
+    이 항목의 목표. 상당히 큰 작업이므로 별도 세션에서 범위 산정부터 착수
+    권장.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

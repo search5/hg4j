@@ -28,6 +28,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * 환경의 시스템 {@code /usr/bin/hg} 7.2.2는 Rust 확장이 없어 이 포맷의 저장소 자체를 만들지
  * 못한다). 상세 생성 방법/바이트 단위 대조 결과는
  * {@code src/test/resources/fixtures/persistent-nodemap/README.md} 참고.</p>
+ *
+ * <p><b>2026-09-04</b>: 이 클래스는 읽기 전용(정적 fixture)이다 — 쓰기 방향의 real-hg 검증은
+ * {@link NodeMapFileWriterTest#realHgRustAcceptsHg4jWrittenNodemap}(단독 persistent-nodemap)과
+ * {@link RevlogV2GeneralParserTest#realHgRustAcceptsHg4jWrittenGeneralV2Repository}(general-v2와
+ * 결합된 조합)에 있다.</p>
  */
 @DisplayName("NodeMapFile (persistent-nodemap .n docket + trie) — verified against real hg-generated fixtures")
 class NodeMapFileFixtureTest {

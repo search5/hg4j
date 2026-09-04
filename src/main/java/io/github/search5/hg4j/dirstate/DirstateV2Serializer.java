@@ -81,9 +81,26 @@ public class DirstateV2Serializer {
         }
 
         // 2. Continuous BFS serialization layout mapping
+        //
+        // Real hg's Rust reader (dirstate/dirstate_map.rs, ChildNodesRef::get()) looks up a child
+        // by name using `nodes.binary_search_by(|node| node.base_name(on_disk).cmp(base_name))` --
+        // it requires each node's *own* children array to be sorted ascending by basename (see the
+        // `sorted()` doc comment in on_disk.rs: "Always sorted by ascending full_path ... only the
+        // base_names need to be compared during binary search"). Comparison is on the raw UTF-8
+        // bytes of the basename, matching Rust's `&[u8]`/`HgPath` ordering. Every level (root list
+        // and every directory's children list) MUST be sorted this way, or binary search on the
+        // real-hg side silently lands on the wrong index and treats an out-of-order sibling as
+        // absent -- this was verified byte-for-byte (2026-09-04) against a real hg-written
+        // dirstate-v2 file: an out-of-order 2-root-file case parses fine via hg4j's own DFS-stack
+        // reader (order-agnostic) but makes real hg's `hg status`/`hg verify` silently drop the
+        // earlier-inserted file ("in manifest1, but not marked as tracked in p1").
+        Comparator<TreeNode> byBasenameBytes = Comparator.comparing(
+                n -> n.name, DirstateV2Serializer::compareUtf8Bytes);
+
         List<TreeNode> flatNodes = new ArrayList<>();
         List<TreeNode> rootList = new ArrayList<>(roots.values());
-        
+        rootList.sort(byBasenameBytes);
+
         flatNodes.addAll(rootList);
 
         Queue<TreeNode> queue = new LinkedList<>(rootList);
@@ -100,6 +117,7 @@ public class DirstateV2Serializer {
             TreeNode parent = queue.poll();
             if (!parent.children.isEmpty()) {
                 List<TreeNode> childList = new ArrayList<>(parent.children.values());
+                childList.sort(byBasenameBytes);
                 childrenStartMap.put(parent, flatNodes.size() * DirstateV2Node.NODE_SIZE); // bytes offset to child nodes
                 childrenCountMap.put(parent, childList.size());
 
@@ -232,5 +250,25 @@ public class DirstateV2Serializer {
         mainBuffer.put(rawDataBlock);
 
         return mainBuffer.array();
+    }
+
+    /**
+     * Lexicographic comparison of two names' raw UTF-8 bytes (unsigned), matching Rust's
+     * {@code &[u8]}/{@code HgPath} ordering used by real hg's {@code binary_search_by} lookup.
+     * Java's {@code String#compareTo} compares UTF-16 code units instead, which agrees with byte
+     * order for ASCII but not necessarily beyond it -- this compares the actual encoded bytes hg4j
+     * writes to disk, since that is what real hg's reader binary-searches over.
+     */
+    private static int compareUtf8Bytes(String a, String b) {
+        byte[] ab = a.getBytes(StandardCharsets.UTF_8);
+        byte[] bb = b.getBytes(StandardCharsets.UTF_8);
+        int len = Math.min(ab.length, bb.length);
+        for (int i = 0; i < len; i++) {
+            int cmp = Integer.compareUnsigned(ab[i] & 0xFF, bb[i] & 0xFF);
+            if (cmp != 0) {
+                return cmp;
+            }
+        }
+        return Integer.compare(ab.length, bb.length);
     }
 }

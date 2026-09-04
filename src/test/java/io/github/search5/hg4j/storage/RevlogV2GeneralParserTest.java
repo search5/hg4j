@@ -1,6 +1,12 @@
 package io.github.search5.hg4j.storage;
 
+import io.github.search5.hg4j.api.AddCommand;
+import io.github.search5.hg4j.api.CommitCommand;
+import io.github.search5.hg4j.api.Hg;
+import io.github.search5.hg4j.lib.HgRepository;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,6 +16,8 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -145,5 +153,78 @@ public class RevlogV2GeneralParserTest {
         assertEquals(3, reopened.getRevisionCount(), "docket의 index_end/data_end가 갱신되어 재오픈 시에도 3개로 보여야 함");
         assertArrayEquals(content, reopened.getRawRevisionContent(2), "재오픈 후에도 새로 쓴 리비전 내용이 올바르게 복원돼야 함");
         assertEquals(5, reopened.getIndexRecord(2).getLinkRev());
+    }
+
+    /**
+     * Write-direction gap this file never covered: every test above only ever READS a static,
+     * pre-captured general-v2 fixture (or hg4j's own reopen of a file hg4j itself wrote). This
+     * closes that gap for the write direction specifically -- hg4j commits into a FRESH,
+     * live, general-v2 repository (which auto-implies {@code fileindex-v1}/{@code
+     * persistent-nodemap} together, per this session's own empirical probing of {@code
+     * hg-rust-7.2.4}, see {@code llm-wiki/decisions/exhaustive-interop-matrix-plan.md} §1-1) and
+     * real, Rust-enabled Mercurial verifies/reads it back. Mirrors {@link
+     * NodeMapFileWriterTest#realHgRustAcceptsHg4jWrittenNodemap} (persistent-nodemap ALONE), but
+     * for the general-v2 combination specifically -- a materially different on-disk code path in
+     * {@code Revlog}/{@code RevlogIndex} (96-byte {@code INDEX_ENTRY_V2} records, explicit
+     * baseRev/linkRev/parents, fileindex list/meta/tree) exercised nowhere else against a live
+     * real-hg oracle. Uses the same one-shot {@code docker run --rm} pattern as that test (a
+     * single docker invocation AFTER all hg4j commits finish, not interleaved with them) --
+     * deliberately avoiding the interleaved-{@code ProcessBuilder} write-corruption pattern the
+     * sibling {@code RequirementMatrixDockerRoundTripTest} had to root-cause and work around via a
+     * dedicated subprocess.
+     */
+    @Test
+    @Tag("interop")
+    @DisplayName("hg4j가 새로 쓴 general-v2(+fileindex-v1+persistent-nodemap) 커밋을 real Rust hg가 검증/조회한다 (쓰기 방향)")
+    void realHgRustAcceptsHg4jWrittenGeneralV2Repository(@TempDir Path liveDir) throws Exception {
+        Assumptions.assumeTrue(isDockerImageAvailable(), "hg-rust-7.2.4 Docker image not available -- build it via `docker build -t hg-rust-7.2.4 docker/hg-rust-7.2.4` to run this test");
+
+        File repoDir = liveDir.resolve("repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        // hg4j never turns general-v2 on by default -- declare it exactly like a real
+        // `hg --config experimental.revlogv2=... init` would (that config auto-adds
+        // fileindex-v1+persistent-nodemap too, per this session's own probing), matching the
+        // `.hg/store/requires` bootstrap pattern already established by
+        // NodeMapFileWriterTest#realHgRustAcceptsHg4jWrittenNodemap for the plain
+        // persistent-nodemap case.
+        File storeDir = new File(repoDir, ".hg/store");
+        Files.createDirectories(storeDir.toPath());
+        List<String> lines = new ArrayList<>(Files.readAllLines(new File(repoDir, ".hg/requires").toPath()));
+        lines.add("exp-revlogv2.2");
+        lines.add("fileindex-v1");
+        lines.add("persistent-nodemap");
+        Files.write(new File(storeDir, "requires").toPath(), lines);
+        repo = new HgRepository(repoDir);
+
+        for (int i = 1; i <= 3; i++) {
+            Files.writeString(new File(repoDir, "a.txt").toPath(), "line " + i + "\n",
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            new AddCommand(repo).call();
+            new CommitCommand(repo).setMessage("commit " + i).call();
+        }
+
+        ProcessBuilder verifyPb = new ProcessBuilder("docker", "run", "--rm", "-v",
+                repoDir.getAbsolutePath() + ":/repo", "hg-rust-7.2.4", "hg", "-R", "/repo", "verify");
+        Process verifyProc = verifyPb.start();
+        String verifyOut = new String(verifyProc.getInputStream().readAllBytes(), StandardCharsets.UTF_8)
+                + new String(verifyProc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, verifyProc.waitFor(), "real hg verify failed on hg4j-written general-v2 repo:\n" + verifyOut);
+
+        ProcessBuilder catPb = new ProcessBuilder("docker", "run", "--rm", "-v",
+                repoDir.getAbsolutePath() + ":/repo", "hg-rust-7.2.4", "hg", "-R", "/repo", "cat", "-r", "tip", "a.txt");
+        Process catProc = catPb.start();
+        String catOut = new String(catProc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, catProc.waitFor());
+        assertEquals("line 1\nline 2\nline 3\n", catOut, "real hg cat must reproduce hg4j's committed content exactly");
+    }
+
+    private static boolean isDockerImageAvailable() {
+        try {
+            Process p = new ProcessBuilder("docker", "image", "inspect", "hg-rust-7.2.4").redirectErrorStream(true).start();
+            return p.waitFor() == 0;
+        } catch (IOException | InterruptedException e) {
+            return false;
+        }
     }
 }

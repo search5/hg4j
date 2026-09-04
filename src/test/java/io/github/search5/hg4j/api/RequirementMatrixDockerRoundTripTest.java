@@ -391,14 +391,14 @@ public class RequirementMatrixDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jWritesRealHgReadsAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        // Known, tracked bug (mercurial-spec-compliance-requirement.md backlog #37, 2026-09-04):
-        // writing an hg4j commit into an EXISTING dirstate-v2 repo orphans the pre-existing tracked
-        // file from the dirstate-v2 tree structure (real hg's `hg verify` reports "not marked as
-        // tracked in p1"). Root cause not yet fixed -- skip (not silently pass, not hard-fail the
-        // whole suite) so this stays an honest, visible signal instead of either hiding the gap or
-        // permanently reddening the build. Remove this assumeFalse once backlog #37 is fixed.
-        Assumptions.assumeFalse(combo.label().startsWith("dirstate2"),
-                "Known bug, backlog #37 (dirstate-v2 tree corruption on hg4j write) -- combo " + combo);
+        // Backlog #37 (mercurial-spec-compliance-requirement.md, 2026-09-04): FIXED. Root cause was
+        // DirstateV2Serializer writing each level's node array in LinkedHashMap insertion order
+        // instead of sorted ascending by basename bytes -- real hg's Rust reader looks up children
+        // via `binary_search_by` (dirstate/dirstate_map.rs) and requires that ordering, so an
+        // out-of-order sibling was silently "not found" (real hg reported it as untracked / a
+        // dirstate-vs-manifest mismatch) even though hg4j's own order-agnostic DFS-stack reader
+        // parsed the same bytes back fine. See DirstateV2Serializer.compareUtf8Bytes and
+        // DirstateV2SerializerCoverageTest's regression tests for the byte-level fix.
         withFreshContainer((writeContainerName, writeWorkDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = writeWorkDir.resolve(repoRelPath);

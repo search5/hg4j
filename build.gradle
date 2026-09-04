@@ -90,7 +90,9 @@ jar {
 }
 
 test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags 'interop'
+    }
     maxHeapSize = "2048m"
     maxParallelForks = 1
     forkEvery = 100
@@ -99,12 +101,39 @@ test {
     finalizedBy jacocoTestReport
 }
 
+// Real hg CLI / Docker 기반 interop 테스트(@Tag("interop"))는 기본 `test`에서 제외되고
+// 이 태스크로만 돈다 -- 매트릭스가 커지면서 기본 테스트 루프가 계속 느려지는 문제를
+// 해결하기 위해 2026-09-04 분리(사용자 지시). `./gradlew interopTest`로 명시적으로 실행.
+tasks.register('interopTest', Test) {
+    group = 'verification'
+    description = 'Runs real hg CLI / Docker 기반 interop 테스트만(@Tag("interop")). 느리고 hg/Docker 설치가 필요함.'
+    useJUnitPlatform {
+        includeTags 'interop'
+    }
+    maxHeapSize = "2048m"
+    maxParallelForks = 1
+    forkEvery = 100
+    classpath = sourceSets.test.runtimeClasspath + project.configurations.testRuntimeClasspath
+    testClassesDirs = sourceSets.test.output.classesDirs
+    binaryResultsDirectory = layout.buildDirectory.dir("interop-test-results/binary")
+    reports {
+        html.outputLocation = layout.buildDirectory.dir("reports/interop-tests")
+        junitXml.outputLocation = layout.buildDirectory.dir("interop-test-results/xml")
+    }
+}
+
 jacoco {
     toolVersion = "0.8.11"
 }
 
 jacocoTestReport {
-    dependsOn test
+    // interopTest도 합쳐야 실제 커버리지를 정확히 반영한다 -- PushCommand/ShelveCommand/
+    // TagCommand/Bundle2Parser 등 여러 핵심 클래스가 real hg CLI/Docker 기반 interop
+    // 테스트로만 커버되는 경로가 많다(2026-09-04, test/interopTest 분리 직후 실측 확인:
+    // interopTest 없이는 이 클래스들이 90% 클래스별 규칙에서 전부 미달로 떨어짐). 평소
+    // 빠른 `test`는 그대로 두고, 커버리지 집계는 두 태스크의 실행 데이터를 합쳐서 계산.
+    dependsOn test, interopTest
+    executionData test, interopTest
     reports {
         xml.required = true
         html.required = true
@@ -112,6 +141,8 @@ jacocoTestReport {
 }
 
 jacocoTestCoverageVerification {
+    dependsOn test, interopTest
+    executionData test, interopTest
     violationRules {
         // 규칙 1: 전체 번들 커버리지 (최소 70% - 네트워크 의존 클래스 제외 전 기준)
         rule {

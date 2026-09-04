@@ -20,6 +20,16 @@ import static org.junit.jupiter.api.Assertions.*;
  * consistent for hg4j's own reader/writer round-trip, but unable to read this real fixture at all
  * (every field would decode to garbage). This test pins the corrected layout against real bytes
  * so a future change can't silently drift away from the real spec again the same way.</p>
+ *
+ * <p><b>2026-09-04</b>: this class is read-only (a static, uncommitted {@code hg add} snapshot).
+ * Live write-direction verification (hg4j commits into a dirstate-v2 repo, real hg reads/verifies
+ * it back) belongs to the requirement matrix's Docker-backed suite,
+ * {@code io.github.search5.hg4j.api.RequirementMatrixDockerRoundTripTest} — which, as of this
+ * writing, has an OPEN, flagged-not-fixed real bug in exactly that direction (hg4j's {@code
+ * Dirstate#write} always emitting {@code children_start=0} for the tree docket, which a real hg
+ * multi-root-siblings scenario does not accept the same way). Not duplicated here to avoid a
+ * second Docker harness for the same underlying concern — see that class's javadoc for the current
+ * status.</p>
  */
 public class DirstateV2RealFixtureTest {
 

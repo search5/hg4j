@@ -38,6 +38,69 @@ public class DirstateV2SerializerCoverageTest {
         assertNotNull(serializer);
     }
 
+    /**
+     * Backlog #37 regression (2026-09-04): real hg's Rust reader looks up a child node within its
+     * parent's children array via {@code binary_search_by(|node| node.base_name(on_disk).cmp
+     * (base_name))} (dirstate/dirstate_map.rs) -- it REQUIRES each node's own children (root nodes
+     * included) to be sorted ascending by basename bytes, not merely self-consistent offsets. Root
+     * caused byte-for-byte (2026-09-04) against a real hg-written dirstate-v2 file: hg4j wrote root
+     * nodes in {@code LinkedHashMap} insertion order (here, "seed.txt" before "hg4j.txt" -- NOT
+     * ascending, since 'h' &lt; 's') and, while hg4j's own DFS-stack reader parsed it back fine
+     * (order-agnostic), real hg's {@code hg status}/{@code hg verify} silently could not find
+     * "seed.txt" via binary search and reported it as "not marked as tracked in p1". Fixed by
+     * sorting every level (root list and each directory's children list) by the UTF-8 bytes of the
+     * basename before serializing.
+     */
+    @Test
+    public void testSerialize_rootNodesSortedByBasenameBytesRegardlessOfInsertionOrder() throws Exception {
+        Dirstate dirstate = new Dirstate();
+        // Insertion order deliberately descending ('s' > 'h') -- the bug only manifested when
+        // insertion order disagreed with sort order.
+        dirstate.addEntry("seed.txt", new Dirstate.Entry('n', 0100644, 5, 1680000000L));
+        dirstate.addEntry("hg4j.txt", new Dirstate.Entry('n', 0100644, 13, 1680000001L));
+
+        byte[] data = DirstateV2Serializer.serialize(dirstate);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
+
+        // Both entries are root-level (no "/"), 2 nodes, node table starts at offset 0.
+        String name0 = readNodeBasename(buf, data, 0);
+        String name1 = readNodeBasename(buf, data, DirstateV2Node.NODE_SIZE);
+
+        assertEquals("hg4j.txt", name0, "root nodes must be sorted ascending by basename bytes");
+        assertEquals("seed.txt", name1, "root nodes must be sorted ascending by basename bytes");
+    }
+
+    @Test
+    public void testSerialize_nestedChildrenSortedByBasenameBytesRegardlessOfInsertionOrder() throws Exception {
+        Dirstate dirstate = new Dirstate();
+        // Same descending-insertion-order setup, one level deeper (siblings under "dir/").
+        dirstate.addEntry("dir/z.txt", new Dirstate.Entry('n', 0100644, 1, 1680000000L));
+        dirstate.addEntry("dir/a.txt", new Dirstate.Entry('n', 0100644, 1, 1680000001L));
+
+        byte[] data = DirstateV2Serializer.serialize(dirstate);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
+
+        // Root: single "dir" node at offset 0.
+        DirstateV2Node dirNode = new DirstateV2Node(buf, 0);
+        int childrenStart = dirNode.getChildrenStart();
+        int childrenCount = dirNode.getChildrenCount();
+        assertEquals(2, childrenCount);
+
+        String child0 = readNodeBasename(buf, data, childrenStart);
+        String child1 = readNodeBasename(buf, data, childrenStart + DirstateV2Node.NODE_SIZE);
+        assertEquals("a.txt", child0, "nested children must be sorted ascending by basename bytes too");
+        assertEquals("z.txt", child1, "nested children must be sorted ascending by basename bytes too");
+    }
+
+    private static String readNodeBasename(ByteBuffer buf, byte[] data, int nodeOffset) {
+        DirstateV2Node node = new DirstateV2Node(buf, nodeOffset);
+        int pathOffset = node.getPathOffset();
+        int pathLen = node.getPathLen() & 0xFFFF;
+        int basenameStart = node.getBasenameStart() & 0xFFFF;
+        String fullPath = new String(data, pathOffset, pathLen, java.nio.charset.StandardCharsets.UTF_8);
+        return fullPath.substring(basenameStart);
+    }
+
     @Test
     public void testSerialize_pathSegmentOver65535Bytes_throwsHgValidationException() {
         // A single top-level path segment (no "/" in it) whose UTF-8 byte length exceeds the

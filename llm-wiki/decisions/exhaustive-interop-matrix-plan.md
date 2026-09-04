@@ -1,16 +1,21 @@
 ---
 name: exhaustive-interop-matrix-plan
 updated: 2026-09-04
-status: requirement 매트릭스 native 6개(GREEN, 실버그 2건 수정) + Docker 30개
-  (읽기 30/30 GREEN, 쓰기 12/30 GREEN·18/30은 신규 실버그로 SKIP — [[mercurial-
-  spec-compliance-requirement]] 백로그 #37) + wire 매트릭스 21개(GREEN, 새
-  프로덕션 버그 없음) 전부 완료(2026-09-04). native/Docker 분할은 12/24에서
-  6/30으로 재정정됨(dirstate-v2도 Docker 필요임이 TDD 중 드러남). 기존 fixture
-  기반 테스트 7개를 라이브 쓰기 검증으로 보강하는 작업 진행 중. 나머지 65개
-  로컬/전송 명령(핵심 라운드트립 6개 제외)은 전부 미착수. 백로그 29~36과는
-  별개 축(개별 기능 gap이 아니라 "조합 공간을 체계적으로 훑는 인프라" 자체가
-  목적)이나, 이 매트릭스가 직접 새 백로그(#37, #38)를 낳았다는 점에서 서로
-  피드백 관계에 있다.
+status: **requirement 매트릭스 36개 조합 + wire 매트릭스 21개 조합, 전부
+  양방향(쓰기 포함) GREEN 완료(2026-09-04)**. native/Docker 분할은 12/24에서
+  6/30으로 재정정됨(dirstate-v2도 Docker 필요임이 TDD 중 드러남). 이 과정에서
+  실버그 3건 발견·수정: (1) changelog-v2 저장소의 zstd/zlib 코덱 혼동
+  (`Revlog`/`RevlogIndex`), (2) **dirstate-v2 트리 손상**(`DirstateV2Serializer`가
+  자식 노드를 정렬 없이 써서 real hg의 이진 탐색 리더가 못 찾던 문제 — [[mercurial-
+  spec-compliance-requirement]] 백로그 #37, 근본 원인까지 확정해 완전히 수정),
+  (3) wire 매트릭스에서는 새 프로덕션 버그 없음(백로그 22/26 협상 로직이 이미
+  정확했음 재확인). 기존 fixture 기반 테스트 7개를 라이브 쓰기 검증으로 보강하는
+  작업도 완료. `test`/`interopTest`(신규 gradle 태스크, 2026-09-04)로 실행 분리
+  — 평소 `./gradlew test`는 interop 제외로 빠르게, `./gradlew check`는 커버리지
+  게이트까지 정확하게. 나머지 65개 로컬/전송 명령(핵심 라운드트립 6개 제외)은
+  전부 미착수. 백로그 29~36과는 별개 축(개별 기능 gap이 아니라 "조합 공간을
+  체계적으로 훑는 인프라" 자체가 목적)이나, 이 매트릭스가 직접 새 백로그(#37,
+  #38)를 낳았다는 점에서 서로 피드백 관계에 있다.
 ---
 
 # 요건: 포셀린 명령 x wire protocol 조합 x requirement 조합 exhaustive interop 매트릭스
@@ -111,22 +116,24 @@ native 6개 + Docker 필요 30개(dirstate-v2×changelog×manifest 6개 + persis
 | 4 | v1 | changelog-v2 | tree | none | **native** | `RequirementMatrixCoreRoundTripTest` — 양방향(쓰기 포함) GREEN, 2026-09-04 완료 |
 | 5 | v1 | changelog-v2+sidedata | flat | none | **native** | `RequirementMatrixCoreRoundTripTest`(신규 양방향) + 기존 `SidedataFilesWriteTest`/`PullSidedataRealHgInteropTest`(이미 쓰기+양방향) — 이중 커버, 2026-09-04 |
 | 6 | v1 | changelog-v2+sidedata | tree | none | **native** | `RequirementMatrixCoreRoundTripTest` — 양방향(쓰기 포함) GREEN, 2026-09-04 완료 |
-| 7 | v2(dirstate) | v1 | flat | none | Docker | `RequirementMatrixDockerRoundTripTest` — 읽기 방향 GREEN, **쓰기 방향은 백로그 #37(dirstate-v2 트리 손상)로 SKIP** — 기존 `DirstateV2RealFixtureTest`(캡처 바이트, 읽기 방향만)는 유지 |
-| 8~12 | v2(dirstate) x (v1/changelog-v2/changelog-v2+sidedata) x (flat/tree), storage-확장=none | — | — | Docker | 위와 동일: 읽기 GREEN, 쓰기는 전부 백로그 #37로 SKIP |
-| 13~24 | v1/v2 x 3changelog x flat/tree | — | persistent-nodemap | Docker | `RequirementMatrixDockerRoundTripTest` — 읽기 방향 12개 전부 GREEN. 쓰기 방향: dirstate=v1인 6개 GREEN, dirstate=v2인 6개는 백로그 #37로 SKIP |
-| 25 | v1 | v1 | flat | fileindex-v1 | Docker | `RequirementMatrixDockerRoundTripTest`(읽기+쓰기 GREEN) + 기존 `FileIndexTest`/`NodeMapFileFixtureTest`/`NodeMapFileWriterTest`/`RevlogV2GeneralParserTest`(정적 픽스처, 읽기 위주) — coverage-upgrade fork가 이 4개 파일에 라이브 쓰기 검증을 추가 중(진행 중) |
-| 26~30 | 나머지 5개(dirstate/changelog 조합 x fileindex-v1, flat 고정) | — | — | Docker | 읽기 GREEN, 쓰기는 dirstate=v1(3개) GREEN / dirstate=v2(2개, changelog v1·v2 각 1개) 백로그 #37로 SKIP |
-| 31 | v1 | v1 | flat | general-v2 | Docker | `RequirementMatrixDockerRoundTripTest`(읽기+쓰기 GREEN) + 기존 `RevlogV2GeneralParserTest`(#25와 동일 픽스처) — coverage-upgrade fork가 라이브 쓰기 검증 추가 중(진행 중) |
-| 32~36 | 나머지 5개(dirstate/changelog 조합 x general-v2, flat 고정) | — | — | Docker | 읽기 GREEN, 쓰기는 dirstate=v1(3개) GREEN / dirstate=v2(2개) 백로그 #37로 SKIP |
+| 7 | v2(dirstate) | v1 | flat | none | Docker | `RequirementMatrixDockerRoundTripTest` — 양방향(쓰기 포함) GREEN, 2026-09-04. 기존 `DirstateV2RealFixtureTest`(읽기 방향)도 라이브 쓰기 검증 참조 추가 |
+| 8~12 | v2(dirstate) x (v1/changelog-v2/changelog-v2+sidedata) x (flat/tree), storage-확장=none | — | — | Docker | 위와 동일: 양방향(쓰기 포함) GREEN, 2026-09-04 |
+| 13~24 | v1/v2 x 3changelog x flat/tree | — | persistent-nodemap | Docker | `RequirementMatrixDockerRoundTripTest` — 12개 전부 양방향(쓰기 포함) GREEN |
+| 25 | v1 | v1 | flat | fileindex-v1 | Docker | `RequirementMatrixDockerRoundTripTest`(양방향 GREEN) + 기존 `FileIndexTest`/`NodeMapFileFixtureTest`/`NodeMapFileWriterTest`/`RevlogV2GeneralParserTest`에 라이브 쓰기 검증(`realHgRustAcceptsHg4jWrittenGeneralV2Repository`) 추가 완료 |
+| 26~30 | 나머지 5개(dirstate/changelog 조합 x fileindex-v1, flat 고정) | — | — | Docker | 5개 전부 양방향(쓰기 포함) GREEN |
+| 31 | v1 | v1 | flat | general-v2 | Docker | `RequirementMatrixDockerRoundTripTest`(양방향 GREEN) + 기존 `RevlogV2GeneralParserTest`에 라이브 쓰기 검증 추가 완료(#25와 같은 커밋으로 보강) |
+| 32~36 | 나머지 5개(dirstate/changelog 조합 x general-v2, flat 고정) | — | — | Docker | 5개 전부 양방향(쓰기 포함) GREEN |
 
-**요약(2026-09-04 갱신, Docker fork 완료)**: native 6개(#1~6)는 `RequirementMatrixCoreRoundTripTest`
-로 양방향(쓰기 포함) GREEN. Docker 30개(#7~36)는 `RequirementMatrixDockerRoundTripTest`
-(60케이스: 30 읽기 + 30 쓰기)로 **읽기 방향 30개 전부 GREEN**, **쓰기 방향은 dirstate=v1인
-12개 GREEN, dirstate=v2인 18개는 신규 발견된 실버그(백로그 #37 — dirstate-v2 저장소에
-hg4j가 커밋하면 기존 파일이 트리 구조에서 유실됨)로 인해 SKIP 처리**(실패가 아니라
-`Assumptions.assumeFalse`로 건너뜀 — 조용히 감추지 않고 테스트 리포트에 스킵으로
-남도록 함). fileindex-v1/general-v2 셀(#25/#31)의 기존 정적 fixture 테스트(`FileIndexTest`
-등 4개)를 라이브 쓰기 검증으로 보강하는 작업은 별도 fork가 진행 중.
+**요약(2026-09-04 갱신, 전부 완료)**: native 6개(#1~6) + Docker 30개(#7~36) =
+**requirement 매트릭스 36개 조합 전부 양방향(쓰기 포함) GREEN**. Docker 30개 쓰기
+방향에서 처음 발견됐던 dirstate=v2 18개 SKIP은 **백로그 #37 근본 원인 규명·수정으로
+전부 해소**됨 — real hg의 dirstate-v2 리더가 자식 노드 배열을 basename 오름차순
+이진 탐색으로 찾는데 hg4j `DirstateV2Serializer`가 정렬 없이 썼던 것이 원인
+(`hg-rust-7.2.4` 컨테이너의 실제 Rust 소스 직접 대조로 확정), 정렬 로직 추가로
+수정. fileindex-v1/general-v2 셀(#25/#31)의 기존 정적 fixture 테스트 4개(`FileIndexTest`
+등)도 라이브 쓰기 검증으로 보강 완료. **requirement 매트릭스 자체는 이제 100% 완료**
+(59개 로컬 명령 중 commit/log/status/cat 4개에 한해서 — 나머지 55개 명령으로 확장하는
+것은 별도 과제로 남음, §4 참고).
 
 ### 1-4. 제외: narrowhg-experimental
 
@@ -223,23 +230,27 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   압축 헤더 바이트가 항상 zstd로 하드코딩돼 있던 문제) — 둘 다 real hg가 만든
   저장소를 hg4j가 쓸 때만 드러나는 종류의 버그였다.
 - [x] Docker 30개 조합 — **완료(2026-09-04)**: `RequirementMatrixDockerRoundTripTest`
-  (60케이스 = 30읽기+30쓰기). 읽기 30개 전부 GREEN. 쓰기 30개 중 12개(dirstate=v1)
-  GREEN, 18개(dirstate=v2)는 **신규 실버그 발견**으로 `Assumptions.assumeFalse`로
-  스킵 처리(백로그 #37로 등록) — dirstate-v2 저장소에 이미 real hg가 커밋해둔
-  파일이 있는 상태에서 hg4j가 새 파일을 커밋하면 기존 파일이 dirstate-v2 트리
-  구조(`children_start`/`children_count` 기반 순회)에서 유실됨, `hg verify`가
-  `"<file> in manifest1, but not marked as tracked in p1"`로 검출. 근본 원인은
-  docket의 `root_nodes children_start`를 hg4j가 항상 0으로 쓰는 반면(자기 자신과는
-  라운드트립 성공) real hg는 0이 아닌 값을 쓴다는 것까지는 밝혀졌으나 정확한 필드
-  단위 원인은 미확정 — 억지 수정 없이 정직하게 SKIP + 백로그 등록. 부수적으로
-  JVM 안에서 hg4j 커밋 실행과 `docker exec`/`docker run` 프로세스 스폰을 번갈아
-  하면 커밋이 비결정적으로 깨지는 테스트 인프라 문제도 발견해 `RequirementMatrix
-  CommitHelperMain`(별도 서브프로세스)으로 우회.
-- [ ] 기존 fixture 기반 커버리지 테스트(`TreemanifestRealFixtureTest`,
+  (60케이스 = 30읽기+30쓰기), **60개 전부 GREEN**. 쓰기 방향에서 처음엔 dirstate=v2
+  18개가 신규 실버그(백로그 #37)로 SKIP됐으나, 근본 원인 규명·수정으로 전부 해소—
+  real hg의 dirstate-v2 리더(`hg-rust-7.2.4` 컨테이너의 실제 Rust 소스
+  `dirstate_map.rs` 직접 대조)가 자식 노드 배열을 basename 오름차순 이진 탐색으로
+  찾는데, hg4j `DirstateV2Serializer`가 `LinkedHashMap` 삽입 순서 그대로(정렬 없이)
+  썼던 것이 원인 — UTF-8 바이트 기준 정렬 로직을 추가해 수정, 18개 전부 GREEN 전환.
+  부수적으로 JVM 안에서 hg4j 커밋 실행과 `docker exec`/`docker run` 프로세스
+  스폰을 번갈아 하면 커밋이 비결정적으로 깨지는 테스트 인프라 문제도 발견해
+  `RequirementMatrixCommitHelperMain`(별도 서브프로세스)으로 우회.
+- [x] 기존 fixture 기반 커버리지 테스트(`TreemanifestRealFixtureTest`,
   `ChangelogV2BootstrapTest`, `DirstateV2RealFixtureTest`, `FileIndexTest`,
   `NodeMapFileFixtureTest`, `NodeMapFileWriterTest`, `RevlogV2GeneralParserTest`)를
-  라이브 쓰기 검증으로 보강하는 작업 — **진행 중**(사용자 지시 2026-09-04, "이미
-  만들어진 커버리지 테스트는 interop에 맞춰서 변경")
+  라이브 쓰기 검증으로 보강 — **완료(2026-09-04)**(사용자 지시, "이미 만들어진
+  커버리지 테스트는 interop에 맞춰서 변경"). 조사 결과 `ChangelogV2BootstrapTest`/
+  `NodeMapFileWriterTest` 2개는 이미 라이브 쓰기 검증이 있어 중복 작업 없이 유지.
+  `TreemanifestRealFixtureTest`에 중첩 디렉터리 treemanifest 쓰기 검증(기존 native
+  매트릭스 테스트가 루트 레벨 파일만 다뤘던 진짜 누락분) 추가, `RevlogV2GeneralParserTest`
+  에 general-v2 라이브 쓰기 검증 추가, `FileIndexTest`/`NodeMapFileFixtureTest`/
+  `DirstateV2RealFixtureTest`는 동일 조합의 라이브 커버리지가 이미 있는 곳(Docker
+  매트릭스 파일)으로의 javadoc 상호 참조만 추가(같은 저장소 상태를 검증하는 3~4번째
+  중복 하니스를 만들지 않기 위한 판단).
 - [ ] 나머지 58개 로컬 명령 — 미착수
 
 ### 4-2. Wire 매트릭스 대상 명령

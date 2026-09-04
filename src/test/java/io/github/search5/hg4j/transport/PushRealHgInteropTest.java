@@ -2,6 +2,7 @@ package io.github.search5.hg4j.transport;
 
 import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.api.AddCommand;
+import io.github.search5.hg4j.api.AmendCommand;
 import io.github.search5.hg4j.api.BookmarkCommand;
 import io.github.search5.hg4j.api.BranchCommand;
 import io.github.search5.hg4j.api.CommitCommand;
@@ -277,6 +278,169 @@ public class PushRealHgInteropTest {
 
             String verify = HgTestUtils.hg(remoteRepoDir, "verify");
             assertFalse(verify.contains("integrity error"), "remote must remain valid: " + verify);
+        }
+    }
+
+    /**
+     * Obsolescence-marker exception ({@code discovery._postprocessobsolete}), backlog 23
+     * follow-up: amending an already-pushed remote head creates a successor that is topologically
+     * a SIBLING of the old head (same parent), not its descendant -- real hg's own client-side
+     * {@code checkheads()} still accepts pushing it without {@code --force}, because the local
+     * repo's own obsstore records the old head as obsolete with this successor.
+     *
+     * <p>Verified directly against real hg 7.2 (2026-09-04, side-by-side reproduction outside
+     * this test): amending a pushed head and pushing the successor from a REAL hg client succeeds
+     * without {@code --force} even with {@code experimental.evolution.exchange=no} (obsolescence
+     * markers themselves never reach the remote) -- real hg's accept/reject decision depends only
+     * on the pushing repo's own obsstore. hg4j's push never exchanges obsmarkers either (it only
+     * ever builds a bundle1 changegroup), so the remote here -- like real hg's own in that
+     * verification -- ends up with BOTH the old and the new head visible (2 heads): this is not
+     * an hg4j gap, it is the exact real-hg-verified outcome of this transport combination.
+     */
+    @Test
+    public void testPushSucceedsWhenObsoleteHeadReplacedBySuccessorWithoutForce(@TempDir Path tempDir) throws Exception {
+        File remoteRepoDir = tempDir.resolve("remote").toFile();
+        HgTestUtils.nativeRepo(remoteRepoDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "a.txt").toPath(), "one");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(remoteRepoDir, "add");
+        HgTestUtils.hg(remoteRepoDir, "commit", "-u", "T", "-m", "c0");
+        Files.writeString(new File(remoteRepoDir, "a.txt").toPath(), "two");
+        HgTestUtils.hg(remoteRepoDir, "commit", "-u", "T", "-m", "c1 to amend");
+        String c1Hex = HgTestUtils.hg(remoteRepoDir, "log", "-r", "tip", "--template", "{node}");
+        allowPush(remoteRepoDir);
+
+        try (RealHgServeSupport.ServeHandle serve = RealHgServeSupport.start(remoteRepoDir)) {
+            File localDir = tempDir.resolve("local").toFile();
+            new InitCommand().setDirectory(localDir).call();
+            HgRepository local = new HgRepository(localDir);
+            new PullCommand(local).setSource(serve.url).call();
+            new UpdateCommand(local).setRevision("tip").call();
+
+            // Amend the pulled tip locally: creates a sibling successor (same parent as c1) and
+            // records c1 as obsolete in the LOCAL obsstore -- c1 was never rewritten remotely.
+            byte[] amended = new AmendCommand(local).setMessage("c1 amended locally").call();
+            String amendedHex = new NodeId(amended).toHex();
+            assertNotEquals(c1Hex, amendedHex);
+
+            // Must succeed WITHOUT --force: the obsolescence-marker exception exempts this
+            // apparent new head from the ordinary "creates new remote head" rejection.
+            String response = new PushCommand(local).setDestination(serve.url).call();
+            assertNotNull(response);
+
+            String headsAfter = HgTestUtils.hg(remoteRepoDir, "heads", "--template", "{node} ");
+            String[] headsArr = headsAfter.trim().split("\\s+");
+            assertEquals(2, headsArr.length,
+                    "remote ends up with both the old and the amended head visible, matching real "
+                            + "hg's own verified behavior for this no-obsmarker-exchange transport: " + headsAfter);
+            assertTrue(headsAfter.contains(amendedHex), "the amended successor must be pushed and visible: " + headsAfter);
+            assertTrue(headsAfter.contains(c1Hex), "the old (now locally-obsolete) head must still be the remote's untouched head: " + headsAfter);
+        }
+    }
+
+    /**
+     * Bookmark-head exception ({@code discovery._nowarnheads} / {@code bookmarks.validdest}),
+     * backlog 23 follow-up: advancing a bookmark across a local amend (obsolescence-based
+     * rewrite) must succeed without {@code --force} -- the amended commit is a valid "forward"
+     * move for that bookmark (real hg: reachable from the bookmark's old remote position via an
+     * obsolescence-successor step, {@code obsutil.foreground}). Verified directly against real
+     * hg 7.2 (2026-09-04): amending a bookmarked pushed head, moving the bookmark to the
+     * amendment, and pushing succeeds without {@code --force} even with {@code
+     * experimental.evolution.exchange=no}, and the remote's bookmark ends up on the new head.
+     */
+    @Test
+    public void testPushOfBookmarkAdvancedAcrossAmendSucceedsWithoutForce(@TempDir Path tempDir) throws Exception {
+        File remoteRepoDir = tempDir.resolve("remote").toFile();
+        HgTestUtils.nativeRepo(remoteRepoDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "a.txt").toPath(), "one");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(remoteRepoDir, "add");
+        HgTestUtils.hg(remoteRepoDir, "commit", "-u", "T", "-m", "c0");
+        Files.writeString(new File(remoteRepoDir, "a.txt").toPath(), "two");
+        HgTestUtils.hg(remoteRepoDir, "commit", "-u", "T", "-m", "c1 to amend");
+        HgTestUtils.hg(remoteRepoDir, "bookmark", "main");
+        allowPush(remoteRepoDir);
+
+        try (RealHgServeSupport.ServeHandle serve = RealHgServeSupport.start(remoteRepoDir)) {
+            File localDir = tempDir.resolve("local").toFile();
+            new InitCommand().setDirectory(localDir).call();
+            HgRepository local = new HgRepository(localDir);
+            new PullCommand(local).setSource(serve.url).call();
+            java.util.Map<String, String> pulledBookmarks = new BookmarkCommand(local).call();
+            new UpdateCommand(local).setRevision(pulledBookmarks.get("main")).call();
+
+            byte[] amended = new AmendCommand(local).setMessage("c1 amended locally").call();
+            String amendedHex = new NodeId(amended).toHex();
+            new BookmarkCommand(local).setBookmarkName("main").setRevision(amendedHex).call();
+
+            String response = new PushCommand(local).setDestination(serve.url).call();
+            assertNotNull(response);
+
+            String remoteBookmarks = HgTestUtils.hg(remoteRepoDir, "bookmarks");
+            assertTrue(remoteBookmarks.contains(amendedHex.substring(0, 12)),
+                    "real hg server must see bookmark 'main' moved to the amended successor: " + remoteBookmarks);
+        }
+    }
+
+    /**
+     * Negative control for the bookmark-head exception: moving a bookmark to a topologically
+     * UNRELATED divergent sibling (no obsolescence link at all between the bookmark's old and
+     * new position) must still be rejected -- the exception only exempts genuine forward moves,
+     * never "any head with a bookmark on it." Verified directly against real hg 7.2 (2026-09-04):
+     * the identical scenario (bookmark force-moved from a head to an unrelated sibling, no
+     * obsstore) aborts with "push creates new remote head ... with bookmark 'main'".
+     */
+    @Test
+    public void testPushRejectedWhenBookmarkMovedToDivergentSiblingWithoutObsolescenceLink(@TempDir Path tempDir) throws Exception {
+        File remoteRepoDir = tempDir.resolve("remote").toFile();
+        HgTestUtils.nativeRepo(remoteRepoDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "a.txt").toPath(), "one");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(remoteRepoDir, "add");
+        HgTestUtils.hg(remoteRepoDir, "commit", "-u", "T", "-m", "c0");
+        String baseHex = HgTestUtils.hg(remoteRepoDir, "log", "-r", "0", "--template", "{node}");
+        Files.writeString(new File(remoteRepoDir, "a.txt").toPath(), "two");
+        HgTestUtils.hg(remoteRepoDir, "commit", "-u", "T", "-m", "c1");
+        HgTestUtils.hg(remoteRepoDir, "bookmark", "main");
+        allowPush(remoteRepoDir);
+
+        try (RealHgServeSupport.ServeHandle serve = RealHgServeSupport.start(remoteRepoDir)) {
+            File localDir = tempDir.resolve("local").toFile();
+            new InitCommand().setDirectory(localDir).call();
+            HgRepository local = new HgRepository(localDir);
+            new PullCommand(local).setSource(serve.url).call();
+
+            // A divergent sibling of the bookmarked head: same parent (c0), no obsolescence
+            // relationship to c1 whatsoever.
+            new UpdateCommand(local).setRevision(baseHex).call();
+            Files.writeString(new File(localDir, "b.txt").toPath(), "divergent");
+            new AddCommand(local).call();
+            byte[] divergent = new CommitCommand(local).setAuthor("T").setMessage("divergent sibling").call();
+            new BookmarkCommand(local).setBookmarkName("main").setRevision(new NodeId(divergent).toHex()).call();
+
+            HgValidationException ex = assertThrows(HgValidationException.class,
+                    () -> new PushCommand(local).setDestination(serve.url).call(),
+                    "moving a bookmark to an unrelated divergent head must still be rejected without --force");
+            assertTrue(ex.getMessage().contains("new remote head") || ex.getMessage().contains("new heads"),
+                    "rejection message should mention new head(s): " + ex.getMessage());
+
+            String remoteBookmarksAfter = HgTestUtils.hg(remoteRepoDir, "bookmarks");
+            assertTrue(remoteBookmarksAfter.contains("main"), "rejected push must leave the remote bookmark in place: " + remoteBookmarksAfter);
+            String headsAfter = HgTestUtils.hg(remoteRepoDir, "heads", "--template", "{node} ");
+            assertEquals(1, headsAfter.trim().split("\\s+").length,
+                    "rejected push must not have changed the remote's head count: " + headsAfter);
         }
     }
 }

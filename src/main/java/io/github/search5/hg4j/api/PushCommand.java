@@ -9,12 +9,18 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.errors.HgLockException;
 
+import io.github.search5.hg4j.obsolete.HgObsMarker;
+import io.github.search5.hg4j.obsolete.HgObsolescenceParser;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.lib.NodeId;
@@ -212,7 +218,7 @@ public class PushCommand {
                 // (mirrors real hg's client-side mercurial/discovery.py checkheads(), which runs
                 // BEFORE the changegroup is even built -- see PushCommand#checkHeads doc).
                 if (!force && !validRemoteHeads.isEmpty()) {
-                    checkHeads(changelog, count, startRev, validRemoteHeads, client);
+                    checkHeads(changelog, count, startRev, validRemoteHeads, client, phaseRoots);
                 }
 
                 // 1. Pack changesets startRev ~ tip into changegroup bundle
@@ -418,15 +424,44 @@ public class PushCommand {
      * "remote is empty, nothing to check") when the remote has no valid heads at all -- callers
      * are expected to have already skipped calling this in that case.
      *
-     * <p>This is a simplified port: it does not replicate real hg's obsolescence-marker
-     * postprocessing (successors quietly absorbing predecessor heads) or its bookmark-head
-     * exemption ({@code _nowarnheads}) -- both narrow real hg's rejection further in cases this
-     * port will still (conservatively) reject. It matches real hg exactly for the common cases
-     * this backlog item's push scenarios exercise: a genuinely new remote head, a genuinely new
-     * named branch, and the ordinary fast-forward/no-new-head case that must NOT be rejected.
+     * <p>Also ports real hg's two remaining {@code checkheads()} exceptions (2026-09-04, real hg
+     * 7.2 {@code mercurial/discovery.py} read directly on this machine):
+     *
+     * <p><b>1. Obsolescence-marker exception</b> ({@code discovery._postprocessobsolete}): a
+     * candidate new head that is itself recorded as obsolete in the LOCAL repo's obsstore (this
+     * repo's own {@code .hg/store/obsstore}, via {@link HgObsMarker}/{@link
+     * HgObsolescenceParser}) is not counted as a genuine new head if its successor chain reaches
+     * a revision that will become common after the push (approximated here as "is one of this
+     * check's own candidate revisions" -- the pushed revisions plus the already-known remote
+     * heads). Real hg's exact rule additionally requires the predecessor not be public and,
+     * for merged/branch-shaped predecessors, that no part of the branch is public or already
+     * kept and that every node on it has an outgoing marker ({@code hasoutmarker}/{@code
+     * pushingmarkerfor}); this port keeps the simpler single-node form, which is what {@code
+     * hg amend}/{@code rebase}-style single-revision rewrites exercise. Verified directly
+     * against real hg 7.2 (2026-09-04): amending a pushed head and pushing the successor
+     * succeeds without {@code --force} even when the obsolescence markers themselves are never
+     * exchanged with the remote ({@code experimental.evolution.exchange=no}) -- real hg's
+     * client-side accept/reject decision depends only on the PUSHING repo's own obsstore, never
+     * on whether the remote actually learns about the marker. hg4j's push never exchanges
+     * obsmarkers either (bundle1-only), so this is an exact behavioral match, not just a
+     * client-side approximation.
+     *
+     * <p><b>2. Bookmark-head exception</b> ({@code discovery._nowarnheads} /
+     * {@code bookmarks.validdest}): a candidate new head that is the target of a local bookmark
+     * whose remote counterpart is known locally is exempted from being blamed for a head-count
+     * increase if the move is a valid "forward" move -- either a plain DAG descendant of the
+     * bookmark's old remote position, or reachable from it via a chain that alternates
+     * descendant steps and obsolescence-successor steps (real hg's {@code obsutil.foreground}).
+     * Verified against real hg 7.2 (2026-09-04): moving a bookmark to a topologically UNRELATED
+     * head with no obsolescence link at all is still rejected ("push creates new remote head ...
+     * with bookmark") -- the exception only fires for genuine forward moves, never as a blanket
+     * "bookmarked heads are always fine" rule. Per real hg's source, this exception does NOT
+     * apply to the brand-new-named-branch multi-head sub-case ({@code remoteheads is None}),
+     * only to the ordinary existing-branch new-head case -- {@link #checkHeadsPerBranch} mirrors
+     * that split exactly.
      */
     private void checkHeads(Revlog changelog, int count, int startRev, List<String> validRemoteHeads,
-                             HgRemoteConnection client) throws IOException {
+                             HgRemoteConnection client, PhaseRoots phaseRoots) throws IOException {
         Map<String, List<String>> remoteBranchHeads;
         try {
             remoteBranchHeads = client.getBranchHeads();
@@ -441,15 +476,24 @@ public class PushCommand {
                     + "falling back to a topological-only check: " + e.getMessage(), e);
             remoteBranchHeads = null;
         }
+
+        // Built once regardless of which branch below runs: both exceptions need to walk "does
+        // this old head have a live/pushed replacement" chains through the local obsstore and/or
+        // the full changelog's descendant edges.
+        Map<String, List<String>> obsSuccessors = loadObsSuccessorMap();
+        Map<Integer, List<Integer>> childrenByRev = buildChildrenMap(changelog, count);
+        Set<Integer> nowarnRevs = computeNowarnRevs(changelog, client, obsSuccessors, childrenByRev);
+
         if (remoteBranchHeads != null) {
-            checkHeadsPerBranch(changelog, count, startRev, remoteBranchHeads);
+            checkHeadsPerBranch(changelog, count, startRev, remoteBranchHeads, phaseRoots, obsSuccessors, nowarnRevs);
         } else {
-            checkHeadsTopological(changelog, count, startRev, validRemoteHeads);
+            checkHeadsTopological(changelog, count, startRev, validRemoteHeads, phaseRoots, obsSuccessors, nowarnRevs);
         }
     }
 
     private void checkHeadsPerBranch(Revlog changelog, int count, int startRev,
-                                      Map<String, List<String>> remoteBranchHeads) throws IOException {
+                                      Map<String, List<String>> remoteBranchHeads, PhaseRoots phaseRoots,
+                                      Map<String, List<String>> obsSuccessors, Set<Integer> nowarnRevs) throws IOException {
         String[] branchByRev = new String[count];
         for (int i = 0; i < count; i++) {
             branchByRev[i] = CommitCommand.getBranchOfRevision(changelog, i);
@@ -474,59 +518,86 @@ public class PushCommand {
         for (String branch : touchedBranches) {
             List<String> oldHeads = remoteBranchHeads.get(branch);
             Set<Integer> candidateRevs = new HashSet<>();
+            Set<Integer> oldHeadsKnownRevs = new HashSet<>();
             if (oldHeads != null) {
                 for (String hex : oldHeads) {
                     int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
                     if (rev != -1) {
                         candidateRevs.add(rev);
+                        oldHeadsKnownRevs.add(rev);
                     }
                 }
             }
-            int unsyncedCount = oldHeads == null ? 0 : (oldHeads.size() - candidateRevs.size());
+            int unsyncedCount = oldHeads == null ? 0 : (oldHeads.size() - oldHeadsKnownRevs.size());
             for (int r = startRev; r < count; r++) {
                 if (branch.equals(branchByRev[r])) {
                     candidateRevs.add(r);
                 }
             }
-            int newHeadsCount = countTopoHeadsWithinSet(changelog, candidateRevs) + unsyncedCount;
-            int oldHeadsCount = oldHeads == null ? 0 : oldHeads.size();
-            boolean violates = (oldHeads == null) ? (newHeadsCount > 1) : (newHeadsCount > oldHeadsCount);
-            if (violates) {
-                if (oldHeads == null) {
+            Set<Integer> rawNewHeads = topoHeadsWithinSet(changelog, candidateRevs);
+            Set<Integer> adjustedNewHeads = applyObsolescenceDiscard(changelog, rawNewHeads, candidateRevs, obsSuccessors, phaseRoots);
+
+            if (oldHeads == null) {
+                // Brand-new branch: real hg's rule here is a flat "len(newhs) > 1" with NO
+                // bookmark exemption (the `remoteheads is None` branch of checkheads() sets
+                // `dhs = list(newhs)` unconditionally, never subtracting `nowarnheads`) -- but it
+                // DOES still run the obsolescence-marker exception first, since
+                // _postprocessobsolete() applies uniformly to every branch's candidate heads.
+                if (adjustedNewHeads.size() > 1) {
                     throw new HgValidationException("abort: push creates new branch '" + branch + "' with multiple heads"
                             + " (merge or see 'hg help push' for details about pushing new heads)");
                 }
-                throw new HgValidationException("abort: push creates new remote head on branch '" + branch + "'"
+                continue;
+            }
+
+            int newHeadsCount = adjustedNewHeads.size() + unsyncedCount;
+            int oldHeadsCount = oldHeads.size();
+            if (newHeadsCount > oldHeadsCount) {
+                Set<Integer> blamed = new HashSet<>(adjustedNewHeads);
+                blamed.removeAll(nowarnRevs);
+                blamed.removeAll(oldHeadsKnownRevs);
+                if (!blamed.isEmpty()) {
+                    throw new HgValidationException("abort: push creates new remote head on branch '" + branch + "'"
+                            + " (merge or see 'hg help push' for details about pushing new heads)");
+                }
+            }
+        }
+    }
+
+    private void checkHeadsTopological(Revlog changelog, int count, int startRev, List<String> validRemoteHeads,
+                                        PhaseRoots phaseRoots, Map<String, List<String>> obsSuccessors,
+                                        Set<Integer> nowarnRevs) throws IOException {
+        Set<Integer> candidateRevs = new HashSet<>();
+        Set<Integer> oldHeadsKnownRevs = new HashSet<>();
+        for (String hex : validRemoteHeads) {
+            int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
+            if (rev != -1) {
+                candidateRevs.add(rev);
+                oldHeadsKnownRevs.add(rev);
+            }
+        }
+        int unsyncedCount = validRemoteHeads.size() - oldHeadsKnownRevs.size();
+        for (int r = startRev; r < count; r++) {
+            candidateRevs.add(r);
+        }
+        Set<Integer> rawNewHeads = topoHeadsWithinSet(changelog, candidateRevs);
+        Set<Integer> adjustedNewHeads = applyObsolescenceDiscard(changelog, rawNewHeads, candidateRevs, obsSuccessors, phaseRoots);
+        int newHeadsCount = adjustedNewHeads.size() + unsyncedCount;
+        if (newHeadsCount > validRemoteHeads.size()) {
+            Set<Integer> blamed = new HashSet<>(adjustedNewHeads);
+            blamed.removeAll(nowarnRevs);
+            blamed.removeAll(oldHeadsKnownRevs);
+            if (!blamed.isEmpty()) {
+                throw new HgValidationException("abort: push creates new remote head"
                         + " (merge or see 'hg help push' for details about pushing new heads)");
             }
         }
     }
 
-    private void checkHeadsTopological(Revlog changelog, int count, int startRev, List<String> validRemoteHeads) throws IOException {
-        Set<Integer> candidateRevs = new HashSet<>();
-        int knownOldHeadsCount = 0;
-        for (String hex : validRemoteHeads) {
-            int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
-            if (rev != -1) {
-                candidateRevs.add(rev);
-                knownOldHeadsCount++;
-            }
-        }
-        int unsyncedCount = validRemoteHeads.size() - knownOldHeadsCount;
-        for (int r = startRev; r < count; r++) {
-            candidateRevs.add(r);
-        }
-        int newHeadsCount = countTopoHeadsWithinSet(changelog, candidateRevs) + unsyncedCount;
-        if (newHeadsCount > validRemoteHeads.size()) {
-            throw new HgValidationException("abort: push creates new remote head"
-                    + " (merge or see 'hg help push' for details about pushing new heads)");
-        }
-    }
-
-    /** Within {@code candidateRevs}, counts revisions that have no OTHER member of the set as a
-     * child (i.e. this set's own topological heads) -- the core of real hg's {@code
+    /** Within {@code candidateRevs}, returns the revisions that have no OTHER member of the set
+     * as a child (i.e. this set's own topological heads) -- the core of real hg's {@code
      * heads(%ln + %ln)} revset call in {@code discovery._oldheadssummary}/{@code _headssummary}. */
-    private int countTopoHeadsWithinSet(Revlog changelog, Set<Integer> candidateRevs) throws IOException {
+    private Set<Integer> topoHeadsWithinSet(Revlog changelog, Set<Integer> candidateRevs) throws IOException {
         boolean[] isParentWithinSet = new boolean[changelog.getRevisionCount()];
         for (int r : candidateRevs) {
             Revlog.IndexRecord rec = changelog.getIndexRecord(r);
@@ -537,13 +608,196 @@ public class PushCommand {
                 isParentWithinSet[rec.getParent2()] = true;
             }
         }
-        int headCount = 0;
+        Set<Integer> heads = new HashSet<>();
         for (int r : candidateRevs) {
             if (!isParentWithinSet[r]) {
-                headCount++;
+                heads.add(r);
             }
         }
-        return headCount;
+        return heads;
+    }
+
+    /** Real hg's {@code discovery._postprocessobsolete}, simplified to single-revision
+     * predecessor/successor pairs (see {@link #checkHeads} doc for the exact rule and its real-hg
+     * verification). Drops from {@code rawNewHeads} any revision that (a) is not public, (b) is
+     * recorded as an obsolescence predecessor in the local obsstore, and (c) has a successor
+     * chain reaching some other revision already present in {@code candidateRevs}. */
+    private Set<Integer> applyObsolescenceDiscard(Revlog changelog, Set<Integer> rawNewHeads, Set<Integer> candidateRevs,
+                                                   Map<String, List<String>> obsSuccessors, PhaseRoots phaseRoots) throws IOException {
+        if (obsSuccessors.isEmpty() || rawNewHeads.isEmpty()) {
+            return rawNewHeads;
+        }
+        Set<String> candidateHexes = new HashSet<>();
+        for (int r : candidateRevs) {
+            candidateHexes.add(NodeIdUtil.toHex(changelog.getIndexRecord(r).getNodeId()));
+        }
+        Set<Integer> discardable = new HashSet<>();
+        for (int r : rawNewHeads) {
+            byte[] nodeBytes = changelog.getIndexRecord(r).getNodeId();
+            String hex = NodeIdUtil.toHex(nodeBytes);
+            if (!obsSuccessors.containsKey(hex)) {
+                continue; // real hg: `r not in obsrevs` -> unconditionally kept as a genuine head
+            }
+            if (phaseRoots.getPhase(new NodeId(nodeBytes), changelog) == PhaseRoots.Phase.PUBLIC) {
+                continue; // real hg: `ispublic(r)` -> unconditionally kept
+            }
+            if (hasLiveSuccessorAmongCandidates(hex, candidateHexes, obsSuccessors)) {
+                discardable.add(r);
+            }
+        }
+        if (discardable.isEmpty()) {
+            return rawNewHeads;
+        }
+        Set<Integer> result = new HashSet<>(rawNewHeads);
+        result.removeAll(discardable);
+        return result;
+    }
+
+    /** BFS over the local obsstore's successor chain starting at {@code predecessorHex} (NOT
+     * including the predecessor itself), true if it reaches any node in {@code candidateHexes}
+     * -- real hg's {@code pushingmarkerfor}/{@code hasoutmarker}, simplified: real hg tests
+     * membership against the full "future common" ancestor closure, hg4j approximates that with
+     * this check's own candidate revision set (the pushed revisions plus the known remote
+     * heads), which is exactly what a rewritten revision's successor normally lands in. */
+    private boolean hasLiveSuccessorAmongCandidates(String predecessorHex, Set<String> candidateHexes,
+                                                     Map<String, List<String>> obsSuccessors) {
+        Set<String> visited = new HashSet<>();
+        visited.add(predecessorHex);
+        Deque<String> stack = new ArrayDeque<>(obsSuccessors.getOrDefault(predecessorHex, List.of()));
+        visited.addAll(stack);
+        while (!stack.isEmpty()) {
+            String cur = stack.pop();
+            if (candidateHexes.contains(cur)) {
+                return true;
+            }
+            for (String next : obsSuccessors.getOrDefault(cur, List.of())) {
+                if (visited.add(next)) {
+                    stack.push(next);
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Real hg's {@code discovery._nowarnheads}: local bookmarks whose remote counterpart is
+     * known locally and whose local position is a valid "forward" move from that remote position
+     * (see {@link #isInForeground}) are exempted from being blamed for a new-head rejection.
+     * Returns the set of (local) revisions that should never be blamed. Deliberately does not
+     * replicate real hg's {@code bookmarks.pushing} config carve-out for brand-new bookmarks
+     * pushed via an explicit {@code -B} flag -- hg4j's {@link PushCommand} has no such flag. */
+    private Set<Integer> computeNowarnRevs(Revlog changelog, HgRemoteConnection client,
+                                            Map<String, List<String>> obsSuccessors,
+                                            Map<Integer, List<Integer>> childrenByRev) throws IOException {
+        Map<String, String> localBookmarks;
+        try {
+            localBookmarks = new BookmarkCommand(repository).call();
+        } catch (Exception e) {
+            return Set.of();
+        }
+        if (localBookmarks == null || localBookmarks.isEmpty()) {
+            return Set.of();
+        }
+        Map<String, String> remoteBookmarks;
+        try {
+            remoteBookmarks = client.listKeys("bookmarks");
+        } catch (IOException e) {
+            return Set.of();
+        }
+        if (remoteBookmarks == null || remoteBookmarks.isEmpty()) {
+            return Set.of();
+        }
+        Set<Integer> nowarn = new HashSet<>();
+        for (Map.Entry<String, String> entry : localBookmarks.entrySet()) {
+            String name = entry.getKey();
+            String localHex = entry.getValue();
+            String remoteHex = remoteBookmarks.get(name);
+            if (remoteHex == null || remoteHex.isEmpty() || localHex.equals(remoteHex)) {
+                continue;
+            }
+            int localRev = changelog.findRevision(NodeIdUtil.fromHex(localHex));
+            int remoteRev = changelog.findRevision(NodeIdUtil.fromHex(remoteHex));
+            if (localRev == -1 || remoteRev == -1) {
+                continue; // real hg: `rnode in repo` gate -- unknown remote position, skip
+            }
+            if (isInForeground(changelog, remoteRev, localRev, obsSuccessors, childrenByRev)) {
+                nowarn.add(localRev);
+            }
+        }
+        return nowarn;
+    }
+
+    /** Real hg's {@code obsutil.foreground}/{@code bookmarks.validdest}: true if {@code
+     * targetRev} is reachable from {@code startRev} via a chain that freely alternates
+     * changelog-descendant steps and local-obsstore-successor steps. With an empty obsstore this
+     * degenerates to a plain descendant (fast-forward) check. */
+    private boolean isInForeground(Revlog changelog, int startRev, int targetRev,
+                                    Map<String, List<String>> obsSuccessors,
+                                    Map<Integer, List<Integer>> childrenByRev) throws IOException {
+        if (startRev == targetRev) {
+            return true;
+        }
+        Set<Integer> visited = new HashSet<>();
+        Deque<Integer> stack = new ArrayDeque<>();
+        stack.push(startRev);
+        visited.add(startRev);
+        while (!stack.isEmpty()) {
+            int cur = stack.pop();
+            if (cur == targetRev) {
+                return true;
+            }
+            for (int child : childrenByRev.getOrDefault(cur, List.of())) {
+                if (visited.add(child)) {
+                    stack.push(child);
+                }
+            }
+            String curHex = NodeIdUtil.toHex(changelog.getIndexRecord(cur).getNodeId());
+            for (String succHex : obsSuccessors.getOrDefault(curHex, List.of())) {
+                int succRev = changelog.findRevision(NodeIdUtil.fromHex(succHex));
+                if (succRev != -1 && visited.add(succRev)) {
+                    stack.push(succRev);
+                }
+            }
+        }
+        return false;
+    }
+
+    /** All child revisions of every revision in the local changelog, {@code rev -> [children]}
+     * -- the reverse of each revision's parent pointers, used by {@link #isInForeground} to walk
+     * descendant edges without recomputing them per bookmark. */
+    private Map<Integer, List<Integer>> buildChildrenMap(Revlog changelog, int count) throws IOException {
+        Map<Integer, List<Integer>> children = new HashMap<>();
+        for (int i = 0; i < count; i++) {
+            Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+            if (rec.getParent1() >= 0) {
+                children.computeIfAbsent(rec.getParent1(), k -> new ArrayList<>()).add(i);
+            }
+            if (rec.getParent2() >= 0) {
+                children.computeIfAbsent(rec.getParent2(), k -> new ArrayList<>()).add(i);
+            }
+        }
+        return children;
+    }
+
+    /** Reads and decodes this repository's own {@code .hg/store/obsstore} (if any) into a {@code
+     * predecessor-hex -> [successor-hex, ...]} map, the local-obsstore analogue of real hg's
+     * {@code obsstore.successors}. Empty (never {@code null}) when the repo has no obsstore at
+     * all, matching real hg's {@code if repo.obsstore:} guards throughout {@code discovery.py}. */
+    private Map<String, List<String>> loadObsSuccessorMap() throws IOException {
+        File obsstoreFile = new File(repository.getStoreDir(), "obsstore");
+        if (!obsstoreFile.exists() || obsstoreFile.length() == 0) {
+            return Map.of();
+        }
+        byte[] bytes = Files.readAllBytes(obsstoreFile.toPath());
+        List<HgObsMarker> markers = HgObsolescenceParser.parse(bytes);
+        Map<String, List<String>> map = new HashMap<>();
+        for (HgObsMarker marker : markers) {
+            String predHex = NodeIdUtil.toHex(marker.getPredecessor());
+            List<String> succHexes = map.computeIfAbsent(predHex, k -> new ArrayList<>());
+            for (byte[] succ : marker.getSuccessors()) {
+                succHexes.add(NodeIdUtil.toHex(succ));
+            }
+        }
+        return map;
     }
 
     private void writeEntryChunk(DataOutputStream dos, ChangegroupParser.ChangeGroupEntry entry) throws IOException {

@@ -7,7 +7,6 @@ import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.errors.HgLockException;
 import java.io.File;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.channels.FileChannel;
 import java.nio.file.StandardOpenOption;
@@ -151,7 +150,7 @@ public class StripCommand {
                                 flDat.delete();
                             }
                         } else {
-                            truncateRevlog(filelog, flIdx, flDat, flKeepCount);
+                            filelog.truncate(flKeepCount);
                             updatedFncachePaths.add(storePath);
                         }
                     }
@@ -165,8 +164,8 @@ public class StripCommand {
             SafeFileIO.writeLinesAtomic(fncacheFile, updatedFncachePaths);
 
             // 2. Truncate Core Changelog and Manifest
-            truncateRevlog(changelog, clIdx, clDat, keepCount);
-            truncateRevlog(manifest, mfIdx, mfDat, keepCount);
+            changelog.truncate(keepCount);
+            manifest.truncate(keepCount);
 
             // 3. Bookmarks pointing at a stripped revision follow it back to the new tip
             // rather than being deleted — real hg's strip.py `strip()` calls
@@ -345,47 +344,10 @@ public class StripCommand {
         file.delete();
     }
 
-    /**
-     * Truncates {@code idxFile}/{@code datFile} to keep only the first {@code keepCount}
-     * revisions.
-     *
-     * <p>The {@code .d} data file MUST be truncated to the exact byte offset of the first
-     * discarded revision ({@code revlog.getIndexRecord(keepCount).getOffset()}), read from
-     * {@code revlog} (loaded from the still-untruncated files by the caller) before either file
-     * is touched. An earlier version of this method instead used a "safe estimation fallback"
-     * (guessing the boundary as {@code datFile.length() * keepCount / (keepCount + 1)}, i.e.
-     * assuming every revision is the same size) -- with revisions of noticeably different sizes
-     * this estimate can land in the middle of a revision that must survive, silently truncating
-     * away trailing delta bytes. Confirmed as a real, reproducible corruption bug (not just a
-     * theoretical concern) via a real-hg-CLI round trip in {@code StripRealHgInteropTest}: after
-     * stripping a revision from a repository whose revisions have uneven sizes, real {@code hg
-     * verify} reported "data length off by N bytes" / "partial read of revlog" errors on the
-     * revisions that were supposed to have survived untouched. Mirrors the exact-offset approach
-     * {@link ShelveCommand#stripRevisionsFrom} already uses for its own (unrelated) truncation.
-     */
-    private void truncateRevlog(Revlog revlog, File idxFile, File datFile, int keepCount) throws IOException {
-        if (!idxFile.exists()) return;
-
-        long keepIndexLength = (long) keepCount * 64;
-        try (RandomAccessFile rafIdx = new RandomAccessFile(idxFile, "rw")) {
-            rafIdx.setLength(keepIndexLength);
-        }
-
-        if (datFile.exists()) {
-            long targetDatSize;
-            if (keepCount == 0) {
-                targetDatSize = 0;
-            } else if (keepCount < revlog.getRevisionCount()) {
-                targetDatSize = revlog.getIndexRecord(keepCount).getOffset();
-            } else {
-                // Nothing beyond keepCount to discard -- leave the data file as-is.
-                targetDatSize = datFile.length();
-            }
-            try (RandomAccessFile rafDat = new RandomAccessFile(datFile, "rw")) {
-                rafDat.setLength(targetDatSize);
-            }
-        }
-    }
+    // Revlog truncation itself (the exact-offset .d truncate, the inline-vs-non-inline v1
+    // branching, and v2/docket-based end-pointer bookkeeping) now lives on the reusable
+    // Revlog.truncate(int) -- see its javadoc for the full history of what this used to get
+    // wrong (backlog #39, requirement-matrix expansion to StripCommand, 2026-09-05).
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
         Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,

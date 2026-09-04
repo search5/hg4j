@@ -2466,22 +2466,133 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     베이스라인에서도 동일 재현 확인)을 제외하고 전부 GREEN.
 
 39. **[[exhaustive-interop-matrix-plan]] 매트릭스 범위 확장 — 명령 커버리지가
-    극히 일부에 머물러 있음**. 신규, 2026-09-04 사용자 지시로 등록 — 미착수.
+    극히 일부에 머물러 있음**. 신규, 2026-09-04 사용자 지시로 등록 —
+    **Wave 1 부분 진행(2026-09-05), 나머지는 여전히 미착수 (아래 참고)**.
     requirement 매트릭스(36개 조합, native 6 + Docker 30, 전부 GREEN 확정)는
-    현재 `CommitCommand`/`LogCommand`/`StatusCommand`/`CatCommand` **4개 명령**
-    에만 적용돼 있고, 나머지 로컬/저장소 전용 명령 55개(`AddCommand`,
+    원래 `CommitCommand`/`LogCommand`/`StatusCommand`/`CatCommand` **4개 명령**
+    에만 적용돼 있었고, 나머지 로컬/저장소 전용 명령 55개(`AddCommand`,
     `AmendCommand`, `BookmarkCommand`, `MergeCommand`, `RebaseCommand`,
     `ShelveCommand`, `StripCommand`, `SubrepoCommand` 등, 전체 목록은
     [[exhaustive-interop-matrix-plan]] §3-2)는 이 36개 조합 전체를 통과한 적이
-    없다. wire 매트릭스(21개 조합, HTTP 18 + SSH 3, 전부 GREEN 확정)도
+    없었다. wire 매트릭스(21개 조합, HTTP 18 + SSH 3, 전부 GREEN 확정)도
     `CloneCommand`/`PullCommand`/`PushCommand` **3개 명령**에만 적용돼 있고,
     `FetchCommand`/`IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/
-    `NarrowCloneCommand` 5개는 미착수([[exhaustive-interop-matrix-plan]] §4).
-    즉 "67개 명령 × 매트릭스" 전체 목표 중 실제로 완주된 것은 명령 기준
-    7/67(4+3)뿐 — 나머지 60개 명령을 우선순위대로 점진적으로 확장하는 것이
-    이 항목의 목표. 특히 `PushCommand`/`RebaseCommand`/`ShelveCommand`/
-    `StripCommand`처럼 이번 세션에서 이미 여러 실버그가 나왔던 명령들을
-    우선순위로 두는 것을 권장.
+    `NarrowCloneCommand` 5개는 여전히 미착수([[exhaustive-interop-matrix-plan]]
+    §4, 이 wave에서 다루지 않음).
+
+    **Wave 1 진행 현황(2026-09-05)**: 사용자 지시로 우선순위 4개 명령
+    (`PushCommand`/`RebaseCommand`/`ShelveCommand`/`StripCommand`)에 requirement
+    매트릭스(native 6 + Docker 30 = 36개 조합)를 확장 적용. 새 테스트 클래스
+    8개 추가(명령당 native/Docker 각 1개 — `RequirementMatrixPushCoreRoundTripTest`/
+    `RequirementMatrixPushDockerRoundTripTest`/`RequirementMatrixRebaseCoreRoundTripTest`/
+    `RequirementMatrixRebaseDockerRoundTripTest`/`RequirementMatrixShelveCoreRoundTripTest`/
+    `RequirementMatrixShelveDockerRoundTripTest`/`RequirementMatrixStripCoreRoundTripTest`/
+    `RequirementMatrixStripDockerRoundTripTest`, 전부 `src/test/java/io/github/search5/hg4j/api/`)
+    + Docker 쓰기 경로 corruption 회피용 subprocess 헬퍼 4개(`RequirementMatrixStripHelperMain`/
+    `RequirementMatrixRebaseHelperMain`/`RequirementMatrixShelveHelperMain`/
+    `RequirementMatrixPushHelperMain`, 기존 `RequirementMatrixCommitHelperMain`과
+    동일한 패턴 재사용). 명령별 결과:
+
+    - **`RebaseCommand`**: native 6/6 + Docker 30/30 전부 GREEN. 새 실버그
+      없음(diverging 2-branch 히스토리를 rebase하는 시나리오가 모든 조합에서
+      깨끗하게 통과).
+    - **`StripCommand`**: native 6/6 + Docker 30/30 전부 GREEN — 단, 실제
+      운영 코드 버그 2건을 TDD로 발견·수정한 뒤에야 도달함(아래 "발견·수정한
+      실버그" 참고). 이 수정으로 기존에 원인 불명이던 `StripRealHgInteropTest`의
+      사전 존재 실패 2건(백로그 23 완료 보고에 "무관한 사전 존재 실패"로
+      기록돼 있던 것)도 근본 원인이 규명되어 함께 해소됨.
+    - **`ShelveCommand`**: native 6/6 + Docker 30/30 전부 GREEN — `StripCommand`와
+      동일한 근본 원인의 버그를 공유하고 있어 같은 수정으로 함께 해소.
+      추가로 "changelog-v2인데 sidedata-copies 기능은 안 쓰는" 조합(`cl2`,
+      `cl2+sidedata` 아님)에서 **real hg 자신의 결함**을 발견(아래 참고) —
+      hg4j 문제가 아니므로 테스트에서 명시적으로 tolerate 처리.
+    - **`PushCommand`**: native 2/6, Docker 14/30만 GREEN — 나머지는 전부
+      **2가지 진짜 hg4j 프로덕션 버그**로 실패(아래 "발견했으나 이번 wave에서
+      수정하지 않은 버그" 참고, 원인은 정확히 규명했으나 수정 자체는 각각
+      상당한 작업량이라 이번 wave 범위 밖으로 남김). 실패 패턴이 매우
+      일관적임 — native/Docker 양쪽에서 실패한 조합은 전부 `treemanifest`
+      또는 `cl2+sidedata`를 포함하는 조합뿐이고, `persistent-nodemap`/
+      `fileindex-v1`/`general-v2`/`dirstate-v2` 자체가 새로운 실패를 유발한
+      적은 없음(Docker 16개 실패 = treemanifest 9개 + cl2+sidedata·flat 7개,
+      정확히 예측과 일치).
+
+    **발견·수정한 실버그 2건(`StripCommand`/`ShelveCommand` 공유 근본 원인)**:
+    1. `StripCommand`/`ShelveCommand`가 각자 따로 구현하고 있던 revlog 물리
+       truncate 로직이 **inline revlog**(backlog #35로 신규 non-changelog v1
+       revlog의 기본값이 된 레이아웃)와 **v2/docket 기반 revlog**(changelog-v2/
+       general-v2)를 전혀 다루지 못했다 — 항상 "non-inline, 64바이트 고정
+       레코드"만 가정. inline revlog를 그렇게 자르면 real hg가 "index
+       00manifest is corrupted"로 완전히 거부(이게 바로 위에서 언급한
+       `StripRealHgInteropTest`의 원인불명 사전 존재 실패 2건의 정체였음).
+       v2/docket을 그렇게 자르면 실제 데이터 파일이 아니라 docket 헤더
+       파일 자체를 잘라버리고, 그마저도 실제 companion 파일(UUID 기반
+       `<radix>-<uuid>.idx`/`.dat`) 경로를 전혀 모른 채 엉뚱한 경로를
+       건드려 다음 open에서 `BufferUnderflowException`. 두 명령의 중복
+       로직을 없애고 **`Revlog.truncate(int keepCount)`** 신규 공용
+       메서드(`storage/Revlog.java`)로 통합 — inline/non-inline v1/v2 세
+       가지 레이아웃 전부 올바르게 처리(v2는 `RevlogIndex.updateV2DocketSizes()`
+       로 docket의 index_end/data_end까지 갱신). `StripCommand.truncateRevlog()`/
+       `ShelveCommand.stripRevisionsFrom()`의 중복 구현은 삭제하고 이
+       메서드를 호출하도록 변경.
+    2. 위 통합 도중 발견한 2차 버그: non-inline 분기에서 `.i` 파일을 먼저
+       물리적으로 truncate한 뒤에 `.d` 파일 truncate 크기를 계산하려고
+       `getRevisionCount()`를 다시 호출하면, `RevlogIndex.checkAndUpdate()`가
+       "방금 줄어든 `.i` 파일 크기"를 보고 revisionCount를 이미 줄어든 값으로
+       재계산해버려 `.d` truncate 자체가 조용히 no-op이 되는 버그(정확한
+       크기 계산은 반드시 두 파일 다 건드리기 **전**에 끝내야 함). 이 버그가
+       `ShelveRealHgInteropTest#unshelveAbortRestoresPreUnshelveStateAndKeepsShelfUsable`
+       회귀를 유발했다가(원인 규명 도구: `git stash`로 수정 전/후 A/B 테스트),
+       계산 순서를 "먼저 계산, 나중에 두 파일 다 truncate"로 고쳐 해결.
+       전체 회귀(비-interop `test` + `interopTest`)로 재확인, 새 회귀 없음.
+
+    **real hg 자신의 결함 1건(hg4j 버그 아님, 발견만 함)**: changelog-v2를
+    쓰면서 sidedata-copies 기능은 켜지 않은 저장소(`cl2` 조합)에서
+    `hg shelve`(real hg 자신의 것) 자신이 v2 docket이 참조하는(항상
+    비어있고 안 쓰이는) `<radix>-<uuid>.sda` companion 파일을 삭제해버리면서도
+    docket 헤더의 sidedata_uuid 필드는 그대로 남겨둬서, 그 이후 아무 때나
+    `hg verify`가 "No such file or directory: ...sda"로 abort. **hg4j를
+    전혀 거치지 않는 순정 real hg 단독 재현으로 확인**(`hg init` →
+    `hg shelve` → `hg unshelve` → `hg verify`만으로 100% 재현). 테스트에서
+    이 특정 시그니처만 명시적으로 tolerate.
+
+    **발견했으나 이번 wave에서 수정하지 않은 진짜 hg4j 버그 2건(`PushCommand`)**:
+    1. **treemanifest 조합에서 디렉터리 manifest(dirlog)를 전혀 전송하지
+       않음**: `PushCommand`의 changegroup 빌드 로직(`repository.getManifestRevlog()`
+       만 사용)은 루트 manifest revlog 하나만 다루고, `meta/<dir>/00manifest.i`
+       형태의 디렉터리별 manifest revlog는 전혀 열거하지 않는다 — 반면
+       읽는 쪽인 `FetchCommand`의 적용 로직은 이미
+       `bundle.manifestGroups`(디렉터리별 그룹)를 완전히 지원한다
+       (`FetchCommand.java` 참고). 즉 "받는 쪽 적용 로직은 있는데 hg4j가
+       "보내는 쪽"(push)일 때 그 데이터 자체를 만들지 않는" 비대칭 — 서브
+       디렉터리에 있는 파일을 push하면 목적지에서 "no such file"로 나타남.
+    2. **changelog-v2 + sidedata-copies 조합에서 sidedata를 전혀 전송하지
+       않음**: `PushCommand`는 sidedata 관련 코드가 전무하다. 순정 real hg
+       끼리의 push+verify 컨트롤 재현(`hg init --config
+       format.exp-use-copies-side-data-changeset=yes` 두 저장소 간
+       `hg push`)은 무해한 경고 하나만 내고 깨끗하게 통과하는 반면, hg4j가
+       push하면 "in manifest but not in changeset"/"rev 0 points to
+       unexpected changeset 0" 같은 진짜 integrity error가 난다 — hg4j
+       원인인 것은 확인했으나, 정확히 어느 바이트 단위 메커니즘까지는
+       이번 pass에서 못 파고들었다(sidedata가 changeset의 "files" 목록
+       크로스체크에 관여하는 것으로 추정).
+
+       둘 다 상당한 신규 구현이 필요한 기능 격차라 이번 wave 범위 밖으로
+       남김 — 다음 wave에서 별도로 다룰 것을 권장.
+
+    **환경 메모**: 이 세션에서 Docker의 `localhost/hg-rust-7.2.4` 태그가
+    사라져 있어(이미지 자체는 `hg-rust-7.2.4:latest`로 존재) 처음엔 Docker
+    매트릭스 전체가 조용히 스킵됐다 — `docker tag hg-rust-7.2.4:latest
+    localhost/hg-rust-7.2.4`로 로컬 재태깅해 해결(코드 변경 아님, 이 머신의
+    Docker 상태일 뿐 — 다음 세션이 같은 머신이 아니면 다시 필요할 수 있음).
+
+    **남은 것(전부 미착수)**: 나머지 로컬 명령 51개(`AddCommand`,
+    `AmendCommand`, `BookmarkCommand`, `MergeCommand`, `SubrepoCommand`
+    등 — 전체 목록 [[exhaustive-interop-matrix-plan]] §3-2에서 이번에 다룬
+    4개 제외), `PushCommand`의 위 2가지 실버그 자체의 수정, wire 매트릭스의
+    나머지 5개 명령(`FetchCommand`/`IncomingCommand`/`OutgoingCommand`/
+    `ClonebundlesCommand`/`NarrowCloneCommand`). "67개 명령 × 매트릭스"
+    전체 목표 중 실제로 완주된 것은 이제 명령 기준 10/67(4+3+3, `PushCommand`는
+    실버그가 남아있어 완주로 세지 않음)뿐.
 
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서

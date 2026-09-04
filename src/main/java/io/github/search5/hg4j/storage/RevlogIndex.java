@@ -340,10 +340,10 @@ public class RevlogIndex {
             // when addedRecords is empty to maintain transaction consistency.
             //
             // This also turns out to be load-bearing for a very different reason than the name
-            // suggests: StripCommand/RebaseCommand/HisteditCommand physically truncate a revlog's
-            // .i/.d files directly with RandomAccessFile#setLength (bypassing addRecord()
-            // entirely -- see StripCommand.truncateRevlog()), then keep using the SAME already-
-            // held Revlog/RevlogIndex reference afterward (e.g. StripCommand's bookmark-
+            // suggests: StripCommand/ShelveCommand physically truncate a revlog's .i/.d files
+            // directly with RandomAccessFile#setLength (bypassing addRecord() entirely -- see
+            // Revlog.truncate()), then keep using the SAME already-held Revlog/RevlogIndex
+            // reference afterward (e.g. StripCommand's bookmark-
             // relocation loop calls changelog.findRevision() on nodes that were just stripped, to
             // tell "does this bookmark point at what I just removed"). If checkAndUpdate() were
             // allowed to reload here, it would rebuild nodeMap from the now-truncated file and

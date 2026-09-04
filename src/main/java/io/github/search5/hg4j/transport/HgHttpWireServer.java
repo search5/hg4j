@@ -255,14 +255,18 @@ public class HgHttpWireServer implements HttpHandler {
                     out.write(body);
                 }
             }
-            case BYTES -> {
+            case BYTES, STREAM_UNCOMPRESSED -> {
                 // Real hg only compresses `streamres` (Kind.STREAM) responses -- `bytesresponse`
                 // (Kind.BYTES: heads/known/listkeys/lookup/pushkey/branchmap/capabilities) is
                 // always sent as plain, uncompressed bytes under the same -0.1 content type
                 // (wireprotoserver.py's _callhttp: "elif isinstance(rsp, bytesresponse):
                 // setresponse(HTTP_OK, HGTYPE, bodybytes=rsp.data)" -- no compression call at
                 // all). Confirmed by real-hg-as-client clone aborting with "unexpected response"
-                // on a compressed `heads` response before this fix.
+                // on a compressed `heads` response before this fix. `streamreslegacy` (Kind.
+                // STREAM_UNCOMPRESSED -- real hg's bundle2 `unbundle` reply, backlog item 26)
+                // gets the exact same uncompressed treatment ("elif isinstance(rsp,
+                // streamreslegacy): setresponse(HTTP_OK, HGTYPE, bodygen=rsp.gen)" -- no
+                // compression call either, unlike the plain `streamres` case just below).
                 exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.1");
                 byte[] body = response.getPayload();
                 exchange.sendResponseHeaders(200, body.length == 0 ? -1 : body.length);

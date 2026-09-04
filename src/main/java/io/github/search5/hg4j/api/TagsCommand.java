@@ -125,7 +125,7 @@ public class TagsCommand {
         return result;
     }
 
-    private static Map<String, byte[]> readTagFile(File file) throws IOException {
+    static Map<String, byte[]> readTagFile(File file) throws IOException {
         Map<String, byte[]> tags = new LinkedHashMap<>();
         if (!file.exists()) {
             return tags;

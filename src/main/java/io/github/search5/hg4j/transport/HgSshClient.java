@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.net.URLDecoder;
 
 /**
  * pure Java SSH Client communicating with remote Mercurial repositories
@@ -429,6 +430,61 @@ public class HgSshClient implements HgRemoteConnection {
             }
         }
         return heads;
+    }
+
+    /**
+     * SSH counterpart of {@link HgRemoteClient#getBranchHeads()} -- backlog 33
+     * (mercurial-spec-compliance-requirement.md): without this, {@code PushCommand}'s
+     * checkheads safety net silently degrades to a topological-only check whenever the
+     * remote is SSH (the {@link HgRemoteConnection#getBranchHeads()} default returns
+     * {@code null}). {@code branchmap} is a no-arg v1 wire command (same shape as
+     * {@code heads}/{@code listkeys}), real hg's server-side handler already exists on
+     * the hg4j server too ({@code Wire1Commands.branchmap}) -- this was purely a missing
+     * client-side call.
+     */
+    @Override
+    public Map<String, List<String>> getBranchHeads() throws IOException {
+        ensureConnected();
+
+        String resp;
+        if (protocolVersion == 2) {
+            writeLine("branchmap");
+            writeLine("");
+            resp = readLine();
+        } else {
+            // Real hg spec: no declared args at all for "branchmap".
+            sendCommand("branchmap", Map.of());
+            resp = new String(readFramedResponse(), StandardCharsets.UTF_8);
+        }
+
+        Map<String, List<String>> map = new HashMap<>();
+        if (resp == null || resp.trim().isEmpty()) {
+            return map;
+        }
+        for (String line : resp.split("\n")) {
+            line = line.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            int sp = line.indexOf(' ');
+            if (sp == -1) {
+                continue;
+            }
+            String branch;
+            try {
+                branch = URLDecoder.decode(line.substring(0, sp), "UTF-8");
+            } catch (Exception e) {
+                branch = line.substring(0, sp);
+            }
+            List<String> heads = new ArrayList<>();
+            for (String h : line.substring(sp + 1).trim().split("\\s+")) {
+                if (!h.isEmpty()) {
+                    heads.add(h);
+                }
+            }
+            map.put(branch, heads);
+        }
+        return map;
     }
 
     @Override

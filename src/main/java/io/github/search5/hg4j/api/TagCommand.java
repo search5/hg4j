@@ -35,6 +35,7 @@ public class TagCommand {
     private boolean commit = true;
     private boolean local = false;
     private boolean remove = false;
+    private boolean force = false;
     private final List<HgHook> preTagHooks = new ArrayList<>();
     private final List<HgHook> postTagHooks = new ArrayList<>();
 
@@ -76,6 +77,19 @@ public class TagCommand {
         return this;
     }
 
+    /**
+     * {@code hg tag -f}/{@code --force}: allows moving a tag name that already resolves to a
+     * non-null revision. Without this, real hg 7.2.2 aborts with {@code tag '<name>' already
+     * exists (use -f to force)} (verified directly against the CLI, 2026-09-04) rather than
+     * silently overwriting -- {@link #call} now reproduces that gate for both global and
+     * {@link #setLocal local} tags. Irrelevant when {@link #setRemove} is set: real hg lets an
+     * existing tag be removed unconditionally, force or not.
+     */
+    public TagCommand setForce(boolean force) {
+        this.force = force;
+        return this;
+    }
+
     public TagCommand registerPreTagHook(HgHook hook) {
         if (hook != null) {
             this.preTagHooks.add(hook);
@@ -102,6 +116,21 @@ public class TagCommand {
                     throw new IllegalArgumentException("Valid NodeID must be specified for creating a tag");
                 }
                 hex = NodeIdUtil.toHex(nodeId).substring(0, 40);
+            }
+
+            // real hg 7.2.2: `hg tag <existing-name>` without -f aborts instead of silently
+            // moving the tag (verified against the CLI, 2026-09-04) -- and the check spans the
+            // MERGED local+global namespace, not just the file being written to: a local tag
+            // colliding with an existing global name (or vice versa) is rejected the same way
+            // (also verified against the CLI). Removal is exempt -- an existing tag can always
+            // be removed regardless of `force`.
+            if (!remove && !force) {
+                Map<String, byte[]> existingGlobal = TagsCommand.readTagFile(tagsFile);
+                Map<String, byte[]> existingLocal = TagsCommand.readTagFile(new File(repository.getHgDir(), "localtags"));
+                byte[] existingNode = existingLocal.containsKey(tagName) ? existingLocal.get(tagName) : existingGlobal.get(tagName);
+                if (existingNode != null && !NodeIdUtil.isAllZero(existingNode)) {
+                    throw new HgValidationException("tag '" + tagName + "' already exists (use -f to force)");
+                }
             }
 
             // 1. PRE_TAG hooks trigger

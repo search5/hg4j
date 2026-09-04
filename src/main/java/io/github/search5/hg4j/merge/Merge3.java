@@ -30,8 +30,21 @@ public class Merge3 {
 
     /**
      * Performs a 3-way merge on three lists of lines representing the common base, yours, and theirs.
+     * Conflict markers (when a block conflicts) are labeled {@code Yours}/{@code Theirs}.
      */
     public static MergeResult merge(List<String> base, List<String> yours, List<String> theirs) {
+        return merge(base, yours, theirs, "Yours", "Theirs");
+    }
+
+    /**
+     * Same as {@link #merge(List, List, List)}, but with caller-supplied conflict marker labels
+     * (e.g. {@code "dest"}/{@code "source"} for a cherry-pick/rebase, matching real hg's own
+     * default {@code internal:merge} tool markers -- verified byte-for-byte against real hg 7.2:
+     * {@code hg rebase} on a genuine conflict writes exactly {@code <<<<<<< dest} / {@code =======}
+     * / {@code >>>>>>> source}, no {@code |||||||} base section).
+     */
+    public static MergeResult merge(List<String> base, List<String> yours, List<String> theirs,
+                                     String yoursLabel, String theirsLabel) {
         int[] baseToYours = getLcsMapping(base, yours);
         int[] baseToTheirs = getLcsMapping(base, theirs);
 
@@ -64,7 +77,8 @@ public class Merge3 {
             MergeBlockRes blockRes = mergeBlock(
                     base.subList(bCurr, bSync),
                     yours.subList(yCurr, ySync),
-                    theirs.subList(tCurr, tSync)
+                    theirs.subList(tCurr, tSync),
+                    yoursLabel, theirsLabel
             );
             result.addAll(blockRes.lines);
             if (blockRes.conflicted) {
@@ -83,7 +97,8 @@ public class Merge3 {
         MergeBlockRes lastBlockRes = mergeBlock(
                 base.subList(bCurr, base.size()),
                 yours.subList(yCurr, yours.size()),
-                theirs.subList(tCurr, theirs.size())
+                theirs.subList(tCurr, theirs.size()),
+                yoursLabel, theirsLabel
         );
         result.addAll(lastBlockRes.lines);
         if (lastBlockRes.conflicted) {
@@ -102,7 +117,8 @@ public class Merge3 {
         }
     }
 
-    private static MergeBlockRes mergeBlock(List<String> bSub, List<String> ySub, List<String> tSub) {
+    private static MergeBlockRes mergeBlock(List<String> bSub, List<String> ySub, List<String> tSub,
+                                             String yoursLabel, String theirsLabel) {
         boolean yChanged = !bSub.equals(ySub);
         boolean tChanged = !bSub.equals(tSub);
 
@@ -113,11 +129,11 @@ public class Merge3 {
             } else {
                 // Both modified the section but differently -> Conflict!
                 List<String> conflictLines = new ArrayList<>();
-                conflictLines.add("<<<<<<< Yours");
+                conflictLines.add("<<<<<<< " + yoursLabel);
                 conflictLines.addAll(ySub);
                 conflictLines.add("=======");
                 conflictLines.addAll(tSub);
-                conflictLines.add(">>>>>>> Theirs");
+                conflictLines.add(">>>>>>> " + theirsLabel);
                 return new MergeBlockRes(true, conflictLines);
             }
         } else if (yChanged) {

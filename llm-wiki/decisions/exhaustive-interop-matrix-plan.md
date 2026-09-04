@@ -1,9 +1,13 @@
 ---
 name: exhaustive-interop-matrix-plan
 updated: 2026-09-04
-status: 설계 완료(표 확정), 구현은 requirement 매트릭스 핵심 라운드트립(commit/log/status/cat)
-  1차 착수 — 나머지는 전부 미착수. 백로그 29~36과는 별개 축(개별 기능 gap이 아니라
-  "조합 공간을 체계적으로 훑는 인프라" 자체가 목적)이다.
+status: 설계 완료 — requirement 매트릭스는 native 12개 + Docker(hg-rust-7.2.4 컨테이너
+  실측) 24개 = 총 36개 조합, wire 매트릭스는 21개 조합으로 확정(2026-09-04). 기존
+  fixture 기반 테스트가 이미 커버하는 셀도 표에 명시적으로 매핑함(requirement
+  36개 중 6개, wire 18개 중 5개 — 나머지는 미커버). 구현은 requirement 매트릭스
+  핵심 라운드트립(commit/log/status/cat)을 native 12개 조합에 한해 1차 착수 —
+  Docker 24개 조합 반영과 나머지 명령은 전부 미착수. 백로그 29~36과는 별개 축
+  (개별 기능 gap이 아니라 "조합 공간을 체계적으로 훑는 인프라" 자체가 목적)이다.
 ---
 
 # 요건: 포셀린 명령 x wire protocol 조합 x requirement 조합 exhaustive interop 매트릭스
@@ -27,58 +31,83 @@ status: 설계 완료(표 확정), 구현은 requirement 매트릭스 핵심 라
 
 ## 1. Requirement 매트릭스 (로컬·저장소 전용 명령에 적용)
 
-### 1-1. Native-buildable 3축 (이 호스트의 순정 파이썬 `hg` 7.2.2로 즉시 실행 가능, 2026-09-04 실측)
+> **2026-09-04 수정**: 최초 버전은 general-v2/fileindex-v1/persistent-nodemap 3개를
+> "Docker가 필요하다"는 이유로 매트릭스에서 통째로 제외했었다 — 사용자 지적으로
+> 정정. `localhost/hg-rust-7.2.4` 이미지(이미 빌드돼 있음, `docker/hg-rust-7.2.4/
+> Dockerfile`)를 실제로 띄워(`docker run -d --rm hg-rust-7.2.4 sleep infinity`)
+> 컨테이너 내부에서 `hg init --config ...`를 직접 실측한 결과를 반영해 **4번째 축
+> (storage-확장)을 정식으로 추가**했다. "Docker가 있어야 한다"는 이 축 자체를 매트릭스
+> 밖으로 밀어낼 이유가 아니라 각 셀의 실행 조건(native vs Docker)일 뿐이다.
 
-`hg init --config ...`를 여러 조합으로 직접 실행해 확인(아래 §1-3 참고). 다음 3개
-불리언/3지선다 토글은 서로 자유롭게 조합 가능하고 Docker 없이 바로 테스트를 돌릴 수
-있다:
+### 1-1. 4개 축과 상호 제약 (2026-09-04, `hg-rust-7.2.4` 컨테이너 내부 실측)
 
 | 축 | 선택지 | config 키 |
 |---|---|---|
-| dirstate | v1 (기본) / v2 | `format.use-dirstate-v2=yes` |
-| changelog | v1(기본) / changelog-v2 / changelog-v2+sidedata-copies | `format.exp-use-changelog-v2=...` (+`format.exp-use-copies-side-data-changeset=yes`가 changelog-v2를 자동으로 암시함, 실측 확인) |
+| dirstate | v1(기본) / v2 | `format.use-dirstate-v2=yes` |
+| changelog | v1(기본) / changelog-v2 / changelog-v2+sidedata-copies | `format.exp-use-changelog-v2=...` (+`format.exp-use-copies-side-data-changeset=yes`가 changelog-v2를 자동 암시) |
 | manifest | flat(기본) / treemanifest | `experimental.treemanifest=1` |
+| storage-확장 | none(기본) / persistent-nodemap / fileindex-v1 / general-v2 | 아래 참고 |
 
-2 x 3 x 2 = **12개 조합**, 전부 유효(서로 배타적인 조합 없음, 실측 확인):
+storage-확장 축의 config 키와 자동 암시/상호배타 관계(전부 컨테이너 내부 실측,
+2026-09-04):
+- `persistent-nodemap`: `format.use-persistent-nodemap=true` 단독 지정 가능(revlogv1
+  그대로 유지, fileindex-v1은 안 붙음).
+- `fileindex-v1`: `format.use-fileindex-v1=yes` — 지정하면 **`persistent-nodemap`이
+  자동으로 함께 켜짐**(둘을 분리할 방법이 없음, requires에 둘 다 나타남).
+  **`experimental.treemanifest`와는 상호 배타**(`abort: cannot create repository
+  with 'format.use-fileindex-v1' and 'experimental.treemanifest' both enabled
+  since they are incompatible with each other`) — 즉 manifest 축이 flat일 때만
+  유효.
+- `general-v2`(`experimental.revlogv2=enable-unstable-format-and-corrupt-my-data`):
+  **`fileindex-v1`+`persistent-nodemap`을 둘 다 자동으로 함께 켬**(같은 이유로
+  treemanifest와도 상호 배타 — fileindex-v1을 통해 간접 전파).
+- 이 4가지 값 모두 dirstate/changelog 두 축과는 자유롭게 조합됨(실측: `generalv2-
+  dirstatev2`, `generalv2-changelogv2`, `generalv2-changelogv2-sidedata`,
+  `pnodemap-dirstatev2`, `pnodemap-changelogv2`, `fileindex-dirstatev2`,
+  `fileindex-changelogv2` 전부 OK).
 
-| # | dirstate | changelog | manifest |
-|---|---|---|---|
-| 1 | v1 | v1 | flat |
-| 2 | v1 | v1 | tree |
-| 3 | v1 | changelog-v2 | flat |
-| 4 | v1 | changelog-v2 | tree |
-| 5 | v1 | changelog-v2+sidedata | flat |
-| 6 | v1 | changelog-v2+sidedata | tree |
-| 7 | v2 | v1 | flat |
-| 8 | v2 | v1 | tree |
-| 9 | v2 | changelog-v2 | flat |
-| 10 | v2 | changelog-v2 | tree |
-| 11 | v2 | changelog-v2+sidedata | flat |
-| 12 | v2 | changelog-v2+sidedata | tree |
+manifest x storage-확장의 유효한 짝은 6개(flat 4개 + tree 2개, tree+fileindex-v1/
+tree+general-v2는 무효)뿐이므로, 전체 유효 조합 수는:
 
-### 1-2. Docker 전용 3개 (매트릭스에서 제외, 기존 fixture로 별도 커버)
+**dirstate(2) x changelog(3) x [manifest x storage-확장 유효 짝(6)] = 36개**
 
-`experimental.revlogv2`(general v2, `exp-revlogv2.2`), `format.use-fileindex-v1`,
-`format.use-persistent-nodemap` 셋 다 이 호스트 순정 파이썬 `hg`로는
-`abort: accessing '...' repository without associated fast implementation`로
-저장소 생성 자체가 실패한다(2026-09-04 실측, §1-3 로그 참고) — Rust 확장이 포함된
-`hg-rust-7.2.4` Docker 이미지가 있어야 한다. 이 셋을 파라미터화 매트릭스에 라이브로
-넣으면 케이스마다 Docker를 띄워야 해서 느리고 불안정해지므로, 이미 존재하는
-사전 캡처 fixture 기반 테스트(`RevlogV2GeneralParserTest`, `FileIndexTest`,
-`NodeMapFileFixtureTest`, `NodeMapFileWriterTest`, `src/test/resources/fixtures/
-revlogv2-general/`)가 이 조합을 계속 전담한다. 신규 매트릭스 인프라의 책임 범위 밖.
+### 1-2. 실행 환경 구분 (같은 매트릭스 안의 속성일 뿐, 별도 매트릭스가 아님)
 
-### 1-3. 실측 로그 (재현 근거)
+| storage-확장 | 실행 환경 |
+|---|---|
+| none | 이 호스트 순정 파이썬 `hg` 7.2.2로 즉시 실행(Docker 불필요) |
+| persistent-nodemap / fileindex-v1 / general-v2 | `hg-rust-7.2.4` 컨테이너 내부에서만 저장소 생성 가능(순정 파이썬 `hg`는 `abort: accessing '...' repository without associated fast implementation`로 실패, 2026-09-04 재확인) |
 
-```
-OK   v1plain        requires=[...revlogv1,store,...]
-OK   changelogv2     requires=[...exp-changelog-v2,...]
-FAIL generalv2       (abort: accessing `fileindex` repository without associated fast implementation)
-FAIL pnodemap-alone   (abort: accessing `persistent-nodemap` repository without associated fast implementation)
-OK   treemanifest    requires=[...treemanifest,...]
-OK   sidedata-alone  requires=[...exp-changelog-v2,exp-copies-sidedata-changeset,...]  <- changelog-v2 자동 암시
-OK   zstd / sparserevlog / generaldelta-off  (기본값과 동일하게 처리됨, 별도 requirement 안 남음)
-```
+none 12개(§1-1 표 그대로) + Docker 필요 24개(persistent-nodemap 2x3x2=12개 +
+fileindex-v1 2x3x1=6개[flat만] + general-v2 2x3x1=6개[flat만]) = **36개**.
+
+### 1-3. 전체 36개 조합표 (기존 테스트 커버리지 매핑 포함)
+
+| # | dirstate | changelog | manifest | storage-확장 | 실행환경 | 기존 커버리지 |
+|---|---|---|---|---|---|---|
+| 1 | v1 | v1 | flat | none | native | — |
+| 2 | v1 | v1 | tree | none | native | `TreemanifestRealFixtureTest`(부분 — real hg 픽스처 읽기 방향) |
+| 3 | v1 | changelog-v2 | flat | none | native | `ChangelogV2BootstrapTest`(`src/test/resources/fixtures/revlogv2-changelog/`, real hg 7.2 생성 픽스처) — 읽기 방향만 |
+| 4 | v1 | changelog-v2 | tree | none | native | — |
+| 5 | v1 | changelog-v2+sidedata | flat | none | native | `SidedataFilesWriteTest`/`PullSidedataRealHgInteropTest` — 쓰기+양방향 |
+| 6 | v1 | changelog-v2+sidedata | tree | none | native | — |
+| 7 | v2(dirstate) | v1 | flat | none | native | `DirstateV2RealFixtureTest` — real hg가 만든 실제 바이트 캡처 기반, 읽기 방향 |
+| 8 | v2(dirstate) | v1 | tree | none | native | — |
+| 9 | v2(dirstate) | changelog-v2 | flat | none | native | — |
+| 10 | v2(dirstate) | changelog-v2 | tree | none | native | — |
+| 11 | v2(dirstate) | changelog-v2+sidedata | flat | none | native | — |
+| 12 | v2(dirstate) | changelog-v2+sidedata | tree | none | native | — |
+| 13~24 | v1/v2 x 3changelog x flat/tree | — | persistent-nodemap | Docker | 미커버(신규) |
+| 25 | v1 | v1 | flat | fileindex-v1 | Docker | `FileIndexTest`, `NodeMapFileFixtureTest`, `NodeMapFileWriterTest`, `RevlogV2GeneralParserTest`(전부 `revlogv2-general` 픽스처 공유) |
+| 26~30 | 나머지 5개(dirstate/changelog 조합 x fileindex-v1, flat 고정) | — | — | Docker | 미커버(신규) |
+| 31 | v1 | v1 | flat | general-v2 | Docker | `RevlogV2GeneralParserTest`(#25와 동일 픽스처 — general-v2가 fileindex-v1/persistent-nodemap을 동반하므로 사실상 같은 셀) |
+| 32~36 | 나머지 5개(dirstate/changelog 조합 x general-v2, flat 고정) | — | — | Docker | 미커버(신규) |
+
+**요약**: 36개 중 실제로 이미 뭔가 커버된 셀은 6개(#2, #3, #5, #7, #25, #31)뿐이고 —
+그나마도 대부분 "real hg가 쓴 걸 hg4j가 읽는" 한쪽 방향만(#5만 양방향) — 나머지 30개는
+전부 미커버다. 특히 dirstate-v2/tree-manifest/general-v2/fileindex-v1/persistent-
+nodemap을 서로 조합한 셀(예: dirstate-v2 + general-v2, treemanifest + persistent-
+nodemap)은 **단 하나도 시도된 적이 없다**.
 
 ### 1-4. 제외: narrowhg-experimental
 
@@ -107,6 +136,31 @@ SSH: 압축(3)만 — SSH에는 arg 전송 tier 구분이 없고(HTTP 전용 개
 
 HTTP 18 + SSH 3 = **21개 조합**.
 
+### 2-1. 기존 테스트 커버리지 매핑 (2026-09-04)
+
+`HgHttpV1NegotiationForcingInteropTest`는 각 축을 **개별로** 강제하면서 나머지
+축은 real hg 서버의 기본값에 맡긴다 — 그 기본값(서버가 `experimental.httppostargs`
+없이 기본 실행되면 `httpheader=` tier로 떨어지고, 압축 엔진 우선순위상 zstd C
+확장이 있으면 zstd가 선택됨, bundle2는 항상 on)을 근거로 각 기존 테스트가 실제로
+어느 셀을 이미 지나갔는지 역산하면:
+
+| 기존 테스트 | 실제로 커버한 셀(tier, 압축, bundle2) |
+|---|---|
+| `httppostargsForcedAdvertisedAndUsedForRealPullAndPush` | (httppostargs, zstd, on) |
+| `legacyGetTierForcedWhenNeitherHttppostargsNorHttpheaderAdvertised` | (legacy-GET, zstd, on) |
+| `compressionZlibForcedRealRoundTrip` | (httpheader, zlib, on) |
+| `compressionZstdForcedRealRoundTrip` | (httpheader, zstd, on) — `HgHttpV1LiveServerInteropTest`류 기본 경로와 중복 |
+| `compressionNoneForcedRealRoundTrip` | (httpheader, none, on) |
+| `unbundlehashOffForcedRealHttpPushStillSucceeds` | 매트릭스 3축 밖(4번째 축인 `unbundlehash`는 별도 관심사) |
+
+18개 HTTP 셀 중 5개가 이미 지나갔고, 13개는 아직 아무도 조합해본 적이 없다 — 특히
+**"legacy-GET tier + bundle2 off"**, **"httppostargs + none 압축"** 같은 조합은
+개별 축 테스트로는 절대 드러나지 않는다(각 테스트가 한 축만 튀기고 나머지는 기본값을
+쓰기 때문). SSH 3셀(압축만)은 `HgSshClientRealHgInteropTest`/
+`HgSshWireServerRealHgInteropTest`가 기본 압축 설정으로 이미 왕복을 검증했지만
+zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH는 (기본압축)
+1셀만 커버, 나머지 2셀 미커버.
+
 ## 3. 명령 분류 (전체 67개 포셀린 명령)
 
 ### 3-1. 전송 관여 (wire 매트릭스 적용 대상, 8개)
@@ -129,8 +183,8 @@ HTTP 18 + SSH 3 = **21개 조합**.
 `UnbundleCommand`(로컬 파일 입력 — wire 아님), `UpdateCommand`, `VerifyCommand`,
 `WorktreeCommand`.
 
-59개를 12개 requirement 조합 전부에 매번 적용하면 708개 케이스라 한 번에 구현하기엔
-너무 크다 — §4의 우선순위대로 점진적으로 채운다.
+59개를 36개 requirement 조합 전부에 매번 적용하면 2,124개 케이스라 한 번에
+구현하기엔 너무 크다 — §4의 우선순위대로 점진적으로 채운다.
 
 ## 4. 구현 우선순위 및 진행 상황
 
@@ -139,12 +193,15 @@ HTTP 18 + SSH 3 = **21개 조합**.
 표의 상태를 갱신한다.
 
 ### 4-1. Requirement 매트릭스 대상 명령
-- [x] 설계(§1) 확정, 12개 조합 유효성 실측 완료(2026-09-04)
+- [x] 설계(§1) 확정, native 12개 + Docker 24개 = 36개 조합 유효성/상호배타 관계
+  실측 완료(2026-09-04, `hg-rust-7.2.4` 컨테이너 포함)
 - [ ] `CommitCommand`/`LogCommand`/`StatusCommand`/`CatCommand` 핵심 라운드트립 —
   **구현 착수(2026-09-04, WIP)**: `RequirementMatrixCoreRoundTripTest`
-  (`src/test/java/io/github/search5/hg4j/api/`) — real hg 쓰기 → hg4j 읽기,
-  hg4j 쓰기 → real hg 읽기(+`hg verify`) 양방향, 12개 조합 x 2방향 = 24 케이스.
-  아직 컴파일/실행 검증 전.
+  (`src/test/java/io/github/search5/hg4j/api/`) — 현재는 native 12개 조합만
+  구현(real hg 쓰기 → hg4j 읽기, hg4j 쓰기 → real hg 읽기(+`hg verify`) 양방향,
+  12 x 2 = 24 케이스, 아직 컴파일/실행 검증 전). **Docker 24개 조합은 아직 이
+  테스트에 반영 안 됨** — persistent-nodemap/fileindex-v1/general-v2 축을 추가로
+  넣어 36개 조합으로 확장하는 게 다음 작업.
 - [ ] 나머지 58개 로컬 명령 — 미착수
 
 ### 4-2. Wire 매트릭스 대상 명령

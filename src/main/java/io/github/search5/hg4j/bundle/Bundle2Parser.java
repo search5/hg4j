@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.InflaterInputStream;
 import java.util.logging.Level;
@@ -32,6 +33,17 @@ public class Bundle2Parser {
          * reply:changegroup} part with the matching {@code in-reply-to} param real hg's own
          * {@code op.records.getreplies(cgpart.id)} keys off of. {@code -1} if not captured. */
         public int changegroupPartId = -1;
+        /** Backlog item 38 ("PushRaced"-equivalent server-side race re-check): the raw 20-byte
+         * head node ids from the incoming push's {@code check:heads} part, one per element -- real
+         * hg's client ({@code exchange.py}'s {@code _pushb2ctxcheckheads}) embeds this whenever
+         * the push isn't {@code --force} and has something to push, so the SERVER (this bundle2
+         * envelope's receiver) can re-validate, after it has actually taken the store lock, that
+         * its current heads still match what the client computed the push against ({@code
+         * mercurial/bundle2_part_handlers.py}'s {@code handlecheckheads()}: {@code
+         * sorted(heads) != sorted(op.repo.heads())} raises {@code error.PushRaced}). {@code null}
+         * if no {@code check:heads} part was present (a {@code --force} push, or a push with
+         * nothing new). */
+        public List<byte[]> checkHeadsRaw;
     }
 
     /**
@@ -96,6 +108,8 @@ public class Bundle2Parser {
 
         DataInputStream pdis = new DataInputStream(payloadStream);
         ByteArrayOutputStream cgOut = new ByteArrayOutputStream();
+        ByteArrayOutputStream checkHeadsOut = new ByteArrayOutputStream();
+        boolean sawCheckHeadsPart = false;
         String extractedVersion = "01";
         int changegroupPartId = -1;
 
@@ -129,6 +143,12 @@ public class Bundle2Parser {
             boolean isChangegroup = "CHANGEGROUP".equalsIgnoreCase(partName);
             if (isChangegroup) {
                 changegroupPartId = partId;
+            }
+            // Backlog item 38: real hg's own part type name, verbatim -- see
+            // mercurial/bundle2_part_handlers.py's `@parthandler(b'check:heads')`.
+            boolean isCheckHeads = "check:heads".equalsIgnoreCase(partName);
+            if (isCheckHeads) {
+                sawCheckHeadsPart = true;
             }
             int paramCount = mandatoryCount + advisoryCount;
 
@@ -170,9 +190,11 @@ public class Bundle2Parser {
                 
                 byte[] chunkData = new byte[chunkSize];
                 pdis.readFully(chunkData);
-                
+
                 if (isChangegroup) {
                     cgOut.write(chunkData);
+                } else if (isCheckHeads) {
+                    checkHeadsOut.write(chunkData);
                 }
             }
         }
@@ -185,6 +207,19 @@ public class Bundle2Parser {
         result.changegroupBytes = cgOut.toByteArray();
         result.cgVersion = extractedVersion;
         result.changegroupPartId = changegroupPartId;
+        if (sawCheckHeadsPart) {
+            // Real hg's own wire encoding (bundle2_part_handlers.py's handlecheckheads(): `h =
+            // inpart.read(20); while len(h) == 20: heads.append(h)`) is just the raw 20-byte node
+            // ids back to back, with no length prefix or separator.
+            byte[] raw = checkHeadsOut.toByteArray();
+            List<byte[]> heads = new ArrayList<>(raw.length / 20);
+            for (int off = 0; off + 20 <= raw.length; off += 20) {
+                byte[] node = new byte[20];
+                System.arraycopy(raw, off, node, 0, 20);
+                heads.add(node);
+            }
+            result.checkHeadsRaw = heads;
+        }
         return result;
     }
 

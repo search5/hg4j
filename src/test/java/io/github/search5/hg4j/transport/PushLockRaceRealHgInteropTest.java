@@ -346,35 +346,287 @@ public class PushLockRaceRealHgInteropTest {
                             + "\nclientA: exit=" + resultA.get().exitCode + " out=" + resultA.get().output
                             + "\nclientB: exit=" + resultB.get().exitCode + " out=" + resultB.get().output);
 
-            // Both outcomes are acceptable per the task's own acceptance criteria: either both
-            // land (sequential, non-conflicting apply) or exactly one lands (the other legitimately
-            // rejected, e.g. by checkheads on stale data) -- but at least one MUST land, since
-            // neither push should be starved outright by lock contention alone under a 30s timeout.
-            // Empirically (2026-09-04) BOTH land here: hg4j's server-side unbundle apply path
-            // acquires the store lock and serializes correctly (that's what this whole class
-            // verifies), but -- unlike real hg's own exchange.unbundle(), which re-runs
-            // check_heads() AFTER acquiring the lock and raises error.PushRaced if the target
-            // moved out from under a stale client -- it never independently re-validates heads
-            // against what each client actually saw. Real hg's client-side checkheads (which IS
-            // ported, in PushCommand) only sees the SERVER's heads as of just before the race
-            // started, so it can't catch this either. Net effect: hg4j ends up with 2 heads here
-            // where a real-hg-served equivalent would have rejected the loser as raced. This is a
-            // real, distinct gap from the lock-wait/timeout behavior this class is about --
-            // reported explicitly rather than silently masked, see backlog item 38's completion
-            // note. It does not violate this test's own acceptance bar (repo integrity + no
-            // partial/duplicate apply), which is all backlog item 38 itself asks for.
+            // Backlog item 38 follow-up (PushRaced-equivalent): both clients cloned from the SAME
+            // pre-race commit and each computed their own push (and, since real hg negotiates
+            // bundle2 with hg4j's server, their own `check:heads` part) against that SAME head
+            // set. Exactly one may land -- the other MUST be rejected as raced, exactly like a
+            // real-hg-served equivalent would (mercurial/bundle2_part_handlers.py's
+            // handlecheckheads() raises error.PushRaced the instant the post-lock heads no longer
+            // match what the loser's check:heads part says they should be). Before this fix
+            // (2026-09-04), hg4j's server had no such re-validation and BOTH landed, silently
+            // creating an extra head a real-hg server would have refused -- see git history for
+            // that superseded assertion.
             int successes = (resultA.get().success() ? 1 : 0) + (resultB.get().success() ? 1 : 0);
-            assertTrue(successes >= 1, "at least one of the two racing pushes must succeed: "
-                    + "clientA exit=" + resultA.get().exitCode + " clientB exit=" + resultB.get().exitCode);
+            assertEquals(1, successes, "exactly one of the two racing pushes (same pre-race head "
+                    + "set) must succeed, the other must be rejected as raced: "
+                    + "clientA exit=" + resultA.get().exitCode + " out=" + resultA.get().output
+                    + " | clientB exit=" + resultB.get().exitCode + " out=" + resultB.get().output);
+
+            HgResult loser = resultA.get().success() ? resultB.get() : resultA.get();
+            assertTrue(loser.output.toLowerCase().contains("changed while pushing")
+                            || loser.output.toLowerCase().contains("try again")
+                            || loser.output.toLowerCase().contains("push failed"),
+                    "the losing side's rejection must read as a race real hg itself would produce "
+                            + "the same wording for (mercurial/bundle2_part_handlers.py's "
+                            + "handlecheckheads(): 'remote repository changed while pushing - "
+                            + "please try again'), not a generic/unrelated failure: " + loser.output);
 
             serverRepo.clearRevlogCache();
             File clIdx = new File(serverRepo.getStoreDir(), "00changelog.i");
             File clDat = new File(serverRepo.getStoreDir(), "00changelog.d");
             var cl = serverRepo.getRevlog(clIdx, clDat);
-            int expectedRevisions = 1 + successes;
-            assertEquals(expectedRevisions, cl.getRevisionCount(),
-                    "revision count must exactly match the number of pushes real hg itself reported as successful "
-                            + "(no silent partial/duplicate apply): successes=" + successes);
+            assertEquals(2, cl.getRevisionCount(),
+                    "only the winner's single commit must have landed on top of c0 -- no partial/"
+                            + "duplicate apply, and no silently-accepted extra head from the loser");
+
+            String headsAfter = HgTestUtils.hg(serverRepoDir, "heads", "--template", "{node} ");
+            assertEquals(1, headsAfter.trim().split("\\s+").length,
+                    "the served repository must end up with exactly ONE head -- matching what a "
+                            + "real-hg-served equivalent of this exact race would produce -- not two: "
+                            + headsAfter);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * SSH mirror of {@link #twoRealHgClientsRacingOverHttpNeverCorruptTheHg4jServedRepository}
+     * -- same genuine two-real-process race, same same-pre-race-head-set setup, over
+     * {@link HgSshWireServer} instead. Backlog item 38's own standing rule (both read/write
+     * directions, HTTP and SSH both) requires this, not just the HTTP case.
+     */
+    @Test
+    public void twoRealHgClientsRacingOverSshNeverCorruptTheHg4jServedRepository(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(isSshKeygenAvailable(), "ssh-keygen is not available. Skipping.");
+
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository bootstrap = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "base");
+        new AddCommand(bootstrap).call();
+        new CommitCommand(bootstrap).setMessage("c0").setAuthor("dev").call();
+        HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
+
+        try (SshFixture ssh = new SshFixture(tempDir)) {
+            ssh.serve(serverRepo);
+            String url = ssh.url(serverRepoDir);
+
+            File clientA = tempDir.resolve("client_a").toFile();
+            File clientB = tempDir.resolve("client_b").toFile();
+            HgTestUtils.hg(tempDir.toFile(), ssh.withSshConfig("clone", url, clientA.getAbsolutePath()));
+            HgTestUtils.hg(tempDir.toFile(), ssh.withSshConfig("clone", url, clientB.getAbsolutePath()));
+
+            Files.writeString(new File(clientA, "from-a.txt").toPath(), "client A's commit");
+            HgTestUtils.hg(clientA, "add", "from-a.txt");
+            HgTestUtils.hg(clientA, "commit", "-u", "A", "-m", "cA");
+
+            Files.writeString(new File(clientB, "from-b.txt").toPath(), "client B's commit");
+            HgTestUtils.hg(clientB, "add", "from-b.txt");
+            HgTestUtils.hg(clientB, "commit", "-u", "B", "-m", "cB");
+
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicReference<HgResult> resultA = new AtomicReference<>();
+            AtomicReference<HgResult> resultB = new AtomicReference<>();
+            AtomicReference<Exception> errorA = new AtomicReference<>();
+            AtomicReference<Exception> errorB = new AtomicReference<>();
+
+            String[] pushA = ssh.withSshConfig("push", url);
+            String[] fullA = new String[pushA.length + 4];
+            fullA[0] = "--config"; fullA[1] = "format.usezstd=false";
+            fullA[2] = "--config"; fullA[3] = "format.revlog-compression=zlib";
+            System.arraycopy(pushA, 0, fullA, 4, pushA.length);
+
+            Thread threadA = new Thread(() -> {
+                try {
+                    go.await();
+                    resultA.set(hgNoThrow(clientA, fullA));
+                } catch (Exception e) {
+                    errorA.set(e);
+                }
+            }, "ssh-race-client-a");
+            Thread threadB = new Thread(() -> {
+                try {
+                    go.await();
+                    resultB.set(hgNoThrow(clientB, fullA));
+                } catch (Exception e) {
+                    errorB.set(e);
+                }
+            }, "ssh-race-client-b");
+            threadA.start();
+            threadB.start();
+            go.countDown();
+            threadA.join(TimeUnit.SECONDS.toMillis(30));
+            threadB.join(TimeUnit.SECONDS.toMillis(30));
+
+            assertNull(errorA.get(), "client A's push thread must not itself throw: " + errorA.get());
+            assertNull(errorB.get(), "client B's push thread must not itself throw: " + errorB.get());
+            assertNotNull(resultA.get(), "client A's push must complete");
+            assertNotNull(resultB.get(), "client B's push must complete");
+
+            String verify = HgTestUtils.hg(serverRepoDir, "verify");
+            assertFalse(verify.toLowerCase().contains("error"),
+                    "server repository must remain valid after a genuine concurrent SSH push race: " + verify);
+
+            int successes = (resultA.get().success() ? 1 : 0) + (resultB.get().success() ? 1 : 0);
+            assertEquals(1, successes, "exactly one of the two racing SSH pushes must succeed: "
+                    + "clientA exit=" + resultA.get().exitCode + " out=" + resultA.get().output
+                    + " | clientB exit=" + resultB.get().exitCode + " out=" + resultB.get().output);
+
+            HgResult loser = resultA.get().success() ? resultB.get() : resultA.get();
+            assertTrue(loser.output.toLowerCase().contains("changed while pushing")
+                            || loser.output.toLowerCase().contains("try again")
+                            || loser.output.toLowerCase().contains("push failed"),
+                    "the losing SSH side's rejection must read as a race: " + loser.output);
+
+            serverRepo.clearRevlogCache();
+            File clIdx = new File(serverRepo.getStoreDir(), "00changelog.i");
+            File clDat = new File(serverRepo.getStoreDir(), "00changelog.d");
+            var cl = serverRepo.getRevlog(clIdx, clDat);
+            assertEquals(2, cl.getRevisionCount(), "only the winner's single commit must have landed on top of c0");
+
+            String headsAfter = HgTestUtils.hg(serverRepoDir, "heads", "--template", "{node} ");
+            assertEquals(1, headsAfter.trim().split("\\s+").length,
+                    "the served repository must end up with exactly ONE head over SSH too: " + headsAfter);
+        }
+    }
+
+    /**
+     * Negative control (backlog item 38 follow-up): ordinary SEQUENTIAL real-hg pushes -- the
+     * second client pulls the first client's already-landed commit before building its own push,
+     * exactly like normal non-racing usage -- must both still succeed cleanly. The lock-wait fix
+     * and the new push-race re-validation must not over-trigger just because a push happened to
+     * queue briefly behind another, or because two pushes occurred close together in wall-clock
+     * time without ever actually overlapping at the point the race check runs.
+     */
+    @Test
+    public void sequentialNonRacingRealHgPushesBothSucceedOverHttp(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository bootstrap = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "base");
+        new AddCommand(bootstrap).call();
+        new CommitCommand(bootstrap).setMessage("c0").setAuthor("dev").call();
+        HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(Executors.newFixedThreadPool(8));
+        server.createContext("/", new HgHttpWireServer(serverRepo));
+        server.start();
+        try {
+            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+
+            File clientA = tempDir.resolve("client_a").toFile();
+            HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl, clientA.getAbsolutePath());
+            Files.writeString(new File(clientA, "from-a.txt").toPath(), "client A's commit");
+            HgTestUtils.hg(clientA, "add", "from-a.txt");
+            HgTestUtils.hg(clientA, "commit", "-u", "A", "-m", "cA");
+            HgTestUtils.hg(clientA, "push", baseUrl);
+
+            // Client B clones AFTER A's push landed -- its own check:heads snapshot is therefore
+            // fresh (matches the server's actual current heads), so its later push must not be
+            // treated as raced even though it happens shortly after A's.
+            File clientB = tempDir.resolve("client_b").toFile();
+            HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl, clientB.getAbsolutePath());
+            Files.writeString(new File(clientB, "from-b.txt").toPath(), "client B's commit");
+            HgTestUtils.hg(clientB, "add", "from-b.txt");
+            HgTestUtils.hg(clientB, "commit", "-u", "B", "-m", "cB");
+            HgTestUtils.hg(clientB, "push", baseUrl);
+
+            serverRepo.clearRevlogCache();
+            File clIdx = new File(serverRepo.getStoreDir(), "00changelog.i");
+            File clDat = new File(serverRepo.getStoreDir(), "00changelog.d");
+            var cl = serverRepo.getRevlog(clIdx, clDat);
+            assertEquals(3, cl.getRevisionCount(), "both sequential, non-racing pushes must land: c0, cA, cB");
+
+            String headsAfter = HgTestUtils.hg(serverRepoDir, "heads", "--template", "{node} ");
+            assertEquals(1, headsAfter.trim().split("\\s+").length,
+                    "sequential pushes on a shared linear history must leave exactly one head: " + headsAfter);
+
+            String verify = HgTestUtils.hg(serverRepoDir, "verify");
+            assertFalse(verify.toLowerCase().contains("error"), "server repository must remain valid: " + verify);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * Negative control, the other half of "genuinely non-conflicting concurrent pushes must not
+     * be over-rejected": a push that has NOTHING NEW to send (a true no-op, e.g. a repeat push
+     * after nothing changed) must not spuriously trip the race check even when issued concurrently
+     * with an unrelated real push -- real hg's own client never even emits a {@code check:heads}
+     * part for a push with nothing to push ({@code mercurial/exchange.py}'s {@code
+     * _pushb2ctxcheckheads}: {@code if not pushop.force and pushop.outgoing.ancestorsof}), so
+     * there is nothing for the server to race-check in the first place.
+     */
+    @Test
+    public void concurrentNoOpPushDoesNotTripRaceCheckAlongsideARealPushOverHttp(@TempDir Path tempDir) throws Exception {
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository bootstrap = Hg.init().setDirectory(serverRepoDir).call();
+        Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "base");
+        new AddCommand(bootstrap).call();
+        new CommitCommand(bootstrap).setMessage("c0").setAuthor("dev").call();
+        HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(Executors.newFixedThreadPool(8));
+        server.createContext("/", new HgHttpWireServer(serverRepo));
+        server.start();
+        try {
+            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+
+            File clientA = tempDir.resolve("client_a").toFile();
+            File clientNoOp = tempDir.resolve("client_noop").toFile();
+            HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl, clientA.getAbsolutePath());
+            HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl, clientNoOp.getAbsolutePath());
+
+            Files.writeString(new File(clientA, "from-a.txt").toPath(), "client A's commit");
+            HgTestUtils.hg(clientA, "add", "from-a.txt");
+            HgTestUtils.hg(clientA, "commit", "-u", "A", "-m", "cA");
+
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicReference<HgResult> resultA = new AtomicReference<>();
+            AtomicReference<HgResult> resultNoOp = new AtomicReference<>();
+
+            Thread threadA = new Thread(() -> {
+                try {
+                    go.await();
+                    resultA.set(hgNoThrow(clientA, "push", baseUrl));
+                } catch (Exception ignored) {
+                }
+            }, "noop-race-client-a");
+            Thread threadNoOp = new Thread(() -> {
+                try {
+                    go.await();
+                    // clientNoOp has nothing new relative to what it cloned -- a genuine no-op push.
+                    resultNoOp.set(hgNoThrow(clientNoOp, "push", baseUrl));
+                } catch (Exception ignored) {
+                }
+            }, "noop-race-client-noop");
+            threadA.start();
+            threadNoOp.start();
+            go.countDown();
+            threadA.join(TimeUnit.SECONDS.toMillis(30));
+            threadNoOp.join(TimeUnit.SECONDS.toMillis(30));
+
+            assertNotNull(resultA.get());
+            assertNotNull(resultNoOp.get());
+            assertTrue(resultA.get().success(), "the real push must succeed: " + resultA.get().output);
+            // Real hg's own convention: a push with nothing new to send prints "no changes found"
+            // and exits non-zero (1) BY DESIGN -- that is not a race rejection, it is real hg's
+            // ordinary "nothing to do" outcome, so success() (exit==0) is the wrong thing to
+            // assert here. What matters is that it's THIS outcome, not a race rejection.
+            assertTrue(resultNoOp.get().output.toLowerCase().contains("no changes found"),
+                    "a concurrent no-op push must report real hg's own ordinary no-op outcome: "
+                            + resultNoOp.get().output);
+            assertFalse(resultNoOp.get().output.toLowerCase().contains("changed while pushing"),
+                    "a no-op push must not even be evaluated by the race check: " + resultNoOp.get().output);
+
+            serverRepo.clearRevlogCache();
+            File clIdx = new File(serverRepo.getStoreDir(), "00changelog.i");
+            File clDat = new File(serverRepo.getStoreDir(), "00changelog.d");
+            var cl = serverRepo.getRevlog(clIdx, clDat);
+            assertEquals(2, cl.getRevisionCount(), "only client A's genuine commit must have landed");
+
+            String verify = HgTestUtils.hg(serverRepoDir, "verify");
+            assertFalse(verify.toLowerCase().contains("error"), "server repository must remain valid: " + verify);
         } finally {
             server.stop(0);
         }

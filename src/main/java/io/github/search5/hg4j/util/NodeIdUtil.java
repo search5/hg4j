@@ -379,14 +379,26 @@ public final class NodeIdUtil {
      *
      * @param heads hex head node ids the caller believes are the remote's current heads
      * @param serverSupportsUnbundleHash whether the negotiated capabilities include {@code unbundlehash}
-     * @return either {@code heads} unchanged, or the 2-element {@code [hashed-sentinel-hex, digest-hex]} wire tokens
+     * @return either {@code heads} unchanged, the single-element hex-encoded force sentinel, or
+     *         the 2-element {@code [hashed-sentinel-hex, digest-hex]} wire tokens
      */
     public static List<String> computeUnbundleHeadsWireValue(List<String> heads, boolean serverSupportsUnbundleHash) {
         if (heads == null || heads.isEmpty()) {
             return heads == null ? List.of() : heads;
         }
         if (heads.size() == 1 && "force".equals(heads.get(0))) {
-            return heads;
+            // Backlog item 38 (found while wiring up a --force push's own wire value, which
+            // previously never actually reached this branch against a real server): real hg's
+            // OWN wireprotov1peer.py `unbundle()` runs the literal `[b'force']` sentinel through
+            // `wireprototypes.encodelist()` exactly like a genuine head list -- `encodelist` is a
+            // blind `hex()` over every element, with NO special-casing for `b'force'` -- so the
+            // wire value real hg actually sends is `hex(b'force')` ("666f726365"), not the bare
+            // ASCII word. Confirmed live (2026-09-04): sending the literal word "force" to a real
+            // hg 7.2 server breaks its `wireprototypes.decodelist()` (`bin("force")` -- 'o'/'r' are
+            // not hex digits -- raises inside the server, surfacing to hg4j's client as a garbled/
+            // empty framed response). The receiving side (Wire1Commands/HgLocalClient) must
+            // recognize this SAME hex-encoded form -- see FORCE_SENTINEL_HEX there.
+            return List.of(toHex("force".getBytes(StandardCharsets.US_ASCII)));
         }
         if (!serverSupportsUnbundleHash) {
             return heads;

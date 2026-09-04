@@ -172,7 +172,11 @@ public class HgSshWireServerTest {
 
         ByteArrayOutputStream reqBytes = new ByteArrayOutputStream();
         reqBytes.write("unbundle\n".getBytes(StandardCharsets.US_ASCII));
-        reqBytes.write(("heads " + hex.length() + "\n" + hex).getBytes(StandardCharsets.US_ASCII));
+        // Backlog item 38 (push-race re-validation): destRepo is headless, so the wire `heads`
+        // argument representing "what the client believed the remote's heads were" must be
+        // empty here, not the incoming commit's own hex -- see Wire1CommandsTest's matching
+        // comment for the full explanation of why this used to be harmless filler.
+        reqBytes.write("heads 0\n".getBytes(StandardCharsets.US_ASCII));
         // getpayload() chunk framing: <chunk-size>\n<chunk bytes> ... terminated by "0\n".
         reqBytes.write((bundleBytes.length + "\n").getBytes(StandardCharsets.US_ASCII));
         reqBytes.write(bundleBytes);
@@ -217,7 +221,9 @@ public class HgSshWireServerTest {
 
         ByteArrayOutputStream reqBytes = new ByteArrayOutputStream();
         reqBytes.write("unbundle\n".getBytes(StandardCharsets.US_ASCII));
-        reqBytes.write(("heads " + hex.length() + "\n" + hex).getBytes(StandardCharsets.US_ASCII));
+        // Backlog item 38: see unbundleReadsTheChunkedPayloadAndAppliesIt's matching comment --
+        // destRepo is headless, so the wire `heads` value must be empty here.
+        reqBytes.write("heads 0\n".getBytes(StandardCharsets.US_ASCII));
         reqBytes.write((bundleBytes.length + "\n").getBytes(StandardCharsets.US_ASCII));
         reqBytes.write(bundleBytes);
         reqBytes.write("0\n".getBytes(StandardCharsets.US_ASCII));

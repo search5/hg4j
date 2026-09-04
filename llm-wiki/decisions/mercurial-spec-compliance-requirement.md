@@ -2391,25 +2391,79 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     push 레이스를 유발 — 결과와 무관하게(둘 다 성공하거나 하나만 성공 — 과제
     자체가 명시한 두 결과 모두 허용) `hg verify`로 저장소가 절대 손상되지
     않았음과 revision count가 실제 성공 건수와 정확히 일치함(부분/중복 적용
-    없음)을 확인. 전체 회귀: 비-interop `test` 2269건 0 실패/0 에러(2 스킵),
-    `interopTest` 236건 중 이 항목과 무관한 기존 `StripRealHgInteropTest`
-    사전 존재 실패 2건(수정 전 베이스라인에서도 동일하게 재현 확인 — 이번
-    변경과 무관)을 제외하고 전부 GREEN(신규 5건 포함).
+    없음)을 확인.
 
-    **범위 밖으로 명시 보고(구현하지 않음, 사용자 판단 필요)**: hg4j 서버의
-    unbundle 적용 경로는 lock을 획득한 뒤 real hg의 `PushRaced`(변경 사항이
-    push 도중 바뀌었을 때 `"repository changed while pushing - please try
-    again"`)에 해당하는 **독립적인 서버측 재검증**(lock 획득 후 heads를 다시
-    계산해 클라이언트가 보낸 오래된 전제와 충돌하는지 재확인)이 없다 —
-    checkheads 검증은 여전히 `PushCommand`(hg4j 클라이언트)에만 있고, 서버는
-    들어온 changegroup을 그대로 적용한다. 이번 항목(38번)이 명시한 검증
-    기준("둘 다 성공하거나 하나만 성공 — 저장소만 손상되지 않으면 됨")은
-    만족하지만, real hg 서버라면 거부했을 시나리오(두 real-hg 클라이언트가
-    같은 오래된 head를 보고 각자 다른 자식 커밋을 동시에 push)에서 hg4j
-    서버는 **양쪽 다 적용해 2개의 head를 만들 수 있다** — 이는 순수 lock
-    문제가 아니라 별개의 기능(서버측 discovery/checkheads 재검증) 부재이며,
-    이번 세션에서 구현하지 않았다. 별도 백로그 항목으로 승격할지는 사용자
-    판단.
+    **후속 확장(2026-09-04, 같은 날 사용자 지시로 범위 내 편입)**: 위
+    `twoRealHgClientsRacingOverHttpNeverCorruptTheHg4jServedRepository` 테스트가
+    실측한 대로, 최초 구현은 lock 대기/타임아웃만 real hg와 맞췄을 뿐 real hg의
+    `PushRaced`(`mercurial/error.py`)에 해당하는 **독립적인 서버측 재검증**이
+    없어서 두 real-hg 클라이언트가 같은 오래된 head를 보고 각자 다른 자식
+    커밋을 동시에 push하면 hg4j 서버가 **양쪽 다 적용**해(2개 head 생성) real
+    hg 서버라면 거부했을 시나리오를 놓치고 있었다 — 사용자가 이를 "범위 밖"이
+    아니라 이번 항목에 포함해 즉시 구현하도록 지시. real hg 소스 확인
+    (`mercurial/bundle2_part_handlers.py`의 `handlecheckheads()`,
+    `mercurial/exchange.py`의 `_pushb2ctxcheckheads()`/`check_heads()`) 결과:
+    real hg 클라이언트는 `--force`가 아니고 실제로 push할 게 있으면 bundle2
+    봉투에 `check:heads` 파트(클라이언트가 push를 계산할 때 본 원격 head 목록)를
+    changegroup 파트보다 먼저 넣어 보내고, 서버는 이 파트를 **lock을 실제로
+    획득한 뒤**(트랜잭션 내부) 처리하면서 `sorted(heads) != sorted(op.repo.
+    heads())`면 `error.PushRaced("remote repository changed while pushing -
+    please try again")`를 던진다 — legacy(non-bundle2) 경로는 대신 `unbundle`
+    명령 자체의 `heads=` 인자를 (lock 이전에) 검사하며, `--force`는
+    `heads=[b'force']`(단, `wireprototypes.encodelist()`가 이것도 그냥
+    `hex()`로 인코딩하므로 실제 wire 값은 `"666f726365"`— `hex(b'force')` —
+    이지 리터럴 단어 "force"가 아님, 실측: 리터럴 "force"를 real hg 서버에
+    보내면 서버의 `decodelist()`가 hex 디코드에 실패해 깨짐)로 체크를 완전히
+    생략한다.
+
+    구현: (1) `Bundle2Parser.ExtractedBundle2`에 `checkHeadsRaw` 필드 추가,
+    `check:heads` 파트의 원시 20바이트 head 목록을 파싱. (2)
+    `HgPushRacedException`(`HgValidationException` 상속) 신설. (3)
+    `FetchCommand.applyBundle`/`PullCommand.applyBundle`에 `PostLockValidator`
+    콜백 오버로드 추가 — store/wlock을 실제로 잡은 직후, 아무것도 쓰기 전에
+    실행되어(따라서 실패해도 journal 등 부분 상태가 전혀 남지 않음) real hg의
+    "lock 획득 후 재검증" 타이밍을 그대로 재현. (4)
+    `HgLocalClient.buildPushRaceValidator()`가 (a) bundle2 `check:heads` 파트가
+    있으면 그걸, (b) 없으면 legacy `heads=` wire 인자(단, 비어있거나 force
+    센티널이면 스킵)를 써서 검증기를 만들고, `pushWithHooks`가 lock-timeout과
+    함께 이를 `applyBundle`에 전달 — HTTP·SSH·file:// 세 방향 모두가 공유하는
+    지점이라 한 번의 구현으로 전부 커버됨. (5) `NodeIdUtil
+    .computeUnbundleHeadsWireValue()`의 force 분기를 real hg와 동일하게
+    `hex(b'force')`로 wire 인코딩하도록 수정(기존엔 리터럴 "force"를 그대로
+    보내 real hg 서버와의 실제 --force 왕복이 깨져 있었음 — 이전에는
+    `PushCommand`가 force 시에도 항상 진짜 head 목록을 보내 이 분기 자체가
+    한 번도 실행된 적이 없었던 잠재 버그, 이번에 처음 실사용되며 발견·수정);
+    서버측(`HgLocalClient`)은 리터럴 "force"와 hex 인코딩 두 형태를 모두
+    force로 인식(전자는 wire 인코딩을 안 거치는 `file://` 로컬 피어 경로용).
+    (6) `PushCommand.call()`이 `--force`일 때 실제 head 목록 대신
+    `["force"]` 센티널을 보내도록 수정(real hg의 `_pushchangeset`:
+    `if pushop.force: remoteheads = [b'force']`) — 이게 없으면 강제 push
+    자체가 새 레이스 체크에 걸려 스스로 거부당할 위험이 있었음.
+
+    검증: `PushLockRaceRealHgInteropTest`에 5건 추가(총 10건) —
+    `twoRealHgClientsRacingOverHttpNeverCorruptTheHg4jServedRepository`를
+    "성공 개수 ≥1"에서 "정확히 1개만 성공, 진 쪽은 real hg와 동일한
+    'changed while pushing'/'try again' 계열 메시지로 거부, 최종 head
+    1개"로 강화, SSH 버전(`twoRealHgClientsRacingOverSsh...`) 신규 추가,
+    "레이스가 아닌 경우 과잉 거부 안 함" 네거티브 컨트롤 2건
+    (`sequentialNonRacingRealHgPushesBothSucceedOverHttp` — 순차 push는 둘 다
+    성공, `concurrentNoOpPushDoesNotTripRaceCheckAlongsideARealPushOverHttp` —
+    보낼 게 없는 push는 애초에 `check:heads` 파트 자체가 없어 레이스 체크
+    대상이 아님을 확인). 구현 중 기존 테스트 6건이 새로 깨졌다가 전부
+    원인 규명 후 수정: `PushCommandTest` 2건(`QuirkyLocalConnection`이 일부러
+    null/전부-0 sentinel을 head 목록에 섞어 보내는 방어 코드 테스트 — 레이스
+    체크가 그 쓰레기 값에 NPE, `HgLocalClient`에 null/all-zero 필터링 추가로
+    해결), `Wire1CommandsTest`/`HgSshWireServerTest` 4건(빈 저장소로의 push를
+    검증하면서 `heads=` wire 인자에 "들어오는 커밋 자신의 hex"라는(이 인자가
+    당시 죽은 코드였을 때는 무해했던) 의미 없는 값을 넣어뒀던 테스트 픽스처
+    — 실제로 이 값이 쓰이게 되자 "헤드 없음"이어야 할 빈 저장소 대상 push가
+    스스로 레이스로 오탐되어 실패 — 픽스처를 "heads 인자 생략/빈 값"으로
+    수정해 원래 테스트 의도 보존), `HgSshClientRealHgInteropTest`/
+    `PushRealHgInteropTest`의 force 관련 2건(위 (5)번 wire 인코딩 버그 — real
+    hg 서버가 리터럴 "force"를 받고 깨짐). 전체 회귀 최종: 비-interop
+    `test` 2269건 0 실패/0 에러(2 스킵), `interopTest` 239건 중 이 항목과
+    무관한 기존 `StripRealHgInteropTest` 사전 존재 실패 2건(수정 전
+    베이스라인에서도 동일 재현 확인)을 제외하고 전부 GREEN.
 
 39. **[[exhaustive-interop-matrix-plan]] 매트릭스 범위 확장 — 명령 커버리지가
     극히 일부에 머물러 있음**. 신규, 2026-09-04 사용자 지시로 등록 — 미착수.

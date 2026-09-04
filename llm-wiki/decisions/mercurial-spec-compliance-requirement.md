@@ -19,11 +19,14 @@ status: 번호 매겨진 백로그 1~28번 전부 완료(25번은 오탐으로 �
   연동(31), subrepo 잔여 gap 4건(32), push checkheads SSH 미작동(33), bisect
   merge DAG 검증 누락(34), revlog 항상 non-inline이라 fncache 경고(35), tag
   재태깅 -f 가드 부재(36) — 전부 real hg CLI interop 검증까지 완료 기준에 포함.
-  **37, 38번도 신규 — 전부 미착수**: 37번(dirstate-v2 저장소에 hg4j가 커밋하면
-  기존 파일이 트리 구조에서 유실됨 — [[exhaustive-interop-matrix-plan]]의
-  requirement 매트릭스 TDD 중 발견, 100% 결정적 재현, 근본 원인 미확정), 38번
-  (동시 push 레이스 컨디션이 real hg와 완전히 동일하게 동작하는지 미검증 — 특히
-  서버 방향, 사용자 지시로 등록).
+  **37번도 신규 — 완료(2026-09-04)**: dirstate-v2 저장소에 hg4j가 커밋하면 기존
+  파일이 트리 구조에서 유실되던 버그 — [[exhaustive-interop-matrix-plan]]의
+  requirement 매트릭스 TDD 중 발견. 근본 원인은 real hg의 dirstate-v2 자식 노드
+  배열이 basename 정렬을 전제로 이진 탐색하는데 hg4j가 정렬 없이 썼던 것
+  (`hg-rust-7.2.4` 컨테이너의 Rust 소스 직접 대조로 확정), `DirstateV2Serializer`
+  정렬 로직 추가로 수정, 60개 매트릭스 케이스 전부 GREEN. **38번은 신규 —
+  미착수**: 동시 push 레이스 컨디션이 real hg와 완전히 동일하게 동작하는지
+  미검증 — 특히 서버 방향, 사용자 지시로 등록.
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -1963,24 +1966,35 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     시나리오(force 없음/force 있음 양쪽)를 재현해 거부 메시지/성공 동작이
     일치하는지 검증하고, 필요한 가드를 구현.
 
-37. **dirstate-v2 저장소에서 hg4j 커밋이 기존 파일을 트리 구조에서 유실시킴**.
-    신규, 2026-09-04 발견([[exhaustive-interop-matrix-plan]]의 requirement 매트릭스
-    Docker 30조합 TDD 중, real hg가 이미 커밋해둔 파일이 있는 dirstate-v2 저장소에
-    hg4j `CommitCommand`로 새 파일을 추가 커밋하는 시나리오에서 100% 결정적으로
-    재현) — 미착수. `hg debugstate`(플랫 덤프)는 기존 파일을 정상 표시하지만
+37. ~~**dirstate-v2 저장소에서 hg4j 커밋이 기존 파일을 트리 구조에서 유실시킴**~~ —
+    ✅ **완료(2026-09-04)**. 신규 발견([[exhaustive-interop-matrix-plan]]의
+    requirement 매트릭스 Docker 30조합 TDD 중, real hg가 이미 커밋해둔 파일이 있는
+    dirstate-v2 저장소에 hg4j `CommitCommand`로 새 파일을 추가 커밋하는 시나리오에서
+    100% 결정적으로 재현). `hg debugstate`(플랫 덤프)는 기존 파일을 정상 표시하지만
     `hg status`/`hg files`/`hg verify`(트리 순회 기반, `children_start`/`count`
-    사용)는 못 찾는다. `hg verify`가 `"<file> in manifest1, but not marked as
+    사용)는 못 찾고, `hg verify`가 `"<file> in manifest1, but not marked as
     tracked in p1"` + `"dirstate inconsistent with current parent's manifest"`로
-    실패. 바이트 레벨 조사 결과: real hg는 dirstate-v2 docket을
-    `[이름/데이터 블록][노드 테이블]` 순서로 쓰고(`root_nodes children_start`가
-    데이터 블록의 총 바이트 길이와 정확히 일치), hg4j `Dirstate.write()`/
-    `DirstateV2Serializer`는 항상 `[노드 테이블][데이터 블록]` 순서(`children_start`
-    항상 0)로 쓴다. 파서 자체는 오프셋 기반이라 이론상 순서 무관해야 하는데 실제
-    real hg 리더는 실패한다 — 정확한 근본 원인(어느 필드가 실제 문제인지)은 아직
-    미확정, 억지 수정 시도는 하지 않고 정직하게 RED로 남김
-    (`RequirementMatrixDockerRoundTripTest`, 30개 write 방향 케이스 중 18개가
-    이 단일 원인으로 RED). `mercurial/dirstateutils/docket.py`/Rust
-    `dirstatemap.rs` 소스 직접 대조가 필요한 별도 집중 세션 권장.
+    실패했다.
+
+    **근본 원인 확정**(`hg-rust-7.2.4` 컨테이너 내부의 실제 hg 소스
+    `/build/mercurial-7.2.4/rust/hg-core/src/dirstate/dirstate_map.rs` 직접 대조로
+    확인): real hg의 Rust dirstate-v2 리더는 부모 노드의 자식 배열에서 특정 파일을
+    찾을 때 `binary_search_by(|node| node.base_name(on_disk).cmp(base_name))`
+    (`dirstate_map.rs:278`)로 **이진 탐색**을 쓰고, 쓰기 경로(`on_disk.rs:327
+    sorted()`)는 자식 노드를 반드시 basename 오름차순으로 정렬해서 쓴다. hg4j의
+    `DirstateV2Serializer`는 `LinkedHashMap` 삽입 순서 그대로(정렬 없이) 썼다 —
+    삽입 순서가 우연히 내림차순이 되면 오름차순을 가정하는 real hg의 이진 탐색이
+    해당 파일을 못 찾는다. hg4j 자신의 리더는 스택 기반 DFS라 순서 무관이었기
+    때문에 자기 자신과의 라운드트립만 우연히 통과해온 것 — 처음에 조사했던
+    `children_start` 오프셋 가설은 틀렸고, 진짜 원인은 정렬 여부였다.
+
+    **수정**: `DirstateV2Serializer.java`에서 root list와 각 디렉터리의 children
+    list 양쪽 모두 basename의 UTF-8 바이트 기준 오름차순으로 정렬(Java `String`의
+    UTF-16 비교가 아니라 실제 인코딩 바이트로 비교해 real hg의 `&[u8]`/`HgPath`
+    순서와 정확히 일치시킴). `DirstateV2SerializerCoverageTest`에 회귀 유닛
+    테스트 2개(루트 레벨/중첩 레벨 정렬) 추가. `RequirementMatrixDockerRoundTripTest`
+    의 18개 스킵 처리를 제거하고 60개 케이스(30읽기+30쓰기) 전부 GREEN 확인,
+    전체 회귀도 새 실패 없음(`BUILD SUCCESSFUL`).
 
 38. **동시 push 레이스 컨디션 — real hg와 완전히 동일한 동작 검증 필요**. 신규,
     2026-09-04 사용자 지시로 등록 — 미착수. `PushCommand`(로컬 push 경로)는

@@ -1,13 +1,19 @@
 package io.github.search5.hg4j.treewalk;
 
+import io.github.search5.hg4j.HgTestUtils;
+import io.github.search5.hg4j.api.AddCommand;
+import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.HgCommit;
 import io.github.search5.hg4j.api.LogCommand;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
@@ -25,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -159,5 +166,50 @@ public class TreemanifestRealFixtureTest {
     public void testLogCommandSeesAllThreeCommitsOnTreemanifestRepo() throws Exception {
         List<HgCommit> revisions = new LogCommand(repository).call();
         assertEquals(3, revisions.size(), "3 commits expected in the treemanifest fixture");
+    }
+
+    /**
+     * Write-direction gap this fixture-only file never covered: {@code
+     * RequirementMatrixCoreRoundTripTest}'s own treemanifest write-direction case only commits a
+     * single root-level file, so it never actually exercises hg4j's {@code CommitCommand} writing
+     * a NEW nested sub-manifest revlog from scratch (as opposed to this class's other tests, which
+     * only ever read a manifest tree real hg already wrote). This closes that gap: hg4j writes a
+     * commit with a 2-level-deep nested directory structure (mirroring the fixture's own layout)
+     * into a fresh, live, real-hg-initialized treemanifest repo (no Docker needed -- {@code
+     * experimental.treemanifest=1} needs no Rust extension, confirmed elsewhere in this session),
+     * and real hg's own CLI must accept it via {@code verify}/{@code cat} on the nested paths.
+     */
+    @Test
+    @Tag("interop")
+    @DisplayName("hg4j가 새로 쓴 중첩 treemanifest 커밋을 실제 hg CLI가 인식한다 (쓰기 방향, 이 파일이 커버 안 하던 gap)")
+    public void hg4jWritesNestedTreemanifestCommitAndRealHgAcceptsIt(@TempDir Path liveDir) throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping.");
+
+        File repoDir = liveDir.resolve("live-repo").toFile();
+        repoDir.mkdirs();
+        HgTestUtils.hg(repoDir, "init", "--config", "experimental.treemanifest=1");
+
+        HgRepository liveRepo = new HgRepository(repoDir);
+        Files.writeString(repoDir.toPath().resolve("a.txt"), "root");
+        Files.createDirectories(repoDir.toPath().resolve("sub/deep"));
+        Files.writeString(repoDir.toPath().resolve("sub/b.txt"), "one level deep");
+        Files.writeString(repoDir.toPath().resolve("sub/deep/c.txt"), "two levels deep");
+        Files.createDirectories(repoDir.toPath().resolve("sub2"));
+        Files.writeString(repoDir.toPath().resolve("sub2/d.txt"), "sibling subtree");
+        new AddCommand(liveRepo).call();
+        byte[] node = new CommitCommand(liveRepo).setAuthor("hg4j").setMessage("nested treemanifest write").call();
+        String hg4jHex = NodeIdUtil.toHex(node);
+
+        String realTipHex = HgTestUtils.hg(repoDir, "log", "-r", "tip", "--template", "{node}");
+        assertEquals(hg4jHex, realTipHex, "real hg's tip must be the hg4j-written nested-treemanifest commit");
+
+        assertEquals("root", HgTestUtils.hg(repoDir, "cat", "-r", "tip", "a.txt"));
+        assertEquals("one level deep", HgTestUtils.hg(repoDir, "cat", "-r", "tip", "sub/b.txt"));
+        assertEquals("two levels deep", HgTestUtils.hg(repoDir, "cat", "-r", "tip", "sub/deep/c.txt"));
+        assertEquals("sibling subtree", HgTestUtils.hg(repoDir, "cat", "-r", "tip", "sub2/d.txt"));
+
+        String verify = HgTestUtils.hg(repoDir, "verify");
+        assertFalse(verify.toLowerCase().contains("integrity error") || verify.toLowerCase().contains("error:"),
+                "real hg verify must find no integrity errors on hg4j's nested treemanifest write: " + verify);
     }
 }

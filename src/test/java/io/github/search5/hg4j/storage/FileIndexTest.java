@@ -20,7 +20,17 @@ import static org.junit.jupiter.api.Assertions.*;
  * {@code fileindex-v1} docket/list/meta/tree parsing and rebuild-writing — verified against a real
  * hg-generated fixture (see src/test/resources/fixtures/revlogv2-general/README.md, generated with
  * the Rust-extension-enabled Mercurial build in {@code docker/hg-rust-7.2.4/Dockerfile}) and, for
- * the write path, round-tripped through hg4j's own reader.
+ * the write path, round-tripped through hg4j's own reader (hg4j-internal only, below).
+ *
+ * <p><b>2026-09-04</b>: live write-direction verification against a REAL Rust-enabled {@code hg}
+ * (not just hg4j's own reader) for this exact combination ({@code fileindex-v1}, which real hg
+ * always bundles together with {@code exp-revlogv2.2}/{@code persistent-nodemap} — confirmed
+ * empirically, see {@code llm-wiki/decisions/exhaustive-interop-matrix-plan.md} §1-1) now lives in
+ * {@link RevlogV2GeneralParserTest#realHgRustAcceptsHg4jWrittenGeneralV2Repository} — a single live
+ * hg4j-writes/real-hg-verifies repo exercises the fileindex list/meta/tree files this class parses
+ * too, since real hg always writes all three (general-v2 index, fileindex, nodemap) together as one
+ * unit. Not duplicated here to avoid a second, redundant Docker container/write-corruption-avoidance
+ * harness for the exact same underlying repository state.
  */
 @DisplayName("fileindex-v1 read/write")
 public class FileIndexTest {

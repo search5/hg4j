@@ -203,8 +203,14 @@ public class Wire1CommandsTest {
         File destDir = tempDir.resolve("dest").toFile();
         HgRepository destRepo = Hg.init().setDirectory(destDir).call();
 
+        // Backlog item 38 (push-race re-validation): the wire `heads` argument is real hg's own
+        // "what did the client believe the remote's heads were" signal (mercurial/exchange.py's
+        // check_heads()) -- `destRepo` is a brand-new, currently-headless repo, so the correct
+        // value representing that is an ABSENT/empty argument, not the incoming commit's own hex
+        // (which used to be harmless filler here, back when this argument was entirely unused
+        // server-side; now that it feeds the race check, a wrong value here would make this
+        // ordinary "does unbundle apply a bundle" test spuriously raced).
         Map<String, String> args = new LinkedHashMap<>();
-        args.put("heads", NodeIdUtil.toHex(commit));
         Wire1Response r = Wire1Commands.unbundle(destRepo, bundleBytes, args);
         // Real hg's pushres leading digit means "were new revisions actually added", not
         // "did the request succeed" -- 1 here since a real commit landed.
@@ -268,8 +274,9 @@ public class Wire1CommandsTest {
             observedContexts.add(ctx);
             return true;
         });
+        // Backlog item 38: see unbundleAppliesAnIncomingPushBundle's comment -- destRepo is
+        // headless, so the correct wire `heads` value is absent, not the incoming commit's hex.
         Map<String, String> args = new LinkedHashMap<>();
-        args.put("heads", NodeIdUtil.toHex(commit));
         Wire1Response r = Wire1Commands.unbundle(destRepo, bundleBytes, args, List.of(), postHooks);
 
         assertTrue(bytes(r).startsWith("1\n"));

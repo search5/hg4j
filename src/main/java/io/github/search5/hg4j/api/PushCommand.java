@@ -380,8 +380,17 @@ public class PushCommand {
                     writeTerminalChunk(dos);
                 }
 
-                // 3. Dispatch bundle to remote destination
-                String response = client.push(baos.toByteArray(), remoteHeads);
+                // 3. Dispatch bundle to remote destination.
+                // Backlog item 38: send real hg's own force sentinel (mercurial/exchange.py's
+                // `_pushchangeset`: `if pushop.force: remoteheads = [b'force']`) instead of the
+                // real head list when --force was requested -- a receiving server's push-race
+                // re-check (see HgLocalClient#buildPushRaceValidator) treats a bare `["force"]`
+                // wire heads value as "skip the check", matching real hg's own `check_heads()`
+                // (`their_heads == [b'force']`). Without this, a --force push whose whole POINT
+                // is overriding a head conflict could get spuriously rejected as "raced" by a
+                // server-side check that (correctly, for a non-forced push) compares against the
+                // heads this client saw before building the bundle.
+                String response = client.push(baos.toByteArray(), force ? List.of("force") : remoteHeads);
 
                 // 3a. Sync local bookmarks to remote utilizing pushkey protocol
                 try {

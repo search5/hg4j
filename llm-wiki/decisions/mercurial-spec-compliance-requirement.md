@@ -2066,12 +2066,116 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     hg 7.2가 둘 다 설치돼 있어(실제로 `[subrepos] git:allowed = true`를 켠 real hg가
     실제 git 저장소를 서브저장소로 받아들이는 전 과정을 라이브로) 상당히 두텁게 검증할
     수 있었다 — record/dirty-차단/`-S` 재귀 커밋/미체크아웃 abort/재귀 clone까지 5개
-    시나리오 모두 실제 git 커밋 sha 단위로 대조. 다만 다음은 의도적으로 단순화했고
-    라이브로 검증하지 않았다: (a) `GitSubrepoUtil.commit()`의 `GIT_AUTHOR_DATE`
-    ISO-8601 포맷팅(실제 커밋은 매번 진행했지만 시각 값 자체를 real hg가 기록하는
-    바이트와 byte-for-byte 비교하지는 않음), (b) `gitsubrepo.get()`의 named-branch
-    우선 checkout(hg4j는 항상 detached checkout), (c) git 쪽 병합/충돌(`gitsubrepo.merge()`)
-    은 이번 백로그의 4개 gap에 포함되지 않아 손대지 않음.
+    시나리오 모두 실제 git 커밋 sha 단위로 대조. 남아 있던 항목 중 (b)
+    `gitsubrepo.get()`의 named-branch 우선 checkout(hg4j는 항상 detached checkout)은
+    기능적 차이가 없는 문서화된 단순화라 그대로 남겨뒀지만, (a)/(c)는 2026-09-04
+    사용자 지시로 후속 작업해 아래와 같이 완료했다.
+
+    **(a) `GIT_AUTHOR_DATE` byte-exactness — ✅ 라이브 검증 완료.** 실제 hg 소스
+    직접 확인(`mercurial/subrepo.py` `gitsubrepo.commit()`): `env[b'GIT_AUTHOR_DATE']
+    = dateutil.datestr(date, b'%Y-%m-%dT%H:%M:%S %1%2')` — "T" 구분자 + 공백 +
+    콜론 없는 `+HHMM`/`-HHMM` 오프셋(예: `"2023-11-15T07:13:20 +0900"`). hg4j의
+    `GitSubrepoUtil.commit()`은 `DateTimeFormatter.ISO_OFFSET_DATE_TIME`을 써서
+    실제로는 다른 문자열(`"2023-11-15T07:13:20+09:00"`, 공백 없음 + 콜론 있는
+    오프셋, 0 오프셋일 땐 `"...Z"`)을 넘긴다 — **그러나 git 자신의 날짜 파서가 두
+    포맷을 완전히 동일하게 파싱함을 git 2.53 CLI로 직접 확인**(둘 다
+    `"1700000000 +0900"`으로 커밋 오브젝트에 기록됨, 0 오프셋/1e9 이전 epoch
+    경계값 포함 여러 케이스로 재확인) — 즉 git에 넘기는 원본 env var 문자열
+    자체는 다르지만, 실제로 바이트 비교 대상이 되는 **git 커밋 오브젝트 자체는
+    byte-exact로 일치**해 기존 구현을 고칠 필요가 없었다(코드 변경 없음, 검증만
+    추가). 부모 hg 커밋에 `-d`를 안 준 "지금 시각" 커밋의 경우도 확인: 실제
+    hg 소스(`mercurial/commands.py`/`localrepo.py` `commit()`)를 추적해보면 그
+    경우 `date` 로컬 변수 자체가 falsy인 채로 `sub.commit(text, user, date)`에
+    그대로 전달되므로(부모 자신의 `cctx._date`는 나중에 `propertycache`로 별도
+    시점에 `dateutil.makedate()`가 채움) real hg조차 부모 커밋 시각과 git
+    서브저장소 커밋 시각이 서로 다른 `now()` 호출로 어긋날 수 있는 것을 확인 —
+    hg4j가 "명시적 `-d` 없으면 `GIT_AUTHOR_DATE`를 아예 안 세팅"하는 기존 동작이
+    바로 이 real hg 동작과 이미 일치한다. **신규 라이브 검증**:
+    `hg4jGitSubrepoCommitDateMatchesRealHgByteExact` — real hg `hg commit -S -d
+    "1700000000 -32400"`로 만든 git 서브저장소 커밋의 author 날짜(`git log
+    --format=%ad --date=raw`)와, hg4j `CommitCommand.setSubrepos(true)
+    .setDate(1700000000L, -32400)`로 만든 동일 시나리오의 결과를 byte-for-byte
+    비교(`"1700000000 +0900"` 고정값까지 확인).
+
+    **(c) git 서브저장소 병합/충돌(`gitsubrepo.merge()`) — ✅ 구현 완료.** 실제
+    hg 소스(`mercurial/subrepo.py` `gitsubrepo.merge()` + `subrepoutil.submerge()`)
+    를 직접 읽고 real hg CLI + 실제 git 서브저장소로 라이브 재현(2026-09-04):
+    같은 git 서브저장소를 공통 조상에서 서로 다르게 갈라놓은 두 hg 커밋을 만들고
+    `hg merge`(비대화형)를 실행하자, `subrepoutil.submerge()`가 `.hgsubstate` 3-way
+    비교로 "양쪽 다 변경됨(diverged)"을 판정해 `ui.promptchoice(msg, 0)`(비대화형
+    기본값 = "Merge")로 `gitsubrepo.merge()`를 호출함을 실측: `git merge-base(remote,
+    local)` 계산 후 `base==remote`면 `get(remote)`("fast forward", real hg 표현
+    그대로 — local이 remote의 후손이어도 문자 그대로 remote를 checkout), `base !=
+    local`이면 `git merge --no-commit <remote>`(종료 코드는 `_gitcommand`가 무조건
+    버려서 **충돌이 나도 감지·보고하지 않음** — 뒤이은 `hg commit`이 git 서브저장소를
+    dirty로 보고 처리하도록 방치), 그 외(진짜 순방향 fast-forward)엔 아무 것도 안 함.
+    **결정적으로, `.hgsubstate`에 최종 기록되는 pin 값은 이 세 경우 모두 LOCAL(병합
+    전 값) 그대로 유지된다**(`submerge()`의 `sm[s] = l`, "merge"/"local" 선택
+    양쪽 다) — git 서브저장소 실제 병합 결과(2-parent 커밋)는 이어지는 `hg commit
+    -S`가 (이미 구현돼 있던 백로그 32 gap #3의 dirty()/commit() 로직으로) 새로
+    기록한다. 이 전체 시퀀스를 그대로 이식: `GitSubrepoUtil.mergeDiverged(gitDir,
+    remoteRev, localRev)`(+ `mergeBase`/`mergeNoCommit` — 후자는 real hg와 동일하게
+    종료 코드를 의도적으로 무시) 신규 추가, `MergeCommand`에 `.hgsubstate`를 더
+    이상 일반 텍스트 3-way 병합(diff3 충돌 마커가 그대로 파일에 박히는 버그였음)에
+    맡기지 않고 전용 `mergeSubrepoState()`로 서브저장소별 3-way 판정(unchanged/
+    remote-only-changed → `UpdateCommand.checkoutSubrepoEntry`로 실제 체크아웃/
+    diverged → git이면 `mergeDiverged`, pin 값은 LOCAL 유지)을 수행하도록 배선.
+    **신규 라이브 검증(git)**: `hg4jMergeHandlesDivergedGitSubrepoMatchingRealHg` —
+    real hg 오라클로 `left.txt`/`right.txt`를 각각 추가하는 두 갈래 git 서브저장소
+    커밋을 만들고 `hg merge`+`hg commit -S`까지 실행해 (i) merge 직후
+    `.hgsubstate`가 LOCAL pin을 유지하는지, (ii) 최종 병합 커밋이 진짜 2-parent
+    git 커밋인지(`git log --format=%P`)를 오라클 자체 검증 + hg4j 쪽도 동일하게
+    자기 자신의 right/left sha와 대조(두 구현이 각자 별도 시각에 만든 git 커밋이라
+    sha 자체는 오라클과 hg4j 사이에서 다를 수 있어 서로 직접 비교하지 않음), 병합
+    후 두 파일이 모두 존재하는지까지 확인.
+
+    **hg-타입(중첩 hg) 서브저장소의 대칭 케이스도 ✅ 구현 완료.** `subrepoutil.
+    submerge()`는 git이든 hg든 구분 없이 diverged 케이스에서 똑같이
+    `sub.merge(r)`을 호출하므로, git 쪽만 고치고 hg-타입은 그대로 두면 gap B가
+    반쪽만 닫히는 것이었다 — real hg의 hg-타입 대응 메서드
+    `mercurial/subrepo.py` `hgsubrepo.merge()`도 함께 직접 읽고 실제 hg CLI(중첩
+    hg 서브저장소, git 불필요)로 2026-09-04 라이브 재현했다: `self._get(state)`로
+    원격 pin을 로컬에 먼저 확보한 뒤 `anc = dst.ancestor(cur)`로 **서브저장소
+    자신의** 조상 관계를 계산해 — `anc==cur`이고 같은 브랜치면 단순
+    `up_impl.update(state[1])`(순방향 fast-forward), `anc==dst`면 아무 것도 안
+    함(cur이 이미 dst를 포함), 그 외(진짜 divergence, 또는 조상은 같지만 브랜치가
+    다른 경우)엔 서브저장소 안에서 **진짜 재귀 `hg merge`**(`up_impl.merge(dst,
+    remind=False)`)를 실행함을 실측 — git 쪽과 마찬가지로 `.hgsubstate`에
+    기록되는 pin은 이 모든 경우에 LOCAL 값 그대로 유지된다. 이를 hg4j 자신의
+    기존 명령을 재귀 호출해 그대로 이식: `MergeCommand.mergeDivergedHgSubrepo()`
+    신규 추가 — 서브저장소를 별도 `HgRepository`로 열어 `ChangesetGraph.
+    isAncestor()`로 조상 관계를 판정하고, fast-forward면 서브저장소에
+    `UpdateCommand`를, 진짜 divergence면 서브저장소에 **재귀적으로
+    `MergeCommand` 자신**을 호출한다(hg4j가 이미 갖고 있던 `MergeCommand`를
+    중첩 호출하는 것만으로 real hg의 재귀 `hg merge`와 동일한 결과를 얻는다 —
+    별도의 충돌 UI/머지 엔진을 새로 만들 필요가 전혀 없었다).
+
+    이 재귀 병합을 라이브로 재현하는 과정에서 **진짜 버그를 하나 더 발견**:
+    `CommitCommand.applySubrepoStateBeforeCommit()`의 hg-타입 서브저장소
+    dirty 판정이 `StatusCommand`의 added/modified/removed 목록만 봤는데,
+    `StatusCommand`는 dirstate 엔트리를 디스크와만 비교하지 parent1의 매니페스트와
+    비교하지 않는다 — 그래서 재귀 병합이 만든 "parent2에서 새로 들어온 파일"이
+    디스크와 일치하는 `'n'`(정상) 엔트리로 기록되면 완전히 "clean"으로 보여서
+    dirty 판정이 거짓이 되고, pending 2-parent 병합인 서브저장소가 커밋 없이
+    그냥 넘어가 버렸다(`.hgsubstate`가 갱신되지 않음). 실제 hg 소스로 근본원인
+    확인: `hgsubrepo.dirty()`는 `workingctx.dirty()`로 위임하는데, 그 함수의 첫
+    조건이 바로 `merge and self.p2()` — **parent2가 있으면 파일 내용과 무관하게
+    무조건 dirty**다. `CommitCommand`의 dirty 판정에 이 조건(서브저장소 dirstate의
+    parent2가 non-null이면 무조건 dirty)을 추가해 수정 — 이 수정이 없었다면 hg4j
+    쪽 재귀 병합 커밋이 1-parent 커밋으로 잘못 기록됐을 것이다(실측: 수정 전에는
+    정확히 이 증상으로 테스트가 실패했음).
+
+    **신규 라이브 검증(hg-타입)**: `hg4jMergeHandlesDivergedHgSubrepoMatchingRealHg`
+    — 순수 hg 서브저장소(git 불필요)로 위와 동일한 left/right divergence 시나리오를
+    real hg 오라클과 hg4j(부모/서브저장소 양쪽 다 hg4j 자체 API로 조작) 양쪽에서
+    재현해 (i) 오라클: merge 직후 `.hgsubstate`가 LOCAL(right) pin을 유지하는지,
+    서브저장소 병합 커밋의 부모 순서(`{p1node} {p2node}`)가 (right, left)인지, (ii)
+    hg4j: merge 직후 서브저장소 dirstate가 실제로 pending 2-parent 상태인지, 병합 후
+    두 파일이 모두 존재하는지, 최종 재귀 커밋 후 서브저장소 changelog에 진짜
+    2-parent 커밋이 새로 생겼는지, 그 부모 쌍이 hg4j 자신의 right/left sha와
+    정확히 일치하는지까지 확인. 회귀 확인: `test`+`interopTest` 전체
+    231개(이번 hg-타입 테스트 1건 추가) 중 이 변경과 무관한 기존
+    `StripRealHgInteropTest` 2건(위와 동일)만 실패, 나머지 전부 GREEN.
 
 33. ~~**`PushCommand`의 checkheads 안전장치가 SSH에서 미작동**~~ — ✅
     **완료(2026-09-04)**. 근본 원인: `HgRemoteConnection.getBranchHeads()`를

@@ -1131,7 +1131,18 @@ public class CommitCommand {
 
             HgRepository subRepo = new HgRepository(subDir);
             Status subStatus = new StatusCommand(subRepo).call();
-            boolean dirty = !subStatus.getAdded().isEmpty()
+            // Real hg's hgsubrepo.dirty() bottoms out in workingctx.dirty(), whose very first
+            // check is `merge and self.p2()`: a subrepo working copy with a PENDING MERGE (a
+            // second dirstate parent set, e.g. left there by a diverged-subrepo recursive merge
+            // -- see MergeCommand#mergeDivergedHgSubrepo, backlog 32 follow-up "gap B") is always
+            // dirty, unconditionally, even when every individual file happens to already match
+            // disk (StatusCommand only diffs dirstate entries against disk content/mtime, not
+            // against parent1's manifest, so a merge-introduced file recorded as clean-normal
+            // 'n' would otherwise be invisible to the added/modified/removed check below).
+            NodeId subParent2ForDirty = subRepo.getDirstate().getParent2Node();
+            boolean pendingMerge = subParent2ForDirty != null && !subParent2ForDirty.isNull();
+            boolean dirty = pendingMerge
+                    || !subStatus.getAdded().isEmpty()
                     || !subStatus.getModified().isEmpty()
                     || !subStatus.getRemoved().isEmpty();
 

@@ -38,8 +38,14 @@ public final class HgLfsManager {
 
     /**
      * Resolves the expected local path for a given OID.
-     * E.g., OID "7b1a2c3d..." resolves to:
-     * {lfsObjectsDir}/7b/1a/2c3d...
+     * E.g., OID "7b1a2c3d..." resolves to: {lfsObjectsDir}/7b/1a2c3d...
+     *
+     * <p>Real hg's {@code lfs} extension (verified against hg 7.2, {@code hgext/lfs/blobstore.py}'s
+     * {@code lfsvfs.join()}: {@code "split the path at first two characters, like: XX/XXXXX..."})
+     * shards local LFS objects with a single two-character directory level, NOT the two-level
+     * Git-style {@code XX/XX/XXXX...} sharding this used to implement -- which meant an hg4j
+     * repo and a real-hg repo sharing the same {@code .hg/store/lfs/objects/} directory could
+     * never find each other's blobs. Fixed as part of backlog 28's real-hg verification pass.
      *
      * @param oid 64-char hex OID
      * @return cache file reference
@@ -49,12 +55,10 @@ public final class HgLfsManager {
             throw new IllegalArgumentException("Invalid OID: must be a 64-character hex string");
         }
         String first2 = oid.substring(0, 2);
-        String next2 = oid.substring(2, 4);
-        String remaining = oid.substring(4);
+        String remaining = oid.substring(2);
 
         File sub1 = new File(lfsObjectsDir, first2);
-        File sub2 = new File(sub1, next2);
-        return new File(sub2, remaining);
+        return new File(sub1, remaining);
     }
 
     /**

@@ -1571,27 +1571,112 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     단언을 이미 제거하고 changelog/branch 메타데이터만 검증하도록 수정된 상태라
     문제 없음.
 
-26. **hg4j 자체 changegroup 생성/적용 경로가 cg1/무sidedata로 제한됨 — 신규,
-    2026-09-04 발견(백로그 11번 "남은 gap"에 번호 없이 있던 것을 메인 에이전트가
-    직접 재확인 후 승격), 미착수. 백로그 23번 완료 후 즉시 진행.** `hg4j가 SERVER
-    역할일 때(`HgHttpWireServer`/`HgSshWireServer` → `Wire1Commands.getbundle` →
-    `HgLocalClient.getBundle()`)는 클라이언트가 뭘 요청하든 상관없이 항상 cg1
-    (`HG10UN`)만 만든다 — `getBundle(common, heads, bundleCaps)`의 `bundleCaps`
-    파라미터가 시그니처에만 있고 메서드 본문 어디서도 참조되지 않음(2026-09-04
-    직접 코드 확인). `ChangegroupParser.writeBundle`로 cg4/cg5 **패킹 자체**는
-    가능하지만(백로그 11번에서 "hg4j가 만든 cg4/cg5를 실제 hg가 읽는다"를 검증할
-    때 이 유틸리티를 별도로 썼음) 실제 getbundle 응답 경로에는 안 이어져 있다.
-    같은 뿌리의 별개 증상: cg5로 받은 sidedata는 `ChangegroupParser`가 파싱은
-    하지만(`entry.sidedata`) 그 값을 로컬 `Revlog`/`.sda`에 반영하는 코드가
-    `api` 패키지 어디에도 없다(2026-09-04 직접 코드 확인, `grep -rn ".sidedata"
-    src/main/java/.../api/`) — 백로그 19번이 만든 sidedata 쓰기 능력은
-    `CommitCommand`(hg4j 스스로 새로 커밋할 때)에만 배선돼 있고, changegroup을
-    **적용(unbundle/pull)**하는 경로에는 아직 안 이어져 있다. **범위(제안)**:
-    (1) `HgLocalClient.getBundle()`이 실제로 `bundleCaps`를 읽어서 상대가
-    지원하는 최고 버전을 고르도록 cg2 이상의 패커를 getbundle 응답 경로에 배선,
-    (2) changegroup 적용 경로(`PullCommand`/`FetchCommand`/`Wire1Commands.unbundle`)
-    가 cg5로 받은 `entry.sidedata`를 실제로 로컬 `.sda`에 반영하도록 배선. 둘 다
-    구현 범위/우선순위는 사용자 확인 후 진행.
+26. ~~**hg4j 자체 changegroup 생성/적용 경로가 cg1/무sidedata로 제한됨**~~ —
+    ✅ **완료(2026-09-04)**. 백로그 11번 "남은 gap"에 번호 없이 있던 것을 메인
+    에이전트가 직접 재확인 후 승격, 사용자 확인 후 두 부분(생성 쪽 버전 협상 +
+    적용 쪽 sidedata 반영) 모두 완전히 구현.
+
+    **1부(생성 쪽 버전 협상)**: `HgLocalClient.getBundle()`이 실제로
+    `bundleCaps`를 읽어 협상하도록 배선. 실측(mercurial/exchange.py,
+    2026-09-04): 클라이언트가 `bundlecaps`에 `"HG2"`로 시작하는 토큰을 하나도
+    안 보내면(legacy) 버전은 무조건 `"01"`이고 응답도 봉투 없이 맨 cg1
+    바이트 그대로 — 이게 바로 이 백로그의 근본 원인이었다: `Wire1Commands.
+    capabilitiesString()`이 `bundle2=` 토큰을 전혀 광고하지 않았기 때문에, 실제
+    hg 클라이언트의 `remote.capable('bundle2')`가 항상 false가 되어 legacy
+    경로(`_pullchangeset`)로만 빠졌고, 그 경로는 `bundlecaps` 인자 자체를 아예
+    안 보낸다(hg4j `getbundle` 핸들러가 뭘 하든 무관하게 cg1 확정) — 실제로
+    `Wire1Commands.getbundle`에 임시 로깅을 심어 real `hg clone` 요청을 직접
+    캡처해 확인. 그래서 `capabilitiesString()`에 `Bundle2Parser.
+    buildBundle2CapsToken("01,02,03,04,05")`를 추가해 bundle2 자체를 광고하게
+    고쳤고, 그 결과 실제 hg 7.2 클라이언트가 `_pullbundle2` 경로로 넘어가
+    자신의 기본 `changegroup=01,02,03` 목록(cg4/cg5는 클라이언트가 설정 없이는
+    절대 광고 안 함)을 `bundle2=<blob>` 안에 실어 보내는 것도 그대로 캡처
+    확인. `HgLocalClient.getBundle()`은 이제 `Bundle2Parser.
+    requestsBundle2()`/`decodeChangegroupVersions()`(신설, `urlutil.
+    b2_caps_from_bundle_caps`/`decode_b2_caps` 실측 이식)로 이 값을 읽어
+    `max(요청 목록 ∩ {01..05})`를 고르고(교집합이 비었거나 bundle2 미요청이면
+    실제 hg와 동일하게 `"01"`), `ChangegroupParser.writeBundle`을 그 버전으로
+    직접 호출해 패킹한다 — `writeEntry`/`writeBundle`는 기존 cg4/cg5 전용이던
+    걸 cg1/cg2/cg3 헤더 레이아웃(각각 80/100/102바이트, `parseGroup`의 읽기
+    쪽과 대칭)까지 지원하도록 확장하고, `writeBundle`의 `manifestsend` 종료
+    청크도 "버전이 tree-capable(03+)인가"로 올바르게 분기하도록 고쳤다(예전엔
+    무조건 붙여서 cg1/cg2에 쓰면 스트림이 깨졌을 버그). 응답은 bundle2
+    요청이었으면 항상 `Bundle2Parser.wrapChangegroupInBundle2`로 HG20 봉투에
+    감싸고, 아니면 기존 `"HG10UN"` 관례를 그대로 유지.
+
+    **부수적으로 드러난 필수 작업(같은 캡ability 플래그 하나가 양방향을 다
+    좌우하는 real hg 자신의 설계 때문에 회피 불가능했음, `exchange.
+    _forcebundle1`)**: `bundle2=`를 광고하자 실제 hg 클라이언트의 **push**도
+    자동으로 bundle2 프로토콜로 전환돼(`_pushbundle2`) body가 맨 cg 바이트가
+    아니라 HG20 봉투가 되고, 응답도 HG20 봉투([reply:changegroup]/[error:abort]
+    파트)여야만 했다 — 이 배선 없이 광고만 켰더니 기존
+    `HgHttpWireServerRealHgInteropTest`의 push 테스트들이 즉시 "abort: not a
+    Mercurial bundle"로 재현됐다(2026-09-04 직접 확인). `HgLocalClient.
+    pushWithHooks()`가 HG20 요청을 `Bundle2Parser.extractChangegroupDetailed`
+    로 언랩하도록, `Wire1Commands.unbundle()`이 요청이 bundle2였으면 응답도
+    `Bundle2Parser.buildChangegroupReplyBundle2`/`buildEmptyBundle2Reply`/
+    `buildErrorAbortBundle2`(전부 신설, `bundle2_part_handlers.
+    handlechangegroup`/`wireprotov1server.unbundle`의 예외 처리 실측 이식)로
+    만들도록 고쳤다. HTTP는 real hg의 `streamreslegacy`(비압축)와 `streamres`
+    (압축)가 다른 처리라는 것도 실측으로 확인해 `Wire1Response`에 `STREAM_
+    UNCOMPRESSED` 종류를 신설(`HgHttpWireServer`는 비압축으로, `HgSshWireServer`
+    는 기존 `STREAM`과 동일하게 무프레이밍으로 처리 — SSH엔 애초에 압축
+    구분이 없음).
+
+    **2부(적용 쪽 sidedata 반영)**: `Revlog.appendChangeGroupEntry()`가
+    `index.isV2()`를 전혀 확인하지 않고 항상 v1 전용 수동 바이트 라이팅
+    경로(64바이트 레코드)로 썼던 것을 고쳐, v2 revlog(가장 흔하게는
+    `exp-copies-sidedata-changeset`가 켜진 changelog)에는 기존
+    `appendRevisionV2`(로컬 커밋용으로 이미 있던 메서드, 96바이트 레코드 +
+    `.sda` 반영)를 그대로 재사용하도록 분기 추가 — `entry.sidedata`(cg5의
+    `CG_FLAG_SIDEDATA`로 온, 이미 `SidedataCodec`이 쓰는 것과 같은 포맷의
+    원시 컨테이너 바이트)를 그대로 넘기면 로컬 커밋이 만드는 것과 동일한
+    온디스크 상태가 된다. 이건 sidedata 문제만이 아니라 더 넓은 사전 존재
+    버그였다: 이 분기가 없었던 예전 코드는 v2 revlog에 pull/push로 들어오는
+    아무 리비전이나 다 v1 레이아웃으로 깨뜨렸을 것이다(사이드 이펙트로 sidedata도
+    통째로 버려짐). 대칭으로, `HgLocalClient.getBundle()`도 이제 cg5로 패킹할
+    때 소스 저장소가 `isSidedataCopies()`면 changelog 엔트리에 `SD_FILES`
+    sidedata를 실어 보내도록(있으면) 배선해 생성 쪽도 손실 없이 왕복되게 했다.
+
+    **검증(전부 real hg CLI 기반, hg4j-내부 왕복만으로는 불충분하다는 지시에
+    따름)**:
+    - `HgHttpWireServerRealHgInteropTest`/`HgSshWireServerRealHgInteropTest`의
+      기존 clone/pull/push 테스트 전부 그대로 통과(위 부수 작업 포함 회귀
+      없음).
+    - 신규 `realHgCloneWithDefaultCapabilitiesNegotiatesAboveCg1OnTheWire`
+      (`HgHttpWireServerRealHgInteropTest`): 실제 `hg clone`이 기본 설정
+      그대로 hg4j 서버에 요청할 때, `HttpExchange`를 얇게 감싸(프로덕션 코드
+      변경 없이) 실제 `?cmd=getbundle` 응답 바이트를 그대로 캡처 → inflate →
+      `Bundle2Parser.extractChangegroupDetailed`로 봉투 안 `CHANGEGROUP` 파트의
+      `version` 파라미터를 직접 읽어 `"01"`이 아님을 확인(실측: 실제 hg 7.2
+      클라이언트의 기본 `changegroup=01,02,03` 목록과 hg4j의 협상 로직이 만나
+      `"03"` 선택).
+    - 신규 `PullSidedataRealHgInteropTest`(part 2 전용): 소스/대상 저장소 둘 다
+      `hg --config format.exp-use-copies-side-data-changeset=yes init`으로
+      부트스트랩(hg4j가 아직 이 포맷을 처음부터 만들진 못하는, 백로그 19에서도
+      이미 문서화된 별개 gap이라 real hg로 부트스트랩만 하고 커밋은 전부
+      hg4j가 함 — `SidedataFilesWriteTest`와 동일 패턴), hg4j `CommitCommand`로
+      rename(`a.txt`→`b.txt`)+신규 파일(`c.txt`) 커밋 → `FetchCommand`가 실제
+      pull에 쓰는 것과 동일한 `bundleCaps`로 `HgLocalClient.getBundle()` 직접
+      호출(hg4j↔hg4j HTTP는 `HgRemoteClient`가 wireprotocol v2로 자동 승급해
+      버려 이 백로그가 다루는 v1/cg5 경로 자체를 안 타므로 의도적으로 우회) →
+      `05` 협상 확인 → `entry.sidedata` 존재 확인 → `FetchCommand.applyBundle`
+      로 적용 → 적용된 저장소에서 `SidedataChangedFilesCommand`로 소스와 동일한
+      added/removed/copiedFromP1(`b.txt`←`a.txt`)을 읽어냄을 확인 → 마지막으로
+      `hg debugchangedfiles 1`/`hg verify`를 적용된 저장소에 대해 직접 돌려
+      real hg 자신도 동의함을 확인(hg4j 자체 리더와의 자기정합성이 아니라
+      스펙 정합성 검증).
+    - 전체 회귀 스위트 2402 테스트, 실패/에러 0(스킵 10 — 도커 기반 인터롭
+      테스트 등 환경 의존, 기존과 동일).
+
+    **발견했지만 이 백로그 범위 밖으로 남겨둔 것**: real hg 자신의 wireprotocol
+    v1 `getbundle` 서버 구현은 `remote_sidedata`를 아예 안 넘겨서(2026-09-04
+    `wireprotov1server.py`/`exchange.py` 실측) **실제 hg를 서버로 한 일반
+    wire `getbundle` 요청에서는 cg5여도 SD_FILES가 전송되지 않는 것으로
+    보인다** — 이번 검증에서 hg4j↔hg4j 대신 real-hg-bootstrap-only 시나리오를
+    쓴 이유이기도 함. hg4j 쪽 생성/적용 배선은 모두 완료됐으므로, 실제 hg
+    자신의 이 제약이 풀리거나 다른 소스(예: hg4j가 만든 cg5)가 쓰이면 그대로
+    작동한다.
 
 ~~27. **`hg log --follow`/annotate가 sidedata 기반 copy-tracing과 연동되지 않음 —
     신규, 2026-09-04 발견(백로그 17번 "남은 gap"에 번호 없이 있던 것을 메인

@@ -398,13 +398,15 @@ public class ChangegroupParser {
     }
 
     // ------------------------------------------------------------------
-    // Packing (cg4/cg5 only). cg1/cg2/cg3 outbound packing lives ad hoc in
-    // HgLocalClient/PushCommand/BundleCommand (always cg1 "HG10UN" on the wire — hg4j has never
-    // needed a version-aware packer there since cg1 is universally accepted by any hg version for
-    // unbundle/push, and no existing test exercises hg4j producing cg2/cg3 wire bytes). These
-    // methods exist to let hg4j itself PRODUCE spec-correct cg4/cg5 changegroup bytes (needed for
-    // the real-hg round-trip interop test) without touching any of those existing, already
-    // real-hg-verified cg1 send paths.
+    // Packing (all of cg1-cg5). Originally cg4/cg5-only -- HgLocalClient/PushCommand/BundleCommand
+    // used to build cg1 "HG10UN" wire bytes ad hoc by hand instead of calling this. Since backlog
+    // item 26 (2026-09-04), HgLocalClient#getBundle negotiates a version from the requester's
+    // bundleCaps and calls writeBundle directly for whatever version (01-05) that negotiation
+    // picks, so writeEntry/writeBundle had to grow real cg1/cg2/cg3 header-layout support
+    // alongside the pre-existing cg4/cg5 one (mirroring parseGroup's read side, which already
+    // handled all five). PushCommand/BundleCommand's own outbound paths are unaffected -- they
+    // still always produce cg1, since no known peer needs anything higher for push/local-bundle
+    // purposes.
     // ------------------------------------------------------------------
 
     /** Writes a changegroup chunk: 4-byte big-endian length (including these 4 bytes) + payload. */
@@ -430,14 +432,52 @@ public class ChangegroupParser {
     }
 
     /**
-     * Serializes a single delta entry as a cg4 or cg5 wire chunk (header + delta/full-text
-     * payload [+ sidedata chunk for cg5 when {@link ChangeGroupEntry#sidedata} is set]).
-     * {@code version} must be {@code "04"} or {@code "05"}.
+     * Serializes a single delta entry as a cg1/cg2/cg3/cg4/cg5 wire chunk (header + delta/
+     * full-text payload [+ sidedata chunk for cg5 when {@link ChangeGroupEntry#sidedata} is
+     * set]). {@code version} must be one of {@code "01"}, {@code "02"}, {@code "03"}, {@code "04"}
+     * or {@code "05"}.
+     *
+     * <p>cg1/cg2/cg3 header layouts mirror {@link #parseGroup}'s read side exactly (byte-for-byte
+     * symmetric, verified against real hg 7.2.2 fixtures there): cg1 is {@code node(20) p1(20)
+     * p2(20) cs(20)} = 80 bytes with NO explicit deltabase field (real hg's cg1 packer always
+     * uses {@code forcedeltaparentprev=True} — the delta base is implicit, "whatever revision was
+     * packed immediately before this one in the same group stream" — so {@link
+     * ChangeGroupEntry#deltabase} is simply not written here, only used by the caller to decide
+     * what content to diff against); cg2 is {@code node(20) p1(20) p2(20) deltabase(20) cs(20)} =
+     * 100 bytes (deltabase now explicit, before cs); cg3 adds a trailing {@code flags(u16)} = 102
+     * bytes total.
      */
     public static void writeEntry(OutputStream out, ChangeGroupEntry entry, String version) throws IOException {
         byte[] deltabase = entry.deltabase != null ? entry.deltabase : new byte[20];
         byte[] payload;
-        if ("04".equals(version)) {
+        if ("01".equals(version)) {
+            payload = new byte[80 + entry.delta.length];
+            System.arraycopy(entry.node, 0, payload, 0, 20);
+            System.arraycopy(entry.p1, 0, payload, 20, 20);
+            System.arraycopy(entry.p2, 0, payload, 40, 20);
+            System.arraycopy(entry.cs, 0, payload, 60, 20);
+            System.arraycopy(entry.delta, 0, payload, 80, entry.delta.length);
+            writeChunk(out, payload);
+        } else if ("02".equals(version)) {
+            payload = new byte[100 + entry.delta.length];
+            System.arraycopy(entry.node, 0, payload, 0, 20);
+            System.arraycopy(entry.p1, 0, payload, 20, 20);
+            System.arraycopy(entry.p2, 0, payload, 40, 20);
+            System.arraycopy(deltabase, 0, payload, 60, 20);
+            System.arraycopy(entry.cs, 0, payload, 80, 20);
+            System.arraycopy(entry.delta, 0, payload, 100, entry.delta.length);
+            writeChunk(out, payload);
+        } else if ("03".equals(version)) {
+            payload = new byte[102 + entry.delta.length];
+            System.arraycopy(entry.node, 0, payload, 0, 20);
+            System.arraycopy(entry.p1, 0, payload, 20, 20);
+            System.arraycopy(entry.p2, 0, payload, 40, 20);
+            System.arraycopy(deltabase, 0, payload, 60, 20);
+            System.arraycopy(entry.cs, 0, payload, 80, 20);
+            writeU16(payload, 100, entry.flags);
+            System.arraycopy(entry.delta, 0, payload, 102, entry.delta.length);
+            writeChunk(out, payload);
+        } else if ("04".equals(version)) {
             payload = new byte[130 + entry.delta.length];
             System.arraycopy(entry.node, 0, payload, 0, 20);
             System.arraycopy(entry.p1, 0, payload, 20, 20);
@@ -472,7 +512,7 @@ public class ChangegroupParser {
                 writeChunk(out, entry.sidedata);
             }
         } else {
-            throw new IllegalArgumentException("writeEntry only supports cg4/cg5, got: " + version);
+            throw new IllegalArgumentException("writeEntry only supports cg1-cg5, got: " + version);
         }
     }
 
@@ -488,7 +528,12 @@ public class ChangegroupParser {
         dst[offset + 3] = (byte) (value & 0xFF);
     }
 
-    /** Writes a whole group of entries (cg4/cg5) followed by its terminal chunk. */
+    private static boolean isSupportedWriteVersion(String version) {
+        return "01".equals(version) || "02".equals(version) || "03".equals(version)
+                || "04".equals(version) || "05".equals(version);
+    }
+
+    /** Writes a whole group of entries (any cg1-cg5 version) followed by its terminal chunk. */
     public static void writeGroup(OutputStream out, List<ChangeGroupEntry> entries, String version) throws IOException {
         for (ChangeGroupEntry entry : entries) {
             writeEntry(out, entry, version);
@@ -497,17 +542,25 @@ public class ChangegroupParser {
     }
 
     /**
-     * Serializes a whole {@link ChangegroupBundle} as cg4 or cg5 wire bytes (the raw changegroup
+     * Serializes a whole {@link ChangegroupBundle} as cg1-cg5 wire bytes (the raw changegroup
      * payload only — not wrapped in an HG20/bundle2 envelope). Mirrors {@link #parseBundle}'s
-     * envelope structure exactly, including the flat-manifest case's extra {@code manifestsend}
-     * terminator (see {@link #isTreeCapableVersion}).
+     * envelope structure exactly: for a tree-capable version ({@link #isTreeCapableVersion}, i.e.
+     * cg3/cg4/cg5) the manifest section always ends with an extra {@code manifestsend} terminator
+     * chunk (real hg emits this even for a flat/non-treemanifest repo, since cg3+'s envelope
+     * always supports "possibly more manifest groups"), whereas cg1/cg2 have no such envelope —
+     * the single flat manifest group's own end-of-group terminator (written by {@link
+     * #writeGroup}) is immediately followed by the file groups, with no extra marker chunk (a bug
+     * fixed 2026-09-04: this method used to always emit the extra terminator regardless of
+     * version, which would have corrupted a cg1/cg2 stream the moment this method was wired to
+     * versions below cg4).
      */
     public static void writeBundle(OutputStream out, ChangegroupBundle bundle, String version) throws IOException {
-        if (!"04".equals(version) && !"05".equals(version)) {
-            throw new IllegalArgumentException("writeBundle only supports cg4/cg5, got: " + version);
+        if (!isSupportedWriteVersion(version)) {
+            throw new IllegalArgumentException("writeBundle only supports cg1-cg5, got: " + version);
         }
         writeGroup(out, bundle.changelogEntries, version);
 
+        boolean treeCapable = isTreeCapableVersion(version);
         if (bundle.manifestGroups != null && !bundle.manifestGroups.isEmpty()) {
             writeGroup(out, bundle.manifestGroups.get(0).entries, version); // bare root group
             for (int i = 1; i < bundle.manifestGroups.size(); i++) {
@@ -515,10 +568,14 @@ public class ChangegroupParser {
                 writePathChunk(out, mg.path);
                 writeGroup(out, mg.entries, version);
             }
-            writeTerminalChunk(out); // manifestsend
+            if (treeCapable) {
+                writeTerminalChunk(out); // manifestsend
+            }
         } else {
             writeGroup(out, bundle.manifestEntries, version);
-            writeTerminalChunk(out); // manifestsend
+            if (treeCapable) {
+                writeTerminalChunk(out); // manifestsend
+            }
         }
 
         for (FileGroup fg : bundle.fileGroups) {

@@ -678,7 +678,9 @@ public class HisteditCommandCoverageTest {
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         assertTrue(flIdx.exists(), "Precondition: b.txt's filelog must exist before we delete it");
         Files.delete(flIdx.toPath());
-        Files.delete(flDat.toPath());
+        // Backlog #35: small filelogs are now inline by default (matching real hg), so a
+        // separate .d file may not exist at all -- tolerate its absence.
+        Files.deleteIfExists(flDat.toPath());
         repo.clearRevlogCache();
 
         long clSizeBefore = new File(repo.getStoreDir(), "00changelog.i").length();

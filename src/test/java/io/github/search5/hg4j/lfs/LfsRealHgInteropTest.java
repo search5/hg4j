@@ -1,7 +1,9 @@
 package io.github.search5.hg4j.lfs;
 
 import io.github.search5.hg4j.HgTestUtils;
+import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CommitCommand;
+import io.github.search5.hg4j.api.UpdateCommand;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import org.junit.jupiter.api.Assumptions;
@@ -36,12 +38,19 @@ import static org.junit.jupiter.api.Assertions.*;
  * 순으로 뒤따르는 부가 필드)는 실제 hg가 만든 걸 그대로 {@link HgLfsPointer#parse}로 파싱해서
  * 맞는 것으로 확인했다 -- 별도 수정 불필요.
  *
- * <p>확인 못한 부분(정직하게 기록): hg4j는 LFS를 커밋/체크아웃 파이프라인에 전혀 연결하지
- * 않았다({@code CommitCommand}/{@code UpdateCommand} 어디에도 {@code HgLfsManager}/
- * {@code HgLfsPointer} 참조가 없음, revlog의 {@code REVIDX_EXTSTORED} 플래그도 다루지 않음) --
- * {@link HgLfsPointer}/{@link HgLfsManager}는 완전히 독립된 유틸리티 라이브러리라서, "hg4j가
- * LFS 커밋을 만들고 실제 hg가 읽는다" 리버스 방향은 그 자체가 존재하지 않는 기능이라 테스트할
- * 수 없다 (백로그 문서에 기록).
+ * <p><b>백로그 31(2026-09-04) 추가</b>: {@code CommitCommand}/{@code UpdateCommand}에 LFS
+ * 커밋/체크아웃 파이프라인을 연동했다 -- 커밋 시 {@code [lfs] threshold}를 넘는 파일(rename/
+ * copy 메타데이터가 없는 경우로 범위 한정, 아래 참고)은 실제 바이트 대신 LFS 포인터를
+ * filelog에 쓰고 {@code REVIDX_EXTSTORED} 플래그를 세팅하며, 체크아웃 시 그 플래그를 보고
+ * 포인터를 실제 바이트로 되돌린다. {@link #hg4jChecksOutRealHgLfsCommitWithFullContent}/
+ * {@link #hg4jCommitsLfsFileAndRealHgSeesFullContent}가 이 파이프라인을 real hg CLI와
+ * 양방향으로 검증한다.
+ *
+ * <p><b>범위 밖으로 남긴 것(정직하게 기록)</b>: rename/copy와 LFS 임계값을 동시에 넘는
+ * 파일(포인터에 real hg의 {@code x-hg-*} copy-tracing 메타데이터를 접어 넣는 것까지는
+ * 구현 안 함 -- 그런 파일은 그냥 일반 경로로 커밋됨), 원격 LFS 서버 URL을 {@code [paths]
+ * default}에서 그대로 유추하는 것(실제 hg처럼 서버별 override({@code [lfs] url})는
+ * 지원 안 함), {@code .hgrc}의 {@code lfs.disableusercache} 등 세부 옵션.
  */
 @Tag("interop")
 public class LfsRealHgInteropTest {
@@ -172,6 +181,83 @@ public class LfsRealHgInteropTest {
         byte[] catOutput = hgCatRawBytes(repoDir, "cat", "big.bin");
         assertArrayEquals(originalContent, catOutput,
                 "real hg's own \"hg cat\" must be able to read the blob hg4j wrote into the shared local LFS store");
+    }
+
+    /**
+     * Pipeline test (backlog 31), checkout direction: real hg commits an LFS file, hg4j's
+     * {@link UpdateCommand} (after the working-copy file is deleted, forcing a real rewrite) must
+     * restore the exact original bytes -- not the pointer text.
+     */
+    @Test
+    public void hg4jChecksOutRealHgLfsCommitWithFullContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgTestUtils.nativeRepo(repoDir, dir -> {
+        });
+        Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
+                "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n",
+                java.nio.file.StandardOpenOption.APPEND);
+
+        byte[] originalContent = new byte[4096];
+        new Random(99).nextBytes(originalContent);
+        Files.write(new File(repoDir, "big.bin").toPath(), originalContent);
+        HgTestUtils.hg(repoDir, "add", "big.bin");
+        HgTestUtils.hg(repoDir, "commit", "-u", "tester", "-m", "add big lfs file");
+
+        HgRepository repo = new HgRepository(repoDir);
+        File workingFile = new File(repoDir, "big.bin");
+        assertTrue(workingFile.delete(), "must delete the working copy so UpdateCommand is forced to rewrite it");
+
+        new UpdateCommand(repo).setForce(true).call();
+
+        assertTrue(workingFile.exists(), "hg4j's UpdateCommand must recreate big.bin");
+        byte[] restored = Files.readAllBytes(workingFile.toPath());
+        assertArrayEquals(originalContent, restored,
+                "hg4j must check out the real LFS blob content, not the pointer text");
+        assertFalse(new String(restored, StandardCharsets.UTF_8).startsWith("version https://git-lfs"),
+                "sanity: the restored file must not be the raw pointer text");
+    }
+
+    /**
+     * Pipeline test (backlog 31), commit direction: hg4j's {@link CommitCommand} writes a file
+     * past {@code [lfs] threshold} as an LFS pointer + REVIDX_EXTSTORED, and real hg's own
+     * {@code hg cat} (with the lfs extension enabled, so it dereferences the pointer transparently)
+     * must read back the exact original bytes.
+     */
+    @Test
+    public void hg4jCommitsLfsFileAndRealHgSeesFullContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        new io.github.search5.hg4j.api.InitCommand().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
+                "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n");
+
+        HgRepository repo = new HgRepository(repoDir);
+        byte[] originalContent = new byte[8192];
+        new Random(123).nextBytes(originalContent);
+        Files.write(new File(repoDir, "big.bin").toPath(), originalContent);
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setAuthor("hg4j").setMessage("add big lfs file").call();
+        assertNotNull(commitNode);
+
+        // Sanity: hg4j itself must have written a pointer (REVIDX_EXTSTORED), not the raw bytes.
+        File flIndex = CommitCommand.getFilelogIndex(repo.getStoreDir(), "big.bin");
+        File flData = new File(flIndex.getPath().substring(0, flIndex.getPath().length() - 2) + ".d");
+        Revlog filelog = repo.getRevlog(flIndex, flData);
+        assertTrue(filelog.isExtStored(0), "hg4j must flag the LFS revision with REVIDX_EXTSTORED");
+        byte[] pointerText = filelog.getRevisionContent(0);
+        assertTrue(new String(pointerText, StandardCharsets.UTF_8).startsWith("version https://git-lfs.github.com/spec/v1\n"),
+                "hg4j's filelog content for the LFS revision must be the pointer text");
+
+        String expectedOid = sha256Hex(originalContent);
+        File blobPath = new File(repo.getStoreDir(), "lfs/objects/" + expectedOid.substring(0, 2) + "/" + expectedOid.substring(2));
+        assertTrue(blobPath.exists(), "hg4j must have cached the real bytes in the local LFS blob store");
+
+        byte[] realHgCatOutput = hgCatRawBytes(repoDir, "--config", "extensions.lfs=", "cat", "-r", "0", "big.bin");
+        assertArrayEquals(originalContent, realHgCatOutput,
+                "real hg's own `hg cat` (lfs-aware) must dereference hg4j's pointer to the exact original bytes");
+
+        String realHgVerify = HgTestUtils.hg(repoDir, "--config", "extensions.lfs=", "verify");
+        assertFalse(realHgVerify.toLowerCase().contains("error:"),
+                "real hg verify (lfs-aware) must find no errors in an hg4j-committed LFS repository: " + realHgVerify);
     }
 
     /** Like {@link HgTestUtils#hg} but returns the raw stdout bytes losslessly (no UTF-8/trim round-trip),

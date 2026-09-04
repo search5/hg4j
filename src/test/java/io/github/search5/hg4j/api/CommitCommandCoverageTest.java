@@ -464,7 +464,9 @@ public class CommitCommandCoverageTest {
             File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "div.txt");
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
             Files.delete(flIdx.toPath());
-            Files.delete(flDat.toPath());
+            // Backlog #35: small filelogs are now inline by default (matching real hg), so a
+            // separate .d file may not exist at all -- tolerate its absence.
+            Files.deleteIfExists(flDat.toPath());
 
             Dirstate mergeDirstate = repo.getDirstate();
             mergeDirstate.setParents(new NodeId(p1Node), new NodeId(p2Node));
@@ -562,7 +564,9 @@ public class CommitCommandCoverageTest {
             File flIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "div2.txt");
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
             Files.delete(flIdx.toPath());
-            Files.delete(flDat.toPath());
+            // Backlog #35: small filelogs are now inline by default (matching real hg), so a
+            // separate .d file may not exist at all -- tolerate its absence.
+            Files.deleteIfExists(flDat.toPath());
             Files.createFile(flIdx.toPath());
             Files.createFile(flDat.toPath());
             assertEquals(0, new Revlog(flIdx, flDat).getRevisionCount(),

@@ -143,7 +143,24 @@ public class Revlog {
             this.inline = false;
         } else {
             this.datFile = datFile;
-            this.inline = index.isInline();
+            // Backlog #35 (2026-09-04): real hg's revlogv1 starts every filelog/manifest INLINE by
+            // default and only splits to a separate .d file past 131072 bytes
+            // (mercurial/revlog.py: REVLOG_DEFAULT_FLAGS=FLAG_INLINE_DATA, _maxinline,
+            // _enforceinlinesize; changelog.py opts out with may_inline=False -- hg4j's existing
+            // always-non-inline changelog behavior is already correct and untouched here).
+            // `index.isInline()` only reflects what an EXISTING on-disk index's first record's
+            // format flags actually say -- for a brand-new revlog (idxFile doesn't exist yet) it's
+            // always false, which is why hg4j had been unconditionally writing non-inline
+            // filelogs/manifests. `appendChangeGroupEntry`'s own separate hand-rolled write path
+            // (used by pull/push changegroup application, not local commit) has since been fixed
+            // to branch on `inline` exactly like `appendRevision` already did;
+            // `appendRawRevision`/`appendOptimizedRevision` already branched correctly (fixed
+            // earlier in this session for an unrelated RebaseCommand backup/restore bug). All
+            // three writers are now inline-aware, so it's safe to actually default new
+            // non-changelog v1 revlogs to inline.
+            boolean isNewRevlog = !idxFile.exists();
+            boolean isChangelog = idxFile.getName().contains("00changelog");
+            this.inline = isNewRevlog ? !isChangelog : index.isInline();
         }
         this.useZstd = useZstd;
     }
@@ -220,8 +237,20 @@ public class Revlog {
     /** {@code flags} bit marking a revision as censored (real hg's {@code REVIDX_ISCENSORED}). */
     public static final int REVIDX_ISCENSORED = 0x8000;
 
+    /**
+     * {@code flags} bit marking a revision's stored text as an external-storage pointer rather
+     * than the real file content (real hg's {@code REVIDX_EXTSTORED}, used by the {@code lfs}
+     * extension). Value confirmed 2026-09-04 against the real hg 7.2 source directly
+     * ({@code mercurial/interfaces/repository.py}: {@code REVISION_FLAG_EXTSTORED = 1 << 13}).
+     */
+    public static final int REVIDX_EXTSTORED = 0x2000;
+
     public synchronized boolean isCensored(int rev) {
         return (getIndexRecord(rev).getFlags() & REVIDX_ISCENSORED) != 0;
+    }
+
+    public synchronized boolean isExtStored(int rev) {
+        return (getIndexRecord(rev).getFlags() & REVIDX_EXTSTORED) != 0;
     }
 
     /** {@code compressionMode} value meaning "stored as-is, no compression" (real hg's {@code COMP_MODE_PLAIN}). */
@@ -675,6 +704,12 @@ public class Revlog {
      */
     private synchronized byte[] appendRevisionV2(int rev, byte[] processedContent, int parent1, int parent2,
                                                    byte[] nodeId, int linkRev, byte[] sidedataContainer) throws IOException {
+        return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev, sidedataContainer, 0);
+    }
+
+    /** @param extraFlags additional {@code flags} bits (e.g. {@link #REVIDX_EXTSTORED}) to OR in. */
+    private synchronized byte[] appendRevisionV2(int rev, byte[] processedContent, int parent1, int parent2,
+                                                   byte[] nodeId, int linkRev, byte[] sidedataContainer, int extraFlags) throws IOException {
         File resolvedIndexFile = index.getResolvedIndexFile();
         File resolvedDataFile = index.getResolvedDataFile();
         boolean changelogV2 = index.isChangelogV2();
@@ -740,7 +775,7 @@ public class Revlog {
             sidedataCompLen = sidedataContainer.length;
         }
 
-        long offsetFlags = (rev == 0) ? 0 : ((offset << 16));
+        long offsetFlags = (rev == 0) ? (extraFlags & 0xFFFFL) : ((offset << 16) | (extraFlags & 0xFFFFL));
         byte[] node20 = Arrays.copyOf(nodeId, 20);
 
         ByteBuffer recordBuf = ByteBuffer.allocate(96);
@@ -791,7 +826,7 @@ public class Revlog {
         }
 
         int recordedLinkRev = changelogV2 ? rev : linkRev;
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
+        index.addRecord(new IndexRecord(rev, offset, extraFlags, dataHunk.length, processedContent.length,
                 rev, recordedLinkRev, parent1, parent2, nodeId, sidedataOffset, sidedataCompLen, 0));
         updatePersistentNodeMapAfterAppend();
 
@@ -814,6 +849,35 @@ public class Revlog {
      */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer) throws IOException {
+        return appendRevision(content, metadata, parent1, parent2, p1Node, p2Node, linkRev, sidedataContainer, 0);
+    }
+
+    /**
+     * @param extraFlags additional {@code flags} bits (e.g. {@link #REVIDX_EXTSTORED}) to OR into
+     *     this revision's index record, on top of whatever this method already computes on its
+     *     own (currently nothing -- flags are otherwise always 0 on this path). Used by {@code
+     *     api.CommitCommand}'s LFS pipeline (backlog 31) to flag a revision whose stored {@code
+     *     content} is an LFS pointer, not the real file bytes.
+     */
+    public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
+                                 byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer, int extraFlags) throws IOException {
+        return appendRevision(content, metadata, parent1, parent2, p1Node, p2Node, linkRev, sidedataContainer, extraFlags, null);
+    }
+
+    /**
+     * @param hashBasisOverride when non-null, the revlog node id is computed as
+     *     {@code SHA1(p1Node, p2Node, hashBasisOverride)} instead of over the (post-metadata-
+     *     escaping) stored {@code content} -- real hg's LFS extension does exactly this: the
+     *     filelog node hash for an LFS-flagged revision is computed over the REAL file bytes
+     *     (what the flag-processor's {@code readfromstore} hands back to callers), even though
+     *     the bytes actually stored on disk are the pointer text (confirmed 2026-09-04 by
+     *     reproducing a real hg 7.2 LFS commit and computing both hashes directly: {@code
+     *     SHA1(p1,p2,pointerText)} does NOT match the filelog node, {@code SHA1(p1,p2,realBytes)}
+     *     does). Used by {@code api.CommitCommand}'s LFS pipeline (backlog 31).
+     */
+    public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
+                                 byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer, int extraFlags,
+                                 byte[] hashBasisOverride) throws IOException {
         int rev = index.getRevisionCount();
 
         // Escaping logic for content and metadata
@@ -838,7 +902,10 @@ public class Revlog {
             processedContent = content;
         }
 
-        // Calculate NodeID: SHA-1(p1Node + p2Node + processedContent) where parents are sorted lexicographically
+        // Calculate NodeID: SHA-1(p1Node + p2Node + hashBasis) where parents are sorted
+        // lexicographically. hashBasis is normally processedContent (what actually gets stored),
+        // except when hashBasisOverride is supplied (LFS -- see javadoc above).
+        byte[] hashBasis = hashBasisOverride != null ? hashBasisOverride : processedContent;
         byte[] hash;
         try {
             byte[] first = p1Node;
@@ -850,7 +917,7 @@ public class Revlog {
             MessageDigest md = MessageDigest.getInstance("SHA-1");
             md.update(first);
             md.update(second);
-            md.update(processedContent);
+            md.update(hashBasis);
             hash = md.digest();
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("SHA-1 digest not available", e);
@@ -875,7 +942,7 @@ public class Revlog {
         }
 
         if (index.isV2()) {
-            return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev, sidedataContainer);
+            return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev, sidedataContainer, extraFlags);
         }
 
         // Decide whether to write delta or fulltext
@@ -925,9 +992,9 @@ public class Revlog {
             if (rev == 0) {
                 long formatFlags = 0x0003L; // inline(1) + generaldelta(2) = 3
                 long version = 1L;
-                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+                offsetFlags = (formatFlags << 48) | (version << 32) | (extraFlags & 0xFFFF);
             } else {
-                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+                offsetFlags = (offset << 16) | (extraFlags & 0xFFFF);
             }
 
             ByteBuffer recordBuf = ByteBuffer.allocate(64);
@@ -956,9 +1023,9 @@ public class Revlog {
             if (rev == 0) {
                 long formatFlags = 0x0002L; // generaldelta
                 long version = 1L;
-                offsetFlags = (formatFlags << 48) | (version << 32) | (0 & 0xFFFF);
+                offsetFlags = (formatFlags << 48) | (version << 32) | (extraFlags & 0xFFFF);
             } else {
-                offsetFlags = (offset << 16) | (0 & 0xFFFF);
+                offsetFlags = (offset << 16) | (extraFlags & 0xFFFF);
             }
 
             ByteBuffer recordBuf = ByteBuffer.allocate(64);
@@ -977,7 +1044,7 @@ public class Revlog {
             }
         }
 
-        index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
+        index.addRecord(new IndexRecord(rev, offset, extraFlags, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
         updatePersistentNodeMapAfterAppend();
 
@@ -1127,40 +1194,73 @@ public class Revlog {
         byte[] dataHunk = DeltaCodec.compress(rawToWrite, useZstd);
 
         long offset = 0;
-        if (datFile.exists()) {
-            offset = datFile.length();
+        if (rev > 0) {
+            IndexRecord prevRec = getIndexRecord(rev - 1);
+            offset = prevRec.getOffset() + prevRec.getCompLen();
         }
-
-        try (FileOutputStream out = new FileOutputStream(datFile, true)) {
-            out.write(dataHunk);
-            out.getFD().sync();
-        }
-
-        long offsetFlags;
-        if (rev == 0) {
-            long formatFlags = 0x0002L;
-            long version = 1L;
-            offsetFlags = (formatFlags << 48) | (version << 32) | (flags & 0xFFFFL);
-        } else {
-            offsetFlags = (offset << 16) | (flags & 0xFFFFL);
-        }
-
-        ByteBuffer recordBuf = ByteBuffer.allocate(64);
-        recordBuf.putLong(offsetFlags);
-        recordBuf.putInt(dataHunk.length);
-        recordBuf.putInt(content.length);
-        recordBuf.putInt(baseRev);
-        recordBuf.putInt(linkRev);
-        recordBuf.putInt(parent1);
-        recordBuf.putInt(parent2);
 
         byte[] nodeId32 = new byte[32];
         System.arraycopy(entry.node, 0, nodeId32, 0, 20);
-        recordBuf.put(nodeId32);
 
-        try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
-            out.write(recordBuf.array());
-            out.getFD().sync();
+        // Mirrors appendRevision()'s inline/non-inline branching exactly (backlog #35) -- this
+        // hand-rolled writer previously always took the non-inline shape (separate datFile,
+        // formatFlags without the inline bit, offset computed from datFile.length()) regardless
+        // of `this.inline`, silently corrupting any inline revlog that received a pull/push
+        // changegroup entry.
+        if (inline) {
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0003L; // inline(1) + generaldelta(2) = 3
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (flags & 0xFFFFL);
+            } else {
+                offsetFlags = (offset << 16) | (flags & 0xFFFFL);
+            }
+
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(content.length);
+            recordBuf.putInt(baseRev);
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId32);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
+        } else {
+            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+                out.write(dataHunk);
+                out.getFD().sync();
+            }
+
+            long offsetFlags;
+            if (rev == 0) {
+                long formatFlags = 0x0002L;
+                long version = 1L;
+                offsetFlags = (formatFlags << 48) | (version << 32) | (flags & 0xFFFFL);
+            } else {
+                offsetFlags = (offset << 16) | (flags & 0xFFFFL);
+            }
+
+            ByteBuffer recordBuf = ByteBuffer.allocate(64);
+            recordBuf.putLong(offsetFlags);
+            recordBuf.putInt(dataHunk.length);
+            recordBuf.putInt(content.length);
+            recordBuf.putInt(baseRev);
+            recordBuf.putInt(linkRev);
+            recordBuf.putInt(parent1);
+            recordBuf.putInt(parent2);
+            recordBuf.put(nodeId32);
+
+            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+                out.write(recordBuf.array());
+                out.getFD().sync();
+            }
         }
 
         index.addRecord(new IndexRecord(rev, offset, flags, dataHunk.length, content.length,

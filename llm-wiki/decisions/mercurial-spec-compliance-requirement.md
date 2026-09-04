@@ -1925,17 +1925,43 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     일관되게 보는지 확인. 기존 시나리오 1~3 포함 전체 4개 테스트 GREEN, 전체
     회귀(`test`+`interopTest`) `BUILD SUCCESSFUL`(22분48초, 새 실패 없음).
 
-31. **LFS 커밋/체크아웃 파이프라인 연동**. 신규, 2026-09-04 발견(백로그 28번에서
-    "정직하게 기록"만 하고 범위 밖으로 남긴 것을 별도 항목으로 승격) — 미착수.
-    `CommitCommand`/`UpdateCommand`/`AddCommand` 어디에도 `HgLfsManager`/
-    `HgLfsPointer`/`REVIDX_EXTSTORED` 참조가 0건이다(2026-09-04 코드 확인).
-    `HgLfsManager`/`HgLfsPointer`는 로컬 저장소 포맷과 원격 blob store만 다루는
-    독립 유틸리티로만 존재하고, hg4j로 실제로 LFS 파일을 커밋하거나 체크아웃하는
-    기능 자체가 없다. `.hgrc`의 `[lfs] threshold` 자동 감지, 커밋 시 큰 파일을
-    LFS 포인터로 자동 치환, 체크아웃 시 포인터를 실제 blob으로 되돌리는 경로를
-    구현하고, real hg CLI로 만든 LFS 커밋을 hg4j `UpdateCommand`가 체크아웃했을 때
-    실제 파일 내용이 나오는지, 반대로 hg4j `CommitCommand`로 만든 LFS 커밋을 real
-    hg가 정확히 체크아웃하는지 양방향 검증 필요.
+31. ~~**LFS 커밋/체크아웃 파이프라인 연동**~~ — ✅ **핵심 경로 완료(2026-09-04)**.
+    신규 발견(백로그 28번에서 "정직하게 기록"만 하고 범위 밖으로 남긴 것을 별도
+    항목으로 승격). `CommitCommand`/`UpdateCommand`에 `[lfs] threshold`를 넘는
+    파일을 LFS 포인터로 치환해 커밋하고(`REVIDX_EXTSTORED` 플래그 세팅, 실제
+    바이트는 로컬 blob store에 캐시), 체크아웃 시 그 플래그를 보고 포인터를 실제
+    바이트로 되돌리는 핵심 경로를 구현했다.
+
+    **근본적으로 잘못 짚었던 가정 하나 발견·수정**: 처음엔 filelog 리비전의 노드
+    해시를 (다른 모든 리비전과 마찬가지로) 저장되는 바이트 그 자체(포인터 텍스트)
+    로 계산하면 될 거라 가정했는데, 실제 hg CLI로 만든 LFS 커밋을 직접 재현해
+    `SHA1(p1,p2,포인터텍스트)`와 `SHA1(p1,p2,실제파일바이트)` 둘 다 계산해 대조해본
+    결과 **후자만 실제 filelog 노드와 일치**했다 — 즉 real hg는 LFS 리비전의 노드
+    해시를 저장된 포인터가 아니라 real hg의 `hgext/lfs` flag processor가
+    돌려주는 실제 파일 콘텐츠 기준으로 계산한다(read-side flag processor의
+    `validatehash=True`가 실제 콘텐츠에 대해 매번 진짜로 검증됨). 이걸 놓치고
+    포인터 텍스트 기준으로 해시를 계산해 커밋했더니, real hg CLI가 그 커밋을 열 때
+    `abort: integrity check failed`로 거부하는 실제 상호운용성 버그가 났었다 —
+    `Revlog.appendRevision`에 `hashBasisOverride` 파라미터를 신설해 "저장되는
+    바이트"와 "해시 계산 기준 바이트"를 분리함으로써 수정. 부수적으로 real hg의
+    `hgext/lfs`가 커밋 훅으로 `.hg/requires`에 `lfs`를 지연 추가한다는 것도 확인해
+    `CommitCommand`에 동일하게 구현(없으면 real hg가 checkhash 우회 자체를
+    활성화하지 않아 같은 에러가 남).
+
+    **검증**: `LfsRealHgInteropTest`에 신규 파이프라인 테스트 2건 추가 — real hg가
+    커밋한 LFS 파일을 hg4j `UpdateCommand`가 체크아웃해 실제 바이트를 복원하는지,
+    hg4j `CommitCommand`로 만든 LFS 커밋을 real hg의 `hg cat`(lfs 확장 활성화)이
+    정확히 읽고 `hg verify`가 에러 없이 통과하는지 양방향 확인 — 전부 GREEN.
+    타깃 테스트 클래스 회귀 재확인 완료, 전체 유닛 테스트(interop 제외)
+    2262/2263 GREEN(유일한 실패는 이 변경과 무관한 기존 `PerformanceBenchmarkTest`
+    타이밍 플레이크).
+
+    **범위 밖으로 남긴 것(정직하게 기록)**: rename/copy 메타데이터와 LFS 임계값을
+    동시에 넘는 파일(real hg는 포인터에 `x-hg-*` 키로 copy-tracing을 접어 넣는데
+    미구현 — 그런 파일은 그냥 일반 경로로 커밋됨), 원격 LFS 서버 URL을
+    `[paths] default`에서 그대로 유추(실제 hg의 `[lfs] url` override 미지원),
+    `.hgrc`의 `lfs.disableusercache` 등 세부 옵션. 전체(모든 fork 동시 실행 중)
+    회귀는 리소스 경합으로 완주 못함 — 별도 확인 권장.
 
 32. **Subrepositories 잔여 gap 4건**. 신규, 2026-09-04 발견(백로그 23번 완료 후
     재검증 중 승격) — 미착수. 실제 코드 확인(2026-09-04) 결과 다음 4가지가 여전히

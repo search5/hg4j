@@ -7,6 +7,8 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.util.SafeFileIO;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.errors.HgLockException;
+import io.github.search5.hg4j.lfs.HgLfsManager;
+import io.github.search5.hg4j.lfs.HgLfsPointer;
 
 import java.io.File;
 import java.io.IOException;
@@ -189,6 +191,33 @@ public class UpdateCommand {
                     }
 
                     byte[] fileContent = filelog.getRevisionContent(fileRev);
+
+                    // LFS pipeline (backlog 31): a REVIDX_EXTSTORED revision's filelog content is
+                    // an LFS pointer, not the real bytes -- resolve it back to the real content
+                    // before it reaches disk, mirroring real hg's hgext/lfs `readfromstore` wrapper.
+                    // Local cache first; falls back to a best-effort remote fetch via the
+                    // repository's configured [paths] default (real hg derives the same
+                    // "<remote>/.git/info/lfs"-style base from the pull source) -- documented as an
+                    // out-of-scope simplification if that guess is wrong for a given remote.
+                    if (filelog.isExtStored(fileRev)) {
+                        HgLfsPointer pointer = HgLfsPointer.parse(fileContent);
+                        HgLfsManager lfsManager = new HgLfsManager(repository.getHgDir());
+                        if (!lfsManager.isCached(pointer)) {
+                            String remote = repository.getConfig().getPath("default");
+                            if (remote != null) {
+                                try {
+                                    lfsManager.fetchObject(pointer, remote + "/info/lfs");
+                                } catch (Exception e) {
+                                    throw new IOException("LFS object " + pointer.getOid()
+                                            + " not cached locally and remote fetch failed for " + path, e);
+                                }
+                            } else {
+                                throw new IOException("LFS object " + pointer.getOid()
+                                        + " not cached locally and no [paths] default configured to fetch it for " + path);
+                            }
+                        }
+                        fileContent = lfsManager.getCachedObject(pointer);
+                    }
 
                     boolean symlink = tw.isSymlink(1);
 

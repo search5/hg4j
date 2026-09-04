@@ -2,6 +2,8 @@ package io.github.search5.hg4j.lfs;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import io.github.search5.hg4j.errors.HgCorruptDataException;
 
 /**
@@ -37,6 +39,33 @@ public final class HgLfsPointer {
 
     public long getSize() {
         return size;
+    }
+
+    /**
+     * Serializes back to the exact 3-line text real hg's {@code gitlfspointer.serialize()} writes
+     * (confirmed 2026-09-04 against {@code hgext/lfs/pointer.py}): sorted with {@code version}
+     * always first, then the rest alphabetically ({@code oid} before {@code size}), each line
+     * {@code "<key> <value>\n"}.
+     */
+    public byte[] serialize() {
+        String text = "version " + version + "\n"
+                + "oid sha256:" + oid + "\n"
+                + "size " + size + "\n";
+        return text.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Lowercase hex SHA-256 of {@code data} -- the LFS {@code oid} (git-lfs only supports sha256). */
+    public static String sha256Hex(byte[] data) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(data);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 digest not available", e);
+        }
     }
 
     /**

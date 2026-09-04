@@ -106,6 +106,15 @@ public class ShelveCommandCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repository = new InitCommand().setDirectory(repoDir).call();
 
+        // Backlog #35: a small new filelog now defaults to inline (matching real hg's behavior
+        // for small files, though hg4j has no size-threshold split logic -- purely "new file
+        // starts inline"), so deleting its .d file would be a no-op with nothing corrupted.
+        // Pre-touch the index as an already-existing (empty) file so hg4j treats it as
+        // "reopening" (non-inline) rather than "brand new" (inline), giving the test a real,
+        // separate .d file to delete.
+        File removedFilelogIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), "removed.txt");
+        removedFilelogIdx.getParentFile().mkdirs();
+        removedFilelogIdx.createNewFile();
         File removedFile = new File(repoDir, "removed.txt");
         Files.writeString(removedFile.toPath(), "removed baseline");
         new AddCommand(repository).call();
@@ -392,6 +401,14 @@ public class ShelveCommandCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repository = new InitCommand().setDirectory(repoDir).call();
 
+        // Backlog #35: pre-touch both filelog indexes as already-existing (empty) files so hg4j
+        // treats them as "reopening" (non-inline) rather than "brand new" (inline) -- this test
+        // needs other.txt's .d file to actually exist so it can be spliced onto removed.txt's.
+        File removedFilelogIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), "removed.txt");
+        removedFilelogIdx.getParentFile().mkdirs();
+        removedFilelogIdx.createNewFile();
+        File otherFilelogIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), "other.txt");
+        otherFilelogIdx.createNewFile();
         File removed = new File(repoDir, "removed.txt");
         Files.writeString(removed.toPath(), "original content");
         File other = new File(repoDir, "other.txt");
@@ -428,6 +445,12 @@ public class ShelveCommandCoverageTest {
         File repoDir = tempDir.toFile();
         HgRepository repository = new InitCommand().setDirectory(repoDir).call();
 
+        // Backlog #35: pre-touch the filelog index as an already-existing (empty) file so hg4j
+        // treats it as "reopening" (non-inline) rather than "brand new" (inline) -- see the
+        // removed.txt case above for the full explanation.
+        File modifiedFilelogIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), "modified.txt");
+        modifiedFilelogIdx.getParentFile().mkdirs();
+        modifiedFilelogIdx.createNewFile();
         File modified = new File(repoDir, "modified.txt");
         Files.writeString(modified.toPath(), "original content");
         new AddCommand(repository).call();

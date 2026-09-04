@@ -2020,47 +2020,57 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     간섭(이 세션에서 이미 여러 차례 확인된 현상)으로 판단 — 이 항목 자체의 회귀는
     없음.
 
-35. **Revlog 쓰기 경로가 항상 non-inline이라 `hg verify`가 fncache 경고를 냄**.
-    신규, 2026-09-04 발견(백로그 23번 strip 카테고리 검증 중 발견, strip과 무관한
-    사전 존재 이슈라 별도 항목으로 승격) — **TDD 시도했으나 회귀 위험이 너무 커서
-    되돌림(2026-09-04), 여전히 미착수**. 재조사에서 실제 hg 스펙은 정확히
-    확정했다(`mercurial/revlog.py` 소스 직접 대조, 이 호스트 Homebrew 설치본
+35. ~~**Revlog 쓰기 경로가 항상 non-inline이라 `hg verify`가 fncache 경고를 냄**~~
+    — ✅ **완료(2026-09-04)**. 신규 발견(백로그 23번 strip 카테고리 검증 중 발견,
+    strip과 무관한 사전 존재 이슈라 별도 항목으로 승격). 실제 hg 스펙 확정
+    (`mercurial/revlog.py` 소스 직접 대조, 이 호스트 Homebrew 설치본
     `/opt/homebrew/lib/python3.14/site-packages/mercurial/revlog.py`): revlogv1은
     `REVLOG_DEFAULT_FLAGS = FLAG_INLINE_DATA`로 **기본이 inline**이고
     `_enforceinlinesize()`가 총 크기가 `_maxinline = 131072`바이트(128KiB)를
-    넘어야만 별도 `.d` 파일로 분리(`split_inline`)한다. changelog만 유일하게
+    넘어야만 별도 `.d` 파일로 분리한다. changelog만 유일하게
     `mercurial/changelog.py`에서 `may_inline=False`로 생성돼 항상 non-inline —
-    hg4j의 changelog 처리는 이미 이 부분과 일치한다(정확함, 안 건드림). 실측으로도
-    확인(`hg init`+1커밋: `a.txt.i`/`00manifest.i` 둘 다 `.d` 없이 inline, `00changelog.i`
-    +`00changelog.d`만 분리).
+    hg4j의 changelog 처리는 이미 이 부분과 일치했다(안 건드림).
 
-    **시도한 수정과 되돌린 이유**: `Revlog` 생성자에서 신규(파일 미존재) v1 filelog/
-    manifest(파일명에 `00changelog` 미포함)를 `inline=true`로 시작하도록 변경 —
-    `appendRevision()`(로컬 `CommitCommand`가 쓰는 주 경로)의 기존 `if (inline) {...}`
-    분기는 이미 정확하게 구현돼 있어서(생전 처음 실행되긴 했지만) 신규 interop
-    테스트(작은 커밋 + real `hg verify`)가 즉시 GREEN이었다. **그러나 전체 회귀에서
-    60개 테스트가 깨짐** — 원인은 `appendChangeGroupEntry()`(pull/push로 원격
-    changegroup을 받아 적용할 때 쓰는 별도 경로, `appendRevision`과는 독립된 자체
-    `if (inline) {...}` 분기)의 inline 쓰기 로직에 실제 데이터 손상 버그가 있었기
-    때문 — `"Failed to read complete hunk of size 20 at offset 64"`로 재현, 단순
-    테스트 픽스처 문제가 아니라 진짜 읽기-쓰기 불일치. `appendRawRevision()`/
-    `appendOptimizedRevision()`의 자체 inline 분기도 검증된 적이 없어 마찬가지로
-    의심스럽다. 즉 `inline` 플래그를 실제로 `true`로 만든 순간, 지금까지 한 번도
-    실행된 적 없던(그래서 아무도 못 잡은) 코드 경로들이 전부 동시에 활성화되면서
-    문제가 드러났다 — `appendRevision` 외 나머지 append 진입점(최소 3개)을 각각
-    개별적으로 감사·수정해야 안전하게 켤 수 있다. 사용자 지시대로("확실하지 않으면
-    무리하지 않는다") 프로덕션 코드는 원상 복구, 전체 회귀 재확인(2268개 중 1개만
-    실패 — 이 세션 내내 존재해온 무관한 `PerformanceBenchmarkTest` 플레이키, 되돌리기
-    전과 동일).
+    **1차 시도(같은 세션 초반)와 되돌린 이유**: `Revlog` 생성자에서 신규 v1
+    filelog/manifest를 `inline=true`로 시작하게만 바꿨더니 전체 회귀에서 60개
+    테스트가 깨짐 — `appendChangeGroupEntry()`(pull/push로 원격 changegroup을
+    적용하는 경로)가 `appendRevision`과는 별개의 자체 `if (inline)` 분기를 갖고
+    있었는데 그게 실제로 `this.inline`을 전혀 확인하지 않고 **항상 non-inline
+    레이아웃으로 하드코딩**돼 있어(offset을 `datFile.length()`로 계산, format
+    flags도 non-inline 값 고정) inline 저장소에 pull/push로 리비전이 들어오면
+    `"Failed to read complete hunk of size 20 at offset 64"`로 데이터가 실제로
+    손상됐다. 1차 시도 때는 이 사실만 확인하고 안전하게 원상 복구·문서화만 하고
+    끝냈었다.
 
-    **후속 세션을 위한 정확한 착수 지점**: `Revlog` 생성자에서 신규 v1 filelog/
-    manifest를 `inline=true`로(changelog는 계속 `false`), `RevlogIndex`에도 같은 값
-    동기화(두 클래스가 각자 별도 `inline` 필드를 갖고 있어 반드시 함께 맞춰야 함) —
-    이 부분까지는 검증됨. 그다음 `appendChangeGroupEntry`/`appendRawRevision`/
-    `appendOptimizedRevision` 각각의 `if (inline)` 분기를 `appendRevision`의 이미
-    검증된 구현과 나란히 대조해 버그를 찾아 고치는 게 남은 작업. 128KiB 초과 시
-    non-inline으로 전환하는 `_enforceinlinesize` 상당 로직은 이번에 아예 시도하지
-    않음(더 큰 별도 범위) — 우선순위는 "append 경로들 안전하게 만들기"가 먼저.
+    **2차 시도(사용자가 명시적으로 "계속하라"고 지시, 2026-09-04, 같은 세션
+    후속)**: `appendChangeGroupEntry()`의 v1 수동 바이트 라이팅 경로를
+    `appendRevision()`이 이미 쓰던 것과 동일한 inline/non-inline 분기 패턴으로
+    재작성(offset을 `prevRec.getOffset()+getCompLen()`으로 계산, inline이면
+    64바이트 레코드+dataHunk를 `idxFile`에 이어쓰기, non-inline이면 기존처럼
+    `datFile`에 씀). 조사해보니 `appendRawRevision()`/`appendOptimizedRevision()`
+    은 이미 세션 초반(RebaseCommand 백업·복원 버그 수정 때) 올바른 inline 분기가
+    붙어 있었던 것으로 확인돼 손댈 필요 없었음 — 실제 미해결 지점은
+    `appendChangeGroupEntry` 하나뿐이었다. `Revlog` 생성자도 신규 v1 filelog/
+    manifest(파일명에 `00changelog` 미포함, 그리고 idxFile이 아직 존재하지 않는
+    "진짜 새 리비전 로그"인 경우만)를 `inline=true`로 시작하도록 재적용.
+
+    **검증**: 신규 `RevlogInlineWriteRealHgInteropTest`(pull로 적용된 filelog가
+    실제로 inline인지, real `hg verify`가 fncache 경고 없이 깨끗한지) GREEN.
+    전체 회귀에서 처음엔 17건 실패 — 전부 "이 store는 항상 `.i`/`.d`로 분리된다"는
+    낡은 전제를 하드코딩한 기존 테스트들(`BackoutCommandCoverageTest`,
+    `CommitCommandCoverageTest`, `HisteditCommandCoverageTest`,
+    `ShelveCommandCoverageTest`, `StatusCommandTest`, `StripCommandCoverageTest`,
+    `RevlogTest`)이었지 실제 데이터 정합성 문제는 아니었음 — 각 테스트를 "필요한
+    파일의 `.i`를 미리 빈 파일로 touch해서 non-inline을 강제"하거나(대부분),
+    "테스트 이름이 원래 의도한 대로 애초에 없어도 되는 시나리오"로 조정(Strip 2건)
+    하거나, `Files.delete`를 `deleteIfExists`로(파일이 아예 없어도 되는 경우), 또는
+    잘못된 가드 조건(`clDat.exists()`가 아니라 `mfDat.exists()`를 봐야 했던 버그
+    1건)을 고쳐서 해결. 128KiB `_enforceinlinesize` 상당 로직(큰 파일은 새로
+    커밋해도 non-inline으로 시작)은 이번에도 구현하지 않음(범위 밖, 별도 후속) —
+    현재는 "새 revlog는 파일 크기와 무관하게 inline으로 시작"만 구현됨(실사용
+    파일 대부분이 128KiB 미만이라 실질적 영향은 낮음). 전체 회귀 4회 재확인,
+    최종 2268개 중 `PerformanceBenchmarkTest`(이 세션 내내 존재해온 무관한 2초
+    타이밍 SLA 플레이키) 1건만 실패, 그 외 전부 GREEN.
 
 36. ~~**`TagCommand`가 기존 태그 재태깅을 `-f` 없이도 허용함**~~ — ✅
     **완료(2026-09-04)**. 신규 발견(백로그 23번 tag 카테고리 완료 후 재검증 중

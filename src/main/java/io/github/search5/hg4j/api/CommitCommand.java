@@ -891,17 +891,16 @@ public class CommitCommand {
      * state. Git subrepos are left alone entirely (skipped), mirroring the parser's existing
      * git-subrepo handling elsewhere in this codebase (e.g. {@code UpdateCommand}).
      *
-     * <p><b>Deliberate divergence from real hg</b> (documented, not an oversight): when a
-     * declared subrepo path is not checked out locally as an hg4j repository, real Mercurial
-     * 7.2 silently auto-vivifies an *empty* repository there and resets its recorded
-     * {@code .hgsubstate} entry to the null revision -- verified live, this actually discards
-     * any previously-recorded (real, non-null) revision for that path. Replicating that verbatim
-     * would silently corrupt the extremely common hg4j workflow (exercised by
-     * {@code HgSubrepoTest}/{@code UpdateCommandTest}) of hand-writing/committing {@code
-     * .hgsub}+{@code .hgsubstate} with the subrepo's real pinned revision *before* ever checking
-     * it out locally, then letting {@code UpdateCommand}'s existing recursive-checkout logic
-     * clone it on demand. Instead, a path that is not checked out locally is left untouched here
-     * (its previous {@code .hgsubstate} entry, if any, is carried forward unchanged).
+     * <p><b>Matches real hg exactly</b> (backlog 23/24, decided 2026-09-04): when a declared
+     * subrepo path is not checked out locally as an hg4j repository, real Mercurial 7.2 silently
+     * auto-vivifies an *empty* repository there and resets its recorded {@code .hgsubstate}
+     * entry to the null revision ({@code 0000000000000000000000000000000000000000}) -- verified
+     * live, this actually discards any previously-recorded (real, non-null) revision for that
+     * path. hg4j replicates this verbatim: a path that is not checked out locally has its
+     * {@code .hgsubstate} entry reset to the null revision here, even when a real, non-null
+     * revision was previously recorded for it. Callers that want a non-null revision recorded
+     * for a subrepo must check it out locally (e.g. via {@code CloneCommand}/{@code
+     * UpdateCommand}) *before* committing, exactly as real hg requires.
      */
     private void applySubrepoStateBeforeCommit() throws IOException, HgLockException {
         File hgsubFile = new File(repository.getDirectory(), ".hgsub");
@@ -931,22 +930,6 @@ public class CommitCommand {
             return;
         }
 
-        File hgsubstateFileForOldState = new File(repository.getDirectory(), ".hgsubstate");
-        Map<String, String> priorState = new HashMap<>();
-        if (hgsubstateFileForOldState.exists()) {
-            for (String line : Files.readAllLines(hgsubstateFileForOldState.toPath(), StandardCharsets.UTF_8)) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    continue;
-                }
-                int sp = trimmed.indexOf(' ');
-                if (sp == -1) {
-                    continue;
-                }
-                priorState.put(trimmed.substring(sp + 1).trim(), trimmed.substring(0, sp).trim());
-            }
-        }
-
         Map<String, String> newState = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (String path : subUrls.keySet()) {
             if (gitPaths.contains(path)) {
@@ -954,12 +937,10 @@ public class CommitCommand {
             }
             File subDir = new File(repository.getDirectory(), path);
             if (!new File(subDir, ".hg").exists()) {
-                // Not checked out locally -- carry forward whatever was already recorded (see
-                // the divergence note above), rather than dropping or nulling out the entry.
-                String prior = priorState.get(path);
-                if (prior != null) {
-                    newState.put(path, prior);
-                }
+                // Not checked out locally -- real hg auto-vivifies an empty repo here and
+                // resets the recorded revision to null (see the class-level note above),
+                // discarding whatever non-null revision may have been previously recorded.
+                newState.put(path, NodeId.NULL.toHex());
                 continue;
             }
 

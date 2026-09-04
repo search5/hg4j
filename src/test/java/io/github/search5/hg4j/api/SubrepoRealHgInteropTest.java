@@ -263,4 +263,82 @@ public class SubrepoRealHgInteropTest {
         assertEquals("v2", Files.readString(new File(parentDir, "sub/hello.txt").toPath()),
                 "hg4j update로 서브 v2 pin 리비전으로 가면 서브저장소 내용도 v2여야 함");
     }
+
+    /**
+     * 시나리오 5 (backlog 23/24, 2026-09-04 최종 결정 반영): {@code .hgsub}에 선언되었지만
+     * 로컬에 체크아웃되지 않은 서브저장소 경로가 있을 때, hg4j {@link CommitCommand}가 실제
+     * hg처럼 {@code .hgsubstate} 엔트리를 null 리비전({@code 000...0})으로 리셋하는지 확인한다.
+     *
+     * <p>동일한 시나리오를 실제 hg CLI로도 나란히 재현해 오라클(정답)로 삼고, (a) hg4j가 쓴
+     * {@code .hgsubstate} 바이트가 실제 hg가 쓴 바이트와 정확히(byte-for-byte) 일치하는지,
+     * (b) 실제 hg CLI로 hg4j의 결과 저장소를 읽었을 때({@code hg status}/{@code hg cat})도
+     * 동일한 null 리비전 엔트리로 인식되는지 양방향으로 확인한다. 이전에는 hg4j가 이 경우
+     * 기존 {@code .hgsubstate} 값을 그대로 보존하는 의도적 divergence였으나, 사용자 결정에
+     * 따라 real hg와 완전히 동일하게 동작하도록 변경되었다.
+     */
+    @Test
+    public void hg4jCommitResetsNotCheckedOutSubrepoToNullRevisionMatchingRealHg(@TempDir Path tempDir) throws Exception {
+        File nonExistentSource = tempDir.resolve("no-such-source").toFile();
+
+        // --- 오라클: 실제 hg CLI로 동일한 시나리오를 재현해 정확한 바이트 포맷을 확보한다. ---
+        File realParentDir = tempDir.resolve("real-parent").toFile();
+        HgTestUtils.nativeRepo(realParentDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "init.txt").toPath(), "init");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(realParentDir, "add");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "parent init");
+
+        // 실제 hg와 동일하게, 선언된 서브저장소 경로("sub")를 로컬에 전혀 체크아웃하지 않는다.
+        Files.writeString(new File(realParentDir, ".hgsub").toPath(), "sub = " + nonExistentSource.getAbsolutePath() + "\n");
+        HgTestUtils.hg(realParentDir, "add", ".hgsub");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "add subrepo not checked out");
+
+        byte[] realHgsubstateBytes = Files.readAllBytes(new File(realParentDir, ".hgsubstate").toPath());
+        String expectedLine = NodeId.NULL.toHex() + " sub\n";
+        assertEquals(expectedLine, new String(realHgsubstateBytes, StandardCharsets.UTF_8),
+                "실제 hg가 만드는 .hgsubstate 라인 포맷을 정확히 확인 (오라클)");
+        // 참고용 확인: 실제 hg는 체크아웃되지 않은 서브저장소 경로에도 빈 저장소를 자동 생성한다.
+        // (hg4j는 이 자동 생성까지는 재현하지 않는다 -- 이 백로그가 요구하는 것은 .hgsubstate
+        // 엔트리 리셋뿐이므로 범위 밖.)
+        assertTrue(new File(realParentDir, "sub/.hg").exists(),
+                "실제 hg는 체크아웃되지 않은 서브저장소 경로에 빈 저장소를 자동 생성함 (오라클 확인용)");
+
+        // --- hg4j: 동일한 시나리오를 hg4j CommitCommand로 재현한다. ---
+        File parentDir = tempDir.resolve("parent").toFile();
+        HgRepository parentRepo = Hg.init().setDirectory(parentDir).call();
+        Files.writeString(new File(parentDir, "init.txt").toPath(), "init");
+        new AddCommand(parentRepo).call();
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("parent init").call();
+
+        // "sub"를 로컬에 전혀 체크아웃하지 않은 채로 .hgsub만 선언한다.
+        Files.writeString(new File(parentDir, ".hgsub").toPath(), "sub = " + nonExistentSource.getAbsolutePath() + "\n");
+        new AddCommand(parentRepo).call(); // .hgsub만 add -- .hgsubstate는 절대 손으로 add하지 않는다.
+
+        assertFalse(new File(parentDir, ".hgsubstate").exists(),
+                "커밋 전에는 아직 .hgsubstate가 없어야 함");
+
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("add subrepo not checked out").call();
+
+        File hgsubstateFile = new File(parentDir, ".hgsubstate");
+        assertTrue(hgsubstateFile.exists(),
+                "체크아웃되지 않은 서브저장소를 선언해도 .hgsubstate는 (null 리비전으로) 자동 생성되어야 함");
+        byte[] hg4jHgsubstateBytes = Files.readAllBytes(hgsubstateFile.toPath());
+
+        // (a) hg4j가 쓴 바이트가 실제 hg가 쓴 바이트와 정확히(byte-for-byte) 일치해야 한다.
+        assertArrayEquals(realHgsubstateBytes, hg4jHgsubstateBytes,
+                "체크아웃되지 않은 서브저장소에 대해 hg4j가 기록한 .hgsubstate 바이트가 실제 hg의 바이트와 정확히 일치해야 함");
+        assertEquals(expectedLine, new String(hg4jHgsubstateBytes, StandardCharsets.UTF_8));
+
+        // (b) 실제 hg CLI로 hg4j가 만든 저장소를 읽었을 때도 동일한 null 리비전 엔트리로 인식되어야 한다.
+        String status = HgTestUtils.hg(parentDir, "status");
+        assertEquals("", status, "실제 hg 기준으로도 커밋 직후 워킹 카피가 clean해야 함: " + status);
+
+        String catState = HgTestUtils.hg(parentDir, "cat", "-r", "tip", ".hgsubstate").trim();
+        assertEquals(NodeId.NULL.toHex() + " sub", catState,
+                "실제 hg CLI가 읽는 hg4j 커밋의 .hgsubstate도 null 리비전 엔트리를 담고 있어야 함");
+    }
 }

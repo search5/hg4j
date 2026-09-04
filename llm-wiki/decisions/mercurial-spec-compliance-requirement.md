@@ -1,22 +1,24 @@
 ---
 updated: 2026-09-04
-status: 번호 매겨진 백로그 1~30번, 33·34·36·37번 전부 완료(25번은 오탐으로
-  종결). 요약: 1~21 완료 → 재검증에서 22~25 발견·완료(25는 오탐) → 재검증에서
-  26~28 발견·완료 → "완료 항목 안에 남은 캐비어트" 재확인으로 29~36 발견 →
-  [[exhaustive-interop-matrix-plan]] TDD 중 37 발견, 사용자 지시로 38~40 등록.
-  **완료**: 29(requires 허용목록이 낡아 평범한 저장소도 거부되던 버그),
-  30(narrow wire-level 재통합 + 사전 존재 캐시 버그), 33(SSH push checkheads
-  미구현), 34(bisect merge DAG 검증, 새 버그는 없었음), 36(tag 재태깅 `-f`
-  가드), 37(dirstate-v2 트리 손상 — real hg의 이진 탐색 리더가 정렬 안 된
-  자식 배열을 못 찾던 것, `hg-rust-7.2.4` 컨테이너의 Rust 소스 대조로 근본
-  원인 확정). **진행 중**: 31(LFS 커밋/체크아웃 파이프라인), 32(subrepo
-  잔여 gap 4건, 31 완료 후 순차 착수 — `CommitCommand`/`UpdateCommand` 공유로
-  동시 진행 불가), 35(revlog 항상 non-inline — 1차 시도에서 `appendChangeGroupEntry`
-  데이터 손상 발견 후 안전 롤백, 사용자 지시로 재시도 중). **미착수**:
-  38(동시 push 레이스 컨디션), 39([[exhaustive-interop-matrix-plan]] 매트릭스
-  범위 확장 — 현재 67개 명령 중 7개만 검증됨), 40(narrow clone의 진짜
-  wire-protocol ellipsis node 왕복 — 지금은 로컬 필터링만 있고 전송량 절감
-  효과가 없음).
+status: 번호 매겨진 백로그 1~37번 전부 완료(25번은 오탐으로 종결). 요약:
+  1~21 완료 → 재검증에서 22~25 발견·완료(25는 오탐) → 재검증에서 26~28
+  발견·완료 → "완료 항목 안에 남은 캐비어트" 재확인으로 29~36 발견·전부 완료
+  → [[exhaustive-interop-matrix-plan]] TDD 중 37 발견·완료, 사용자 지시로
+  38~41 등록. **완료(29~37 상세)**: 29(requires 허용목록이 낡아 평범한
+  저장소도 거부되던 버그), 30(narrow wire-level 재통합 + 사전 존재 캐시
+  버그), 31(LFS 커밋/체크아웃 파이프라인 — LFS 노드 해시가 포인터 텍스트가
+  아니라 실제 파일 콘텐츠 기준이어야 한다는 버그 발견·수정), 33(SSH push
+  checkheads 미구현), 34(bisect merge DAG 검증, 새 버그는 없었음), 35(revlog
+  항상 non-inline — `appendChangeGroupEntry`가 inline 상태를 무시하던 근본
+  원인 수정), 36(tag 재태깅 `-f` 가드), 37(dirstate-v2 트리 손상 — real hg의
+  이진 탐색 리더가 정렬 안 된 자식 배열을 못 찾던 것, `hg-rust-7.2.4`
+  컨테이너의 Rust 소스 대조로 근본 원인 확정). **미착수**: 32(subrepo
+  잔여 gap 4건, 31 완료로 이제 착수 가능 — `CommitCommand`/`UpdateCommand`
+  공유), 38(동시 push 레이스 컨디션), 39([[exhaustive-interop-matrix-plan]]
+  매트릭스 범위 확장 — 현재 67개 명령 중 7개만 검증됨), 40(narrow clone의
+  진짜 wire-protocol ellipsis node 왕복 — 지금은 로컬 필터링만 있고 전송량
+  절감 효과가 없음), 41(SVN 서브저장소 지원, **우선순위 최하** — 코드베이스에
+  관련 처리가 전혀 없어 맨땅에서 시작해야 함, 32/38/39/40 완료 후 착수).
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -2172,6 +2174,21 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     생성 로직 — `mercurial/narrowbundle2.py` 실측 필요)을 구현하는 것이
     이 항목의 목표. 상당히 큰 작업이므로 별도 세션에서 범위 산정부터 착수
     권장.
+
+41. **SVN 서브저장소(`[svn]` prefix) 지원 — 전혀 없음**. 신규, 2026-09-04
+    사용자 지시로 등록, **우선순위 최하** — 미착수. real hg의 `.hgsub`
+    스펙은 서브저장소로 Mercurial(기본)/Git(`[git]` prefix)/SVN(`[svn]`
+    prefix) 세 종류를 지원한다. Git 쪽은 `HgSubrepoParser`가 이미 URL
+    prefix 파싱은 해두고 있어(백로그 32번이 마무리하는 커밋측 상태 갱신만
+    남음) 그나마 절반은 진행된 상태지만, **SVN은 코드베이스 어디에도
+    관련 처리가 전혀 없다**(2026-09-04 `grep` 확인 — `HgSubrepoParser`의
+    prefix 인식조차 없음). 범위: `[svn]` URL 파싱, SVN 워킹카피 상태 조회
+    (`svn info`/`svn status` 상당의 로컬 SVN 클라이언트 연동 필요 —
+    hg4j에 SVN 관련 인프라가 전무해 맨땅에서 시작해야 함), `.hgsub`/
+    `.hgsubstate` 연동은 git 서브저장소 패턴을 참고해 대칭적으로 구현.
+    실사용 빈도가 낮고(Mercurial 자체에서도 SVN 서브저장소는 git보다
+    훨씬 드물게 쓰임) 작업량 대비 가치가 낮아 최하 우선순위로 등록 —
+    32/38/39/40번을 전부 마친 뒤에 착수할 것.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

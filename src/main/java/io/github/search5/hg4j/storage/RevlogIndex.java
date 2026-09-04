@@ -114,14 +114,30 @@ public class RevlogIndex {
      *     requires declare {@code exp-changelog-v2} but has never been committed to yet.
      */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2, boolean createAsChangelogV2, NodeMapFile persistentNodeMap) throws IOException {
+        this(idxFile, createAsGeneralV2, createAsChangelogV2, persistentNodeMap, true);
+    }
+
+    /**
+     * @param useZstd which codec a brand-new v2 docket's {@code default_compression_header} byte
+     *     should declare ({@code '('} for zstd, {@code 'x'} for zlib) -- only meaningful when this
+     *     constructor actually bootstraps a new docket ({@code createAsGeneralV2}/{@code
+     *     createAsChangelogV2} true and {@code idxFile} does not exist yet). Must match the
+     *     repository's actual {@code revlog-compression-zstd} requirement: real hg's reader
+     *     decides which codec COMP_MODE_DEFAULT chunks use purely from this docket-level field,
+     *     not from the per-record compression-mode bits or from requires directly -- a mismatch
+     *     between what {@link Revlog#appendRevisionV2} actually writes and what this field
+     *     declares makes every COMP_MODE_DEFAULT revision unreadable by real hg (found 2026-09-04,
+     *     see {@link Revlog#appendRevisionV2}'s own javadoc for the interop bug this fixes).
+     */
+    public RevlogIndex(File idxFile, boolean createAsGeneralV2, boolean createAsChangelogV2, NodeMapFile persistentNodeMap, boolean useZstd) throws IOException {
         this.idxFile = idxFile;
         this.persistentNodeMap = persistentNodeMap;
         if (idxFile.exists()) {
             loadIndex();
         } else if (createAsGeneralV2) {
-            initializeNewV2Docket(false);
+            initializeNewV2Docket(false, useZstd);
         } else if (createAsChangelogV2) {
-            initializeNewV2Docket(true);
+            initializeNewV2Docket(true, useZstd);
         }
     }
 
@@ -141,7 +157,7 @@ public class RevlogIndex {
      * INDEX_ENTRY_V2} per-record layout based on {@link #isChangelogV2()} for every revision
      * appended after this bootstrap.
      */
-    private void initializeNewV2Docket(boolean asChangelogV2) throws IOException {
+    private void initializeNewV2Docket(boolean asChangelogV2, boolean useZstd) throws IOException {
         this.isV2 = true;
         this.isChangelogV2 = asChangelogV2;
         this.versionHeader = asChangelogV2 ? MAGIC_CHANGELOGV2 : MAGIC_REVLOGV2;
@@ -170,7 +186,13 @@ public class RevlogIndex {
         this.docketPendingDataEnd = 0;
         this.docketSidedataEnd = 0;
         this.docketPendingSidedataEnd = 0;
-        this.docketDefaultCompression = '(';
+        // real hg's reader picks the codec for every COMP_MODE_DEFAULT record in this revlog
+        // purely from this one docket-level byte -- '(' (0x28, zstd's own frame-magic lead byte)
+        // for zstd, 'x' (0x78, zlib's own header byte) for zlib -- matching mercurial/revlogutils/
+        // docket.py's default_compression_header and real hg's own on-disk bytes for a
+        // usezstd=false repository (verified 2026-09-04, must stay in sync with which codec
+        // Revlog#appendRevisionV2 actually compresses with).
+        this.docketDefaultCompression = (byte) (useZstd ? '(' : 'x');
 
         ByteBuffer header = ByteBuffer.allocate(V2_HEADER_SIZE);
         header.putInt(this.versionHeader);

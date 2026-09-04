@@ -31,6 +31,16 @@ public class HgTestUtils {
         }
     }
 
+    public static boolean isGitInstalled() {
+        try {
+            Process process = new ProcessBuilder("git", "--version").start();
+            process.waitFor();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public static String hg(File repoDir, String... args) throws Exception {
         String[] cmd = new String[args.length + 5];
         cmd[0] = "hg";
@@ -39,12 +49,12 @@ public class HgTestUtils {
         cmd[3] = "--config";
         cmd[4] = "format.revlog-compression=zlib";
         System.arraycopy(args, 0, cmd, 5, args.length);
-        
+
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(repoDir);
         pb.redirectErrorStream(true);
         Process p = pb.start();
-        
+
         String out;
         try (InputStream is = p.getInputStream()) {
             out = new String(is.readAllBytes(), StandardCharsets.UTF_8).trim();
@@ -52,6 +62,43 @@ public class HgTestUtils {
         int code = p.waitFor();
         if (code != 0) {
             throw new AssertionError("hg " + Arrays.toString(args) + " failed with exit code " + code + ": " + out);
+        }
+        return out;
+    }
+
+    /** Same as {@link #hg(File, String...)} but with {@code [subrepos] git:allowed = true} set
+     * (real hg 7.2 defaults this to false; git subrepo tests need it enabled). */
+    public static String hgGitAllowed(File repoDir, String... args) throws Exception {
+        String[] withConfig = new String[args.length + 2];
+        withConfig[0] = "--config";
+        withConfig[1] = "subrepos.git:allowed=true";
+        System.arraycopy(args, 0, withConfig, 2, args.length);
+        return hg(repoDir, withConfig);
+    }
+
+    /** Runs a plain {@code git} CLI command with a fixed local identity, for building the git
+     * subrepo fixtures real hg's own {@code gitsubrepo} class is tested against. */
+    public static String git(File repoDir, String... args) throws Exception {
+        String[] cmd = new String[args.length + 1];
+        cmd[0] = "git";
+        System.arraycopy(args, 0, cmd, 1, args.length);
+
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.directory(repoDir);
+        pb.redirectErrorStream(true);
+        pb.environment().put("GIT_AUTHOR_NAME", "T");
+        pb.environment().put("GIT_AUTHOR_EMAIL", "t@example.com");
+        pb.environment().put("GIT_COMMITTER_NAME", "T");
+        pb.environment().put("GIT_COMMITTER_EMAIL", "t@example.com");
+        Process p = pb.start();
+
+        String out;
+        try (InputStream is = p.getInputStream()) {
+            out = new String(is.readAllBytes(), StandardCharsets.UTF_8).trim();
+        }
+        int code = p.waitFor();
+        if (code != 0) {
+            throw new AssertionError("git " + Arrays.toString(args) + " failed with exit code " + code + ": " + out);
         }
         return out;
     }

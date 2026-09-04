@@ -44,18 +44,27 @@ public class HgNarrowCloneTest {
                 .call();
 
         assertNotNull(hgNarrow);
-        
-        // 3. Verify narrowspec file and requires specifications
-        File narrowSpecFile = new File(destRepoDir, ".hg/narrowspec");
+
+        // 3. Verify narrowspec file and requires specifications match real hg 7.2 (verified
+        // against the host's native "hg --config extensions.narrow= clone --narrow ..."):
+        // the authoritative narrowspec lives at .hg/store/narrowspec (not .hg/narrowspec), uses
+        // singular "[include]"/"[exclude]" sections, and patterns are normalized to the
+        // "path:" kind with the trailing "/" stripped. The requirement recorded in
+        // .hg/requires is "narrowhg-experimental", not "narrowspec".
+        File narrowSpecFile = new File(destRepoDir, ".hg/store/narrowspec");
         assertTrue(narrowSpecFile.exists());
 
         String specText = Files.readString(narrowSpecFile.toPath(), StandardCharsets.UTF_8);
-        assertTrue(specText.contains("[includes]"));
-        assertTrue(specText.contains("src/"));
+        assertEquals("[include]\npath:src\n", specText);
+
+        File dirstateSpecFile = new File(destRepoDir, ".hg/narrowspec.dirstate");
+        assertTrue(dirstateSpecFile.exists());
+        assertEquals(specText, Files.readString(dirstateSpecFile.toPath(), StandardCharsets.UTF_8));
 
         File requiresFile = new File(destRepoDir, ".hg/requires");
         String requiresText = Files.readString(requiresFile.toPath(), StandardCharsets.UTF_8);
-        assertTrue(requiresText.contains("narrowspec"));
+        assertTrue(requiresText.contains("narrowhg-experimental"));
+        assertFalse(requiresText.contains("narrowspec\n"), "real hg's requirement key is narrowhg-experimental, not narrowspec");
     }
 
     @Test
@@ -88,10 +97,51 @@ public class HgNarrowCloneTest {
 
         assertNotNull(hgNarrow);
 
-        File narrowSpecFile = new File(destRepoDir, ".hg/narrowspec");
+        File narrowSpecFile = new File(destRepoDir, ".hg/store/narrowspec");
         String specText = Files.readString(narrowSpecFile.toPath(), StandardCharsets.UTF_8);
-        assertTrue(specText.contains("[excludes]"));
-        assertTrue(specText.contains("docs/"));
+        assertEquals("[include]\npath:src\n[exclude]\npath:docs\n", specText);
+
+        assertTrue(new File(destRepoDir, "src/main/A.java").exists());
+        assertFalse(new File(destRepoDir, "docs/readme.txt").exists(),
+                "docs/ is excluded so it must not be materialized in the narrow working copy");
+    }
+
+    /**
+     * Regression test for a real bug found while auditing against real hg 7.2 (backlog 28):
+     * hg4j's include matching used to be a naive {@code String#startsWith}, so an include of
+     * "srcdir" would incorrectly also match a sibling directory like "srcdirextra" (no
+     * component-boundary check). Real hg's narrowspec "path:" matching never does this --
+     * confirmed by narrow-cloning a repo containing both "srcdir/" and "srcdirextra/" against
+     * real hg with {@code --include srcdir}, where "srcdirextra/x.txt" was correctly excluded.
+     */
+    @Test
+    public void testNarrowCloneIncludeRespectsPathComponentBoundary() throws Exception {
+        File srcRepoDir = new File(tempDir, "src_repo_boundary");
+        File destRepoDir = new File(tempDir, "narrow_repo_boundary");
+
+        HgRepository srcRepo = Hg.init().setDirectory(srcRepoDir).call();
+        try (Hg hgSrc = Hg.wrap(srcRepo)) {
+            File f1 = new File(srcRepoDir, "srcdir/A.java");
+            f1.getParentFile().mkdirs();
+            Files.writeString(f1.toPath(), "Class A");
+
+            File f2 = new File(srcRepoDir, "srcdirextra/x.txt");
+            f2.getParentFile().mkdirs();
+            Files.writeString(f2.toPath(), "extra");
+
+            hgSrc.add().addFile("srcdir/A.java").addFile("srcdirextra/x.txt").call();
+            hgSrc.commit().setAuthor("Tester").setMessage("init commit").call();
+        }
+
+        Hg.narrowClone()
+                .setSource(srcRepoDir.getAbsolutePath())
+                .setDirectory(destRepoDir)
+                .addIncludePath("srcdir")
+                .call();
+
+        assertTrue(new File(destRepoDir, "srcdir/A.java").exists());
+        assertFalse(new File(destRepoDir, "srcdirextra/x.txt").exists(),
+                "include=srcdir must not match the sibling directory srcdirextra (component boundary)");
     }
 
     @Test

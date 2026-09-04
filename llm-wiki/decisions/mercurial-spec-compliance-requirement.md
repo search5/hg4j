@@ -61,7 +61,7 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
 | Narrow clone / narrowspec | wiki 관련 문서 | `NarrowCloneCommand`, `HgTreeFilter` | ⚠️ (README에 명시) — **2026-09-04 재확인: 근거 서술 없는 bare `✅`였다.** `HgNarrowCloneTest`는 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와 대조하는 인터롭 테스트가 없음(`Subrepositories`/`LFS` 행과 같은 패턴) — 백로그 28번으로 승격, 미착수 |
 | Sparse checkout | `mercurial/sparse.py`(`parseconfig`/`patternsforrev` 실측) | `treewalk.SparseConfig`, `treewalk.SparsePathFilter` | ✅ **구현 완료(2026-09-01)** — `.hg/sparse` 파일 파싱(`[include]`/`[exclude]`/`%include` 프로파일 참조, 앞자리 `/` 거부, 섹션 밖 항목 에러 등 실제 hg의 검증 규칙까지 재현) 및 `%include`로 참조된 프로파일을 해당 리비전의 매니페스트에서 읽어 재귀적으로 병합하는 `patternsforrev` 로직 신규 구현. `.hg*` 자동 include 규칙 포함. 실제 hg CLI로 만든 `.hg/sparse` 픽스처와 대조 검증(`SparseConfigInteropTest`) |
 | LFS (largefiles) | 관련 확장 문서 | `HgLfsManager`, `HgLfsPointer` | ⚠️ — **2026-09-04 재확인: 근거 서술 없는 bare `✅`였다.** `HgLfsTest`는 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와 대조하는 인터롭 테스트가 없음(`Subrepositories`/`Narrow clone` 행과 같은 패턴) — 백로그 28번으로 승격, 미착수 |
-| Subrepositories (`.hgsub`/`.hgsubstate`) | `mercurial/subrepo.py`/`subrepoutil.py`(`hgsubrepo.dirty`/`basestate`/`get`, `precommitstate`, `writestate` 실측) | `HgSubrepoParser`, `HgSubrepoEntry`, `api.SubrepoCommand`, `api.CommitCommand`, `api.UpdateCommand`, `lib.HgRepository.scanWorkingCopy()` | ✅ **재검증 및 실제 버그 2건 발견·수정(2026-09-04)** — 백로그 23번(subrepo 카테고리). 기존 "✅"는 근거 없이 클래스 존재만으로 체크된 것이었음이 확인됨: 실제 hg CLI와 대조해보니 (1) `CommitCommand`에 subrepo 인식 로직이 전혀 없어서, 서브저장소가 낀 상태로 커밋해도 `.hgsubstate`가 자동 갱신되지 않고(실제 hg는 `.hgsub`만 tracked면 `.hgsubstate`를 hg add 없이 자동 생성·추적하고 서브저장소의 현재 체크아웃 리비전으로 매 커밋마다 갱신함) dirty한 서브저장소가 있어도 부모 커밋이 그냥 성공해버렸음(실제 hg는 `uncommitted changes in subrepository "..."` 로 거부하고 `-S`/`--subrepos`가 있어야 재귀 커밋을 허용). (2) `HgRepository.scanWorkingCopy()`(`AddCommand`/`StatusCommand`/`CommitCommand`의 워킹카피 스캔이 전부 공유)가 서브저장소 경계를 전혀 인식하지 못해, 체크아웃된 서브저장소 디렉터리 내부 파일들이 **부모 저장소 자신의 추적 파일**로 잘못 add/commit되는 심각한 버그였음(real hg는 `.hgsub`가 선언한 경로를 walk 자체를 안 함). 둘 다 TDD로 수정: `CommitCommand.applySubrepoStateBeforeCommit()`(dirty-check→abort/재귀커밋, `.hgsubstate` 자동 생성·정렬·추적, `setSubrepos(true)`로 `-S` 상당 기능 추가) 신설, `scanWorkingCopy()`에 `.hgsub` 선언 경로를 opaque 경계로 처리하는 로직 추가. **4개 시나리오 전부 실제 hg 7.2 CLI 양방향 대조로 검증**(`SubrepoRealHgInteropTest`): ① 실제 hg가 만든 `.hgsub`/`.hgsubstate`를 `HgSubrepoParser`가 정확히 파싱, ② hg4j `CommitCommand`가 만든 `.hgsubstate`를 실제 hg CLI(`hg status`/`hg files`/`hg cat`/`hg log`)가 정확히 인식, ③ 서브저장소 리비전이 바뀐 뒤 dirty-check 거부→재귀 커밋으로 `.hgsubstate` 갱신까지 실제 hg와 동일한 abort 메시지/동작으로 일치, ④ 실제 hg로 두 개의 서로 다른 서브 리비전을 pin한 부모 커밋 두 개를 만들고 hg4j `UpdateCommand`로 그 사이를 오가며 서브저장소 워킹카피 내용이 일치. **의도적으로 real hg를 따라하지 않은 부분(문서화된 발산, 코드 주석 참고, 사용자 확인 필요)**: 서브저장소가 로컬에 체크아웃돼 있지 않은 채 부모를 커밋하면 실제 hg는 그 경로에 빈 저장소를 자동 생성하고 `.hgsubstate`를 null 리비전으로 덮어쓰는데(실측 확인), hg4j 기존 워크플로우(`.hgsub`+`.hgsubstate`를 먼저 손으로 써서 커밋한 뒤 `UpdateCommand`가 나중에 clone하는 패턴 — 기존 `HgSubrepoTest`/`UpdateCommandTest`가 이 패턴에 의존)를 깨뜨리므로 대신 기존 기록을 그대로 보존하도록 구현 — **이 트레이드오프는 담당 에이전트가 임의로 결정한 것으로, 조정자가 사용자에게 확인 필요**. **범위 밖으로 남은 것(시간 부족, 정직하게 명시)**: `CloneCommand`는 서브저장소를 재귀적으로 clone하지 않음(실제 hg `hg clone`은 자동으로 재귀 clone함) — 이번 항목이 명시한 범위는 "commit/update"뿐이라 미착수. `.hgsub`가 제거됐을 때 `.hgsubstate`를 자동 정리하는 로직, git 서브저장소(`[git]` prefix)의 커밋측 상태 갱신도 미구현(기존과 동일하게 스킵). `UpdateCommand`의 재귀 서브저장소 체크아웃은 매번 무조건 `pull`을 시도(실제 hg는 리비전이 로컬에 이미 있으면 네트워크 요청을 안 함) — 실패해도 로그만 남기고 넘어가 기능적으로는 무해하지만 실제 hg와 동작이 다름, 미수정. 전체 회귀 2362건 전부 GREEN(신규 실패 없음) |
+| Subrepositories (`.hgsub`/`.hgsubstate`) | `mercurial/subrepo.py`/`subrepoutil.py`(`hgsubrepo.dirty`/`basestate`/`get`, `precommitstate`, `writestate` 실측) | `HgSubrepoParser`, `HgSubrepoEntry`, `api.SubrepoCommand`, `api.CommitCommand`, `api.UpdateCommand`, `lib.HgRepository.scanWorkingCopy()` | ✅ **재검증 및 실제 버그 2건 발견·수정(2026-09-04)** — 백로그 23번(subrepo 카테고리). 기존 "✅"는 근거 없이 클래스 존재만으로 체크된 것이었음이 확인됨: 실제 hg CLI와 대조해보니 (1) `CommitCommand`에 subrepo 인식 로직이 전혀 없어서, 서브저장소가 낀 상태로 커밋해도 `.hgsubstate`가 자동 갱신되지 않고(실제 hg는 `.hgsub`만 tracked면 `.hgsubstate`를 hg add 없이 자동 생성·추적하고 서브저장소의 현재 체크아웃 리비전으로 매 커밋마다 갱신함) dirty한 서브저장소가 있어도 부모 커밋이 그냥 성공해버렸음(실제 hg는 `uncommitted changes in subrepository "..."` 로 거부하고 `-S`/`--subrepos`가 있어야 재귀 커밋을 허용). (2) `HgRepository.scanWorkingCopy()`(`AddCommand`/`StatusCommand`/`CommitCommand`의 워킹카피 스캔이 전부 공유)가 서브저장소 경계를 전혀 인식하지 못해, 체크아웃된 서브저장소 디렉터리 내부 파일들이 **부모 저장소 자신의 추적 파일**로 잘못 add/commit되는 심각한 버그였음(real hg는 `.hgsub`가 선언한 경로를 walk 자체를 안 함). 둘 다 TDD로 수정: `CommitCommand.applySubrepoStateBeforeCommit()`(dirty-check→abort/재귀커밋, `.hgsubstate` 자동 생성·정렬·추적, `setSubrepos(true)`로 `-S` 상당 기능 추가) 신설, `scanWorkingCopy()`에 `.hgsub` 선언 경로를 opaque 경계로 처리하는 로직 추가. **4개 시나리오 전부 실제 hg 7.2 CLI 양방향 대조로 검증**(`SubrepoRealHgInteropTest`): ① 실제 hg가 만든 `.hgsub`/`.hgsubstate`를 `HgSubrepoParser`가 정확히 파싱, ② hg4j `CommitCommand`가 만든 `.hgsubstate`를 실제 hg CLI(`hg status`/`hg files`/`hg cat`/`hg log`)가 정확히 인식, ③ 서브저장소 리비전이 바뀐 뒤 dirty-check 거부→재귀 커밋으로 `.hgsubstate` 갱신까지 실제 hg와 동일한 abort 메시지/동작으로 일치, ④ 실제 hg로 두 개의 서로 다른 서브 리비전을 pin한 부모 커밋 두 개를 만들고 hg4j `UpdateCommand`로 그 사이를 오가며 서브저장소 워킹카피 내용이 일치. **의도적으로 real hg를 따라하지 않은 부분(문서화된 발산, 코드 주석 참고, 사용자 확인 필요)**: 서브저장소가 로컬에 체크아웃돼 있지 않은 채 부모를 커밋하면 실제 hg는 그 경로에 빈 저장소를 자동 생성하고 `.hgsubstate`를 null 리비전으로 덮어쓰는데(실측 확인), hg4j 기존 워크플로우(`.hgsub`+`.hgsubstate`를 먼저 손으로 써서 커밋한 뒤 `UpdateCommand`가 나중에 clone하는 패턴 — 기존 `HgSubrepoTest`/`UpdateCommandTest`가 이 패턴에 의존)를 깨뜨리므로 대신 기존 기록을 그대로 보존하도록 구현 — **이 트레이드오프는 담당 에이전트가 임의로 결정한 것으로, 조정자가 사용자에게 확인 필요**. **→ 결정(2026-09-04): real hg와 동일하게 null 리비전으로 리셋하는 쪽으로 확정**(기존 `HgSubrepoTest`/`UpdateCommandTest`의 보존-의존 케이스 갱신 필요, 위 "아키텍처 결정 6건" 참고). **범위 밖으로 남은 것(시간 부족, 정직하게 명시)**: `CloneCommand`는 서브저장소를 재귀적으로 clone하지 않음(실제 hg `hg clone`은 자동으로 재귀 clone함) — 이번 항목이 명시한 범위는 "commit/update"뿐이라 미착수. `.hgsub`가 제거됐을 때 `.hgsubstate`를 자동 정리하는 로직, git 서브저장소(`[git]` prefix)의 커밋측 상태 갱신도 미구현(기존과 동일하게 스킵). `UpdateCommand`의 재귀 서브저장소 체크아웃은 매번 무조건 `pull`을 시도(실제 hg는 리비전이 로컬에 이미 있으면 네트워크 요청을 안 함) — 실패해도 로그만 남기고 넘어가 기능적으로는 무해하지만 실제 hg와 동작이 다름, 미수정. 전체 회귀 2362건 전부 GREEN(신규 실패 없음) |
 | Config 파일 포맷 (`hgrc`, include/`%include`, 섹션) | `hg help internals.config`, `mercurial/config.py`(`parse` 실측) | `HgRcConfig` | ✅ **구현 완료(2026-09-01)** — `%include <path>`(포함 파일의 디렉터리 기준 상대 경로 해석, 없는 파일은 조용히 무시), `%unset <key>`(현재 시점까지 설정된 값 완전 제거), 들여쓰기 연속 줄 지원을 실제 `mercurial/config.py` 소스대로 구현. 실제 `hg config` 명령 출력과 대조 검증(`HgRcConfigTest#testIncludeAndUnsetMatchRealHg`) |
 | Merge state 영속화 (재개 가능한 머지) | `hg help internals.mergestate`, `mercurial/mergestate.py`(`_readrecordsv2`/`_writerecordsv2` 실측) | `merge.MergeState`(`.hg/merge/state2`), `api.MergeCommand`, `api.ResolveCommand` | ✅ **완료(2026-09-01)** — 실제 hg의 `state2` 바이너리 포맷(타입 1바이트+길이 4바이트 프레임, `L`/`O`/`F` 레코드, 비허용 타입은 `t` 오버라이드로 래핑)을 그대로 구현한 `MergeState` 클래스, `MergeCommand`가 충돌 시 실제로 `state2`를 쓰도록 연결 — 양방향 검증(hg4j가 실제 hg의 충돌 상태를 읽고, 실제 hg의 `resolve --list`가 hg4j가 쓴 상태를 읽음, `MergeStateInteropTest`). `ResolveCommand`도 레거시 v1에서 `MergeState`(state2) 기반으로 전면 재작성해 list/markResolved/markUnresolved를 실제 hg와 양방향 interop까지 검증 완료(백로그 1번) |
 | 트랜잭션 저널링 / 크래시 복구 (`recover`, `rollback`) | `hg help internals.transaction`(트랜잭션/저널 파일 포맷) | `api.CommitCommand`, `api.FetchCommand`, `api.RebaseCommand`, `api.RollbackCommand`, `api.HisteditCommand`, `lib.HgRepository.checkAndPerformAutoRollback()` | ✅ **구현 완료(2026-09-01)** — 크래시 자동복구(commit/fetch/pull/rebase/amend/graft/remove/rename/merge/strip/**histedit** 경로 전부 커버)와 `RollbackCommand` 둘 다 실제 hg CLI로 검증(`RollbackRealHgInteropTest`). **완료 과정에서 발견한 실제 갭**: `FetchCommand`가 undo 정보를 안 남겨서 pull 직후에는 rollback이 전혀 동작하지 않았음(가장 흔한 실사용 시나리오) — 수정 완료. `histedit`도 journal 미적용이었으나 TDD로 수정 완료. 상세: [[journaling-crash-recovery-plan]] |
@@ -848,6 +848,33 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     코드 변경 없이 사용자 확인만 필요한 아키텍처 수준 결정이 발견돼 아래 각
     카테고리 문단에 표시해뒀다** — 코디네이터가 정리해 별도로 보고할 예정.
 
+    **아키텍처 결정 6건 — 전부 사용자 확정(2026-09-04)**: 아래 각 카테고리
+    문단에 흩어져 있던 "사용자 확인 필요" 항목 6개를 모아 `AskUserQuestion`으로
+    확인, 전부 "정석대로 완전히 구현" 방향으로 확정됨(코드는 아직 미착수 —
+    이 결정 기록 다음에 순서대로 구현 예정):
+    1. `HeadsCommand.call()`(인자 없는 기본 호출) → **real hg의 실제 `hg heads`
+       시맨틱(브랜치별 head 전부)으로 고침**(브레이킹 체인지 감수, 기존
+       `--topo` 동작은 명시적 옵션으로만 유지).
+    2. subrepo 미체크아웃 상태에서 부모 커밋 시 `.hgsubstate` 처리 →
+       **real hg와 동일하게 null 리비전으로 리셋**(기존 "보존" 방식 폐기 —
+       `HgSubrepoTest`/`UpdateCommandTest`의 의존 케이스 갱신 필요).
+    3. rebase의 물리적 strip+marker 동시 수행 → **strip을 그만두고 marker만
+       남기는 evolution 방식으로 전환**(원본 리비전은 hidden으로 보존,
+       `RebaseRealHgInteropTest`의 "unknown revision" 기대값을 "hidden"으로
+       갱신 필요).
+    4. rebase 충돌 감지 → **`MergeCommand`의 3-way merge 인프라를 cherry-pick
+       경로에 이식**(conflict marker+exit 1+`resolve`/`--continue`/`--abort`까지
+       real hg와 동등하게).
+    5. `unshelve`의 rebase 필요 시나리오(충돌 포함) → **real hg의
+       임시커밋+rebase+merge+strip 알고리즘을 지금 이식**(항목 4의 merge
+       인프라를 재사용할 것).
+    6. `PushCommand`의 `checkheads()` 포트 → **obsolescence-marker 예외,
+       bookmark-head 예외까지 지금 마저 포팅**.
+
+    구현 순서: 4(rebase 3-way merge 인프라)를 먼저 완성한 뒤 그 인프라를
+    재사용해 3(rebase evolution 전환)과 5(unshelve rebase화)를 이어서 진행,
+    1/2/6은 서로 독립적이라 병행 가능.
+
     **commit**: ✅ **완료(2026-09-04)**. 머지 커밋(부모 2개, `p2` 필드 정확성) —
     특히 심볼릭 링크/실행권한/바이너리 파일이 섞인 머지, `hg commit
     --close-branch`, 빈 커밋(파일 변경 없이 메시지만), extra 필드가 여러 개
@@ -889,6 +916,8 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `HgRemoteClient`(HTTP)에 구현 — SSH는 기본 폴백만, 미구현). **이 판단이
     맞는지, 또는 obsolescence-marker 예외 처리·bookmark-head 예외 등 real hg의
     나머지 세부 규칙까지 완전히 포팅해야 하는지는 사용자 확인이 필요하다.**
+    **→ 결정(2026-09-04): 나머지 규칙까지 마저 포팅하는 쪽으로 확정**(위
+    "아키텍처 결정 6건" 참고).
     **실제 버그 발견 및 수정(architecture-level 아님, PushCommand 내부
     로직 수정)**: (1) cg1 changegroup 패킹 시 각 그룹(changelog/manifest/
     파일별 filelog)의 **첫 엔트리**의 델타 베이스를 "로컬 rev 인덱스상
@@ -961,6 +990,8 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     바꾸는 건 기존 공개 API 시맨틱을 바꾸는 것이라 이번 세션에서는 손대지 않고
     `setBranch`를 통한 명시적 필터 기능만 추가했다. 기본 동작을 real hg의
     `hg heads` 시맨틱에 맞출지(브레이킹 체인지) 여부는 사용자 확인이 필요하다.
+    **→ 결정(2026-09-04): real hg 시맨틱으로 고치는 쪽으로 확정**(위
+    "아키텍처 결정 6건" 참고, 구현은 이후 순서대로 진행).
 
     **merge**: ✅ **완료(2026-09-04)**. fast-forward는 이미 부분 검증돼 있었고,
     진짜 3-way merge(공통 조상에서 양쪽이 다른 파일을 수정 — 충돌 없음)와 서로
@@ -1149,6 +1180,10 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     충돌은 존재하지 않는다고 가정")를 건드리는 결정이라 이 세션에서 임의로
     정하지 않았다. 각각 실제 hg 동작과의 구체적 차이를 위에 재현 테스트와 함께
     기록해뒀다.
+    **→ 결정(2026-09-04): 둘 다 "정석대로 완전 구현" 확정** — strip 중단하고
+    marker만 남기는 evolution 방식으로 전환 + `MergeCommand`의 3-way merge
+    인프라를 cherry-pick에 이식(conflict marker/exit 1/`resolve`/`--continue`/
+    `--abort`까지)(위 "아키텍처 결정 6건" 참고).
 
     **테스트**: `RebaseRealHgInteropTest`(4개: 충돌 없는 rebase 검증, obsolescence
     marker가 real hg 관점에서 unknown revision이 됨을 확인, 평범한 real hg
@@ -1242,6 +1277,8 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
       나는 경우는 검증하지 않았다 — 이걸 채우려면 hg4j `ShelveCommand`에 진짜 rebase/merge
       기반 unshelve를 새로 얹는 아키텍처 수준 작업이 필요해 보인다(현재 hg4j는 그런
       인프라가 없음). 이 결정(할지/언제 할지)은 사용자 확인 필요.
+      **→ 결정(2026-09-04): 지금 구현하는 쪽으로 확정**(rebase 3-way merge
+      인프라 이식과 함께 진행, 위 "아키텍처 결정 6건" 참고).
 
 24. ~~**`HgHttpWireServer`/`HgSshWireServer`가 외부 프로세스의 저장소 변경을 못 보고
     stale `Revlog` 캐시를 계속 서빙함**~~ — ✅ **완료(2026-09-03)**. 백로그 22번

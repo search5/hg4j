@@ -1,7 +1,9 @@
 package io.github.search5.hg4j.treewalk;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import io.github.search5.hg4j.treewalk.PathFilter;
 
@@ -82,5 +84,187 @@ public abstract class HgTreeFilter implements PathFilter {
                 return false;
             }
         };
+    }
+
+    /**
+     * A single normalized narrowspec pattern, mirroring real hg's
+     * {@code mercurial/narrowspec.py} data model: a validated {@code kind} (only
+     * {@code "path"} or {@code "rootfilesin"} are legal on-disk) plus the POSIX-style
+     * path with any trailing {@code "/"} stripped.
+     */
+    public static final class NarrowPattern {
+        public final String kind;
+        public final String path;
+
+        private NarrowPattern(String kind, String path) {
+            this.kind = kind;
+            this.path = path;
+        }
+
+        /** Renders back to the {@code "kind:path"} textual form stored in narrowspec files. */
+        public String toSpecString() {
+            return kind + ":" + path;
+        }
+
+        @Override
+        public String toString() {
+            return toSpecString();
+        }
+    }
+
+    /**
+     * Normalizes and validates a single user-supplied narrow pattern exactly like real hg's
+     * {@code narrowspec.normalizepattern()}/{@code _validatepattern()}: defaults to the
+     * {@code path:} kind when no recognized prefix is present, strips a single trailing
+     * {@code "/"}, and rejects patterns real hg would abort on (an unsupported kind prefix
+     * such as {@code glob:}/{@code re:}, embedded {@code "."}/{@code ".."} components, empty
+     * path components, or leading/trailing whitespace).
+     *
+     * @throws IllegalArgumentException if the pattern is not a legal narrowspec pattern
+     */
+    public static NarrowPattern normalizeNarrowPattern(String pattern) {
+        if (pattern == null) {
+            throw new IllegalArgumentException("Narrow pattern cannot be null");
+        }
+        String kind;
+        String pat;
+        if (pattern.startsWith("path:")) {
+            kind = "path";
+            pat = pattern.substring("path:".length());
+        } else if (pattern.startsWith("rootfilesin:")) {
+            kind = "rootfilesin";
+            pat = pattern.substring("rootfilesin:".length());
+        } else {
+            int colon = pattern.indexOf(':');
+            if (colon > 0 && isLikelyKindPrefix(pattern.substring(0, colon))) {
+                throw new IllegalArgumentException(
+                        "invalid prefix on narrow pattern: " + pattern
+                                + " (narrow patterns must begin with one of: path:, rootfilesin:)");
+            }
+            kind = "path";
+            pat = pattern;
+        }
+
+        while (pat.endsWith("/")) {
+            pat = pat.substring(0, pat.length() - 1);
+        }
+
+        if (!pat.equals(pat.strip())) {
+            throw new IllegalArgumentException(
+                    "leading or trailing whitespace is not allowed in narrowspec paths: " + pattern);
+        }
+        if (pat.contains("\n")) {
+            throw new IllegalArgumentException("newlines are not allowed in narrowspec paths");
+        }
+        if (!pat.isEmpty()) {
+            for (String component : pat.split("/", -1)) {
+                if (component.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "empty path components are not allowed in narrowspec paths: " + pattern);
+                }
+                if (component.equals(".") || component.equals("..")) {
+                    throw new IllegalArgumentException(
+                            "\".\" and \"..\" are not allowed in narrowspec paths: " + pattern);
+                }
+            }
+        }
+
+        return new NarrowPattern(kind, pat);
+    }
+
+    private static boolean isLikelyKindPrefix(String candidate) {
+        // A conservative allowlist of prefixes real hg (or its sparse/fileset machinery) would
+        // recognize as an explicit pattern kind. Anything else (e.g. a Windows drive letter, or
+        // a bare directory name that happens to contain ':') is treated as a plain path.
+        switch (candidate) {
+            case "path":
+            case "rootfilesin":
+            case "glob":
+            case "re":
+            case "relglob":
+            case "relpath":
+            case "relre":
+            case "rootglob":
+            case "set":
+            case "include":
+            case "subinclude":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Builds a matcher that reproduces real hg's {@code mercurial/narrowspec.py} matching
+     * semantics exactly (verified against hg 7.2's {@code narrow} extension), rather than the
+     * simplified/generic prefix semantics of {@link #createPathPrefixFilter}:
+     * <ul>
+     *   <li>Patterns must already be normalized (see {@link #normalizeNarrowPattern}) -- only the
+     *       {@code path:} and {@code rootfilesin:} kinds are honored.</li>
+     *   <li>{@code path:foo} matches {@code foo} itself and anything under the {@code foo/}
+     *       directory (component-boundary aware: it does NOT match a sibling like
+     *       {@code foobar/baz}), matching real hg byte-for-byte.</li>
+     *   <li>{@code path:} (empty path, i.e. the repo root / {@code path:.}) matches every path.</li>
+     *   <li>{@code rootfilesin:foo} matches only files directly inside {@code foo/} -- not nested
+     *       subdirectories, and not {@code foo} itself.</li>
+     *   <li>Excludes always win over includes.</li>
+     *   <li>If no include patterns are given at all, real hg's {@code narrowspec.match()} returns
+     *       its "never" matcher -- so, matching that, this returns a filter that accepts nothing.
+     *       (This differs deliberately from {@link #createPathPrefixFilter}'s generic
+     *       "no includes means accept everything" default, which exists for non-narrow callers.)</li>
+     * </ul>
+     */
+    public static HgTreeFilter createNarrowSpecFilter(Collection<NarrowPattern> includes, Collection<NarrowPattern> excludes) {
+        final List<NarrowPattern> inc = includes != null ? new ArrayList<>(includes) : List.of();
+        final List<NarrowPattern> exc = excludes != null ? new ArrayList<>(excludes) : List.of();
+
+        return new HgTreeFilter() {
+            @Override
+            public boolean accept(String path) {
+                if (path == null) {
+                    return false;
+                }
+                String normalized = path;
+                while (normalized.startsWith("/")) {
+                    normalized = normalized.substring(1);
+                }
+                while (normalized.endsWith("/")) {
+                    normalized = normalized.substring(0, normalized.length() - 1);
+                }
+
+                for (NarrowPattern ex : exc) {
+                    if (matchesPattern(ex, normalized)) {
+                        return false;
+                    }
+                }
+                if (inc.isEmpty()) {
+                    return false;
+                }
+                for (NarrowPattern in : inc) {
+                    if (matchesPattern(in, normalized)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        };
+    }
+
+    private static boolean matchesPattern(NarrowPattern pattern, String path) {
+        if ("rootfilesin".equals(pattern.kind)) {
+            if (pattern.path.isEmpty()) {
+                return !path.contains("/");
+            }
+            if (!path.startsWith(pattern.path + "/")) {
+                return false;
+            }
+            String remainder = path.substring(pattern.path.length() + 1);
+            return !remainder.isEmpty() && !remainder.contains("/");
+        }
+        // "path" kind (the default).
+        if (pattern.path.isEmpty()) {
+            return true; // path:. / path: matches the whole tree
+        }
+        return path.equals(pattern.path) || path.startsWith(pattern.path + "/");
     }
 }

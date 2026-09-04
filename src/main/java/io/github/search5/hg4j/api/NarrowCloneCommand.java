@@ -63,34 +63,89 @@ public final class NarrowCloneCommand {
         HgRepository repo = Hg.init().setDirectory(directory).call();
         Hg hg = Hg.wrap(repo);
 
-        // 2. Add narrow paths requirements inside .hg/requires to mark as narrow clone
+        // 2. Normalize/validate patterns exactly like real hg's narrowspec.normalizepattern():
+        // default to the "path:" kind, strip a trailing "/", reject "."/".."/empty components
+        // and unsupported kind prefixes (glob:/re:/etc are not legal in a narrowspec).
+        List<HgTreeFilter.NarrowPattern> normalizedIncludes = new ArrayList<>();
+        for (String inc : includePaths) {
+            normalizedIncludes.add(HgTreeFilter.normalizeNarrowPattern(inc));
+        }
+        List<HgTreeFilter.NarrowPattern> normalizedExcludes = new ArrayList<>();
+        for (String ex : excludePaths) {
+            normalizedExcludes.add(HgTreeFilter.normalizeNarrowPattern(ex));
+        }
+
+        // 3. Mark the repository as a narrow clone. Real hg (verified against hg 7.2's "narrow"
+        // extension) records this as the "narrowhg-experimental" requirement in .hg/requires --
+        // NOT a "narrowspec" requirement.
         File requiresFile = new File(repo.getHgDir(), "requires");
         List<String> requirements = new ArrayList<>(Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8));
-        requirements.add("narrowspec");
+        requirements.add("narrowhg-experimental");
         SafeFileIO.writeLinesAtomic(requiresFile, requirements);
 
-        // 3. Establish pull with TreeFilter integration (emulates narrow clone segment mapping)
-        HgTreeFilter pathFilter = HgTreeFilter.createPathPrefixFilter(includePaths, excludePaths);
-        
-        // Setup narrow paths specifications
-        File narrowSpecFile = new File(repo.getHgDir(), "narrowspec");
-        StringBuilder sb = new StringBuilder();
-        sb.append("[includes]\n");
-        for (String inc : includePaths) {
-            sb.append(inc).append("\n");
-        }
-        sb.append("[excludes]\n");
-        for (String ex : excludePaths) {
-            sb.append(ex).append("\n");
-        }
-        SafeFileIO.writeStringAtomic(narrowSpecFile, sb.toString());
+        // 4. Write the narrowspec itself. Real hg keeps two copies: the authoritative one in
+        // .hg/store/narrowspec (server/store side, format() in mercurial/narrowspec.py: a
+        // "[include]"/"[exclude]" ini-like format, singular section names, sorted "kind:path"
+        // patterns with includes-minus-excludes written under [include]) and a working-copy
+        // mirror at .hg/narrowspec.dirstate (mercurial/narrowspec.py:copytoworkingcopy) which
+        // starts out identical right after clone.
+        String specText = formatNarrowSpec(normalizedIncludes, normalizedExcludes);
+        File storeNarrowSpecFile = new File(repo.getStoreDir(), "narrowspec");
+        SafeFileIO.writeStringAtomic(storeNarrowSpecFile, specText);
+        File dirstateNarrowSpecFile = new File(repo.getHgDir(), "narrowspec.dirstate");
+        SafeFileIO.writeStringAtomic(dirstateNarrowSpecFile, specText);
+
+        // 5. Establish pull with TreeFilter integration (emulates narrow clone segment mapping).
+        // Uses the narrow-spec-correct matcher (path:/rootfilesin: with component-boundary
+        // matching, "no includes" == match nothing) rather than the generic
+        // createPathPrefixFilter, which intentionally has different (non-narrow) defaults for
+        // its other callers.
+        HgTreeFilter pathFilter = HgTreeFilter.createNarrowSpecFilter(normalizedIncludes, normalizedExcludes);
 
         // Perform the standard SCM clone/pull
         hg.pull().setSource(sourceUrl).setTreeFilter(pathFilter).call();
 
-        // 4. sparse working copy update
+        // 6. sparse working copy update
         hg.update().setTreeFilter(pathFilter).call();
 
         return hg;
+    }
+
+    /**
+     * Renders the narrowspec text exactly like real hg's {@code narrowspec.format()}: a
+     * "[include]" section (only emitted when includes is non-empty) listing
+     * {@code sorted(includes - excludes)}, followed by an "[exclude]" section (only emitted when
+     * excludes is non-empty) listing the sorted excludes.
+     */
+    private static String formatNarrowSpec(List<HgTreeFilter.NarrowPattern> includes, List<HgTreeFilter.NarrowPattern> excludes) {
+        List<String> excludeStrings = new ArrayList<>();
+        for (HgTreeFilter.NarrowPattern ex : excludes) {
+            excludeStrings.add(ex.toSpecString());
+        }
+
+        StringBuilder sb = new StringBuilder();
+        if (!includes.isEmpty()) {
+            List<String> includeStrings = new ArrayList<>();
+            for (HgTreeFilter.NarrowPattern inc : includes) {
+                String s = inc.toSpecString();
+                if (!excludeStrings.contains(s)) {
+                    includeStrings.add(s);
+                }
+            }
+            includeStrings.sort(null);
+            sb.append("[include]\n");
+            for (String s : includeStrings) {
+                sb.append(s).append("\n");
+            }
+        }
+        if (!excludeStrings.isEmpty()) {
+            List<String> sortedExcludes = new ArrayList<>(excludeStrings);
+            sortedExcludes.sort(null);
+            sb.append("[exclude]\n");
+            for (String s : sortedExcludes) {
+                sb.append(s).append("\n");
+            }
+        }
+        return sb.toString();
     }
 }

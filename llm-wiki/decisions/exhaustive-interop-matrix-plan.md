@@ -251,7 +251,14 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `DirstateV2RealFixtureTest`는 동일 조합의 라이브 커버리지가 이미 있는 곳(Docker
   매트릭스 파일)으로의 javadoc 상호 참조만 추가(같은 저장소 상태를 검증하는 3~4번째
   중복 하니스를 만들지 않기 위한 판단).
-- [ ] 나머지 58개 로컬 명령 — 미착수
+- [ ] 나머지 58개 로컬 명령 — 대부분 미착수. **Wave 1(2026-09-05, 백로그 #39)**:
+  우선순위 4개(`PushCommand`/`RebaseCommand`/`ShelveCommand`/`StripCommand`)에
+  36개 조합(native 6 + Docker 30) 적용 완료 — `RebaseCommand`/`StripCommand`/
+  `ShelveCommand` 3개는 전부 GREEN(그 과정에서 `Revlog.truncate()` 통합으로
+  실버그 2건 수정), `PushCommand`는 treemanifest dirlog 미전송 + changelog-v2
+  sidedata 미전송 2개의 실버그가 남아 native 2/6·Docker 14/30만 GREEN(원인
+  규명 완료, 수정은 다음 wave). 상세는 [[mercurial-spec-compliance-requirement]]
+  백로그 #39 참고. 나머지 54개 명령은 여전히 미착수.
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

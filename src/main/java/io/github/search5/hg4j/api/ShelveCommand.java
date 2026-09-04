@@ -23,9 +23,7 @@ import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.treewalk.ManifestWalk;
-import java.nio.channels.FileChannel;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Objects;
@@ -1336,33 +1334,22 @@ public class ShelveCommand {
     private void stripRevisionsFrom(int startRev) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         Revlog changelog = repository.getRevlog(clIdx, clDat);
         Revlog manifest = repository.getManifestRevlog();
 
-        // Calculate truncate boundaries. Real hg's "inline" revlog format (the default for a
-        // small revlog -- confirmed the common case for a real-hg-authored repo's
-        // changelog/manifest/filelogs, e.g. ShelveRealHgInteropTest's realHgShelveCanBeUnshelvedByHg4j,
-        // 2026-09-04) packs each revision's compressed DATA directly after its own 64-byte index
-        // header, all within the single .i file -- there is no .d file at all until/unless the
-        // revlog later crosses hg's inline-size threshold and gets rewritten as non-inline. A
-        // plain `rev * 64` byte offset (correct only for a NON-inline revlog, whose .i file holds
-        // nothing but fixed-size 64-byte headers) truncates mid-record for an inline one,
-        // corrupting it -- this method previously always used that formula, which was never
-        // exercised against a real-hg-authored (inline) revlog before this class started actually
-        // creating and stripping a real temporary commit during unshelve. Use the revlog's own
-        // recorded per-revision file offset (Revlog.getFileOffset(), tracked by RevlogIndex's own
-        // reader precisely for this purpose) instead, whenever Revlog.isInline() says so.
-        long clIdxSize;
-        long clDatSize = clDat.exists() ? clDat.length() : 0L;
-        if (changelog.isInline()) {
-            clIdxSize = changelog.getFileOffset(startRev);
-        } else {
-            clIdxSize = (long) startRev * 64;
-            clDatSize = (startRev > 0) ? changelog.getIndexRecord(startRev).getOffset() : 0;
-        }
+        // Truncation itself (inline-vs-non-inline v1 branching, plus v2/docket-based end-pointer
+        // bookkeeping) is delegated to the shared Revlog.truncate(int) -- see its javadoc for the
+        // full history of what a hand-rolled version of this used to get wrong. This method
+        // previously had its own near-duplicate of that logic which, like StripCommand's
+        // (backlog #39, requirement-matrix expansion, 2026-09-05), handled ONLY the non-inline-v1
+        // case: for a changelog-v2 repository it truncated the v2 DOCKET header file (```
+        // 00changelog.i```) to a flat `startRev * 64` bytes -- nowhere near the docket's real
+        // ~83-byte header shape -- corrupting it so badly that the very next open threw
+        // BufferUnderflowException reading the docket's UID fields. Confirmed reproducible via
+        // the "cl2"/"cl2+sidedata" requirement-matrix combos in
+        // RequirementMatrixShelveCoreRoundTripTest.
+        changelog.truncate(startRev);
 
         // We also truncate manifest starting from the linkRev mapping to startRev
         int minMfRev = -1;
@@ -1372,17 +1359,7 @@ public class ShelveCommand {
                 break;
             }
         }
-
-        long mfIdxSize = mfIdx.exists() ? mfIdx.length() : 0L;
-        long mfDatSize = mfDat.exists() ? mfDat.length() : 0L;
-        if (minMfRev != -1) {
-            if (manifest.isInline()) {
-                mfIdxSize = manifest.getFileOffset(minMfRev);
-            } else {
-                mfIdxSize = (long) minMfRev * 64;
-                mfDatSize = (minMfRev > 0) ? manifest.getIndexRecord(minMfRev).getOffset() : 0;
-            }
-        }
+        manifest.truncate(minMfRev != -1 ? minMfRev : manifest.getRevisionCount());
 
         // Truncate filelogs registered in fncache
         File fncacheFile = new File(repository.getStoreDir(), "fncache");
@@ -1405,39 +1382,12 @@ public class ShelveCommand {
                                 }
                             }
                             if (minFileRev != -1) {
-                                long flIdxSize;
-                                long flDatSize = flDat.exists() ? flDat.length() : 0L;
-                                if (filelog.isInline()) {
-                                    flIdxSize = filelog.getFileOffset(minFileRev);
-                                } else {
-                                    flIdxSize = (long) minFileRev * 64;
-                                    flDatSize = (minFileRev > 0) ? filelog.getIndexRecord(minFileRev).getOffset() : 0;
-                                }
-                                truncateFile(flIdx, flIdxSize);
-                                truncateFile(flDat, flDatSize);
+                                filelog.truncate(minFileRev);
                             }
                         } catch (Exception ignored) {
                         }
                     }
                 }
-            }
-        }
-
-        // Perform truncate physically
-        truncateFile(clIdx, clIdxSize);
-        truncateFile(clDat, clDatSize);
-        truncateFile(mfIdx, mfIdxSize);
-        truncateFile(mfDat, mfDatSize);
-    }
-
-    private void truncateFile(File file, long size) throws IOException {
-        if (!file.exists()) return;
-        if (size == 0) {
-            Files.deleteIfExists(file.toPath());
-        } else {
-            try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
-                outChan.truncate(size);
-                outChan.force(true);
             }
         }
     }

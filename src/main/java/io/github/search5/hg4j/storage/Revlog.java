@@ -8,6 +8,7 @@ import com.github.luben.zstd.Zstd;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -220,6 +221,143 @@ public class Revlog {
      */
     public synchronized long getFileOffset(int rev) {
         return index.getFileOffset(rev);
+    }
+
+    /**
+     * Truncates this revlog in place so only revisions {@code [0, keepCount)} survive, handling
+     * all three on-disk layouts uniformly -- used by {@code StripCommand}. Must be called on a
+     * {@code Revlog} instance loaded from the still-untruncated files (its own {@code
+     * getIndexRecord}/{@code getFileOffset} reads must reflect the PRE-truncation state to compute
+     * the correct cut points), and only once per instance (its own view of the revlog is stale
+     * afterwards -- callers must {@code clearRevlogCache()} the owning repository before reopening
+     * it).
+     *
+     * <ol>
+     *   <li><b>v2 / docket-based</b> (changelog-v2 or general-v2, {@link RevlogIndex#isV2()}):
+     *   the physical index/data companion files are resolved via the docket's UUIDs (not {@code
+     *   idxFile}/{@code datFile} literally), records are a fixed {@value RevlogIndex#V2_RECORD_SIZE}
+     *   bytes each, and the docket header's own {@code index_end}/{@code data_end} fields (plus
+     *   their {@code pending} twins) must be rewritten to match or a later reopen sees stale
+     *   lengths and real hg rejects the revlog as corrupt ({@link
+     *   RevlogIndex#updateV2DocketSizes(long, long)}).
+     *   <li><b>inline v1</b> ({@link #isInline()}): data is interleaved with each 64-byte header
+     *   directly inside {@code idxFile}, no separate data file exists at all -- only {@code
+     *   idxFile} is truncated, to {@link #getFileOffset} of the first discarded revision (which
+     *   already accounts for every preceding revision's interleaved bytes).
+     *   <li><b>non-inline v1</b>: the original fixed-64-bytes-per-record {@code idxFile} truncation
+     *   plus an exact-byte-offset {@code datFile} truncation (never the old "assume every revision
+     *   is the same size" estimate -- see the {@code StripCommand} history this replaced).
+     * </ol>
+     *
+     * <p>Found and fixed 2026-09-05 (backlog #39, requirement-matrix expansion to {@code
+     * StripCommand}): the pre-existing {@code StripCommand.truncateRevlog} private helper this
+     * replaces handled ONLY the non-inline-v1 case, silently corrupting every inline-v1 manifest/
+     * filelog it stripped (real hg then aborts outright with "index 00manifest is corrupted" --
+     * this was the actual root cause of {@code StripRealHgInteropTest}'s two long-standing,
+     * previously-undiagnosed pre-existing failures) and every v2/docket-based changelog it
+     * stripped (real hg's {@code verify} then reports "changeset refers to unknown revision",
+     * since the stale docket end-pointers kept advertising revisions whose bytes had just been
+     * cut off the companion files).
+     */
+    public synchronized void truncate(int keepCount) throws IOException {
+        if (index.isV2()) {
+            File resolvedIdx = index.getResolvedIndexFile();
+            File resolvedDat = index.getResolvedDataFile();
+            long newIndexEnd = (long) keepCount * RevlogIndex.V2_RECORD_SIZE;
+            long newDataEnd;
+            if (keepCount == 0) {
+                newDataEnd = 0;
+            } else if (keepCount < getRevisionCount()) {
+                newDataEnd = getIndexRecord(keepCount).getOffset();
+            } else {
+                newDataEnd = (resolvedDat != null && resolvedDat.exists()) ? resolvedDat.length() : 0;
+            }
+            if (resolvedIdx != null && resolvedIdx.exists()) {
+                try (RandomAccessFile raf = new RandomAccessFile(resolvedIdx, "rw")) {
+                    raf.setLength(newIndexEnd);
+                }
+            }
+            if (resolvedDat != null && resolvedDat.exists()) {
+                try (RandomAccessFile raf = new RandomAccessFile(resolvedDat, "rw")) {
+                    raf.setLength(newDataEnd);
+                }
+            }
+            index.updateV2DocketSizes(newIndexEnd, newDataEnd);
+            return;
+        }
+
+        if (!idxFile.exists()) {
+            return;
+        }
+
+        if (inline) {
+            if (keepCount == 0) {
+                // DELETE rather than zero-length: a zero-length-but-still-EXISTING .i file makes
+                // this same file's own constructor treat a later reopen as "existing" (`isNewRevlog
+                // = !idxFile.exists()` is false) instead of "brand new", which reads `index.isInline()`
+                // off the (empty, no records to read flags from) file instead of defaulting to
+                // inline -- found 2026-09-05 via a regression in
+                // ShelveRealHgInteropTest#unshelveAbortRestoresPreUnshelveStateAndKeepsShelfUsable
+                // (manifest truncated-to-zero during unshelve-abort, then immediately reopened for
+                // the very next write) after this method's first version used setLength(0) here.
+                // Deleting instead matches what this repository's OWN filelog-truncate-to-zero path
+                // (StripCommand.call()'s `if (flKeepCount == 0) { flIdx.delete(); ... }`, and the
+                // ShelveCommand truncation this method replaced) already did.
+                Files.deleteIfExists(idxFile.toPath());
+                return;
+            }
+            long targetIdxSize;
+            if (keepCount < getRevisionCount()) {
+                targetIdxSize = getFileOffset(keepCount);
+            } else {
+                targetIdxSize = idxFile.length();
+            }
+            try (RandomAccessFile raf = new RandomAccessFile(idxFile, "rw")) {
+                raf.setLength(targetIdxSize);
+            }
+            // Inline revlogs never have a companion .d file -- leave datFile (if one somehow
+            // exists, e.g. stale from an unrelated operation) untouched.
+            return;
+        }
+
+        if (keepCount == 0) {
+            // See the inline branch above for why delete (not zero-length) is required.
+            Files.deleteIfExists(idxFile.toPath());
+            if (datFile != null) {
+                Files.deleteIfExists(datFile.toPath());
+            }
+            return;
+        }
+
+        // Compute the .d target size (and read getRevisionCount()) BEFORE touching idxFile at all
+        // -- found 2026-09-05 via a regression in
+        // ShelveRealHgInteropTest#unshelveAbortRestoresPreUnshelveStateAndKeepsShelfUsable:
+        // truncating idxFile FIRST and only THEN calling getRevisionCount()/getIndexRecord() for
+        // the .d computation is wrong, because RevlogIndex.checkAndUpdate() notices idxFile's size
+        // just changed (its own physical file, bypassed via RandomAccessFile rather than through
+        // the index's normal write path) and eagerly re-derives revisionCount from the
+        // now-ALREADY-shrunk .i file -- so `keepCount < getRevisionCount()` silently flips from
+        // true to false mid-computation and the .d file is left completely untruncated (real hg's
+        // `hg verify` then reports "changelog@?: data length off by N bytes", N being exactly the
+        // stripped revision's own compLen). Mirrors why StripCommand's original bug report (see
+        // this method's own class javadoc) insisted on reading offsets from the still-untruncated
+        // revlog before mutating anything.
+        long targetDatSize = -1;
+        if (datFile != null && datFile.exists()) {
+            targetDatSize = (keepCount < getRevisionCount())
+                    ? getIndexRecord(keepCount).getOffset()
+                    : datFile.length();
+        }
+
+        long keepIndexLength = (long) keepCount * 64;
+        try (RandomAccessFile rafIdx = new RandomAccessFile(idxFile, "rw")) {
+            rafIdx.setLength(keepIndexLength);
+        }
+        if (targetDatSize >= 0) {
+            try (RandomAccessFile rafDat = new RandomAccessFile(datFile, "rw")) {
+                rafDat.setLength(targetDatSize);
+            }
+        }
     }
 
     /**

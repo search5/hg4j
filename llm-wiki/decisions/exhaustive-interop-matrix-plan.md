@@ -267,6 +267,73 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `NarrowCloneCommand` — 미착수
 
 ## 관련 페이지
-[[mercurial-spec-compliance-requirement]] (백로그 29~36 — 이 매트릭스와 별개로,
+[[mercurial-spec-compliance-requirement]] (백로그 29~40 — 이 매트릭스와 별개로,
 "완료" 표시 항목 안에 남은 개별 기능 gap을 다룬다), [[test-coverage-95-percent-initiative]]
 (BRANCH 커버리지 부채 — 이 매트릭스와 마찬가지로 real-hg interop과는 다른 축의 안전망).
+
+## 인수인계 (2026-09-04 17:50, 다른 세션/다른 머신에서 이어서 진행하기 위함)
+
+이 세션(session_01FSm18kLTZDAcdHuivJuZ8t)은 사용자 지시로 17:50에 작업을
+중지했다. 아래는 완료 여부와 무관하게 그 시점의 정확한 상태다.
+
+### 지금 어디까지 됐는지 (커밋 `ce767fa` 기준)
+- **완료·검증됨**: requirement 매트릭스 36개 조합(native 6 + Docker 30) +
+  wire 매트릭스 21개 조합, 4개 명령(commit/log/status/cat)+3개 명령
+  (clone/pull/push) 한정으로 전부 양방향(쓰기 포함) GREEN. 기존 fixture
+  테스트 7개도 라이브 쓰기 검증으로 보강 완료. [[mercurial-spec-compliance-requirement]]
+  백로그 29/30/31/33/34/36/37 완료, 그 과정에서 발견한 실버그(changelog-v2
+  zstd/zlib 혼동, dirstate-v2 트리 손상, narrow clone 캐시 버그, LFS 노드
+  해시 계산 오류, `Hg.open()`의 낡은 requirement 허용목록, SSH push
+  checkheads 미구현)까지 전부 수정·커밋됨.
+- **미검증 상태로 커밋됨(주의)**: 백로그 35(revlog 항상 non-inline)의 재시도
+  결과가 `Revlog.java` 등에 반영돼 있으나, 정지 시각까지 독립적인 전체 회귀
+  재확인을 못 마쳤다. 코드 내 주석은 완료를 시사하지만(3개 append* 메서드
+  모두 inline-aware하게 고쳤다는 기록) **다음 세션이 반드시 가장 먼저
+  `./gradlew test && ./gradlew interopTest`를 다른 gradle 빌드 없이 단독
+  으로 완주시켜 확인해야 한다**. 문제가 있으면 커밋 `9aba692`(그 이전, 안전
+  검증된 지점)로 해당 파일들만 되돌리는 것을 고려할 것.
+- **완전히 미착수**: 백로그 32(subrepo 4건 — 31 완료로 이제 착수 가능),
+  38(동시 push 레이스 컨디션), 39(매트릭스를 나머지 60개 명령으로 확장),
+  40(narrow clone 진짜 wire-protocol ellipsis node).
+
+### 재현에 필요한 환경 정보
+- **Docker**: `localhost/hg-rust-7.2.4` 이미지가 이미 빌드돼 있음
+  (`docker/hg-rust-7.2.4/Dockerfile`) — Rust 확장 포함 실제 Mercurial
+  7.2.4, `persistent-nodemap`/`fileindex-v1`/`general-v2`/`dirstate-v2`
+  전부 이 이미지에서만 저장소 생성 가능(순정 파이썬 hg는 "without
+  associated fast implementation"으로 거부).
+- **`RequirementMatrixCommitHelperMain.java`**(`src/test/java/.../api/`):
+  같은 JVM에서 hg4j `CommitCommand` 실행과 `docker exec`/`docker run`
+  프로세스 스폰을 번갈아 하면 커밋이 비결정적으로 깨지는 버그를 별도
+  서브프로세스로 우회하는 헬퍼 — Docker 관련 신규 테스트를 짤 때 반드시
+  재사용할 것, 새로 만들지 말 것.
+- **gradle 태스크**: `test`(기본, `@Tag("interop")` 제외, 빠름)와
+  `interopTest`(real hg CLI/Docker 필요, 느림)로 분리돼 있음(2026-09-04).
+  `check`/`jacocoTestReport`/`jacocoTestCoverageVerification`은 두 태스크의
+  실행 데이터를 합쳐서 커버리지를 계산하므로 정확한 커버리지 게이트
+  확인에는 `check`가 필요하다.
+- **이 머신(M1 Pro, 16GB)의 동시 gradle 빌드 한계는 ~3개** — 초과하면
+  메모리 압박으로 스루풋이 오히려 떨어진다. 빌드 시작 전
+  `ps aux | grep GradleWorkerMain`으로 확인할 것.
+- **공유 컴파일 출력 디렉터리 오염**: `-PagentBuildDir`은 리포트/jacoco
+  출력만 격리하고 `build/classes/java/test` 컴파일 산출물은 격리하지
+  않는다 — 여러 fork가 동시에 `compileTestJava`를 돌리면 서로의 클래스
+  파일을 덮어써서 무관한 테스트가 대량으로 실패하는 것처럼 보인다(이
+  세션에서 최소 4번 독립적으로 관측·확인됨). 회귀 결과를 신뢰하려면
+  **다른 gradle 빌드가 전혀 없는 상태에서 단독 실행**해야 한다.
+- **주의(운영상 교훈)**: 이 세션 중 조정자가 자신의 백그라운드 빌드를
+  정리하려다 `pkill -f GradleWorkerMain`으로 다른 fork의 빌드까지 실수로
+  같이 죽인 사고가 있었다 — 특정 프로세스를 정리할 땐 반드시 정확한 PID로만
+  죽일 것, 패턴 매칭으로 넓게 죽이지 말 것.
+
+### 다음에 할 일 순서(권장)
+1. `./gradlew test && ./gradlew interopTest` 단독 완주로 백로그 35의 안전성
+   확인(가장 시급 — 이미 커밋된 상태라 방치하면 다음 작업이 이 위에 계속
+   쌓인다).
+2. 백로그 32(subrepo 4건) — `CommitCommand.java`/`UpdateCommand.java`를
+   31/35가 이미 여러 번 고쳐놨으니 최신 상태를 반드시 먼저 읽고 시작할 것.
+3. 백로그 38(동시 push 레이스 컨디션).
+4. 백로그 39(매트릭스 확장) — §3의 우선순위(PushCommand/RebaseCommand/
+   ShelveCommand/StripCommand부터) 참고.
+5. 백로그 40(narrow ellipsis node) — 범위가 크므로 별도 세션에서 범위
+   산정부터.

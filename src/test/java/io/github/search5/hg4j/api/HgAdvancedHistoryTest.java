@@ -160,30 +160,37 @@ public class HgAdvancedHistoryTest {
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
 
-        // Rebase should result in:
-        // C0 -> C1 -> C2' (Rebased Feature branch)
-        // C0 -> C3' (Restored Independent branch)
-        // Total revisions should be 4 (C0, C1, C2', C3')
-        assertEquals(4, cl.getRevisionCount(), "History should contain exactly 4 revisions after non-linear rebase.");
+        // Evolution-only rebase (2026-09-04): C2 is never physically stripped/restored -- it
+        // remains exactly where it always was (merely hidden via an obsolescence marker), and the
+        // independent branch C3 was never touched at all. So the post-rebase changelog holds all
+        // 4 original revisions (C0, C1, C2, C3) PLUS the freshly cherry-picked C2' = 5, not the
+        // pre-2026-09-04 4.
+        assertEquals(5, cl.getRevisionCount(), "History should contain 5 revisions after non-linear rebase "
+                + "(C0, C1, C2 kept-but-hidden, C3 untouched, C2').");
 
         // Find the revisions
         int c0Rev = NodeIdUtil.findRevisionByNodeId(cl, c0Node);
         int c1Rev = NodeIdUtil.findRevisionByNodeId(cl, c1Node);
-        
+        int c2Rev = NodeIdUtil.findRevisionByNodeId(cl, c2Node);
+
         // Find C2' (its parent1 must be C1)
         int rebasedFeatureRev = NodeIdUtil.findRevisionByNodeId(cl, rebasedFeatureHead);
         assertTrue(rebasedFeatureRev != -1);
         assertEquals(c1Rev, cl.getIndexRecord(rebasedFeatureRev).getParent1(), "Rebased Feature's parent must be C1.");
 
-        // Find restored C3' (its parent1 must be C0)
-        int restoredIndependentRev = -1;
+        // C2 itself is still present, unmodified, still parented on C0 (now hidden, not gone).
+        assertTrue(c2Rev != -1, "Original C2 must remain fully readable (evolution-only: no physical strip).");
+        assertEquals(c0Rev, cl.getIndexRecord(c2Rev).getParent1());
+
+        // Find the untouched independent branch C3 (its parent1 must be C0, distinct from C2).
+        int independentRev = -1;
         for (int i = 0; i < cl.getRevisionCount(); i++) {
-            if (cl.getIndexRecord(i).getParent1() == c0Rev && i != c1Rev && i != rebasedFeatureRev) {
-                restoredIndependentRev = i;
+            if (cl.getIndexRecord(i).getParent1() == c0Rev && i != c1Rev && i != rebasedFeatureRev && i != c2Rev) {
+                independentRev = i;
                 break;
             }
         }
-        assertTrue(restoredIndependentRev != -1, "Independent branch C3 must be safely restored with C0 as parent1.");
-        assertTrue(new String(cl.getRevisionContent(restoredIndependentRev), StandardCharsets.UTF_8).contains("Commit 3"));
+        assertTrue(independentRev != -1, "Independent branch C3 must remain untouched with C0 as parent1.");
+        assertTrue(new String(cl.getRevisionContent(independentRev), StandardCharsets.UTF_8).contains("Commit 3"));
     }
 }

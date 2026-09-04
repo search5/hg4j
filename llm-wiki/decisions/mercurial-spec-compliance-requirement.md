@@ -1122,40 +1122,96 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
        **이건 이 세션 판단으로 정할 architecture 결정이 아니라 사용자
        확인이 필요하다**(아래 "아키텍처 수준 확인 필요" 참고).
 
-    **또 다른 확인된 갭(버그 수정과 별개, 구현 안 함)**: `hg rebase --continue`/
-    `--abort`에 대응하는 게 hg4j `RebaseCommand`에 전혀 없다. 이유를 실제 hg와
-    대조해 신설 `conflictingEditIsSilentlyOverwrittenInsteadOfDetectedAsConflict`
-    테스트로 확증: real hg는 rebase 중 source/target이 같은 파일을 다르게
-    고치면 3-way merge를 시도하고 진짜 충돌 시 conflict marker를 남기고 exit 1로
-    멈춰 `hg resolve`/`hg rebase --continue`를 요구한다(real hg 7.2로 직접
-    재현: `<<<<<<< dest ... ======= ... >>>>>>> source`, `hg resolve --list`에
-    "U f.txt"). hg4j `RebaseCommand.cherryPickBackup`은 **3-way merge 로직이
-    코드에 아예 없다** — `MergeCommand`가 쓰는 `Merge3`를 전혀 참조하지 않고,
-    target을 체크아웃한 뒤 원본 커밋의 파일 내용을 무조건 덮어쓴다. 그 결과 이
-    시나리오에서 target의 수정 내용이 아무 경고·충돌 표시도 없이 조용히
-    사라지고 source 내용으로 완전히 덮어써진다(silent data loss — real hg라면
-    여기서 멈춰야 할 상황). `--continue`/`--abort`가 없는 것도 이 때문이다:
-    애초에 충돌을 감지하지 않으니 "충돌로 멈춘 중간 상태"가 존재하지 않고,
-    그래서 all-or-nothing(성공 아니면 물리적 rollback)으로 설계돼 있다. **이건
-    이번 세션에서 고치지 않았다** — 제대로 고치려면 `MergeCommand`가 하는
-    3-way merge+conflict-state 인프라를 cherry-pick 경로에도 통째로 들여와야
-    하는 규모 있는 아키텍처 작업이라, 이 세션 판단으로 구현 여부/방식을
-    정하지 않고 증거(실패 재현 테스트)만 남겨 사용자 확인을 요청한다.
+    **→ 결정(2026-09-04): 둘 다 "정석대로 완전 구현" 확정** — 위 두 아키텍처
+    질문(obsolescence marker의 strip-and-mark 동시 수행 여부, rebase conflict
+    감지+3-way merge+`--continue`/`--abort` 구현 여부) 모두 사용자가 "지름길 없이
+    정석대로 완전히 구현하라"고 명시적으로 확정했다. 같은 날 늦게 별도 세션에서
+    두 항목 다 구현 완료.
 
-    **아키텍처 수준 확인 필요(사용자 판단 필요, 코드 변경은 하지 않음)**:
-    위 두 항목(obsolescence marker의 strip-and-mark 동시 수행 여부, rebase
-    conflict 감지+3-way merge+`--continue`/`--abort` 구현 여부)은 모두 hg4j
-    `RebaseCommand`의 근본 설계("항상 물리적 strip, 항상 all-or-nothing,
-    충돌은 존재하지 않는다고 가정")를 건드리는 결정이라 이 세션에서 임의로
-    정하지 않았다. 각각 실제 hg 동작과의 구체적 차이를 위에 재현 테스트와 함께
-    기록해뒀다.
+    **4. evolution-only로 전환(물리적 strip 제거) ✅ 완료** — `RebaseCommand`는
+    이제 원본 리비전을 절대 물리적으로 strip하지 않는다. cherry-pick된 원본은
+    changelog/manifest/filelog에 영원히 완전한 형태로 남고, `HgObsMarker.writeMarker`
+    (predecessor → successor)만 기록된다 — real hg 자신의 두 상호배타적 전략(marker
+    없이 순수 strip, 또는 strip 없이 marker만) 중 후자와 정확히 일치, 이전처럼 둘을
+    동시에 하지 않는다. `stripRevisionsFrom`/`computeTruncateSizes`/`restoreBackup`/
+    `BackupCommit.fileContents` 등 "전체 [minOrigRev,tip] 구간을 통째로 strip한 뒤
+    재구성"하던 옛 설계 전체를 삭제 — 원본이 사라지지 않으므로 "독립 브랜치를
+    물리적으로 복원"할 필요 자체가 없어져 코드가 크게 단순해졌다. 신설
+    `originalRevisionIsHiddenNotGoneAfterRebase` 테스트로 real hg 7.2 CLI 직접
+    검증: `hg log --hidden -r <원본>`이 이제 "unknown revision"이 아니라 원본
+    노드를 그대로 찾고(`{desc}`/`cat` 내용도 원본 그대로), 반대로 `--hidden` 없는
+    평범한 `hg log`/`hg log -G`에는 나타나지 않는다(살아있는 non-obsolete
+    successor가 있어 기본적으로 숨김) — real hg의 evolution 기반 rebase와 동일한
+    결과.
+    - **이 전환 과정에서 드러난 별도의 심각한 버그(예상 밖)**: `Revlog.appendRevision`이
+      새 리비전의 nodeId를 `SHA1(p1,p2,content)`로 계산해두고도, 그 nodeId가 **이미
+      해당 revlog에 존재하는지 전혀 확인하지 않고 무조건 append**하고 있었다. strip
+      기반 설계에서는 rebase 시작 전에 filelog를 통째로 잘라내 버려서 이 경로를 밟은
+      적이 없었지만, evolution-only로 바뀌어 원본이 그대로 남으면서 "target에 없던
+      완전히 새 파일을 cherry-pick"하는 흔한 경우(parent 없음 + 원본과 동일한 내용
+      → 원본과 SHA1 입력이 완전히 같음)마다 **동일한 nodeId를 가진 filelog 리비전
+      2개**가 생겨 real `hg verify`가 즉시 "`duplicate revision 1 (0)`"/"`not in
+      manifests`" integrity error로 잡아냈다(`RebaseRealHgInteropTest`의
+      `conflictFreeRebaseVerifiedByRealHg`로 실제 hg 7.2 검증 중 발견). Real hg
+      자신의 `revlog.addrevision`/`filelog.add`가 항상 하는 "동일 (parents,content)
+      조합이 이미 있으면 기존 리비전을 재사용"을 `Revlog.appendRevision`에 추가해
+      수정 — `RebaseCommand`뿐 아니라 같은 메서드를 쓰는 `ImportCommand`/
+      `HisteditCommand`/`CommitCommand` 전부가 이 잠재 버그의 수혜자다(전체 회귀
+      그대로 GREEN 확인됨). 상세: `src/main/java/io/github/search5/hg4j/storage/Revlog.java`
+      `appendRevision`.
 
-    **테스트**: `RebaseRealHgInteropTest`(4개: 충돌 없는 rebase 검증, obsolescence
-    marker가 real hg 관점에서 unknown revision이 됨을 확인, 평범한 real hg
-    명령에 경고가 섞여 나옴을 확인, 충돌 시나리오에서 silent data loss가
-    현재 동작임을 문서화) 신설, 전부 GREEN(문서화 테스트 포함 — 마지막 두
-    개는 "현재 동작이 이렇다"를 고정하는 assert이지 "이게 옳다"는 assert가
-    아니다).
+    **5. 진짜 3-way merge 충돌 감지 + `continueRebase()`/`abort()` ✅ 완료** —
+    `RebaseCommand`의 cherry-pick 경로가 이제 `MergeCommand`와 같은 `Merge3` 엔진으로
+    실제 3-way merge를 시도한다: ancestor = 원본 리비전 자신의 parent가 갖고 있던
+    파일 내용, local = 현재 목적지(dest, 체인의 이전 cherry-pick 결과 포함)의 내용,
+    other = 원본 리비전이 새로 만든 내용. 정말 겹치면(자동 병합 불가) 충돌 마커를
+    작업 파일에 쓰고(`<<<<<<< dest` / `=======` / `>>>>>>> source`, real hg 7.2의
+    기본 `internal:merge` 마커와 byte-for-byte 일치 — base 섹션 없음, 직접 재현해
+    검증) `io.github.search5.hg4j.errors.HgMergeConflictException`(충돌 경로 목록
+    포함, 새 `getConflictPaths()` 접근자 추가)을 던지며 rebase를 일시정지한다.
+    충돌 파일 상태는 `MergeCommand`가 이미 쓰는 것과 완전히 같은 real-hg 호환
+    포맷(`io.github.search5.hg4j.merge.MergeState`, `.hg/merge/state2`)에 기록되므로
+    real hg CLI `hg resolve --list`가 그 결과를 그대로 읽어 "U f.txt"를 보여준다
+    (직접 검증). `RebaseCommand`에 새 공개 메서드 2개 추가:
+    `continueRebase()`(사용자가 파일을 수동으로 고치고 저장한 뒤 호출 — 일시정지된
+    리비전의 커밋을 완료하고 남은 큐를 이어서 처리, 다음 리비전도 충돌하면 다시
+    `HgMergeConflictException`으로 정지) / `abort()`(이번 rebase 시도로 이미 커밋된
+    것까지 전부 포함해 changelog/manifest/filelog를 rebase 시작 전 바이트 그대로
+    복원하고 작업 사본·dirstate도 원래 체크아웃 상태로 되돌림, real hg의 `hg rebase
+    --abort`와 동일). 두 메서드 모두 **디스크에 영속화된 상태**(`.hg/rebasestate-hg4j`,
+    hg4j 전용 텍스트 포맷 — real hg 자신의 바이너리 `.hg/rebasestate`와는 무관, 중간
+    재개 상태 자체의 real-hg interop은 목표가 아니었고 최종 상태만 real hg와
+    맞으면 됨)로 동작하므로, 처음 충돌을 만난 것과 **다른 새 `RebaseCommand`
+    인스턴스**로도 이어서 호출 가능(직접 검증). 미해결 충돌이 남았는데
+    `continueRebase()`를 부르거나, 진행 중인 rebase가 없는데 `abort()`/
+    `continueRebase()`를 부르면 real hg의 "abort: no rebase in progress"와 같은
+    취지로 `HgValidationException`을 던진다.
+    - **부수 발견**: `.hg/merge/state2`만 지우고 완료 처리하면, 사용자가 중간에 실제
+      `hg resolve --mark`를 돌려서 real hg 자신이 함께 써둔 레거시 v1
+      `.hg/merge/state` 파일이 남아 있어 `hg resolve --list`가 완료 후에도 "R f.txt"를
+      계속 보여주는 문제가 있었다(real hg의 `mergestate.read()`가 state2 없으면 v1로
+      폴백) — `.hg/merge` 디렉터리 전체를 지우는 것으로 수정.
+
+    상세 구현 위치: `src/main/java/io/github/search5/hg4j/api/RebaseCommand.java`
+    (cherry-pick당 실제 diff 계산 + 3-way merge는 `cherryPickRevision`, 병합
+    commit들은 `processQueue`/`finalizeRebase`, 일시정지 상태 직렬화는
+    `writeRebaseState`/`readRebaseState`), `src/main/java/io/github/search5/hg4j/merge/Merge3.java`
+    (충돌 마커 라벨을 커스텀할 수 있는 새 오버로드 `merge(base,yours,theirs,yoursLabel,theirsLabel)`
+    추가, 기존 `merge(base,yours,theirs)`는 `"Yours"/"Theirs"` 기본값으로 위임 —
+    `MergeCommand`는 그대로 옛 동작 유지), `src/main/java/io/github/search5/hg4j/errors/HgMergeConflictException.java`
+    (기존에 정의만 되고 아무도 안 쓰던 클래스를 이제 실제로 사용 — 복수 충돌 경로를
+    담는 `List<String>` 생성자/`getConflictPaths()` 추가).
+
+    **테스트**: `RebaseRealHgInteropTest`를 6개로 재작성(`conflictFreeRebaseVerifiedByRealHg`,
+    `plainRealHgCommandsDoNotWarnAfterHg4jRebase`는 유지, `originalRevisionIsHiddenNotGoneAfterRebase`
+    가 옛 `obsoleteMarkerAfterRebaseStripPointsAtNodeGoneFromChangelog`를 대체(정반대
+    결과를 검증하도록), `conflictingEditWritesConflictMarkersAndPausesRebase`가 옛
+    `conflictingEditIsSilentlyOverwrittenInsteadOfDetectedAsConflict`를 대체, 신규
+    `abortAfterConflictRestoresPreRebaseState`/`continueRebaseAfterManualResolutionCompletesTheRebase`
+    추가) — 전부 real hg 7.2 CLI 왕복 기준, 전부 GREEN. 기존 `RebaseCommandTest`/
+    `RebaseCommandCoverageTest`/`HgAdvancedHistoryTest`도 옛 물리적 strip 전제(정확한
+    리비전 개수 등)에 맞춰 갱신, 격리된 빌드 디렉터리(`/tmp/backlog-rebase-overhaul`)로
+    전체 회귀 재실행해 GREEN 확인.
 
     **범위(제외)**: 위 10개 카테고리 전부 **hg4j↔hg4j 자체 왕복이 아니라 실제 hg
     CLI와의 양방향 대조**(hg4j로 만든 결과를 실제 `hg log`/`hg verify`/`hg tags`/

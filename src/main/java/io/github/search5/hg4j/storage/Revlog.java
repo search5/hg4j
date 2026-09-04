@@ -819,6 +819,21 @@ public class Revlog {
         byte[] nodeId = new byte[32];
         System.arraycopy(hash, 0, nodeId, 0, 20);
 
+        // A revlog node id is exactly hash(p1, p2, content) -- if a revision with that identical
+        // (parents, content) triple already exists anywhere in this revlog, real hg's own
+        // revlog.addrevision()/filelog.add() reuse it instead of appending a byte-for-byte
+        // duplicate node id (two index entries sharing one node id is a corrupt revlog, flagged
+        // by `hg verify` as "duplicate revision"). This matters well beyond a curiosity: any
+        // caller that re-adds an existing file's content with no filelog parent of its own (e.g.
+        // RebaseCommand cherry-picking a revision that added a file fresh onto a destination that
+        // never had that path -- verified live: without this check, real hg's `hg verify` on such
+        // a rebase's output reports "duplicate revision N (M)" and "<node> not in manifests") would
+        // otherwise corrupt the store on every such call.
+        int existingRev = findRevision(nodeId);
+        if (existingRev != -1) {
+            return getIndexRecord(existingRev).getNodeId();
+        }
+
         if (index.isV2()) {
             return appendRevisionV2(rev, processedContent, parent1, parent2, nodeId, linkRev, sidedataContainer);
         }

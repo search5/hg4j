@@ -64,7 +64,9 @@ public class RebaseCommandCoverageTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        assertEquals(2, cl.getRevisionCount(), "rootB restored + rebased rootA'");
+        // Evolution-only rebase (2026-09-04): rootA is never physically stripped (only hidden via
+        // an obsolescence marker), so both original roots remain plus the freshly rebased rootA'.
+        assertEquals(3, cl.getRevisionCount(), "rootA (kept, now hidden) + rootB + rebased rootA'");
 
         int rebasedRev = NodeIdUtil.findRevisionByNodeId(cl, rebasedTip);
         int rootBRev = NodeIdUtil.findRevisionByNodeId(cl, rootB);
@@ -124,8 +126,10 @@ public class RebaseCommandCoverageTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        // c0, rootD, rebased c1', rebased c3', restored c2 == 5 revisions.
-        assertEquals(5, cl.getRevisionCount());
+        // Evolution-only rebase (2026-09-04): c1 and c3 are never physically stripped (only hidden
+        // via obsolescence markers), so all 5 original revisions (c0,c1,c2,c3,rootD) remain, plus
+        // the 2 freshly cherry-picked ones (c1',c3') = 7, not the pre-2026-09-04 5.
+        assertEquals(7, cl.getRevisionCount());
 
         int restoredC2Rev = NodeIdUtil.findRevisionByNodeId(cl, c2);
         assertTrue(restoredC2Rev != -1, "independent branch commit must be restored preserving its node id");
@@ -138,8 +142,11 @@ public class RebaseCommandCoverageTest {
     }
 
     // ------------------------------------------------------------------
-    // A stale/corrupt filelog referenced by fncache must not abort the whole rebase --
-    // exercises the per-entry try/catch in RebaseCommand.stripRevisionsFrom.
+    // A stale/corrupt filelog referenced by fncache must not abort the whole rebase. Since the
+    // 2026-09-04 evolution-only rewrite, RebaseCommand.backupStoreFiles only ever plain-byte-copies
+    // (never loads/parses) each fncache-listed filelog for its own crash-safety backup, so a
+    // corrupt entry can no longer even throw here in the first place -- this test now mostly
+    // documents that fact (the corrupt entry is simply inert).
     // ------------------------------------------------------------------
     @Test
     public void rebaseToleratesCorruptFilelogListedInFncache(@TempDir Path tempDir) throws Exception {
@@ -179,7 +186,9 @@ public class RebaseCommandCoverageTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        assertEquals(3, cl.getRevisionCount());
+        // Evolution-only rebase (2026-09-04): c2 is never physically stripped, so it remains
+        // (hidden) alongside c0/c1, plus the freshly cherry-picked c2'.
+        assertEquals(4, cl.getRevisionCount());
     }
 
     // ------------------------------------------------------------------
@@ -268,7 +277,9 @@ public class RebaseCommandCoverageTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        assertEquals(3, cl.getRevisionCount());
+        // Evolution-only rebase (2026-09-04): c2 is never physically stripped, so it remains
+        // (hidden) alongside c0/c1, plus the freshly cherry-picked c2'.
+        assertEquals(4, cl.getRevisionCount());
     }
 
     // ------------------------------------------------------------------
@@ -566,19 +577,21 @@ public class RebaseCommandCoverageTest {
     // ------------------------------------------------------------------
     // Real hg commits always write a "<time> <offset> <extra>" (or "<time> <offset>")
     // date line with at least one space, and any offset field they write always parses
-    // as a valid integer -- so RebaseCommand.backupRevision's defensive
+    // as a valid integer -- so RebaseCommand.readRevisionMeta's defensive
     // NumberFormatException handling and its whole "no space at all" fallback branch are
-    // never exercised by any normally-produced changelog entry. Forging three
-    // independent-root commits' date lines (same truncate+reappend technique as the
-    // other forged-changelog tests here) exercises all three: a non-numeric,
-    // space-less date line (backupRevision's else branch), a malformed offset followed
-    // by an extra field, and a malformed offset with no extra field at all. Only the
-    // date line is corrupted -- manifest/file content stays real and valid, so the
-    // affected revisions still round-trip correctly through backup/restore or
-    // cherry-pick.
+    // never exercised by any normally-produced changelog entry. Forging the date line of
+    // the revision actually being rebased -- the only revision this class ever reads
+    // author/message/date metadata from, since the 2026-09-04 evolution-only rewrite no
+    // longer "restores" untouched revisions at all (they are simply never stripped in the
+    // first place, so there is nothing to restore and nothing to read metadata from) --
+    // exercises both a non-numeric, space-less date line (this test: the "else" branch's
+    // throwing-and-swallowed path) and a purely-numeric space-less one (the companion test
+    // below: that branch's normal, non-throwing completion). Only the date line is
+    // corrupted -- manifest/file content stays real and valid, so the rebased revision
+    // still cherry-picks correctly.
     // ------------------------------------------------------------------
     @Test
-    public void backupRevisionToleratesMalformedDateLines(@TempDir Path tempDir) throws Exception {
+    public void readRevisionMetaToleratesNonNumericSpacelessDateLine(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
@@ -594,41 +607,45 @@ public class RebaseCommandCoverageTest {
         byte[] source = new CommitCommand(repo).setAuthor("t").setMessage("source (rebased)").call();
         patchLastChangelogRevision(repo, text -> replaceDateLine(text, "not-a-number-no-space"));
 
-        ds = repo.getDirstate();
-        ds.setParents(new byte[20], new byte[20]);
-        repo.writeDirstate(ds);
-        Files.writeString(new File(repoDir, "extra1.txt").toPath(), "extra1");
-        new AddCommand(repo).call();
-        new CommitCommand(repo).setAuthor("t").setMessage("independent root (restored)").call();
-        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "1600000000 BADOFFSET branch:default"));
-
-        ds = repo.getDirstate();
-        ds.setParents(new byte[20], new byte[20]);
-        repo.writeDirstate(ds);
-        Files.writeString(new File(repoDir, "extra2.txt").toPath(), "extra2");
-        new AddCommand(repo).call();
-        new CommitCommand(repo).setAuthor("t").setMessage("independent root 2 (restored)").call();
-        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "1600000000 BADOFFSET2"));
-
-        // A space-less date line that IS purely numeric (unlike "source"'s above) parses
-        // successfully in backupRevision's else branch, exercising that branch's normal
-        // (non-throwing) completion in addition to the throwing case already covered above.
-        ds = repo.getDirstate();
-        ds.setParents(new byte[20], new byte[20]);
-        repo.writeDirstate(ds);
-        Files.writeString(new File(repoDir, "extra3.txt").toPath(), "extra3");
-        new AddCommand(repo).call();
-        new CommitCommand(repo).setAuthor("t").setMessage("independent root 3 (restored)").call();
-        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "9876543210"));
-
         RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(source).setTarget(target);
         byte[] rebasedTip = rebaseCmd.call();
-        assertNotNull(rebasedTip, "malformed date lines on unrelated/rebased revisions must not abort the rebase");
+        assertNotNull(rebasedTip, "a malformed date line on the rebased revision must not abort the rebase");
 
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        assertEquals(5, cl.getRevisionCount(), "target, rebased source, and three restored independent roots");
+        // Evolution-only rebase (2026-09-04): source is never physically stripped, so it remains
+        // (hidden) alongside target, plus the freshly cherry-picked source'.
+        assertEquals(3, cl.getRevisionCount(), "target, kept-but-hidden source, and rebased source'");
+        assertTrue(new String(cl.getRevisionContent(NodeIdUtil.findRevisionByNodeId(cl, rebasedTip)), StandardCharsets.UTF_8)
+                .contains("source (rebased)"));
+    }
+
+    @Test
+    public void readRevisionMetaAcceptsPurelyNumericSpacelessDateLine(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        Files.writeString(new File(repoDir, "target.txt").toPath(), "target");
+        new AddCommand(repo).call();
+        byte[] target = new CommitCommand(repo).setAuthor("t").setMessage("rebase target").call();
+
+        Dirstate ds = repo.getDirstate();
+        ds.setParents(new byte[20], new byte[20]);
+        repo.writeDirstate(ds);
+        Files.writeString(new File(repoDir, "src.txt").toPath(), "src");
+        new AddCommand(repo).call();
+        byte[] source = new CommitCommand(repo).setAuthor("t").setMessage("source (rebased)").call();
+        patchLastChangelogRevision(repo, text -> replaceDateLine(text, "9876543210"));
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(source).setTarget(target);
+        byte[] rebasedTip = rebaseCmd.call();
+        assertNotNull(rebasedTip, "a purely-numeric space-less date line must parse without error");
+
+        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+        File clDat = new File(repo.getStoreDir(), "00changelog.d");
+        Revlog cl = new Revlog(clIdx, clDat);
+        assertEquals(3, cl.getRevisionCount(), "target, kept-but-hidden source, and rebased source'");
     }
 
     // ------------------------------------------------------------------

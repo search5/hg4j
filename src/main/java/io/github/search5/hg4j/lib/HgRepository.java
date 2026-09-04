@@ -634,23 +634,84 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * Locks the working directory (updates to dirstate or working copy).
+     * Locks the working directory (updates to dirstate or working copy), failing immediately
+     * (fail-fast, no wait) if it is already held -- see {@link #lockWorkingCopy(int)} for a
+     * variant that waits like real hg's own default {@code wlock()}.
      *
      * @return the {@link HgLock} instance
      * @throws HgLockException if acquiring the lock fails
      */
-    public synchronized HgLock lockWorkingCopy() throws HgLockException {
-        return new HgLock(new File(hgDir, "wlock"), 0, true);
+    public HgLock lockWorkingCopy() throws HgLockException {
+        return lockWorkingCopy(0);
     }
 
     /**
-     * Locks the store repository database (commits, metadata, index updates).
+     * Locks the working directory, waiting up to {@code timeoutMs} if it is already held before
+     * giving up -- matches real hg's {@code localrepo.py} {@code wlock(wait=True)} default (backed
+     * by {@code mercurial/lock.py}'s {@code trylock()}/{@code lock()} loop). Only the push/unbundle
+     * apply path opts into this today (backlog item 38); every other caller keeps using the
+     * fail-fast {@link #lockWorkingCopy()} overload.
+     *
+     * <p>Deliberately NOT {@code synchronized} on this repository instance (unlike most other
+     * mutating methods here): the underlying {@link HgLock} constructor can now genuinely block
+     * for up to {@code timeoutMs} while contended. Holding this object's own monitor for that
+     * whole wait would block every OTHER {@code synchronized} method on the same {@link
+     * HgRepository} instance -- including ones a concurrently-racing thread needs to finish its
+     * own, unrelated work -- turning a bounded per-lock wait into an effectively unbounded
+     * self-deadlock. Confirmed live (2026-09-04, backlog item 38): with this method still marked
+     * {@code synchronized}, two genuinely concurrent real-hg pushes against the same shared server
+     * repository reliably deadlocked this way -- the winner's own request thread got stuck for
+     * the loser's ENTIRE wait duration on an unrelated {@code synchronized} repository call, even
+     * though the winner itself was never contending on the file lock at all. Mutual exclusion for
+     * the lock itself is already fully guaranteed without this object's monitor, by {@link
+     * HgLock}'s own static, path-keyed tracking plus the atomic filesystem symlink/file creation
+     * it uses.
+     *
+     * @param timeoutMs how long to wait for contention to clear, in milliseconds; {@code 0} means
+     *                   fail immediately, matching real hg's own {@code ui.timeout=0} semantics.
+     * @return the {@link HgLock} instance
+     * @throws HgLockException if the lock could not be acquired within {@code timeoutMs}
+     */
+    public HgLock lockWorkingCopy(int timeoutMs) throws HgLockException {
+        return new HgLock(new File(hgDir, "wlock"), timeoutMs, true);
+    }
+
+    /**
+     * Locks the store repository database (commits, metadata, index updates), failing immediately
+     * (fail-fast, no wait) if it is already held -- see {@link #lockStore(int)} for a variant that
+     * waits like real hg's own default {@code lock()}.
      *
      * @return the {@link HgLock} instance
      * @throws HgLockException if acquiring the lock fails
      */
-    public synchronized HgLock lockStore() throws HgLockException {
-        HgLock lock = new HgLock(new File(storeDir, "lock"), 0, true);
+    public HgLock lockStore() throws HgLockException {
+        return lockStore(0);
+    }
+
+    /**
+     * Locks the store repository database, waiting up to {@code timeoutMs} if it is already held
+     * before giving up -- matches real hg's {@code localrepo.py} {@code lock(wait=True)} default
+     * (backed by {@code mercurial/lock.py}'s {@code trylock()}/{@code lock()} loop, which itself
+     * waits up to {@code ui.timeout} -- default 600 seconds -- before raising {@code
+     * error.LockHeld}). Only the push/unbundle apply path opts into this today (backlog item 38,
+     * see {@link #resolvePushLockTimeoutMs()}); every other caller (commit, update, rebase, ...)
+     * keeps using the fail-fast {@link #lockStore()} overload -- widening the wait behavior to
+     * every command that locks the store is a separate, much larger change this backlog item does
+     * not cover.
+     *
+     * <p>Deliberately NOT {@code synchronized} -- see {@link #lockWorkingCopy(int)}'s doc for why
+     * (the exact same self-deadlock hazard applies here, and was in fact where it was first
+     * reproduced live: this is the lock the push/unbundle apply path actually contends on).
+     * {@link #checkAndPerformAutoRollback()} keeps its own independent {@code synchronized}
+     * modifier, so it is still safely serialized against itself regardless.
+     *
+     * @param timeoutMs how long to wait for contention to clear, in milliseconds; {@code 0} means
+     *                   fail immediately, matching real hg's own {@code ui.timeout=0} semantics.
+     * @return the {@link HgLock} instance
+     * @throws HgLockException if the lock could not be acquired within {@code timeoutMs}
+     */
+    public HgLock lockStore(int timeoutMs) throws HgLockException {
+        HgLock lock = new HgLock(new File(storeDir, "lock"), timeoutMs, true);
         try {
             checkAndPerformAutoRollback();
         } catch (Throwable t) {
@@ -663,6 +724,30 @@ public class HgRepository implements Repository {
             throw new HgLockException("lock", "Failed to perform auto-rollback after lock acquisition", t);
         }
         return lock;
+    }
+
+    /**
+     * Resolves the store-lock wait timeout (in milliseconds) the push/unbundle apply path should
+     * use for this repository -- mirrors real hg's own {@code ui.timeout} config (default {@code
+     * "600"} seconds; {@code mercurial/localrepo.py}'s {@code _lock()} reads it whenever a caller
+     * asks to wait, and {@code mercurial/lock.py}'s {@code lock()} loop treats {@code timeout == 0}
+     * as "fail immediately" rather than "wait forever"). Confirmed against real hg 7.2 directly
+     * (2026-09-04, backlog item 38): a real {@code hg push} against a repository whose store lock
+     * is held waits for exactly the configured {@code ui.timeout} before the server-side push
+     * fails.
+     */
+    public int resolvePushLockTimeoutMs() {
+        String raw = getConfig().get("ui", "timeout", "600");
+        try {
+            long seconds = Long.parseLong(raw.trim());
+            if (seconds <= 0) {
+                return 0;
+            }
+            long ms = seconds * 1000L;
+            return ms > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) ms;
+        } catch (NumberFormatException e) {
+            return 600_000;
+        }
     }
 
     public synchronized void checkAndPerformAutoRollback() {

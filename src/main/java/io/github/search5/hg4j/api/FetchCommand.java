@@ -389,6 +389,21 @@ public class FetchCommand {
     }
 
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
+        return applyBundle(bundle, 0);
+    }
+
+    /**
+     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle)}, but acquires the store/
+     * working-copy locks with a caller-supplied wait timeout instead of failing immediately on
+     * contention -- used by the push/unbundle apply path (backlog item 38, both the server
+     * direction, {@code HgLocalClient#pushWithHooks}, and the local-peer/{@code file://} direction
+     * it shares) so a genuinely concurrent push waits like real hg's own {@code repo.lock()}
+     * ({@code wait=True} default) instead of aborting on the very first contended attempt.
+     *
+     * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds --
+     *                      {@code 0} preserves the original fail-fast behavior.
+     */
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs) throws IOException, HgLockException {
         resolveNarrowTreeFilterIfDefault();
         List<byte[]> importedCommits = new ArrayList<>();
         if (bundle.changelogEntries.isEmpty()) {
@@ -403,8 +418,8 @@ public class FetchCommand {
 
         Map<File, Long> fileSizes = new HashMap<>();
 
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock storeLock = repository.lockStore(lockTimeoutMs);
+             HgLock wlock = repository.lockWorkingCopy(lockTimeoutMs)) {
 
             Files.deleteIfExists(journalFile.toPath());
             

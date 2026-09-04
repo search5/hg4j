@@ -200,6 +200,15 @@ public class HgLock implements AutoCloseable {
                 } else if (!acquiredJvmLock) {
                     msg += " (Currently held by another thread in this process)";
                 }
+                if (timeoutMs > 0) {
+                    // Matches the SHAPE of real hg's own message once it has actually waited
+                    // (mercurial/scmutil.py's callcatch(): "abort: %s: timed out waiting for
+                    // lock held by %r" -- confirmed live against real hg 7.2, 2026-09-04, backlog
+                    // item 38) -- callers that opted into waiting (timeoutMs > 0, e.g. the push/
+                    // unbundle apply path) get this distinguished from the immediate/fail-fast
+                    // (timeoutMs == 0) case every other caller still uses.
+                    msg += " -- timed out waiting for lock after " + timeoutMs + "ms";
+                }
                 throw new HgLockException(lockFile.getName(), msg);
             }
 

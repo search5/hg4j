@@ -485,9 +485,27 @@ public class HgLocalClient implements HgRemoteConnection {
                 }
             }
 
-            // Apply bundle natively to remoteRepo using transactional API of PullCommand
+            // Apply bundle natively to remoteRepo using transactional API of PullCommand.
+            // Backlog item 38: this is the SERVER direction of a concurrent push (Wire1Commands's
+            // unbundle -- HTTP and SSH both -- and the file:// local-peer role reach this exact
+            // same code path). Real hg's own server-side unbundle apply (mercurial/exchange.py's
+            // unbundle(): `with repo.lock(), repo.transaction(...)`) waits for the target repo's
+            // store lock (repo.lock() default wait=True, timeout from ui.timeout -- 600s default)
+            // rather than failing on the very first contended attempt; confirmed live against
+            // real hg 7.2 (2026-09-04): with the remote's store lock artificially held and
+            // ui.timeout=2 configured on the server, a real `hg push` over HTTP waited ~2s before
+            // the request failed (surfaced to the real-hg client as "abort: HTTP Error 500", since
+            // real hg's own wireprotov1server.unbundle() does not specially catch
+            // error.LockHeld/LockUnavailable -- it's an unhandled exception that the WSGI/CGI
+            // layer turns into a 500). hg4j's own equivalent (this pullApi.applyBundle call) used
+            // to lock with timeoutMs=0 (immediate fail-fast) unconditionally -- passing the
+            // repository's own resolvePushLockTimeoutMs() (mirrors ui.timeout) here makes it wait
+            // like real hg's does, while every OTHER lockStore()/lockWorkingCopy() caller
+            // (commit, update, rebase, ...) is intentionally left untouched -- see
+            // HgRepository#lockStore(int)'s doc.
             PullCommand pullApi = new PullCommand(remoteRepo);
-            List<byte[]> imported = pullApi.applyBundle(bundle);
+            int lockTimeoutMs = remoteRepo.resolvePushLockTimeoutMs();
+            List<byte[]> imported = pullApi.applyBundle(bundle, lockTimeoutMs);
 
             // Restore remote dirstate to preserve bare repo status
             if (dirstateBackup != null) {

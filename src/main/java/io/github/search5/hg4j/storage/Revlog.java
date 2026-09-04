@@ -1014,6 +1014,24 @@ public class Revlog {
             }
         }
 
+        // 백로그 26번: 이 revlog가 이미 v2 포맷(가장 흔하게는 exp-copies-sidedata-changeset이
+        // 켜진 changelog)이면 아래 v1 전용 수동 바이트 라이팅 경로를 절대 타면 안 된다 --
+        // 인덱스 레코드 크기 자체가 다르다(64바이트 대 96바이트, 필드 배치도 다름). 대신
+        // appendRevisionV2를 그대로 재사용해 로컬 커밋(CommitCommand)이 만드는 것과 완전히
+        // 동일한 온디스크 레이아웃으로 남긴다 -- entry.sidedata(cg5의 CG_FLAG_SIDEDATA로 온
+        // 원시 sidedata 컨테이너 바이트, 없으면 null)가 있으면 그대로 .sda에 반영된다.
+        // entry.sidedata는 이미 SidedataCodec이 쓰는 것과 같은 "이미 직렬화된 외부 컨테이너"
+        // 포맷이라 재인코딩 없이 곧장 넘길 수 있다 -- 이전엔 이 메서드가 index.isV2()를 전혀
+        // 확인하지 않아 v2 revlog에 pull/push로 들어오는 리비전을 전부 v1 레이아웃으로
+        // 깨뜨렸고(사이드 이펙트로, 받은 cg5 sidedata도 통째로 버려졌다), 로컬 커밋에만
+        // 쓰이던 backlog 19의 sidedata 저장 능력이 changegroup 적용 경로에는 전혀 연결돼 있지
+        // 않았다.
+        if (index.isV2()) {
+            appendRevisionV2(rev, content, parent1, parent2, entry.node, linkRev, entry.sidedata);
+            clearCache();
+            return;
+        }
+
         byte[] rawToWrite;
         int baseRev;
 

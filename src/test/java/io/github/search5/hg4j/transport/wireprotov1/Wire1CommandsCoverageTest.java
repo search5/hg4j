@@ -77,8 +77,14 @@ public class Wire1CommandsCoverageTest {
         new AddCommand(repo).call();
         byte[] commit = new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
 
-        // Real hg's HTTP client always sends bundlecaps; HgLocalClient.getBundle() doesn't act on
-        // them today, but Wire1Commands.getbundle() must still parse the argument without failing.
+        // Real hg's HTTP client always sends bundlecaps. Since backlog item 26, HgLocalClient.
+        // getBundle() actually negotiates a changegroup version from this argument (and wraps the
+        // response in an HG20 envelope whenever it contains an "HG2*" token, as this one does,
+        // per Bundle2Parser#requestsBundle2) -- this test's bare "bundlecaps" blob here
+        // (bundle2=bookmarks=yes) has no "changegroup=" entry, so version negotiation still
+        // degrades to "01" (real hg's own default), but the response is now HG20-framed rather
+        // than raw cg1 bytes. Either way, Wire1Commands.getbundle() must parse the argument and
+        // produce a non-empty stream without failing.
         Map<String, String> args = new LinkedHashMap<>();
         args.put("common", "");
         args.put("heads", NodeIdUtil.toHex(commit));

@@ -6,6 +6,7 @@ import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
@@ -209,5 +210,125 @@ public class HgHttpWireServerRealHgInteropTest {
         assertTrue(failure.getMessage().toLowerCase().contains("unknown revision")
                         || failure.getMessage().toLowerCase().contains("abort"),
                 "Expected a real-hg-understood error message, got: " + failure.getMessage());
+    }
+
+    /**
+     * Backlog item 26: verifies that a real {@code hg clone} using nothing but the real hg
+     * client's OWN default capabilities actually negotiates a changegroup version above cg1 on
+     * the wire, not merely that hg4j's advertised capability string looks correct. Captures the
+     * literal HTTP response bytes {@code HgHttpWireServer} sends back for the {@code
+     * ?cmd=getbundle} request a real {@code hg clone} issues (by wrapping the {@link HttpExchange}
+     * this test's own {@link HttpServer} instance hands to {@link HgHttpWireServer}, so no
+     * production code needs any debug-only hook) and decodes the bundle2 {@code CHANGEGROUP}
+     * part's own {@code version} parameter directly -- the strongest possible evidence that the
+     * bytes that actually left the wire were not cg1, distinct from asserting anything about
+     * hg4j's internal negotiation logic in isolation.
+     */
+    @Test
+    public void realHgCloneWithDefaultCapabilitiesNegotiatesAboveCg1OnTheWire(@TempDir Path tempDir) throws Exception {
+        java.util.concurrent.atomic.AtomicReference<byte[]> capturedGetbundleResponse = new java.util.concurrent.atomic.AtomicReference<>();
+        HgHttpWireServer delegate = new HgHttpWireServer(serverRepo);
+        HttpServer capturingServer = HttpServer.create(new InetSocketAddress(0), 0);
+        capturingServer.createContext("/", exchange -> {
+            boolean isGetbundle = exchange.getRequestURI().getRawQuery() != null
+                    && exchange.getRequestURI().getRawQuery().contains("cmd=getbundle");
+            if (!isGetbundle) {
+                delegate.handle(exchange);
+                return;
+            }
+            delegate.handle(new ResponseCapturingHttpExchange(exchange, capturedGetbundleResponse));
+        });
+        capturingServer.start();
+        try {
+            String url = "http://127.0.0.1:" + capturingServer.getAddress().getPort() + "/";
+            File destDir = tempDir.resolve("client_repo").toFile();
+            HgTestUtils.hg(tempDir.toFile(), "clone", url, destDir.getAbsolutePath());
+
+            byte[] responseBytes = capturedGetbundleResponse.get();
+            assertNotNull(responseBytes, "expected the real hg clone to have issued a ?cmd=getbundle request");
+
+            // application/mercurial-0.1's `streamres` (getbundle) responses are zlib-deflate
+            // compressed on the wire (HgHttpWireServer#deflate / real hg's own "we only compress
+            // streamres" rule) -- inflate before decoding the bundle2 envelope underneath.
+            byte[] inflated;
+            try (java.util.zip.InflaterInputStream iis =
+                         new java.util.zip.InflaterInputStream(new java.io.ByteArrayInputStream(responseBytes))) {
+                inflated = iis.readAllBytes();
+            }
+            assertTrue(inflated.length >= 4 && inflated[0] == 'H' && inflated[1] == 'G'
+                            && inflated[2] == '2' && inflated[3] == '0',
+                    "expected a bundle2-framed (HG20) response now that hg4j's capabilities advertise bundle2=");
+
+            io.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 extracted =
+                    io.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(
+                            new java.io.ByteArrayInputStream(inflated));
+            assertNotEquals("01", extracted.cgVersion,
+                    "a real hg 7.2 client's own default incoming-changegroup capability list is "
+                            + "changegroup=01,02,03 -- negotiation must not silently degrade to cg1");
+
+            // Sanity: the clone must have actually succeeded and be readable with these bytes.
+            String log = HgTestUtils.hg(destDir, "log", "-T", "{node}\n");
+            assertEquals(NodeIdUtil.toHex(commitNode), log.trim());
+        } finally {
+            capturingServer.stop(0);
+        }
+    }
+
+    /**
+     * Delegates every {@link HttpExchange} method to a wrapped real exchange except {@link
+     * #getResponseBody()}, which tees whatever bytes get written through it into {@code capture}
+     * as well -- lets a test observe exactly what {@link HgHttpWireServer} sent for one specific
+     * request without any production-code changes.
+     */
+    private static final class ResponseCapturingHttpExchange extends com.sun.net.httpserver.HttpExchange {
+        private final com.sun.net.httpserver.HttpExchange delegate;
+        private final java.util.concurrent.atomic.AtomicReference<byte[]> capture;
+        private java.io.OutputStream teeStream;
+
+        ResponseCapturingHttpExchange(com.sun.net.httpserver.HttpExchange delegate,
+                                       java.util.concurrent.atomic.AtomicReference<byte[]> capture) {
+            this.delegate = delegate;
+            this.capture = capture;
+        }
+
+        @Override
+        public java.io.OutputStream getResponseBody() {
+            if (teeStream == null) {
+                java.io.OutputStream real = delegate.getResponseBody();
+                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+                teeStream = new java.io.OutputStream() {
+                    @Override public void write(int b) throws java.io.IOException { real.write(b); buffer.write(b); }
+                    @Override public void write(byte[] b, int off, int len) throws java.io.IOException {
+                        real.write(b, off, len);
+                        buffer.write(b, off, len);
+                    }
+                    @Override public void flush() throws java.io.IOException { real.flush(); }
+                    @Override public void close() throws java.io.IOException {
+                        real.close();
+                        capture.set(buffer.toByteArray());
+                    }
+                };
+            }
+            return teeStream;
+        }
+
+        @Override public com.sun.net.httpserver.Headers getRequestHeaders() { return delegate.getRequestHeaders(); }
+        @Override public com.sun.net.httpserver.Headers getResponseHeaders() { return delegate.getResponseHeaders(); }
+        @Override public java.net.URI getRequestURI() { return delegate.getRequestURI(); }
+        @Override public String getRequestMethod() { return delegate.getRequestMethod(); }
+        @Override public com.sun.net.httpserver.HttpContext getHttpContext() { return delegate.getHttpContext(); }
+        @Override public void close() { delegate.close(); }
+        @Override public java.io.InputStream getRequestBody() { return delegate.getRequestBody(); }
+        @Override public void sendResponseHeaders(int rCode, long responseLength) throws java.io.IOException {
+            delegate.sendResponseHeaders(rCode, responseLength);
+        }
+        @Override public java.net.InetSocketAddress getRemoteAddress() { return delegate.getRemoteAddress(); }
+        @Override public int getResponseCode() { return delegate.getResponseCode(); }
+        @Override public java.net.InetSocketAddress getLocalAddress() { return delegate.getLocalAddress(); }
+        @Override public String getProtocol() { return delegate.getProtocol(); }
+        @Override public Object getAttribute(String name) { return delegate.getAttribute(name); }
+        @Override public void setAttribute(String name, Object value) { delegate.setAttribute(name, value); }
+        @Override public void setStreams(java.io.InputStream i, java.io.OutputStream o) { delegate.setStreams(i, o); }
+        @Override public com.sun.net.httpserver.HttpPrincipal getPrincipal() { return delegate.getPrincipal(); }
     }
 }

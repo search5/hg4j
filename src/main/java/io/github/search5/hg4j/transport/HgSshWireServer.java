@@ -121,6 +121,21 @@ public class HgSshWireServer {
         byte[] bundleBytes = readPayload(in);
 
         Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
+
+        // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는
+        // (bundle2를 실제로 요청한, 즉 body가 HG20 봉투였던) push에 한해 Wire1Commands.unbundle()이
+        // 더는 위 "1\n<status>"/"0\n<error>" 평문이 아니라 온전한 HG20 봉투 하나를 그대로
+        // 돌려준다(Kind.STREAM_UNCOMPRESSED) -- 실제 hg의 sshserver.py도 이 두 경우를 서로
+        // 다른 응답 타입(`pushres`는 두 개의 개별 프레임값, `streamreslegacy`는 자체-프레임된
+        // 원시 스트림 하나)으로 구분해서 쓴다(실측, mercurial/wireprotoserver.py). SSH에서는
+        // streamres/streamreslegacy 구분이 압축 여부에 영향을 주지 않으므로(SSH 전송 자체가
+        // 비압축) getbundle 등 다른 스트림 응답과 동일하게(아래 writeResponse) 프레이밍 없이
+        // 원시 바이트 그대로 내보낸다.
+        if (resp.getKind() == Wire1Response.Kind.STREAM_UNCOMPRESSED) {
+            writeResponse(out, resp);
+            return;
+        }
+
         // Wire1Commands.unbundle()'s payload is always "1\n<status>" (success) or "0\n<error>"
         // (failure) -- the shared HTTP/SSH string convention. Real hg's SSH client, though, reads
         // this outcome as two SEPARATE framed values (an error-or-empty check, then a bare
@@ -191,7 +206,12 @@ public class HgSshWireServer {
     private void writeResponse(OutputStream out, Wire1Response response) throws IOException {
         switch (response.getKind()) {
             case BYTES -> writeLengthPrefixed(out, response.getPayload());
-            case STREAM -> {
+            case STREAM, STREAM_UNCOMPRESSED -> {
+                // 실제 스펙(mercurial/wireprotoserver.py의 sshserver 루프): streamres와
+                // streamreslegacy(백로그 26번의 bundle2 unbundle 회신) 둘 다 SSH에서는 동일하게
+                // _sshv1respondstream()으로 프레이밍 없이 원시 바이트만 쓴다 -- HTTP와 달리
+                // SSH 쪽엔 이 둘을 구분하는 압축 단계 자체가 없다(SSH 전송 자체가 애초에
+                // 비압축).
                 out.write(response.getPayload());
                 out.flush();
             }

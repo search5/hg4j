@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 import java.util.zip.InflaterInputStream;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -25,6 +26,12 @@ public class Bundle2Parser {
     public static class ExtractedBundle2 {
         public byte[] changegroupBytes;
         public String cgVersion = "01"; // Default to cg1 if not specified
+        /** The wire part id (real hg's {@code partid}, a small sequential integer the SENDER
+         * assigned) of the {@code CHANGEGROUP} part this was extracted from -- needed by a
+         * server building a bundle2 reply (backlog item 26) to stamp the reply's {@code
+         * reply:changegroup} part with the matching {@code in-reply-to} param real hg's own
+         * {@code op.records.getreplies(cgpart.id)} keys off of. {@code -1} if not captured. */
+        public int changegroupPartId = -1;
     }
 
     /**
@@ -90,6 +97,7 @@ public class Bundle2Parser {
         DataInputStream pdis = new DataInputStream(payloadStream);
         ByteArrayOutputStream cgOut = new ByteArrayOutputStream();
         String extractedVersion = "01";
+        int changegroupPartId = -1;
 
         // 4. Parse Payload Parts
         while (true) {
@@ -109,8 +117,9 @@ public class Bundle2Parser {
             String partName = new String(headerBlock, cursor, nameSize, StandardCharsets.US_ASCII);
             LOGGER.log(Level.FINE, "[DEBUG BUNDLE2] Parsed partName: ''{0}'', partHeaderSize: {1}, nameSize: {2}", new Object[]{partName, partHeaderSize, nameSize});
             cursor += nameSize;
-            
-            // Part ID (4 bytes) - Skip
+
+            int partId = ((headerBlock[cursor] & 0xFF) << 24) | ((headerBlock[cursor + 1] & 0xFF) << 16)
+                    | ((headerBlock[cursor + 2] & 0xFF) << 8) | (headerBlock[cursor + 3] & 0xFF);
             cursor += 4;
 
             // Part parameters counts
@@ -118,6 +127,9 @@ public class Bundle2Parser {
             int advisoryCount = headerBlock[cursor++] & 0xFF;
             
             boolean isChangegroup = "CHANGEGROUP".equalsIgnoreCase(partName);
+            if (isChangegroup) {
+                changegroupPartId = partId;
+            }
             int paramCount = mandatoryCount + advisoryCount;
 
             // 실제 스펙(mercurial/bundle2.py): 파라미터는 "먼저 (keylen,vallen) 쌍
@@ -172,6 +184,7 @@ public class Bundle2Parser {
         ExtractedBundle2 result = new ExtractedBundle2();
         result.changegroupBytes = cgOut.toByteArray();
         result.cgVersion = extractedVersion;
+        result.changegroupPartId = changegroupPartId;
         return result;
     }
 
@@ -226,6 +239,116 @@ public class Bundle2Parser {
     public static String buildBundle2CapsToken(String changegroupVersionsCsv) {
         String blob = "HG20\nchangegroup=" + changegroupVersionsCsv;
         return "bundle2=" + pythonQuote(blob);
+    }
+
+    /**
+     * Server-side mirror of {@link #buildBundle2CapsToken}/real hg's {@code
+     * urlutil.b2_caps_from_bundle_caps()} + {@code decode_b2_caps()} — decodes the changegroup
+     * version list a CLIENT advertised in its own {@code bundlecaps} request argument (backlog
+     * item 26: {@code HgLocalClient#getBundle} needs this to actually negotiate a changegroup
+     * version instead of hardcoding cg1).
+     *
+     * <p>Real hg spec (verified against Mercurial 7.2.2, 2026-09-04, by instrumenting {@code
+     * Wire1Commands.getbundle} and reading a real {@code hg clone}'s actual request): {@code
+     * bundlecaps} is a top-level-comma-separated set of tokens (already split by the caller, one
+     * token per list element here); the ONE token starting with the literal {@code "bundle2="}
+     * prefix carries a percent-encoded blob of newline-separated {@code capability=v1,v2,...}
+     * lines (same shape {@link #buildBundle2CapsToken} produces), and the {@code changegroup} line
+     * within it (if present) lists the versions the CLIENT is prepared to accept as incoming data
+     * — this is the list real hg's own {@code exchange.py}'s {@code
+     * _getbundlechangegrouppart(version = max(cgversions ∩ supportedoutgoingversions(repo)))} rule
+     * reads, symmetric with how a real hg SERVER decides what to send on a plain pull (the
+     * server's OWN advertised {@code changegroup=} capability value is never consulted for this —
+     * it's only used for the opposite, push/unbundle direction). A missing {@code bundle2=} token,
+     * or one whose blob has no {@code changegroup} line, means "no explicit request" (real hg
+     * defaults {@code version} to {@code "01"} in that case) — this method returns an empty list
+     * for both, letting the caller apply that same default.
+     *
+     * @return the requested version tokens (e.g. {@code ["01","02","03"]}) in the order they were
+     *         listed, or an empty list if no {@code changegroup=} entry was found anywhere
+     */
+    public static List<String> decodeChangegroupVersions(List<String> bundleCaps) {
+        if (bundleCaps == null) {
+            return List.of();
+        }
+        for (String cap : bundleCaps) {
+            if (cap == null || !cap.startsWith("bundle2=")) {
+                continue;
+            }
+            String blob = pythonUnquote(cap.substring("bundle2=".length()));
+            for (String line : blob.split("\n", -1)) {
+                if (line.isEmpty()) {
+                    continue;
+                }
+                int eq = line.indexOf('=');
+                if (eq < 0) {
+                    continue;
+                }
+                String key = pythonUnquote(line.substring(0, eq));
+                if (!"changegroup".equals(key)) {
+                    continue;
+                }
+                String val = line.substring(eq + 1);
+                List<String> versions = new java.util.ArrayList<>();
+                for (String v : val.split(",", -1)) {
+                    if (!v.isEmpty()) {
+                        versions.add(pythonUnquote(v));
+                    }
+                }
+                return versions;
+            }
+        }
+        return List.of();
+    }
+
+    /**
+     * Real hg spec (see {@link #decodeChangegroupVersions}): {@code
+     * exchange.bundle2requested(bundlecaps)} is {@code any(cap.startswith("HG2") for cap in
+     * bundlecaps)} — whether the response must be wrapped in a bundle2 (HG20) container at all
+     * (independent of which changegroup version ends up chosen: with no such token, real hg
+     * hardcodes cg1 and never wraps the response in bundle2, regardless of any {@code
+     * changegroup=} list a caller might have also sent).
+     */
+    public static boolean requestsBundle2(List<String> bundleCaps) {
+        if (bundleCaps == null) {
+            return false;
+        }
+        for (String cap : bundleCaps) {
+            if (cap != null && cap.startsWith("HG2")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Percent-decodes exactly like Python's {@code urllib.parse.unquote(s)} on an ASCII-range
+     * blob (the inverse of {@link #pythonQuote}): every {@code %XX} escape becomes the raw byte;
+     * everything else passes through unchanged. Deliberately NOT {@code java.net.URLDecoder} —
+     * that treats {@code +} as an encoded space (form-encoding semantics), which is wrong for a
+     * blob {@link #pythonQuote} produced (space is escaped there as {@code %20}, and a literal
+     * {@code +} — none appear in practice, but correctness shouldn't depend on that — must stay
+     * a literal {@code +}).
+     */
+    private static String pythonUnquote(String s) {
+        byte[] chars = s.getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream(chars.length);
+        int i = 0;
+        while (i < chars.length) {
+            int c = chars[i] & 0xFF;
+            if (c == '%' && i + 2 < chars.length) {
+                int hi = Character.digit((char) chars[i + 1], 16);
+                int lo = Character.digit((char) chars[i + 2], 16);
+                if (hi >= 0 && lo >= 0) {
+                    out.write((hi << 4) | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.write(c);
+            i++;
+        }
+        return new String(out.toByteArray(), StandardCharsets.UTF_8);
     }
 
     /**
@@ -297,5 +420,104 @@ public class Bundle2Parser {
         out.write((value >>> 16) & 0xFF);
         out.write((value >>> 8) & 0xFF);
         out.write(value & 0xFF);
+    }
+
+    /**
+     * Builds a minimal, uncompressed HG20/bundle2 "reply" envelope containing a single {@code
+     * reply:changegroup} part -- what a server (backlog item 26: {@code Wire1Commands#unbundle})
+     * must send back for a push whose request body was itself a bundle2 envelope. Real hg's own
+     * client only sends a bundle2-framed push (and therefore only accepts/expects a bundle2-framed
+     * REPLY) once the server has advertised the {@code bundle2=} capability at all -- turning that
+     * capability on for {@link #decodeChangegroupVersions}'s sake (getbundle version negotiation)
+     * unavoidably also switches every real-hg-client push onto this path (verified 2026-09-04:
+     * before this method existed, a real {@code hg push} against an hg4j server that had just
+     * started advertising {@code bundle2=} failed client-side with "abort: not a Mercurial bundle"
+     * trying to parse hg4j's old plain-text {@code "1\n<status>"} reply as a bundle2 stream).
+     *
+     * <p>Mirrors real hg's own {@code bundle2_part_handlers.handlechangegroup} reply exactly
+     * (verified against Mercurial 7.2.2 source): a {@code reply:changegroup} part with two
+     * advisory params, {@code in-reply-to} (the wire part id of the CLIENT's own {@code
+     * changegroup} request part -- see {@link ExtractedBundle2#changegroupPartId}) and {@code
+     * return} (an integer; real hg's own client reads this into {@code pushop.cgresult} --
+     * {@code 0} means "nothing added" and makes {@code hg push} exit with "nothing to push",
+     * any nonzero value means "something landed" and is otherwise not interpreted numerically).
+     */
+    public static byte[] buildChangegroupReplyBundle2(int inReplyToPartId, int returnValue) throws IOException {
+        byte[] key1 = "in-reply-to".getBytes(StandardCharsets.US_ASCII);
+        byte[] val1 = Integer.toString(inReplyToPartId).getBytes(StandardCharsets.US_ASCII);
+        byte[] key2 = "return".getBytes(StandardCharsets.US_ASCII);
+        byte[] val2 = Integer.toString(returnValue).getBytes(StandardCharsets.US_ASCII);
+        return wrapZeroPayloadPart("reply:changegroup", 0, new byte[][]{key1, key2}, new byte[][]{val1, val2});
+    }
+
+    /**
+     * Builds a minimal, uncompressed HG20/bundle2 stream with NO parts at all -- a trivially
+     * valid empty reply, used when an incoming bundle2 push carried no {@code changegroup} part
+     * to reply to at all (e.g. a bookmark-only push with no new changesets).
+     */
+    public static byte[] buildEmptyBundle2Reply() throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write("HG20".getBytes(StandardCharsets.US_ASCII));
+        writeInt32(out, 0); // stream params size
+        writeInt32(out, 0); // no parts at all
+        return out.toByteArray();
+    }
+
+    /**
+     * Builds a minimal, uncompressed HG20/bundle2 stream carrying a single {@code error:abort}
+     * part with a mandatory {@code message} param -- exactly real hg's own {@code
+     * wireprotov1server.unbundle}'s exception-to-wire-response conversion for an {@code
+     * error.Abort} raised while applying a bundle2 push (verified against Mercurial 7.2.2
+     * source, 2026-09-04). Real hg's client-side {@code bundle2.processbundle} recognizes this
+     * part type and raises {@code AbortFromPart(message)}, which {@code exchange._pushbundle2}
+     * reports as {@code "remote: <message>"} -- the bundle2-era equivalent of this server's
+     * legacy {@code "0\n<message>"} plain-text error response.
+     */
+    public static byte[] buildErrorAbortBundle2(String message) throws IOException {
+        byte[] key = "message".getBytes(StandardCharsets.US_ASCII);
+        byte[] val = message.getBytes(StandardCharsets.UTF_8);
+        return wrapZeroPayloadPart("error:abort", 1, new byte[][]{key}, new byte[][]{val});
+    }
+
+    /**
+     * Shared builder for a single-part, zero-payload-chunk bundle2 stream (used by the reply/
+     * error helpers above) -- header layout matches {@link #wrapChangegroupInBundle2} exactly,
+     * minus the payload chunk itself (a params-only part has none: real hg's own wire format
+     * still requires the payload chunk stream to be present but lets it be immediately
+     * zero-terminated, i.e. "no payload chunks at all").
+     *
+     * @param mandatoryCount how many of the leading entries in {@code paramKeys}/{@code
+     *     paramVals} are mandatory (the rest, i.e. the trailing entries, are advisory) --
+     *     matches real hg's own header layout, where mandatory params are always listed first
+     */
+    private static byte[] wrapZeroPayloadPart(String partTypeName, int mandatoryCount,
+                                               byte[][] paramKeys, byte[][] paramVals) throws IOException {
+        byte[] partName = partTypeName.getBytes(StandardCharsets.US_ASCII);
+        int advisoryCount = paramKeys.length - mandatoryCount;
+
+        ByteArrayOutputStream header = new ByteArrayOutputStream();
+        header.write(partName.length);
+        header.write(partName);
+        header.write(new byte[]{0, 0, 0, 0}); // this reply part's own id -- unused by a client, which only reads the "in-reply-to" PARAM value
+        header.write(mandatoryCount);
+        header.write(advisoryCount);
+        for (int i = 0; i < paramKeys.length; i++) {
+            header.write(paramKeys[i].length);
+            header.write(paramVals[i].length);
+        }
+        for (int i = 0; i < paramKeys.length; i++) {
+            header.write(paramKeys[i]);
+            header.write(paramVals[i]);
+        }
+        byte[] headerBytes = header.toByteArray();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write("HG20".getBytes(StandardCharsets.US_ASCII));
+        writeInt32(out, 0); // stream params size (no compression)
+        writeInt32(out, headerBytes.length);
+        out.write(headerBytes);
+        writeInt32(out, 0); // no payload chunks at all
+        writeInt32(out, 0); // end of bundle2 stream (no more parts)
+        return out.toByteArray();
     }
 }

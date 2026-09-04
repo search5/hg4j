@@ -27,6 +27,23 @@ public class StatusCommand {
     private final HgRepository repository;
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
+    /**
+     * Real Mercurial writes a dirstate entry's mtime as the 32-bit "-1" sentinel (0xFFFFFFFF)
+     * whenever it cannot trust an actual on-disk timestamp for that entry -- most commonly when
+     * the entry was (re)written within the very same wall-clock second as the dirstate file
+     * itself, so a same-second edit right afterward would otherwise be indistinguishable from
+     * "unchanged" by size/mtime alone (mercurial/dirstate.py's classic ambiguous-time handling;
+     * real hg's own internal {@code up_impl.update()} -- used by, among others, {@code hg shelve}'s
+     * revert-to-parent step -- writes this sentinel routinely, not just in rare corner cases).
+     * Treating that sentinel as a literal mtime value (comparing it against a real epoch-seconds
+     * disk mtime, which can never equal it) made every such entry look permanently "modified" even
+     * when byte-identical to the parent -- confirmed live against a real hg-authored dirstate
+     * (ShelveRealHgInteropTest, 2026-09-04). When present, size/time comparison below falls back to
+     * the same real content comparison already used for the "recorded mtime equals the dirstate
+     * file's own mtime" racy-write case.
+     */
+    private static final long AMBIGUOUS_TIME = 0xFFFFFFFFL;
+
     public StatusCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -68,11 +85,12 @@ public class StatusCommand {
                     } else {
                         long diskSize = effectiveSize(diskFile, isSymlink);
                         long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
-                        if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
+                        boolean ambiguousTime = dEntry.getTime() == AMBIGUOUS_TIME;
+                        if (dEntry.getSize() != diskSize || (!ambiguousTime && dEntry.getTime() != diskTime)) {
                             status.getModified().add(path);
                         } else {
                             boolean isRacyModified = false;
-                            if (diskTime == dirstateMtime) {
+                            if (ambiguousTime || diskTime == dirstateMtime) {
                                 try {
                                     byte[] parentContent = getParentCommitFileContent(dirstate, path);
                                     if (parentContent != null) {
@@ -159,11 +177,12 @@ public class StatusCommand {
                         if (dEntry != null) {
                             long diskSize = effectiveSize(diskFile, isSymlink);
                             long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
-                            if (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime) {
+                            boolean ambiguousTime = dEntry.getTime() == AMBIGUOUS_TIME;
+                            if (dEntry.getSize() != diskSize || (!ambiguousTime && dEntry.getTime() != diskTime)) {
                                 status.getModified().add(path);
                             } else {
                                 boolean isRacyModified = false;
-                                if (diskTime == dirstateMtime) {
+                                if (ambiguousTime || diskTime == dirstateMtime) {
                                     try {
                                         byte[] parentContent = getParentCommitFileContent(dirstate, path);
                                         if (parentContent != null) {

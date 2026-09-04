@@ -387,19 +387,68 @@ public class CommitCommand {
                                     // Changed if size or mtime differs
                                     changed = true;
                                 } else if (diskTime >= txStartSec - 1) {
-                                    // M-2: racy-hg check (accounting for 1-second resolution)
-                                    File flIdx = getFilelogIndex(repository.getStoreDir(), path);
-                                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                                    if (flIdx.exists()) {
-                                        Revlog filelog = repository.getRevlog(flIdx, flDat);
-                                        if (filelog.getRevisionCount() > 0) {
-                                            byte[] fileContent = diskIsSymlink
-                                                    ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
-                                                    : Files.readAllBytes(diskFile.toPath());
-                                            byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
-                                            if (!Arrays.equals(fileContent, lastContent)) {
-                                                changed = true;
+                                    // M-2: racy-hg check (accounting for 1-second resolution) --
+                                    // compare against the CURRENT PARENT commit's own recorded
+                                    // content for this path, not just "whatever the filelog's most
+                                    // recently-appended revision happens to be". A filelog's latest
+                                    // revision can belong to an entirely different branch that
+                                    // isn't even an ancestor of the commit being built now (e.g.
+                                    // RebaseCommand cherry-picking a fast-forwarded file whose
+                                    // filelog most recently gained a revision from the
+                                    // ORIGINAL/source side, not the destination side this commit's
+                                    // parent chain actually descends from) -- the old
+                                    // "positionally last revision" heuristic silently kept the
+                                    // PARENT's stale manifest entry instead of the just-written new
+                                    // content whenever that mismatch occurred, confirmed live via
+                                    // ShelveRealHgInteropTest's
+                                    // unshelveRebasesOntoAnUnrelatedInterveningCommit (2026-09-04):
+                                    // unshelve's rebase step fast-forwards a.txt's shelved content
+                                    // onto a dest commit that never touched it, but a.txt's filelog
+                                    // had ALREADY gained a newer (throwaway restore commit's)
+                                    // revision in between, so "last in filelog" silently pointed at
+                                    // the wrong content and the fast-forward was dropped entirely.
+                                    // For a merge commit, "unchanged" legitimately means "matches
+                                    // EITHER parent" (the byte-level disambiguation a few lines
+                                    // below picks whichever one it actually is) -- comparing only
+                                    // against P1 would wrongly flag a file that only matches P2
+                                    // (e.g. reverted-on-one-side-of-a-merge) as "changed" and divert
+                                    // it away from that disambiguation entirely, minting a brand
+                                    // new filelog revision for content that already exists.
+                                    String hexP1x = manifestP1.get(path);
+                                    String hexP2x = manifestP2.get(path);
+                                    if (hexP1x != null || hexP2x != null) {
+                                        byte[] fileContent = diskIsSymlink
+                                                ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
+                                                : Files.readAllBytes(diskFile.toPath());
+                                        // Only ever escalate to "changed" when at least one
+                                        // parent's content could actually be READ and compared --
+                                        // when a parent's filelog is itself missing/corrupted/
+                                        // emptied (a scenario this class's own tests exercise
+                                        // deliberately), neither side is verifiable, and the
+                                        // pre-existing byte-level disambiguation logic below
+                                        // already tolerates exactly that (it swallows the same
+                                        // read failure and falls back to the OTHER side without
+                                        // needing to re-verify it) -- staying "unchanged" here and
+                                        // deferring to it avoids minting a brand new filelog
+                                        // revision for content that's already the correct side's.
+                                        Boolean p1Matches = null;
+                                        if (hexP1x != null) {
+                                            try {
+                                                p1Matches = Arrays.equals(fileContent, getFileRevisionContent(repository, path, hexP1x));
+                                            } catch (Exception ignored) {
                                             }
+                                        }
+                                        Boolean p2Matches = null;
+                                        if (hexP2x != null) {
+                                            try {
+                                                p2Matches = Arrays.equals(fileContent, getFileRevisionContent(repository, path, hexP2x));
+                                            } catch (Exception ignored) {
+                                            }
+                                        }
+                                        boolean anyReadable = p1Matches != null || p2Matches != null;
+                                        boolean matchesAParent = Boolean.TRUE.equals(p1Matches) || Boolean.TRUE.equals(p2Matches);
+                                        if (anyReadable && !matchesAParent) {
+                                            changed = true;
                                         }
                                     }
                                 }

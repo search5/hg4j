@@ -295,7 +295,14 @@ public class ShelveCommandCoverageTest {
         assertEquals("keep modified", Files.readString(keep.toPath()));
         assertEquals("other modified", Files.readString(other.toPath()),
                 "File missing from state metadata must still be restored, defaulting to modified state");
-        assertEquals('m', repository.getDirstate().getEntries().get("other.txt").getState());
+        // Since 2026-09-04, unshelve's own default-'m'-when-missing-from-metadata fallback (still
+        // exercised above, for the throwaway restore commit's content) no longer leaks into the
+        // FINAL dirstate: the pending-change classification is now recomputed generically by
+        // diffing the restored/rebased commit's manifest against the true working-directory
+        // parent's, which reports a tracked-and-modified file as 'n' -- the same state a real
+        // tracked-modified file always has (real hg reports "M" for it via its own dirstate-vs-
+        // disk racy check, not a special dirstate character), not hg4j's old ad hoc 'm' passthrough.
+        assertEquals('n', repository.getDirstate().getEntries().get("other.txt").getState());
     }
 
     @Test

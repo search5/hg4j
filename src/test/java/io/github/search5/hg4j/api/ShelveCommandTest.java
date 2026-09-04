@@ -48,7 +48,11 @@ public class ShelveCommandTest {
         assertTrue(new File(shelvedDir, "test-shelve.state").exists());
         assertTrue(new File(shelvedDir, "test-shelve.hg").exists());
 
-        // 4. Try to Unshelve but with modified parent1 to trigger mismatch exception (W1)
+        // 4. Try to Unshelve but with a garbage (non-existent) parent1. Since 2026-09-04 unshelve
+        // no longer requires the working-directory parent to literally equal the shelve's own
+        // original parent (it rebases onto whatever it actually is instead, see ShelveCommand's
+        // class javadoc) -- a garbage node simply can't be resolved as a rebase target, so this
+        // now fails with a revision-not-found error rather than the old strict-equality check.
         Dirstate currentDirstate = repository.getDirstate();
         byte[] differentParent1 = new byte[20];
         differentParent1[0] = 0x0B; // Change parent
@@ -60,7 +64,7 @@ public class ShelveCommandTest {
         unshelveCmd.setUnshelve(true);
 
         IOException ex = assertThrows(IOException.class, () -> unshelveCmd.call());
-        assertTrue(ex.getMessage().contains("does not match shelved parent"));
+        assertTrue(ex.getMessage().contains("not found"), "Unexpected message: " + ex.getMessage());
 
         // 4a. Restore correct parent1 but try mismatched shelveName
         currentDirstate = repository.getDirstate();
@@ -73,7 +77,9 @@ public class ShelveCommandTest {
 
         // Mismatched name should throw file not found, but if we rename file to match it should throw name mismatch
         // Actually, if stateFile doesn't exist under mismatched-name, it throws "Shelve file not found".
-        // Let's test mismatched parent2 instead!
+        // Let's test an in-progress-merge parent2 instead! (Since 2026-09-04, unshelve no longer
+        // requires parent2 to literally match the shelve's own recorded parent2 -- it only rejects
+        // an unresolved merge already in progress, i.e. a non-zero current parent2.)
         currentDirstate = repository.getDirstate();
         byte[] differentParent2 = new byte[20];
         differentParent2[0] = 0x0C; // Change parent2
@@ -81,7 +87,7 @@ public class ShelveCommandTest {
         repository.writeDirstate(currentDirstate);
 
         IOException exParent2 = assertThrows(IOException.class, () -> unshelveCmd.call());
-        assertTrue(exParent2.getMessage().contains("does not match shelved parent2"));
+        assertTrue(exParent2.getMessage().contains("unresolved merge"), "Unexpected message: " + exParent2.getMessage());
 
         // 4b. Test mismatched shelveName in state file
         currentDirstate = repository.getDirstate();

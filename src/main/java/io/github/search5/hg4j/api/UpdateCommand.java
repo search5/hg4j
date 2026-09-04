@@ -381,46 +381,62 @@ public class UpdateCommand {
             Map<String, HgSubrepoEntry> subrepos = HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
 
             for (HgSubrepoEntry subEntry : subrepos.values()) {
-                File subDir = new File(repository.getDirectory(), subEntry.getPath());
-
-                if (subEntry.isGit()) {
-                    checkoutGitSubrepo(subDir, subEntry);
-                    continue;
-                }
-
-                HgRepository subRepo;
-                if (!new File(subDir, ".hg").exists()) {
-                    subRepo = Hg.init().setDirectory(subDir).call();
-                } else {
-                    subRepo = new HgRepository(subDir);
-                }
-
-                try (Hg hgSub = Hg.wrap(subRepo)) {
-                    String revision = subEntry.getRevision();
-                    boolean haveLocally = revision != null && !revision.isEmpty()
-                            && isRevisionPresentLocally(subRepo, revision);
-
-                    if (!haveLocally && subEntry.getSourceUrl() != null && !subEntry.getSourceUrl().isEmpty()) {
-                        try {
-                            hgSub.pull().setSource(subEntry.getSourceUrl()).call();
-                        } catch (Exception e) {
-                            LOGGER.log(Level.WARNING, "Failed to pull subrepo from: " + subEntry.getSourceUrl() + ", error: " + e.getMessage(), e);
-                        }
-                    }
-
-                    if (revision != null && !revision.isEmpty()) {
-                        hgSub.update().setRevision(revision).setForce(true).call();
-                    }
-                }
+                checkoutSubrepoEntry(repository.getDirectory(), subEntry);
             }
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to perform recursive subrepo checkout", e);
         }
     }
 
+    /**
+     * Checks out a single subrepo entry (hg- or git-typed) to its {@code .hgsubstate}-pinned
+     * revision under {@code repositoryDir}. Factored out of {@link #recursiveSubrepoCheckout}
+     * (backlog 32 gap #4) so {@link MergeCommand} can reuse the exact same checkout logic for
+     * the non-diverged ("remote changed only") case of a two-parent {@code hg merge} that
+     * touches {@code .hgsubstate} -- see {@code MergeCommand#mergeSubrepoState} (backlog 32
+     * follow-up, gap B).
+     */
+    static void checkoutSubrepoEntry(File repositoryDir, HgSubrepoEntry subEntry) {
+        File subDir = new File(repositoryDir, subEntry.getPath());
+
+        if (subEntry.isGit()) {
+            checkoutGitSubrepo(subDir, subEntry);
+            return;
+        }
+
+        try {
+            HgRepository subRepo;
+            if (!new File(subDir, ".hg").exists()) {
+                subRepo = Hg.init().setDirectory(subDir).call();
+            } else {
+                subRepo = new HgRepository(subDir);
+            }
+
+            try (Hg hgSub = Hg.wrap(subRepo)) {
+                String revision = subEntry.getRevision();
+                boolean haveLocally = revision != null && !revision.isEmpty()
+                        && isRevisionPresentLocally(subRepo, revision);
+
+                if (!haveLocally && subEntry.getSourceUrl() != null && !subEntry.getSourceUrl().isEmpty()) {
+                    try {
+                        hgSub.pull().setSource(subEntry.getSourceUrl()).call();
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Failed to pull subrepo from: " + subEntry.getSourceUrl() + ", error: " + e.getMessage(), e);
+                    }
+                }
+
+                if (revision != null && !revision.isEmpty()) {
+                    hgSub.update().setRevision(revision).setForce(true).call();
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to check out subrepo \"" + subEntry.getPath() + "\": " + e.getMessage(), e);
+        }
+    }
+
     /** Whether {@code revisionHex} already exists in {@code subRepo}'s local changelog --
      * backlog 32 gap #4's "skip the pull when already available locally" check. */
-    private static boolean isRevisionPresentLocally(HgRepository subRepo, String revisionHex) {
+    static boolean isRevisionPresentLocally(HgRepository subRepo, String revisionHex) {
         try {
             File clIdx = new File(subRepo.getStoreDir(), "00changelog.i");
             File clDat = new File(subRepo.getStoreDir(), "00changelog.d");
@@ -442,7 +458,7 @@ public class UpdateCommand {
      * GitSubrepoUtil} for what this simplifies versus real hg's {@code gitsubrepo.get()} and
      * what was verified live.
      */
-    private static void checkoutGitSubrepo(File subDir, HgSubrepoEntry subEntry) {
+    static void checkoutGitSubrepo(File subDir, HgSubrepoEntry subEntry) {
         String targetSha = subEntry.getRevision();
         if (targetSha == null || targetSha.isEmpty()) {
             return;

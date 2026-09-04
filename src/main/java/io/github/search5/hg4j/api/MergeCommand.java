@@ -19,6 +19,9 @@ import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.revwalk.ChangesetGraph;
+import io.github.search5.hg4j.submodule.GitSubrepoUtil;
+import io.github.search5.hg4j.submodule.HgSubrepoEntry;
+import io.github.search5.hg4j.submodule.HgSubrepoParser;
 import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.treewalk.TreeWalk;
 import io.github.search5.hg4j.util.SafeFileIO;
@@ -376,6 +379,19 @@ public class MergeCommand {
                 String hP1 = inP1 ? manifestP1.get(path) : null;
                 String hP2 = inP2 ? manifestP2.get(path) : null;
 
+                if (".hgsubstate".equals(path)) {
+                    // Real hg never runs its generic line-based file merge on .hgsubstate --
+                    // it is always resolved semantically, per subrepo, via subrepoutil.submerge()
+                    // (backlog 32 follow-up "gap B"; see mergeSubrepoState()'s javadoc). Doing a
+                    // plain text 3-way merge on it instead (as this method used to, since
+                    // .hgsubstate is tracked like any other file) would write literal
+                    // "<<<<<<<"/"======="/">>>>>>>" conflict markers into it whenever both
+                    // parents pinned a subrepo to a different revision -- real hg never does
+                    // that to this file.
+                    mergeSubrepoState(hLca, hP1, hP2, dirstate);
+                    continue;
+                }
+
                 if (Objects.equals(hP1, hP2)) {
                     continue;
                 }
@@ -593,6 +609,225 @@ public class MergeCommand {
             throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
         return filelog.getRevisionContent(rev);
+    }
+
+    /**
+     * Resolves {@code .hgsubstate} across a two-parent {@code hg merge}, mirroring real hg's
+     * {@code subrepoutil.submerge()} (Mercurial 7.2, backlog 32 follow-up "gap B" -- see
+     * {@link GitSubrepoUtil#mergeDiverged} for the specific diverged-git-subrepo case, ported
+     * and verified live against real hg CLI + a real git subrepo, 2026-09-04).
+     *
+     * <p>For each subrepo path declared across the ancestor/local({@code P1})/remote({@code P2})
+     * {@code .hgsubstate} snapshots, classifies its pinned revision the same way real hg's
+     * {@code submerge()} does (collapsing its several branches -- which mostly exist for
+     * interactive-prompt UX -- into the outcomes real hg's own non-interactive defaults always
+     * pick):
+     * <ul>
+     *   <li>unchanged on either side, or remote unchanged from the ancestor: keep local, no
+     *       subrepo action (real hg: "no change" / "local is newer" / "remote unchanged" --
+     *       {@code submerge()}'s {@code ld == r || r == a} / {@code a == nullstate} branches).</li>
+     *   <li>local unchanged from the ancestor (remote changed only): adopt the remote pin into
+     *       the merged {@code .hgsubstate} and physically check the subrepo out to it via
+     *       {@link UpdateCommand#checkoutSubrepoEntry} (real hg: {@code wctx.sub(s).get(r,
+     *       overwrite)}), or drop the entry entirely if remote removed it.</li>
+     *   <li>both sides changed independently (diverged): real hg's default (non-interactive)
+     *       choice for this is always "Merge" ({@code ui.promptchoice(msg, 0)}), which for a
+     *       {@code [git]} subrepo delegates to {@link GitSubrepoUtil#mergeDiverged} and for an
+     *       hg-typed subrepo delegates to {@link #mergeDivergedHgSubrepo} (both ports of real
+     *       hg's own {@code gitsubrepo.merge()}/{@code hgsubrepo.merge()}) -- the recorded
+     *       {@code .hgsubstate} pin itself is deliberately left at the LOCAL value in both cases
+     *       (matching real hg's own {@code sm[s] = l}), to be re-derived from each subrepo's
+     *       actual post-merge state at the next {@code hg commit}: the already-implemented
+     *       backlog 32 gap #3 dirty()/commit() machinery for git, and a plain recursive
+     *       {@code hg commit} of the (now single-parent-committed, since
+     *       {@link #mergeDivergedHgSubrepo} itself already ran a full nested merge+left it for
+     *       the user to commit, exactly like real hg) subrepo for hg-typed ones.</li>
+     * </ul>
+     */
+    private void mergeSubrepoState(String hLca, String hP1, String hP2, Dirstate dirstate) throws IOException {
+        if (Objects.equals(hP1, hP2)) {
+            return; // Identical (or both absent) on both sides -- nothing to reconcile.
+        }
+
+        File hgsubFile = new File(repository.getDirectory(), ".hgsub");
+        byte[] hgsubBytes = hgsubFile.exists() ? Files.readAllBytes(hgsubFile.toPath()) : new byte[0];
+
+        Map<String, String> lcaRevs = loadHgsubstateRevisions(hgsubBytes, hLca);
+        Map<String, String> p1Revs = loadHgsubstateRevisions(hgsubBytes, hP1);
+        Map<String, String> p2Revs = loadHgsubstateRevisions(hgsubBytes, hP2);
+        // Metadata (source URL / git-ness) lookup only -- revision is irrelevant here, so an
+        // empty .hgsubstate is fine (parseSubrepositories' own fallback still yields an entry
+        // per .hgsub-declared path).
+        Map<String, HgSubrepoEntry> metaEntries = HgSubrepoParser.parseSubrepositories(hgsubBytes, new byte[0]);
+
+        Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        allPaths.addAll(lcaRevs.keySet());
+        allPaths.addAll(p1Revs.keySet());
+        allPaths.addAll(p2Revs.keySet());
+
+        Map<String, String> mergedRevs = new LinkedHashMap<>(p1Revs);
+        boolean changed = false;
+
+        for (String path : allPaths) {
+            String l = p1Revs.get(path);
+            String r = p2Revs.get(path);
+            String a = lcaRevs.get(path);
+            if (Objects.equals(l, r) || Objects.equals(r, a)) {
+                continue; // No change, or remote unchanged from the ancestor -- keep local.
+            }
+            HgSubrepoEntry meta = metaEntries.get(path);
+            if (Objects.equals(l, a)) {
+                // Local unchanged from the ancestor -- remote changed (or added/removed) it.
+                if (r == null) {
+                    mergedRevs.remove(path);
+                } else {
+                    mergedRevs.put(path, r);
+                    if (meta != null) {
+                        HgSubrepoEntry target = new HgSubrepoEntry(path, meta.getSourceUrl(), r, meta.isGit());
+                        UpdateCommand.checkoutSubrepoEntry(repository.getDirectory(), target);
+                    }
+                }
+                changed = true;
+                continue;
+            }
+            // Both sides changed independently from the ancestor (diverged). Real hg's own
+            // non-interactive default is always "Merge", never touching the recorded pin.
+            if (l != null && r != null) {
+                File subDir = new File(repository.getDirectory(), path);
+                if (meta != null && meta.isGit()) {
+                    try {
+                        GitSubrepoUtil.mergeDiverged(subDir, r, l);
+                    } catch (IOException e) {
+                        LOGGER.log(Level.WARNING, "Failed to merge diverged git subrepo \"" + path + "\": " + e.getMessage(), e);
+                    }
+                } else {
+                    mergeDivergedHgSubrepo(subDir, l, r, meta != null ? meta.getSourceUrl() : null, path);
+                }
+            }
+            // mergedRevs already holds the LOCAL value (l) for this path -- left as-is.
+        }
+
+        if (changed) {
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, String> e : mergedRevs.entrySet()) {
+                sb.append(e.getValue()).append(' ').append(e.getKey()).append('\n');
+            }
+            byte[] newContent = sb.toString().getBytes(StandardCharsets.UTF_8);
+            File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");
+            Files.write(hgsubstateFile.toPath(), newContent);
+            dirstate.addEntry(".hgsubstate", new Dirstate.Entry('n', 0644, newContent.length, System.currentTimeMillis() / 1000));
+        }
+    }
+
+    /**
+     * Mirrors real hg's {@code hgsubrepo.merge()} (Mercurial 7.2, read live from
+     * {@code mercurial/subrepo.py}, backlog 32 follow-up "gap B" hg-typed counterpart) for the
+     * deterministic case where a nested hg-typed subrepo's pinned revision diverged between the
+     * two {@code hg merge} parents. Real hg's algorithm, ported directly:
+     * <pre>
+     * self._get(state)                       # pull the remote pin if not local yet
+     * cur = self._repo['.']                  # subrepo's own currently checked-out rev
+     * dst = self._repo[state[1]]             # subrepo's remote-pinned rev
+     * anc = dst.ancestor(cur)
+     * if anc == cur and dst.branch() == cur.branch():
+     *     up_impl.update(self._repo, state[1])      # plain forward fast-forward
+     * elif anc == dst:
+     *     pass                                       # dst already contained in cur -- no-op
+     * else:
+     *     up_impl.merge(dst, remind=False)            # a REAL recursive hg merge
+     * </pre>
+     * This delegates to hg4j's own {@link UpdateCommand} (fast-forward case) and
+     * {@link MergeCommand} (genuine divergence case) recursively against the subrepo's own
+     * {@link HgRepository} -- exactly like real hg delegates to its own
+     * {@code cmd_impls.update.update}/{@code .merge}. Like the git-typed sibling case, the
+     * {@code .hgsubstate} pin recorded for the PARENT commit is left at the local value
+     * (matching real hg's {@code sm[s] = l}); the subrepo's own new tip (after the recursive
+     * update, or the recursive merge left pending-uncommitted exactly like a top-level
+     * {@code hg merge} would) is picked up the next time the parent is committed, via the
+     * existing hg-subrepo branch of {@link CommitCommand#applySubrepoStateBeforeCommit}
+     * (dirty-detection + recursive {@code --subrepos} commit, backlog 23/32).
+     */
+    private void mergeDivergedHgSubrepo(File subDir, String localHex, String remoteHex, String sourceUrl, String path) {
+        if (!new File(subDir, ".hg").exists()) {
+            // Not checked out locally at all -- real hg's hgsubrepo.merge() would itself first
+            // hit _get()'s own missing-checkout handling; UpdateCommand.checkoutSubrepoEntry
+            // (used elsewhere in this same merge for the "remote changed only" case) already
+            // covers materializing a subrepo that isn't checked out yet, so there is nothing
+            // for a diverged-merge specifically to do here.
+            return;
+        }
+        try {
+            HgRepository subRepo = new HgRepository(subDir);
+
+            if (!UpdateCommand.isRevisionPresentLocally(subRepo, remoteHex)
+                    && sourceUrl != null && !sourceUrl.isEmpty()) {
+                try (Hg hgSub = Hg.wrap(subRepo)) {
+                    hgSub.pull().setSource(sourceUrl).call();
+                } catch (Exception e) {
+                    LOGGER.log(Level.WARNING, "Failed to pull diverged hg subrepo \"" + path + "\" from "
+                            + sourceUrl + ": " + e.getMessage(), e);
+                }
+            }
+
+            File clIdx = new File(subRepo.getStoreDir(), "00changelog.i");
+            File clDat = new File(subRepo.getStoreDir(), "00changelog.d");
+            Revlog subChangelog = subRepo.getRevlog(clIdx, clDat);
+
+            NodeId curNode = subRepo.getDirstate().getParent1Node();
+            int curRev = (curNode == null || curNode.isNull()) ? -1
+                    : NodeIdUtil.findRevisionByNodeId(subChangelog, curNode.getBytes());
+            int dstRev = NodeIdUtil.findRevisionByNodeId(subChangelog, NodeIdUtil.fromHex(remoteHex));
+            if (curRev == -1 || dstRev == -1) {
+                LOGGER.log(Level.WARNING, "Could not resolve diverged hg subrepo \"" + path + "\" revisions locally ("
+                        + "local=" + localHex + ", remote=" + remoteHex + ") -- skipping merge");
+                return;
+            }
+            if (curRev == dstRev) {
+                return; // Already there (shouldn't normally happen -- localHex != remoteHex).
+            }
+
+            ChangesetGraph graph = new ChangesetGraph(subChangelog);
+            boolean curIsAncestorOfDst = graph.isAncestor(curRev, dstRev);
+            boolean dstIsAncestorOfCur = graph.isAncestor(dstRev, curRev);
+
+            if (curIsAncestorOfDst
+                    && Objects.equals(CommitCommand.getBranchOfRevision(subChangelog, curRev),
+                            CommitCommand.getBranchOfRevision(subChangelog, dstRev))) {
+                // dst is strictly ahead of cur on the same named branch -- plain fast-forward
+                // checkout (real hg: up_impl.update(self._repo, state[1])).
+                new UpdateCommand(subRepo).setRevision(remoteHex).setForce(true).call();
+            } else if (dstIsAncestorOfCur) {
+                // cur already contains dst -- nothing to do (real hg: pass).
+            } else {
+                // Genuine divergence (or same-ancestor-different-branch) -- a real recursive
+                // merge, left uncommitted exactly like real hg's own up_impl.merge(dst,
+                // remind=False) leaves the subrepo's working copy with a pending 2-parent merge
+                // for the user (or the parent's own --subrepos recursive commit) to finish.
+                new MergeCommand(subRepo).setRevision(dstRev).call();
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to merge diverged hg subrepo \"" + path + "\": " + e.getMessage(), e);
+        }
+    }
+
+    /** Reads {@code .hgsubstate}'s content at the filelog revision identified by manifest hex
+     * {@code manifestHex} (may be {@code null} if the path wasn't tracked at that point) and
+     * parses it (alongside the CURRENT working copy's {@code .hgsub}, for source/git-ness
+     * metadata) into a plain path-to-pinned-revision map. */
+    private Map<String, String> loadHgsubstateRevisions(byte[] hgsubBytes, String manifestHex) throws IOException {
+        if (manifestHex == null) {
+            return Collections.emptyMap();
+        }
+        byte[] content = getFileRevisionContent(".hgsubstate", manifestHex);
+        Map<String, HgSubrepoEntry> entries = HgSubrepoParser.parseSubrepositories(hgsubBytes, content);
+        Map<String, String> revs = new LinkedHashMap<>();
+        for (Map.Entry<String, HgSubrepoEntry> e : entries.entrySet()) {
+            String rev = e.getValue().getRevision();
+            if (rev != null && !rev.isEmpty()) {
+                revs.put(e.getKey(), rev);
+            }
+        }
+        return revs;
     }
 
     private void writeFileToWorkingCopy(String path, byte[] content, int mode) throws IOException {

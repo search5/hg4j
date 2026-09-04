@@ -1,11 +1,14 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.HgTestUtils;
+import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.lib.NodeId;
+import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.submodule.HgSubrepoEntry;
 import io.github.search5.hg4j.submodule.HgSubrepoParser;
+import io.github.search5.hg4j.util.NodeIdUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -893,5 +896,356 @@ public class SubrepoRealHgInteropTest {
         assertFalse(anyPullFailureLogged,
                 "리비전이 이미 로컬에 있으면 pull을 아예 시도하지 않아야 함 -- 무효한 소스에 대한 "
                         + "pull 실패 로그가 있으면 안 됨(실제 hg의 hasunlinkedrev 사전 체크와 동일 동작이어야 함)");
+    }
+
+    /**
+     * Backlog 32 후속 gap A: {@link io.github.search5.hg4j.submodule.GitSubrepoUtil#commit}이
+     * git 커밋에 기록하는 {@code GIT_AUTHOR_DATE}가 실제 hg의 {@code gitsubrepo.commit()}
+     * (mercurial/subrepo.py, Mercurial 7.2)이 만들어내는 것과 byte-exact로 일치하는지 확인한다.
+     *
+     * <p>실제 hg 소스 확인: {@code env[b'GIT_AUTHOR_DATE'] = dateutil.datestr(date,
+     * b'%Y-%m-%dT%H:%M:%S %1%2')} -- "T" 구분자 + 공백 + 콜론 없는 "+HHMM" 오프셋
+     * (예: "2023-11-15T07:13:20 +0900"). hg4j는 {@code DateTimeFormatter.ISO_OFFSET_DATE_TIME}
+     * 을 쓰기 때문에 실제로는 다른 문자열("2023-11-15T07:13:20+09:00", 공백 없음 + 콜론 있는
+     * 오프셋)을 넘긴다 -- 그러나 2026-09-04 실측: git 자신의 날짜 파서가 두 문자열을 동일한
+     * "{@code <epoch> <+-HHMM>}" 쌍으로 정규화해 커밋 오브젝트에 기록하므로(둘 다
+     * "1700000000 +0900"), 실제로 바이트 단위로 비교 대상이 되는 커밋 오브젝트 자체는
+     * byte-exact로 일치한다 -- git에 넘기는 원본 env var 문자열 자체가 다를 뿐이다.
+     */
+    @Test
+    public void hg4jGitSubrepoCommitDateMatchesRealHgByteExact(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isGitInstalled(), "git이 설치되어 있지 않습니다. 건너뜁니다.");
+
+        File gitSubSrc = tempDir.resolve("git-sub-src").toFile();
+        gitSubSrc.mkdirs();
+        HgTestUtils.git(gitSubSrc, "init", "-q", "-b", "master", ".");
+        Files.writeString(new File(gitSubSrc, "g.txt").toPath(), "hello");
+        HgTestUtils.git(gitSubSrc, "add", "g.txt");
+        HgTestUtils.git(gitSubSrc, "commit", "-q", "-m", "git commit1");
+
+        // hg 내부 날짜 형식("unixtime offset", mercurial 컨벤션 -- 서쪽 오프셋이 양수)으로 -d를
+        // 직접 지정: epoch 1700000000, tz -32400 == 실제 시각 2023-11-15T07:13:20+09:00.
+        String hgDateArg = "1700000000 -32400";
+        long epochSecs = 1700000000L;
+        int hgOffsetSeconds = -32400;
+
+        // --- 오라클: 실제 hg ---
+        File realParentDir = tempDir.resolve("real-parent").toFile();
+        HgTestUtils.nativeRepo(realParentDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "init.txt").toPath(), "init");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(realParentDir, "add");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "parent init");
+        Files.writeString(new File(realParentDir, ".hgsub").toPath(), "gitsub = [git]" + gitSubSrc.getAbsolutePath() + "\n");
+        HgTestUtils.git(tempDir.toFile(), "clone", "-q", gitSubSrc.getAbsolutePath(), new File(realParentDir, "gitsub").getAbsolutePath());
+        HgTestUtils.hgGitAllowed(realParentDir, "add", ".hgsub");
+        HgTestUtils.hgGitAllowed(realParentDir, "commit", "-u", "T", "-m", "add git subrepo");
+
+        Files.writeString(new File(realParentDir, "gitsub/g.txt").toPath(), "dirty");
+        HgTestUtils.hgGitAllowed(realParentDir, "commit", "-S", "-u", "T <t@example.com>", "-d", hgDateArg, "-m", "dated recursive commit");
+        String oracleAuthorLine = HgTestUtils.git(new File(realParentDir, "gitsub"), "log", "-1", "--format=%ad", "--date=raw");
+
+        // --- hg4j 재현 ---
+        File parentDir = tempDir.resolve("parent").toFile();
+        HgRepository parentRepo = Hg.init().setDirectory(parentDir).call();
+        Files.writeString(new File(parentDir, "init.txt").toPath(), "init");
+        new AddCommand(parentRepo).call();
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("parent init").call();
+        Files.writeString(new File(parentDir, ".hgsub").toPath(), "gitsub = [git]" + gitSubSrc.getAbsolutePath() + "\n");
+        HgTestUtils.git(tempDir.toFile(), "clone", "-q", gitSubSrc.getAbsolutePath(), new File(parentDir, "gitsub").getAbsolutePath());
+        new AddCommand(parentRepo).call();
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("add git subrepo").call();
+
+        Files.writeString(new File(parentDir, "gitsub/g.txt").toPath(), "dirty");
+        new CommitCommand(parentRepo)
+                .setAuthor("T <t@example.com>")
+                .setMessage("dated recursive commit")
+                .setSubrepos(true)
+                .setDate(epochSecs, hgOffsetSeconds)
+                .call();
+
+        String hg4jAuthorLine = HgTestUtils.git(new File(parentDir, "gitsub"), "log", "-1", "--format=%ad", "--date=raw");
+
+        assertEquals(oracleAuthorLine, hg4jAuthorLine,
+                "hg4j GitSubrepoUtil.commit()이 기록한 git 커밋의 author 날짜(epoch+tz)가 실제 hg의 "
+                        + "GIT_AUTHOR_DATE 결과와 byte-exact로 일치해야 함");
+        assertEquals("1700000000 +0900", hg4jAuthorLine, "기대한 epoch/오프셋 값 자체도 정확해야 함");
+    }
+
+    /**
+     * Backlog 32 후속 gap B: 두 hg-레벨 부모가 같은 git 서브저장소를 공통 조상으로부터 서로 다르게
+     * 갈라놓은("diverged") 상태에서 {@code hg merge}가 실행되는 시나리오. 실제 hg의
+     * {@code gitsubrepo.merge()}(mercurial/subrepo.py, Mercurial 7.2)와 {@code
+     * subrepoutil.submerge()}를 직접 읽고 실제 hg CLI + git으로 2026-09-04 재현 검증했다:
+     * <ul>
+     *   <li>{@code hg merge}는 (비대화형 기본 선택 "Merge") {@code .hgsubstate}의 pin 값은
+     *       LOCAL(병합 전 pin)로 그대로 두고, git 서브저장소 워킹 트리에 실제
+     *       {@code git merge --no-commit <remote>}를 실행해 병합 결과(충돌 없으면 stage된
+     *       변경, 있으면 미해결 충돌 마커 + MERGE_HEAD)를 남긴다.</li>
+     *   <li>그 뒤 이어지는 {@code hg commit -S}가 (이미 구현된 backlog 32 gap #3의
+     *       dirty()/commit() 로직을 통해) 그 병합 결과를 실제 2-parent git 병합 커밋으로
+     *       기록하고 {@code .hgsubstate}를 그 sha로 갱신한다.</li>
+     * </ul>
+     * hg4j의 {@code MergeCommand#mergeSubrepoState} + {@code GitSubrepoUtil#mergeDiverged}가
+     * 동일한 시퀀스를 재현하는지, 최종 git 서브저장소 커밋 그래프(부모 2개, 각 부모 sha)까지
+     * 오라클과 대조한다.
+     */
+    @Test
+    public void hg4jMergeHandlesDivergedGitSubrepoMatchingRealHg(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isGitInstalled(), "git이 설치되어 있지 않습니다. 건너뜁니다.");
+
+        File gitSubSrc = tempDir.resolve("git-sub-src").toFile();
+        gitSubSrc.mkdirs();
+        HgTestUtils.git(gitSubSrc, "init", "-q", "-b", "master", ".");
+        Files.writeString(new File(gitSubSrc, "g.txt").toPath(), "hello");
+        HgTestUtils.git(gitSubSrc, "add", "g.txt");
+        HgTestUtils.git(gitSubSrc, "commit", "-q", "-m", "commitA");
+
+        // --- 오라클: 실제 hg ---
+        File realParentDir = tempDir.resolve("real-parent").toFile();
+        HgTestUtils.nativeRepo(realParentDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "init.txt").toPath(), "init");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(realParentDir, "add");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "parent init");
+        Files.writeString(new File(realParentDir, ".hgsub").toPath(), "gitsub = [git]" + gitSubSrc.getAbsolutePath() + "\n");
+        HgTestUtils.git(tempDir.toFile(), "clone", "-q", gitSubSrc.getAbsolutePath(), new File(realParentDir, "gitsub").getAbsolutePath());
+        HgTestUtils.hgGitAllowed(realParentDir, "add", ".hgsub");
+        HgTestUtils.hgGitAllowed(realParentDir, "commit", "-u", "T", "-m", "add subrepo");
+        String hgAddSubrepoRev = HgTestUtils.hg(realParentDir, "log", "-r", "tip", "--template", "{rev}");
+
+        Files.writeString(new File(realParentDir, "gitsub/left.txt").toPath(), "left change\n");
+        HgTestUtils.git(new File(realParentDir, "gitsub"), "add", "left.txt");
+        HgTestUtils.git(new File(realParentDir, "gitsub"), "commit", "-q", "-m", "left commit");
+        String gitLeftRevOracle = HgTestUtils.git(new File(realParentDir, "gitsub"), "rev-parse", "HEAD");
+        HgTestUtils.hgGitAllowed(realParentDir, "commit", "-u", "T", "-m", "bump subrepo left");
+        String hgLeftRev = HgTestUtils.hg(realParentDir, "log", "-r", "tip", "--template", "{rev}");
+
+        HgTestUtils.hgGitAllowed(realParentDir, "update", "-r", hgAddSubrepoRev);
+        Files.writeString(new File(realParentDir, "gitsub/right.txt").toPath(), "right change\n");
+        HgTestUtils.git(new File(realParentDir, "gitsub"), "add", "right.txt");
+        HgTestUtils.git(new File(realParentDir, "gitsub"), "commit", "-q", "-m", "right commit");
+        HgTestUtils.hgGitAllowed(realParentDir, "commit", "-u", "T", "-m", "bump subrepo right");
+        String gitRightRev = Files.readString(new File(realParentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+
+        HgTestUtils.hgGitAllowed(realParentDir, "merge", "-r", hgLeftRev, "--config", "ui.interactive=false");
+        // 병합 직후 .hgsubstate는 LOCAL(right) pin을 그대로 유지해야 한다 (real hg: sm[s] = l).
+        String oracleHgsubstateAfterMerge = Files.readString(new File(realParentDir, ".hgsubstate").toPath()).trim();
+        assertEquals(gitRightRev + " gitsub", oracleHgsubstateAfterMerge,
+                "오라클: hg merge 직후 .hgsubstate는 LOCAL pin을 그대로 유지해야 함 (git merge --no-commit은 워킹 트리만 바꿈)");
+
+        HgTestUtils.hgGitAllowed(realParentDir, "commit", "-S", "-u", "T <t@example.com>", "-m", "merge subrepo");
+        String oracleMergedSha = Files.readString(new File(realParentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+        String oracleParents = HgTestUtils.git(new File(realParentDir, "gitsub"), "log", "-1", "--format=%P", oracleMergedSha);
+        // 오라클 자체의 부모 순서(local=right 먼저, remote=left 나중)를 real hg 소스 이해가
+        // 맞는지 먼저 자체 검증한다 -- 두 git 커밋 sha는 실행 시각에 의존하므로(오라클/hg4j가
+        // 각자 별도로 만든 커밋) 오라클과 hg4j를 서로 직접 비교하지 않고, 각자 자기 자신의
+        // right/left sha와만 대조한다.
+        assertEquals(gitRightRev + " " + gitLeftRevOracle, oracleParents.trim(),
+                "오라클: 실제 git 병합 커밋의 부모 순서는 (local=right, remote=left)여야 함");
+
+        // --- hg4j 재현 ---
+        File parentDir = tempDir.resolve("parent").toFile();
+        HgRepository parentRepo = Hg.init().setDirectory(parentDir).call();
+        Files.writeString(new File(parentDir, "init.txt").toPath(), "init");
+        new AddCommand(parentRepo).call();
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("parent init").call();
+        Files.writeString(new File(parentDir, ".hgsub").toPath(), "gitsub = [git]" + gitSubSrc.getAbsolutePath() + "\n");
+        HgTestUtils.git(tempDir.toFile(), "clone", "-q", gitSubSrc.getAbsolutePath(), new File(parentDir, "gitsub").getAbsolutePath());
+        new AddCommand(parentRepo).call();
+        byte[] rev1AddSubrepo = new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("add subrepo").call();
+
+        Files.writeString(new File(parentDir, "gitsub/left.txt").toPath(), "left change\n");
+        HgTestUtils.git(new File(parentDir, "gitsub"), "add", "left.txt");
+        HgTestUtils.git(new File(parentDir, "gitsub"), "commit", "-q", "-m", "left commit");
+        String gitLeftRevHg4j = HgTestUtils.git(new File(parentDir, "gitsub"), "rev-parse", "HEAD");
+        byte[] rev2Left = new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("bump subrepo left").call();
+
+        new UpdateCommand(parentRepo).setRevision(NodeIdUtil.toHex(rev1AddSubrepo)).setForce(true).call();
+        Files.writeString(new File(parentDir, "gitsub/right.txt").toPath(), "right change\n");
+        HgTestUtils.git(new File(parentDir, "gitsub"), "add", "right.txt");
+        HgTestUtils.git(new File(parentDir, "gitsub"), "commit", "-q", "-m", "right commit");
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("bump subrepo right").call();
+        String gitRightRevHg4j = Files.readString(new File(parentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+
+        int rev2LeftIdx = NodeIdUtil.findRevisionByNodeId(
+                parentRepo.getRevlog(new File(parentRepo.getStoreDir(), "00changelog.i"), new File(parentRepo.getStoreDir(), "00changelog.d")),
+                rev2Left);
+        MergeCommand.MergeResult mergeResult = new MergeCommand(parentRepo).setRevision(rev2LeftIdx).call();
+        assertFalse(mergeResult.isConflicted(), "파일 레벨 충돌은 없어야 함 (left.txt/right.txt는 서로 다른 파일)");
+
+        String hg4jHgsubstateAfterMerge = Files.readString(new File(parentDir, ".hgsubstate").toPath()).trim();
+        assertEquals(gitRightRevHg4j + " gitsub", hg4jHgsubstateAfterMerge,
+                "hg4j도 merge 직후 .hgsubstate는 LOCAL pin을 그대로 유지해야 함 (오라클과 동일)");
+
+        new CommitCommand(parentRepo)
+                .setAuthor("T <t@example.com>")
+                .setMessage("merge subrepo")
+                .setSubrepos(true)
+                .call();
+        String hg4jMergedSha = Files.readString(new File(parentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+        String hg4jParents = HgTestUtils.git(new File(parentDir, "gitsub"), "log", "-1", "--format=%P", hg4jMergedSha);
+
+        // 실제 git 커밋 sha 자체는 커밋 시각(now)에 의존하므로 오라클과 hg4j가 독립적으로 만든
+        // right/left 커밋의 sha는 서로 다를 수 있다(둘 다 같은 순간에 커밋되는 게 아니므로) --
+        // 그래서 오라클과 hg4j를 직접 비교하는 대신, 각자 자기 자신이 만든 right/left sha와
+        // 대조해 "부모 순서(local=right, remote=left)" 구조 자체가 오라클과 hg4j 모두에서
+        // 동일한 real-hg 알고리즘을 따르는지 확인한다 (위 오라클 자체검증과 대칭).
+        assertEquals(2, hg4jParents.trim().split("\\s+").length,
+                "hg4j 병합 커밋도 실제 git merge commit(부모 2개)이어야 함: " + hg4jParents);
+        assertEquals(gitRightRevHg4j + " " + gitLeftRevHg4j, hg4jParents.trim(),
+                "hg4j 병합 커밋의 부모 순서도 오라클과 동일하게 (local=right, remote=left)여야 함");
+
+        // 병합된 파일 트리에 양쪽 파일이 모두 존재해야 한다 (실제 git merge 결과).
+        assertTrue(new File(parentDir, "gitsub/left.txt").exists(), "병합 후 left.txt가 존재해야 함");
+        assertTrue(new File(parentDir, "gitsub/right.txt").exists(), "병합 후 right.txt가 존재해야 함");
+    }
+
+    /**
+     * Backlog 32 후속 gap B의 hg-타입(비-git) 대칭 케이스: {@code hg}-타입 중첩 서브저장소가 두
+     * hg-레벨 부모 사이에서 diverge한 상태로 {@code hg merge}가 실행되는 시나리오. 실제 hg의
+     * {@code hgsubrepo.merge()}(mercurial/subrepo.py, Mercurial 7.2)를 직접 읽고 실제 hg
+     * CLI로 2026-09-04 재현 검증했다: {@code self._get(state)}로 원격 pin을 로컬에 확보한 뒤
+     * {@code anc = dst.ancestor(cur)}로 서브저장소 자체의 조상 관계를 계산해, cur이 dst의
+     * 조상(같은 브랜치)이면 단순 {@code hg update}, dst가 cur의 조상이면 아무 것도 안 함, 그
+     * 외(진짜 divergence)엔 서브저장소 안에서 진짜 {@code hg merge}(재귀!)를 실행한다 — 실측:
+     * 병합 직후 서브저장소는 2-parent(pending merge) 상태로 남고 {@code .hgsubstate}는(git
+     * 케이스와 마찬가지로) LOCAL pin을 그대로 유지하다가, 이어지는 {@code hg commit -S}가(이미
+     * 구현돼 있던 기존 hg-서브저장소 dirty-commit 로직으로) 서브저장소를 재귀 커밋해 새
+     * 2-parent sha로 {@code .hgsubstate}를 갱신한다. hg4j의
+     * {@code MergeCommand#mergeDivergedHgSubrepo}가(내부적으로 hg4j 자신의
+     * {@code UpdateCommand}/{@code MergeCommand}를 서브저장소에 재귀 호출해) 동일한 시퀀스를
+     * 재현하는지, 서브저장소의 최종 2-parent 병합 커밋 그래프까지 오라클과 대조한다.
+     */
+    @Test
+    public void hg4jMergeHandlesDivergedHgSubrepoMatchingRealHg(@TempDir Path tempDir) throws Exception {
+        File subSrc = tempDir.resolve("sub-src").toFile();
+        HgTestUtils.nativeRepo(subSrc, dir -> {
+            try {
+                Files.writeString(new File(dir, "g.txt").toPath(), "hello");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(subSrc, "add");
+        HgTestUtils.hg(subSrc, "commit", "-u", "T", "-m", "commitA");
+
+        // --- 오라클: 실제 hg ---
+        File realParentDir = tempDir.resolve("real-parent").toFile();
+        HgTestUtils.nativeRepo(realParentDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "init.txt").toPath(), "init");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        HgTestUtils.hg(realParentDir, "add");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "parent init");
+        Files.writeString(new File(realParentDir, ".hgsub").toPath(), "hsub = " + subSrc.getAbsolutePath() + "\n");
+        HgTestUtils.hg(realParentDir, "clone", subSrc.getAbsolutePath(), new File(realParentDir, "hsub").getAbsolutePath());
+        HgTestUtils.hg(realParentDir, "add", ".hgsub");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "add subrepo");
+        String hgAddSubrepoRev = HgTestUtils.hg(realParentDir, "log", "-r", "tip", "--template", "{rev}");
+
+        Files.writeString(new File(realParentDir, "hsub/left.txt").toPath(), "left change\n");
+        HgTestUtils.hg(new File(realParentDir, "hsub"), "add");
+        HgTestUtils.hg(new File(realParentDir, "hsub"), "commit", "-u", "T", "-m", "left commit");
+        String subLeftRevOracle = HgTestUtils.hg(new File(realParentDir, "hsub"), "log", "-r", "tip", "--template", "{node}");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "bump subrepo left");
+        String hgLeftRev = HgTestUtils.hg(realParentDir, "log", "-r", "tip", "--template", "{rev}");
+
+        HgTestUtils.hg(realParentDir, "update", "-r", hgAddSubrepoRev);
+        Files.writeString(new File(realParentDir, "hsub/right.txt").toPath(), "right change\n");
+        HgTestUtils.hg(new File(realParentDir, "hsub"), "add");
+        HgTestUtils.hg(new File(realParentDir, "hsub"), "commit", "-u", "T", "-m", "right commit");
+        HgTestUtils.hg(realParentDir, "commit", "-u", "T", "-m", "bump subrepo right");
+        String subRightRevOracle = Files.readString(new File(realParentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+
+        HgTestUtils.hg(realParentDir, "--config", "ui.interactive=false", "merge", "-r", hgLeftRev);
+        String oracleHgsubstateAfterMerge = Files.readString(new File(realParentDir, ".hgsubstate").toPath()).trim();
+        assertEquals(subRightRevOracle + " hsub", oracleHgsubstateAfterMerge,
+                "오라클: hg merge 직후 .hgsubstate는 LOCAL(right) pin을 그대로 유지해야 함 (재귀 hg merge는 서브저장소 워킹 트리만 바꿈)");
+
+        HgTestUtils.hg(realParentDir, "commit", "-S", "-u", "T", "-m", "merge subrepo");
+        String oracleMergedSha = Files.readString(new File(realParentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+        String oracleParents = HgTestUtils.hg(new File(realParentDir, "hsub"), "log", "-r", oracleMergedSha, "--template", "{p1node} {p2node}");
+        assertEquals(subRightRevOracle + " " + subLeftRevOracle, oracleParents.trim(),
+                "오라클: 서브저장소 병합 커밋의 부모 순서는 (local=right, remote=left)여야 함");
+
+        // --- hg4j 재현 (부모/서브저장소 둘 다 hg4j 자체 API로 조작) ---
+        File parentDir = tempDir.resolve("parent").toFile();
+        HgRepository parentRepo = Hg.init().setDirectory(parentDir).call();
+        Files.writeString(new File(parentDir, "init.txt").toPath(), "init");
+        new AddCommand(parentRepo).call();
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("parent init").call();
+        Files.writeString(new File(parentDir, ".hgsub").toPath(), "hsub = " + subSrc.getAbsolutePath() + "\n");
+        Hg.cloneRepository().setSource(subSrc.getAbsolutePath()).setDirectory(new File(parentDir, "hsub")).call();
+        new AddCommand(parentRepo).call();
+        byte[] rev1AddSubrepo = new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("add subrepo").call();
+
+        HgRepository subRepo = new HgRepository(new File(parentDir, "hsub"));
+        Files.writeString(new File(parentDir, "hsub/left.txt").toPath(), "left change\n");
+        new AddCommand(subRepo).call();
+        byte[] subLeftRevHg4j = new CommitCommand(subRepo).setAuthor("T <t@example.com>").setMessage("left commit").call();
+        byte[] rev2Left = new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("bump subrepo left").call();
+
+        new UpdateCommand(parentRepo).setRevision(NodeIdUtil.toHex(rev1AddSubrepo)).setForce(true).call();
+        Files.writeString(new File(parentDir, "hsub/right.txt").toPath(), "right change\n");
+        new AddCommand(subRepo).call();
+        byte[] subRightRevHg4j = new CommitCommand(subRepo).setAuthor("T <t@example.com>").setMessage("right commit").call();
+        new CommitCommand(parentRepo).setAuthor("T <t@example.com>").setMessage("bump subrepo right").call();
+        String subRightRevHg4jFromState = Files.readString(new File(parentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+        assertEquals(NodeIdUtil.toHex(subRightRevHg4j), subRightRevHg4jFromState, "사전 점검: .hgsubstate가 right 커밋 sha를 기록해야 함");
+
+        int rev2LeftIdx = NodeIdUtil.findRevisionByNodeId(
+                parentRepo.getRevlog(new File(parentRepo.getStoreDir(), "00changelog.i"), new File(parentRepo.getStoreDir(), "00changelog.d")),
+                rev2Left);
+        MergeCommand.MergeResult mergeResult = new MergeCommand(parentRepo).setRevision(rev2LeftIdx).call();
+        assertFalse(mergeResult.isConflicted(), "파일 레벨 충돌은 없어야 함 (left.txt/right.txt는 서로 다른 파일)");
+
+        String hg4jHgsubstateAfterMerge = Files.readString(new File(parentDir, ".hgsubstate").toPath()).trim();
+        assertEquals(subRightRevHg4jFromState + " hsub", hg4jHgsubstateAfterMerge,
+                "hg4j도 merge 직후 .hgsubstate는 LOCAL pin을 그대로 유지해야 함 (오라클과 동일)");
+
+        // 재귀 hg merge가 실제로 서브저장소 워킹 카피에 pending 2-parent 병합을 남겼는지 확인.
+        Dirstate subDirstateAfterMerge = subRepo.getDirstate();
+        assertFalse(subDirstateAfterMerge.getParent2Node() == null || subDirstateAfterMerge.getParent2Node().isNull(),
+                "hg4j의 재귀 병합도 서브저장소를 real hg처럼 pending 2-parent 상태로 남겨야 함");
+        assertTrue(new File(parentDir, "hsub/left.txt").exists(), "병합 후 left.txt가 존재해야 함");
+        assertTrue(new File(parentDir, "hsub/right.txt").exists(), "병합 후 right.txt가 존재해야 함");
+
+        new CommitCommand(parentRepo)
+                .setAuthor("T <t@example.com>")
+                .setMessage("merge subrepo")
+                .setSubrepos(true)
+                .call();
+        String hg4jMergedShaHex = Files.readString(new File(parentDir, ".hgsubstate").toPath()).trim().split(" ")[0];
+
+        // 위 부모 커밋이 (applySubrepoStateBeforeCommit 내부에서) 서브저장소를 재귀 커밋할 때
+        // 이 테스트의 subRepo 객체와는 별도의 새 HgRepository 인스턴스를 여는데, subRepo 자신의
+        // Revlog 캐시는 그 디스크 변경을 모른다 -- 새로 열어서 최신 상태를 읽는다.
+        HgRepository subRepoAfter = new HgRepository(new File(parentDir, "hsub"));
+        Revlog subChangelogAfter = subRepoAfter.getRevlog(new File(subRepoAfter.getStoreDir(), "00changelog.i"), new File(subRepoAfter.getStoreDir(), "00changelog.d"));
+        int mergedRev = NodeIdUtil.findRevisionByNodeId(subChangelogAfter, NodeIdUtil.fromHex(hg4jMergedShaHex));
+        assertTrue(mergedRev != -1, "hg4j도 .hgsubstate에 서브저장소의 새 병합 커밋 sha를 기록해야 함");
+        Revlog.IndexRecord mergedRec = subChangelogAfter.getIndexRecord(mergedRev);
+        assertTrue(mergedRec.getParent1() != -1 && mergedRec.getParent2() != -1,
+                "hg4j 병합 커밋도 실제 2-parent 커밋이어야 함");
+        String hg4jParent1Hex = NodeIdUtil.toHex(subChangelogAfter.getIndexRecord(mergedRec.getParent1()).getNodeId());
+        String hg4jParent2Hex = NodeIdUtil.toHex(subChangelogAfter.getIndexRecord(mergedRec.getParent2()).getNodeId());
+
+        // 오라클과 hg4j가 각자 독립적으로 만든 커밋이라 sha 자체는 다를 수 있으므로(시각 등
+        // 커밋 메타데이터 의존), 부모 순서(local=right, remote=left) 구조를 각자 자기 자신의
+        // right/left sha와 대조한다 (git 케이스의 대칭 검증과 동일한 이유).
+        assertEquals(NodeIdUtil.toHex(subRightRevHg4j), hg4jParent1Hex, "hg4j 병합 커밋의 parent1은 local(right)이어야 함");
+        assertEquals(NodeIdUtil.toHex(subLeftRevHg4j), hg4jParent2Hex, "hg4j 병합 커밋의 parent2는 remote(left)여야 함");
     }
 }

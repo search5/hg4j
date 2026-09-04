@@ -232,4 +232,75 @@ public class LogCommandTest {
         assertTrue(restricted.stream().anyMatch(c -> c.getRevision() == 1));
         assertTrue(restricted.stream().noneMatch(c -> c.getRevision() == 2));
     }
+
+    /**
+     * Verified against real {@code hg} 7.2 on an equivalent scratch repository (plain
+     * {@code hg init}, no changelog-v2/copies-sidedata format flags):
+     * <pre>
+     *   $ hg log --follow new.txt --template "{rev} {desc}\n"
+     *   2 modify new.txt
+     *   1 rename to new.txt
+     *   0 add old.txt
+     * </pre>
+     * i.e. {@code --follow <path>} crosses the rename boundary and includes the pre-rename
+     * revision under its old name, unlike plain {@code --follow} with no path (which is just
+     * changelog ancestry and already covered by {@link #followAncestorsLimitsLogToAncestorsOfStartRev}).
+     */
+    @Test
+    public void followPathCrossesRenameBoundaryToOldPath(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            Files.writeString(new File(repoDir, "old.txt").toPath(), "line1\nline2\n");
+            hg.add().addFile("old.txt").call();
+            hg.commit().setAuthor("Alice").setMessage("add old.txt").call(); // rev 0
+
+            hg.rename().setSource("old.txt").setTarget("new.txt").call();
+            hg.commit().setAuthor("Bob").setMessage("rename to new.txt").call(); // rev 1
+
+            Files.writeString(new File(repoDir, "new.txt").toPath(), "line1\nline2\nline3\n");
+            hg.commit().setAuthor("Carol").setMessage("modify new.txt").call(); // rev 2
+
+            List<HgCommit> followed = new LogCommand(repo).setFollowPath("new.txt").call();
+
+            assertEquals(3, followed.size(), "Should include all three revisions, crossing the rename");
+            assertTrue(followed.stream().anyMatch(c -> c.getRevision() == 0 && c.getFiles().contains("old.txt")));
+            assertTrue(followed.stream().anyMatch(c -> c.getRevision() == 1));
+            assertTrue(followed.stream().anyMatch(c -> c.getRevision() == 2 && c.getFiles().contains("new.txt")));
+        }
+    }
+
+    @Test
+    public void followPathWithoutRenameBehavesLikePlainFollow(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
+            hg.add().addFile("a.txt").call();
+            hg.commit().setMessage("rev0").call();
+
+            Files.writeString(new File(repoDir, "a.txt").toPath(), "v2");
+            hg.commit().setMessage("rev1").call();
+
+            List<HgCommit> followed = new LogCommand(repo).setFollowPath("a.txt").call();
+            assertEquals(2, followed.size());
+        }
+    }
+
+    @Test
+    public void followPathOnNeverExistingPathReturnsEmpty(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
+            hg.add().addFile("a.txt").call();
+            hg.commit().setMessage("rev0").call();
+
+            List<HgCommit> followed = new LogCommand(repo).setFollowPath("never-existed.txt").call();
+            assertTrue(followed.isEmpty());
+        }
+    }
 }

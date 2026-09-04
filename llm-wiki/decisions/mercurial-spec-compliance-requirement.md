@@ -1970,21 +1970,108 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `.hgrc`의 `lfs.disableusercache` 등 세부 옵션. 전체(모든 fork 동시 실행 중)
     회귀는 리소스 경합으로 완주 못함 — 별도 확인 권장.
 
-32. **Subrepositories 잔여 gap 4건**. 신규, 2026-09-04 발견(백로그 23번 완료 후
-    재검증 중 승격) — 미착수. 실제 코드 확인(2026-09-04) 결과 다음 4가지가 여전히
-    미구현: (1) `CloneCommand`가 서브저장소를 재귀적으로 clone하지 않음(real hg
-    `hg clone`은 자동 재귀 clone, hg4j는 `CloneCommand.java`에 subrepo 참조 자체가
-    0건). (2) `.hgsub` 파일 자체가 완전히 삭제된 채 커밋하면
-    `CommitCommand.applySubrepoStateBeforeCommit()`이 `if (!hgsubFile.exists())
-    return;`로 조기 반환해 `.hgsubstate`를 전혀 정리하지 않고 그대로 방치(반면
-    `.hgsub`는 남아있고 개별 줄만 지운 경우는 이미 정상적으로 정리됨 — 이 부분은
-    이미 해소돼 있었음). (3) git 서브저장소(`[git]` prefix)는 URL 파싱
-    (`HgSubrepoParser`)만 되고 `CommitCommand`의 상태 갱신 루프에서 `if
-    (gitPaths.contains(path)) continue;`로 명시적으로 건너뜀 — git 서브저장소의
-    커밋측 상태 갱신 자체가 없음. (4) `UpdateCommand`의 재귀 서브저장소 체크아웃이
-    대상 리비전이 로컬에 이미 있는지 확인 없이 매번 무조건 `hgSub.pull()`을 먼저
-    시도함(실제 hg는 로컬에 있으면 네트워크 요청 생략) — 기능적으로는 무해하지만
-    동작이 다름. 4개 시나리오 모두 real hg CLI와 나란히 재현해 대조 검증 필요.
+32. ~~**Subrepositories 잔여 gap 4건**~~ — ✅ **완료(2026-09-04)**. 4가지 모두
+    real hg 7.2 CLI(+git)와 나란히 재현하는 TDD로 확인/수정했다.
+
+    **(1) `CloneCommand`가 서브저장소를 재귀적으로 clone하지 않음.** `UpdateCommand`가
+    이미 갖고 있던 재귀 서브저장소 체크아웃 블록(그때까지는 `UpdateCommand.call()`
+    안에 인라인으로만 존재해 재사용 불가능한 상태였음)을 패키지 프라이빗 정적 메서드
+    `UpdateCommand.recursiveSubrepoCheckout(HgRepository)`로 추출하고, `CloneCommand`가
+    `checkoutLatest()` 직후 이를 호출하도록 배선했다. 이 추출 과정에서 (3)/(4) 수정도
+    같은 메서드에 함께 반영되므로 clone도 자동으로 git 서브저장소 재귀 clone과 로컬
+    존재 시 pull 생략 혜택을 받는다.
+
+    **(2) `.hgsub`이 완전히 사라진 채 커밋.** 실제 hg 7.2로 직접 재현해보니 **사라지는
+    방식에 따라 동작이 다르다**(`mercurial/subrepoutil.py`의 `precommit()` 직접 확인):
+    - `hg remove .hgsub`로 명시적으로 지우면(dirstate `'r'`) 실제 hg는 사용자가
+      `hg remove .hgsubstate`를 따로 하지 않아도 `.hgsubstate`까지 같은 커밋에서 완전히
+      추적 해제한다(`hg cat -r tip .hgsubstate`가 "no such file in rev"로 실패) —
+      `subrepoutil.precommit()`의 `elif '.hgsub' in status.removed:` 분기.
+    - `rm .hgsub`로 그냥 디스크에서만 지우면(`hg remove` 없이, dirstate는 여전히
+      `'n'`) `.hgsub` 자체의 추적은 전혀 건드리지 않고(tracked-but-missing 상태로
+      남음) `.hgsubstate`만 **빈 내용으로 커밋**된다 — 신기하게도 이 경우는 다른 모든
+      "추적됐지만 디스크에서 사라진 파일"과 달리 real hg가 missing-file abort
+      ("nothing changed (N missing files)")를 내지 않는 특별 취급이다.
+    둘 다 hg4j에 없었다. `CommitCommand.applySubrepoStateBeforeCommit()`의
+    `if (!hgsubFile.exists()) return;` 조기 반환과, 그보다 더 안쪽의
+    `if (subUrls.isEmpty()) return;` 조기 반환(둘 다 "빈 `.hgsubstate` 커밋" 경로를
+    막고 있었음)을 제거하고 dirstate의 `.hgsub` 엔트리 상태로 두 경우를 분기하도록
+    재작성했다. 명시적 제거 시에는 `.hgsubstate`도 함께 `'r'`로 마킹, raw 삭제 시에는
+    빈 `.hgsubstate` 내용을 그대로 쓴다. 추가로, 메인 커밋 루프(파일별 dirstate 순회)
+    자체가 "추적됐는데 디스크에 없는 파일"을 전부 `HgValidationException`으로
+    거부하고 있어서 raw 삭제 케이스는 `applySubrepoStateBeforeCommit()`을 고치는 것만
+    으로는 부족했다 — `.hgsub`이면서 `workingState == 'n'`이고 디스크에 없는 경우를
+    특별 취급해(P1/P2 manifest 엔트리를 그대로 캐리) 예외를 던지지 않도록 별도 수정.
+
+    **(3) git 서브저장소 커밋측 상태 갱신 부재.** real git(`git rev-parse HEAD`)이
+    설치돼 있어 `mercurial/subrepo.py`의 `gitsubrepo` 클래스(`basestate()`/`dirty()`/
+    `commit()`)를 직접 읽고, **실제 git 서브저장소를 만들어 real hg 7.2(+
+    `[subrepos] git:allowed = true`)로 라이브 왕복 검증**까지 했다. 확인된 사실: (a)
+    `.hgsubstate`에는 `git rev-parse HEAD`가 그대로(hg 노드 해시가 아니라 git commit
+    sha) `"<sha> <path>"` 포맷으로 기록됨 — hg 서브저장소와 완전히 동일한 라인 포맷.
+    (b) dirty 판정은 git 자신의 `git diff-index --quiet HEAD`(추적 파일의 스테이지/
+    미스테이지 변경만, untracked는 무시)이고, dirty하면 hg 서브저장소와 **글자
+    하나까지 동일한** `uncommitted changes in subrepository "<path>" (use --subrepos
+    for recursive commit)` 메시지로 부모 커밋을 거부한다. (c) `-S`를 켜면
+    `git commit -a -m <message> [--author <author>]`가 대신 실행되고 새 HEAD sha가
+    기록된다. (d) 로컬에 전혀 체크아웃되지 않은 git 서브저장소는 hg 서브저장소와 달리
+    null 리비전 폴백이 **없다** — real hg가 `No such file or directory: '<abspath>'`로
+    부모 커밋 자체를 abort한다(직접 재현 확인). 이 4가지를 그대로 구현: 신규
+    `io.github.search5.hg4j.submodule.GitSubrepoUtil`(git CLI를 쉘아웃하는 얇은
+    헬퍼 — `revParseHead`/`isDirty`/`commit`/`clone`/`fetch`/`checkout`)를 만들고
+    `CommitCommand`의 상태 갱신 루프에서 `if (gitPaths.contains(path)) continue;`를
+    제거해 `computeGitSubrepoState()`로 대체했다. `UpdateCommand`의 재귀 체크아웃
+    쪽도(1)에서 추출한 공용 메서드 안에서 git 서브저장소를 더 이상 건너뛰지 않고
+    실제 `git clone`/`fetch`/`checkout`으로 체크아웃하도록 확장(단, real hg의
+    `gitsubrepo.get()`이 pin된 커밋을 가리키는 named branch가 있으면 그걸 우선
+    checkout하는 것과 달리, hg4j는 항상 detached HEAD로 checkout — 내용/커밋은
+    동일하게 도달하므로 기능적 차이는 없고 문서화된 단순화).
+
+    **(4) `UpdateCommand` 재귀 서브저장소 체크아웃의 무조건 pull.** real hg 소스
+    (`hgsubrepo._fetch()`/`gitsubrepo._fetch()`)를 직접 확인 — 둘 다 `hasunlinkedrev`/
+    `_githavelocally`로 대상 리비전이 로컬에 이미 있는지 먼저 확인하고, 있으면 pull/
+    fetch 자체를 생략한다. hg4j의 (1)에서 추출한 공용 메서드에 동일한 사전 확인을
+    추가했다 — hg 서브저장소는 로컬 changelog에서 `NodeIdUtil.findRevisionByNodeId`로,
+    git 서브저장소는 `git cat-file -e <sha>`로 로컬 존재 여부를 먼저 확인 후에만
+    pull/fetch. 검증은 real hg CLI 출력으로 직접 관측 가능한 성질이 아니라서(네트워크
+    호출을 "안 했다"는 hg CLI stdout으로 증명할 수 없음), 대신 로그 캡처로 간접
+    검증했다: 서브저장소 소스 경로를 존재하지 않는 곳으로 바꿔치기한 뒤, 이미 로컬에
+    있는 두 pin 리비전 사이를 hg4j `UpdateCommand`로 오가면서 "Failed to pull
+    subrepo" 실패 로그가 전혀 남지 않는지 확인(수정 전이었다면 무조건 pull을 시도해
+    무효한 소스에 대한 실패 로그가 남았을 것).
+
+    **검증**: `SubrepoRealHgInteropTest`에 신규 시나리오 8개 추가(총 13개 GREEN) —
+    `hg4jCloneRecursivelyClonesSubrepoMatchingRealHg`,
+    `hg4jCloneRecursivelyClonesGitSubrepoMatchingRealHg`,
+    `hg4jCommitEmptiesHgsubstateWhenHgsubRawlyDeletedMatchingRealHg`,
+    `hg4jCommitRemovesHgsubstateWhenHgsubExplicitlyRemovedMatchingRealHg`,
+    `hg4jCommitRecordsGitSubrepoStateMatchingRealHg`,
+    `hg4jCommitBlocksThenRecursivelyCommitsDirtyGitSubrepoMatchingRealHg`,
+    `hg4jCommitAbortsForNotCheckedOutGitSubrepoMatchingRealHg`,
+    `hg4jUpdateSkipsPullWhenSubrepoRevisionAlreadyLocalMatchingRealHg`. 각각 real hg(
+    +git) 오라클로 동일 시나리오를 나란히 재현해 hg4j 결과와 대조하고, 여러 테스트는
+    hg4j 결과물을 다시 real hg CLI로 읽어 양방향 확인까지 한다. 기존
+    `UpdateCommandCoverageTest`의 `subrepoCheckoutSkipsGitEntriesAndHandlesUnrecordedRevisionAndSource`
+    는 "git 서브저장소는 무조건 건너뛴다"는 낡은 전제로 작성돼 있어 새 동작(로컬에
+    없는 git 서브저장소는 커밋 자체가 abort)과 충돌 — `subrepoCheckoutHandlesUnrecordedRevisionAndSource`
+    (git 없는 부분만 유지)와 `subrepoCommitAbortsForNotCheckedOutGitSubrepo`(새 abort
+    동작 검증)로 분리했다. 전체 회귀: `test` 태스크 2268/2268 GREEN,
+    `interopTest` 태스크 228개 중 이 변경과 무관한 기존 `StripRealHgInteropTest`
+    2건(`stripMiddleRevisionKeepsAncestorsVerifiable`/
+    `stripWithUnevenRevisionSizesLeavesVerifiableRepo`)만 실패 — 이 변경분을 전부
+    `git stash`로 되돌린 상태에서도 동일하게 실패함을 직접 확인해 무관함을 검증(백로그
+    32와 무관한 사전 존재 이슈).
+
+    **정직한 한계**: git 서브저장소 검증은 이 머신에 real git 7.2 계열 바이너리와 real
+    hg 7.2가 둘 다 설치돼 있어(실제로 `[subrepos] git:allowed = true`를 켠 real hg가
+    실제 git 저장소를 서브저장소로 받아들이는 전 과정을 라이브로) 상당히 두텁게 검증할
+    수 있었다 — record/dirty-차단/`-S` 재귀 커밋/미체크아웃 abort/재귀 clone까지 5개
+    시나리오 모두 실제 git 커밋 sha 단위로 대조. 다만 다음은 의도적으로 단순화했고
+    라이브로 검증하지 않았다: (a) `GitSubrepoUtil.commit()`의 `GIT_AUTHOR_DATE`
+    ISO-8601 포맷팅(실제 커밋은 매번 진행했지만 시각 값 자체를 real hg가 기록하는
+    바이트와 byte-for-byte 비교하지는 않음), (b) `gitsubrepo.get()`의 named-branch
+    우선 checkout(hg4j는 항상 detached checkout), (c) git 쪽 병합/충돌(`gitsubrepo.merge()`)
+    은 이번 백로그의 4개 gap에 포함되지 않아 손대지 않음.
 
 33. ~~**`PushCommand`의 checkheads 안전장치가 SSH에서 미작동**~~ — ✅
     **완료(2026-09-04)**. 근본 원인: `HgRemoteConnection.getBranchHeads()`를

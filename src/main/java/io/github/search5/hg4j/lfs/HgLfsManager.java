@@ -37,6 +37,34 @@ public final class HgLfsManager {
     }
 
     /**
+     * Parses a {@code [lfs] threshold} value the same way real hg's {@code ui.configbytes()}/
+     * {@code util.sizetoint()} does (confirmed 2026-09-04 against {@code mercurial/util.py}):
+     * a plain number is bytes, otherwise a case-insensitive suffix of {@code b}/{@code k}/
+     * {@code kb}/{@code m}/{@code mb}/{@code g}/{@code gb} (checked by string-endswith, which is
+     * order-independent since single-letter suffixes never match a two-letter one) multiplies a
+     * leading (possibly fractional) number by 1/2^10/2^20/2^30 as appropriate.
+     *
+     * @return the parsed byte count, or -1 if {@code value} is {@code null}/blank (no threshold
+     *     configured -- caller should treat every file as non-LFS in that case, matching real hg's
+     *     own "lfs.threshold unset" default of never triggering).
+     */
+    public static long parseThresholdBytes(String value) {
+        if (value == null || value.isBlank()) {
+            return -1;
+        }
+        String t = value.trim().toLowerCase(java.util.Locale.ROOT);
+        String[] suffixes = {"kb", "mb", "gb", "k", "m", "g", "b"};
+        long[] units = {1L << 10, 1L << 20, 1L << 30, 1L << 10, 1L << 20, 1L << 30, 1L};
+        for (int i = 0; i < suffixes.length; i++) {
+            if (t.endsWith(suffixes[i])) {
+                String numPart = t.substring(0, t.length() - suffixes[i].length()).trim();
+                return (long) (Double.parseDouble(numPart) * units[i]);
+            }
+        }
+        return Long.parseLong(t);
+    }
+
+    /**
      * Resolves the expected local path for a given OID.
      * E.g., OID "7b1a2c3d..." resolves to: {lfsObjectsDir}/7b/1a2c3d...
      *

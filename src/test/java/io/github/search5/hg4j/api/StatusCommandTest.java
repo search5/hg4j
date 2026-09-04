@@ -401,6 +401,12 @@ public class StatusCommandTest {
     public void racyCheckSwallowsCorruptedFilelogDataAndFallsBackToCleanOnSizeMatch(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        // Backlog #35: pre-touch the filelog index as an already-existing (empty) file so hg4j
+        // treats it as "reopening" (non-inline) rather than "brand new" (inline), giving this
+        // test a real, separate .d file to zero out.
+        File corruptFilelogIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "corrupt.txt");
+        corruptFilelogIdx.getParentFile().mkdirs();
+        corruptFilelogIdx.createNewFile();
         File f = new File(repoDir, "corrupt.txt");
         String content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789content long enough to compress";
         Files.writeString(f.toPath(), content);
@@ -430,6 +436,12 @@ public class StatusCommandTest {
     public void racyCheckSwallowsCorruptedFilelogDataInSlowPathAndFallsBackToCleanOnSizeMatch(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        // Backlog #35: pre-touch the filelog index as an already-existing (empty) file so hg4j
+        // treats it as "reopening" (non-inline) rather than "brand new" (inline), giving this
+        // test a real, separate .d file to zero out.
+        File corrupt2FilelogIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "corrupt2.txt");
+        corrupt2FilelogIdx.getParentFile().mkdirs();
+        corrupt2FilelogIdx.createNewFile();
         File f = new File(repoDir, "corrupt2.txt");
         String content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789content long enough to compress too";
         Files.writeString(f.toPath(), content);
@@ -482,6 +494,12 @@ public class StatusCommandTest {
     public void racyCheckWhenFilelogRevisionMissingTreatsAsCleanDespiteValidParentHistory(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        // Backlog #35: pre-touch the filelog index as an already-existing (empty) file so hg4j
+        // treats it as "reopening" (non-inline) rather than "brand new" (inline), giving this
+        // test a real, separate .d file to zero out alongside the index.
+        File norevFilelogIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "norev.txt");
+        norevFilelogIdx.getParentFile().mkdirs();
+        norevFilelogIdx.createNewFile();
         File f = new File(repoDir, "norev.txt");
         Files.writeString(f.toPath(), "content whose filelog will be emptied out after commit");
         new AddCommand(repo).call();

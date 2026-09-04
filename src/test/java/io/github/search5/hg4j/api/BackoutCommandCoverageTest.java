@@ -57,6 +57,15 @@ public class BackoutCommandCoverageTest {
         Hg hg = Hg.wrap(repo);
         File a = new File(repoDir, "a.txt");
         File b = new File(repoDir, "b.txt");
+        // Backlog #35: hg4j now defaults small new v1 filelogs to inline (matching real hg, which
+        // has no size-threshold split logic in hg4j -- it's purely "new file starts inline") --
+        // this test's premise (copying b.txt's .d onto a.txt's) needs a real, separate .d file to
+        // exist, so pre-touch b.txt's filelog index as an already-existing (empty) file BEFORE the
+        // commit creates it, which makes hg4j treat it as "reopening" (non-inline) rather than
+        // "brand new" (inline).
+        File bFilelogIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), "b.txt");
+        bFilelogIdx.getParentFile().mkdirs();
+        bFilelogIdx.createNewFile();
         Files.writeString(a.toPath(), "a-v1");
         Files.writeString(b.toPath(), "b-v1");
         hg.add().addFile("a.txt").call();

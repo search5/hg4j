@@ -7,6 +7,8 @@ import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.FileIndex;
 import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.lfs.HgLfsManager;
+import io.github.search5.hg4j.lfs.HgLfsPointer;
 import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.util.SafeFileIO;
@@ -562,7 +564,51 @@ public class CommitCommand {
                                 sdTouched.add(path);
                             }
 
-                            byte[] newFileNode = filelog.appendRevision(fileContent, copyMeta, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev);
+                            // LFS pipeline (backlog 31): if this file is larger than the
+                            // configured [lfs] threshold, store an LFS pointer in the filelog
+                            // (flagged REVIDX_EXTSTORED) instead of the real bytes, and stash the
+                            // real bytes in the local LFS blob store -- matches real hg's
+                            // hgext/lfs `filelogaddrevision` wrapper (verified 2026-09-04 against
+                            // hgext/lfs/wrapper.py's writetostore/filelogaddrevision). Scoped down
+                            // to files with no rename/copy metadata for now (real hg folds
+                            // copy-tracing into the pointer's own x-hg-* keys, which this pipeline
+                            // does not attempt yet -- an out-of-scope simplification, documented in
+                            // the backlog entry) so a renamed-and-large file just takes the normal
+                            // non-LFS path here.
+                            byte[] contentToStore = fileContent;
+                            byte[] lfsHashBasis = null;
+                            int extraRevFlags = 0;
+                            if (copyMeta == null) {
+                                long lfsThreshold = HgLfsManager.parseThresholdBytes(
+                                        repository.getConfig().get("lfs", "threshold"));
+                                if (lfsThreshold >= 0 && fileContent.length > lfsThreshold) {
+                                    String oidHex = HgLfsPointer.sha256Hex(fileContent);
+                                    HgLfsPointer pointer = new HgLfsPointer(
+                                            "https://git-lfs.github.com/spec/v1", oidHex, fileContent.length);
+                                    new HgLfsManager(repository.getHgDir()).cacheObject(pointer, fileContent);
+                                    contentToStore = pointer.serialize();
+                                    lfsHashBasis = fileContent;
+                                    extraRevFlags = Revlog.REVIDX_EXTSTORED;
+                                    // Real hg's lfs extension only fully activates its
+                                    // checkhash-bypass flag processor for a repo once "lfs" is in
+                                    // .hg/requires (hgext/lfs/__init__.py's commit.lfs hook adds it
+                                    // lazily on the first commit containing an LFS-flagged file,
+                                    // confirmed 2026-09-04 by reading that source directly) --
+                                    // without this, a real hg CLI reading an hg4j-written LFS
+                                    // commit fails with "abort: integrity check failed" because it
+                                    // tries to validate the node hash against the real (huge) blob
+                                    // instead of skipping that check for the pointer revision.
+                                    File requiresFile = new File(repository.getHgDir(), "requires");
+                                    List<String> requirements = new ArrayList<>(
+                                            Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8));
+                                    if (!requirements.contains("lfs")) {
+                                        requirements.add("lfs");
+                                        SafeFileIO.writeLinesAtomic(requiresFile, requirements);
+                                    }
+                                }
+                            }
+
+                            byte[] newFileNode = filelog.appendRevision(contentToStore, copyMeta, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev, null, extraRevFlags, lfsHashBasis);
                             
                             // Capture execution flag and symlink flag for serialization
                             String flag = "";

@@ -196,6 +196,13 @@ public class RevlogTest {
     public void testMissingDataFile(@TempDir Path tempDir) throws Exception {
         File idxFile = tempDir.resolve("missing.i").toFile();
         File datFile = tempDir.resolve("missing.d").toFile();
+        // Backlog #35: a genuinely brand-new revlog now defaults to inline (matching real hg),
+        // which would write straight into idxFile with no separate datFile at all -- this
+        // low-level test is specifically about the non-inline (separate .d file) layout, so
+        // pre-touch idxFile as an existing (empty) file to make the constructor treat this as
+        // "reopening" rather than "creating new" and keep the non-inline default.
+        idxFile.getParentFile().mkdirs();
+        idxFile.createNewFile();
 
         Revlog revlog = new Revlog(idxFile, datFile);
         byte[] content = "Hello".getBytes(StandardCharsets.UTF_8);
@@ -211,6 +218,11 @@ public class RevlogTest {
     public void testIndexRecordGettersAndCoverages(@TempDir Path tempDir) throws Exception {
         File idxFile = tempDir.resolve("getters.i").toFile();
         File datFile = tempDir.resolve("getters.d").toFile();
+        // Backlog #35: this test hand-constructs raw non-inline index bytes further down
+        // (offset-into-a-separate-.d-file convention) -- pre-touch idxFile so the constructor
+        // keeps the non-inline default instead of treating this as a brand-new inline revlog.
+        idxFile.getParentFile().mkdirs();
+        idxFile.createNewFile();
         Revlog revlog = new Revlog(idxFile, datFile);
 
         // Test empty revision content read (covers line 168)

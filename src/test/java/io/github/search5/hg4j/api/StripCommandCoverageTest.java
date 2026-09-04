@@ -177,7 +177,10 @@ public class StripCommandCoverageTest {
         byte[] origClIdx = Files.readAllBytes(clIdx.toPath());
         byte[] origClDat = Files.readAllBytes(clDat.toPath());
         byte[] origMfIdx = Files.readAllBytes(mfIdx.toPath());
-        byte[] origMfDat = clDat.exists() ? Files.readAllBytes(mfDat.toPath()) : null;
+        // Backlog #35: a small manifest is now inline by default (matching real hg) and may have
+        // no separate .d file of its own -- guard on mfDat's OWN existence, not clDat's (the
+        // changelog stays non-inline always, so checking it here was never actually meaningful).
+        byte[] origMfDat = mfDat.exists() ? Files.readAllBytes(mfDat.toPath()) : null;
         byte[] origDirstate = Files.readAllBytes(new File(repo.getDirectory(), ".hg/dirstate").toPath());
 
         // Corrupt the bookmarks file with an odd-length hex node so NodeIdUtil.fromHex() throws
@@ -395,9 +398,10 @@ public class StripCommandCoverageTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("rev0").call();
 
-        File flDat = new File(repo.getStoreDir(), "data/a.txt.d");
-        assertTrue(flDat.exists(), "this store always splits filelogs into .i/.d");
-        Files.delete(flDat.toPath());
+        // Backlog #35: a small new filelog is now inline by default (matching real hg), so
+        // a.txt.d is naturally already absent -- exactly the scenario this test's name describes,
+        // with no need to manually delete it first.
+        assertFalse(new File(repo.getStoreDir(), "data/a.txt.d").exists());
 
         new StripCommand(repo).setRevision("0").call();
 
@@ -416,9 +420,10 @@ public class StripCommandCoverageTest {
         Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
         new CommitCommand(repo).setMessage("rev1").call();
 
-        File flDat = new File(repo.getStoreDir(), "data/a.txt.d");
-        assertTrue(flDat.exists(), "this store always splits filelogs into .i/.d");
-        Files.delete(flDat.toPath());
+        // Backlog #35: a small filelog is now inline by default (matching real hg), so
+        // a.txt.d is naturally already absent -- exactly the scenario this test's name describes,
+        // with no need to manually delete it first.
+        assertFalse(new File(repo.getStoreDir(), "data/a.txt.d").exists());
 
         new StripCommand(repo).setRevision("1").call();
 

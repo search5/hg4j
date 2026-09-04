@@ -34,6 +34,7 @@ import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.gpg.GpgSignature;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.phase.PhaseRoots;
+import io.github.search5.hg4j.submodule.GitSubrepoUtil;
 import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.treewalk.TreeWalk;
 import io.github.search5.hg4j.treewalk.WorkingDirTreeIterator;
@@ -363,7 +364,36 @@ public class CommitCommand {
                         // A symlink is valid to commit even when its target is missing (dangling)
                         // or not a plain file — real hg tracks it regardless (verified live).
                         // exists()/isFile() alone follow the link and would reject it.
-                        if (!Files.isSymbolicLink(diskFile.toPath()) && (!diskFile.exists() || !diskFile.isFile())) {
+                        boolean physicallyMissing = !Files.isSymbolicLink(diskFile.toPath())
+                                && (!diskFile.exists() || !diskFile.isFile());
+
+                        // Backlog 32 gap #2 (verified live against Mercurial 7.2): unlike every
+                        // OTHER tracked-but-missing file (which makes `hg commit` abort with
+                        // "nothing changed (N missing files)"), real hg specially tolerates
+                        // `.hgsub` (the subrepo spec file) being deleted from the working
+                        // directory WITHOUT an explicit `hg remove` -- `hg commit` neither
+                        // aborts nor mints a new `.hgsub` revision, it silently carries the
+                        // previous manifest entry forward unchanged (`hg cat -r tip .hgsub`
+                        // afterwards still returns the OLD content; `hg log --follow -- .hgsub`
+                        // shows no new revision for it). The actual subrepo-side reaction to
+                        // `.hgsub`'s absence happens separately, in
+                        // applySubrepoStateBeforeCommit() above, which empties `.hgsubstate` to
+                        // match "no subrepos currently declared" (an explicit `hg remove .hgsub`
+                        // instead goes through the ordinary workingState == 'r' branch above,
+                        // and applySubrepoStateBeforeCommit() additionally drops .hgsubstate
+                        // from tracking entirely in that case, also verified live).
+                        if (physicallyMissing && workingState == 'n' && ".hgsub".equals(path)) {
+                            String carryHexP1 = manifestP1.get(path);
+                            String carryHexP2 = parent2Rev != -1 ? manifestP2.get(path) : null;
+                            if (carryHexP1 != null) {
+                                newManifest.put(path, carryHexP1);
+                            } else if (carryHexP2 != null) {
+                                newManifest.put(path, carryHexP2);
+                            }
+                            continue;
+                        }
+
+                        if (physicallyMissing) {
                             throw new HgValidationException("Tracked file not found on disk: " + path);
                         }
 
@@ -976,61 +1006,121 @@ public class CommitCommand {
      * Real hg's {@code hg commit} automatically manages {@code .hgsubstate} whenever {@code
      * .hgsub} is present in the working directory -- the user never runs a separate "record
      * subrepo state" step, and {@code .hgsubstate} does not need to be {@code hg add}ed by hand
-     * (verified live against Mercurial 7.2's {@code subrepoutil.precommitstate}/{@code
+     * (verified live against Mercurial 7.2's {@code subrepoutil.precommit}/{@code
      * hgsubrepo.dirty}/{@code hgsubrepo.basestate}): for every path declared in {@code .hgsub}
      * (processed in sorted order, matching {@code subrepoutil.writestate}'s {@code sorted(state)}),
      * if the subrepo has uncommitted local changes, the parent commit aborts with {@code
      * uncommitted changes in subrepository "&lt;path&gt;"} unless {@link #subrepos} (real hg's
      * {@code -S}/{@code --subrepos}) is set, in which case the subrepo is committed first;
      * otherwise the subrepo's current checked-out revision (dirty or not) becomes its recorded
-     * state. Git subrepos are left alone entirely (skipped), mirroring the parser's existing
-     * git-subrepo handling elsewhere in this codebase (e.g. {@code UpdateCommand}).
+     * state.
      *
      * <p><b>Matches real hg exactly</b> (backlog 23/24, decided 2026-09-04): when a declared
-     * subrepo path is not checked out locally as an hg4j repository, real Mercurial 7.2 silently
-     * auto-vivifies an *empty* repository there and resets its recorded {@code .hgsubstate}
-     * entry to the null revision ({@code 0000000000000000000000000000000000000000}) -- verified
-     * live, this actually discards any previously-recorded (real, non-null) revision for that
-     * path. hg4j replicates this verbatim: a path that is not checked out locally has its
-     * {@code .hgsubstate} entry reset to the null revision here, even when a real, non-null
+     * hg subrepo path is not checked out locally as an hg4j repository, real Mercurial 7.2
+     * silently auto-vivifies an *empty* repository there and resets its recorded {@code
+     * .hgsubstate} entry to the null revision ({@code 0000000000000000000000000000000000000000})
+     * -- verified live, this actually discards any previously-recorded (real, non-null) revision
+     * for that path. hg4j replicates this verbatim: a path that is not checked out locally has
+     * its {@code .hgsubstate} entry reset to the null revision here, even when a real, non-null
      * revision was previously recorded for it. Callers that want a non-null revision recorded
      * for a subrepo must check it out locally (e.g. via {@code CloneCommand}/{@code
      * UpdateCommand}) *before* committing, exactly as real hg requires.
+     *
+     * <p><b>Git subrepos</b> ({@code [git]} prefix, backlog 32 gap #3 -- verified live against
+     * Mercurial 7.2 + git, with {@code [subrepos] git:allowed = true}, using an actual git
+     * subrepo checkout): real hg's {@code gitsubrepo.basestate()} records {@code git rev-parse
+     * HEAD} (a git commit sha, not an hg node hash -- confirmed by reading {@code
+     * mercurial/subrepo.py}'s {@code gitsubrepo} class directly) in exactly the same {@code
+     * "<hash> <path>"} {@code .hgsubstate} line format hg subrepos use. Dirtiness is git's own
+     * {@code git diff-index --quiet HEAD} (tracked-file changes only, untracked files ignored)
+     * and gates the same {@code uncommitted changes in subrepository "&lt;path&gt;" (use
+     * --subrepos for recursive commit)} abort (verified byte-for-byte identical message text to
+     * the hg-subrepo case), with {@code -S}/{@link #subrepos} running {@code git commit -a -m
+     * &lt;message&gt; [--author &lt;author&gt;]} and recording the resulting new HEAD sha. A git
+     * subrepo path that is declared in {@code .hgsub} but NOT checked out locally (no {@code
+     * .git} under it) is a HARD abort of the whole parent commit -- verified live: real hg does
+     * NOT fall back to a null revision the way it does for a missing hg subrepo, it aborts with
+     * {@code No such file or directory: '&lt;abspath&gt;'} instead.
+     *
+     * <p><b>{@code .hgsub} removal</b> (backlog 32 gap #2 -- both branches verified live against
+     * Mercurial 7.2): real hg reacts differently depending on HOW {@code .hgsub} disappears from
+     * the working copy, per {@code subrepoutil.precommit()}:
+     * <ul>
+     * <li>An explicit {@code hg remove .hgsub} (dirstate state {@code 'r'}) also drops {@code
+     * .hgsubstate} from tracking entirely in the SAME commit, even though the user never ran
+     * {@code hg remove .hgsubstate} themselves -- {@code hg log --follow -- .hgsubstate} shows a
+     * delete record in that commit, and {@code hg cat -r tip .hgsubstate} afterwards fails with
+     * "no such file in rev". The physical {@code .hgsubstate} file, if any, is left alone on
+     * disk and simply becomes untracked.</li>
+     * <li>A raw {@code rm .hgsub} WITHOUT {@code hg remove} (dirstate still says {@code 'n'},
+     * file just physically missing) does NOT touch {@code .hgsub}'s own tracking at all --
+     * {@code .hgsub} stays tracked-but-missing (see the {@code workingState == 'n'} special case
+     * in this class's main commit loop, which carries its manifest entry forward unchanged
+     * instead of throwing "Tracked file not found on disk"). {@code .hgsubstate} instead gets
+     * TRUNCATED to empty content and that empty content is committed (matching "no subrepos
+     * currently declared"), while remaining tracked.</li>
+     * </ul>
      */
     private void applySubrepoStateBeforeCommit() throws IOException, HgLockException {
         File hgsubFile = new File(repository.getDirectory(), ".hgsub");
-        if (!hgsubFile.exists()) {
+        File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");
+        Dirstate dirstate = repository.getDirstate();
+        Dirstate.Entry hgsubEntry = dirstate.getEntries().get(".hgsub");
+
+        if (!hgsubFile.exists() && !hgsubstateFile.exists() && hgsubEntry == null) {
+            return; // Subrepos have never been involved in this repo at all -- nothing to do.
+        }
+
+        if (hgsubEntry != null && hgsubEntry.getState() == 'r') {
+            // Explicit `hg remove .hgsub` -- also drop `.hgsubstate` from tracking (see the
+            // class-level note above), matching subrepoutil.precommit()'s
+            // "elif '.hgsub' in status.removed" branch. The file itself (if still physically
+            // present) is left alone on disk, exactly like real hg.
+            Dirstate.Entry hgsubstateEntry = dirstate.getEntries().get(".hgsubstate");
+            if (hgsubstateEntry != null && hgsubstateEntry.getState() != 'r') {
+                dirstate.addEntry(".hgsubstate", new Dirstate.Entry('r', 0, 0, 0));
+                repository.writeDirstate(dirstate);
+            }
             return;
         }
 
         Map<String, String> subUrls = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
         Set<String> gitPaths = new LinkedHashSet<>();
-        for (String line : Files.readAllLines(hgsubFile.toPath(), StandardCharsets.UTF_8)) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                continue;
+        if (hgsubFile.exists()) {
+            for (String line : Files.readAllLines(hgsubFile.toPath(), StandardCharsets.UTF_8)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    continue;
+                }
+                int eq = trimmed.indexOf('=');
+                if (eq == -1) {
+                    continue;
+                }
+                String path = trimmed.substring(0, eq).trim();
+                String url = trimmed.substring(eq + 1).trim();
+                if (url.startsWith("[git]")) {
+                    gitPaths.add(path);
+                    url = url.substring("[git]".length()).trim();
+                }
+                subUrls.put(path, url);
             }
-            int eq = trimmed.indexOf('=');
-            if (eq == -1) {
-                continue;
-            }
-            String path = trimmed.substring(0, eq).trim();
-            String url = trimmed.substring(eq + 1).trim();
-            if (url.startsWith("[git]")) {
-                gitPaths.add(path);
-            }
-            subUrls.put(path, url);
         }
-        if (subUrls.isEmpty()) {
-            return;
-        }
+        // If hgsubFile doesn't physically exist here, hgsubEntry is non-null with state != 'r'
+        // (a raw `rm .hgsub` without `hg remove`) -- subUrls stays empty, matching real hg's own
+        // "no subrepos currently declared" outcome for that case (see the class-level note).
 
         Map<String, String> newState = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (String path : subUrls.keySet()) {
+            File subDir = new File(repository.getDirectory(), path);
+
             if (gitPaths.contains(path)) {
+                String revHex = computeGitSubrepoState(subDir, path);
+                if (revHex != null) {
+                    newState.put(path, revHex);
+                }
                 continue;
             }
-            File subDir = new File(repository.getDirectory(), path);
+
             if (!new File(subDir, ".hg").exists()) {
                 // Not checked out locally -- real hg auto-vivifies an empty repo here and
                 // resets the recorded revision to null (see the class-level note above),
@@ -1076,7 +1166,6 @@ public class CommitCommand {
         }
         byte[] newContent = sb.toString().getBytes(StandardCharsets.UTF_8);
 
-        File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");
         byte[] oldContent = hgsubstateFile.exists() ? Files.readAllBytes(hgsubstateFile.toPath()) : null;
         if (oldContent == null && newState.isEmpty()) {
             return; // Nothing recorded before, nothing to record now -- do not conjure the file
@@ -1089,7 +1178,6 @@ public class CommitCommand {
 
         Files.write(hgsubstateFile.toPath(), newContent);
 
-        Dirstate dirstate = repository.getDirstate();
         if (!dirstate.getEntries().containsKey(".hgsubstate")) {
             // Auto-track .hgsubstate the first time it is written, exactly like real hg -- the
             // user is never expected to `hg add .hgsubstate` by hand.
@@ -1099,6 +1187,51 @@ public class CommitCommand {
         // If already tracked ('n' state from a prior commit), the size/mtime-vs-disk change
         // detection this class's own commit loop already performs (see the workingState == 'n'
         // branch above) picks up the freshly written content without any further dirstate edit.
+    }
+
+    /**
+     * Resolves the {@code .hgsubstate} entry to record for a git subrepo (backlog 32 gap #3),
+     * mirroring real hg's {@code gitsubrepo.basestate()}/{@code dirty()}/{@code commit()} -- see
+     * the class-level note on {@link #applySubrepoStateBeforeCommit()} for what was actually
+     * verified live.
+     *
+     * @return the git commit sha to record, or {@code null} if there is nothing to record
+     */
+    private String computeGitSubrepoState(File subDir, String path) throws IOException {
+        if (!GitSubrepoUtil.isGitCheckout(subDir)) {
+            // Real hg has no null-revision fallback for a git subrepo the way it does for an hg
+            // subrepo -- a declared git subrepo that isn't checked out locally aborts the WHOLE
+            // parent commit (verified live: Mercurial 7.2 fails with exactly this message
+            // before even attempting to fetch/clone it during `hg commit`).
+            throw new HgValidationException("No such file or directory: '" + subDir.getAbsolutePath() + "'");
+        }
+
+        boolean dirty;
+        try {
+            dirty = GitSubrepoUtil.isDirty(subDir);
+        } catch (IOException e) {
+            throw new HgValidationException("Failed to inspect git subrepository \"" + path + "\": " + e.getMessage());
+        }
+
+        if (dirty) {
+            if (!this.subrepos) {
+                throw new HgValidationException(
+                        "uncommitted changes in subrepository \"" + path
+                                + "\" (use --subrepos for recursive commit)");
+            }
+            try {
+                return GitSubrepoUtil.commit(
+                        subDir, this.message, this.author, forcedTime, forcedOffset);
+            } catch (IOException e) {
+                throw new HgValidationException("Failed to commit git subrepository \"" + path + "\": " + e.getMessage());
+            }
+        }
+
+        try {
+            return GitSubrepoUtil.revParseHead(subDir);
+        } catch (IOException e) {
+            throw new HgValidationException("Failed to read HEAD of git subrepository \"" + path + "\": " + e.getMessage());
+        }
     }
 
     /**

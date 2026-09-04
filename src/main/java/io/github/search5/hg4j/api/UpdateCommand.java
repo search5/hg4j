@@ -19,6 +19,7 @@ import java.util.Map;
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import io.github.search5.hg4j.errors.HgValidationException;
+import io.github.search5.hg4j.submodule.GitSubrepoUtil;
 import io.github.search5.hg4j.submodule.HgSubrepoEntry;
 import io.github.search5.hg4j.submodule.HgSubrepoParser;
 import io.github.search5.hg4j.treewalk.HgTreeFilter;
@@ -299,45 +300,7 @@ public class UpdateCommand {
             }
 
             // 5. Recursive Subrepo Checkout (JGit-like subrepository checkout support)
-            File hgsubFile = new File(repository.getDirectory(), ".hgsub");
-            File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");
-            if (hgsubFile.exists() && hgsubstateFile.exists()) {
-                try {
-                    byte[] hgsubBytes = Files.readAllBytes(hgsubFile.toPath());
-                    byte[] hgsubstateBytes = Files.readAllBytes(hgsubstateFile.toPath());
-                    Map<String, HgSubrepoEntry> subrepos = HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
-                    
-                    for (HgSubrepoEntry subEntry : subrepos.values()) {
-                        if (subEntry.isGit()) {
-                            continue; // Skip Git subrepos
-                        }
-                        
-                        File subDir = new File(repository.getDirectory(), subEntry.getPath());
-                        HgRepository subRepo;
-                        if (!new File(subDir, ".hg").exists()) {
-                            subRepo = Hg.init().setDirectory(subDir).call();
-                        } else {
-                            subRepo = new HgRepository(subDir);
-                        }
-
-                        try (Hg hgSub = Hg.wrap(subRepo)) {
-                            if (subEntry.getSourceUrl() != null && !subEntry.getSourceUrl().isEmpty()) {
-                                try {
-                                    hgSub.pull().setSource(subEntry.getSourceUrl()).call();
-                                } catch (Exception e) {
-                                    LOGGER.log(Level.WARNING, "Failed to pull subrepo from: " + subEntry.getSourceUrl() + ", error: " + e.getMessage(), e);
-                                }
-                            }
-                            
-                            if (subEntry.getRevision() != null && !subEntry.getRevision().isEmpty()) {
-                                hgSub.update().setRevision(subEntry.getRevision()).setForce(true).call();
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    LOGGER.log(Level.WARNING, "Failed to perform recursive subrepo checkout", e);
-                }
-            }
+            recursiveSubrepoCheckout(repository);
 
             // POST_UPDATE hooks trigger
             Map<String, Object> ctx = new HashMap<>();
@@ -385,5 +348,135 @@ public class UpdateCommand {
         }
 
         throw new HgRevisionNotFoundException("Unable to resolve revision identifier: " + targetRevision);
+    }
+
+    /**
+     * Recursively checks out every subrepository declared in the working copy's {@code
+     * .hgsub}/{@code .hgsubstate} to its pinned revision -- shared by {@link UpdateCommand}
+     * (after checking out a target revision) and {@link CloneCommand} (after checking out the
+     * freshly cloned tip), matching real hg's own behavior of recursing into subrepos on both
+     * {@code hg update} and {@code hg clone}.
+     *
+     * <p>Backlog 32 gap #4 (verified live against Mercurial 7.2's {@code hgsubrepo._fetch()}/
+     * {@code gitsubrepo._fetch()}, which both check local availability -- {@code
+     * hasunlinkedrev}/{@code _githavelocally} -- before ever pulling/fetching): a subrepo whose
+     * pinned revision is ALREADY present in its local clone is checked out directly, without
+     * first pulling/fetching from the remote. This matters both for matching real hg's actual
+     * behavior and for correctness in network-isolated environments (e.g. tests using a stale or
+     * unreachable {@code file://} remote after the subrepo was already fully cloned).
+     *
+     * <p>Backlog 32 gap #3: git subrepos ({@code [git]} prefix in {@code .hgsub}) are checked
+     * out too, via the {@code git} CLI -- see {@link GitSubrepoUtil} for exactly what was
+     * verified live for the git side.
+     */
+    static void recursiveSubrepoCheckout(HgRepository repository) {
+        File hgsubFile = new File(repository.getDirectory(), ".hgsub");
+        File hgsubstateFile = new File(repository.getDirectory(), ".hgsubstate");
+        if (!hgsubFile.exists() || !hgsubstateFile.exists()) {
+            return;
+        }
+        try {
+            byte[] hgsubBytes = Files.readAllBytes(hgsubFile.toPath());
+            byte[] hgsubstateBytes = Files.readAllBytes(hgsubstateFile.toPath());
+            Map<String, HgSubrepoEntry> subrepos = HgSubrepoParser.parseSubrepositories(hgsubBytes, hgsubstateBytes);
+
+            for (HgSubrepoEntry subEntry : subrepos.values()) {
+                File subDir = new File(repository.getDirectory(), subEntry.getPath());
+
+                if (subEntry.isGit()) {
+                    checkoutGitSubrepo(subDir, subEntry);
+                    continue;
+                }
+
+                HgRepository subRepo;
+                if (!new File(subDir, ".hg").exists()) {
+                    subRepo = Hg.init().setDirectory(subDir).call();
+                } else {
+                    subRepo = new HgRepository(subDir);
+                }
+
+                try (Hg hgSub = Hg.wrap(subRepo)) {
+                    String revision = subEntry.getRevision();
+                    boolean haveLocally = revision != null && !revision.isEmpty()
+                            && isRevisionPresentLocally(subRepo, revision);
+
+                    if (!haveLocally && subEntry.getSourceUrl() != null && !subEntry.getSourceUrl().isEmpty()) {
+                        try {
+                            hgSub.pull().setSource(subEntry.getSourceUrl()).call();
+                        } catch (Exception e) {
+                            LOGGER.log(Level.WARNING, "Failed to pull subrepo from: " + subEntry.getSourceUrl() + ", error: " + e.getMessage(), e);
+                        }
+                    }
+
+                    if (revision != null && !revision.isEmpty()) {
+                        hgSub.update().setRevision(revision).setForce(true).call();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to perform recursive subrepo checkout", e);
+        }
+    }
+
+    /** Whether {@code revisionHex} already exists in {@code subRepo}'s local changelog --
+     * backlog 32 gap #4's "skip the pull when already available locally" check. */
+    private static boolean isRevisionPresentLocally(HgRepository subRepo, String revisionHex) {
+        try {
+            File clIdx = new File(subRepo.getStoreDir(), "00changelog.i");
+            File clDat = new File(subRepo.getStoreDir(), "00changelog.d");
+            if (!clIdx.exists()) {
+                return false;
+            }
+            Revlog changelog = subRepo.getRevlog(clIdx, clDat);
+            return NodeIdUtil.findRevisionByNodeId(changelog, NodeIdUtil.fromHex(revisionHex)) != -1;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Checks out a {@code [git]} subrepo to its {@code .hgsubstate}-pinned commit: clones it
+     * first if not present locally at all, fetches only if the pinned commit is missing
+     * (backlog 32 gap #4, same local-availability check as the hg-subrepo path above), then
+     * {@code git checkout}s it (skipped entirely if already at that commit) -- see {@link
+     * GitSubrepoUtil} for what this simplifies versus real hg's {@code gitsubrepo.get()} and
+     * what was verified live.
+     */
+    private static void checkoutGitSubrepo(File subDir, HgSubrepoEntry subEntry) {
+        String targetSha = subEntry.getRevision();
+        if (targetSha == null || targetSha.isEmpty()) {
+            return;
+        }
+        try {
+            if (!GitSubrepoUtil.isGitCheckout(subDir)) {
+                if (subEntry.getSourceUrl() == null || subEntry.getSourceUrl().isEmpty()) {
+                    LOGGER.log(Level.WARNING, "Git subrepo at " + subDir + " is not checked out locally and has no source URL to clone from");
+                    return;
+                }
+                GitSubrepoUtil.clone(subDir.getParentFile(), subEntry.getSourceUrl(), subDir);
+            }
+
+            if (!GitSubrepoUtil.hasLocally(subDir, targetSha)) {
+                try {
+                    GitSubrepoUtil.fetch(subDir);
+                } catch (IOException e) {
+                    LOGGER.log(Level.WARNING, "Failed to fetch git subrepo at " + subDir + ": " + e.getMessage(), e);
+                }
+            }
+
+            String currentHead = null;
+            try {
+                currentHead = GitSubrepoUtil.revParseHead(subDir);
+            } catch (IOException ignored) {
+                // Freshly cloned/empty repo with no commits yet -- fall through to checkout,
+                // which will report its own error if the target sha still can't be found.
+            }
+            if (targetSha.equals(currentHead)) {
+                return; // Already checked out -- matches gitsubrepo.get()'s own early return.
+            }
+            GitSubrepoUtil.checkout(subDir, targetSha);
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to perform recursive git subrepo checkout for " + subEntry.getPath() + ": " + e.getMessage(), e);
+        }
     }
 }

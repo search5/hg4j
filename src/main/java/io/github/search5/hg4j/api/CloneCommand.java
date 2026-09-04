@@ -81,6 +81,16 @@ public class CloneCommand {
         checkoutLatest(repo);
         monitor.update(1);
 
+        // 4. Recursively clone/checkout any subrepos declared in the just-checked-out .hgsub
+        // (backlog 32 gap #1 -- verified live against Mercurial 7.2: `hg clone` on a parent repo
+        // whose tip declares subrepos automatically recurses into each one, checking it out to
+        // the revision pinned in .hgsubstate, without any extra flag). Reuses the same recursive
+        // checkout logic UpdateCommand's own post-update step uses (see
+        // UpdateCommand.recursiveSubrepoCheckout), including its git-subrepo support (gap #3)
+        // and its "skip the pull when the pinned revision is already present locally" behavior
+        // (gap #4) -- here the subrepo is never present locally yet, so this always clones.
+        UpdateCommand.recursiveSubrepoCheckout(repo);
+
         monitor.end();
         return repo;
     }

@@ -46,8 +46,27 @@ public final class Wire1Commands {
         // pushkey, ...) as a GET with args split across X-HgArg-N request headers rather than a
         // legacy query string -- HgHttpWireServer#handleV1Command reassembles them. Matches real
         // hg's own default server advertisement (confirmed via a real hg --debug clone capture).
+        //
+        // bundle2=...: backlog item 26 -- without this token, a real hg client's own
+        // remote.capable('bundle2') check (mercurial/exchanges/peer.py: exact-match OR any cap
+        // starting with "bundle2=") comes back false, which forces the client onto its legacy
+        // bundle1-only pull path (exchange.py's _forcebundle1/_pullchangeset): it calls
+        // getbundle() with NO bundlecaps argument at all (empty set), so no changegroup version
+        // list is ever sent and hg4j's server can never negotiate anything beyond cg1 -- verified
+        // directly (2026-09-04) by instrumenting Wire1Commands.getbundle and observing a real `hg
+        // clone`'s request args before this fix. Advertising bundle2 here makes the client go
+        // through _pullbundle2 instead, which DOES send its own changegroup=01,02,03 (a real hg
+        // 7.2 client's own default incoming-version list; cg4/cg5 are never offered by client
+        // unless its own repo/config wants them) nested in a bundle2= blob -- see
+        // HgLocalClient#getBundle for the server-side decode/negotiate/response-wrapping logic
+        // this enables. The blob's own advertised list ("01,02,03,04,05") only needs to be
+        // non-empty and truthful about what hg4j's OWN unbundle/push-apply path can accept --
+        // real hg's server-side getbundle version selection never reads the SERVER's own
+        // advertised capability value for the pull direction, only the CLIENT's (see
+        // Bundle2Parser#decodeChangegroupVersions's doc).
         return "lookup changegroupsubset branchmap pushkey known getbundle batch httpheader=1024 "
-                + "unbundle=HG10UN,HG10GZ";
+                + "unbundle=HG10UN,HG10GZ "
+                + io.github.search5.hg4j.bundle.Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05");
     }
 
     /**
@@ -264,12 +283,51 @@ public final class Wire1Commands {
                                           List<HgHook> preChangegroupHooks,
                                           List<HgHook> postChangegroupHooks) throws IOException, HgLockException {
         List<String> heads = splitOrEmpty(args.get("heads"));
+
+        // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는
+        // push할 때도 (getbundle과 마찬가지로 remote.capable('bundle2') 하나로 양쪽 방향이 다
+        // 갈리는 real hg 자신의 규칙, mercurial/exchange.py의 _forcebundle1 실측) 더는 맨 cg
+        // 바이트가 아니라 HG20/bundle2 봉투로 body를 보내고, 그 경우 응답도 반드시 bundle2
+        // 봉투([reply:changegroup]/[error:abort] 파트)여야 한다 -- 예전의 평문 "N\n<message>"
+        // 그대로 돌려주면 실제 hg 클라이언트는 그걸 bundle2 스트림으로 파싱하려다
+        // "abort: not a Mercurial bundle"로 즉시 깨진다(실측, 2026-09-04: 이 광고를 추가하자
+        // 기존 push interop 테스트가 바로 이 메시지로 재현됨).
+        boolean isBundle2Request = bundleBytes != null && bundleBytes.length >= 4
+                && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0';
+        int changegroupPartId = -1;
+        if (isBundle2Request) {
+            try {
+                changegroupPartId = io.github.search5.hg4j.bundle.Bundle2Parser
+                        .extractChangegroupDetailed(new java.io.ByteArrayInputStream(bundleBytes))
+                        .changegroupPartId;
+            } catch (Exception noChangegroupPart) {
+                // 실제 hg 스펙(bundle2 파트는 changegroup 하나로 고정돼 있지 않음): 예를 들어
+                // 북마크만 옮기는 push는 changegroup 파트 자체가 없을 수 있다 -- 이 경우 아래
+                // pushWithHooks(bundleBytes...)가 어차피 changegroup 파싱을 다시 시도해 같은
+                // 이유로 "변경 없음"으로 처리되므로, 여기서는 그냥 "회신할 changegroup 파트
+                // 없음"으로만 기록해두고 계속 진행한다.
+                changegroupPartId = -1;
+            }
+        }
+
         try {
             HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
                     bundleBytes, heads, preChangegroupHooks, postChangegroupHooks);
             boolean added = !result.status.startsWith("no changes found");
+            if (isBundle2Request) {
+                if (changegroupPartId >= 0) {
+                    int cgResult = added ? Math.max(1, result.importedNodeHexes.size()) : 0;
+                    return Wire1Response.streamUncompressed(io.github.search5.hg4j.bundle.Bundle2Parser
+                            .buildChangegroupReplyBundle2(changegroupPartId, cgResult));
+                }
+                return Wire1Response.streamUncompressed(io.github.search5.hg4j.bundle.Bundle2Parser.buildEmptyBundle2Reply());
+            }
             return Wire1Response.bytes(((added ? "1\n" : "0\n") + result.status).getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
+            if (isBundle2Request) {
+                return Wire1Response.streamUncompressed(io.github.search5.hg4j.bundle.Bundle2Parser
+                        .buildErrorAbortBundle2(String.valueOf(e.getMessage())));
+            }
             return Wire1Response.bytes(("0\n" + e.getMessage()).getBytes(StandardCharsets.UTF_8));
         }
     }

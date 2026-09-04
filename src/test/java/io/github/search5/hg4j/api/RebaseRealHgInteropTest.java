@@ -3,6 +3,8 @@ package io.github.search5.hg4j.api;
 import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
+import io.github.search5.hg4j.errors.HgMergeConflictException;
+import io.github.search5.hg4j.errors.HgValidationException;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -10,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -78,9 +81,13 @@ public class RebaseRealHgInteropTest {
         String catSource = hgEvolution(repoDir, "cat", "-r", rebasedHex, "source.txt");
         assertEquals("on-source", catSource.trim());
 
-        // original source commit is gone from the store (hg4j physically strips it)
+        // Evolution-only rebase (2026-09-04): the original source commit is never physically
+        // stripped -- it is merely hidden (it has a live, non-obsolete successor), so a plain
+        // `hg log` (no --hidden) must not list it, exactly like any other hidden revision. See
+        // {@link #originalRevisionIsHiddenNotGoneAfterRebase} for the positive half of this: the
+        // same node found via `hg log --hidden`, still fully readable, not "unknown revision".
         String logAll = hgEvolution(repoDir, "log", "--template", "{node} ");
-        assertFalse(logAll.contains(sourceNode), "물리적으로 strip된 원본 커밋은 더 이상 존재하면 안 됨");
+        assertFalse(logAll.contains(sourceNode), "hidden revision must not appear in a plain `hg log`");
     }
 
     /**
@@ -93,10 +100,10 @@ public class RebaseRealHgInteropTest {
      * {@code experimental.evolution.createmarkers = true}를 자동으로 심어둠) 이 경고가 실제로
      * 사라졌다 — 부수 효과로 이 rebase 관련 발견 사항이 부분적으로 해소됨(직접 재현해 확인,
      * 2026-09-04). 그래서 이 테스트는 이제 "경고가 안 나온다"를 검증하도록 갱신됐다.
-     * strip과 marker를 동시에 쓰는 근본적인 시맨틱 불일치(원본 커밋이 changelog에서 완전히
-     * 사라져 {@code hg log --hidden}에서 "hidden"이 아니라 "unknown revision"이 되는 문제)는
-     * 이 수정과 무관하게 여전히 남아있다 — 그건 별도 테스트
-     * {@link #obsoleteMarkerAfterRebaseStripPointsAtNodeGoneFromChangelog}가 계속 문서화한다.
+     * strip과 marker를 동시에 쓰던 근본적인 시맨틱 불일치(원본 커밋이 changelog에서 완전히
+     * 사라져 {@code hg log --hidden}에서 "hidden"이 아니라 "unknown revision"이 되던 문제)는
+     * 같은 날(2026-09-04) 늦게 rebase를 evolution-only(marker만, 물리적 strip 없음)로
+     * 전환하면서 해소됐다 — 그 확인은 {@link #originalRevisionIsHiddenNotGoneAfterRebase} 참고.
      */
     @Test
     public void plainRealHgCommandsDoNotWarnAfterHg4jRebase(@TempDir Path tempDir) throws Exception {
@@ -141,28 +148,24 @@ public class RebaseRealHgInteropTest {
     }
 
     /**
-     * <b>아키텍처 갭 문서화(고치지 않음 -- 조정자/사용자 확인 필요, 상세는 최종 보고 참고).</b>
+     * <b>고쳐짐(2026-09-04 오후).</b> 실제 hg는 rebase 중 source와 target이 같은 파일의 같은
+     * 부분을 다르게 고쳤으면 3-way merge를 시도하고, 정말 겹치면 conflict marker를 남기고 exit
+     * code 1로 멈춰 {@code hg resolve}/{@code hg rebase --continue}를 요구한다(이 파일 맨 위에서
+     * 실제 hg 7.2로 직접 재현: {@code hg rebase -s 2 -d 1} → exit 1, {@code <<<<<<< dest} /
+     * {@code =======} / {@code >>>>>>> source} 마커(byte-for-byte, 라벨 사이 base 섹션 없음),
+     * {@code hg resolve --list}에 "U f.txt").
      *
-     * <p>실제 hg는 rebase 중 source와 target이 같은 파일의 같은 부분을 다르게 고쳤으면 3-way
-     * merge를 시도하고, 정말 겹치면 conflict marker를 남기고 exit code 1로 멈춰
-     * {@code hg resolve}/{@code hg rebase --continue}를 요구한다(이 파일 맨 위에서 실제 hg 7.2로
-     * 직접 재현: {@code hg rebase -s 2 -d 1} → exit 1, {@code <<<<<<< dest ... ======= ... >>>>>>>
-     * source} 마커, {@code hg resolve --list}에 "U f.txt").
-     *
-     * <p>hg4j {@link RebaseCommand#cherryPickBackup}는 이런 3-way merge를 전혀 하지 않는다 --
-     * target을 체크아웃한 뒤 원본 커밋이 갖고 있던 파일 내용을 무조건 덮어쓸 뿐이다(3-way merge
-     * 로직 자체가 코드에 없음, {@link MergeCommand}가 쓰는 {@link
-     * io.github.search5.hg4j.merge.Merge3}를 전혀 참조하지 않음). 그 결과 이 테스트처럼 target이
-     * 같은 파일을 다르게 수정한 상태에서 rebase하면, target의 수정 내용이 아무 경고도 충돌
-     * 표시도 없이 조용히 사라지고 source의 내용으로 완전히 덮어써진다 -- silent data loss.
-     *
-     * <p>{@code --continue}/{@code --abort} 메서드 자체도 {@link RebaseCommand}에 없다(항상
-     * 원자적으로 전체를 끝내거나 예외 시 물리적 rollback하는 all-or-nothing 설계라 애초에 "중단된
-     * 상태"가 존재하지 않음 -- 하지만 그 all-or-nothing 설계가 가능한 이유가 바로 이 테스트가
-     * 보여주는 "충돌을 아예 감지 안 함"이다).
+     * <p>{@link RebaseCommand}는 이제 {@link MergeCommand}와 같은 {@link
+     * io.github.search5.hg4j.merge.Merge3} 엔진으로 실제 3-way merge를 시도한다: ancestor =
+     * source 리비전 자신의 원래 parent가 갖고 있던 파일 내용, local = 현재 목적지(dest)의 내용,
+     * other = source 리비전이 새로 만든 내용. 정말 겹치면 이 테스트처럼 {@link
+     * HgMergeConflictException}을 던지고, 충돌 마커를 작업 파일에 쓰고, {@code
+     * .hg/merge/state2}(실제 hg와 동일 포맷, {@link io.github.search5.hg4j.merge.MergeState})에
+     * 미해결 상태를 남긴 채 rebase를 일시정지한다 -- 실제 hg CLI의 {@code hg resolve --list}가
+     * 이 저장소를 그대로 읽어 "U f.txt"를 보여줄 수 있어야 한다는 것을 여기서 직접 확인한다.
      */
     @Test
-    public void conflictingEditIsSilentlyOverwrittenInsteadOfDetectedAsConflict(@TempDir Path tempDir) throws Exception {
+    public void conflictingEditWritesConflictMarkersAndPausesRebase(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = HgTestUtils.nativeRepo(repoDir, dir -> {
             try {
@@ -181,22 +184,147 @@ public class RebaseRealHgInteropTest {
         HgTestUtils.hg(repoDir, "commit", "-m", "c2 source modifies f (conflicts with target)");
         String sourceNode = HgTestUtils.hg(repoDir, "log", "-r", ".", "--template", "{node}");
 
-        // Real hg would refuse this with a conflict (verified live above / in this file's class
-        // javadoc). hg4j completes it without error or any conflict signal.
-        byte[] rebasedNode = new RebaseCommand(repo)
+        RebaseCommand rebaseCmd = new RebaseCommand(repo)
                 .setSource(NodeIdUtil.fromHex(sourceNode))
-                .setTarget(NodeIdUtil.fromHex(targetNode))
-                .call();
+                .setTarget(NodeIdUtil.fromHex(targetNode));
+
+        HgMergeConflictException ex = assertThrows(HgMergeConflictException.class, rebaseCmd::call,
+                "a genuine same-file conflict must pause the rebase instead of silently overwriting it");
+        assertEquals(java.util.List.of("f.txt"), ex.getConflictPaths());
+
+        // Byte-for-byte match against real hg 7.2's own default internal:merge conflict markers
+        // (verified live, see this file's class javadoc / the top-of-file real-hg repro).
+        String fContent = Files.readString(new File(repoDir, "f.txt").toPath());
+        assertEquals("<<<<<<< dest\nline1-target\n=======\nline1-source\n>>>>>>> source\n", fContent);
+
+        // Real hg CLI, reading the SAME repo directory hg4j just wrote to, must see the identical
+        // unresolved-file bookkeeping ".hg/merge/state2" produces (mirrors MergeCommand's own
+        // already-proven state2 interop).
+        String resolveList = HgTestUtils.hg(repoDir, "resolve", "--list");
+        assertEquals("U f.txt", resolveList.trim());
+
+        // No commit was produced for the paused revision, and the original source is untouched.
+        String status = HgTestUtils.hg(repoDir, "status");
+        assertTrue(status.contains("M f.txt"), "f.txt must show as modified-in-progress: " + status);
+    }
+
+    /**
+     * Companion to {@link #conflictingEditWritesConflictMarkersAndPausesRebase}: {@link
+     * RebaseCommand#abort()} must cleanly discard the paused rebase and restore the working copy
+     * and dirstate to exactly their pre-rebase state (mirrors real hg's own {@code hg rebase
+     * --abort}, verified live in this file's class javadoc / top-of-file real-hg repro).
+     */
+    @Test
+    public void abortAfterConflictRestoresPreRebaseState(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgRepository repo = HgTestUtils.nativeRepo(repoDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "f.txt").toPath(), "line1\n");
+            } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        HgTestUtils.hg(repoDir, "add", "f.txt");
+        HgTestUtils.hg(repoDir, "commit", "-m", "c0 base");
+
+        Files.writeString(new File(repoDir, "f.txt").toPath(), "line1-target\n");
+        HgTestUtils.hg(repoDir, "commit", "-m", "c1 target modifies f");
+        String targetNode = HgTestUtils.hg(repoDir, "log", "-r", ".", "--template", "{node}");
+
+        HgTestUtils.hg(repoDir, "update", "0");
+        Files.writeString(new File(repoDir, "f.txt").toPath(), "line1-source\n");
+        HgTestUtils.hg(repoDir, "commit", "-m", "c2 source modifies f (conflicts with target)");
+        String sourceNode = HgTestUtils.hg(repoDir, "log", "-r", ".", "--template", "{node}");
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo)
+                .setSource(NodeIdUtil.fromHex(sourceNode))
+                .setTarget(NodeIdUtil.fromHex(targetNode));
+        assertThrows(HgMergeConflictException.class, rebaseCmd::call);
+
+        // A fresh RebaseCommand instance can abort -- the paused state is persisted to disk, not
+        // held only in the instance that hit the conflict.
+        new RebaseCommand(repo).abort();
+
+        String parents = HgTestUtils.hg(repoDir, "parents", "--template", "{node}");
+        assertEquals(sourceNode, parents, "working directory must be back on the original source commit");
+
+        String content = Files.readString(new File(repoDir, "f.txt").toPath());
+        assertEquals("line1-source\n", content, "f.txt must be back to its pre-rebase (source) content");
+
+        String resolveList = HgTestUtils.hg(repoDir, "resolve", "--list");
+        assertEquals("", resolveList.trim(), "no unresolved files must remain after abort");
+
+        String status = HgTestUtils.hg(repoDir, "status");
+        assertEquals("", status.trim(), "working copy must be clean after abort");
+
+        // A second abort() (or continueRebase()) with nothing in progress must fail closed, same
+        // as real hg's own "abort: no rebase in progress".
+        assertThrows(HgValidationException.class, () -> new RebaseCommand(repo).abort());
+        assertThrows(HgValidationException.class, () -> new RebaseCommand(repo).continueRebase());
+
+        // The original source commit is untouched and rebase never left any trace behind.
+        String log = HgTestUtils.hg(repoDir, "log", "--template", "{node} ");
+        assertTrue(log.contains(sourceNode));
+        assertTrue(log.contains(targetNode));
+    }
+
+    /**
+     * Companion to {@link #conflictingEditWritesConflictMarkersAndPausesRebase}: after resolving
+     * the conflict on disk exactly like a real {@code hg resolve} session would, {@link
+     * RebaseCommand#continueRebase()} must finish the paused commit and produce a repository real
+     * hg accepts as valid, with the original source hidden-not-gone (same evolution-only contract
+     * as the non-conflicting case).
+     */
+    @Test
+    public void continueRebaseAfterManualResolutionCompletesTheRebase(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgRepository repo = HgTestUtils.nativeRepo(repoDir, dir -> {
+            try {
+                Files.writeString(new File(dir, "f.txt").toPath(), "line1\n");
+            } catch (Exception e) { throw new RuntimeException(e); }
+        });
+        HgTestUtils.hg(repoDir, "add", "f.txt");
+        HgTestUtils.hg(repoDir, "commit", "-m", "c0 base");
+
+        Files.writeString(new File(repoDir, "f.txt").toPath(), "line1-target\n");
+        HgTestUtils.hg(repoDir, "commit", "-m", "c1 target modifies f");
+        String targetNode = HgTestUtils.hg(repoDir, "log", "-r", ".", "--template", "{node}");
+
+        HgTestUtils.hg(repoDir, "update", "0");
+        Files.writeString(new File(repoDir, "f.txt").toPath(), "line1-source\n");
+        HgTestUtils.hg(repoDir, "commit", "-m", "c2 source modifies f (conflicts with target)");
+        String sourceNode = HgTestUtils.hg(repoDir, "log", "-r", ".", "--template", "{node}");
+
+        RebaseCommand rebaseCmd = new RebaseCommand(repo)
+                .setSource(NodeIdUtil.fromHex(sourceNode))
+                .setTarget(NodeIdUtil.fromHex(targetNode));
+        assertThrows(HgMergeConflictException.class, rebaseCmd::call);
+
+        // Manually resolve exactly like a user driving `hg resolve` would: overwrite the
+        // conflict-marked file with the merged content, then mark it resolved.
+        Files.writeString(new File(repoDir, "f.txt").toPath(), "line1-target\nline1-source\n");
+        HgTestUtils.hg(repoDir, "resolve", "--mark", "f.txt");
+        assertEquals("R f.txt", HgTestUtils.hg(repoDir, "resolve", "--list").trim());
+
+        // A fresh RebaseCommand instance can continue -- same persisted-state contract as abort().
+        byte[] rebasedNode = new RebaseCommand(repo).continueRebase();
         String rebasedHex = NodeIdUtil.toHex(rebasedNode);
 
-        String cat = hgEvolution(repoDir, "cat", "-r", rebasedHex, "f.txt");
-        assertEquals("line1-source", cat.trim(),
-                "현재 동작 문서화용 assert: target의 'line1-target' 수정이 흔적도 없이 사라지고 " +
-                "source 내용으로 조용히 덮어써진다 (실제 hg라면 여기서 conflict로 멈춰야 함). " +
-                "이 assert가 깨진다면 동작이 바뀐 것이니 이 테스트와 최종 보고를 함께 갱신할 것.");
+        String verify = hgEvolution(repoDir, "verify");
+        assertFalse(verify.contains("integrity error"), "Repository integrity error!\n" + verify);
 
-        String noResolveList = hgEvolution(repoDir, "resolve", "--list");
-        assertEquals("", noResolveList.trim(), "hg4j는 애초에 충돌을 감지하지 않으므로 남는 미해결 파일도 없음");
+        String catF = hgEvolution(repoDir, "cat", "-r", rebasedHex, "f.txt");
+        assertEquals("line1-target\nline1-source", catF.trim());
+
+        String resolveList = HgTestUtils.hg(repoDir, "resolve", "--list");
+        assertEquals("", resolveList.trim(), "no unresolved files must remain once the rebase completes");
+
+        // Same evolution-only contract as the non-conflicting case: source is hidden, not gone.
+        String hiddenLog = hgEvolution(repoDir, "log", "--hidden", "-r", sourceNode, "--template", "{node}");
+        assertEquals(sourceNode, hiddenLog);
+        String plainLog = hgEvolution(repoDir, "log", "--template", "{node} ");
+        assertFalse(plainLog.contains(sourceNode), "hidden revision must not appear in a plain `hg log`");
+
+        // Nothing left in progress.
+        assertThrows(HgValidationException.class, () -> new RebaseCommand(repo).continueRebase());
     }
 
     private static String hgEvolution(File repoDir, String... args) throws Exception {
@@ -218,18 +346,22 @@ public class RebaseRealHgInteropTest {
     }
 
     /**
-     * hg4j RebaseCommand가 남기는 obsolescence marker(원본 -> rebase된 노드)를 실제 hg
-     * {@code hg debugobsolete}/{@code hg log --hidden}이 어떻게 보는지 확인한다. hg4j
-     * RebaseCommand는 원본 리비전을 물리적으로 strip하면서 동시에 obsolescence marker를
-     * 남긴다 -- 원본 노드가 changelog에 더 이상 존재하지 않으므로, 실제 hg 관점에서 이 marker가
-     * 가리키는 predecessor는 "hidden revision"이 아니라 "unknown revision"이 된다는 것이
-     * 이 테스트가 확인하려는 것이다(실제 hg의 evolution 기반 rebase --keep 없는 기본 strip
-     * 동작과는 의미가 다름 -- 실제 hg가 evolution 없이 rebase하면 obsmarker를 아예 안 남기고
-     * strip만 하고, evolution이 켜져 있으면 strip 없이 obsmarker만 남긴다. hg4j는 이 둘을
-     * 동시에 하고 있어 marker가 가리키는 대상이 존재하지 않는 상태가 된다).
+     * <b>고쳐짐(2026-09-04 오후): "unknown revision" 버그가 없어지고 실제 hg의 evolution
+     * 시맨틱과 일치함.</b> 이 테스트는 원래(2026-09-04 오전) hg4j RebaseCommand가 원본 리비전을
+     * 물리적으로 strip하면서 동시에 obsolescence marker를 남기는 바람에(실제 hg는 이 둘을 절대
+     * 동시에 하지 않는다 -- evolution 없이 strip만 하거나, evolution으로 marker만 남기고 strip은
+     * 안 하거나 둘 중 하나) marker의 predecessor가 changelog에서 완전히 사라져 {@code hg log
+     * --hidden}으로도 "hidden"이 아니라 "unknown revision"이 되는 버그를 문서화했다.
+     *
+     * <p>RebaseCommand는 이제 evolution-only다(marker만 남기고 물리적 strip은 전혀 하지 않음) --
+     * 그래서 이 테스트는 이제 정반대: 원본 리비전이 changelog/manifest/filelog에 그대로 완전히
+     * 읽을 수 있게 남아있고, {@code hg log --hidden}으로 정상적으로 찾아지며(더 이상 "unknown
+     * revision" 아님), 그러면서도 {@code hg log}/{@code hg log -G}(즉 {@code --hidden} 없이)에는
+     * 나타나지 않는다(살아있는 non-obsolete successor가 있으므로 기본적으로 숨김)는 것을
+     * 확인한다 -- 실제 hg의 evolution 기반 rebase와 정확히 같은 결과.
      */
     @Test
-    public void obsoleteMarkerAfterRebaseStripPointsAtNodeGoneFromChangelog(@TempDir Path tempDir) throws Exception {
+    public void originalRevisionIsHiddenNotGoneAfterRebase(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = HgTestUtils.nativeRepo(repoDir, dir -> {
             try {
@@ -258,30 +390,28 @@ public class RebaseRealHgInteropTest {
         // 실제 hg debugobsolete로 원문 마커 확인 -- predecessor/successor hex가 그대로 보여야 함
         // (HgObsolescenceRealHgInteropTest가 이미 증명한 "hg4j가 쓴 obsstore를 real hg가 파싱
         // 가능"의 연장선).
-        ProcessBuilder pb = new ProcessBuilder("hg", "--config", "experimental.evolution=all", "debugobsolete");
-        pb.directory(repoDir);
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-        String debugObsolete = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-        int exit = p.waitFor();
-        assertEquals(0, exit, "debugobsolete 자체는 파싱에 성공해야 함:\n" + debugObsolete);
+        String debugObsolete = hgEvolution(repoDir, "debugobsolete");
         assertTrue(debugObsolete.contains(sourceNode), "marker의 predecessor에 원본 노드가 있어야 함:\n" + debugObsolete);
 
-        // 하지만 원본 노드는 changelog에서 물리적으로 사라졌으므로, `hg log --hidden`으로도
-        // 찾을 수 없다(evolution의 "hidden"이 아니라 완전히 strip된 것) -- 이는 실제 hg의
-        // "evolution 켜짐 = strip 없이 숨김" 의미론과 다르다.
-        ProcessBuilder pbLog = new ProcessBuilder("hg", "--config", "experimental.evolution=all",
-                "log", "--hidden", "-r", sourceNode, "--template", "{node}");
-        pbLog.directory(repoDir);
-        pbLog.redirectErrorStream(true);
-        Process pLog = pbLog.start();
-        String logHiddenOutput = new String(pLog.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-        int logExit = pLog.waitFor();
+        // Evolution-only rebase (2026-09-04): the original node is fully readable, so real hg's
+        // `hg log --hidden -r <node>` finds it (no "unknown revision") and reports the exact same
+        // node -- this is the direct fix for this test's original documented bug.
+        String hiddenLog = hgEvolution(repoDir, "log", "--hidden", "-r", sourceNode, "--template", "{node}");
+        assertEquals(sourceNode, hiddenLog,
+                "the original revision must be found and fully readable via `hg log --hidden`, not \"unknown revision\"");
 
-        assertNotEquals(0, logExit,
-                "hg4j가 원본 리비전을 물리적으로 strip하므로, --hidden으로도 실제 hg가 그 노드를 찾지 " +
-                "못해야 한다(찾아지면 이 테스트의 가정이 깨진 것이니 재검토 필요): " + logHiddenOutput);
-        assertTrue(logHiddenOutput.contains("unknown revision"),
-                "실제 hg는 evolution 기반 hidden이 아니라 unknown revision 오류를 내야 함: " + logHiddenOutput);
+        // Its content, message and parentage must still be exactly what they always were.
+        String hiddenDesc = hgEvolution(repoDir, "log", "--hidden", "-r", sourceNode, "--template", "{desc}");
+        assertEquals("c2 source", hiddenDesc);
+        String hiddenCat = hgEvolution(repoDir, "cat", "--hidden", "-r", sourceNode, "source.txt");
+        assertEquals("on-source", hiddenCat.trim());
+
+        // But it must NOT show up in a plain `hg log`/`hg log -G` (no --hidden): a revision with a
+        // live, non-obsolete successor is hidden by default, exactly like real hg's own
+        // evolution-based rebase.
+        String plainLog = hgEvolution(repoDir, "log", "--template", "{node} ");
+        assertFalse(plainLog.contains(sourceNode), "hidden revision must not appear in a plain `hg log`");
+        String plainLogGraph = hgEvolution(repoDir, "log", "-G", "--template", "{node} ");
+        assertFalse(plainLogGraph.contains(sourceNode), "hidden revision must not appear in a plain `hg log -G`");
     }
 }

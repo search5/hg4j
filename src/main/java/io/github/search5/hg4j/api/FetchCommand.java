@@ -389,6 +389,45 @@ public class FetchCommand {
     }
 
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
+        return applyBundle(bundle, 0, null);
+    }
+
+    /**
+     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle)}, but acquires the store/
+     * working-copy locks with a caller-supplied wait timeout instead of failing immediately on
+     * contention -- used by the push/unbundle apply path (backlog item 38, both the server
+     * direction, {@code HgLocalClient#pushWithHooks}, and the local-peer/{@code file://} direction
+     * it shares) so a genuinely concurrent push waits like real hg's own {@code repo.lock()}
+     * ({@code wait=True} default) instead of aborting on the very first contended attempt.
+     *
+     * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds --
+     *                      {@code 0} preserves the original fail-fast behavior.
+     */
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs) throws IOException, HgLockException {
+        return applyBundle(bundle, lockTimeoutMs, null);
+    }
+
+    /**
+     * Runs once the store/working-copy locks are actually held, before ANY part of the incoming
+     * bundle is applied -- the exact point real hg's own {@code exchange.unbundle()} re-validates
+     * a push against a race (backlog item 38: {@code mercurial/bundle2_part_handlers.py}'s {@code
+     * check:heads}/{@code check:updated-heads} part handlers, run while processing the bundle2
+     * envelope inside the just-acquired transaction/lock). Throwing here aborts the apply with
+     * nothing yet written (no journal entries exist at this point), so the locks release cleanly
+     * via the enclosing try-with-resources and the repository is left exactly as it was.
+     */
+    @FunctionalInterface
+    public interface PostLockValidator {
+        void validate() throws IOException;
+    }
+
+    /**
+     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int)}, but additionally
+     * runs {@code postLockValidator} (if non-null) immediately after the store/working-copy locks
+     * are acquired and before any mutation begins -- see {@link PostLockValidator}'s doc.
+     */
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
+                                     PostLockValidator postLockValidator) throws IOException, HgLockException {
         resolveNarrowTreeFilterIfDefault();
         List<byte[]> importedCommits = new ArrayList<>();
         if (bundle.changelogEntries.isEmpty()) {
@@ -403,8 +442,12 @@ public class FetchCommand {
 
         Map<File, Long> fileSizes = new HashMap<>();
 
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock storeLock = repository.lockStore(lockTimeoutMs);
+             HgLock wlock = repository.lockWorkingCopy(lockTimeoutMs)) {
+
+            if (postLockValidator != null) {
+                postLockValidator.validate();
+            }
 
             Files.deleteIfExists(journalFile.toPath());
             

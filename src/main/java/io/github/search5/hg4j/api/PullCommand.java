@@ -124,6 +124,29 @@ public class PullCommand {
     }
 
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
+        return applyBundle(bundle, 0, null);
+    }
+
+    /**
+     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle)}, but forwards a store/
+     * working-copy lock wait timeout to {@link FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int)}
+     * instead of failing immediately on contention -- see that method's doc (backlog item 38).
+     *
+     * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds --
+     *                      {@code 0} preserves the original fail-fast behavior.
+     */
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs) throws IOException, HgLockException {
+        return applyBundle(bundle, lockTimeoutMs, null);
+    }
+
+    /**
+     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int)}, but forwards a
+     * post-lock, pre-apply validator to {@link
+     * FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}
+     * -- see that method's doc (backlog item 38, push-race re-validation).
+     */
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
+                                     FetchCommand.PostLockValidator postLockValidator) throws IOException, HgLockException {
         FetchCommand fetchCmd = new FetchCommand(repository);
         // Backlog 30: only forward an explicit override -- if this PullCommand itself was never
         // given one, leave FetchCommand's own default so it can auto-load the repository's own
@@ -136,8 +159,8 @@ public class PullCommand {
         if (this.credentialsProvider != null) {
             fetchCmd.setCredentialsProvider(this.credentialsProvider);
         }
-        
-        List<byte[]> results = fetchCmd.applyBundle(bundle);
+
+        List<byte[]> results = fetchCmd.applyBundle(bundle, lockTimeoutMs, postLockValidator);
 
         if (results != null && !results.isEmpty()) {
             Dirstate dirstate = repository.getDirstate();

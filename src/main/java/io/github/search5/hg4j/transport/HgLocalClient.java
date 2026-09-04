@@ -27,6 +27,11 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import io.github.search5.hg4j.errors.HgPushRacedException;
+import io.github.search5.hg4j.api.FetchCommand;
 
 /**
  * Pure Java transport that provides a connection to a Mercurial repository on the local filesystem.
@@ -442,6 +447,11 @@ public class HgLocalClient implements HgRemoteConnection {
 
         byte[] changegroupBytes = bundleBytes;
         String cgVersion = "01";
+        // Backlog item 38 ("PushRaced"-equivalent): if the incoming bundle2 envelope carries a
+        // `check:heads` part, it's the authoritative source for what the pushing client computed
+        // its push against -- captured here (bundle2-only) and used to build the post-lock race
+        // validator below, alongside the plain wire `heads` arg for non-bundle2 pushes.
+        Bundle2Parser.ExtractedBundle2 extracted = null;
         if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
             // 백로그 26번: Wire1Commands.capabilitiesString()이 이제 bundle2=를 광고하므로
             // (getbundle 버전 협상을 가능케 하려고) 실제 hg 클라이언트의 push도 더는 맨 cg1
@@ -452,8 +462,7 @@ public class HgLocalClient implements HgRemoteConnection {
             // 왔다"는 증거였는데, 광고를 추가하자 즉시 "0\n... not a Mercurial bundle" 실패로
             // 재현·확인됨). Bundle2Parser는 이미 이 봉투를 파싱하는 유틸(원래는 getbundle
             // 응답을 읽는 클라이언트 쪽 용도)을 갖고 있어 그대로 재사용한다.
-            Bundle2Parser.ExtractedBundle2 extracted = Bundle2Parser.extractChangegroupDetailed(
-                    new ByteArrayInputStream(bundleBytes));
+            extracted = Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
             changegroupBytes = extracted.changegroupBytes;
             cgVersion = extracted.cgVersion;
         } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
@@ -485,9 +494,29 @@ public class HgLocalClient implements HgRemoteConnection {
                 }
             }
 
-            // Apply bundle natively to remoteRepo using transactional API of PullCommand
+            // Apply bundle natively to remoteRepo using transactional API of PullCommand.
+            // Backlog item 38: this is the SERVER direction of a concurrent push (Wire1Commands's
+            // unbundle -- HTTP and SSH both -- and the file:// local-peer role reach this exact
+            // same code path). Real hg's own server-side unbundle apply (mercurial/exchange.py's
+            // unbundle(): `with repo.lock(), repo.transaction(...)`) waits for the target repo's
+            // store lock (repo.lock() default wait=True, timeout from ui.timeout -- 600s default)
+            // rather than failing on the very first contended attempt; confirmed live against
+            // real hg 7.2 (2026-09-04): with the remote's store lock artificially held and
+            // ui.timeout=2 configured on the server, a real `hg push` over HTTP waited ~2s before
+            // the request failed (surfaced to the real-hg client as "abort: HTTP Error 500", since
+            // real hg's own wireprotov1server.unbundle() does not specially catch
+            // error.LockHeld/LockUnavailable -- it's an unhandled exception that the WSGI/CGI
+            // layer turns into a 500). hg4j's own equivalent (this pullApi.applyBundle call) used
+            // to lock with timeoutMs=0 (immediate fail-fast) unconditionally -- passing the
+            // repository's own resolvePushLockTimeoutMs() (mirrors ui.timeout) here makes it wait
+            // like real hg's does, while every OTHER lockStore()/lockWorkingCopy() caller
+            // (commit, update, rebase, ...) is intentionally left untouched -- see
+            // HgRepository#lockStore(int)'s doc.
             PullCommand pullApi = new PullCommand(remoteRepo);
-            List<byte[]> imported = pullApi.applyBundle(bundle);
+            int lockTimeoutMs = remoteRepo.resolvePushLockTimeoutMs();
+            FetchCommand.PostLockValidator raceCheck = buildPushRaceValidator(
+                    extracted != null ? extracted.checkHeadsRaw : null, heads);
+            List<byte[]> imported = pullApi.applyBundle(bundle, lockTimeoutMs, raceCheck);
 
             // Restore remote dirstate to preserve bare repo status
             if (dirstateBackup != null) {
@@ -510,6 +539,139 @@ public class HgLocalClient implements HgRemoteConnection {
             }
 
             return new PushResult("push successful, imported " + imported.size() + " changesets natively", importedNodeHexes);
+        }
+    }
+
+    /** Wire encoding of real hg's own {@code "hashed"} sentinel byte string, used as the FIRST
+     * element of a 2-element hashed-heads wire value -- see {@link
+     * io.github.search5.hg4j.util.NodeIdUtil#computeUnbundleHeadsWireValue}'s doc and {@code
+     * mercurial/exchange.py}'s {@code if heads != [b'force'] and self.capable(b'unbundlehash')}. */
+    private static final String HASHED_SENTINEL_HEX = NodeIdUtil.toHex("hashed".getBytes(StandardCharsets.US_ASCII));
+
+    /** Wire encoding of real hg's own force-push sentinel -- real hg's {@code
+     * wireprototypes.encodelist()} hex-encodes {@code [b'force']} exactly like a genuine head
+     * list (no special-casing), so the wire value a real client OR hg4j's own {@link
+     * io.github.search5.hg4j.transport.HgRemoteClient}/{@link io.github.search5.hg4j.transport.HgSshClient}
+     * (via {@link io.github.search5.hg4j.util.NodeIdUtil#computeUnbundleHeadsWireValue}) actually
+     * sends is {@code hex(b'force')}, not the bare ASCII word -- see that method's doc. The bare
+     * word is ALSO accepted below because {@link #push}/{@link #pushWithHooks} is reached directly
+     * (no wire encoding at all) for the {@code file://} local-peer role, where {@link
+     * io.github.search5.hg4j.api.PushCommand} passes the literal {@code "force"} straight through. */
+    private static final String FORCE_SENTINEL_HEX = NodeIdUtil.toHex("force".getBytes(StandardCharsets.US_ASCII));
+
+    /**
+     * Backlog item 38 ("PushRaced"-equivalent server-side race re-check): builds the validator
+     * {@link FetchCommand#applyBundle(io.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}
+     * runs immediately after the store/working-copy locks are acquired, to reject a push whose
+     * target heads changed underneath it since the client computed the push -- exactly what real
+     * hg's own {@code error.PushRaced} guards against (see {@code
+     * mercurial/bundle2_part_handlers.py}'s {@code handlecheckheads()} for the bundle2 case this
+     * mirrors, and {@code mercurial/exchange.py}'s {@code check_heads()} for the legacy bundle1
+     * wire-argument case).
+     *
+     * <p>Priority, matching which mechanism the pushing client actually used:
+     * <ol>
+     *   <li>A bundle2 {@code check:heads} part ({@code checkHeadsPartRaw} non-null) is
+     *       authoritative when present -- real hg's client only sends it for a non-{@code --force}
+     *       push that has something to push, so its mere presence means "please check this".</li>
+     *   <li>Otherwise, the legacy {@code heads=} wire argument ({@code wireHeads}) is used, unless
+     *       it is empty (real hg4j's own {@link io.github.search5.hg4j.api.PushCommand} omits the
+     *       argument entirely for a brand-new, currently-headless remote -- indistinguishable on
+     *       the wire from "no race info sent at all", so this is conservatively treated as "skip"
+     *       rather than risk rejecting a legitimate first push) or is exactly {@code ["force"]}
+     *       (real hg's own force-push sentinel, {@code mercurial/exchange.py}'s {@code if
+     *       pushop.force: remoteheads = [b'force']} -- see {@code PushCommand#call()}'s matching
+     *       send-side fix) or the 2-element {@code ["hashed", <sha1-hex>]} form (real hg's {@code
+     *       unbundlehash} bandwidth optimization for very large head counts -- hg4j's own server
+     *       never advertises that capability today, so no client should ever actually send this
+     *       to hg4j, but the check is implemented for source fidelity in case that changes).</li>
+     * </ol>
+     *
+     * @return {@code null} if no race check applies (nothing to compare against, or the push was
+     *         forced); otherwise a validator that throws {@link HgPushRacedException} on mismatch.
+     */
+    private FetchCommand.PostLockValidator buildPushRaceValidator(List<byte[]> checkHeadsPartRaw, List<String> wireHeads) {
+        if (checkHeadsPartRaw != null) {
+            List<String> expectedHex = new ArrayList<>(checkHeadsPartRaw.size());
+            for (byte[] node : checkHeadsPartRaw) {
+                expectedHex.add(NodeIdUtil.toHex(node));
+            }
+            return () -> validatePushNotRaced(expectedHex);
+        }
+        // Defensive sanitization: PushCommand itself already treats a null entry or the all-zero
+        // "no real head" sentinel node as "not a real head" when computing its OWN local
+        // validRemoteHeads (see PushCommand#call()) -- but the RAW, unfiltered head list is what
+        // actually goes out over the wire as this heads= argument (a separate, pre-existing
+        // quirk, unrelated to backlog 38, that PushCommandTest deliberately exercises via a
+        // HgRemoteConnection test double). Since this argument was previously never consumed
+        // server-side, that quirk was harmless; now that it feeds the race check, the same
+        // filtering is applied here so a stray null/sentinel entry can't either NPE or be
+        // compared against a real head hex.
+        List<String> sanitized = sanitizeWireHeads(wireHeads);
+        if (sanitized.isEmpty()) {
+            return null;
+        }
+        if (sanitized.size() == 1
+                && ("force".equalsIgnoreCase(sanitized.get(0)) || FORCE_SENTINEL_HEX.equalsIgnoreCase(sanitized.get(0)))) {
+            return null;
+        }
+        if (sanitized.size() == 2 && HASHED_SENTINEL_HEX.equalsIgnoreCase(sanitized.get(0))) {
+            String expectedDigestHex = sanitized.get(1);
+            return () -> validatePushNotRacedHashed(expectedDigestHex);
+        }
+        return () -> validatePushNotRaced(sanitized);
+    }
+
+    private static final String NULL_NODE_HEX = "0".repeat(40);
+
+    private static List<String> sanitizeWireHeads(List<String> wireHeads) {
+        if (wireHeads == null) {
+            return List.of();
+        }
+        List<String> sanitized = new ArrayList<>(wireHeads.size());
+        for (String h : wireHeads) {
+            if (h != null && !h.isEmpty() && !NULL_NODE_HEX.equalsIgnoreCase(h)) {
+                sanitized.add(h);
+            }
+        }
+        return sanitized;
+    }
+
+    /** Real hg's own message, verbatim ({@code mercurial/bundle2_part_handlers.py}'s {@code
+     * handlecheckheads()}: {@code b'remote repository changed while pushing - please try again'}). */
+    private static final String PUSH_RACED_MESSAGE = "remote repository changed while pushing - please try again";
+
+    private void validatePushNotRaced(List<String> expectedHeadHex) throws IOException {
+        TreeSet<String> expected = new TreeSet<>();
+        for (String h : expectedHeadHex) {
+            expected.add(h.toLowerCase());
+        }
+        TreeSet<String> current = new TreeSet<>();
+        for (String h : new HgLocalClient(remoteRepo).getHeads()) {
+            current.add(h.toLowerCase());
+        }
+        if (!expected.equals(current)) {
+            throw new HgPushRacedException(PUSH_RACED_MESSAGE);
+        }
+    }
+
+    private void validatePushNotRacedHashed(String expectedDigestHex) throws IOException {
+        List<String> currentHex = new ArrayList<>(new HgLocalClient(remoteRepo).getHeads());
+        // Hex-string order matches the underlying unsigned-byte order (each byte maps to exactly
+        // two hex digits), so sorting hex strings here is equivalent to real hg's own
+        // `sorted(heads)` over the raw 20-byte node ids -- no need to decode back to bytes first.
+        currentHex.sort(String::compareTo);
+        try {
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            for (String h : currentHex) {
+                sha1.update(NodeIdUtil.fromHex(h));
+            }
+            String actualDigestHex = NodeIdUtil.toHex(sha1.digest());
+            if (!actualDigestHex.equalsIgnoreCase(expectedDigestHex)) {
+                throw new HgPushRacedException(PUSH_RACED_MESSAGE);
+            }
+        } catch (NoSuchAlgorithmException e) {
+            throw new IOException("SHA-1 unavailable for push-race hashed-heads check", e);
         }
     }
 

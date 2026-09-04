@@ -17,4 +17,4 @@ JGit의 `org.eclipse.jgit.gpg.bc`에 대응.
 `gpg` 테스트 디렉터리로 함께 이동(대응 클래스와 위치 일치).
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/gpg/`
+`src/main/java/io/github/search5/hg4j/gpg/`

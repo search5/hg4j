@@ -16,4 +16,4 @@ Phase 3에서 분리됨 — import 변경 범위가 커서 Track A 초반에 처
   [[journaling-crash-recovery-plan]] 등 여러 쓰기 경로가 이 클래스의 원자적 쓰기에 의존.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/util/`
+`src/main/java/io/github/search5/hg4j/util/`

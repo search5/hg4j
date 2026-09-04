@@ -1,13 +1,29 @@
 ---
-updated: 2026-08-31
-status: current
+updated: 2026-09-04
+status: completed
 ---
 
 # 계획: `core` 패키지 분리 순서 (JGit 정합성 요건 이행)
 
 > [[jgit-parity-requirement]]에서 위임받은 항목. "분리 순서는 니가 알아서, 확인은
-> 사용자가 직접" — 이 문서는 Claude가 제안한 순서이며, **아직 실행되지 않았다**
-> (status: current는 "계획이 유효하다"는 뜻이지 "실행 완료"가 아님).
+> 사용자가 직접" — 이 문서는 Claude가 제안한 순서다.
+>
+> ✅ **2026-09-04 확인 — 전 단계(Phase 1~12) 실행 완료.** `src/main/java/io/github/search5/hg4j/core/`
+> 디렉터리 자체가 더 이상 존재하지 않는다. 실제 코드 기준 확인:
+> - Phase 1~11에서 계획한 `dirstate`/`merge`/`util`/`submodule`/`phase`/`obsolete`/`revset`/
+>   `bundle`/`lfs`/`gpg`/`storage`/`diff`/`treewalk` 패키지가 전부 `src/main/java/io/github/search5/hg4j/`
+>   아래 개별 패키지로 존재.
+> - Phase 0(`core.HgLockException` 정리)도 완료 — 전체 소스에서 `errors.HgLockException`
+>   하나만 남아있고 `core.HgLockException`은 없음(참조 35건 모두 `errors.HgLockException`).
+> - Phase 12(`core` → `lib` 병합)도 완료 — `HgRepository`/`Repository`/`HgRcConfig`/`HgLock`/
+>   `HgLockException`이 `lib` 패키지에 있고, 이 문서가 가장 흔한 실수로 지목했던
+>   `build.gradle`의 `jacocoTestCoverageVerification` FQCN 목록도 `core.*` 잔재 없이 전부
+>   새 패키지 경로로 갱신돼 있음(`io.github.search5.hg4j.dirstate.Dirstate`,
+>   `io.github.search5.hg4j.merge.Merge3` 등 확인).
+> - 이 분리 작업이 정확히 어느 커밋(들)에서 이뤄졌는지는 여러 커밋에 걸쳐 있어
+>   단일 커밋으로 특정하지 않음 — 결과 상태만 확인.
+>
+> 아래 원 계획 내용은 실행 시점의 설계 근거 기록으로 그대로 보존한다.
 
 ## 원칙
 1. **저위험(의존성 적음) → 고위험(광범위 참조) 순서로 이동**한다. 코드 자체는 그대로 두고

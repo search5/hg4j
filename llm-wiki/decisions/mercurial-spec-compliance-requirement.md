@@ -1,13 +1,24 @@
 ---
 updated: 2026-09-04
-status: 백로그 18~25, 27번 전부 완료. 25번은 오탐(hg4j 버그 아님)으로 종결. 23번(commit·push·
-  branch·merge·tag·rebase·shelve·bisect·strip·subrepo 10개 카테고리 실전 interop 검증)도
-  5개 병렬 TDD 작업으로 전부 완료 — 실제 버그 15건 발견·수정, 코드 변경 없이 사용자 확인만
-  필요한 아키텍처 수준 결정 다수 발견(각 카테고리 문단에 표시). 27번(log --follow <path>
-  신규 옵션 + annotate의 rename-crossing)은 완료(2026-09-04) — 조사 결과 real hg의 이
-  기능 자체가 기본 설정에서는 sidedata가 아니라 filelog 수준 copy 메타데이터를 쓴다는
-  것이 밝혀져 그 계층으로 구현(상세는 27번 문단). 26(hg4j 서버가 cg1만 생성/cg5
-  sidedata 미반영)·28(Narrow clone/LFS 실제 hg interop 검증 누락) 번은 다음 착수 대상.
+status: 번호 매겨진 백로그 1~28번 전부 완료(25번은 오탐으로 종결). 23번(commit·
+  push·branch·merge·tag·rebase·shelve·bisect·strip·subrepo 10개 카테고리 실전
+  interop 검증)은 5개 병렬 TDD 작업으로 완료 — 실제 버그 15건 발견·수정, 코드
+  변경 없이 사용자 확인만 필요한 아키텍처 수준 결정 다수 발견(각 카테고리 문단에
+  표시). 26번(hg4j 자체 changegroup 생성/적용 경로가 cg1/무sidedata로 제한되던
+  문제 — 근본 원인은 `Wire1Commands.capabilitiesString()`이 `bundle2=`를 광고하지
+  않아 실제 hg 클라이언트가 항상 legacy cg1 경로로만 빠지던 것)도 완료
+  (2026-09-04) — 상세는 아래 gap table "Changegroup (cg1~cg5)" 행 및 26번 문단.
+  27번(log --follow <path> 신규 옵션 + annotate의 rename-crossing)도 완료
+  (2026-09-04) — 조사 결과 real hg의 이 기능 자체가 기본 설정에서는 sidedata가
+  아니라 filelog 수준 copy 메타데이터를 쓴다는 것이 밝혀져 그 계층으로 구현
+  (상세는 27번 문단). 28번(Narrow clone/LFS 실제 hg interop 검증 누락)도 완료
+  (2026-09-04) — 상세는 아래 gap table "Narrow clone / narrowspec"/"LFS" 행.
+  **29~36번은 신규 — 2026-09-04에 "완료된 항목 안에 남은 캐비어트"를 사용자
+  지시로 코드까지 직접 재확인해 승격한 항목들로, 전부 미착수**: requires 문자열
+  커버리지(29), narrow clone wire-level 재통합(30), LFS 커밋/체크아웃 파이프라인
+  연동(31), subrepo 잔여 gap 4건(32), push checkheads SSH 미작동(33), bisect
+  merge DAG 검증 누락(34), revlog 항상 non-inline이라 fncache 경고(35), tag
+  재태깅 -f 가드 부재(36) — 전부 real hg CLI interop 검증까지 완료 기준에 포함.
 ---
 
 # 요건: Mercurial 전체 스펙 완전 준수
@@ -53,7 +64,7 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
 | Dirstate v2 (44바이트 노드) | `hg help internals.dirstate-v2` | `DirstateV2Parser`, `DirstateV2Serializer`, `DirstateV2Node` | ✅ **구현 완료(2026-09-01)** — 실제 hg CLI(Docker 6.0 + host native 7.2.2)로 만든 진짜 dirstate-v2 저장소 바이트를 직접 캡처해 대조, **3건의 실제 버그 발견·수정**: (1) NODE 44바이트 구조체 필드 오프셋이 전부 지어낸 값(자기 자신과의 라운드트립만 우연히 통과, 실제 hg가 쓴 파일은 못 읽는 상태), (2) flags 비트 값 오류, (3) 데이터 파일명 패턴이 `dirstate.d.<uid>`가 아니라 실제로는 `dirstate.<uid>`였던 완전 단절 버그. 캡처한 실제 바이트를 그대로 박은 회귀(`DirstateV2RealFixtureTest`) 신설, 기존 `CHgDirstateV2Test`의 설정 순서/requires 누락 버그도 같이 수정 — 상세는 아래 백로그 5번 |
 | Bundle1 (레거시 `HG10UN/GZ/BZ`) | wiki `BundleFormat` | `api.UnbundleCommand`, `api.FetchCommand`, `api.BundleCommand` | ✅ **완료(2026-09-03)** — 읽기(HG10UN/HG10GZ/HG10BZ 세 압축 형식 전부)는 이미 실제 `hg bundle --type=none-v1/gzip-v1/bzip2-v1`로 만든 파일로 검증돼 있었음(`TrackCMissingCommandsInteropTest`). 진단해보니 `api.BundleCommand`(직전 세션에 이미 신설)는 `none-v1`(`"HG10UN"` + 무압축 cg1)만 만들 수 있었고, 실제 gap은 `--type` 파라미터/gzip·bzip2 압축 부재였다 — `BundleCommand.BundleType`(`NONE_V1`/`GZIP_V1`/`BZIP2_V1`, `setType(BundleType)`/`setType(String)`, `hg`의 `--type` 철자 그대로) 추가로 해결. 바이트 레이아웃은 real hg 7.2.2 CLI 출력을 `xxd`로 직접 대조해 확정: `gzip-v1`은 순수 zlib/DEFLATE(`java.util.zip.Deflater`의 기본 wrapped 모드 — `GZIPOutputStream`이 만드는 gzip 컨테이너가 아님, `mercurial/utils/compression.py`의 `zlib.compressobj()` 및 기존 `UnbundleCommand`의 `InflaterInputStream` 읽기 경로와 대칭), `bzip2-v1`은 4바이트 리터럴 `"HG10"` 뒤에 표준 bzip2 스트림(`BZip2CompressorOutputStream`, 자체 `"BZh9..."` 매직으로 시작)을 그대로 이어붙여 `"HG10BZh9..."`가 되도록 함(6바이트 `"HG10BZ"` 헤더는 리터럴로 쓰지 않음 — `mercurial/bundle2.py`의 `bundletypes["HG10BZ"] = ("HG10", "BZ")`가 정확히 이 레이아웃임을 소스로 확인). 세 압축 방식 모두 real hg round-trip으로 검증(`BundleCommandTest`: hg4j가 쓴 gzip-v1/bzip2-v1 파일을 real `hg unbundle`이 정확히 읽음, real hg가 만든 gzip-v1 파일을 hg4j `UnbundleCommand`가 정확히 읽음) |
 | Bundle2 컨테이너 | `hg help internals.bundle2` | `Bundle2Parser` | ✅ **버그 2건 발견·수정(2026-09-01)** — 스트림 파라미터 크기 필드가 2바이트가 아니라 실제로는 4바이트(`_fstreamparamsize='>i'`)였던 버그, 파트 헤더의 파라미터를 키/값 교차로 읽던 게 아니라 실제로는 모든 (keylen,vallen) 쌍을 먼저 읽고 그다음 키/값 바이트를 순서대로 읽는 2단계 구조였던 버그. 둘 다 실제 `hg bundle`(기본 bzip2 압축) 결과물로 발견 |
-| Changegroup (cg1~cg5) | `hg help internals.changegroups`, `mercurial/changegroup.py` 실측 | `ChangegroupParser`, `storage.Revlog`, `transport.HgLocalClient`, `transport.HgRemoteClientV2` | ✅ **cg1/cg2/cg3 헤더 구조 버그 발견·수정 완료(2026-09-01)** — (1) cg1 델타 베이스 규칙: 실제 cg1은 `forcedeltaparentprev=True`로 각 엔트리를 "실제 DAG 부모(p1)"가 아니라 "스트림상 바로 직전 엔트리"를 기준으로 델타 인코딩한다(위치 기반, DAG와 무관). `HgLocalClient.getBundle()`이 p1 기준으로 델타를 만들고 있어서 다중 head(branch) 저장소를 pull하면 콘텐츠가 깨지는 실제 버그였음. (2) cg2/cg3 델타 헤더 필드 순서: 실제 구조체는 `node,p1,p2,deltabase,cs`인데 hg4j는 `node,p1,p2,cs,deltabase`로 읽어서 changelog 그룹에서 deltabase가 항상 자기 자신의 node와 같아지는 버그였음(`node`/`cs`가 changelog에서는 같은 값이라 증상이 그렇게 나타남) — 실제 `hg bundle` 결과물의 unbundle 실패로 발견. **cg3의 censor 지원은 ✅ 완료(2026-09-01, 백로그 7번)** — 패킹측 크래시(censored 리비전 포함 저장소를 pull/clone/push하면 무조건 죽던 버그)와 수신측 censored 플래그 소실(censor된 내용이 조용히 복원되는 심각한 버그) 둘 다 발견·수정. **트리매니페스트(treemanifest) 파싱은 읽기 경로만 ✅ 완료(2026-09-03, 백로그 8번)** — cg3의 `ManifestGroup` 파싱 골격 자체는 이미 있었고, 실제 병목은 매니페스트 콘텐츠를 소비하는 `ManifestTreeIterator` 쪽이었다(위 "Manifest 포맷" 행 참고). 쓰기는 백로그 18번. **cg4/cg5는 ✅ 완료(2026-09-03)** — 상세는 백로그 11번. 같은 작업 중 cg3에도 있던 별도의 실제 버그(루트 매니페스트 그룹을 서브디렉터리 경로 청크로 오인하는 버그)와, cg2~cg5 모두에 해당하는 협상 자체가 사실상 항상 무력화돼 있던 버그(bundlecaps 인코딩)도 같이 발견·수정 |
+| Changegroup (cg1~cg5) | `hg help internals.changegroups`, `mercurial/changegroup.py` 실측 | `ChangegroupParser`, `storage.Revlog`, `transport.HgLocalClient`, `transport.HgRemoteClientV2` | ✅ **cg1/cg2/cg3 헤더 구조 버그 발견·수정 완료(2026-09-01)** — (1) cg1 델타 베이스 규칙: 실제 cg1은 `forcedeltaparentprev=True`로 각 엔트리를 "실제 DAG 부모(p1)"가 아니라 "스트림상 바로 직전 엔트리"를 기준으로 델타 인코딩한다(위치 기반, DAG와 무관). `HgLocalClient.getBundle()`이 p1 기준으로 델타를 만들고 있어서 다중 head(branch) 저장소를 pull하면 콘텐츠가 깨지는 실제 버그였음. (2) cg2/cg3 델타 헤더 필드 순서: 실제 구조체는 `node,p1,p2,deltabase,cs`인데 hg4j는 `node,p1,p2,cs,deltabase`로 읽어서 changelog 그룹에서 deltabase가 항상 자기 자신의 node와 같아지는 버그였음(`node`/`cs`가 changelog에서는 같은 값이라 증상이 그렇게 나타남) — 실제 `hg bundle` 결과물의 unbundle 실패로 발견. **cg3의 censor 지원은 ✅ 완료(2026-09-01, 백로그 7번)** — 패킹측 크래시(censored 리비전 포함 저장소를 pull/clone/push하면 무조건 죽던 버그)와 수신측 censored 플래그 소실(censor된 내용이 조용히 복원되는 심각한 버그) 둘 다 발견·수정. **트리매니페스트(treemanifest) 파싱은 읽기 경로만 ✅ 완료(2026-09-03, 백로그 8번)** — cg3의 `ManifestGroup` 파싱 골격 자체는 이미 있었고, 실제 병목은 매니페스트 콘텐츠를 소비하는 `ManifestTreeIterator` 쪽이었다(위 "Manifest 포맷" 행 참고). 쓰기는 백로그 18번. **cg4/cg5는 ✅ 완료(2026-09-03)** — 상세는 백로그 11번. 같은 작업 중 cg3에도 있던 별도의 실제 버그(루트 매니페스트 그룹을 서브디렉터리 경로 청크로 오인하는 버그)와, cg2~cg5 모두에 해당하는 협상 자체가 사실상 항상 무력화돼 있던 버그(bundlecaps 인코딩)도 같이 발견·수정. **hg4j 자체 changegroup 생성/적용 경로(로컬 `HgLocalClient.getBundle()`/`Revlog.appendChangeGroupEntry()`)가 cg1/무sidedata로 고정돼 있던 문제도 ✅ 완료(2026-09-04, 백로그 26번)** — 근본 원인은 `Wire1Commands.capabilitiesString()`이 `bundle2=`를 아예 광고하지 않아 실제 hg 클라이언트의 `remote.capable('bundle2')`가 항상 false가 되고, 그래서 legacy 경로(`bundlecaps` 자체를 안 보냄, 응답도 무조건 cg1 맨 바이트)로만 빠지던 것 — `bundle2=` 광고를 추가하고 `HgLocalClient.getBundle()`이 `bundleCaps`를 읽어 `max(요청 목록 ∩ {01..05})`로 버전을 협상하도록, `Revlog.appendChangeGroupEntry()`가 v2 revlog에는 `appendRevisionV2`(sidedata 포함)로 분기하도록 수정. 부수적으로 `bundle2=` 광고 자체가 실제 hg 클라이언트의 **push** 프로토콜도 자동으로 bundle2로 전환시켜(`exchange._forcebundle1`) HG20 봉투 요청/응답 처리를 새로 배선해야 했음(`Bundle2Parser.buildChangegroupReplyBundle2`류 신설). 전부 real hg CLI 기반으로 검증(`HgHttpWireServerRealHgInteropTest`/`PullSidedataRealHgInteropTest` 신규 케이스), 회귀 2402건 전부 GREEN |
 | Wire protocol v1 (HTTP/SSH, capability 협상) | `hg help internals.wireprotocol` | `HgRemoteClient`, `HgSshClient`, `transport.wireprotov1.Wire1Commands`, `HgHttpWireServer`, `HgSshWireServer` | ✅ **양방향 완전 검증 완료(2026-09-01, 서버 방향 및 클라이언트 협상 매트릭스 2026-09-03에 확장)**. 클라이언트 방향: Docker 실제 Mercurial 6.0 `hg serve` HTTP 서버를 대상으로 hg4j `PullCommand`/`PushCommand`가 실시간 pull+push 왕복 성공(`HgHttpV1LiveServerInteropTest`). **서버 방향(실제 hg 클라이언트 → hg4j 서버)도 완료** — 기존 모놀리식 `HgWireServer`(가짜 SSH stdio 핸들러 포함, 실제 검증된 적 없음)를 JGit의 `UploadPack`/`ReceivePack`+전송별 glue 패턴대로 `Wire1Commands`(전송 무관 v1 코어)+`HgHttpWireServer`(HTTP)+`HgSshWireServer`(SSH, real hg SSH 라인 프로토콜 재구현)로 재구성 후 삭제, 실제 hg CLI를 클라이언트로 clone/pull/push/bookmark(HTTP, `HgHttpWireServerRealHgInteropTest`) 및 clone(SSH, 임베디드 Apache MINA SSHD 경유 진짜 SSH 세션, `HgSshWireServerRealHgInteropTest`)까지 전부 검증 — 이 과정에서 SSH 핸드셰이크의 `between` 커맨드가 빈 응답을 내던 진짜 버그(real hg 클라이언트가 영원히 멈춤)도 발견·수정. **백로그 22번 "실제 hg 클라이언트 → hg4j 서버" 그룹(2026-09-03)**: 그때까지 SSH 쪽은 clone 한 가지만 검증돼 있었던 실제 gap을 메움 — real hg **SSH 증분 pull**(`realHgPullsIncrementalChangesFromHg4jServedOverSsh`)과 real hg **SSH push**(`realHgPushesToHg4jServedOverSsh`) 신규 검증 통과(기존에 알려졌던 대로 SSH push 경로 자체는 이미 정상 동작했음 — 새로운 실버그는 못 찾음), 여러 named branch/bookmark/tag가 있는 저장소의 clone 정확성(HTTP+SSH 둘 다), 존재하지 않는 리비전을 `clone -r`/`pull -r`로 요청했을 때 real hg 클라이언트가 "unknown revision"/"abort" 메시지로 정상 종료(크래시·행 없음, HTTP+SSH 둘 다)까지 신규 검증. 추가로 "첫 번째 real hg 클라이언트가 push한 직후 두 번째 real hg 클라이언트가 같은 살아있는 서버에서 즉시 그 커밋을 보는지"(서버 재시작 없이 자체 일관성 유지되는지)도 신규 검증(HTTP+SSH 둘 다 통과). **테스트 작성 중 발견한 함정(버그 아님)**: `HgHttpWireServer`/`HgSshWireServer`에 넘긴 `HgRepository` 객체가 내부적으로 `Revlog` 인스턴스를 캐싱하므로, 서버가 살아있는 동안 그 저장소 디렉터리를 **hg4j API를 거치지 않고** 별도 `hg` CLI 프로세스로 직접 수정하면(이번 세션의 브랜치/북마크/태그 테스트 셋업이 처음에 그렇게 했다가 걸림) 서버가 그 변경을 못 보고 stale 데이터를 서빙한다 — `serverRepo.clearRevlogCache()`를 명시적으로 호출해야 함(기존 push 테스트도 이미 이 패턴을 쓰고 있었음). 이건 wire protocol 자체의 버그가 아니라 "server가 물고 있는 저장소를 외부 프로세스가 몰래 건드리는" 별개의 아키텍처 이슈라 이번 항목 범위 밖으로 두고 그대로 문서화만 함. 이번 확장분 테스트: `HgHttpWireServerRealHgInteropTest`(4→8건), `HgSshWireServerRealHgInteropTest`(1→6건), 전부 GREEN. **백로그 22번 그룹 1/2/4(클라이언트 방향 "실전 통신·협상" 세부 조합) ✅ 완료(2026-09-03)** — HTTP 3단계 인자 전송(`httppostargs`/`httpheader=N`/레거시 GET) 각각을 실제 hg 서버로 개별 강제(레거시 GET은 real hg가 `httpheader=`를 끌 방법이 없어 그 토큰만 투명하게 벗겨내는 신규 `CapabilityStrippingHttpProxy`로 강제), `zlib`/`zstd`/`none` 압축 조합 전부, SSH `unbundlehash` off(신규 `HgSshUnbundleHashOffInteropTest`)까지 전부 real hg 7.2(Docker 불필요, 시스템 hg가 zstd 확장 내장)로 검증 — **새 프로토콜 버그는 못 찾음**(기존 구현이 이미 정확했고 강제 검증만 안 돼 있던 상태였음이 확인됨). 상세는 백로그 22번 항목 참고. **장기 실행 서버의 stale 캐시 문제도 ✅ 완료(2026-09-03, 백로그 24번)** — `HgRepository.refreshIfChangedOnDisk()` 신설(changelog 파일 크기+mtime 비교 후 변경 시 `clearRevlogCache()`), `HgHttpWireServer.handle()`/`HgSshWireServer.handleConnection()` 양쪽에 배선. **이 검증 중 발견했던 "파일 내용이 안 전달되는 것처럼 보이는 현상"은 조사 결과 hg4j 버그가 아니라 real hg clone 자체의 정상 동작(named branch가 있으면 저장소 tip이 아니라 "default" 브랜치 tip만 체크아웃)으로 확인·종결됨 — 상세는 백로그 25번 |
 | Wire protocol v2 (실험적, cbor+프레임 기반) | `hg help internals.wireprotocolv2`, `mercurial/wireprotoframing.py`/`wireprotov2server.py`/`wireprotov2peer.py` 실측(Mercurial 6.0) | `transport.HgRemoteClientV2`, `transport.HgHttpWireServer`, `transport.wireprotov2.*`(`Wire2Frame`/`Wire2Transport`/`Wire2Commands`/`Cbor`) | ✅ **전면 재구현 완료(2026-09-01)** — 이전 구현은 사실상 전부 가짜였다(존재하지도 않는 `/api/<command>` 평면 HTTP+CBOR 스킴, `changegroup`/`getbundle`/`unbundle`이라는 v2에 없는 명령, 실제로는 모든 문자열이 CBOR byte-string인데 text-string으로 인코딩). Mercurial 6.0(v2 서버 코드가 남아있는 마지막 릴리스 — 6.1에서 완전히 제거됨)을 Docker로 직접 띄워 **양방향** 검증: (1) hg4j 클라이언트 → 실제 hg 6.0 서버로 capabilities/heads/known/listkeys/lookup/pushkey/branchmap 및 changesetdata+manifestdata+filesdata로부터 재구성한 전체 clone까지 노드 해시 일치 확인. (2) 실제 hg 6.0 클라이언트(`hg --config experimental.httppeer.advertise-v2=true clone`) → hg4j의 서버(현재 `HgHttpWireServer`, JGit식 재구성으로 옛 `HgWireServer`에서 이관됨)로 완전한 clone 성공 + `hg verify` 통과. 진짜 프레임 프로토콜(8바이트 헤더, capabilities 발견 핸드셰이크, 실제 명령 집합)을 처음부터 구현. **구조적 한계**: 이 프로토콜 자체가 실제 Mercurial에서 6.1부터 완전히 폐기됐다 — 즉 아무리 정확히 구현해도 현재 배포되는 실제 hg 서버 중 이 프로토콜을 쓰는 것은 사실상 없다(README의 "완전 준수" 요건 충족 목적으로는 의미 있으나 실사용 가치는 제한적). **v1→v2 자동 업그레이드는 ✅ 완료(2026-09-01, 백로그 2번)** — 가짜 `"http-v2"` 플래그 매칭을 제거하고 실제 `X-HgUpgrade-1`/`X-HgProto-1` 핸드셰이크로 교체, CBOR discovery 응답이면 `HgRemoteClientV2`로 자동 위임·아니면 평문 v1 폴백. **추가로 발견·수정한 버그(JGit 재구성 세션, 이후)**: 이 자동 업그레이드 시에도 discovery 응답에 실려오는 `v1capabilities` 필드(`clonebundles` 같은 v2에 없는 v1 전용 토큰)를 클라이언트가 실제로는 파싱하지 않고 버리고 있었음 — 파싱하도록 수정. **`getBundle()`의 재귀적 tree fetch도 ✅ 완료(2026-09-03, 백로그 20번)** — 루트 매니페스트에서 `t` 플래그 서브디렉터리 포인터를 발견하면 BFS로 `manifestdata`를 `tree=<dir>`로 재귀 호출해 깊이 중첩된 포인터까지 전부 수집. 이 과정에서 hg4j 자체 wire2 **서버** 측(`Wire2Commands.manifestdata`)도 비어있지 않은 `tree` 인자를 무조건 거부하던 실제 갭을 발견해 대칭적으로 수정. Mercurial 6.1부터 폐기된 프로토콜이라 real hg 서버로는 검증 못 하고 hg4j↔hg4j 자기 일관성 왕복(`Wire2TreeManifestFetchTest`)으로 검증. 상세: [[wireprotocol-v2-support-plan]] |
 | Phases (draft/public/secret) | `hg help phases` | `PhaseRoots`, `api.PhaseCommand` | ✅ |
@@ -79,12 +90,10 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
    짜야 실질적 검증이 된다.
    **2026-09-04 상태**: censor(`CensorRealHgInteropTest`)와 obsolescence marker
    (`HgObsolescenceRealHgInteropTest`)는 ✅ 완료(2026-09-01, 위 gap table 참고).
-   **narrow와 LFS는 여전히 미검증** — `grep`으로 직접 확인한 결과 `HgNarrowCloneTest`/
-   `HgLfsTest`는 존재하지만 둘 다 hg4j↔hg4j 자체 왕복만 검증하고 real hg CLI와
-   대조하는 인터롭 테스트(`*RealHgInteropTest`류)가 하나도 없다 — gap table의
-   `Narrow clone`/`LFS` 두 행이 근거 서술 없는 bare `✅`인 것도 이 때문(23번 항목이
-   `Subrepositories` 행에 대해 지적한 것과 정확히 같은 패턴). ✅ **백로그 28번으로
-   승격됨(2026-09-04).**
+   **narrow와 LFS도 ✅ 완료(2026-09-04, 백로그 28번)** — `NarrowCloneRealHgInteropTest`/
+   `LfsRealHgInteropTest` 신규로 real hg CLI 대조 검증 추가, 검증 과정에서 narrowspec
+   파일 위치/포맷 불일치와 LFS 블롭 샤딩 방식 불일치(Git-LFS 2단계 vs 실제 hg 1단계)
+   실제 버그 2건도 발견·수정. 상세는 위 gap table `Narrow clone / narrowspec`/`LFS` 행.
 2. **버전 고정 재검증 루틴**: README가 못박은 "SCM v7.2.2" 기준으로, 이 버전의 `hg help
    internals.*` 전문을 한 번 스냅샷해서 [[sources]]에 원문 요약을 남기는 것을 권장.
    **2026-09-04 상태**: 여전히 미착수(문서화 방법론 제안일 뿐 구체적 버그 추적 대상은
@@ -1850,6 +1859,104 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     추가), `HgNarrowCloneTest`(포맷/위치 수정 반영 + component-boundary 회귀
     테스트 추가), `NarrowCloneRealHgInteropTest`(신규, 3건),
     `LfsRealHgInteropTest`(신규, 2건). 전체 회귀 2415건 전부 GREEN(신규 실패 없음).
+
+29. **`requires` 파일 세부 문자열 커버리지 재검증**. 신규, 2026-09-04 발견(gap table
+    "requires 파일" 행의 "확인 필요" 표기를 실제 코드로 재확인하는 과정에서 승격) —
+    미착수. `HgRepository.loadRequires()`는 8개 문자열(`dirstate-v2`/
+    `revlog-compression-zstd`/`exp-changelog-v2`/`exp-revlogv2.2`/`persistent-nodemap`/
+    `fileindex-v1`/`treemanifest`/`exp-copies-sidedata-changeset`)만 인식하고 나머지는
+    조용히 무시한다. 전용 테스트 파일(`*RequiresTest` 계열)이 하나도 없어(2026-09-04
+    `find` 확인) 실제 hg가 만드는 저장소의 전체 `requires`/`store/requires` 문자열
+    집합(예: `revlogv1`, `store`, `fncache`, `dotencode`, `generaldelta`,
+    `sparserevlog`, `share-safe` 등)과 hg4j가 실제로 무엇을 지원/무시하는지가 라인
+    단위로 대조된 적이 없다. real hg 7.2 CLI로 다양한 포맷 조합(`--config format.*`)의
+    저장소를 만들어 hg4j `HgRepository`가 읽을 때 실패하지 않고 알려진 필드만 정확히
+    인식하는지, 인식 못 하는 requirement가 있는 저장소를 열어도 안전한지 real hg CLI
+    산출물 대조로 검증 필요.
+
+30. **Narrow clone의 wire-protocol 수준 재통합 (narrow pull/update)**. 신규,
+    2026-09-04 발견(백로그 28번 완료 후 재검증 중 승격) — 미착수. `PullCommand`/
+    `UpdateCommand`/`FetchCommand` 어디에도 narrowspec 참조가 없다(2026-09-04 코드
+    확인). 현재 narrowspec은 `NarrowCloneCommand` 최초 clone 시점에만 그 자리에서
+    필터를 만들어 쓰고, 이후 `pull`/`update`가 narrow 상태를 다시 읽어 범위 밖
+    리비전을 걸러내는 로직이 전혀 없다 — narrow clone한 저장소에 이후 pull을 하면
+    사실상 full clone과 동일하게 전체 히스토리를 받아버릴 가능성이 높다(미검증).
+    실제 hg의 wire-protocol ellipsis node 메커니즘까지 구현 범위로 잡지 않더라도,
+    최소한 "narrow clone 이후 pull 시 hg4j가 무엇을 받는지"를 real hg CLI(`hg
+    --config extensions.narrow= pull`)와 나란히 실행해 대조 검증 필요.
+
+31. **LFS 커밋/체크아웃 파이프라인 연동**. 신규, 2026-09-04 발견(백로그 28번에서
+    "정직하게 기록"만 하고 범위 밖으로 남긴 것을 별도 항목으로 승격) — 미착수.
+    `CommitCommand`/`UpdateCommand`/`AddCommand` 어디에도 `HgLfsManager`/
+    `HgLfsPointer`/`REVIDX_EXTSTORED` 참조가 0건이다(2026-09-04 코드 확인).
+    `HgLfsManager`/`HgLfsPointer`는 로컬 저장소 포맷과 원격 blob store만 다루는
+    독립 유틸리티로만 존재하고, hg4j로 실제로 LFS 파일을 커밋하거나 체크아웃하는
+    기능 자체가 없다. `.hgrc`의 `[lfs] threshold` 자동 감지, 커밋 시 큰 파일을
+    LFS 포인터로 자동 치환, 체크아웃 시 포인터를 실제 blob으로 되돌리는 경로를
+    구현하고, real hg CLI로 만든 LFS 커밋을 hg4j `UpdateCommand`가 체크아웃했을 때
+    실제 파일 내용이 나오는지, 반대로 hg4j `CommitCommand`로 만든 LFS 커밋을 real
+    hg가 정확히 체크아웃하는지 양방향 검증 필요.
+
+32. **Subrepositories 잔여 gap 4건**. 신규, 2026-09-04 발견(백로그 23번 완료 후
+    재검증 중 승격) — 미착수. 실제 코드 확인(2026-09-04) 결과 다음 4가지가 여전히
+    미구현: (1) `CloneCommand`가 서브저장소를 재귀적으로 clone하지 않음(real hg
+    `hg clone`은 자동 재귀 clone, hg4j는 `CloneCommand.java`에 subrepo 참조 자체가
+    0건). (2) `.hgsub` 파일 자체가 완전히 삭제된 채 커밋하면
+    `CommitCommand.applySubrepoStateBeforeCommit()`이 `if (!hgsubFile.exists())
+    return;`로 조기 반환해 `.hgsubstate`를 전혀 정리하지 않고 그대로 방치(반면
+    `.hgsub`는 남아있고 개별 줄만 지운 경우는 이미 정상적으로 정리됨 — 이 부분은
+    이미 해소돼 있었음). (3) git 서브저장소(`[git]` prefix)는 URL 파싱
+    (`HgSubrepoParser`)만 되고 `CommitCommand`의 상태 갱신 루프에서 `if
+    (gitPaths.contains(path)) continue;`로 명시적으로 건너뜀 — git 서브저장소의
+    커밋측 상태 갱신 자체가 없음. (4) `UpdateCommand`의 재귀 서브저장소 체크아웃이
+    대상 리비전이 로컬에 이미 있는지 확인 없이 매번 무조건 `hgSub.pull()`을 먼저
+    시도함(실제 hg는 로컬에 있으면 네트워크 요청 생략) — 기능적으로는 무해하지만
+    동작이 다름. 4개 시나리오 모두 real hg CLI와 나란히 재현해 대조 검증 필요.
+
+33. **`PushCommand`의 checkheads 안전장치가 SSH에서 미작동**. 신규, 2026-09-04
+    발견(백로그 23번 push 카테고리 완료 후 재검증 중 승격) — 미착수.
+    `HgRemoteConnection.getBranchHeads()`는 `HgRemoteClient`(HTTP)만 구현하고
+    `HgSshClient`는 오버라이드하지 않아 인터페이스 기본값(`return null`,
+    "branch-unaware 폴백"으로 문서화됨)으로 떨어진다(2026-09-04 코드 확인) — SSH로
+    push할 때는 이미 "완료"로 표시된 브랜치 인식 checkheads 안전장치(다중 head/새
+    브랜치 push 거부)가 실질적으로 무력화된 채 topological-only 체크로만 동작한다.
+    `HgSshClient`에도 HTTP와 동등한 `getBranchHeads()`(SSH `branchmap`/`listkeys`
+    커맨드 기반)를 구현하고, 다중 head push 거부 시나리오를 HTTP와 SSH 양쪽에서
+    real hg CLI 상대로 동일하게 재현해 대조 검증 필요.
+
+34. **`BisectCommand`의 merge 커밋 DAG 시나리오 real hg 대조 검증 누락**. 신규,
+    2026-09-04 발견(백로그 23번 bisect 카테고리 완료 후 재검증 중 승격) — 미착수.
+    구현 자체는 `getParent2()` 처리가 있어 merge-aware하게 짜여 있지만(2026-09-04
+    코드 확인), `BisectRealHgInteropTest`에는 `bisectConvergesToSameCulpritAsRealHg`
+    테스트 메서드 1개만 있고 선형 히스토리 시나리오만 다룬다 — 브랜치 두 개가
+    합쳐지는 실제 DAG에서 hg4j의 bisect 알고리즘이 real hg의 `hg bisect`와 동일한
+    culprit으로 수렴하는지는 한 번도 검증된 적이 없다. merge 커밋이 있는 저장소를
+    real hg CLI로 만들고, 동일한 good/bad 리비전 집합에 대해 hg4j `BisectCommand`와
+    real `hg bisect`를 나란히 돌려 매 단계 선택하는 리비전과 최종 culprit이
+    일치하는지 검증 필요.
+
+35. **Revlog 쓰기 경로가 항상 non-inline이라 `hg verify`가 fncache 경고를 냄**.
+    신규, 2026-09-04 발견(백로그 23번 strip 카테고리 검증 중 발견, strip과 무관한
+    사전 존재 이슈라 별도 항목으로 승격) — 미착수. `storage.Revlog`의 `inline`
+    필드는 기본값 `false`이고, 새로 revlog를 생성하는 쓰기 경로 어디에도 이를
+    `true`로 세팅하는 코드가 없다(`inline`은 오직 기존 인덱스를 읽을 때
+    `index.isInline()`으로만 채워짐, 2026-09-04 코드 확인) — 즉 hg4j가 만드는 모든
+    신규 revlog(파일이 아무리 작아도)는 항상 non-inline(`.i`/`.d` 분리)
+    레이아웃이다. 실제 hg는 작은 revlog를 inline으로 유지해 fncache 목록에 별도로
+    등록하지 않는 관례를 쓰기 때문에, hg4j가 만든 저장소에 대해 real `hg verify`를
+    돌리면 "revlog 'X.d' not in fncache!" 경고가 난다 — hg4j가 만드는 **모든**
+    커밋에 잠재하는 이슈. 작은 revlog를 실제 hg처럼 inline으로 쓰도록(또는 애초에
+    fncache에 `.d` 파일을 등록하지 않는 실제 hg 규칙을 재현하도록) 수정하고, real
+    `hg verify`가 경고 없이 통과하는지 검증 필요.
+
+36. **`TagCommand`가 기존 태그 재태깅을 `-f` 없이도 허용함**. 신규, 2026-09-04
+    발견(백로그 23번 tag 카테고리 완료 후 재검증 중 승격) — 미착수. real hg는 이미
+    존재하는 태그 이름으로 다시 태깅하면 `abort: tag '%s' already exists (use -f to
+    force)`로 거부하고 `--force`가 있어야 덮어쓰기를 허용하는데, `TagCommand.java`
+    에는 "already exists"/"force"/`setForce` 관련 코드가 전혀 없어(2026-09-04 코드
+    확인) hg4j는 항상 무조건 덮어쓴다. real hg CLI와 나란히 기존 태그 재태깅
+    시나리오(force 없음/force 있음 양쪽)를 재현해 거부 메시지/성공 동작이
+    일치하는지 검증하고, 필요한 가드를 구현.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

@@ -1,6 +1,6 @@
 ---
-updated: 2026-09-01
-status: current
+updated: 2026-09-04
+status: current (Track A/B/C 전부 완료 — 남은 실질적 작업은 [[test-coverage-95-percent-initiative]]의 커버리지 격차뿐)
 audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에이전트)
 ---
 
@@ -45,14 +45,14 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 (왜 이런 결정을 했는지, 격차 분석의 근거)은 `llm-wiki/decisions/jgit-parity-requirement.md`
 와 `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`에 있습니다.
 
-## 전체 작업 순서 (Track A 완료, 현재 Track B 진행 가능)
-1. **Track A: 패키지 구조 재정렬** (Phase 0~12) — **완료됨**. 패키지 분할 및 재정렬 구조가 소스 코드에 전부 반영되었습니다.
+## 전체 작업 순서 (Track A/B/C 전부 완료)
+1. **Track A: 패키지 구조 재정렬** (Phase 0~12) — **완료됨**. 패키지 분할 및 재정렬 구조가 소스 코드에 전부 반영되었습니다. 이후 2026-09-03 자바 패키지 네임스페이스가 `com.github.search5.hg4j` → `io.github.search5.hg4j`로 재통합됐습니다 — 상세는 [[package-namespace-and-dual-publishing]] 참고.
 2. **Track B: Mercurial 스펙 준수 강화** (B-1 Revlog v2, B-2 Wireprotocol v2, B-3
    Bookmark 완전 지원, B-4 트랜잭션 저널링/크래시 복구, B-5 Obsolescence marker 생성
-   경로 완성) — B-1/B-2는 신규 기능 개발, B-3~B-5는 이미 부분 구현된 기능을 완성하는
-   작업(2026-08-31 전수 감사로 추가 확정). 현재 착수 단계입니다.
-3. **Track C: 검증 백로그** — "구현은 됐는데 세부 규칙이 맞는지 확인 안 된" 항목들을
-   점검하고 필요시 고치는 작업. 우선순위는 사용자와 상의 후 진행할 것 (아래 참고).
+   경로 완성) — **전부 완료됨**(아래 각 절 참고).
+3. **Track C: 검증 백로그** — **번호 매겨진 백로그 항목 1~28번 전부 완료됨**(실제 hg
+   CLI/서버와의 양방향 상호운용 검증까지 포함). 상세는 아래 및
+   [[mercurial-spec-compliance-requirement]]의 "남은 백로그" 절 참고.
 
 ---
 
@@ -367,24 +367,17 @@ mercurial-spec-compliance-requirement.md`의 gap table에 반영돼 있습니다
 histedit journal, Clonebundles(클라이언트+**서버 측 전부**) 전부 실제 hg CLI/서버
 대조 검증까지 완료됐습니다.
 
-**진짜 남은 것 — `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`의
-"남은 백로그" 섹션**을 참고하세요:
-1. **트리매니페스트(treemanifest) 읽기 지원** — 조사 결과 미구현으로 확정. hg4j의
-   매니페스트 파싱이 flat 구조만 가정해서, treemanifest 저장소를 열면 여러 명령이
-   조용히 잘못된 결과를 낼 수 있음. 구현 범위가 큼(재귀적 파싱 + 소비하는 모든 명령
-   배선). `HgRemoteClientV2`의 wireprotocol v2 클라이언트가 서브디렉터리 tree를
-   전혀 fetch 안 하는 것도 같은 미구현의 한 증상(2026-09-02 추가 확인).
-2. **Revlog v2 일반(매니페스트/파일로그) + persistent-nodemap** — 이 환경의 hg가
-   Rust 확장 없이는 저장소를 못 만들어서 계속 보류.
-3. **깨진(dangling) symlink가 `AddCommand`/`HgRepository`에서 조용히 누락·거부됨**
-   (2026-09-02 신규 발견) — `File.isFile()`/`.exists()`가 심볼릭 링크를 따라가서
-   판단하는 게 원인. 수정 범위는 작을 것으로 예상되나 아직 미착수.
+**번호 매겨진 백로그 1~28번 전부 완료됨(2026-09-04 기준)** — 트리매니페스트 읽기,
+Revlog v2 일반(매니페스트/파일로그)+fileindex-v1+persistent-nodemap, 깨진 symlink
+처리를 포함해 이 절이 예전에 "미완료"로 나열하던 항목들도 모두 실제 hg CLI/서버
+상호운용 검증까지 마치고 종결됐다. 각 항목의 상세 내용과 발견된 버그는
+`llm-wiki/decisions/mercurial-spec-compliance-requirement.md`의 "남은 백로그" 절에
+기록돼 있다 — 이 문서에는 더 이상 중복 유지하지 않는다(그 문서 한 곳만 최신 상태를
+본다는 원칙은 위 문단과 동일).
 
-**코드 커버리지 95% 목표**: 2026-09-02 라운드 2(미커버 instruction 수 큰 순서로 44개
-클래스 TDD, 실제 버그 21건 발견·19건 수정)를 거쳐 전체 회귀 기준 INSTRUCTION
-**97.10%**/LINE **97.05%**/METHOD **97.84%**/CLASS **100%** 전부 달성, BRANCH만
-**86.40%**로 아직 미달(대부분 방어적 죽은 코드로 문서화됨, 나머지 격차는 이 44개
-밖의 미착수 클래스들에서 옴). 상세는 [[test-coverage-95-percent-initiative]] 참고.
+**코드 커버리지 95% 목표**: 지속적으로 진행 중 — 최신 수치와 라운드별 상세 기록은
+[[test-coverage-95-percent-initiative]] 참고(이 문서에 수치를 중복 기재하지 않음 —
+매 라운드마다 갱신되는 값이라 여기 박아두면 바로 낡는다).
 
 ---
 

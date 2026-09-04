@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-31
+updated: 2026-09-04
 status: current
 ---
 
@@ -12,6 +12,11 @@ status: current
 - `HgLockException`, `HgTransportException`, `HgMergeConflictException`,
   `HgRevisionNotFoundException`, `HgAuthException`, `HgRepositoryNotFoundException`,
   `HgValidationException`, `HgProtocolException`, `HgCorruptDataException`
+- `HgCensoredContentException`(`IOException` 상속, `HgException` 루트 계층 밖):
+  censor된(`hg censor`) 리비전 콘텐츠를 읽으려 할 때 던짐 — 실제 hg가 기본적으로
+  tombstone 텍스트를 조용히 반환하지 않고 `error.CensoredNodeError`를 던지는 동작을
+  그대로 반영. `getTombstone()`으로 대체 텍스트(설정돼 있었다면)를 꺼낼 수 있다.
+  `storage.Revlog.getRevisionContent()`가 던지는 소비자.
 
 ## JGit과의 이름 비교
 | hg4j | JGit 유사 개념 | 비고 |
@@ -32,4 +37,4 @@ status: current
 통일하고 `core` 판은 삭제했다. 현재는 `errors.HgLockException` 하나만 존재.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/errors/`
+`src/main/java/io/github/search5/hg4j/errors/`

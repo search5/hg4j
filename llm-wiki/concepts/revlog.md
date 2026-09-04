@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-01
+updated: 2026-09-04
 status: current
 ---
 
@@ -58,6 +58,32 @@ requirement 문자열 `revlog-compression=zstd`(등호)를 쓰고 있었다. 실
   구분하는 매직 바이트 판별 로직이 원인이었음 (`e865b1e` 커밋).
 - 최근(`56b1988`) fncache 레이어 불일치 수정 — 파일명 인코딩(`encodeFname`, dh/ 하이브리드
   인코딩)과 revlog 물리 파일 경로 매핑 관련.
+
+## 2026-09-02~03: 일반 revlog v2(`exp-revlogv2.2`) + fileindex-v1 + persistent-nodemap 완료
+changelog-v2에 이어, 매니페스트/파일로그에도 쓰이는 **일반 revlog v2** 포맷을 완료했다.
+기존 `RevlogIndex`/`Revlog` **읽기** 경로는 이미 general v2를 올바르게 지원하고 있었으나
+(코드 주석은 "changelog-v2만 지원"이라 적혀 있었지만 실제로는 stale한 주석이었음),
+**쓰기** 경로(`Revlog.appendRevisionV2`)는 미구현이었다 — 항상 `COMP_MODE_PLAIN` 풀텍스트로
+쓰도록 확장(델타 압축은 하지 않음, 스펙상 유효하나 실제 hg보다 저장 효율이 낮음).
+
+이 과정에서 `exp-revlogv2.2` 저장소가 fncache 대신 쓰는 **fileindex-v1**(방사 트라이 기반
+바이너리 포맷, docket + list/meta/tree 3개 컴패니언 파일)이 새로 발견돼 `storage.FileIndex`로
+구현했다 — 이 개발 환경의 Rust 미포함 Mercurial 소스 트리에 있는 pure-Python 참조 구현
+(`store_utils/file_index_util.py`)을 직접 포트. hg4j의 쓰기 전략은 실제 hg의 증분
+copy-on-write append 대신 매번 전체를 새 UUID로 재빌드하는 단순화된 방식을 쓴다(실제 hg
+자신의 주기적 "vacuum" 결과와 바이트 단위로 동일한 형태라 스펙상 유효).
+
+persistent-nodemap(`.n` 트라이 파일) 읽기 가속도 함께 완료됐다. 상세·픽스처는
+`src/test/resources/fixtures/revlogv2-general/README.md`,
+[[mercurial-spec-compliance-requirement]]의 백로그 4번/15번 참고.
+
+## 2026-09: cg1 changegroup 델타 베이스 규칙 오류 (발견·수정됨, push를 깨뜨리던 버그)
+Bookmark 작업(B-3) 검증 중, 다중 head 저장소를 pull하면 콘텐츠가 깨지는 문제를 재현하다가
+cg1 changegroup을 만들 때 쓰는 델타 베이스 선택 규칙 자체가 틀려 있던 것을 발견했다. 실제
+`cg1unpacker._deltaheader`의 규칙은 "그룹의 첫 엔트리는 직전에 패킹된 엔트리가 아니라
+**자신의 진짜 p1**에 대해 델타를 뜬다"(`prevnode is None → deltabase = p1`)인데, hg4j는
+"항상 직전 패킹 엔트리 기준"으로 잘못 구현되어 있어 실제 hg 서버에 push하면 HTTP 500으로
+재현되는 심각한 버그였다. 상세는 [[mercurial-spec-compliance-requirement]] 참고.
 
 ## 관련 페이지
 - [[dirstate]] — revlog에 커밋되기 전 워킹카피 상태

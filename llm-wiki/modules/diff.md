@@ -17,4 +17,4 @@ Revlog 델타 알고리즘 전용 패키지. [[core-package-split-plan]] Phase 1
 - `modules/storage.md` — 이 클래스를 소비하는 저장 엔진
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/diff/`
+`src/main/java/io/github/search5/hg4j/diff/`

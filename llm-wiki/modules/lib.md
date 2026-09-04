@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-31
+updated: 2026-09-04
 status: current
 ---
 
@@ -14,7 +14,7 @@ JGit의 `org.eclipse.jgit.lib`에 대응하는 최상위 핵심 데이터 구조
 
 ## 저장소 진입점
 - **`Repository`** (인터페이스) — 저장소 기본 동작 시그니처 정의. JGit의 `Repository`와 유사.
-- **`HgRepository`** — 저장소 진입점 유일 구현체. 작업 디렉터리(`directory`) 및 `.hg` 디렉터리 경계를 구분하고, ignore 패턴 파싱과 트랜잭션 자동 롤백 트리거(`checkAndPerformAutoRollback()`) 등을 관리.
+- **`HgRepository`** — 저장소 진입점 유일 구현체. 작업 디렉터리(`directory`) 및 `.hg` 디렉터리 경계를 구분하고, ignore 패턴 파싱과 트랜잭션 자동 롤백 트리거(`checkAndPerformAutoRollback()`) 등을 관리. `refreshIfChangedOnDisk()`로 장수명 서버 프로세스(HTTP/SSH wire 서버 등)가 다른 프로세스의 커밋을 반영하지 못하고 캐시를 그대로 서빙하는 문제를 방지한다.
 - **`HgRcConfig`**: `.hgrc` 로컬/글로벌 구성 파일 인터페이스 및 파서.
 - **`HgLock`**: 저장소 락(`.hg/wlock`) 및 스토어 락(`.hg/store/lock`) 획득을 담당하여 다중 스레드/프로세스 환경에서의 안전성 보장.
 
@@ -22,4 +22,4 @@ JGit의 `org.eclipse.jgit.lib`에 대응하는 최상위 핵심 데이터 구조
 이전에는 다수의 역할이 `core` 패키지 하나에 뭉쳐 있었으나, 격차 분석 결과에 따라 각 책임을 세분화된 하위 패키지(`storage`, `dirstate`, `merge`, `diff`, `util`, `submodule`, `phase`, `obsolete`, `revset`, `bundle`, `lfs`, `gpg`)로 이관하고, 최상위 저장소 수명주기 및 형상 수호 계층만을 `lib` 패키지에 유지하도록 재구성하였습니다.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/lib/`
+`src/main/java/io/github/search5/hg4j/lib/`

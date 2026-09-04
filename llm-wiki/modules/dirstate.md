@@ -22,4 +22,4 @@ status: current
 이 페이지는 "패키지에 뭐가 있는가"만 다루고, "어떻게 동작하는가"는 concepts 쪽 책임.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/dirstate/`
+`src/main/java/io/github/search5/hg4j/dirstate/`

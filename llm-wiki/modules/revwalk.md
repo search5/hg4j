@@ -28,4 +28,4 @@ status: current
 > `ChangesetGraph`/`SortOrder`는 격차가 아니라 의도된 도메인 네이밍으로 확정.
 
 ## 상위 클래스 코드 위치
-`src/main/java/com/github/search5/hg4j/revwalk/`
+`src/main/java/io/github/search5/hg4j/revwalk/`

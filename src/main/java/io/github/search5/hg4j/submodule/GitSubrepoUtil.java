@@ -110,6 +110,101 @@ public final class GitSubrepoUtil {
         return revParseHead(gitDir);
     }
 
+    /**
+     * Mirrors real hg's {@code gitsubrepo.merge()} (Mercurial 7.2, read live + reproduced with
+     * real hg CLI + a real git subrepo, backlog 32 follow-up "gap B") for the deterministic
+     * (non-interactive-default) case where a git subrepo's pinned revision <em>diverged</em>
+     * between the two parents of an {@code hg merge} -- i.e. {@code subrepoutil.submerge()}
+     * already determined both the local and remote {@code .hgsubstate} pins changed from their
+     * common ancestor, and (per real hg's own {@code ui.promptchoice(msg, 0)} default, which is
+     * "Merge") delegated to the subrepo's own {@code merge()}.
+     *
+     * <p>Real hg's algorithm, ported verbatim:
+     * <pre>
+     * base = git merge-base(revision, self._state[1])   # self._state[1] == localRev
+     * if base == revision:
+     *     self.get(state)                # "fast forward merge" -- literally checks out
+     *                                     # revision even though it is an ancestor of local
+     * elif base != self._state[1]:
+     *     self._gitcommand(['merge', '--no-commit', revision])   # exit code IGNORED
+     * # else (base == localRev, a genuine forward-only ff): real hg does nothing at all here
+     * </pre>
+     *
+     * <p>Whatever this leaves the git working tree in (cleanly merged-but-uncommitted, or
+     * conflicted with unresolved markers + {@code MERGE_HEAD} -- real hg discards the exit code
+     * of {@code git merge --no-commit} exactly like every other {@code _gitcommand} call, so it
+     * never even notices a conflict here) is picked up later by the already-implemented
+     * dirty()/commit() machinery (backlog 32 gap #3) the next time the parent repo is committed:
+     * a clean merge gets recursively {@code git commit -a}ed (or blocks the parent commit
+     * without {@code --subrepos}, same as any other dirty git subrepo); an unresolved conflict
+     * makes that {@code git commit -a} itself fail, which surfaces as an aborted parent commit.
+     *
+     * <p>Verified live (Mercurial 7.2 + git, 2026-09-04): two hg commits independently modified
+     * a git subrepo from a common git ancestor (added {@code left.txt} vs {@code right.txt} --
+     * no textual overlap, so the underlying {@code git merge --no-commit} itself resolved
+     * cleanly); {@code hg merge} (non-interactively) printed the "subrepository ... diverged ...
+     * (m)erge/(l)ocal/(r)emote" prompt, auto-picked "Merge", and left {@code .hgsubstate}
+     * pointing at the OLD local pin (unchanged) while the git subrepo's working tree held a
+     * real two-parent git merge staged (not yet committed); the following {@code hg commit -S}
+     * then recorded a genuine two-parent git merge commit and updated {@code .hgsubstate} to
+     * its sha, via the pre-existing gap #3 dirty-commit path -- exactly the sequence this method
+     * (plus {@code MergeCommand#mergeSubrepoState}, which deliberately leaves the
+     * {@code .hgsubstate} pin at the local value) reproduces.
+     *
+     * <p>This method does NOT record anything into {@code .hgsubstate} itself -- matching real
+     * hg, where {@code subrepoutil.submerge()} always sets the recorded state to the LOCAL pin
+     * for the "merge" and "local" prompt choices (the "remote" choice, not real hg's default, is
+     * the only one that adopts the remote pin instead -- see the class-level {@code merge()}
+     * quirk note above); the caller is responsible for that.
+     */
+    public static void mergeDiverged(File gitDir, String remoteRev, String localRev) throws IOException {
+        if (!hasLocally(gitDir, remoteRev)) {
+            fetch(gitDir);
+        }
+        String base = mergeBase(gitDir, remoteRev, localRev);
+        if (base.equals(remoteRev)) {
+            checkout(gitDir, remoteRev);
+        } else if (!base.equals(localRev)) {
+            mergeNoCommit(gitDir, remoteRev);
+        }
+        // else: base == localRev (a genuine forward-only fast-forward) -- real hg's own
+        // gitsubrepo.merge() takes neither branch in this case and does nothing at all.
+    }
+
+    /** {@code git merge-base <rev1> <rev2>} -- real hg's {@code gitsubrepo.merge()} base lookup. */
+    public static String mergeBase(File gitDir, String rev1, String rev2) throws IOException {
+        return run(gitDir, Collections.emptyMap(), "merge-base", rev1, rev2).trim();
+    }
+
+    /**
+     * {@code git merge --no-commit <revision>} -- real hg's {@code gitsubrepo.merge()} calls
+     * this via {@code self._gitcommand(...)}, which (verified live and by reading
+     * {@code _gitcommand}/{@code _gitdir}/{@code _gitnodir}) discards the process's exit code
+     * unconditionally, so a conflicted merge is deliberately NOT treated as an error here
+     * either -- the caller only cares about the resulting git working tree state (picked up
+     * later by {@link #isDirty}/{@link #commit}), not this call's own success/failure.
+     */
+    public static void mergeNoCommit(File gitDir, String revision) throws IOException {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("git");
+        cmd.add("merge");
+        cmd.add("--no-commit");
+        cmd.add(revision);
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.directory(gitDir);
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        try (InputStream is = process.getInputStream()) {
+            is.readAllBytes();
+        }
+        try {
+            process.waitFor();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("git merge --no-commit " + revision + " was interrupted", e);
+        }
+    }
+
     private static String run(File cwd, Map<String, String> extraEnv, String... args) throws IOException {
         List<String> cmd = new ArrayList<>();
         cmd.add("git");

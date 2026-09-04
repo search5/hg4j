@@ -129,7 +129,12 @@ public class PushCommand {
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
-            try (HgLock storeLock = repository.lockStore()) {
+            // Backlog item 38: mirrors real hg's own client-side push locking its SOURCE repo
+            // (mercurial/exchange.py's push(): `lock = pushop.repo.lock()`, default wait=True,
+            // waiting up to ui.timeout -- 600s default -- rather than aborting on the very first
+            // contended attempt) so this local read-lock waits like real hg's does instead of
+            // failing immediately if another local hg4j operation happens to hold it.
+            try (HgLock storeLock = repository.lockStore(repository.resolvePushLockTimeoutMs())) {
                 Revlog changelog = repository.getRevlog(clIdx, clDat);
                 int count = changelog.getRevisionCount();
                 if (count == 0) {

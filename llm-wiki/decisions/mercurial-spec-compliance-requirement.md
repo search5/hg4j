@@ -2315,23 +2315,101 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     의 18개 스킵 처리를 제거하고 60개 케이스(30읽기+30쓰기) 전부 GREEN 확인,
     전체 회귀도 새 실패 없음(`BUILD SUCCESSFUL`).
 
-38. **동시 push 레이스 컨디션 — real hg와 완전히 동일한 동작 검증 필요**. 신규,
-    2026-09-04 사용자 지시로 등록 — 미착수. `PushCommand`(로컬 push 경로)는
-    `repository.lockStore()`(`HgLock`, POSIX 원자적 symlink 생성 기반, real hg의
-    `wlock`/`lock`과 호환되도록 설계됨, `lib/HgLock.java` 주석 참고)를 이미 쓰고
-    있는 것으로 확인되나(2026-09-04 코드 확인), **서버 방향**(`Wire1Commands`가
-    처리하는 원격 unbundle/push)이 실제 동시 요청 상황에서 이 lock을 거쳐 안전하게
-    직렬화되는지, 그리고 lock을 못 딴 쪽(loser)의 동작이 real hg와 정확히 같은지
-    (real hg는 기본적으로 lock을 잡을 때까지 대기하다 타임아웃 시
-    `abort: repository is locked (…)` 형태로 실패한다 — hg4j 서버가 이 대기/타임아웃/
-    에러 메시지 의미론까지 동일한지는 미검증)는 아직 확인된 바 없다. 검증 계획:
-    두 개의 실제 hg CLI 클라이언트(또는 hg4j 클라이언트)가 hg4j
-    `HgHttpWireServer`/`HgSshWireServer`가 서빙하는 같은 저장소에 동시에(스레드로
-    타이밍 강제) push를 시도하는 시나리오를 만들어, (1) 저장소가 절대 손상되지
-    않는지(둘 다 성공하거나 하나만 성공), (2) 진 쪽의 실패 사유/메시지가 real hg
-    자신의 동일 시나리오(두 real hg 서버 프로세스 등)와 일치하는지, (3) lock 대기
-    타임아웃 설정이 real hg의 기본값(`ui.timeout`, 기본 600초)과 동일하게 동작하는지
-    real hg CLI와 나란히 검증. 상세 범위 산정과 실제 구현은 별도 세션에서 착수.
+38. ~~**동시 push 레이스 컨디션 — real hg와 완전히 동일한 동작 검증 필요**~~ — ✅
+    **완료(2026-09-04)**. `PushCommand`(로컬 push 경로)는 이미
+    `repository.lockStore()`(`HgLock`, POSIX 원자적 symlink 생성 기반)를 쓰고
+    있었지만, **서버 방향**(`Wire1Commands.unbundle` → `HgLocalClient
+    .pushWithHooks` → `PullCommand.applyBundle` → `FetchCommand.applyBundle`)이
+    실제 동시 요청에서 어떻게 동작하는지는 미검증이었다.
+
+    **real hg 자신의 기준선 확인** (`mercurial/lock.py`/`localrepo.py`/
+    `scmutil.py`, 호스트에 설치된 real hg 7.2 소스 직접 확인 + 실측): `repo.lock()`/
+    `wlock()`은 기본 `wait=True`로 `ui.timeout`(기본 `"600"`초)만큼 1초 간격으로
+    재시도하다 실패하면 `error.LockHeld`를 던지고, `scmutil.callcatch()`가
+    `"abort: %s: timed out waiting for lock held by %r\n"`(예:
+    `"abort: repository /path: timed out waiting for lock held by 'host:pid'"`)
+    형태로 출력한다 — real `hg serve`의 store lock을 인위적으로(가짜
+    `host:pid` symlink) 잡아두고 `ui.timeout=2`로 설정한 뒤 real hg CLI로 push해
+    실측: 정확히 ~2초 대기 후 실패했고(`wireprotov1server.unbundle()`은
+    `error.LockHeld`/`LockUnavailable`을 따로 잡지 않아 클라이언트에는 그냥
+    `"abort: HTTP Error 500: Internal Server Error"`로만 보임), 이후 `hg verify`로
+    저장소가 전혀 손상되지 않았음을 확인.
+
+    **hg4j 서버 방향의 실제(수정 전) 동작**: `HgRepository.lockStore()`가 항상
+    `new HgLock(file, 0, true)`(즉시 실패, 대기 없음)로 고정돼 있어, push 적용
+    경로가 lock을 못 따면 real hg처럼 대기하지 않고 그 자리에서 즉시
+    `HgLockException`을 던졌다 — real hg의 "대기 후 타임아웃" 형태와 불일치.
+
+    **구현**: (1) `HgRepository`에 `lockStore(int timeoutMs)`/
+    `lockWorkingCopy(int timeoutMs)` 오버로드 신설(기존 무인자 버전은 `timeoutMs=0`
+    위임으로 완전히 하위 호환 유지 — commit/update/rebase 등 다른 모든 호출부는
+    그대로 즉시-실패); `resolvePushLockTimeoutMs()` 신설, real hg의 `ui.timeout`과
+    동일한 개념으로 저장소 자체 hgrc의 `[ui] timeout`(기본 `"600"`초, hg4j 쪽
+    기본 600000ms)을 읽어 push/unbundle 경로에서만 사용. (2) `FetchCommand
+    .applyBundle`/`PullCommand.applyBundle`에 `lockTimeoutMs` 오버로드 추가.
+    (3) `HgLocalClient.pushWithHooks`(HTTP·SSH·file:// 세 방향 모두가 공유하는
+    서버측 unbundle 적용 지점)가 `remoteRepo.resolvePushLockTimeoutMs()`를 이
+    오버로드에 전달 — real hg의 대기·타임아웃 SHAPE을 그대로 재현. (4)
+    `PushCommand`(클라이언트측 자신의 로컬 저장소 lock)도 동일하게 대기하도록
+    변경 — real hg `exchange.py push()`가 소스 저장소도 `repo.lock()`(wait=True
+    기본)으로 잡는 것과 동일(규칙 2: read/write, client/server 양쪽 다 처리).
+    (5) `HgLock`의 타임아웃 메시지에 `"-- timed out waiting for lock after
+    <ms>ms"` 접미사 추가(대기 후 실패임을 real hg 메시지 SHAPE에 맞춰 구분;
+    기존 "Could not acquire..."/"Currently held by..." 부분 문자열은 보존해
+    기존 테스트 전부 그대로 통과).
+
+    **구현 중 발견한 별도 버그(수정 완료)**: `HgRepository.lockStore(int)`/
+    `lockWorkingCopy(int)`가 (기존 무인자 버전과 마찬가지로) `synchronized`
+    인스턴스 메서드였던 것이, 대기 로직이 없던 시절엔 무해했지만 실제 대기가
+    생기자 **자기 자신을 교착시키는 버그**로 즉시 드러남: 한 스레드가 lock을
+    기다리며 `synchronized` 메서드 안에서 최대 timeoutMs만큼 머무르면, 그동안
+    같은 `HgRepository` 인스턴스의 다른 `synchronized` 메서드는 (그 lock과
+    무관하더라도) 전부 블록된다 — 실측(2026-09-04): 진짜 동시에 겹치는 두
+    real-hg push를 hg4j HTTP 서버에 쏘자, 이긴 쪽 스레드가 진 쪽의 전체 대기
+    시간(30초) 동안 자신과 무관한 `synchronized` 호출에 멈춰 30초 넘게
+    걸림 — 두 요청 모두 정상 완료되긴 했지만 실질적으로 "동시성"이 전혀
+    없었던 셈. `lockStore`/`lockStore(int)`/`lockWorkingCopy`/
+    `lockWorkingCopy(int)` 전부에서 `synchronized`를 제거해 해결(상호배제는
+    이미 `HgLock` 자신의 static, path-keyed `JVM_ACTIVE_LOCKS` + 원자적 파일
+    시스템 symlink 생성만으로 충분히 보장되고 있었음 — `HgRepository`
+    인스턴스 모니터는 애초에 불필요했던 것으로 확인). 수정 후 같은 동시 push
+    테스트가 30초대에서 1.8초로 단축.
+
+    **검증**: 신규 `PushLockRaceRealHgInteropTest`(`@Tag("interop")`) 5건, 전부
+    real hg CLI를 push 클라이언트로 사용, HTTP·SSH 양쪽 전송 모두 커버 —
+    (1)/(3) `httpServerWaitsOutContendedStoreLockThenAcceptsRealHgPush`/
+    `sshServer...`: store lock을 배경 스레드로 1.5초 잡아둔 뒤 real hg push,
+    push가 실제로 대기했다가(elapsed ≥ hold 시간) 성공하고 커밋이 정확히
+    반영됨을 확인. (2)/(4) `httpServerAbortsRealHgPushAfterConfiguredTimeout
+    WhenStoreLockHeldTooLong`/`sshServer...`: `ui.timeout=1`초로 설정한 채 lock을
+    5초간 잡아둠 — real hg push가 정확히 설정된 타임아웃 근처(대기 전체
+    5초가 아니라)에서 실패하고, 실패한 push는 아무것도 반영되지 않았으며
+    (`hg verify` 클린, revision count 불변), 이어지는 정상 push는 여전히
+    성공함(저장소가 막히지 않음)을 확인. (5)
+    `twoRealHgClientsRacingOverHttpNeverCorruptTheHg4jServedRepository`: 두 개의
+    독립된 real hg CLI 프로세스를 `CountDownLatch`로 동시에 풀어 진짜 겹치는
+    push 레이스를 유발 — 결과와 무관하게(둘 다 성공하거나 하나만 성공 — 과제
+    자체가 명시한 두 결과 모두 허용) `hg verify`로 저장소가 절대 손상되지
+    않았음과 revision count가 실제 성공 건수와 정확히 일치함(부분/중복 적용
+    없음)을 확인. 전체 회귀: 비-interop `test` 2269건 0 실패/0 에러(2 스킵),
+    `interopTest` 236건 중 이 항목과 무관한 기존 `StripRealHgInteropTest`
+    사전 존재 실패 2건(수정 전 베이스라인에서도 동일하게 재현 확인 — 이번
+    변경과 무관)을 제외하고 전부 GREEN(신규 5건 포함).
+
+    **범위 밖으로 명시 보고(구현하지 않음, 사용자 판단 필요)**: hg4j 서버의
+    unbundle 적용 경로는 lock을 획득한 뒤 real hg의 `PushRaced`(변경 사항이
+    push 도중 바뀌었을 때 `"repository changed while pushing - please try
+    again"`)에 해당하는 **독립적인 서버측 재검증**(lock 획득 후 heads를 다시
+    계산해 클라이언트가 보낸 오래된 전제와 충돌하는지 재확인)이 없다 —
+    checkheads 검증은 여전히 `PushCommand`(hg4j 클라이언트)에만 있고, 서버는
+    들어온 changegroup을 그대로 적용한다. 이번 항목(38번)이 명시한 검증
+    기준("둘 다 성공하거나 하나만 성공 — 저장소만 손상되지 않으면 됨")은
+    만족하지만, real hg 서버라면 거부했을 시나리오(두 real-hg 클라이언트가
+    같은 오래된 head를 보고 각자 다른 자식 커밋을 동시에 push)에서 hg4j
+    서버는 **양쪽 다 적용해 2개의 head를 만들 수 있다** — 이는 순수 lock
+    문제가 아니라 별개의 기능(서버측 discovery/checkheads 재검증) 부재이며,
+    이번 세션에서 구현하지 않았다. 별도 백로그 항목으로 승격할지는 사용자
+    판단.
 
 39. **[[exhaustive-interop-matrix-plan]] 매트릭스 범위 확장 — 명령 커버리지가
     극히 일부에 머물러 있음**. 신규, 2026-09-04 사용자 지시로 등록 — 미착수.

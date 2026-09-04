@@ -977,21 +977,35 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `setIncludeClosed(boolean)`를 새로 추가했다 — 기존에는 branch 필터 기능 자체가
     없었다(`src/main/java/io/github/search5/hg4j/api/HeadsCommand.java`).
 
-    **아키텍처 수준 확인 필요(사용자 판단 필요, 코드 변경은 하지 않음)**: 조사 중
-    `HeadsCommand.call()`(필터 없는 기본 호출)이 사실 real hg의 `hg heads --topo`와
-    동일한 "저장소 전역 위상 head"만 계산하고 있고, real hg의 인자 없는 기본
-    `hg heads`(브랜치별로 열린 head를 전부 나열 — 위상 리프가 아니어도 그 브랜치의
-    자체 head라면 포함, 예: 다른 브랜치가 자기 위에 커밋을 쌓아 위상 리프는 아니게
-    됐지만 자기 브랜치 안에서는 자식이 없는 head)와는 다르다는 걸 real hg
-    스크래치 저장소로 확인했다(`hg heads`가 rev0/default를 보여주는데
-    `hg heads --topo`는 안 보여주는 경우 재현). `HeadsCommand`는 라이브러리
-    안에서 오직 `Hg.heads()` 포셀린 진입점으로만 쓰이고(내부 push/pull 로직은
-    별도 head 계산을 쓴다) 블라스트 반경은 작지만, 인자 없는 기본 동작 자체를
-    바꾸는 건 기존 공개 API 시맨틱을 바꾸는 것이라 이번 세션에서는 손대지 않고
-    `setBranch`를 통한 명시적 필터 기능만 추가했다. 기본 동작을 real hg의
-    `hg heads` 시맨틱에 맞출지(브레이킹 체인지) 여부는 사용자 확인이 필요하다.
-    **→ 결정(2026-09-04): real hg 시맨틱으로 고치는 쪽으로 확정**(위
-    "아키텍처 결정 6건" 참고, 구현은 이후 순서대로 진행).
+    **`HeadsCommand` 기본 동작 브레이킹 체인지 ✅ 완료(2026-09-04)**: 위에서 확인된
+    갭(`HeadsCommand.call()`의 필터 없는 기본 호출이 사실 real hg의 `hg heads --topo`
+    시맨틱만 구현하고 있었음)에 대해 사용자가 "real hg의 실제 `hg heads` 시맨틱으로
+    고친다(브레이킹 체인지 수용)"로 확정 결정. `mercurial/commands.py heads()` 소스를
+    직접 실측(`/usr/lib/python3/dist-packages/mercurial`, hg 7.2 패키지)해 정확한
+    알고리즘을 확인 후 그대로 이식: 인자 없는 기본 `call()`은 이제
+    `repo.branchmap()`의 모든 브랜치를 순회하며 각 브랜치의 열린 head(들)를
+    (`bm.branchheads(branch, closed=...)`처럼) 모아 리비전 내림차순으로 정렬해
+    반환한다 — 브랜치 자체 head라면 저장소 전역 위상 리프가 아니어도 포함된다.
+    옛 동작(저장소 전역 위상 리프만)은 `setTopo(boolean)`(기본값 `false`)로 명시적
+    opt-in 가능하게 남겨뒀다(real hg의 `hg heads --topo`와 동일). `setIncludeClosed`도
+    이제 필터 없는 기본 호출에 적용되도록 의미를 넓혔다(real hg의 `--closed`가
+    `branchmap()` 순회 전체에 적용되는 것과 동일). 기존 콜러 재확인: `Hg.heads()`
+    포셀린 진입점 외에는 아무도 `HeadsCommand`를 쓰지 않고, 내부 push/pull 로직
+    (`PushCommand`/`PullCommand`/`HgLocalClient`)은 별도 head 계산을 쓴다는 문서의
+    주장을 grep으로 재확인(import조차 없음) — 블라스트 반경은 `Hg.heads()` 콜러로
+    한정됨. 기존 테스트(`HeadsCommandCoverageTest`, `PorcelainExtraCommandsTest`,
+    `BranchRealHgInteropTest`)는 전부 단일 브랜치·단일 head 시나리오라 새 기본
+    동작과도 결과가 동일해 변경 불필요였음(재확인만 함, 코드 수정 없음). **신규
+    테스트**: `HeadsRealHgInteropTest`(신설, `src/test/java/io/github/search5/hg4j/api/`)
+    3건 — (1) 브랜치 A의 head가 다른 브랜치로 머지되어 저장소 전역 위상 리프는
+    아니지만 자기 브랜치 안에서는 여전히 head인 정확한 백로그 23 재현 시나리오에서
+    hg4j의 새 기본 `call()`과 real hg의 맨 `hg heads`가 정확히 일치하고,
+    `setTopo(true)`와 real hg `hg heads --topo`도 정확히 일치함을 확인, (2) 여러
+    브랜치에 걸친 head 목록의 리비전 내림차순 정렬 순서까지 real hg와 정확히 일치,
+    (3) `setTopo(true)`에서 closed head가 (real hg처럼) 여전히 위상 리프로 포함됨을
+    확인 — 전부 real hg 7.2 host-native CLI 왕복 검증, GREEN. 전체 회귀 스위트
+    2403건 중 신규 실패 없음(`ShelveRealHgInteropTest`의 무관한 1건 실패는 단독
+    실행 시 GREEN으로 재확인된 병렬 실행 환경 문제로, 이 변경과 무관).
 
     **merge**: ✅ **완료(2026-09-04)**. fast-forward는 이미 부분 검증돼 있었고,
     진짜 3-way merge(공통 조상에서 양쪽이 다른 파일을 수정 — 충돌 없음)와 서로

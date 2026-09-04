@@ -266,4 +266,78 @@ public class AnnotateCommandCoverageTest {
             assertEquals(0, lines.get(4).getRevision());
         }
     }
+
+    /**
+     * Verified against real {@code hg} 7.2 on an equivalent scratch repository (plain
+     * {@code hg init}, no changelog-v2/copies-sidedata format flags):
+     * <pre>
+     *   $ hg annotate -u new.txt
+     *   Alice: line1
+     *   Alice: line2
+     *   Carol: line3
+     * </pre>
+     * i.e. the two lines that survive the rename unmodified are still attributed to Alice's
+     * pre-rename commit, not to Bob's rename commit or "unknown" -- real hg's default annotate
+     * (no separate {@code --follow} flag needed) already crosses the rename boundary.
+     */
+    @Test
+    public void annotateFollowsRenameBoundaryToOriginalAuthor() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            File oldFile = new File(tempDir, "old.txt");
+            Files.writeString(oldFile.toPath(), "line1\nline2\n");
+            hg.add().addFile("old.txt").call();
+            hg.commit().setAuthor("Alice").setMessage("add old.txt").call(); // rev 0
+
+            hg.rename().setSource("old.txt").setTarget("new.txt").call();
+            hg.commit().setAuthor("Bob").setMessage("rename to new.txt").call(); // rev 1
+
+            File newFile = new File(tempDir, "new.txt");
+            Files.writeString(newFile.toPath(), "line1\nline2\nline3\n");
+            hg.commit().setAuthor("Carol").setMessage("modify new.txt").call(); // rev 2
+
+            List<AnnotateCommand.BlameLine> lines = hg.annotate().setPath("new.txt").call();
+
+            assertEquals(4, lines.size()); // line1, line2, line3 + trailing empty
+            assertEquals("line1", lines.get(0).getContent());
+            assertEquals("Alice", lines.get(0).getAuthor());
+            assertEquals(0, lines.get(0).getRevision());
+
+            assertEquals("line2", lines.get(1).getContent());
+            assertEquals("Alice", lines.get(1).getAuthor());
+            assertEquals(0, lines.get(1).getRevision());
+
+            assertEquals("line3", lines.get(2).getContent());
+            assertEquals("Carol", lines.get(2).getAuthor());
+            assertEquals(2, lines.get(2).getRevision());
+        }
+    }
+
+    @Test
+    public void annotateFollowsCopyBoundaryButLeavesOriginalUntouched() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+
+        try (Hg hg = Hg.wrap(repo)) {
+            File original = new File(tempDir, "orig.txt");
+            Files.writeString(original.toPath(), "shared line\n");
+            hg.add().addFile("orig.txt").call();
+            hg.commit().setAuthor("Alice").setMessage("add orig.txt").call(); // rev 0
+
+            hg.copy().setSource("orig.txt").setDestination("copy.txt").call();
+            hg.commit().setAuthor("Bob").setMessage("copy to copy.txt").call(); // rev 1
+
+            List<AnnotateCommand.BlameLine> copyLines = hg.annotate().setPath("copy.txt").call();
+            assertEquals(2, copyLines.size()); // "shared line" + trailing empty
+            assertEquals("shared line", copyLines.get(0).getContent());
+            assertEquals("Alice", copyLines.get(0).getAuthor());
+            assertEquals(0, copyLines.get(0).getRevision());
+
+            // The original file's own annotate is unaffected by the copy.
+            List<AnnotateCommand.BlameLine> origLines = hg.annotate().setPath("orig.txt").call();
+            assertEquals(2, origLines.size());
+            assertEquals("Alice", origLines.get(0).getAuthor());
+            assertEquals(0, origLines.get(0).getRevision());
+        }
+    }
 }

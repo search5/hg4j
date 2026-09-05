@@ -340,6 +340,25 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `RevertCommand` 11개 명령 추가로, 이전 wave까지의 17개(Push/Rebase/Shelve/
   Strip/Merge/Graft/Bundle 등)에 더해 28/67로 집계.)
 
+  **Wave 4(2026-09-05)**: `UnbundleCommand`(`BundleCommand`의 반대 방향 —
+  real hg가 만든 번들 파일을 hg4j가 적용)도 36개 조합 전부 GREEN, 새 실버그
+  없음(수신측 `FetchCommand#applyBundle` 경로가 이미 정확했음이 재확인됨).
+  `ExportCommand`/`ImportCommand`도 함께 36개 조합 전부 GREEN이지만 이번엔
+  진짜 hg4j 버그 2건을 TDD로 발견·수정: `ImportCommand`가 매니페스트/
+  changelog를 손수 조립하던 방식이라 treemanifest에서 구조적으로 동작 불가능
+  했던 것(이미 검증된 `CommitCommand`에 위임하도록 재작성, 삭제 패치
+  `/dev/null` 지원도 이 참에 처음 추가)과, `DiffCommand`의 줄 분리 로직이
+  후행 개행이 있는 콘텐츠마다 가짜 빈 줄을 하나 더 만들어내던 버그(내보낸
+  패치를 real hg로 되읽었을 때 커밋 노드 해시가 달라지는 것으로 발각 —
+  단순 내용 비교가 아니라 노드 해시 완전 일치를 대조하는 매트릭스 설계
+  덕분에 잡힌 버그). 상세는 [[mercurial-spec-compliance-requirement]] 백로그
+  #39 참고. 나머지 41개 명령은 여전히 미착수(다른 wave 4 에이전트들과 병렬
+  진행 중이라 최종 숫자는 조정자가 취합).
+
+  (조정자 취합, 2026-09-05: 위 `UnbundleCommand`/`ExportCommand`/
+  `ImportCommand` 3개 명령을 앞선 wave 4 병합 결과(28/67)에 더해 로컬 명령
+  기준 **31/67**로 증가.)
+
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)
 - [x] `CloneCommand`/`PullCommand`/`PushCommand` 핵심 라운드트립 — **완료

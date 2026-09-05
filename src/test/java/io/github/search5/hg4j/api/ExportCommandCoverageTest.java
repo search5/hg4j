@@ -159,6 +159,50 @@ public class ExportCommandCoverageTest {
         assertTrue(!patch.contains("-content1"), "Diff must not be computed against rev1's content:\n" + patch);
     }
 
+    /**
+     * Backlog #39 (2026-09-05) regression: a newly-added file's diff header used to unconditionally
+     * read {@code --- a/<path>} even though the file has no old-side content at all -- real {@code
+     * hg export}'s own convention (and what {@link ImportCommand}'s patch parser now depends on to
+     * tell "new file" apart from "modify") is {@code --- /dev/null}.
+     */
+    @Test
+    public void testExportOfRootCommitUsesDevNullForAddedFile(@TempDir Path tempDir) throws Exception {
+        File dir = tempDir.resolve("repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(dir).call();
+        Files.writeString(dir.toPath().resolve("new.txt"), "brand new\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add new.txt").setAuthor("dev").call();
+
+        String patch = new ExportCommand(repo).setRevision("0").call();
+
+        assertTrue(patch.contains("--- /dev/null\n+++ b/new.txt\n"),
+                "a brand-new file's diff header must use the /dev/null convention:\n" + patch);
+        assertTrue(patch.contains("@@ -0,0 +1,1 @@"), "a pure add's hunk must anchor at 0,0 on the old side:\n" + patch);
+    }
+
+    /**
+     * Backlog #39 (2026-09-05) regression: same as above but for a deleted file -- the NEW side
+     * (not present at all after the deletion) must read {@code +++ /dev/null}.
+     */
+    @Test
+    public void testExportOfFileDeletionUsesDevNullForNewSide(@TempDir Path tempDir) throws Exception {
+        File dir = tempDir.resolve("repo").toFile();
+        HgRepository repo = Hg.init().setDirectory(dir).call();
+        File f = new File(dir, "old.txt");
+        Files.writeString(f.toPath(), "will be removed\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("add old.txt").setAuthor("dev").call();
+
+        new RemoveCommand(repo).setFile("old.txt").setForce(true).call();
+        new CommitCommand(repo).setMessage("remove old.txt").setAuthor("dev").call();
+
+        String patch = new ExportCommand(repo).setRevision("1").call();
+
+        assertTrue(patch.contains("--- a/old.txt\n+++ /dev/null\n"),
+                "a deleted file's diff header must use the /dev/null convention on the new side:\n" + patch);
+        assertTrue(patch.contains("@@ -1,1 +0,0 @@"), "a pure delete's hunk must anchor at 0,0 on the new side:\n" + patch);
+    }
+
     private static Revlog getChangelog(HgRepository repo) throws IOException {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");

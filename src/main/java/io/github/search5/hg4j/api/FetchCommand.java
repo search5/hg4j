@@ -92,6 +92,38 @@ public class FetchCommand {
         }
     }
 
+    /**
+     * Backlog item 40: recovers the narrowspec patterns behind {@code treeFilter} -- when it's
+     * actually a {@link HgTreeFilter.NarrowSpecFilter} (built by {@link
+     * io.github.search5.hg4j.api.NarrowCloneCommand} or {@link #resolveNarrowTreeFilterIfDefault}
+     * from the repository's stored narrowspec) and the remote advertised {@link
+     * HgRemoteConnection#supportsNarrow()} -- so {@link #downloadChangegroupBundle} can ask the
+     * remote to do the filtering itself instead of hg4j fetching the full changegroup and
+     * discarding out-of-scope filelogs locally afterward.
+     *
+     * <p>Returns {@code null} (meaning: request the plain, unfiltered changegroup, exactly like
+     * before this backlog item) for any other {@code treeFilter} -- e.g. a plain {@link
+     * HgTreeFilter#createPathPrefixFilter} some other caller supplied, which has no narrowspec
+     * patterns to forward -- or when the remote doesn't understand the narrow wire arguments.
+     * This is a pure bandwidth optimization: {@link #applyBundle} still applies {@code
+     * treeFilter} itself locally regardless (harmless no-op for paths the remote already omitted,
+     * still correct/needed for a remote that ignored the request or doesn't support it).
+     */
+    private static HgRemoteConnection.NarrowScope narrowScopeFor(HgRemoteConnection client, HgTreeFilter treeFilter) {
+        if (!(treeFilter instanceof HgTreeFilter.NarrowSpecFilter narrowSpecFilter) || !client.supportsNarrow()) {
+            return null;
+        }
+        List<String> includes = new ArrayList<>();
+        for (HgTreeFilter.NarrowPattern p : narrowSpecFilter.getIncludes()) {
+            includes.add(p.toSpecString());
+        }
+        List<String> excludes = new ArrayList<>();
+        for (HgTreeFilter.NarrowPattern p : narrowSpecFilter.getExcludes()) {
+            excludes.add(p.toSpecString());
+        }
+        return new HgRemoteConnection.NarrowScope(includes, excludes);
+    }
+
     public List<byte[]> call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");
@@ -210,7 +242,7 @@ public class FetchCommand {
 
             monitor.update(1);
 
-            DownloadedChangegroup downloaded = downloadChangegroupBundle(client, caps, common, remoteHeads);
+            DownloadedChangegroup downloaded = downloadChangegroupBundle(client, caps, common, remoteHeads, narrowScopeFor(client, treeFilter));
             if (downloaded == null) {
                 syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
                 monitor.end();
@@ -300,6 +332,19 @@ public class FetchCommand {
      */
     static DownloadedChangegroup downloadChangegroupBundle(HgRemoteConnection client, List<String> caps,
                                                             List<String> common, List<String> remoteHeads) throws IOException {
+        return downloadChangegroupBundle(client, caps, common, remoteHeads, null);
+    }
+
+    /**
+     * Same as the 4-argument overload, but additionally negotiates real hg's narrow clone wire
+     * arguments (backlog item 40) when {@code narrowScope} is non-{@code null} -- see {@link
+     * HgRemoteConnection#getBundle(List, List, List, HgRemoteConnection.NarrowScope)}'s doc for
+     * the real-hg-verified wire shape and measured bandwidth savings. {@code null} preserves the
+     * old always-full-changegroup behavior (used by {@link IncomingCommand}, which never narrows).
+     */
+    static DownloadedChangegroup downloadChangegroupBundle(HgRemoteConnection client, List<String> caps,
+                                                            List<String> common, List<String> remoteHeads,
+                                                            HgRemoteConnection.NarrowScope narrowScope) throws IOException {
         boolean supportsGetBundle = caps.contains("getbundle") || caps.stream().anyMatch(c -> c.startsWith("getbundle"));
 
         byte[] bundleBytes;
@@ -324,7 +369,7 @@ public class FetchCommand {
                 bundleCaps.add(Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05"));
                 bundleCaps.add("compression=GZ,BZ,ZS");
             }
-            bundleBytes = client.getBundle(common, remoteHeads, bundleCaps);
+            bundleBytes = client.getBundle(common, remoteHeads, bundleCaps, narrowScope);
         } else {
             bundleBytes = client.getChangegroup(common);
         }

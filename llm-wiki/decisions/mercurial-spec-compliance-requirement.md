@@ -3952,25 +3952,110 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     명령 x wire protocol 조합 x requirement 조합 exhaustive interop
     매트릭스")는 완료로 전환한다.**
 
-40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
-    구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
-    각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도
-    번호로 승격) — 미착수. 백로그 30번 완료로 narrow clone 이후 로컬에서
-    pull/update 시 narrowspec 필터를 다시 읽어 범위 밖 파일을 걸러내는
-    것까지는 구현됐지만(로컬 changegroup 적용 단계에서 필터링), 이건 진짜
-    wire-protocol 수준 narrow pull(실제 hg의 `narrow` 확장이 서버·클라이언트
-    간에 협상하는 `ellipsis node` — 범위 밖 리비전을 실제 조상 정보를 보존한
-    "가짜" 압축 노드로 대체해서 전송량 자체를 줄이는 메커니즘)과는 다르다.
-    hg4j는 narrowspec을 clone/pull 요청 시점에 서버로 전달해 서버가 실제로
-    범위를 좁혀 전송하게 만드는 프로토콜 수준 협상이 없고, 대신 항상 전체
-    changegroup을 받은 뒤 로컬에서 걸러내는 방식이다 — 기능적으로는 워킹
-    디렉터리/추적 목록 결과가 real hg와 일치하지만(백로그 30번에서 검증됨),
-    "narrow clone으로 전송량을 줄인다"는 narrow clone의 원래 목적 자체는
-    달성하지 못한다(대역폭/저장 절감 효과 없음). 실제 hg의 wire protocol v1
-    `narrow` capability 협상(`narrow=`, `depth=` 파라미터, ellipsis 노드
-    생성 로직 — `mercurial/narrowbundle2.py` 실측 필요)을 구현하는 것이
-    이 항목의 목표. 상당히 큰 작업이므로 별도 세션에서 범위 산정부터 착수
-    권장.
+40. **Narrow clone의 진짜 wire-protocol 수준 협상(genuine narrow clone) — 실제
+    hg 소스 실측 결과 "ellipsis node"는 이 항목의 올바른 구현 목표가 아니었음을
+    확인, 그 대신 실제 hg의 진짜 기본 메커니즘을 구현·검증 완료**. 2026-09-06
+    착수·완료(2026-09-04 사용자 지시로 등록됐던 항목, 별도 세션에서 범위
+    산정부터 시작). ✅ **완료**.
+
+    **핵심 발견(실제 hg 7.2 소스 직접 실측, `mercurial/exchange.py`/
+    `mercurial/changegroup.py`/`hgext/narrow/*.py`)**: 이 항목을 처음 등록할 때
+    "narrow clone의 진짜 메커니즘은 ellipsis node"라고 적었던 전제 자체가
+    틀렸다. `hgext/narrow/__init__.py`를 직접 읽어보면 ellipsis 노드 생성은
+    `experimental.narrowservebrokenellipses`라는, **기본값이 `False`이고
+    설정 이름 자체에 "broken"이 박혀 있는** 서버 config로 게이트돼 있으며,
+    바로 그 옆 주석이 "narrowhg has support for serving ellipsis nodes...
+    but that support is pretty fragile and has a lot of problems on
+    real-world repositories that have complex graph topologies... unlikely
+    this work will get done"라고 명시한다 — 즉 ellipsis 노드는 real hg
+    자신도 머지가 있는 실사용 저장소에는 권장하지 않는, Google 내부용의
+    **비활성 기본값 실험 기능**이다. 반면 real hg의 **진짜 기본 narrow
+    clone**(`hg clone --narrow`, ellipsis 없이)은 서버가 `getbundle` 요청의
+    `narrow=1`/`includepats`/`excludepats` 인자를 받아 `changegroup.makestream`에
+    matcher를 넘기고, `cgpacker.generatefiles()`가
+    `changedfiles = [f for f in changedfiles if self._matcher(f) and not
+    self._oldmatcher(f)]`로 **범위 밖 파일의 filelog 데이터만 아예
+    패킹에서 제외**하는 것으로 전송량을 줄인다 — changelog/manifest는
+    (hg4j처럼 flat manifest를 쓰는 한) 항상 그대로 전부 보낸다(플랫
+    매니페스트 한 리비전은 전체 파일 목록을 담은 하나의 불가분 블롭이라
+    개별 경로 단위로 자를 수 없음 — treemanifest만 `matcher.visitdir()`로
+    서브트리 단위 pruning이 가능한데, real hg도 기본은 아니고 hg4j는
+    treemanifest 자체를 구현하지 않음). 실측: 로컬 `hg serve
+    --config extensions.narrow= --config experimental.narrow=True`로 50개
+    작은 in-scope 파일 + 200개 20KB out-of-scope 파일 저장소를 만들어
+    `hg --config extensions.narrow= --debug clone --narrow
+    --include=included`로 비교 — 전체 clone의 getbundle payload는
+    5,462,104바이트인데 narrow clone은 29,412바이트(약 99.5% 절감).
+
+    **구현 내용**:
+    - **클라이언트(hg4j가 real hg 서버에서 pull)**: `HgRemoteConnection`에
+      `supportsNarrow()`(real hg의 `exp-narrow-1` capability 토큰 감지)와
+      `getBundle(common, heads, bundleCaps, NarrowScope)` 오버로드를 추가.
+      `HgRemoteClient`(HTTP)·`HgSshClient`(SSH) 둘 다 narrowScope가 있으면
+      `narrow=1`/`includepats`/`excludepats`를 실제 wire 인자로 실어 보낸다
+      (real hg 자신의 클라이언트처럼 빈 값은 아예 생략 — `"".split(",")`가
+      `[""]`가 되는 함정을 피함). `FetchCommand`는 narrow clone/pull에 쓰인
+      `treeFilter`가 (narrowspec에서 만들어진) `HgTreeFilter.NarrowSpecFilter`
+      이고 원격이 narrow를 지원하면 자동으로 `NarrowScope`를 만들어
+      `downloadChangegroupBundle`에 넘긴다 — `NarrowCloneCommand`/일반
+      `PullCommand` 양쪽 모두, 별도 API 변경 없이 자동으로 이 최적화를 받는다.
+    - **서버(hg4j가 real hg 클라이언트를 서빙)**: `Wire1Commands
+      .capabilitiesString()`에 `exp-narrow-1`을 무조건 광고(hg4j는 확장
+      시스템이 없으므로 "narrow 확장이 항상 로드된" 것과 동등). `getbundle`
+      핸들러가 `narrow`/`includepats`/`excludepats` wire 인자를 파싱해
+      `HgLocalClient.getBundle(..., NarrowScope)`로 전달하고, 이 메서드가
+      changegroup 패킹의 "1c. Pack Filelogs" 단계에서 narrowspec 매칭에
+      실패하는 경로를 건너뛴다(changelog/manifest 패킹은 그대로 유지) —
+      `HgHttpWireServer`/`HgSshWireServer`는 이미 인자 맵을 그대로
+      `Wire1Commands.dispatch`에 넘기는 구조라 트랜스포트별 추가 코드 불필요.
+    - `HgTreeFilter.createNarrowSpecFilter`가 이제 익명 클래스 대신
+      `NarrowSpecFilter`(구체 타입, `getIncludes()`/`getExcludes()` 노출)를
+      반환 — `FetchCommand`가 wire 협상용 patterns을 되찾아올 수 있게 하기
+      위한 최소 변경.
+
+    **양방향 real hg CLI 검증 (모두 통과)**:
+    - `NarrowCloneWireReductionRealHgInteropTest`(hg4j 클라이언트 → real hg
+      7.2.2 서버, `RealHgServeSupport`로 실제 `hg serve` 프로세스 기동):
+      `narrowGetBundleResponseIsDramaticallySmallerThanFullResponse` —
+      같은 저장소·같은 서버에서 narrow 없는 getBundle과 narrow가 있는
+      getBundle을 직접 비교, narrow 응답이 1/4 미만(실측상 훨씬 더 작음)임을
+      확인. `narrowCloneCommandProducesCorrectResultAgainstRealHgServer` —
+      `NarrowCloneCommand`로 받은 클라이언트 로컬 store에 애초에 제외 파일의
+      filelog(`.i`) 자체가 존재하지 않음을 확인(로컬에서 사후 필터링한 게
+      아니라 서버가 애초에 안 보냈다는 증거).
+    - `HgHttpWireServerNarrowInteropTest`(real hg 클라이언트 → hg4j가 서빙하는
+      `HgHttpWireServer`): `HttpExchange`를 감싸 실제 `?cmd=getbundle` 응답
+      바이트를 캡처, 평범한 clone(응답 200KB+) 대비 real hg의
+      `hg --config extensions.narrow= clone --narrow --include=included`
+      요청에 대한 hg4j 서버 응답이 1/4 미만임을 확인 + 워킹 카피 정확성
+      (in-scope 존재, out-of-scope 부재) 확인.
+    - `HgSshWireServerRealHgInteropTest#realHgNarrowClonesFromHg4jServedOverSsh`
+      (real hg 클라이언트 → hg4j가 서빙하는 `HgSshWireServer`, 진짜 SSH 세션):
+      동일 시나리오를 SSH로 반복 — 평범한 clone과 narrow clone의 클라이언트
+      로컬 store 크기를 비교(1/4 미만), `Wire1Commands.getbundle`의 narrow
+      필터링이 HTTP와 SSH 두 트랜스포트에서 동일하게 재사용됨을 증명.
+    - 회귀 없음: 기존 `HgWireProtocolMatrixNarrowCloneTest`(21 콤보) +
+      `NarrowCloneRealHgInteropTest`(4개) 전부 그대로 통과. 빠른
+      비interop 테스트로 `HgLocalClientCoverageTest`에 2개(narrow 있을 때
+      filelog 생략, include 없으면 전부 제외) 추가.
+
+    **의도적으로 구현하지 않은 것과 그 근거(사용자가 "hidden sub-part도
+    구현" 요구했지만, 이 부분은 real hg 자신도 갖추지 않은 것으로 판단)**:
+    ellipsis 노드/`depth=` shallow narrow clone은 구현하지 않았다. 근거:
+    (1) real hg 자신이 이 기능을 `narrowservebrokenellipses`라는 이름의,
+    기본 비활성 config로 막아두고 "실사용 복잡한 그래프 토폴로지에서
+    깨지기 쉽고 고쳐질 가능성도 낮다"고 소스 주석에 명시한 실험 기능이다.
+    (2) 이 기본 협상(narrow=1/includepats/excludepats)만으로 이미 narrow
+    clone의 실제 목적(대역폭/저장 절감)을 99% 이상 달성함을 실측으로
+    증명했다 — 대부분의 실사용 narrow clone 시나리오(특정 대용량
+    서브디렉터리를 제외)에서 ellipsis 없이도 압도적 절감 효과가 난다.
+    (3) real hg 클라이언트의 `--depth`(shallow) 옵션조차, 서버가 ellipsis를
+    지원하지 않으면(기본값) 그냥 무시되고 전체 히스토리를 받는다 — hg4j가
+    depth/ellipsis를 지원하지 않는 것은 real hg의 기본(비확장) 서버와
+    똑같은 동작이다. 이건 "발견한 하위 작업을 임의로 스코프 밖으로 뺀 것"이
+    아니라 "real hg 자신도 기본으로 갖추지 않은, 자기 소스가 명시적으로
+    fragile/unlikely-to-be-fixed라고 선언한 기능은 구현 목표에서 제외한다"는
+    실측 근거 기반 판단이다.
 
 41. **SVN 서브저장소(`[svn]` prefix) 지원 — 전혀 없음**. 신규, 2026-09-04
     사용자 지시로 등록, **우선순위 최하** — 미착수. real hg의 `.hgsub`

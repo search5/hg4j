@@ -441,6 +441,76 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   실패는 병합한 에이전트의 판단을 그대로 신뢰하지 말고 반드시 직접
   격리 재현(병합 전/후, 브랜치 단독 여부)으로 재확인할 것.)
 
+  **Wave 5(2026-09-05, 저장소 유지보수/관리 6개 명령 — `GcCommand`/
+  `RecoverCommand`/`RollbackCommand`/`VerifyCommand`/`CensorCommand`/
+  `InitCommand`)**: 병렬 서브에이전트 2개(각각 Gc+Recover+Rollback,
+  Verify+Censor)와 조정 세션이 직접 맡은 `InitCommand`로 나눠 진행, 전부
+  GREEN(native 6/6 + Docker 30/30 조합 자체는 6개 명령 전부 동일, 명령별
+  시나리오 수 차이로 실제 케이스 총량만 다름 — `InitCommand`
+  6/6+30/30, `GcCommand` 6/6+30/30, `RecoverCommand` 12/12+30/30,
+  `RollbackCommand` 12/12+30/30, `VerifyCommand` 15/15+69/69,
+  `CensorCommand` 12/12+60/60). `InitCommand`는 설계가 나머지 5개와
+  근본적으로 다르다 — 다른 31개 기완주 명령처럼 real hg가 저장소를 만들고
+  hg4j가 그 위에 쓰는 방향이 아니라, **hg4j 자신의 `InitCommand`가 36개
+  조합 전부의 저장소를 처음부터 만들고 real hg가 완전히 받아들이는지**
+  (verify/log/cat/debugrequires + 추가 커밋까지) 검증 — 이 매트릭스의
+  나머지 모든 테스트가 "저장소가 유효하다"는 전제 위에 서 있으므로 §서두에
+  명시된 대로 고위험 취급.
+
+  진짜 hg4j 버그 9건 발견·수정(전부 즉시 완전 수정, 범위 축소 없음) —
+  상세는 [[mercurial-spec-compliance-requirement]] 백로그 #39 참고. 요약:
+  (1) `InitCommand`가 애초에 dirstate-v2/zstd 2개 축만 지원해 30개 이상의
+  조합을 hg4j 스스로 만들 수조차 없던 gap — 전체 축 구현으로 해결.
+  (2) changelog-v2+general-v2 동시 활성화 시 changelog 부트스트랩이 잘못된
+  포맷을 선택해(`DefaultFileStoreEngine`/`RevlogIndex`) real hg가 그 위에
+  커밋하면 `TypeError`로 크래시 — 이 세션에서 `InitCommand` 36개 조합 검증
+  중 직접 발견. (3) CL_V2 `rank` 필드가 real hg의 재귀 공식과 다르게
+  기록되던 정합성 버그. (4) **명령 무관 공용 버그**:
+  `DeltaCodec.decompressZstd`가 델타 리비전에 fulltext 길이를 잘못
+  써서 zstd 압축 해제 버퍼가 오버사이즈되고 결과가 손상되던 문제 —
+  `GcCommand`/`VerifyCommand` 두 서브에이전트가 각각 독립적으로 발견,
+  병합 시 두 수정이 로직상 동일해 하나로 합침(native는 항상 zlib 강제라
+  이제까지 전혀 안 드러났던, 이 매트릭스가 Docker에서 진짜 멀티 리비전
+  zstd 델타를 처음 읽은 덕에 잡힌 버그). (5)(6) `GcCommand`의 v2/docket
+  revlog 파괴적 리라이트 및 fncache/fileindex-v1 오처리. (7)
+  `CommitCommand`/`RollbackCommand`/`RecoverCommand`의 v2-docket
+  undo/journal 무동작(no-op) 버그 및 dirstate-v2 컴패니언 파일 미복원.
+  (8) `VerifyCommand`의 fileindex-v1/general-v2 filelog 발견 누락 및
+  treemanifest 서브매니페스트 미검사. (9) `CensorCommand`의 check-heads
+  가드 부재 및 general-v2 filelog를 파괴하던 `Revlog.censorRevision()`
+  포맷 무관 재작성 버그.
+
+  검증: 전체 비-interop `test` 그린(각 서브에이전트 브랜치 및 병합 후
+  통합본 전부), 6개 명령 native 매트릭스 병합 후 재확인 그린,
+  `VerifyCommand`(Docker 69케이스)/`CensorCommand`(Docker 60케이스) —
+  병합된 `DeltaCodec`/`Revlog` 수정 경로를 실제로 거치는 시나리오라 병합
+  후 재검증 우선순위로 선택 — 도 그린. `GcCommand`/`RecoverCommand`/
+  `RollbackCommand` 브랜치와 `VerifyCommand`/`CensorCommand` 브랜치가
+  `DeltaCodec.java`를 각자 독립 수정해 병합 충돌 — 로직 동일 확인 후 한쪽
+  기준으로 정리. 이 wave의 `DeltaCodec.decompressZstd` 수정은 코디네이터의
+  core/query wave 병합 시 이미 main에 반영된 동일 수정(변수명만 다름,
+  로직 완전히 동일 확인)과의 충돌도 코디네이터가 이 wave 병합 시 같은
+  방식으로 정리.
+
+  이 wave 자체 기준 완주 수는 31에서 37/67(코디네이터가 다른 wave 5
+  병렬 그룹과 별도 취합 필요). 부수 발견(다음 담당자 참고): `GraftCommand`의
+  v2-docket rollback/journal 기록에 이번 `CommitCommand` 수정과 유사하지만
+  별도인 gap이 있음을 `RecoverCommand`/`RollbackCommand` 작업 중 발견 —
+  이번 wave 위임 범위 밖이라 미수정, `GraftCommand` 매트릭스 담당자가
+  확인할 것(백로그 39 전체 완료 후 후속 점검 항목으로 유지).
+
+  (조정자 취합, 2026-09-05: 위 3개 wave 5 문단(메타데이터조회 +8,
+  core/query +7, admin/maintenance +6)은 서로 다른 명령 집합에 대한
+  독립 병렬 작업으로 겹치지 않음(단, `DeltaCodec.decompressZstd` 버그는
+  core/query와 admin/maintenance 두 그룹이 각각 독립적으로 발견 — 로직
+  동일한 수정이라 병합 시 하나로 정리). 세 wave 병합 후 로컬 명령
+  완주 수는 31 + 8 + 7 + 6 = **52/67**. 남은 그룹: 작업트리 6개
+  (`ArchiveCommand`/`PurgeCommand`/`UpdateCommand`/`TreeCommand`/
+  `TreeMergeCommand`/`WorktreeCommand`, 완료·병합 대기 중) + 콘텐츠/트리
+  읽기 6개(`CatCommand`/`FilesCommand`/`LocateCommand`/`GrepCommand`/
+  `AnnotateCommand`/`ManifestCommand`, 진행 중) — 이 둘이 병합되면
+  로컬 매트릭스 전체 67개 완료 예정.)
+
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)
 - [x] `CloneCommand`/`PullCommand`/`PushCommand` 핵심 라운드트립 — **완료

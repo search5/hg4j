@@ -7,6 +7,7 @@ import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.FileIndex;
 import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.storage.RevlogIndex;
 import io.github.search5.hg4j.lfs.HgLfsManager;
 import io.github.search5.hg4j.lfs.HgLfsPointer;
 import io.github.search5.hg4j.merge.MergeState;
@@ -45,6 +46,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.TimeZone;
+import java.util.UUID;
 
 /**
  * Commits tracked changes to the repository history.
@@ -59,7 +61,33 @@ public class CommitCommand {
     private Long forcedTime = null;
     private Integer forcedOffset = null;
     private boolean skipLockAndJournal = false;
-    
+
+    // Per-call() transient rollback/journal bookkeeping (backlog #39 requirement-matrix fix,
+    // 2026-09-05) -- instance fields (rather than locals threaded through every helper) purely so
+    // recursive treemanifest dirlog helpers (writeTreeManifestDir/collectDirNodesRecursive) can
+    // reach them without widening their own signatures. call() re-initializes both fresh on every
+    // invocation, so this is safe despite not being re-entrant (this command object is a one-shot
+    // builder, exactly like every other transient field here).
+    private Map<File, Long> fileSizes;
+    // v2/docket-based (changelog-v2, general-v2) revlogs whose changelog/manifest/filelog "index"
+    // file (00changelog.i / 00manifest.i / data-*.i) is a small fixed-size docket header+UUIDs --
+    // it does NOT grow with each revision (only its own CONTENT/index_end-data_end pointers
+    // change), so a plain byte-length record (which fileSizes uses for everything else) is a
+    // complete no-op for restoring it. These need a full-content backup+restore instead; see
+    // recordRevlogRollbackState's javadoc for the full story (found live 2026-09-05: rollback of
+    // a changelog-v2/general-v2 commit was silently a no-op before this fix).
+    private Map<File, byte[]> docketBackups;
+    // The subset of fileSizes's keys that are a v2/docket revlog's resolved companion .idx/.dat/
+    // .sda files (as opposed to a classic revlog's own .i/.d, or dirstate/fncache backups): these
+    // must always be restored with truncate-only ("trunc " line) semantics, NEVER the plain
+    // "<path>\t<size>" line's delete-on-zero-size shortcut, because real hg expects a v2 revlog's
+    // companion files to physically exist (even 0 bytes) for as long as its docket references
+    // them -- a freshly-bootstrapped v2 revlog's sidedata companion is legitimately 0 bytes from
+    // the moment it is created, so deleting it on rollback (what the plain line's size-0 case
+    // does) leaves real hg unable to even open the repository afterward (found live 2026-09-05).
+    private Set<File> truncateOnlyEntries;
+    private File journalFile;
+
     private final List<HgHook> preCommitHooks = new ArrayList<>();
     private final List<HgHook> postCommitHooks = new ArrayList<>();
     private GpgSignature gpgSignature;
@@ -185,7 +213,9 @@ public class CommitCommand {
             }
         }
 
-        Map<File, Long> fileSizes = new HashMap<>();
+        fileSizes = new HashMap<>();
+        docketBackups = new HashMap<>();
+        truncateOnlyEntries = new java.util.HashSet<>();
         File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
         byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
         // N-2: snapshot the dirstate-v2 data file this backup's docket references (if any), so a
@@ -197,7 +227,7 @@ public class CommitCommand {
         byte[] fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
         FileIndex.Snapshot fileIndexBackup = repository.isFileIndexV1()
                 ? FileIndex.snapshot(repository.getStoreDir()) : null;
-        File journalFile = new File(repository.getStoreDir(), "journal");
+        journalFile = new File(repository.getStoreDir(), "journal");
 
         try (HgLock wlock = skipLockAndJournal ? HgLock.noOp() : repository.lockWorkingCopy();
              HgLock storeLock = skipLockAndJournal ? HgLock.noOp() : repository.lockStore()) {
@@ -210,6 +240,31 @@ public class CommitCommand {
                     File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
                     Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     appendToJournal(journalFile, "dirstate");
+                    // dirstate-v2's own companion data file (backlog #39, found live 2026-09-05):
+                    // Dirstate.write()'s "W-LEAK" cleanup deletes the *previous* uid's
+                    // ".hg/dirstate.<uid>" data file the instant a NEW docket is durably written --
+                    // so if this transaction crashes anywhere after that write, a later
+                    // HgRepository#checkAndPerformAutoRollback() (a genuinely separate process --
+                    // unlike the in-process dirstateV2DataBackup byte[] below, which only survives
+                    // within THIS same call() invocation's own catch block) would restore
+                    // dirstate.backup's docket bytes pointing at a data file that no longer
+                    // exists. Real hg's own dirstate-v2 reader then treats the missing/mismatched
+                    // companion as an unrecoverable "dirstate read race" and aborts outright
+                    // (verified live against hg-rust-7.2.4). Persisting the OLD data file's bytes
+                    // to disk here (consumed by checkAndPerformAutoRollback's matching restore)
+                    // is what actually survives a crash.
+                    // Deliberately NOT named "dirstate.*" -- CommitCommandCoverageTest's own
+                    // dirstate-v2-data-file-count assertions (and any real hg tooling that might
+                    // do the same) glob hgDir for "dirstate." prefixed files to enumerate the
+                    // *actual* dirstate-v2 data files; naming this "dirstate.backup.data" made it
+                    // collide with that glob (found live 2026-09-05 running the full regression
+                    // suite after adding this file).
+                    File dirstateV2DataBackupFile = new File(repository.getDirectory(), ".hg/dirstateV2.backup.data");
+                    if (dirstateV2DataBackup != null) {
+                        SafeFileIO.writeAtomic(dirstateV2DataBackupFile, dirstateV2DataBackup);
+                    } else {
+                        Files.deleteIfExists(dirstateV2DataBackupFile.toPath());
+                    }
                 }
                 if (fncacheFile.exists()) {
                     File fncacheBackupFile = new File(repository.getStoreDir(), "fncache.backup");
@@ -218,29 +273,16 @@ public class CommitCommand {
                 }
             }
 
-            // Initialize Transaction File Sizes Rollback Backup
+            // Initialize Transaction File Sizes Rollback Backup -- v2/docket-aware (backlog #39,
+            // see recordRevlogRollbackState's javadoc for why a plain byte-length record is not
+            // enough for changelog-v2/general-v2 repositories).
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
             File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
             File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
-            long clIdxLen = clIdx.exists() ? clIdx.length() : 0L;
-            long clDatLen = clDat.exists() ? clDat.length() : 0L;
-            long mfIdxLen = mfIdx.exists() ? mfIdx.length() : 0L;
-            long mfDatLen = mfDat.exists() ? mfDat.length() : 0L;
-
-            fileSizes.put(clIdx, clIdxLen);
-            fileSizes.put(clDat, clDatLen);
-            fileSizes.put(mfIdx, mfIdxLen);
-            fileSizes.put(mfDat, mfDatLen);
-
-            if (!skipLockAndJournal) {
-                // Path is relative to the .hg directory (standard hg journal format)
-                appendToJournal(journalFile, "store/00changelog.i\t" + clIdxLen);
-                appendToJournal(journalFile, "store/00changelog.d\t" + clDatLen);
-                appendToJournal(journalFile, "store/00manifest.i\t" + mfIdxLen);
-                appendToJournal(journalFile, "store/00manifest.d\t" + mfDatLen);
-            }
+            recordRevlogRollbackState(clIdx, clDat);
+            recordRevlogRollbackState(mfIdx, mfDat);
 
             Dirstate dirstate = repository.getDirstate();
             NodeId p1CommitNode = dirstate.getParent1Node();
@@ -533,24 +575,11 @@ public class CommitCommand {
                             }
                             File flIdx = getFilelogIndex(repository.getStoreDir(), path);
                             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                            
+
                             // Capture pre-write file sizes for potential rollback transaction
-                            if (!fileSizes.containsKey(flIdx)) {
-                                long idxLen = flIdx.exists() ? flIdx.length() : 0L;
-                                fileSizes.put(flIdx, idxLen);
-                                if (!skipLockAndJournal) {
-                                    String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path + ".i");
-                                    appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
-                                }
-                            }
-                            if (!fileSizes.containsKey(flDat)) {
-                                long datLen = flDat.exists() ? flDat.length() : 0L;
-                                fileSizes.put(flDat, datLen);
-                                if (!skipLockAndJournal) {
-                                    String storeRelDat = "store/" + NodeIdUtil.encodeFname(path + ".d");
-                                    appendToJournal(journalFile, storeRelDat + "\t" + datLen);
-                                }
-                            }
+                            // (v2/docket-aware -- see recordRevlogRollbackState; matters here for
+                            // general-v2 repositories, where every filelog is v2 too).
+                            recordRevlogRollbackState(flIdx, flDat);
 
                             // Ensure parent directories exist in store
                             flIdx.getParentFile().mkdirs();
@@ -940,7 +969,7 @@ public class CommitCommand {
 
             // 4b. Write undo info for rollback support
             try {
-                writeUndoInfo(repository, fileSizes, dirstateBackup);
+                writeUndoInfo(repository, fileSizes, dirstateBackup, docketBackups, truncateOnlyEntries, dirstateV2DataBackup);
             } catch (Exception e) {
                 LOGGER.log(Level.WARNING, "Failed to write undo info for rollback", e);
             }
@@ -952,11 +981,22 @@ public class CommitCommand {
                 throw t;
             }
             // N-1: Transaction Rollback Session
+            // Restore v2/docket full-content backups first (backlog #39, see
+            // recordRevlogRollbackState's javadoc) -- these docket files never change size, so
+            // they are absent from the byte-length-truncate loop below entirely.
+            for (Map.Entry<File, byte[]> docketEntry : docketBackups.entrySet()) {
+                try {
+                    SafeFileIO.writeAtomic(docketEntry.getKey(), docketEntry.getValue());
+                } catch (Exception ignored) {
+                    LOGGER.log(Level.WARNING, "Failed to restore docket backup during rollback: " + docketEntry.getKey(), ignored);
+                    t.addSuppressed(ignored);
+                }
+            }
             // Rollback files to original truncated sizes
             for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
                 File file = sizeEntry.getKey();
                 long origSize = sizeEntry.getValue();
-                if (origSize == 0) {
+                if (origSize == 0 && !truncateOnlyEntries.contains(file)) {
                     try {
                         Files.deleteIfExists(file.toPath());
                     } catch (Exception ignored) {
@@ -964,9 +1004,19 @@ public class CommitCommand {
                         t.addSuppressed(ignored);
                     }
                 } else {
-                    try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
-                        outChan.truncate(origSize);
-                        outChan.force(true);
+                    // truncateOnlyEntries (a v2 revlog's resolved companion .idx/.dat/.sda) must
+                    // never be deleted even at size 0 -- real hg expects them to always physically
+                    // exist as long as the docket references them (see the field's own javadoc).
+                    try {
+                        File parent = file.getParentFile();
+                        if (parent != null) {
+                            parent.mkdirs();
+                        }
+                        try (FileChannel outChan = FileChannel.open(file.toPath(),
+                                StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+                            outChan.truncate(origSize);
+                            outChan.force(true);
+                        }
                     } catch (Exception ignored) {
                         LOGGER.log(Level.WARNING, "Failed to truncate file during rollback: " + file, ignored);
                         t.addSuppressed(ignored);
@@ -1485,6 +1535,13 @@ public class CommitCommand {
         } else {
             File subIdx = new File(repository.getStoreDir(), "meta/" + dir + "/00manifest.i");
             File subDat = new File(repository.getStoreDir(), "meta/" + dir + "/00manifest.d");
+            // Snapshot this directory manifest's pre-write state too -- found live 2026-09-05
+            // (backlog #39 requirement-matrix expansion to RollbackCommand): treemanifest dirlogs
+            // (meta/<dir>/00manifest.i) were never recorded at all, so rolling back a treemanifest
+            // commit left every touched directory manifest's newly-appended revision in place
+            // (harmless orphan data since the root manifest still points at the old revision, but
+            // real hg's own transaction mechanism DOES reclaim these -- matching that here too).
+            recordRevlogRollbackState(subIdx, subDat);
             Files.createDirectories(subIdx.getParentFile().toPath());
             dirRevlog = repository.getRevlog(subIdx, subDat);
             p1 = p1DirNodes.getOrDefault(dir, new byte[20]);
@@ -1627,6 +1684,91 @@ public class CommitCommand {
         return extra;
     }
 
+    /**
+     * Records enough state to undo a write to {@code idxFile}/{@code datFile} later (both into
+     * {@link #fileSizes}/{@link #docketBackups}, and, when this commit is transactional, as
+     * "{@code journal}" lines {@link RecoverCommand}/{@link HgRepository#checkAndPerformAutoRollback()}
+     * know how to replay) -- handles both physical revlog layouts uniformly (backlog #39
+     * requirement-matrix expansion to {@code RollbackCommand}/{@code RecoverCommand}, found live
+     * 2026-09-05):
+     * <ul>
+     *   <li><b>classic</b> (single {@code .i}[+{@code .d}] pair): a plain byte-length of
+     *   {@code idxFile} (and {@code datFile}, if it exists) is enough -- {@link
+     *   RollbackCommand}/{@link HgRepository#checkAndPerformAutoRollback()} both already restore
+     *   these correctly via a straight {@code FileChannel.truncate()} back to that length, for
+     *   both inline revlogs (payload bytes live directly inside {@code idxFile}) and non-inline
+     *   ones.</li>
+     *   <li><b>v2/docket-based</b> ({@code exp-changelog-v2}/{@code exp-revlogv2.2} --
+     *   {@link RevlogIndex#isV2()}): {@code idxFile} itself is a small FIXED-size docket header
+     *   plus 3 UUIDs (~83 bytes) that never grows -- every commit only changes its own CONTENT
+     *   (the {@code index_end}/{@code data_end}/{@code sidedata_end} pointers), so a byte-length
+     *   record is a complete no-op for restoring it (this made rollback of a changelog-v2/
+     *   general-v2 commit silently do nothing at all before this fix -- caught live by the
+     *   requirement-matrix expansion to {@code RollbackCommand}, not by any prior test, since
+     *   nothing previously exercised rollback on anything but the default v1 combo). The actual
+     *   growing files are the docket's resolved companion {@code .idx}/{@code .dat}/{@code .sda}
+     *   files ({@link RevlogIndex#getResolvedIndexFile()} etc.) -- safe to byte-length-truncate
+     *   like any classic file, since v2 appends are strictly sequential too. The docket file
+     *   itself needs a full-content backup+restore instead (parallels how {@code dirstateBackup}/
+     *   the bookmarks backup already work), recorded into {@link #docketBackups} and, for the
+     *   transactional journal, physically copied to a {@code journal.docket.<uuid>.bck} sibling
+     *   file referenced via the journal's existing generic {@code "backup <orig>\t<backup>"} line
+     *   convention ({@link HgRepository#checkAndPerformAutoRollback()} already understands this
+     *   format -- it is what {@code MergeCommand}/{@code GraftCommand} use for their own
+     *   dirstate-restore lines).</li>
+     * </ul>
+     * A no-op if {@code idxFile} was already recorded (mirrors the {@code containsKey} guards this
+     * replaces at each call site -- multiple changed paths under the same not-yet-existing
+     * directory manifest, or the same filelog touched twice, must only be recorded once so the
+     * FIRST-seen -- i.e. genuinely pre-transaction -- size wins).
+     */
+    private void recordRevlogRollbackState(File idxFile, File datFile) throws IOException {
+        if (fileSizes.containsKey(idxFile) || docketBackups.containsKey(idxFile)) {
+            return;
+        }
+        File storeDir = repository.getStoreDir();
+        if (idxFile.exists()) {
+            RevlogIndex probe = new RevlogIndex(idxFile);
+            if (probe.isV2()) {
+                byte[] docketBytes = Files.readAllBytes(idxFile.toPath());
+                docketBackups.put(idxFile, docketBytes);
+                if (!skipLockAndJournal) {
+                    String backupRel = "journal.docket." + UUID.randomUUID() + ".bck";
+                    SafeFileIO.writeAtomic(new File(storeDir, backupRel), docketBytes);
+                    appendToJournal(journalFile, "backup store/" + relToStore(storeDir, idxFile) + "\tstore/" + backupRel);
+                }
+                for (File resolved : new File[]{probe.getResolvedIndexFile(), probe.getResolvedDataFile(), probe.getResolvedSidedataFile()}) {
+                    if (resolved == null) {
+                        continue;
+                    }
+                    long len = resolved.exists() ? resolved.length() : 0L;
+                    fileSizes.put(resolved, len);
+                    truncateOnlyEntries.add(resolved);
+                    if (!skipLockAndJournal) {
+                        appendToJournal(journalFile, "trunc store/" + relToStore(storeDir, resolved) + "\t" + len);
+                    }
+                }
+                return;
+            }
+        }
+        long idxLen = idxFile.exists() ? idxFile.length() : 0L;
+        fileSizes.put(idxFile, idxLen);
+        if (!skipLockAndJournal) {
+            appendToJournal(journalFile, "store/" + relToStore(storeDir, idxFile) + "\t" + idxLen);
+        }
+        if (datFile != null) {
+            long datLen = datFile.exists() ? datFile.length() : 0L;
+            fileSizes.put(datFile, datLen);
+            if (!skipLockAndJournal) {
+                appendToJournal(journalFile, "store/" + relToStore(storeDir, datFile) + "\t" + datLen);
+            }
+        }
+    }
+
+    private static String relToStore(File storeDir, File f) {
+        return storeDir.toPath().relativize(f.toPath()).toString().replace('\\', '/');
+    }
+
     private void appendToJournal(File journalFile, String entry) throws IOException {
         Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND);
@@ -1651,15 +1793,67 @@ public class CommitCommand {
     }
 
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup) throws IOException {
+        writeUndoInfo(repository, fileSizes, dirstateBackup, Collections.emptyMap());
+    }
+
+    /**
+     * @param docketBackups full-byte-content backups of any v2/docket revlog "index" file
+     *     (00changelog.i/00manifest.i/a filelog's own {@code .i}) touched by this commit --
+     *     see {@link #recordRevlogRollbackState}'s javadoc for why these need a full-content
+     *     backup+restore rather than the byte-length record every other entry in {@code
+     *     fileSizes} uses. Written out as {@code undo.docket.<n>.bck} sibling files plus a
+     *     {@code backup <relPath>\t<backupRelPath>} line in the {@code undo} file itself --
+     *     {@link RollbackCommand} already understands this convention (mirrors the journal's own
+     *     {@code "backup "} line format, {@link HgRepository#checkAndPerformAutoRollback()}).
+     */
+    public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup,
+                                      Map<File, byte[]> docketBackups) throws IOException {
+        writeUndoInfo(repository, fileSizes, dirstateBackup, docketBackups, Collections.emptySet());
+    }
+
+    /**
+     * @param truncateOnlyEntries the subset of {@code fileSizes}'s keys that must be restored
+     *     with truncate-only ("{@code trunc }" line) semantics rather than the plain line's
+     *     delete-on-zero-size shortcut -- a v2 revlog's resolved companion {@code .idx}/{@code
+     *     .dat}/{@code .sda} files, which real hg expects to always physically exist (even 0
+     *     bytes) as long as the docket references them. See {@link
+     *     HgRepository#checkAndPerformAutoRollback()}'s matching branch and {@link
+     *     #recordRevlogRollbackState}'s javadoc for the full story.
+     */
+    public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup,
+                                      Map<File, byte[]> docketBackups, Set<File> truncateOnlyEntries) throws IOException {
+        writeUndoInfo(repository, fileSizes, dirstateBackup, docketBackups, truncateOnlyEntries, null);
+    }
+
+    /**
+     * @param dirstateV2DataBackup the pre-commit bytes of the dirstate-v2 companion data file
+     *     ({@code .hg/dirstate.<uid>}) the pre-commit {@code dirstateBackup} docket references, or
+     *     {@code null} if not applicable (v1 dirstate, or the data file could not be read) -- see
+     *     {@link #captureDirstateV2DataBackup}. Written out as {@code .hg/undo.backup.dirstate.data}
+     *     for {@link RollbackCommand} to restore if needed: {@code Dirstate.write()}'s own
+     *     "W-LEAK" cleanup deletes the *previous* uid's data file the moment this commit's own new
+     *     docket is written, so restoring just {@code dirstateBackup}'s docket bytes without this
+     *     would leave a rolled-back repository's dirstate pointing at a data file that no longer
+     *     exists -- real hg's own dirstate-v2 reader then aborts with "dirstate read race
+     *     happened 5 times in a row" (found live 2026-09-05, backlog #39 requirement-matrix
+     *     expansion to {@code RollbackCommand}/{@code RecoverCommand} -- the exact same root cause
+     *     independently found and fixed for the crash-journal path, see {@link
+     *     HgRepository#checkAndPerformAutoRollback()}'s matching "dirstate" branch).
+     */
+    public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup,
+                                      Map<File, byte[]> docketBackups, Set<File> truncateOnlyEntries,
+                                      byte[] dirstateV2DataBackup) throws IOException {
         File undoFile = new File(repository.getStoreDir(), "undo");
         File undoBackupFiles = new File(repository.getStoreDir(), "undo.backup.files");
         File undoDirstate = new File(repository.getDirectory(), ".hg/undo.backup.dirstate");
+        File undoDirstateData = new File(repository.getDirectory(), ".hg/undo.backup.dirstate.data");
         File undoBookmarks = new File(repository.getDirectory(), ".hg/undo.backup.bookmarks");
 
         // Clean previous undo files
         Files.deleteIfExists(undoFile.toPath());
         Files.deleteIfExists(undoBackupFiles.toPath());
         Files.deleteIfExists(undoDirstate.toPath());
+        Files.deleteIfExists(undoDirstateData.toPath());
         Files.deleteIfExists(undoBookmarks.toPath());
 
         // 1. Write undo file (list of store files and original sizes)
@@ -1670,11 +1864,24 @@ public class CommitCommand {
         for (Map.Entry<File, Long> entry : fileSizes.entrySet()) {
             File f = entry.getKey();
             long size = entry.getValue();
-            
+
             // Get path relative to the store directory
             String relPath = storeDir.toPath().relativize(f.toPath()).toString();
-            sbUndo.append(relPath).append("\t").append(size).append("\n");
+            if (truncateOnlyEntries.contains(f)) {
+                sbUndo.append("trunc ").append(relPath).append("\t").append(size).append("\n");
+            } else {
+                sbUndo.append(relPath).append("\t").append(size).append("\n");
+            }
             sbFiles.append(relPath).append("\n");
+        }
+
+        int docketBackupIndex = 0;
+        for (Map.Entry<File, byte[]> entry : docketBackups.entrySet()) {
+            String relPath = storeDir.toPath().relativize(entry.getKey().toPath()).toString().replace('\\', '/');
+            String backupRel = "undo.docket." + (docketBackupIndex++) + ".bck";
+            SafeFileIO.writeAtomic(new File(storeDir, backupRel), entry.getValue());
+            sbUndo.append("backup ").append(relPath).append("\t").append(backupRel).append("\n");
+            sbFiles.append(backupRel).append("\n");
         }
 
         SafeFileIO.writeStringAtomic(undoFile, sbUndo.toString());
@@ -1683,6 +1890,9 @@ public class CommitCommand {
         // 2. Backup dirstate
         if (dirstateBackup != null) {
             SafeFileIO.writeAtomic(undoDirstate, dirstateBackup);
+        }
+        if (dirstateV2DataBackup != null) {
+            SafeFileIO.writeAtomic(undoDirstateData, dirstateV2DataBackup);
         }
 
         // 3. Backup bookmarks

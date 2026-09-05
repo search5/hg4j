@@ -137,6 +137,32 @@ public final class DeltaCodec {
     /**
      * Decompresses a Zstd-compressed revlog hunk (header byte {@code 0x28}).
      *
+     * <p>2026-09-05 (backlog #39 wave 5, found independently by two parallel agents working
+     * {@code GcCommand} and {@code VerifyCommand}'s requirement-matrix expansion): {@code
+     * uncompLen} (the index record's {@code rawsize} field) is only a HINT, and for a delta
+     * revision it is the WRONG size to trust blindly -- per the revlog format, that field always
+     * holds the fully-reconstructed FULLTEXT's length (what this revision decodes to after the
+     * whole delta chain is applied), not the length of THIS hunk's own decompressed bytes. A
+     * genuine delta revision (real hg's own {@code mdiff}-style hunk encoding: a sequence of
+     * {@code [start][end][length][data]} records describing what changed) decompresses to a
+     * payload that is normally much SMALLER than the fulltext it patches -- confirmed live via a
+     * `hg-rust-7.2.4` container (a 154-byte manifest fulltext's rev-1 delta decompressed to well
+     * under 154 bytes, and independently cross-checked by hand-decompressing the same hunk bytes
+     * with Python's own {@code zstandard} library). Blindly allocating {@code new byte[uncompLen]}
+     * and handing back that full-sized array regardless of how many bytes zstd actually wrote into
+     * it silently appended trailing zero-byte padding after the real delta data -- {@link
+     * DeltaEngine#applyDelta} then parsed those zero bytes as a bogus extra {@code
+     * start=0,end=0,length=0} hunk and rejected it with exactly the {@code "Invalid delta hunk
+     * offsets: start=0, end=0"} symptom this fix resolves. Fixed by trusting the zstd frame's OWN
+     * embedded content-size header ({@link Zstd#getFrameContentSize(byte[])} -- every hunk real hg
+     * writes embeds this, the same source of truth {@code Revlog#decompressSidedataChunk} already
+     * relies on for an analogous reason) as the destination buffer size instead, falling back to
+     * {@code uncompLen} only when the frame legitimately declares no content size (the zstd-jni
+     * sentinel is negative for "unknown"/"error", hence the {@code >= 0} check rather than
+     * {@code > 0} -- a genuinely empty-content frame is a valid, if unusual, size of zero) -- and,
+     * belt-and-braces, always trimming the returned array down to zstd's own reported
+     * actual-bytes-written count afterward regardless of which size was used to allocate it.
+     *
      * <p>zstd-jni's {@code Zstd.decompress} can either return an error code (testable via
      * {@link Zstd#isError(long)}) or throw an unchecked {@link ZstdException} for malformed
      * or truncated input, depending on where the failure occurs. Both are normalized here into
@@ -174,6 +200,9 @@ public final class DeltaCodec {
             long result = Zstd.decompress(dest, hunk);
             if (Zstd.isError(result)) {
                 throw new HgCorruptDataException("Failed to decompress zstd revlog hunk: " + Zstd.getErrorName(result));
+            }
+            if (result != dest.length) {
+                dest = Arrays.copyOf(dest, (int) result);
             }
         } catch (ZstdException e) {
             throw new HgCorruptDataException("Failed to decompress zstd revlog hunk", e);

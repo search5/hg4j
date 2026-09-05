@@ -3542,6 +3542,125 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     (회귀 없음). 이로써 [[exhaustive-interop-matrix-plan]]의 wire 매트릭스
     (§4-2) 8개 명령 전부 완료.
 
+    **Wave 5(2026-09-05, `GcCommand`/`RecoverCommand`/`RollbackCommand`/
+    `VerifyCommand`/`CensorCommand`/`InitCommand`)**: 저장소 유지보수/관리
+    계열 6개 명령에 requirement 매트릭스(native 6 + Docker 30 = 36개 조합)
+    확장 적용, 전부 GREEN(명령별 시나리오 수가 달라 native/Docker 케이스
+    총량은 명령마다 다름 — `InitCommand` native 6/6+Docker 30/30,
+    `GcCommand` native 6/6+Docker 30/30, `RecoverCommand` native
+    12/12+Docker 30/30, `RollbackCommand` native 12/12+Docker 30/30,
+    `VerifyCommand` native 15/15+Docker 69/69, `CensorCommand` native
+    12/12+Docker 60/60). `InitCommand`는 다른 5개와 설계가 다르다 — 나머지
+    31개 기완주 명령이 전부 그래왔듯 real hg가 저장소를 만들고 hg4j가 그
+    위에 쓰는 방향이 아니라, **hg4j 자신의 `InitCommand`가 36개 조합 전부의
+    저장소를 처음부터 만들고 real hg가 그 결과를 완전히 받아들이는지**(검증
+    +추가 커밋까지) 검증 — 이 캠페인의 다른 모든 테스트가 "저장소가
+    유효하다"는 전제에 의존하므로 사용자가 특별히 고위험으로 지정한 항목.
+
+    **발견·수정된 진짜 hg4j 버그 9건** (전부 표준 원칙에 따라 발견 즉시 완전
+    수정, 범위 축소 없음):
+    1. **(`InitCommand`, 최초엔 지원 자체가 없던 gap)** `InitCommand`가
+       원래 `dirstate-v2`/zstd 압축 2개 축만 지원해 36개 조합 중 30개 이상을
+       hg4j 스스로는 아예 만들 수 없었다 — changelog-v2/sidedata/
+       treemanifest/persistent-nodemap/fileindex-v1/general-v2 축을 real
+       hg의 상호 함의 규칙(fileindex-v1→persistent-nodemap 함의,
+       general-v2→둘 다 함의, sidedata→changelog-v2 함의, treemanifest는
+       fileindex-v1/general-v2와 상호배타로 real hg와 동일하게 abort)까지
+       그대로 반영해 완전히 구현.
+    2. **(크래시, `DefaultFileStoreEngine`/`RevlogIndex`)** changelog-v2 +
+       general-v2가 동시에 활성화된 저장소에서 changelog를 부트스트랩할 때
+       `createAsGeneralV2`가 `createAsChangelogV2`보다 먼저 체크되어
+       changelog가 `rank` 필드 없는 일반 general-v2 포맷(`INDEX_ENTRY_V2`)
+       으로 잘못 생성됨 — 이 메서드 자신의 기존 문서화된 의도("changelog-v2가
+       우선")와 real hg의 실제 우선순위(`mercurial/revlog.py`의
+       `_init_opts`가 changelog kind에서 `'changelogv2'`를
+       `'revlogv2'`보다 먼저 체크) 둘 다에 반하는 순서였다. real hg가 그
+       위에 커밋하면 `revlog.py`의 `fast_rank()`가 `CHANGELOGV2`가 아닌
+       모든 포맷에 대해 무조건 `None`을 반환해 `rank = 1 + None`에서
+       `TypeError`로 크래시. 두 곳(근본 원인/방어 코드) 모두 우선순위 수정.
+    3. **(정합성, `Revlog.appendRevisionV2`)** CL_V2 리비전의 `rank` 필드를
+       real hg의 실제 재귀 공식(루트 리비전은 1, 이후는
+       `1 + rank(parent)`) 대신 그냥 `rev`(첫 커밋이면 0)로 써서 real hg
+       자신이 그 위에 이어서 계산하는 모든 후속 rank가 1씩 어긋나던 문제 —
+       `IndexRecord`에 `rank` 필드 추가하고 CL_V2 읽기/쓰기 양쪽에 실제
+       재귀 계산을 관통시켜 수정.
+    4. **(데이터 손상, `DeltaCodec.decompressZstd` — 명령 무관 공용 버그,
+       2개 병렬 에이전트가 `GcCommand`/`VerifyCommand` 작업 중 각각 독립
+       발견)** zstd 압축 해제 목적지 버퍼 크기를 리비전의 최종 fulltext
+       길이(`uncompLen`)로 잡았는데, 이는 델타(비-fulltext) 리비전에는 틀린
+       값이다 — 델타 페이로드는 보통 fulltext보다 훨씬 작아서 버퍼가
+       남으면 뒤쪽에 0바이트 패딩이 남고, `DeltaEngine.applyDelta`가 그걸
+       가짜 `(start=0,end=0,length=0)` 헝크로 오인해 "Invalid delta hunk
+       offsets"로 거부했다. native 테스트는 항상 zlib을 강제해서 이제까지
+       한 번도 안 드러났고, hg-rust의 기본 압축이 zstd라 Docker 조합에서
+       진짜 멀티 리비전 zstd 델타를 처음 만든 이번 매트릭스에서 처음
+       드러남. zstd 프레임 자체에 내장된 content-size 헤더(이미
+       `Revlog#decompressSidedataChunk`가 같은 이유로 쓰던 것과 동일한
+       근거)로 버퍼 크기를 잡도록 수정 — 두 에이전트가 병합 시 거의 동일한
+       수정을 독립적으로 제출해 하나로 합침.
+    5. **(데이터 손상, `GcCommand`)** 순수 revlogv1 전제의 리라이트
+       로직이 changelog-v2/general-v2(docket 기반) revlog를 만나면 그
+       docket을 구식 v1 헤더로 통째로 덮어써 저장소를 망가뜨림 — v2/docket
+       revlog는 건드리지 않고 건너뛰도록 수정.
+    6. **(`GcCommand`)** fncache 재구축이 real hg가 절대 포함시키지 않는
+       루트 `00changelog.i`/`00manifest.i`를 끼워 넣고, fileindex-v1
+       저장소(real hg는 fncache 자체를 안 씀, 실측 확인)에서도 무조건
+       fncache를 다시 씀 — 둘 다 real hg 실측대로 수정, 분할된(non-inline)
+       revlog를 재압축 중 실수로 다시 inline화해 `.d` 파일을 고아로 만들던
+       버그도 함께 수정.
+    7. **(`CommitCommand`/`RollbackCommand`/`RecoverCommand`)** undo/journal
+       기록이 v2 docket 파일의 (커밋해도 안 변하는) 바이트 길이만 기록해서
+       changelog-v2/general-v2 커밋에 대한 rollback/recover가 완전히
+       무동작(no-op)이었던 문제, 그리고 dirstate-v2의 컴패니언 데이터
+       파일이 rollback 후 복원되지 않아 real hg가 "dirstate read race
+       happened 5 times in a row"로 abort하던 문제 — docket 전체 내용
+       백업/복원 방식으로 재구현. treemanifest 디렉터리 매니페스트도 이
+       참에 rollback 추적 대상에 추가.
+    8. **(`VerifyCommand`)** filelog 발견을 fncache에만 의존해 fileindex-v1/
+       general-v2 저장소에서는 filelog 무결성 검사가 통째로 스킵되던(거짓
+       음성) 문제, treemanifest의 `meta/<dir>/00manifest.i` 서브매니페스트를
+       아예 검사 대상에서 빠뜨리던 문제 — 둘 다 수정.
+    9. **(`CensorCommand`)** real hg의 `hgext.censor`가 갖고 있는
+       "head/작업 디렉터리 parent에 살아있는 리비전은 censor 거부" 가드가
+       hg4j에는 아예 없던 문제(`setCheckHeads(false)`로 우회 가능하게 real
+       hg의 `--no-check-heads`도 동일하게 구현), 그리고
+       `Revlog.censorRevision()`이 포맷 무관하게 항상 구식 revlogv1
+       레이아웃으로 재작성해 general-v2 filelog의 docket을 깨뜨리고 진짜
+       컴패니언 파일들을 고아로 만들던 데이터 손상 버그(`truncate`+
+       `appendRevisionV2` 재사용하는 `censorRevisionV2` 분기로 수정) — 둘
+       다 수정.
+
+    **검증**: 전체 비-interop `test` 그린(merge 전후 각 브랜치 및 최종
+    통합본 전부 확인), 6개 명령의 native 매트릭스 전부 스코프 재확인
+    그린, `VerifyCommand`/`CensorCommand`의 Docker 매트릭스(각각 병합된
+    `DeltaCodec`/`Revlog` 수정 경로를 실제로 타는 시나리오라 병합 후
+    재검증 우선순위로 선택)도 그린. `GcCommand`/`RecoverCommand`/
+    `RollbackCommand` 브랜치와 `VerifyCommand`/`CensorCommand` 브랜치가
+    `DeltaCodec.java`(#4 버그)를 각자 독립 수정해 병합 시 충돌 — 두 수정이
+    로직상 동일해 한쪽으로 합치고 문서만 통합.
+
+    이번 wave 자체 기준 로컬 명령 완주 수는 31에서 37/67(코디네이터가
+    다른 wave 5 병렬 그룹과 별도 취합 필요). 부수 발견: `GraftCommand`의
+    v2-docket rollback/journal 기록에도 이번 `CommitCommand` 수정과
+    유사한(그러나 별도인) gap이 있다는 것을 `RecoverCommand`/
+    `RollbackCommand` 작업 중 발견했으나 이번 wave의 위임 범위 밖이라
+    손대지 않음 — `GraftCommand` 매트릭스를 맡을 다음 에이전트가 반드시
+    확인할 것(백로그 39 전체 완료 후 후속 점검 항목으로 유지).
+
+    **조정자 취합(2026-09-05)**: 위 3개 wave 5 문단(메타데이터조회 wave
+    +8, core/query wave +7, 이 admin/maintenance wave +6)은 서로 다른
+    명령 집합에 대한 독립 병렬 작업으로 겹치지 않음(단, `DeltaCodec
+    .decompressZstd` 델타-버퍼-크기 버그는 core/query wave와 이
+    admin/maintenance wave가 각각 독립적으로 발견 — 두 수정이 변수명만
+    다르고 로직이 완전히 동일함을 diff로 직접 확인한 뒤 병합 시 하나로
+    정리). 세 wave를 모두 병합한 결과 로컬 명령 완주 수는
+    31 + 8 + 7 + 6 = **52/67**. 남은 두 그룹: 작업트리 6개
+    (`ArchiveCommand`/`PurgeCommand`/`UpdateCommand`/`TreeCommand`/
+    `TreeMergeCommand`/`WorktreeCommand`, 완료됨·병합 대기) + 콘텐츠/트리
+    읽기 6개(`CatCommand`/`FilesCommand`/`LocateCommand`/`GrepCommand`/
+    `AnnotateCommand`/`ManifestCommand`, 진행 중) — 이 둘까지 병합되면
+    로컬 매트릭스 67개 전체 완료, wire 매트릭스는 이미 8/8 완료 상태.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

@@ -808,6 +808,25 @@ public class HgRepository implements Repository {
                     File dirstateFile = new File(hgDir, "dirstate");
                     if (dirstateBackup.exists()) {
                         Files.move(dirstateBackup.toPath(), dirstateFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                        // dirstate-v2's own companion data file (backlog #39, found live
+                        // 2026-09-05): the docket bytes just restored above may reference a
+                        // "<uid>" whose ".hg/dirstate.<uid>" data file Dirstate.write()'s own
+                        // "W-LEAK" cleanup already deleted (it removes the *previous* uid's data
+                        // file the instant the crashed transaction durably wrote its own new
+                        // docket) -- restore it from the durable backup CommitCommand leaves
+                        // alongside "dirstate.backup" (see its own recordRevlogRollbackState-
+                        // adjacent comment) if it is indeed missing. Without this, real hg's own
+                        // dirstate-v2 reader treats the dangling reference as an unrecoverable
+                        // "dirstate read race" and aborts outright (verified live against
+                        // hg-rust-7.2.4).
+                        String uid = readDirstateV2Uid(dirstateFile);
+                        if (uid != null) {
+                            File dataFile = new File(hgDir, "dirstate." + uid);
+                            File dataBackup = new File(hgDir, "dirstateV2.backup.data");
+                            if (!dataFile.exists() && dataBackup.exists()) {
+                                Files.copy(dataBackup.toPath(), dataFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                            }
+                        }
                     } else {
                         Files.deleteIfExists(dirstateFile.toPath());
                     }
@@ -818,6 +837,30 @@ public class HgRepository implements Repository {
                         Files.move(fncacheBackup.toPath(), fncacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     } else {
                         Files.deleteIfExists(fncacheFile.toPath());
+                    }
+                } else if (line.startsWith("trunc ")) {
+                    // Truncate-only restore, never delete-on-zero -- unlike the generic
+                    // "<path>\t<size>" entry below (where size 0 legitimately means "this file
+                    // did not exist before, delete it"), this is for companion files of a v2/
+                    // docket revlog (a filelog/manifest/changelog's resolved .idx/.dat/.sda) that
+                    // real hg always expects to physically exist -- even empty -- as long as the
+                    // docket references them (backlog #39, found live 2026-09-05: a fresh v2
+                    // revlog's sidedata companion is legitimately 0 bytes from the moment the
+                    // docket is created, and deleting it on rollback instead of truncating made
+                    // real hg abort with "No such file or directory" reading the docket
+                    // afterward). See CommitCommand#recordRevlogRollbackState's javadoc.
+                    String content = line.substring("trunc ".length()).trim();
+                    int splitIdx = content.lastIndexOf('\t');
+                    if (splitIdx != -1) {
+                        String filePath = content.substring(0, splitIdx);
+                        long origSize = Long.parseLong(content.substring(splitIdx + 1).trim());
+                        File file = new File(hgDir, filePath);
+                        file.getParentFile().mkdirs();
+                        try (FileChannel outChan = FileChannel.open(file.toPath(),
+                                StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+                            outChan.truncate(origSize);
+                            outChan.force(true);
+                        }
                     }
                 } else {
                     int splitIdx = line.lastIndexOf('\t');
@@ -849,11 +892,39 @@ public class HgRepository implements Repository {
             try {
                 Files.deleteIfExists(journalFile.toPath());
                 Files.deleteIfExists(new File(hgDir, "dirstate.backup").toPath());
+                Files.deleteIfExists(new File(hgDir, "dirstateV2.backup.data").toPath());
                 Files.deleteIfExists(new File(storeDir, "fncache.backup").toPath());
                 deleteDirRecursively(new File(storeDir, "rebase-backup"));
             } catch (Exception ignored) {
                 LOGGER.log(Level.WARNING, "Failed to delete rollback backups", ignored);
             }
+        }
+    }
+
+    /**
+     * Parses a dirstate-v2 docket file's own {@code uid} field (the identifier of its companion
+     * {@code .hg/dirstate.<uid>} data file), or {@code null} if {@code dirstateFile} does not
+     * exist, is empty, or is not dirstate-v2 (a plain v1 dirstate has no such structure). See
+     * {@code CommitCommand#captureDirstateV2DataBackup}'s javadoc for the exact on-disk layout
+     * being read (magic {@code "dirstate-v2\n"}, uid length byte at offset 124, uid bytes
+     * immediately after).
+     */
+    private static String readDirstateV2Uid(File dirstateFile) {
+        try {
+            byte[] bytes = Files.readAllBytes(dirstateFile.toPath());
+            if (bytes.length < 125) {
+                return null;
+            }
+            if (!new String(bytes, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
+                return null;
+            }
+            int uidSize = bytes[124] & 0xFF;
+            if (bytes.length < 125 + uidSize) {
+                return null;
+            }
+            return new String(bytes, 125, uidSize, StandardCharsets.US_ASCII);
+        } catch (Exception e) {
+            return null;
         }
     }
 

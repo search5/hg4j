@@ -3651,6 +3651,107 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     손대지 않음 — `GraftCommand` 매트릭스를 맡을 다음 에이전트가 반드시
     확인할 것(백로그 39 전체 완료 후 후속 점검 항목으로 유지).
 
+    **✅ 해결됨(2026-09-06, 백로그 39 후속 점검)**: 위에서 플래그만 남기고
+    손대지 않았던 `GraftCommand`의 v2-docket rollback/journal gap을
+    실측·수정. `GraftCommand#commitGraftedRevision`은 `CommitCommand`를
+    `setSkipLockAndJournal(true)`로 위임 호출하면서 **자기 자신의**
+    크래시-안전 저널/인메모리 롤백을 별도로 관리하는데(2026-09-05
+    wave 2에서 신규 추가, 위 문단 §2 참고), 그 구현이 정확히 이 `CommitCommand`
+    수정 이전의 버그를 그대로 재현하고 있었다: `recordAndJournal()`이
+    `00changelog.i`/`00manifest.i`/각 filelog `.i`의 **바이트 길이만**
+    기록·저널화했는데, changelog-v2/general-v2 저장소에서 이 "index" 파일은
+    실제로는 append해도 크기가 변하지 않는 작은 고정 크기 docket 헤더이고
+    (실제로 자라는 건 docket의 UUID가 가리키는 별도의 resolved companion
+    `.idx`/`.dat`/`.sda` 파일들), 이 companion 파일들은 `recordAndJournal()`
+    호출 대상에 아예 들어있지도 않았다.
+
+    **실측 재현(수정 전 코드로 직접 검증)**: 로컬 real hg 7.2 CLI로
+    changelog-v2 저장소(`format.exp-use-changelog-v2=enable-unstable-format-and-corrupt-my-data`)를
+    만들고, 목적지/소스 두 브랜치를 커밋한 뒤, `RevlogIndex.updateV2DocketSizes()`가
+    docket 헤더에 새 `index_end`/`data_end` 포인터를 쓰는 시점(이 메서드가
+    `FileChannel.open(idxFile, WRITE)`로 **기존 파일에 직접 in-place 쓰기**를
+    한다는 걸 소스로 확인 -- bookmark/dirstate 쓰기와 달리 atomic rename이
+    전혀 아님)에 `00changelog.i`를 실제로 읽기 전용(`chmod 444`)으로 만들어
+    강제 실패를 주입: 이 시점이면 이미 `appendRevisionV2()`가 filelog+manifest+
+    changelog의 resolved companion 파일들(`.idx`/`.dat`)에 새 리비전 바이트를
+    다 append한 뒤라, 진짜 "부분 커밋" 상태가 재현된다. **수정 전 코드로
+    돌려서(`git stash`) 동일 테스트를 실행하니 4개 조합(`cl2`/`cl2+sidedata`
+    × flatmanifest/treemanifest) 전부에서 changelog의 resolved index
+    companion 파일이 그래프트 실패 후에도 288바이트(그래프트 전 원본 크기)가
+    아닌 384바이트(그래프트로 커진 크기)로 그대로 남아있음을 직접 확인**
+    (`RequirementMatrixGraftCoreRoundTripTest#hg4jFailedGraftRestoresChangelogOnInProcessFailureAcrossCombo`
+    의 `AssertionFailedError: ... expected: <288> but was: <384>`) --
+    실패한(그리고 dirstate/parent 등 나머지 상태는 전혀 커밋되지 않은) 그래프트가
+    changelog의 물리 저장소에 검증되지 않은 리비전 바이트를 영구히 흘려버리는
+    실제 버그였다. 이 재현 시나리오는 docket의 `index_end`/`data_end` 포인터
+    자체는 (주입한 실패가 바로 그 쓰기를 막았으므로) 실제로 전진하지 않아
+    real hg가 그 여분 바이트를 읽지는 않지만(`hg verify`/`hg log`는 이 특정
+    재현에서는 깨끗했음 -- docket 기반 포맷은 파일 길이가 아니라 docket이
+    선언한 end 포인터만 신뢰하기 때문), companion 파일에 누적되는 고아
+    바이트 자체가 실질적 저장소 오염/누수이고, **저널을 통한 크래시 복구
+    시나리오(진짜 목표)로는 더 심각하다**: 실제 프로세스 크래시가 docket
+    포인터 갱신까지 성공한 *직후*(=그래프트가 커밋으로서 완전히 끝났지만
+    이 클래스 자신의 저널 정리 직전) 발생했다면, 바이트-길이 기반 저널
+    엔트리는 복구 시점에 완전한 no-op이라 그래프트로 생긴 리비전이 real
+    hg에게 그대로 유효한 커밋으로 남아버린다 -- `CommitCommand`가 고쳤던
+    바로 그 "환상 커밋(phantom commit)" 위험이 `GraftCommand`에도 동일하게
+    존재했다.
+
+    **수정**: `CommitCommand#recordRevlogRollbackState`와 완전히 동일한
+    패턴을 `GraftCommand`에도 그대로 이식(`recordRevlogRollbackState` 메서드
+    신규 추가, 기존 `recordAndJournal` 대체) -- `RevlogIndex.isV2()`인
+    "index" 파일은 (a) 전체 바이트를 인메모리 `docketBackups`에 백업하고
+    `journal.docket.<uuid>.bck` 사이드카 파일 + 저널의 기존 `"backup
+    <orig>\t<backup>"` 라인(이미 `HgRepository#checkAndPerformAutoRollback()`
+    이 이해하는 범용 포맷 -- `MergeCommand`/`GraftCommand` 자신의
+    dirstate 복원 라인이 이미 이 포맷을 씀)으로 물리 백업하고, (b) docket이
+    가리키는 resolved companion 파일들은 `truncateOnlyEntries`에 등록해
+    (0바이트여도 delete-on-zero가 아니라 항상 truncate만 하도록) `"trunc
+    <path>\t<size>"` 라인으로 저널화. 인프로세스 실패 시(`commitGraftedRevision`
+    자신의 `catch` 블록)에는 `docketBackups`를 `SafeFileIO.writeAtomic()`
+    (atomic rename -- 대상 파일 자체의 쓰기 권한이 필요 없어, 원본 크래시
+    원인이 여전히 남아있는 상황에서도 in-process 복구가 스스로 완결될 수 있음)
+    으로 복원하고 `truncateOnlyEntries`의 파일들은 delete-on-zero 없이
+    항상 truncate. 성공 경로(정상 그래프트)는 완전히 그대로 -- 커밋 완료 후
+    저널·docket 백업 사이드카 파일을 정리하는 로직만 추가됐을 뿐, 실제 그래프트
+    동작(3-way merge, obsmarker 미기록, 실행 부/심볼릭 링크 복원 등)은 전혀
+    건드리지 않음.
+
+    **검증**: 기존 `GraftCommandCoverageTest`(20개, 성공 경로 회귀 없음) +
+    기존 `RequirementMatrixGraftCoreRoundTripTest`(6/6, conflict-pause/
+    continueGraft 왕복 포함) 전부 그린 재확인. 이 gap 자체를 겨냥한 신규
+    테스트 2개를 `RequirementMatrixGraftCoreRoundTripTest`에 추가(6-combo
+    전체 × 2 = 12개, 총 18개 그린):
+    1. `hg4jFailedGraftRestoresChangelogOnInProcessFailureAcrossCombo` --
+       위 실측 재현과 동일한 `chmod` 기반 실패 주입으로 `commitGraftedRevision`
+       자신의 in-process 복구를 실제로 태우고, docket의 resolved companion
+       파일 크기가 그래프트 이전으로 정확히 truncate됐는지, 저널이 남지
+       않았는지, real hg `log`/`verify`가 그래프트 이전과 완전히 동일한
+       리비전 집합·클린 상태인지 확인. (참고: `cl1`(classic) 조합은 in-place
+       truncate 복원 자체가 같은 파일을 대상으로 하기 때문에 주입한 권한
+       실패가 복구 자체도 막아 저널이 일단 남는 것이 **정상**(2단 방어의
+       의도된 동작, `CommitCommand`와 동일) -- 이 경우 테스트가 권한을 다시
+       열어준 뒤 `HgRepository#checkAndPerformAutoRollback()`(재오픈 시
+       크래시 복구)으로 마무리까지 확인.)
+    2. `hg4jCrashRecoveryUndoesSuccessfulGraftFromHandCraftedJournalAcrossCombo`
+       -- `RequirementMatrixRecoverCoreRoundTripTest`와 동일한 기법(실제
+       hg4j 성공 커밋 전후 물리 상태를 스냅샷한 뒤 "커밋은 끝났지만 저널
+       정리 직전 크래시"를 손으로 재구성)으로, 그래프트가 **완전히 성공한
+       뒤** 프로세스가 죽은 시나리오를 재현 -- 수정 전이었다면 정확히 이
+       시나리오에서 phantom 커밋이 살아남았을 경우다. 새 리포지토리 핸들의
+       `lockStore()`(=`checkAndPerformAutoRollback()` 트리거)로 복구를
+       실행한 뒤, real hg `log`가 그래프트 이전 커밋 집합과 정확히 일치하고
+       (`{node}` 목록 완전 동일, 그래프트 커밋 해시는 더 이상 보이지 않음),
+       `hg verify`가 클린하고, `hg parents`가 그래프트 이전 목적지로
+       되돌아갔는지 확인.
+
+    두 신규 테스트 모두 **수정 전 코드로 먼저 돌려 실패를 직접 확인**(4개
+    조합에서 `AssertionFailedError`, 위 실측 재현 문단 참고) 후 수정 커밋을
+    적용해 그린으로 전환하는 TDD 순서를 실제로 밟았다. 전체 non-interop
+    `test`(jacoco 제외)와 `interopTest --tests
+    RequirementMatrixGraftCoreRoundTripTest`가 모두 그린. 상세 커밋:
+    후속 세션의 GraftCommand v2-docket rollback/journal 수정 커밋 참고.
+
     **조정자 취합(2026-09-05)**: 위 3개 wave 5 문단(메타데이터조회 wave
     +8, core/query wave +7, 이 admin/maintenance wave +6)은 서로 다른
     명령 집합에 대한 독립 병렬 작업으로 겹치지 않음(단, `DeltaCodec

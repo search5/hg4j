@@ -878,6 +878,188 @@ public class Revlog {
     }
 
     /**
+     * Real hg's {@code _maxinline} (mercurial/revlog.py) -- the cumulative inline-data-size
+     * threshold past which {@code _enforceinlinesize()} converts an inline v1 revlog to the
+     * separate-{@code .d}-file non-inline layout. See {@link #enforceInlineSize(int)}.
+     */
+    private static final long MAXINLINE = 131072L;
+
+    /**
+     * Backlog #43 -- real hg's {@code revlog.py} {@code _enforceinlinesize()} equivalent, called
+     * right after a revision has been durably appended to this (v1, inline) revlog, mirroring
+     * real hg's own call site ({@code _writeentry()} calls {@code self._enforceinlinesize(tr)}
+     * immediately after writing each single revision -- confirmed live against real hg 7.2: a
+     * single first revision whose own compressed size alone already exceeds {@code _maxinline}
+     * is written inline and then IMMEDIATELY split, exactly like the multi-revision case below).
+     *
+     * <p>Live real-hg 7.2 testing (llm-wiki backlog #43) confirmed the exact trigger condition:
+     * after appending revision {@code rev}, if this revlog is still inline and the cumulative
+     * data size so far ({@code offset(rev) + compLen(rev)} -- real hg's own
+     * {@code self.start(tiprev) + self.length(tiprev)}, which for a v1 revlog's "offset" field
+     * always means pure compressed-data bytes excluding the 64-byte headers, in EITHER layout)
+     * has reached or passed 131072 bytes, the revlog is converted to non-inline via
+     * {@link #splitInlineToNonInline()}. Only relevant to v1: a v2 revlog is already permanently
+     * non-inline ({@code this.inline} is always {@code false} whenever {@link RevlogIndex#isV2()}
+     * -- see the constructor), so this is naturally a no-op for v2, matching real hg's own
+     * {@code not self._inline} fast-return; changelog is likewise unaffected since it's
+     * {@code may_inline=False}/never inline to begin with (also already reflected in
+     * {@code this.inline} via the constructor's {@code isChangelog} check).
+     */
+    private void enforceInlineSize(int rev) throws IOException {
+        if (!inline) {
+            return;
+        }
+        IndexRecord rec = getIndexRecord(rev);
+        long totalSize = rec.getOffset() + rec.getCompLen();
+        if (totalSize < MAXINLINE) {
+            return;
+        }
+        splitInlineToNonInline();
+    }
+
+    /**
+     * Performs the actual inline&rarr;non-inline on-disk conversion: splits every revision's raw
+     * (already-compressed) data bytes out of the inline {@code .i} file into a fresh {@code .d}
+     * file (in revision order, exactly like real hg's own
+     * {@code InnerRevlog.split_inline}: read each revision's existing segment unchanged, append
+     * it to the new data file, then rewrite the index with plain 64-byte records), then rewrites
+     * the {@code .i} file to hold only fixed-64-byte index records with the inline format-flag
+     * bit cleared.
+     *
+     * <p>Critically, every other field of every existing record (offset, flags, lengths, baseRev,
+     * linkRev, parents, nodeId) is carried over byte-for-byte unchanged -- live real-hg 7.2
+     * byte-level comparison (backlog #43) confirmed a v1 revlog's "offset" field is always a pure
+     * data-byte count that never includes the interleaved 64-byte headers, in EITHER layout, so
+     * no offset recomputation is needed when converting -- only where the bytes physically live
+     * changes. This exactly matches real hg's own {@code split_inline}, which re-serializes each
+     * existing {@code index.entry_binary(i)} unchanged (only rev 0's packed header bits differ,
+     * losing the inline flag).
+     */
+    private void splitInlineToNonInline() throws IOException {
+        int count = index.getRevisionCount();
+        // Snapshot every revision's raw data hunk from the CURRENT inline .i file layout before
+        // any bytes move -- index.getFileOffset(rev) still reflects the pre-split physical inline
+        // layout at this point (interleaved 64-byte headers + data).
+        byte[][] dataHunks = new byte[count][];
+        try (RandomAccessFile raf = new RandomAccessFile(idxFile, "r")) {
+            for (int rev = 0; rev < count; rev++) {
+                IndexRecord rec = getIndexRecord(rev);
+                long headerOffset = index.getFileOffset(rev);
+                byte[] hunk = new byte[rec.getCompLen()];
+                raf.seek(headerOffset + 64);
+                raf.readFully(hunk);
+                dataHunks[rev] = hunk;
+            }
+        }
+
+        // Write the new .d file holding every revision's data, in order, contiguously -- matches
+        // real hg's split_inline() truncate-then-sequential-write.
+        try (FileOutputStream out = new FileOutputStream(datFile, false)) {
+            for (byte[] hunk : dataHunks) {
+                out.write(hunk);
+            }
+            out.getFD().sync();
+        }
+
+        // Rewrite the .i file: plain 64-byte records only, inline format-flag bit cleared. Built
+        // in a temp file and atomically renamed into place so a crash mid-rewrite can never leave
+        // a half-converted .i file.
+        File tmpIdx = new File(idxFile.getParentFile(), idxFile.getName() + ".tmpsplit");
+        try (FileOutputStream out = new FileOutputStream(tmpIdx, false)) {
+            for (int rev = 0; rev < count; rev++) {
+                IndexRecord rec = getIndexRecord(rev);
+                long offsetFlags;
+                if (rev == 0) {
+                    long formatFlags = 0x0002L; // generaldelta, inline(0x0001) bit cleared
+                    long version = 1L;
+                    offsetFlags = (formatFlags << 48) | (version << 32) | (rec.getFlags() & 0xFFFFL);
+                } else {
+                    offsetFlags = (rec.getOffset() << 16) | (rec.getFlags() & 0xFFFFL);
+                }
+
+                ByteBuffer recordBuf = ByteBuffer.allocate(64);
+                recordBuf.putLong(offsetFlags);
+                recordBuf.putInt(rec.getCompLen());
+                recordBuf.putInt(rec.getUncompLen());
+                recordBuf.putInt(rec.getBaseRev());
+                recordBuf.putInt(rec.getLinkRev());
+                recordBuf.putInt(rec.getParent1());
+                recordBuf.putInt(rec.getParent2());
+                byte[] nodeField = new byte[32];
+                System.arraycopy(rec.getNodeId(), 0, nodeField, 0, 20);
+                recordBuf.put(nodeField);
+
+                out.write(recordBuf.array());
+            }
+            out.getFD().sync();
+        }
+        Files.move(tmpIdx.toPath(), idxFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+        this.inline = false;
+        // Force a full fresh reload from the just-rewritten on-disk state: RevlogIndex.loadIndex()
+        // determines `inline` from rev 0's actual on-disk format flags and recomputes fileOffsets
+        // as plain `rev * 64` for a non-inline layout, so this is simpler and less error-prone
+        // than hand-maintaining every piece of in-memory bookkeeping (fileOffsets, addedRecords,
+        // nodeMapDeferred, etc.) that a partial in-place update would otherwise have to track.
+        index.clearCache();
+
+        registerNewDataFileInFncache();
+    }
+
+    /**
+     * Real hg's {@code store.py} {@code fncachestore._fncachevfs.register_file()} equivalent,
+     * called ONLY at the exact moment {@link #splitInlineToNonInline()} creates a brand-new
+     * {@code .d} file for a previously-inline revlog: real hg's own {@code _enforceinlinesize()}
+     * calls exactly this ({@code self.opener.register_file(self._datafile)}) right after the
+     * split, registering the just-created data file into {@code .hg/store/fncache} alongside the
+     * index file that (for a filelog/treemanifest revlog under {@code data/}/{@code meta/}) was
+     * already registered when the revlog was first created. Without this, real hg's own
+     * {@code hg verify} reports {@code warning: revlog 'data/<name>.d' not in fncache!} for every
+     * filelog/manifest hg4j itself transitions to non-inline -- confirmed live (backlog #43).
+     *
+     * <p>Real hg's {@code RE_FNCACHE_FILE = re.compile(r'^(data|meta)/.*\.[id]$')} only tracks
+     * files under {@code data/} (filelogs) and {@code meta/} (per-directory treemanifest
+     * revlogs) -- the well-known root-level {@code 00changelog.i}/{@code 00manifest.i} are never
+     * fncache-tracked at all (irrelevant here anyway: changelog never goes inline in the first
+     * place, and even if the root manifest transitions, its path has no {@code data/}/{@code
+     * meta/} prefix). Best-effort and silent like this class's other post-append bookkeeping
+     * ({@link #updatePersistentNodeMapAfterAppend()}): a repository with no {@code fncache} file
+     * at all (the {@code fncache} requirement not in play) is deliberately left untouched rather
+     * than have one spuriously created.
+     */
+    private void registerNewDataFileInFncache() {
+        try {
+            String idxPath = idxFile.getAbsolutePath().replace(File.separatorChar, '/');
+            int storeMarker = idxPath.lastIndexOf("/store/");
+            if (storeMarker == -1) {
+                return;
+            }
+            String storeRelative = idxPath.substring(storeMarker + "/store/".length());
+            if (!(storeRelative.startsWith("data/") || storeRelative.startsWith("meta/"))
+                    || !storeRelative.endsWith(".i")) {
+                return;
+            }
+            File storeDir = new File(idxPath.substring(0, storeMarker + "/store".length()));
+            File fncacheFile = new File(storeDir, "fncache");
+            if (!fncacheFile.exists()) {
+                // No fncache requirement active for this repository -- nothing to update, and
+                // real hg itself would never create one here either.
+                return;
+            }
+            String dataEntry = storeRelative.substring(0, storeRelative.length() - ".i".length()) + ".d";
+            List<String> existing = Files.readAllLines(fncacheFile.toPath());
+            if (!existing.contains(dataEntry)) {
+                try (java.io.Writer w = new java.io.FileWriter(fncacheFile, true)) {
+                    w.write(dataEntry);
+                    w.write("\n");
+                }
+            }
+        } catch (IOException ignored) {
+            // best-effort, matches this class's other post-append bookkeeping
+        }
+    }
+
+    /**
      * v2(changelog-v2 또는 일반 revlog-v2) 저장소에 새 리비전을 append한다. 실제 hg CLI로
      * 생성한 픽스처를 hexdump/struct로 직접 대조해 검증된 레이아웃을 그대로 재현한다 — 두
      * 포맷 모두 델타 체인 없이 매 리비전을 독립 fulltext로 저장한다(단순화, changelog-v2는
@@ -1322,6 +1504,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, extraFlags, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
+        enforceInlineSize(rev);
         updatePersistentNodeMapAfterAppend();
 
         return hash;
@@ -1541,6 +1724,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, flags, dataHunk.length, content.length,
                 baseRev, linkRev, parent1, parent2, entry.node));
+        enforceInlineSize(rev);
         updatePersistentNodeMapAfterAppend();
 
         clearCache();
@@ -1688,6 +1872,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, rawToWrite.length,
                 rev, linkRev, parent1, parent2, node));
+        enforceInlineSize(rev);
         updatePersistentNodeMapAfterAppend();
 
         clearCache();
@@ -1797,6 +1982,7 @@ public class Revlog {
 
         index.addRecord(new IndexRecord(rev, offset, 0, dataHunk.length, processedContent.length,
                 baseRev, linkRev, parent1, parent2, nodeId));
+        enforceInlineSize(rev);
         updatePersistentNodeMapAfterAppend();
 
         clearCache();

@@ -58,7 +58,7 @@ Bookmarks/Obsolescence/Merge state/트랜잭션 저널링 행 갱신 및 신규 
 |---|---|---|---|
 | `requires` 파일 / requirements | `hg help internals.requirements` | `HgRepository.loadRequires()`, `Hg.open()` | ✅ **재검증 완료(2026-09-04, 백로그 29번)** — `HgOpenRequirementValidationTest` 신설. `HgRepository.loadRequires()` 자체는 8개 문자열(dirstate-v2/revlog-compression-zstd/exp-changelog-v2/exp-revlogv2.2/persistent-nodemap/fileindex-v1/treemanifest/exp-copies-sidedata-changeset)만 인식하고 문제없었으나, **`Hg.open()`의 별도 `SUPPORTED` 허용목록이 심각하게 낡아 있던 실제 버그를 발견·수정**했다 — `sparserevlog`(모든 real hg 7.2 기본 저장소에 있음)가 아예 빠져 있었고 `revlog-compression-zstd`를 접미사 없는 `revlog-compression`으로 잘못 갖고 있어서, **설정 없이 그냥 `hg init`한 완전히 평범한 저장소조차 `Hg.open()`으로 열면 `HgValidationException: unsupported repository requirement: sparserevlog`로 거부되고 있었다**(`new HgRepository(dir)`로 이 게이트를 우회하는 기존 테스트들만 이 사실을 가려왔음). `SUPPORTED` 목록을 실측된 정확한 문자열로 동기화 |
 | store 레이아웃 / fncache 인코딩 | wiki `fncacheRepoFormat`, `mercurial/store.py`(`_pathencode`/`_hashencode` 실측) | `util.NodeIdUtil.encodeFname` | ✅ **구현 완료(2026-09-01)** — `store.py`의 실제 인코딩 알고리즘대로 전면 재작성. 이전에는 Windows `COM#`/`LPT#` 예약어의 세 번째 글자가 아니라 끝자리 숫자를 이스케이프하는 버그와, 긴 경로(120바이트 초과) 해싱 방식이 실제 hg에 없는 방식(255바이트 초과 시 디렉터리 없는 형태로 전환)으로 되어 있던 버그를 발견·수정. 대문자/앞자리 점/Windows 예약어/150바이트 초과 경로 등 7개 까다로운 파일명으로 실제 hg 온디스크 레이아웃과 바이트 단위 일치 검증(`FncacheEncodingInteropTest`). fncache 파일 목록 자체(원본 논리 경로 그대로 저장)는 기존에도 정확했음 |
-| Revlog v1 (인덱스/데이터, generaldelta, inline) | `hg help internals.revlogs`, wiki `FileFormats` | `Revlog`, `RevlogIndex`, `DeltaEngine`, `DeltaCodec` | ✅ v1 구현, **2026-09-01 실제 hg CLI 재검증 중 zstd requirement 문자열 버그 발견·수정**(`revlog-compression=zstd`→`revlog-compression-zstd`) — 상세는 [[revlog]]. **inline 레이아웃도 완료(2026-09-04, 백로그 35번)** — hg4j는 새 revlog를 항상 non-inline(`.i`/`.d` 분리)으로만 써서 real `hg verify`가 "not in fncache" 경고를 내던 문제를 발견·수정. real hg는 revlogv1이 기본 inline이고 131072바이트(`_maxinline`)를 넘을 때만 분리하는데(changelog만 예외), hg4j `Revlog` 생성자가 신규 v1 filelog/manifest를 inline으로 시작하도록 수정 — 근본 원인은 `appendChangeGroupEntry`(pull/push changegroup 적용 경로)가 inline 상태를 아예 무시하고 항상 non-inline으로 쓰던 별도의 hand-rolled write path였음, `appendRevision`과 동일한 inline/non-inline 분기로 재작성 |
+| Revlog v1 (인덱스/데이터, generaldelta, inline) | `hg help internals.revlogs`, wiki `FileFormats` | `Revlog`, `RevlogIndex`, `DeltaEngine`, `DeltaCodec` | ✅ v1 구현, **2026-09-01 실제 hg CLI 재검증 중 zstd requirement 문자열 버그 발견·수정**(`revlog-compression=zstd`→`revlog-compression-zstd`) — 상세는 [[revlog]]. **inline 레이아웃도 완료(2026-09-04, 백로그 35번)** — hg4j는 새 revlog를 항상 non-inline(`.i`/`.d` 분리)으로만 써서 real `hg verify`가 "not in fncache" 경고를 내던 문제를 발견·수정. real hg는 revlogv1이 기본 inline이고 131072바이트(`_maxinline`)를 넘을 때만 분리하는데(changelog만 예외), hg4j `Revlog` 생성자가 신규 v1 filelog/manifest를 inline으로 시작하도록 수정 — 근본 원인은 `appendChangeGroupEntry`(pull/push changegroup 적용 경로)가 inline 상태를 아예 무시하고 항상 non-inline으로 쓰던 별도의 hand-rolled write path였음, `appendRevision`과 동일한 inline/non-inline 분기로 재작성. **성장 중 inline→non-inline 전환도 완료(2026-09-06, 백로그 43번)** — real hg의 `_enforceinlinesize()`(131072바이트 초과 시 전환)를 `Revlog`의 4개 write path 전부에 구현, real hg 7.2 라이브 재현으로 정확한 전환 시점/바이트 레이아웃 확인, 부수적으로 발견된 `CommitCommand`/`FetchCommand`의 fncache `.d` 미등록 버그도 함께 수정 — 상세는 위 백로그 43번 항목 |
 | Revlog v2 — changelog-v2(`exp-changelog-v2`) | `mercurial/revlogutils/docket.py`+실제 hg 데이터 대조 | `storage.RevlogIndex`, `storage.Revlog` | ✅ **구현 완료(2026-09-01)** — 실제 hg CLI로 생성한 저장소로 읽기/쓰기 검증, `hg verify`로 상호운용성까지 확인. 상세: [[revlog-v2-support-plan]] |
 | Revlog v2 — 일반(`exp-revlogv2.2`, 매니페스트/파일로그) 및 `fileindex-v1` | Rust 확장 포함 실제 Mercurial 7.2.4(Docker) fixture로 바이트 단위 검증 완료 | `RevlogV2GeneralParserTest`, `FileIndexTest`(+ 수동 Docker `hg verify`/`log`/`cat` 왕복) | ✅ **완료(2026-09-02)** — 읽기+쓰기 모두 구현. 상세: [[revlog-v2-support-plan]] |
 | persistent-nodemap(`.n` 트라이 파일 가속 조회) | `mercurial/revlogutils/nodemap.py`(docket + trie 인코딩 실측) | `storage.NodeMapFile`, `storage.RevlogIndex`, `storage.Revlog`, `storage.DefaultFileStoreEngine` | ✅ **읽기(가속 조회) 구현 완료(2026-09-03)** — Docker `hg-rust-7.2.4`(Rust 확장 포함, 이 환경의 시스템 hg는 이 requirement의 저장소 자체를 못 만듦)로 40커밋 실제 저장소를 만들어 `.n` docket(62바이트: version/uid_size/tip_rev/data_length/data_unused/tip_node_size 헤더 + uid + tip_node) + `-<uid>.nd` 트라이(64바이트 블록, 16×4바이트 빅엔디안 signed int, 루트는 항상 마지막 블록)를 바이트 단위로 대조(`NodeMapFileFixtureTest`, 40/40 실제 노드 해시 일치). `RevlogIndex`에 `.n`이 신선하고(tip_rev/tip_node가 현재 인덱스와 일치) 비-inline인 경우 전체 레코드 스캔을 건너뛰고 오프셋을 산술적으로 계산하는 fast path를 추가, `findRevision()`이 트라이를 우선 조회(항상 실제 레코드로 재검증 후 반환)하고 stale/부재 시 기존 순차 스캔 fallback으로 안전하게 전환(`RevlogIndexPersistentNodeMapTest`). `findByHexPrefix()`는 트라이가 전체 노드 해시를 저장하지 않아 가속 대상에서 제외 — 최초 호출 시 지연된 맵을 1회 materialize. **쓰기(커밋 시 `.n` 갱신)도 ✅ 완료(2026-09-03)** — `mercurial/revlogutils/nodemap.py`의 전체 재빌드(`_build_trie`)와 증분 갱신(`_update_trie`) 양쪽을 실측해 `NodeMapFile`에 모두 구현(실제 hg의 "새 길이가 unused*10 이하면 포기하고 전체 재빌드로 폴백" 10% 임계값 로직 포함), `Revlog`의 리비전 append 진입점 전부에 배선. 상세는 백로그 15번(읽기)/21번(쓰기) 참고 |
@@ -3997,16 +3997,113 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     셋 다 real hg CLI로 실측해서 hg4j 동작과 대조 검증 후 필요한 만큼
     구현할 것.
 
-43. **Revlog가 성장해도 inline→non-inline 전환을 안 함 (`_enforceinlinesize`
-    상당 로직 없음)**. 신규, 2026-09-04 문서 재감사로 발견(백로그 35번
-    완료 본문에 번호 없이 있던 캐비어트를 승격) — 미착수. 백로그 35번에서
-    "새 revlog는 항상 inline으로 시작"하도록 고쳤지만, real hg는 그 이후
-    revlog가 자라서 131072바이트(`_maxinline`)를 넘으면 inline에서
-    non-inline으로 **전환**하는 로직(`_enforceinlinesize`)이 있다 — hg4j는
-    이 "성장 중 전환"이 구현돼 있지 않아서, 계속 커지는 파일을 반복 커밋하는
-    실사용 시나리오에서 revlog가 무한정 inline 상태로 남아있을 가능성이 있다
-    (정확한 영향 범위 미확인 — 단순히 비효율인지, 어느 시점부터 실제 파싱
-    오류로 이어지는지 real hg 소스/CLI로 확인 필요).
+43. ~~**Revlog가 성장해도 inline→non-inline 전환을 안 함 (`_enforceinlinesize`
+    상당 로직 없음)**~~ — ✅ **완료(2026-09-06)**. 신규, 2026-09-04 문서 재감사로
+    발견(백로그 35번 완료 본문에 번호 없이 있던 캐비어트를 승격).
+
+    **real hg 실측 (호스트 real hg 7.2, `mercurial/revlog.py` 소스 직접 대조 +
+    라이브 재현)**: `_enforceinlinesize(tr)`는 매 리비전 append 직후
+    (`_writeentry()` 끝, `mercurial/revlog.py:3771`) 호출되며, 조건은
+    `total_size = self.start(tiprev) + self.length(tiprev)` (v1의 "offset" 필드는
+    inline/non-inline 어느 레이아웃이든 헤더 바이트를 제외한 순수 데이터 바이트
+    누적값이라는 점 실측 확인)가 131072바이트(`_maxinline`) 이상이면서 현재
+    inline인 경우에만 전환한다. 실측 재현(호스트 real hg 7.2, 10000/30000/
+    50000/70000바이트로 커지는 파일을 연속 커밋): 처음 3개 커밋까지는 inline
+    유지(`.d` 파일 없음, `.i`만 성장), 4번째 커밋(누적 160000바이트, 임계값
+    초과) 직후 즉시 `.d` 파일이 생기고 `.i`는 `revCount * 64`바이트로 축소됨
+    (`ls`/`hg debugindex`로 바이트 단위 확인). 첫 리비전 하나만으로도 이미
+    131072바이트를 넘는 경우(예: 단일 커밋으로 200000바이트 파일 추가) 그
+    리비전 하나만 있는 상태로 즉시 non-inline 전환되는 것도 확인(real hg는
+    "일단 inline으로 다 쓰고 크기 넘으면 분리"이지 "미리 크기를 알아서 non-inline
+    으로 바로 쓰기"가 아님 — 라이브 관찰로 확정). `split_inline()`(실제 전환
+    로직, `mercurial/revlog.py:843`)은 기존 레코드의 offset/flags/baseRev/
+    linkRev/parents/nodeId를 전혀 재계산하지 않고 그대로 재직렬화하며 rev0의
+    packed header(formatFlags|version)에서만 inline 비트(`0x0001`)를 지운다 —
+    이 사실이 hg4j 구현을 크게 단순화시켜 줌(offset 재계산 불필요, 물리적
+    바이트 위치만 이동).
+
+    **pre-fix 영향 실측 (수정 전 hg4j 동작을 그대로 재현해 real hg CLI로 검증)**:
+    수정된 hg4j로 정상 전환된 저장소를 만든 뒤, 그 `.i`/`.d`를 손으로 다시
+    "inline으로 역전(un-split)"시켜 pre-fix hg4j가 만들었을 법한 결과물(4개
+    리비전, 160260바이트 전부 inline, `.d` 파일 없음, fncache에도 `.d` 항목
+    없음)을 정확히 재현한 뒤 real hg 7.2로 직접 검증: `hg verify`
+    **경고 없이 clean**(fncache 검사는 존재하는 `.d`/`.i` 파일 목록과 fncache
+    엔트리의 일치 여부만 보므로,애초에 `.d` 파일이 없는 "정상적으로 작은
+    inline revlog"와 "너무 커진 채로 inline인 revlog"를 구분하지 못함 —
+    검사 대상이 아님), `hg debugindex`/`hg log`로 4개 리비전 전부 정상 열거,
+    `hg cat`으로 4개 리비전 전부 정상 split 버전과 바이트 단위로 완전히 동일한
+    내용 추출, `hg clone`(하드링크 로컬 클론)은 오버사이즈 inline 레이아웃을
+    그대로 보존(고쳐주지 않음), `hg clone --pull`(번들/와이어 프로토콜 경로)은
+    소스에서 4개 리비전 전부 정상적으로 읽어들인 뒤 **목적지에는 real hg 자신의
+    쓰기 경로가 다시 적용되어 정상적으로 split된(`.d` 분리) 레이아웃으로
+    "자가 치유"됨**을 확인. 결론: 이 버그는 **데이터 손상/파싱 오류가 아니라
+    순수 포맷 충실도(format-fidelity)/비효율 문제**였다 — real hg는 크기와
+    무관하게 inline 플래그 비트만 보고 읽으므로 오버사이즈 inline revlog도
+    완벽하게 읽고 검증하고 clone/pull할 수 있지만, hg4j가 만드는 결과물이
+    real hg가 절대 만들지 않는 모양(성장해도 계속 inline)이라는 점에서
+    포맷 충실도 격차였다. 데이터 손상/치명적 real-hg-비호환이 아니므로
+    웹훅 알림 기준에는 해당하지 않음(이미 알려진 중간 우선순위 백로그
+    항목의 예정된 완료).
+
+    **구현** (`Revlog.java`): `appendRevision`/`appendChangeGroupEntry`/
+    `appendRawRevision`/`appendOptimizedRevision` 4개 write path 전부
+    (`appendRevisionV2`는 대상 아님 — v2는 애초에 항상 non-inline) 각자의
+    `index.addRecord(...)` 직후 신설 `enforceInlineSize(rev)`를 호출하도록
+    통일. `enforceInlineSize`는 `!inline`이면 즉시 반환(v2/changelog에 대해
+    자연히 no-op), 아니면 방금 추가된 레코드의 `offset+compLen`이 131072
+    이상인지 확인 후 넘으면 `splitInlineToNonInline()` 호출.
+    `splitInlineToNonInline()`은 (1) 기존 inline `.i`의 물리 레이아웃에서 각
+    리비전의 원시(압축된) 데이터 청크를 순서대로 읽어 새 `.d` 파일에 이어쓰고,
+    (2) 각 레코드를 고정 64바이트로만(데이터 인터리빙 없이) 재직렬화해 임시
+    파일에 쓴 뒤 원자적으로 `.i`에 rename하며 rev0의 packed header에서만
+    inline 비트를 지우고, (3) `this.inline = false`로 갱신한 뒤 `RevlogIndex
+    .clearCache()`로 방금 재작성한 온디스크 상태를 그대로 다시 파싱해
+    fileOffsets/nodeMap/addedRecords 등 모든 내부 부기를 새로 맞춘다(직접
+    부분 갱신보다 훨씬 덜 오류에 취약). offset/flags/baseRev/linkRev/parents/
+    nodeId는 real hg의 `split_inline()`과 동일하게 전혀 재계산하지 않고
+    그대로 이전.
+
+    **fncache 상호작용 발견 및 수정** (범위 축소 없이 완전 대응): 위 구현만으로
+    `hg4jCommittingAGrowingFileTransitionsToNonInlineJustLikeRealHg` 테스트가
+    처음엔 `hg verify`에서 `warning: revlog 'data/f.bin.d' not in fncache!`로
+    실패 — real hg의 `RE_FNCACHE_FILE`(`store.py`)은 `data/`, `meta/` 하위의
+    `.i`/`.d` 파일을 전부 fncache에 등록하는데(비-inline 전환 시
+    `self.opener.register_file(self._datafile)`을 명시적으로 호출), hg4j의
+    `CommitCommand`/`FetchCommand`는 필드로 등록된 `.i` 파일만 fncache에
+    넣고 `.d`는 전혀 넣지 않았다(inline-by-default 이전에는 항상 처음부터
+    non-inline이라 `.i` 등록 시점에 `.d`도 이미 존재해서 이 gap이 드러나지
+    않았음 — 이번 백로그가 처음으로 이 gap을 노출시킴). `Revlog
+    .splitInlineToNonInline()` 안에 best-effort `registerNewDataFileInFncache()`
+    를 추가해 전환 직후 곧바로 fncache에 `.d`를 append하지만, `CommitCommand`/
+    `FetchCommand` 둘 다 "커밋/펄 시작 시 fncache를 통째로 읽어 메모리 집합에
+    넣고 끝에 통째로 다시 씀" 패턴이라 이 직접 파일 쓰기가 나중에 stale
+    스냅샷으로 덮어써지는 레이스가 실제로 발생 — 두 커맨드 모두 자신의
+    `fncachePaths` 집합에 `filelog.isInline() == false`일 때 `.d` 엔트리를
+    함께 추가하도록 수정(GcCommand의 fncache 재구축이 이미 확립해 둔 것과
+    동일한 관례). `Revlog` 쪽 직접 쓰기는 이 두 커맨드 밖(예: `Revlog`를 직접
+    쓰는 저수준 코드)을 위한 안전망으로 유지.
+
+    **검증**: 신규 `RevlogTest`(빠른 순수 자바, 실제 hg 불필요) 3건 —
+    소규모 revlog는 절대 `.d`를 만들지 않음(회귀 가드), 10000/30000/50000/
+    70000바이트 연속 append가 4번째에서 정확히 전환되고 재오픈 후에도
+    모든 리비전 콘텐츠가 살아남음, 단일 200000바이트 리비전이 즉시 전환됨 —
+    전부 GREEN. 신규 `RevlogInlineTransitionRealHgInteropTest`(`@Tag("interop")`,
+    real hg CLI 필요) 2건 — hg4j가 커밋한 성장 파일이 real hg 7.2와 동일하게
+    전환되고 `hg verify`/`hg debugindex`가 clean함, real hg 자신이 만든(이미
+    전환을 거친) 저장소를 hg4j `CloneCommand`로 clone해 모든 리비전을 hg4j가
+    정확히 읽어들이고 목적지에 대한 real hg `verify`도 clean함 — 전부 GREEN
+    (real hg 프로세스 호출 결과가 assertion 근거). 기존
+    `RevlogInlineWriteRealHgInteropTest`(백로그 35) 재확인 GREEN(회귀 없음).
+    격리 빌드(`/tmp/backlog43-revloginline/{build,cache}`)에서
+    `test -x jacocoTestReport` 전체 재확인(다른 에이전트와 캐시 분리) GREEN.
+    changelog는 `isChangelog` 체크로 애초에 절대 inline으로 시작하지 않으므로
+    (백로그 35에서 이미 확정) 이번 전환 로직의 대상이 아님 — 확인만 하고 손대지
+    않음. treemanifest(`meta/<dir>/00manifest.i`) 리비전도 동일한 `Revlog`
+    write path를 타므로 전환 로직 자체는 그대로 적용되나, `CommitCommand`가
+    애초에 treemanifest dirlog를 fncache에 전혀 등록하지 않는(이 백로그와
+    무관한, 더 이전부터 있던 별개의 gap으로 보임) 것을 발견 — 이번 백로그
+    범위(inline↔non-inline 전환) 밖이라 별도 항목으로 남겨둠(뒤에 후속 번호로
+    등록).
 
 44. **Clonebundles 서버: 매니페스트 파일 없을 때 응답 포맷 미확인**. 신규,
     2026-09-04 문서 재감사로 발견(clonebundles 실행 계획의 서버측 항목
@@ -4015,6 +4112,21 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     파일이 아예 없는 상태에서 요청을 받았을 때 real hg가 빈 응답을 주는지
     404를 주는지 실측 확인이 안 된 상태 — real hg CLI로 직접 재현해서
     확인 후 hg4j 서버 동작을 맞출 것.
+
+45. **`CommitCommand`가 treemanifest 하위 디렉터리 manifest(`meta/<dir>/
+    00manifest.i`/`.d`)를 fncache에 전혀 등록하지 않음**. 신규, 2026-09-06
+    백로그 43번(revlog inline→non-inline 전환) 작업 중 발견 — 미착수.
+    `CommitCommand`는 파일이 바뀔 때마다 `data/<path>.i`(및 이제는 non-inline
+    전환 시 `.d`도, 백로그 43 수정분)를 `fncachePaths`에 추가하지만, treemanifest
+    저장소에서 디렉터리별로 쓰이는 `meta/<dir>/00manifest.i`/`.d`는 그 어디에도
+    fncache에 추가하는 코드가 없다 — real hg의 `RE_FNCACHE_FILE`
+    (`store.py`)은 `data/`와 `meta/` 둘 다 동일하게 추적 대상으로 삼으므로,
+    treemanifest 저장소에서 real hg `hg verify`를 돌리면 모든 디렉터리
+    manifest revlog에 대해 "not in fncache" 경고가 날 가능성이 높다(직접
+    재현/확인 필요 — 이번 백로그에서는 실측하지 않고 코드 리딩으로만 발견).
+    real hg CLI로 treemanifest 저장소를 만들어 실제 fncache 내용과 대조
+    확인 후 `CommitCommand`(및 `FetchCommand`의 treemanifest 매니페스트
+    그룹 적용 경로도 동일 패턴인지 함께 점검)에 `meta/` 등록 로직을 추가할 것.
 
 ## 완료된 항목 (번호 재사용, 위 목록과 별개로 시간순 기록)
 - ~~**`histedit`의 크래시 복구 journal 미적용**~~ — ✅ **완료(2026-09-01)**.

@@ -140,6 +140,22 @@ llm-wiki/
      specific missing evidence or the specific obstacle — never an apology or a promise to "try
      harder" in its place.
 
+10. **Known-bugs registry check before new matrix/command work (added 2026-09-06, after
+    `DeltaCodec.decompressZstd` was independently rediscovered by 4 separate parallel waves
+    in the same session — each wave burned real time re-diagnosing a bug another wave had
+    already fixed).**
+    - **Before starting matrix work on a new command, or investigating a new bug report,
+      search `llm-wiki/known-bugs-registry.md` first** for the shared/infra classes that
+      command calls (e.g. `DeltaCodec`, `RevlogIndex`, `DirstateV2Node`, `DirstateV2Serializer`)
+      — not just the command's own class name, since most repeat-discoveries happen in a
+      shared dependency, not the command class itself.
+    - If the registry already documents the exact symptom, apply the existing fix/verification
+      method instead of re-deriving it from scratch.
+    - When you do find and fix a genuinely new bug, add it to the registry immediately —
+      organized by class/method under "공유 인프라 계층" (shared infra, checked by every
+      command that touches it) or "명령별 버그" (command-specific) — so the next wave doesn't
+      repeat the discovery.
+
 ## The 3 core tasks (borrowed from the Karpathy pattern)
 
 - **Ingest**: read new commits/issues/design discussions and update the relevant

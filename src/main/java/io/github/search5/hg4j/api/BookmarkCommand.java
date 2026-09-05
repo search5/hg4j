@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import io.github.search5.hg4j.revwalk.ChangesetGraph;
 import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.errors.HgValidationException;
 
 /**
  * Commands for bookmark management (listing, creating, or deleting bookmarks).
@@ -22,6 +23,7 @@ public class BookmarkCommand {
     private byte[] nodeId;
     private boolean delete = false;
     private boolean active = false;
+    private boolean force = false;
 
     public BookmarkCommand(HgRepository repository) {
         this.repository = repository;
@@ -51,6 +53,20 @@ public class BookmarkCommand {
 
     public BookmarkCommand setActive(boolean active) {
         this.active = active;
+        return this;
+    }
+
+    /**
+     * {@code hg bookmark -f}/{@code --force}: allows moving an existing bookmark to a revision
+     * that is NOT a descendant of its current target (a backward or divergent move). Without
+     * this, real hg 7.2 aborts with {@code bookmark '<name>' already exists (use -f to force)}
+     * (verified directly against the CLI, 2026-09-05) -- a plain fast-forward move (new target is
+     * a descendant of the current one) is always allowed without {@code -f}, exactly like a brand
+     * new bookmark name. Irrelevant to {@link #setDelete} (removal never requires force) and to
+     * {@link #setActive} (that only touches {@code bookmarks.current}, never a bookmark's target).
+     */
+    public BookmarkCommand setForce(boolean force) {
+        this.force = force;
         return this;
     }
 
@@ -113,6 +129,17 @@ public class BookmarkCommand {
                 targetNode = repository.getDirstate().getParent1();
             }
             String hex = NodeIdUtil.toHex(targetNode).substring(0, 40);
+
+            // real hg 7.2: moving an EXISTING bookmark to a non-descendant revision without -f
+            // aborts instead of silently moving it (verified against the CLI, 2026-09-05) --
+            // exactly the same gate TagCommand already has for retagging (backlog #36). A no-op
+            // "move" to the same target, and any brand-new bookmark name, are both exempt.
+            String existingHex = bookmarks.get(bookmarkName);
+            if (existingHex != null && !existingHex.equalsIgnoreCase(hex) && !force
+                    && !isFastForwardMove(existingHex, hex)) {
+                throw new HgValidationException("bookmark '" + bookmarkName + "' already exists (use -f to force)");
+            }
+
             bookmarks.put(bookmarkName, hex);
             writeBookmarks(bkFile, bookmarks);
             if (!explicitTarget) {
@@ -180,7 +207,9 @@ public class BookmarkCommand {
             }
             if (localRev == -1) {
                 // 로컬 bookmark가 더 이상 존재하지 않는 리비전을 가리킴(strip 등) — 원격 값을 그대로 채택.
-                new BookmarkCommand(repository).setBookmarkName(name).setRevision(remoteHex).call();
+                // 조상 관계를 판정할 기준 리비전 자체가 없으므로 새 force 게이트를 우회한다
+                // (이 분기는 이미 "원격을 그대로 채택"이라는 올바른 판단을 스스로 내린 뒤이다).
+                new BookmarkCommand(repository).setBookmarkName(name).setRevision(remoteHex).setForce(true).call();
                 continue;
             }
 
@@ -209,10 +238,125 @@ public class BookmarkCommand {
         return null;
     }
 
+    /**
+     * True when {@code newHex} is reachable "forward" from {@code oldHex} -- the condition real
+     * hg's own bookmark move gate ({@code bookmarks.validdest}/{@code obsutil.foreground})
+     * allows without {@code -f}. This is NOT just a plain changelog-DAG descendant check: real hg
+     * also allows moving a bookmark across an obsolescence-successor step (e.g. advancing a
+     * bookmark from a commit onto its {@code hg amend}/{@code hg rebase} successor, which is a
+     * DAG *sibling*, not a descendant, of the original) -- freely alternating descendant steps and
+     * successor steps, exactly like {@link PushCommand}'s own {@code isInForeground} (verified
+     * against real hg 7.2, 2026-09-05: amending a bookmarked commit and moving the bookmark to the
+     * amendment succeeds locally without {@code -f}). Either hex failing to resolve to a known
+     * revision (a dangling/stale bookmark target) is treated as "not reachable", matching real
+     * hg's cautious default of requiring {@code -f} whenever this can't be established.
+     */
+    private boolean isFastForwardMove(String oldHex, String newHex) {
+        try {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+            int oldRev = changelog.findRevision(NodeIdUtil.fromHex(oldHex));
+            int newRev = changelog.findRevision(NodeIdUtil.fromHex(newHex));
+            if (oldRev == -1 || newRev == -1) {
+                return false;
+            }
+            if (oldRev == newRev || new ChangesetGraph(changelog).isAncestor(oldRev, newRev)) {
+                return true;
+            }
+            Map<String, List<String>> obsSuccessors = loadObsSuccessorMap();
+            if (obsSuccessors.isEmpty()) {
+                return false;
+            }
+            return isInForeground(changelog, oldRev, newRev, obsSuccessors, buildChildrenMap(changelog));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Real hg's {@code obsutil.foreground}: true when {@code targetRev} is reachable from
+     * {@code startRev} via a chain that freely alternates changelog-descendant steps and
+     * local-obsstore-successor steps. Self-contained near-duplicate of {@link PushCommand}'s own
+     * private method of the same name (kept separate deliberately -- see this file's other
+     * matrix-test-adjacent javadocs for why this codebase generally prefers small isolated copies
+     * of this kind of DAG-walk helper over a shared utility coupling two independently-verified
+     * commands). */
+    private boolean isInForeground(Revlog changelog, int startRev, int targetRev,
+                                    Map<String, List<String>> obsSuccessors,
+                                    Map<Integer, List<Integer>> childrenByRev) throws IOException {
+        if (startRev == targetRev) {
+            return true;
+        }
+        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        java.util.Deque<Integer> stack = new java.util.ArrayDeque<>();
+        stack.push(startRev);
+        visited.add(startRev);
+        while (!stack.isEmpty()) {
+            int cur = stack.pop();
+            if (cur == targetRev) {
+                return true;
+            }
+            for (int child : childrenByRev.getOrDefault(cur, List.of())) {
+                if (visited.add(child)) {
+                    stack.push(child);
+                }
+            }
+            String curHex = NodeIdUtil.toHex(changelog.getIndexRecord(cur).getNodeId());
+            for (String succHex : obsSuccessors.getOrDefault(curHex, List.of())) {
+                int succRev = changelog.findRevision(NodeIdUtil.fromHex(succHex));
+                if (succRev != -1 && visited.add(succRev)) {
+                    stack.push(succRev);
+                }
+            }
+        }
+        return false;
+    }
+
+    /** All child revisions of every revision in the local changelog, {@code rev -> [children]}. */
+    private Map<Integer, List<Integer>> buildChildrenMap(Revlog changelog) throws IOException {
+        Map<Integer, List<Integer>> children = new java.util.HashMap<>();
+        int count = changelog.getRevisionCount();
+        for (int i = 0; i < count; i++) {
+            Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+            if (rec.getParent1() >= 0) {
+                children.computeIfAbsent(rec.getParent1(), k -> new java.util.ArrayList<>()).add(i);
+            }
+            if (rec.getParent2() >= 0) {
+                children.computeIfAbsent(rec.getParent2(), k -> new java.util.ArrayList<>()).add(i);
+            }
+        }
+        return children;
+    }
+
+    /** Reads and decodes this repository's own {@code .hg/store/obsstore} (if any) into a
+     * {@code predecessor-hex -> [successor-hex, ...]} map. Empty (never {@code null}) when the
+     * repo has no obsstore at all. */
+    private Map<String, List<String>> loadObsSuccessorMap() throws IOException {
+        File obsstoreFile = new File(repository.getStoreDir(), "obsstore");
+        if (!obsstoreFile.exists() || obsstoreFile.length() == 0) {
+            return Map.of();
+        }
+        byte[] bytes = Files.readAllBytes(obsstoreFile.toPath());
+        List<io.github.search5.hg4j.obsolete.HgObsMarker> markers = io.github.search5.hg4j.obsolete.HgObsolescenceParser.parse(bytes);
+        Map<String, List<String>> map = new java.util.HashMap<>();
+        for (io.github.search5.hg4j.obsolete.HgObsMarker marker : markers) {
+            String predHex = NodeIdUtil.toHex(marker.getPredecessor());
+            List<String> succHexes = map.computeIfAbsent(predHex, k -> new java.util.ArrayList<>());
+            for (byte[] succ : marker.getSuccessors()) {
+                succHexes.add(NodeIdUtil.toHex(succ));
+            }
+        }
+        return map;
+    }
+
     private void writeBookmarks(File file, Map<String, String> bookmarks) throws IOException {
         if (bookmarks.isEmpty()) {
+            // Real hg (verified against the CLI, 2026-09-05: `hg bookmarks --delete` on the last
+            // remaining bookmark) leaves `.hg/bookmarks` behind as a 0-byte file rather than
+            // deleting it -- it is only ever removed by real hg if it never existed in the first
+            // place. Match that: once the file exists, keep it (now empty) instead of unlinking it.
             if (file.exists()) {
-                file.delete();
+                SafeFileIO.writeStringAtomic(file, "");
             }
             return;
         }

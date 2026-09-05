@@ -284,7 +284,12 @@ public class TrackCMissingCommandsInteropTest {
     }
 
     @Test
-    public void testBackoutRootCommitRemovesAllItsFiles(@TempDir Path tempDir) throws Exception {
+    public void testBackoutRootCommitIsRejected(@TempDir Path tempDir) throws Exception {
+        // Backlog #39 wave 4: verified live against real hg 7.2 (2026-09-05) -- `hg backout -r 0`
+        // on a root (parentless) commit aborts with "cannot backout a change with no parents"
+        // (mercurial/commands.py's _dobackout: "if p1 == repo.nullid: raise ..."). The previous
+        // version of this test asserted the opposite (that hg4j would happily back out a root
+        // commit) -- a real behavioral deviation from hg this fixes rather than preserves.
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -293,13 +298,10 @@ public class TrackCMissingCommandsInteropTest {
         hg.add().addFile("a.txt").call();
         byte[] c1 = hg.commit().setAuthor("T").setMessage("c1").call();
 
-        new BackoutCommand(repo).setRevision(NodeIdUtil.toHex(c1)).setAuthor("T").call();
-
-        assertFalse(f.exists(), "부모가 없는 root 커밋을 backout하면 그 커밋에서 추가된 파일이 제거되어야 함");
-        // backout이 제거를 이미 새 커밋으로 반영했으므로 status는 깨끗해야 하고(대기 중인
-        // 변경 없음), 실제 hg에서도 tip 시점에 추적되는 파일이 없어야 한다.
-        String nativeStatus = HgTestUtils.hg(repoDir, "status");
-        assertEquals("", nativeStatus.trim());
+        HgValidationException ex = assertThrows(HgValidationException.class,
+                () -> new BackoutCommand(repo).setRevision(NodeIdUtil.toHex(c1)).setAuthor("T").call());
+        assertTrue(ex.getMessage().contains("cannot backout a change with no parents"), ex.getMessage());
+        assertTrue(f.exists(), "a rejected backout must not touch the working copy");
     }
 
     @Test

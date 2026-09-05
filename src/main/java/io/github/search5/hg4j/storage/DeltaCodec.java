@@ -137,17 +137,45 @@ public final class DeltaCodec {
     /**
      * Decompresses a Zstd-compressed revlog hunk (header byte {@code 0x28}).
      *
+     * <p>{@code uncompLen} (the index record's own "uncompressed length" field) is only a HINT,
+     * and for a delta revision it is the WRONG size to trust blindly: per the revlog format, that
+     * field always holds the fully-reconstructed FULLTEXT's length (what this revision decodes
+     * to after the whole delta chain is applied), not the length of THIS hunk's own decompressed
+     * bytes -- a delta hunk (a handful of {@code [start][end][length][data]} records describing
+     * what changed) is normally much SMALLER than the fulltext it patches. Blindly allocating
+     * {@code new byte[uncompLen]} and handing back that full-sized array regardless of how many
+     * bytes zstd actually wrote into it silently appends trailing zero-byte padding after the
+     * real delta data -- {@link DeltaEngine#applyDelta} then parses those zero bytes as a bogus
+     * extra {@code start=0,end=0,length=0} hunk and rejects it as "Invalid delta hunk offsets"
+     * (found live 2026-09-05, backlog #39 requirement-matrix expansion to {@code GcCommand}: a
+     * real hg-rust-created, zstd-compressed, generaldelta classic-v1 manifest with more than one
+     * revision -- verified live against hg-rust-7.2.4 by hand-decompressing the exact same hunk
+     * bytes with Python's own {@code zstandard} library, which correctly returns only the real
+     * 127 decompressed bytes for a hunk whose owning revision's fulltext uncompLen is 152).
+     * Fixed by trusting the zstd frame's OWN embedded content-size header
+     * ({@link Zstd#getFrameContentSize(byte[])} -- every hunk real hg writes embeds this) as the
+     * destination buffer size instead, falling back to {@code uncompLen} only when the frame does
+     * not declare one (an unusual, non-hg-written zstd stream) -- and, belt-and-braces, always
+     * trimming the returned array down to zstd's own reported actual-bytes-written count
+     * afterward regardless of which size was used to allocate it.
+     *
      * <p>zstd-jni's {@code Zstd.decompress} can either return an error code (testable via
      * {@link Zstd#isError(long)}) or throw an unchecked {@link ZstdException} for malformed
      * or truncated input, depending on where the failure occurs. Both are normalized here into
      * {@link HgCorruptDataException}, matching how {@link #decompressZlib} reports zlib errors.
      */
     private static byte[] decompressZstd(byte[] hunk, int uncompLen) throws HgCorruptDataException {
-        byte[] dest = new byte[uncompLen];
+        long frameContentSize = Zstd.getFrameContentSize(hunk);
+        int destSize = (frameContentSize > 0 && frameContentSize <= Integer.MAX_VALUE)
+                ? (int) frameContentSize : uncompLen;
+        byte[] dest = new byte[destSize];
         try {
             long result = Zstd.decompress(dest, hunk);
             if (Zstd.isError(result)) {
                 throw new HgCorruptDataException("Failed to decompress zstd revlog hunk: " + Zstd.getErrorName(result));
+            }
+            if (result != dest.length) {
+                dest = Arrays.copyOf(dest, (int) result);
             }
         } catch (ZstdException e) {
             throw new HgCorruptDataException("Failed to decompress zstd revlog hunk", e);

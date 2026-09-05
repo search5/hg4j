@@ -842,3 +842,18 @@ tier/압축/bundle2를 바꿀 config 노브가 없어서, 리버스 방향은 (�
    ShelveCommand/StripCommand부터) 참고.
 4. 백로그 40(narrow ellipsis node) — 범위가 크므로 별도 세션에서 범위
    산정부터.
+
+## 추가 갱신 (2026-09-06, 백로그 40 완료)
+
+백로그 40이 완료됐다 — 상세 내용은 [[mercurial-spec-compliance-requirement]]
+문서의 백로그 40 항목 본문 참고. 요약: "narrow clone의 진짜 메커니즘은
+ellipsis node"라는 당초 전제가 real hg 소스 실측 결과 틀렸음을 확인(ellipsis는
+real hg 자신도 `narrowservebrokenellipses`=false 기본값으로 막아둔, "fragile/
+unlikely-to-be-fixed"라고 소스 주석에 적힌 실험 기능) — 대신 real hg의 진짜
+기본 메커니즘(`getbundle`의 `narrow=1`/`includepats`/`excludepats` wire 인자
+협상, 서버가 범위 밖 파일의 filelog만 패킹에서 제외)을 hg4j 클라이언트·서버
+양쪽에 구현하고, real hg CLI(호스트 7.2.2)로 양방향(hg4j→real hg 서버,
+real hg→hg4j HTTP/SSH 서버) 실측 검증(getbundle 응답 payload 5,462,104바이트 →
+29,412바이트, 약 99.5% 절감)까지 마쳤다. 이 항목 자체는 §2/§4-2가 다루는
+"포셀린 명령 x wire protocol 콤보" 매트릭스의 범위 밖(별도로 등록된 단일
+기능 백로그)이라 위 매트릭스 진행 상황 표는 변경하지 않았다.

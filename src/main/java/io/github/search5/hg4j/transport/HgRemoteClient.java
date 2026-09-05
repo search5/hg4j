@@ -54,6 +54,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     private boolean sawHttpHeaderCap = false;
     private boolean supportsV2 = false;
     private boolean supportsClonebundles = false;
+    private boolean supportsNarrow = false;
     private boolean supportsHttpPostArgs = false;
     private boolean supportsUnbundleHash = false;
     private List<String> httpMediaTypes = Collections.emptyList();
@@ -89,6 +90,9 @@ public class HgRemoteClient implements HgRemoteConnection {
             }
             if ("clonebundles".equals(cap)) {
                 this.supportsClonebundles = true;
+            }
+            if ("exp-narrow-1".equals(cap)) {
+                this.supportsNarrow = true;
             }
             if ("httppostargs".equals(cap)) {
                 this.supportsHttpPostArgs = true;
@@ -166,6 +170,21 @@ public class HgRemoteClient implements HgRemoteConnection {
     @Override
     public boolean supportsClonebundles() {
         return supportsClonebundles;
+    }
+
+    /**
+     * Whether the remote advertised real hg's {@code "exp-narrow-1"} narrow clone wire capability
+     * (available only after {@link #getCapabilities()} has been called at least once).
+     */
+    @Override
+    public boolean supportsNarrow() {
+        if (delegate != null) {
+            // hg4j has no v2 narrow implementation (real hg's own v2 wire protocol never grew a
+            // narrow-clone equivalent as of 7.2 -- narrow stays a v1-only feature) -- the v2
+            // delegate's own getBundle()/capabilities plumbing doesn't carry this flag.
+            return false;
+        }
+        return supportsNarrow;
     }
 
     /**
@@ -314,11 +333,43 @@ public class HgRemoteClient implements HgRemoteConnection {
      * @throws IOException if execution fails
      */
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException {
+        return getBundle(common, heads, bundleCaps, null);
+    }
+
+    /**
+     * Same as {@link #getBundle(List, List, List)}, but additionally sends real hg's narrow
+     * clone wire arguments ({@code narrow=1}, {@code includepats}, {@code excludepats}) when
+     * {@code narrowScope} is non-{@code null} -- see {@link HgRemoteConnection#getBundle(List,
+     * List, List, HgRemoteConnection.NarrowScope)}'s doc for the real-hg-verified wire shape.
+     */
+    @Override
+    public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
+                             HgRemoteConnection.NarrowScope narrowScope) throws IOException {
         if (delegate != null) {
+            // hg4j's v2 delegate has no narrow implementation (see supportsNarrow()) -- fall back
+            // to the plain request rather than silently dropping narrowScope.
             return delegate.getBundle(common, heads, bundleCaps);
         }
         Map<String, String> params = new HashMap<>();
-        
+
+        if (narrowScope != null) {
+            // Real spec (mercurial/wireprotov1peer.py's getbundle(): boolean -> "%i" % bool(v),
+            // csv -> ",".join(values)) -- verified 2026-09-06 against Mercurial 7.2 source and a
+            // real `hg --debug clone --narrow` packet trace against a local `hg serve
+            // --config extensions.narrow=`. Real hg's own client (mercurial/exchange.py's
+            // _pullbundle2, `if servernarrow and pullop.includepats: ...`) only sends
+            // includepats/excludepats when non-empty -- an empty string would decode server-side
+            // as a single bogus empty-string pattern (`"".split(",") == [""]`), so this omits
+            // them the same way rather than sending an always-present-but-possibly-empty value.
+            params.put("narrow", "1");
+            if (!narrowScope.includePatterns.isEmpty()) {
+                params.put("includepats", String.join(",", narrowScope.includePatterns));
+            }
+            if (!narrowScope.excludePatterns.isEmpty()) {
+                params.put("excludepats", String.join(",", narrowScope.excludePatterns));
+            }
+        }
+
         if (common != null && !common.isEmpty()) {
             params.put("common", String.join(" ", common));
         } else {

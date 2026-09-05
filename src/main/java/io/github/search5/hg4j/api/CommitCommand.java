@@ -9,6 +9,7 @@ import io.github.search5.hg4j.storage.FileIndex;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.lfs.HgLfsManager;
 import io.github.search5.hg4j.lfs.HgLfsPointer;
+import io.github.search5.hg4j.merge.MergeState;
 import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.util.SafeFileIO;
@@ -329,17 +330,19 @@ public class CommitCommand {
                     ? new LinkedHashSet<>(FileIndex.readTrackedPaths(repository.getStoreDir()))
                     : Collections.emptySet();
 
-            // Check for unresolved merge conflicts
-            for (Map.Entry<String, Dirstate.Entry> item : dirstate.getEntries().entrySet()) {
-                if (item.getValue().getState() == 'm') {
-                    File file = new File(repository.getDirectory(), item.getKey());
-                    if (file.exists() && file.isFile()) {
-                        String fileText = Files.readString(file.toPath(), StandardCharsets.UTF_8);
-                        if (fileText.contains("<<<<<<<") && fileText.contains("=======") && fileText.contains(">>>>>>>")) {
-                            throw new IllegalStateException("Commit blocked: Unresolved merge conflicts in file: " + item.getKey());
-                        }
-                    }
-                }
+            // Check for unresolved merge conflicts. Real hg (mercurial/commands.py's `commit`,
+            // via `mergestatemod.mergestate.read(repo)` + `ms.unresolvedcount()`) aborts based
+            // purely on the merge state's own resolved/unresolved flags -- never by re-scanning
+            // working-copy file content for literal conflict markers, which this used to do.
+            // That textual scan was both a false negative (a resolved file that legitimately
+            // still contains "<<<<<<<"/"======="/">>>>>>>" text, e.g. it IS a diff/patch file,
+            // would wrongly re-block the commit forever) and a false positive relative to real
+            // hg (a conflict resolved via `hg resolve --tool internal:local`/`:other` -- which
+            // never writes markers at all -- would be silently allowed through by this scan even
+            // while real hg's mergestate still correctly flags it unresolved).
+            MergeState activeMergeState = MergeState.read(new File(repository.getHgDir(), "merge/state2"));
+            if (activeMergeState.isActive() && !activeMergeState.unresolvedFiles().isEmpty()) {
+                throw new HgValidationException("unresolved merge conflicts (see 'hg help resolve')");
             }
 
             TreeWalk tw = new TreeWalk();
@@ -801,7 +804,19 @@ public class CommitCommand {
 
             // 6. Update and save Dirstate
             dirstate.setParents(new NodeId(commitNode), NodeId.NULL);
-            
+
+            // Real hg fully removes .hg/merge/ once a two-parent merge is finalized by a
+            // successful commit (mercurial/mergestate.py's `mergestate.reset()` -- verified live
+            // against real hg 7.2, 2026-09-05: right after `hg commit` following a two-parent
+            // merge, `.hg/merge` itself is gone, not just its `state2` file). This used to be
+            // left behind entirely by hg4j, so a subsequent `hg resolve --list`/`hg summary` run
+            // by real hg against an hg4j-produced merge commit would still (wrongly) report the
+            // just-committed file as unresolved, and stale per-file `.hg/merge/<localkey>`
+            // conflict backups would linger forever.
+            if (parent2Rev != -1) {
+                deleteRecursively(new File(repository.getHgDir(), "merge"));
+            }
+
             List<String> pathsToChange = new ArrayList<>(dirstate.getEntries().keySet());
             for (String path : pathsToChange) {
                 Dirstate.Entry entry = dirstate.getEntries().get(path);
@@ -1564,6 +1579,21 @@ public class CommitCommand {
         try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
             fc.force(true);
         }
+    }
+
+    /** Best-effort recursive delete, mirroring Python's {@code shutil.rmtree(ignore_errors=True)}
+     * as used by real hg's own post-merge-commit {@code mergestate.reset()}. */
+    private static void deleteRecursively(File f) {
+        if (f == null || !f.exists()) {
+            return;
+        }
+        File[] children = f.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        f.delete();
     }
 
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup) throws IOException {

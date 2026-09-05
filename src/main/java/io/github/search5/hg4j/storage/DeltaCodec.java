@@ -141,6 +141,26 @@ public final class DeltaCodec {
      * {@link Zstd#isError(long)}) or throw an unchecked {@link ZstdException} for malformed
      * or truncated input, depending on where the failure occurs. Both are normalized here into
      * {@link HgCorruptDataException}, matching how {@link #decompressZlib} reports zlib errors.
+     *
+     * <p>Backlog #39 fix (found reading a real Rust-hg-written manifest revlog, {@code
+     * hg-rust-7.2.4}, 2026-09-05): {@code uncompLen} ({@code rec.getUncompLen()}) is the index's
+     * "uncompressed length" field, which real hg's own revlog format defines as the size of the
+     * FULLTEXT reconstructed once this revision's delta chain is fully applied -- for a full
+     * snapshot ({@code baseRev == rev}) that happens to equal this hunk's own decompressed size
+     * (the hunk IS the fulltext), but for a genuine DELTA revision the delta instructions
+     * themselves almost always decompress to a DIFFERENT (typically smaller) byte count than the
+     * final reconstructed fulltext. {@code dest} must still be allocated at {@code uncompLen}
+     * bytes (it's a safe upper bound in every real-world case seen so far, and Zstd's own API
+     * tolerates an oversized destination buffer), but the returned array must be truncated to the
+     * ACTUAL decompressed length Zstd reports -- returning the full oversized buffer verbatim
+     * silently appended zero-byte padding after this delta's real content, which {@link
+     * DeltaEngine#applyDelta} then misparsed as a bogus trailing hunk with {@code start=0, end=0}
+     * (invalid once a real hunk had already advanced {@code lastCopied} past 0), aborting with
+     * {@code HgCorruptDataException}. Reproduced live: a real Rust-hg two-commit repo where the
+     * second commit's manifest delta is genuinely shorter, decompressed, than the final manifest
+     * size (any manifest edit that shrinks the reconstructed content, e.g. removing a mode flag or
+     * shortening a filename, triggers it) failed to read at all via {@link
+     * io.github.search5.hg4j.treewalk.ManifestTreeIterator} before this fix.
      */
     private static byte[] decompressZstd(byte[] hunk, int uncompLen) throws HgCorruptDataException {
         byte[] dest = new byte[uncompLen];
@@ -148,6 +168,9 @@ public final class DeltaCodec {
             long result = Zstd.decompress(dest, hunk);
             if (Zstd.isError(result)) {
                 throw new HgCorruptDataException("Failed to decompress zstd revlog hunk: " + Zstd.getErrorName(result));
+            }
+            if (result != uncompLen) {
+                return Arrays.copyOf(dest, (int) result);
             }
         } catch (ZstdException e) {
             throw new HgCorruptDataException("Failed to decompress zstd revlog hunk", e);

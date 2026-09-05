@@ -429,8 +429,20 @@ public class CommitCommand {
                                 // confirmed live against a real hg-authored dirstate produced by
                                 // an add+commit that landed in the same second.
                                 boolean statAmbiguous = dEntry.isStatAmbiguous();
-                                if (!statAmbiguous && (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime)) {
-                                    // Changed if size or mtime differs
+                                // Backlog #39: a pure `chmod +x`/`chmod -x` on an otherwise
+                                // untouched tracked file changes neither its size nor its mtime
+                                // (chmod updates ctime, not mtime, on POSIX) -- verified live
+                                // against real hg 7.2 (`hg status` reports "M" for exactly this,
+                                // with zero content change). The size/mtime-only comparison below
+                                // was completely blind to this, so a real executable-bit flip was
+                                // silently NEVER committed at all (found via a `TreeMergeCommand`
+                                // matrix test exercising a flag-only change across two commits --
+                                // the second commit's manifest simply never recorded the flip).
+                                boolean diskExecutable = !diskIsSymlink && diskFile.canExecute();
+                                boolean dirstateExecutable = !statAmbiguous && (dEntry.getMode() & 0111) != 0;
+                                boolean execBitChanged = !statAmbiguous && diskExecutable != dirstateExecutable;
+                                if (execBitChanged || (!statAmbiguous && (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime))) {
+                                    // Changed if the executable bit, size, or mtime differs
                                     changed = true;
                                 } else if (statAmbiguous || diskTime >= txStartSec - 1) {
                                     // M-2: racy-hg check (accounting for 1-second resolution) --
@@ -652,8 +664,40 @@ public class CommitCommand {
                                 }
                             }
 
-                            byte[] newFileNode = filelog.appendRevision(contentToStore, copyMeta, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev, null, extraRevFlags, lfsHashBasis);
-                            
+                            // Backlog #39: a pure executable-bit flip (content byte-identical to
+                            // what a parent already has recorded) must NOT mint a brand new
+                            // filelog revision -- real hg 7.2 CLI, verified live, reuses the
+                            // EXISTING filelog node hex unchanged and only changes the MANIFEST
+                            // line's flag suffix (e.g. "<hex> 755 * run.sh" after "<hex> 644
+                            // run.sh", same <hex> both times). Blindly calling appendRevision()
+                            // here for that case would try to append a revision whose computed
+                            // node hash (SHA1 of the same parents + same content) is IDENTICAL to
+                            // an already-existing revision in this same filelog -- a real
+                            // correctness hazard (duplicate node hashes are never valid within one
+                            // revlog). Skipped for the copy/LFS paths (copyMeta != null / LFS
+                            // pointer bytes always differ from the parent's stored bytes anyway,
+                            // so this reuse can never legitimately apply there).
+                            byte[] newFileNode = null;
+                            if (copyMeta == null && extraRevFlags == 0) {
+                                String reuseHex = manifestP1.get(path);
+                                if (reuseHex == null || reuseHex.length() < 40) {
+                                    reuseHex = parent2Rev != -1 ? manifestP2.get(path) : null;
+                                }
+                                if (reuseHex != null && reuseHex.length() >= 40) {
+                                    try {
+                                        byte[] candidateContent = getFileRevisionContent(repository, path, reuseHex.substring(0, 40));
+                                        if (Arrays.equals(candidateContent, contentToStore)) {
+                                            newFileNode = NodeIdUtil.fromHex(reuseHex.substring(0, 40));
+                                        }
+                                    } catch (Exception ignored) {
+                                        // Unreadable parent revision -- fall through to a normal append.
+                                    }
+                                }
+                            }
+                            if (newFileNode == null) {
+                                newFileNode = filelog.appendRevision(contentToStore, copyMeta, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev, null, extraRevFlags, lfsHashBasis);
+                            }
+
                             // Capture execution flag and symlink flag for serialization
                             String flag = "";
                             if (Files.isSymbolicLink(diskFile.toPath())) {

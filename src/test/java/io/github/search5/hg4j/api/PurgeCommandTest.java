@@ -51,7 +51,10 @@ public class PurgeCommandTest {
     }
 
     @Test
-    public void testPurgeWithoutPurgeDirectoriesLeavesEmptyUntrackedDir(@TempDir Path tempDir) throws Exception {
+    public void testPurgeDeletesEmptyUntrackedDirByDefault(@TempDir Path tempDir) throws Exception {
+        // Backlog #39: real hg's own `hg purge` deletes untracked empty directories with ZERO
+        // flags needed (verified live, 2026-09-05, `hg help purge`: listed under "by default") --
+        // `setPurgeDirectories(false)` is the opt-OUT, matching real hg's `--files`-only mode.
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
@@ -60,7 +63,20 @@ public class PurgeCommandTest {
 
         new PurgeCommand(repo).call();
 
-        assertTrue(dir.exists(), "Directory must survive purge when purgeDirectories is not set");
+        assertFalse(dir.exists(), "Untracked empty directory must be purged by default, matching real hg");
+    }
+
+    @Test
+    public void testPurgeDirectoriesFalseLeavesEmptyUntrackedDir(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File dir = new File(repoDir, "emptydir");
+        assertTrue(dir.mkdir());
+
+        new PurgeCommand(repo).setPurgeDirectories(false).call();
+
+        assertTrue(dir.exists(), "Directory must survive purge when purgeDirectories is explicitly disabled");
     }
 
     @Test
@@ -155,7 +171,11 @@ public class PurgeCommandTest {
     }
 
     @Test
-    public void testPurgeLeavesBrokenSymlinkUntouched(@TempDir Path tempDir) throws Exception {
+    public void testPurgeDeletesBrokenSymlink(@TempDir Path tempDir) throws Exception {
+        // Backlog #39: real hg 7.2's own `hg purge` DOES delete a broken (dangling-target)
+        // symlink -- verified live, 2026-09-05 (`hg purge` logs "removing file <broken-link>").
+        // The old hg4j behavior (silently skipping it) came from Files.exists() following the
+        // link and seeing "no target" as "path doesn't exist at all".
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
@@ -169,8 +189,40 @@ public class PurgeCommandTest {
 
         new PurgeCommand(repo).call();
 
-        assertTrue(Files.exists(brokenLink, java.nio.file.LinkOption.NOFOLLOW_LINKS),
-                "A broken symlink is skipped (Files.exists returns false) rather than deleted by purge");
+        assertFalse(Files.exists(brokenLink, java.nio.file.LinkOption.NOFOLLOW_LINKS),
+                "A broken symlink must be deleted by purge, matching real hg");
+    }
+
+    @Test
+    public void testPurgeNeverTraversesIntoSymlinkedDirectory(@TempDir Path tempDir) throws Exception {
+        // Backlog #39 (real, severe data-loss bug found while extending requirement-matrix
+        // coverage): the old implementation used Files.isDirectory(path) WITHOUT
+        // LinkOption.NOFOLLOW_LINKS, so a symlink pointing at a directory was walked THROUGH --
+        // any file on the far side of it (entirely outside the repository) looked "untracked" to
+        // the parent's dirstate and got deleted. Verified live against real hg 7.2: `hg purge`
+        // deletes only the symlink itself, an external target directory's contents are completely
+        // untouched (confirmed via `hg purge -p` listing just the link's own path, and an actual
+        // `hg purge` run that left the external directory's file in place).
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File externalDir = new File(tempDir.toFile().getParentFile(), "external-target-" + System.nanoTime());
+        assertTrue(externalDir.mkdirs());
+        File precious = new File(externalDir, "precious.txt");
+        Files.writeString(precious.toPath(), "do not delete me");
+
+        Path linkDir = repoDir.toPath().resolve("linkdir");
+        try {
+            Files.createSymbolicLink(linkDir, externalDir.toPath());
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            return;
+        }
+
+        new PurgeCommand(repo).call();
+
+        assertFalse(Files.exists(linkDir, java.nio.file.LinkOption.NOFOLLOW_LINKS),
+                "The symlink itself must be purged, matching real hg");
+        assertTrue(precious.exists(), "A file reachable only through a directory symlink must NEVER be deleted by purge");
     }
 
 }

@@ -97,24 +97,29 @@ public class ArchiveCommandCoverageTest {
         new ArchiveCommand(repo).setRevision("tip").setDestination(zipFile).call();
 
         assertTrue(zipFile.exists() && zipFile.length() > 0);
+        // Backlog #39: real hg always prefixes zip members with the destination's basename minus
+        // its extension (here "snapshot/") and always adds a .hg_archival.txt metadata member --
+        // verified live against real hg 7.2, 2026-09-05 (see ArchiveCommand's own class javadoc).
         try (ZipFile zf = new ZipFile(zipFile)) {
-            ZipEntry entryA = zf.getEntry("a.txt");
+            ZipEntry entryA = zf.getEntry("snapshot/a.txt");
             assertNotNull(entryA);
             assertEquals("Hello A", new String(zf.getInputStream(entryA).readAllBytes(), StandardCharsets.UTF_8));
 
-            ZipEntry entryB = zf.getEntry("sub/b.txt");
+            ZipEntry entryB = zf.getEntry("snapshot/sub/b.txt");
             assertNotNull(entryB);
             assertEquals("Hello B in subdir", new String(zf.getInputStream(entryB).readAllBytes(), StandardCharsets.UTF_8));
 
-            assertEquals(2, zf.size(), "Zip must contain exactly the tracked files, nothing else");
+            ZipEntry meta = zf.getEntry("snapshot/.hg_archival.txt");
+            assertNotNull(meta);
+
+            assertEquals(3, zf.size(), "Zip must contain exactly the tracked files plus .hg_archival.txt, nothing else");
         }
     }
 
     @Test
-    public void callCreatesEmptyZipForCommitWithNoTrackedFiles(@TempDir Path tempDir) throws Exception {
-        // A commit with zero tracked files produces an empty manifest revision (mContent == "").
-        // getManifestForCommit's line-parsing loop must handle the resulting single empty
-        // split() element without adding a spurious entry (line.isEmpty() -> continue).
+    public void callCreatesArchivalOnlyZipForCommitWithNoTrackedFiles(@TempDir Path tempDir) throws Exception {
+        // A commit with zero tracked files produces an empty manifest revision -- the resulting
+        // zip must still carry exactly the always-present .hg_archival.txt metadata member.
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         new CommitCommand(repo).setMessage("Empty initial commit").call();
 
@@ -123,7 +128,8 @@ public class ArchiveCommandCoverageTest {
 
         assertTrue(zipFile.exists());
         try (ZipFile zf = new ZipFile(zipFile)) {
-            assertEquals(0, zf.size(), "An empty-manifest commit must archive to an empty zip");
+            assertEquals(1, zf.size(), "An empty-manifest commit must still archive .hg_archival.txt alone");
+            assertNotNull(zf.getEntry("empty/.hg_archival.txt"));
         }
     }
 
@@ -167,137 +173,13 @@ public class ArchiveCommandCoverageTest {
         assertTrue(ex.getMessage().contains("File revision not found: a.txt @ " + bogusHex));
     }
 
-    @Test
-    public void getManifestForCommitReturnsEmptyMapForNullOrAllZeroOrUnknownCommitNode(@TempDir Path tempDir) throws Exception {
-        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        Files.writeString(new File(tempDir.toFile(), "a.txt").toPath(), "content");
-        new AddCommand(repo).call();
-        new CommitCommand(repo).setMessage("Commit 1").call();
-
-        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
-        File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        Revlog changelog = repo.getRevlog(clIdx, clDat);
-        File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repo.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repo.getRevlog(mfIdx, mfDat);
-
-        ArchiveCommand cmd = new ArchiveCommand(repo);
-        Class<?>[] types = {Revlog.class, Revlog.class, byte[].class};
-
-        @SuppressWarnings("unchecked")
-        Map<String, String> forNull = (Map<String, String>) invokePrivate(cmd, "getManifestForCommit", types,
-                changelog, manifestRevlog, null);
-        assertTrue(forNull.isEmpty());
-
-        @SuppressWarnings("unchecked")
-        Map<String, String> forAllZero = (Map<String, String>) invokePrivate(cmd, "getManifestForCommit", types,
-                changelog, manifestRevlog, new byte[20]);
-        assertTrue(forAllZero.isEmpty());
-
-        byte[] unknownNode = new byte[20];
-        unknownNode[0] = 0x7f;
-        @SuppressWarnings("unchecked")
-        Map<String, String> forUnknown = (Map<String, String>) invokePrivate(cmd, "getManifestForCommit", types,
-                changelog, manifestRevlog, unknownNode);
-        assertTrue(forUnknown.isEmpty(), "A commit node absent from the changelog must yield an empty manifest");
-    }
-
-    @Test
-    public void getManifestForCommitReturnsEmptyWhenChangelogContentSplitsToZeroLines(@TempDir Path tempDir) throws Exception {
-        // String.split("\n") on content that is a single bare newline (all resulting pieces are
-        // trailing-empty) yields a zero-length array, unlike split() on truly empty content
-        // (which yields one empty element) -- this is only reachable via a changelog revision
-        // whose stored content is exactly "\n", e.g. store corruption that truncated the commit
-        // metadata away. getManifestForCommit's lines.length guard must handle that without an
-        // ArrayIndexOutOfBoundsException on lines[0].
-        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-
-        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
-        File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        Revlog changelog = repo.getRevlog(clIdx, clDat);
-        File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repo.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repo.getRevlog(mfIdx, mfDat);
-
-        byte[] zeroParent = new byte[20];
-        assertEquals(0, "\n".split("\n").length, "precondition: split() on a bare newline must yield zero elements");
-        byte[] commitNode = changelog.appendRevision(
-                "\n".getBytes(StandardCharsets.UTF_8), -1, -1, zeroParent, zeroParent, 0);
-
-        ArchiveCommand cmd = new ArchiveCommand(repo);
-        @SuppressWarnings("unchecked")
-        Map<String, String> result = (Map<String, String>) invokePrivate(cmd, "getManifestForCommit",
-                new Class<?>[]{Revlog.class, Revlog.class, byte[].class},
-                changelog, manifestRevlog, commitNode);
-
-        assertTrue(result.isEmpty(), "Zero-line changelog content must yield an empty manifest, not throw");
-    }
-
-    @Test
-    public void getManifestForCommitReturnsEmptyWhenManifestRevlogNeverRecordedTheNode(
-            @TempDir Path repoDirPath, @TempDir Path otherRepoDirPath) throws Exception {
-        HgRepository repo = Hg.init().setDirectory(repoDirPath.toFile()).call();
-        Files.writeString(new File(repoDirPath.toFile(), "a.txt").toPath(), "content");
-        new AddCommand(repo).call();
-        new CommitCommand(repo).setMessage("Commit 1").call();
-        byte[] commitNode = repo.getDirstate().getParent1();
-
-        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
-        File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        Revlog changelog = repo.getRevlog(clIdx, clDat);
-
-        // A manifest revlog from an unrelated, empty repository -- pairing it with the real
-        // changelog above simulates a manifest store restored from an older backup than its
-        // changelog, which never recorded the commit's manifest node.
-        HgRepository otherRepo = Hg.init().setDirectory(otherRepoDirPath.toFile()).call();
-        File otherMfIdx = new File(otherRepo.getStoreDir(), "00manifest.i");
-        File otherMfDat = new File(otherRepo.getStoreDir(), "00manifest.d");
-        Revlog neverWrittenManifestRevlog = otherRepo.getRevlog(otherMfIdx, otherMfDat);
-
-        ArchiveCommand cmd = new ArchiveCommand(repo);
-        @SuppressWarnings("unchecked")
-        Map<String, String> result = (Map<String, String>) invokePrivate(cmd, "getManifestForCommit",
-                new Class<?>[]{Revlog.class, Revlog.class, byte[].class},
-                changelog, neverWrittenManifestRevlog, commitNode);
-
-        assertTrue(result.isEmpty(),
-                "An unresolvable manifest node must yield an empty manifest, not throw or return stale data");
-    }
-
-    @Test
-    public void getManifestForCommitSkipsManifestLinesWithoutNullSeparator(@TempDir Path tempDir) throws Exception {
-        // Every manifest line hg4j itself ever writes is "path\0hexflags", so a line lacking the
-        // null separator can only arise from external store corruption. Exercise that defensive
-        // skip directly by hand-crafting a manifest revision (via Revlog.appendRevision, the same
-        // low-level primitive CommitCommand uses) containing one well-formed entry and one
-        // malformed line, then a changelog revision pointing at it.
-        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-
-        File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repo.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repo.getRevlog(mfIdx, mfDat);
-        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
-        File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        Revlog changelog = repo.getRevlog(clIdx, clDat);
-
-        byte[] zeroParent = new byte[20];
-        String goodHex = "a".repeat(40);
-        String malformedManifestText = "good.txt\0" + goodHex + "\n" + "malformed-line-without-null-separator\n";
-        byte[] manifestNode = manifestRevlog.appendRevision(
-                malformedManifestText.getBytes(StandardCharsets.UTF_8), -1, -1, zeroParent, zeroParent, 0);
-
-        String changelogText = NodeIdUtil.toHex(manifestNode) + "\nTester <t@example.com>\n0 0\n\ngoodtxt only\n";
-        byte[] commitNode = changelog.appendRevision(
-                changelogText.getBytes(StandardCharsets.UTF_8), -1, -1, zeroParent, zeroParent, 0);
-
-        ArchiveCommand cmd = new ArchiveCommand(repo);
-        @SuppressWarnings("unchecked")
-        Map<String, String> result = (Map<String, String>) invokePrivate(cmd, "getManifestForCommit",
-                new Class<?>[]{Revlog.class, Revlog.class, byte[].class},
-                changelog, manifestRevlog, commitNode);
-
-        assertEquals(1, result.size(), "The malformed line must be skipped, not throw or produce a bogus entry");
-        assertEquals(goodHex, result.get("good.txt"));
-        assertFalse(result.containsKey("malformed-line-without-null-separator"));
-    }
+    // The old hand-rolled getManifestForCommit()/flat-manifest-only parser (and its defensive
+    // edge-case tests formerly here: null/all-zero/unknown commit node, zero-line changelog
+    // content, a manifest revlog that never recorded the node, manifest lines without a null
+    // separator) was removed as part of the backlog #39 rewrite -- ArchiveCommand now delegates to
+    // HgRepository#getManifestAtCommit(byte[]), the same shared, already treemanifest-aware,
+    // already-tested helper TreeCommand/ManifestCommand use (see ArchiveCommand's class javadoc
+    // for why the old parser was a real bug: it silently dropped treemanifest subdirectories).
+    // Equivalent defensive-branch coverage for that shared helper lives on its own call sites'
+    // test classes (e.g. TreeCommandTest, ManifestCommandTest), not duplicated here.
 }

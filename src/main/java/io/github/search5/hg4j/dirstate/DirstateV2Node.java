@@ -135,8 +135,20 @@ public class DirstateV2Node {
     public void setMode(int mode) {
         int flags = getFlags() & 0xFFFF;
         flags &= ~(MODE_EXEC_PERM | MODE_IS_SYMLINK);
-        if ((mode & 0120000) == 0120000) {
+        boolean isSymlink = (mode & 0120000) == 0120000;
+        if (isSymlink) {
             flags |= MODE_IS_SYMLINK;
+            // Backlog #39 fix, verified directly against real hg 7.2.4's Rust dirstate-v2 source
+            // (rust/hg-core/src/dirstate/entry.rs, mode_changed(): `dirstate_exec_bit =
+            // self.mode() & EXEC_BIT_MASK(0o100)` compared against `fs_exec_bit = fresh lstat mode
+            // & 0o100`). A real OS symlink's lstat mode ALWAYS reports the full rwxrwxrwx
+            // permission bits (there is no such thing as a "non-executable" symlink at the
+            // filesystem level) -- so `fs_exec_bit` is unconditionally true for every symlink, and
+            // MODE_EXEC_PERM must be set alongside MODE_IS_SYMLINK (never mutually exclusive) for
+            // synthesize_unix_mode()'s reconstructed "dirstate_exec_bit" to agree, or real hg's own
+            // `hg status` reports every untouched symlink as modified. Confirmed live (2026-09-05)
+            // against a real Rust-hg-written dirstate-v2 repository.
+            flags |= MODE_EXEC_PERM;
         } else if ((mode & 0111) != 0) {
             flags |= MODE_EXEC_PERM;
         }

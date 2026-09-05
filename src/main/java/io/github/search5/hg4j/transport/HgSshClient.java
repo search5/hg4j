@@ -502,6 +502,16 @@ public class HgSshClient implements HgRemoteConnection {
         return capabilities.contains("clonebundles");
     }
 
+    /**
+     * SSH counterpart of {@link HgRemoteClient#supportsNarrow()} -- see that method's doc for the
+     * real hg source citation ({@code exp-narrow-1}, unconditional once the server's {@code
+     * narrow} extension is loaded, regardless of transport).
+     */
+    @Override
+    public boolean supportsNarrow() {
+        return capabilities.contains("exp-narrow-1");
+    }
+
     @Override
     public String fetchClonebundlesManifest() throws IOException {
         ensureConnected();
@@ -536,6 +546,19 @@ public class HgSshClient implements HgRemoteConnection {
 
     @Override
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException {
+        return getBundle(common, heads, bundleCaps, null);
+    }
+
+    /**
+     * SSH counterpart of {@link HgRemoteClient#getBundle(List, List, List,
+     * HgRemoteConnection.NarrowScope)} -- see that method's doc for the real-hg-verified wire
+     * shape ({@code narrow=1}/{@code includepats}/{@code excludepats}, only sent when
+     * {@code narrowScope} is non-{@code null}; include/excludepats individually omitted rather
+     * than sent empty, matching real hg's own client).
+     */
+    @Override
+    public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
+                             HgRemoteConnection.NarrowScope narrowScope) throws IOException {
         ensureConnected();
 
         if (protocolVersion == 2) {
@@ -556,6 +579,15 @@ public class HgSshClient implements HgRemoteConnection {
                         + io.github.search5.hg4j.bundle.Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
                         + ",compression=GZ,BZ,ZS");
             }
+            if (narrowScope != null) {
+                writeLine("narrow 1");
+                if (!narrowScope.includePatterns.isEmpty()) {
+                    writeLine("includepats " + String.join(",", narrowScope.includePatterns));
+                }
+                if (!narrowScope.excludePatterns.isEmpty()) {
+                    writeLine("excludepats " + String.join(",", narrowScope.excludePatterns));
+                }
+            }
             writeLine("");
             return readBinaryResponse();
         }
@@ -569,6 +601,15 @@ public class HgSshClient implements HgRemoteConnection {
             extra.put("heads", String.join(" ", heads));
         }
         extra.put("cg", "true");
+        if (narrowScope != null) {
+            extra.put("narrow", "1");
+            if (!narrowScope.includePatterns.isEmpty()) {
+                extra.put("includepats", String.join(",", narrowScope.includePatterns));
+            }
+            if (!narrowScope.excludePatterns.isEmpty()) {
+                extra.put("excludepats", String.join(",", narrowScope.excludePatterns));
+            }
+        }
 
         // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS): bundlecaps는 "scsv" 타입 — 최상위
         // 토큰 구분자가 콤마다(스페이스 아님, HgRemoteClient에서 실측한 것과 동일한 문제).

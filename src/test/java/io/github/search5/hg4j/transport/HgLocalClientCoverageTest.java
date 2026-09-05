@@ -247,6 +247,81 @@ public class HgLocalClientCoverageTest {
     }
 
     // ==========================================================
+    // Backlog item 40: getBundle(..., NarrowScope) actually omits out-of-scope filelog data --
+    // fast (no real hg CLI / network needed), exercises the exact same code path the
+    // HgHttpWireServer/HgSshWireServer wire-protocol servers use (Wire1Commands#getbundle calls
+    // straight into this overload), and the same code path a `file://`-sourced NarrowCloneCommand
+    // uses (HgLocalClient#supportsNarrow() always returns true, so FetchCommand always builds a
+    // NarrowScope for a narrow-spec treeFilter regardless of transport).
+    // ==========================================================
+
+    @Test
+    public void getBundleWithNarrowScopeOmitsExcludedFilelogsButKeepsChangelogAndManifestInFull(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.resolve("repo").toFile()).call();
+        writeFile(repo, "included/a.txt", "in scope");
+        writeFile(repo, "excluded/b.txt", "out of scope");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("seed").call();
+
+        try (HgLocalClient client = new HgLocalClient(repo)) {
+            byte[] fullBytes = client.getBundle(null, null, null);
+            ChangegroupParser.ChangegroupBundle fullBundle = ChangegroupParser.parseBundle(
+                    new ByteArrayInputStream(fullBytes, 6, fullBytes.length - 6), "01");
+            assertEquals(2, fullBundle.fileGroups.size(),
+                    "sanity: an unscoped getBundle must still include both filelogs");
+
+            HgRemoteConnection.NarrowScope narrowScope =
+                    new HgRemoteConnection.NarrowScope(List.of("path:included"), List.of());
+            byte[] narrowBytes = client.getBundle(null, null, null, narrowScope);
+            ChangegroupParser.ChangegroupBundle narrowBundle = ChangegroupParser.parseBundle(
+                    new ByteArrayInputStream(narrowBytes, 6, narrowBytes.length - 6), "01");
+
+            assertEquals(1, narrowBundle.fileGroups.size(),
+                    "narrow-scoped getBundle must omit the excluded/b.txt filelog entirely");
+            assertEquals("included/a.txt", narrowBundle.fileGroups.get(0).path);
+
+            // Changelog and manifest are always sent in full, matching real hg's own non-ellipses,
+            // flat-manifest narrow clone behavior (see this method's caller's javadoc).
+            assertEquals(fullBundle.changelogEntries.size(), narrowBundle.changelogEntries.size(),
+                    "changelog must never be filtered by narrow scope");
+            assertEquals(fullBundle.manifestEntries.size(), narrowBundle.manifestEntries.size(),
+                    "manifest must never be filtered by narrow scope (flat manifest storage)");
+
+            assertTrue(narrowBytes.length < fullBytes.length,
+                    "the narrow-scoped bundle must be smaller than the full one");
+        }
+    }
+
+    @Test
+    public void getBundleWithNarrowScopeExcludesEverythingWhenNoIncludesGiven(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.resolve("repo").toFile()).call();
+        writeFile(repo, "a.txt", "content");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor("dev").setMessage("seed").call();
+
+        try (HgLocalClient client = new HgLocalClient(repo)) {
+            // Matches real hg's narrowspec.match(): no include patterns at all means "match
+            // nothing" (see HgTreeFilter.createNarrowSpecFilter's own javadoc).
+            HgRemoteConnection.NarrowScope emptyScope = new HgRemoteConnection.NarrowScope(List.of(), List.of());
+            byte[] bytes = client.getBundle(null, null, null, emptyScope);
+            ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
+                    new ByteArrayInputStream(bytes, 6, bytes.length - 6), "01");
+            assertTrue(bundle.fileGroups.isEmpty(), "no include patterns must match no files at all");
+            assertEquals(1, bundle.changelogEntries.size(), "changelog is still sent in full");
+        }
+    }
+
+    private static void writeFile(HgRepository repo, String relPath, String content) throws IOException {
+        File f = new File(repo.getDirectory(), relPath);
+        f.getParentFile().mkdirs();
+        try {
+            Files.writeString(f.toPath(), content);
+        } catch (IOException e) {
+            throw e;
+        }
+    }
+
+    // ==========================================================
     // pushWithHooks: bundleBytes guard, malformed HG10 header handling, hooks
     // ==========================================================
 

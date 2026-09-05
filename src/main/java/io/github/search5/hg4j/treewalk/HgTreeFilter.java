@@ -222,37 +222,67 @@ public abstract class HgTreeFilter implements PathFilter {
     public static HgTreeFilter createNarrowSpecFilter(Collection<NarrowPattern> includes, Collection<NarrowPattern> excludes) {
         final List<NarrowPattern> inc = includes != null ? new ArrayList<>(includes) : List.of();
         final List<NarrowPattern> exc = excludes != null ? new ArrayList<>(excludes) : List.of();
+        return new NarrowSpecFilter(inc, exc);
+    }
 
-        return new HgTreeFilter() {
-            @Override
-            public boolean accept(String path) {
-                if (path == null) {
-                    return false;
-                }
-                String normalized = path;
-                while (normalized.startsWith("/")) {
-                    normalized = normalized.substring(1);
-                }
-                while (normalized.endsWith("/")) {
-                    normalized = normalized.substring(0, normalized.length() - 1);
-                }
+    /**
+     * Concrete narrowspec-backed filter returned by {@link #createNarrowSpecFilter}. Unlike the
+     * anonymous {@link HgTreeFilter} instances elsewhere in this class, this one keeps its
+     * {@code include}/{@code exclude} {@link NarrowPattern} lists around (not just the compiled
+     * predicate) so wire-protocol callers -- {@link io.github.search5.hg4j.api.FetchCommand},
+     * specifically -- can recover the original narrowspec patterns and forward them to a real hg
+     * server's {@code getbundle} {@code includepats}/{@code excludepats} wire arguments (backlog
+     * item 40: genuine wire-protocol-level narrow clone, negotiating actual server-side filelog
+     * filtering instead of always fetching the full changegroup and discarding out-of-scope
+     * content locally after the fact).
+     */
+    public static final class NarrowSpecFilter extends HgTreeFilter {
+        private final List<NarrowPattern> includes;
+        private final List<NarrowPattern> excludes;
 
-                for (NarrowPattern ex : exc) {
-                    if (matchesPattern(ex, normalized)) {
-                        return false;
-                    }
-                }
-                if (inc.isEmpty()) {
-                    return false;
-                }
-                for (NarrowPattern in : inc) {
-                    if (matchesPattern(in, normalized)) {
-                        return true;
-                    }
-                }
+        private NarrowSpecFilter(List<NarrowPattern> includes, List<NarrowPattern> excludes) {
+            this.includes = includes;
+            this.excludes = excludes;
+        }
+
+        /** The narrowspec's include patterns, exactly as normalized at narrow-clone time. */
+        public List<NarrowPattern> getIncludes() {
+            return includes;
+        }
+
+        /** The narrowspec's exclude patterns, exactly as normalized at narrow-clone time. */
+        public List<NarrowPattern> getExcludes() {
+            return excludes;
+        }
+
+        @Override
+        public boolean accept(String path) {
+            if (path == null) {
                 return false;
             }
-        };
+            String normalized = path;
+            while (normalized.startsWith("/")) {
+                normalized = normalized.substring(1);
+            }
+            while (normalized.endsWith("/")) {
+                normalized = normalized.substring(0, normalized.length() - 1);
+            }
+
+            for (NarrowPattern ex : excludes) {
+                if (matchesPattern(ex, normalized)) {
+                    return false;
+                }
+            }
+            if (includes.isEmpty()) {
+                return false;
+            }
+            for (NarrowPattern in : includes) {
+                if (matchesPattern(in, normalized)) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     /**
@@ -268,11 +298,12 @@ public abstract class HgTreeFilter implements PathFilter {
      * the same filter by hand every time. Returns {@link #ALL} when the repository has no stored
      * narrowspec (not a narrow clone), so callers can apply this result unconditionally.
      *
-     * <p>Scope note (still out of scope, tracked in backlog 30's own writeup): this only affects
-     * what hg4j does with content already present locally (skips narrow-excluded files/dirs when
-     * applying an already-fetched changegroup, or when checking out) -- true wire-protocol-level
-     * ellipsis-node narrow pull (server-side history rewriting so excluded paths' revisions are
-     * never even transferred) remains unimplemented, as already documented for backlog 28.
+     * <p>Backlog item 40: the returned filter now also doubles as the source of the
+     * {@code includepats}/{@code excludepats} wire arguments {@link
+     * io.github.search5.hg4j.api.FetchCommand} negotiates with a narrow-capable remote (real hg's
+     * {@code exp-narrow-1} capability), so that a subsequent {@code pull} -- not just the initial
+     * {@code NarrowCloneCommand} clone -- also gets a genuinely filelog-filtered changegroup from
+     * the server instead of a full one filtered locally after the fact.
      */
     public static HgTreeFilter loadFromRepository(HgRepository repository) throws IOException {
         File narrowSpecFile = new File(repository.getStoreDir(), "narrowspec");

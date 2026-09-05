@@ -163,7 +163,20 @@ public class HisteditCommand implements AutoCloseable {
                     // Drop this commit message, keep the accumulated pending CommitMsg
                     pendingHexNodes.add(rule.hexNode);
                 } else if (rule.action == Action.DROP) {
-                    // Skip completely
+                    // Skip completely -- but, like real `hg histedit` (verified live, 2026-09-05:
+                    // under experimental.evolution=all, real hg's own histedit registers a
+                    // "prune" obsmarker -- precursor with an empty successor set -- for a dropped
+                    // revision, exactly like StripCommand.call() already does for a plain `hg
+                    // strip`), the dropped revision must be marked pruned so a plain `hg log`
+                    // hides it. This class never physically strips (matching RebaseCommand's own
+                    // 2026-09-04 evolution-only design), so without this marker the dropped
+                    // revision stayed fully visible in a plain log forever -- found live via this
+                    // class's own requirement-matrix interop test.
+                    try {
+                        HgObsMarker.writeMarker(repository.getStoreDir(), nodeBytes, List.of(), "prune");
+                    } catch (Exception e) {
+                        // non-blocking, same as every other obsmarker write in this class
+                    }
                 }
             }
 
@@ -177,17 +190,38 @@ public class HisteditCommand implements AutoCloseable {
             // through a fold/roll group) must disappear from the working directory too.
             // Verified against real `hg histedit`: dropping a commit that added b.txt leaves
             // b.txt off disk (and out of `hg manifest -r tip`) once histedit finishes.
+            //
+            // The dirstate's own tracked-path set must be reconciled the same way -- found live
+            // via this class's own requirement-matrix interop test (2026-09-05): `hg verify`
+            // reported "<path> marked as tracked in p1 (...) but not in manifest1" because this
+            // loop used to only delete the dropped path's physical file, never its dirstate
+            // entry, leaving a dropped commit's path permanently stuck as tracked afterward
+            // (undetectable by any test that only checks `File.exists()`/log content, since
+            // `hg status`/`hg add` would still silently treat it as already-removed-from-disk).
             Revlog manifestRevlogForCleanup = repository.getRevlog(mfIdx, mfDat);
             Map<String, String> oldManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, originalParent);
             Map<String, String> finalManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, lastCommittedNode);
-            for (String path : oldManifest.keySet()) {
-                if (!finalManifest.containsKey(path)) {
+            Dirstate d = repository.getDirstate();
+            Set<String> allTouchedPaths = new java.util.TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+            allTouchedPaths.addAll(oldManifest.keySet());
+            allTouchedPaths.addAll(finalManifest.keySet());
+            for (String path : allTouchedPaths) {
+                String finalHexAndFlag = finalManifest.get(path);
+                if (finalHexAndFlag == null) {
                     Files.deleteIfExists(new File(repository.getDirectory(), path).toPath());
+                    d.removeEntry(path);
+                } else if (!finalHexAndFlag.equals(oldManifest.get(path))) {
+                    // Newly introduced, or changed, by the rewritten range -- (re)stage as
+                    // clean/tracked so `hg verify`'s dirstate-vs-manifest1 cross-check agrees.
+                    File wf = new File(repository.getDirectory(), path);
+                    String flag = finalHexAndFlag.length() > 40 ? finalHexAndFlag.substring(40) : "";
+                    int mode = flag.contains("x") ? 0755 : (flag.contains("l") ? 0120000 : 0644);
+                    long size = wf.exists() ? wf.length() : 0L;
+                    d.addEntry(path, new Dirstate.Entry('n', mode, (int) size, SafeFileIO.lastModifiedSeconds(wf)));
                 }
             }
 
             // Sync workspace to the last committed node
-            Dirstate d = repository.getDirstate();
             d.setParents(lastCommittedNode, new byte[20]);
             repository.writeDirstate(d);
             repository.clearRevlogCache();
@@ -336,10 +370,18 @@ public class HisteditCommand implements AutoCloseable {
         }
         List<String> filesModified = new ArrayList<>(filesModifiedSet);
 
-        // 3. Serialize and append new manifest revision
+        // 3. Serialize and append new manifest revision. Real hg requires manifest entries to be
+        // in strict sorted-by-path order ("hg verify": "Manifest lines not in sorted order" --
+        // found live via this class's own requirement-matrix interop test, 2026-09-05); newManifest
+        // is a LinkedHashMap seeded from the parent's already-sorted manifest text but then mutated
+        // in file-processing order above (new paths introduced by a fold/pick group land wherever
+        // they were encountered, not in sorted position), so the keys must be explicitly re-sorted
+        // before serializing rather than trusting entrySet()'s insertion order.
+        List<String> sortedManifestPaths = new ArrayList<>(newManifest.keySet());
+        Collections.sort(sortedManifestPaths, NodeIdUtil.UTF8_STRING_COMPARATOR);
         StringBuilder manifestSb = new StringBuilder();
-        for (Map.Entry<String, String> entry : newManifest.entrySet()) {
-            manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
+        for (String path : sortedManifestPaths) {
+            manifestSb.append(path).append('\0').append(newManifest.get(path)).append('\n');
         }
         byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
         

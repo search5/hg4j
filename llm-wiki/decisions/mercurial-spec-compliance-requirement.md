@@ -2628,6 +2628,121 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     **Native 6/6 + Docker 30/30 전부 GREEN** — 새 실버그 없음(`CommitCommand`로의
     위임이 모든 36개 조합에서 안전함을 재확인).
 
+    **Wave 3(2026-09-05, `AmendCommand` 완료 이후 다른 wave 3 에이전트와 병렬
+    진행)**: `HisteditCommand`/`GraftCommand`에 requirement 매트릭스(native 6 +
+    Docker 30 = 36개 조합) 확장 적용 — 사용자 지시로 두 명령을 같은 에이전트에
+    묶어 순서대로("`RebaseCommand`와 cherry-pick/rewrite 내부 로직을 공유하는지"
+    확인 목적) 진행. 신규 테스트 클래스/헬퍼 6개(`RequirementMatrixHisteditCoreRoundTripTest`/
+    `RequirementMatrixHisteditDockerRoundTripTest`/`RequirementMatrixHisteditHelperMain`/
+    `RequirementMatrixGraftCoreRoundTripTest`/`RequirementMatrixGraftDockerRoundTripTest`/
+    `RequirementMatrixGraftHelperMain`, 전부 `src/test/java/io/github/search5/hg4j/api/`).
+
+    - **`HisteditCommand`**: **native 6/6 + Docker 30/30 전부 GREEN** — TDD로
+      실제 프로덕션 버그 2건 발견·수정:
+      1. `commitNewRev()`가 새 매니페스트 리비전을 직렬화할 때 `LinkedHashMap`
+         (부모의 이미 정렬된 매니페스트로 seed된 뒤 fold/pick 그룹이 새 경로를
+         처리 순서대로 추가)의 `entrySet()` 삽입 순서를 그대로 썼다 — fold/pick이
+         새로 도입한 경로가 정렬 위치가 아니라 처리 순서에 삽입되어 real hg
+         `verify`가 "Manifest lines not in sorted order"로 실패(요구사항 매트릭스
+         테스트로 최초 재현, 6/6 native 조합 전부에서 재현됨). `NodeIdUtil.
+         UTF8_STRING_COMPARATOR`로 직렬화 직전 명시적 재정렬하도록 수정.
+      2. 히스테디트 종료 시 워킹 디렉터리에서 dropped/제거된 경로의 물리 파일은
+         지웠지만 dirstate 엔트리는 그대로 남겨둬(`Files.deleteIfExists`만 하고
+         `dirstate.removeEntry`는 호출한 적이 없었음) real hg `verify`가 "<path>
+         marked as tracked in p1 (...) but not in manifest1" + "dirstate
+         inconsistent with current parent's manifest"로 실패(1번 버그를 고친
+         뒤에야 verify가 여기까지 도달해 드러남). 히스테디트 이전/이후 매니페스트를
+         비교해 dirstate를 완전히 재동기화(제거된 경로는 `removeEntry`, 새로
+         추가되었거나 내용이 바뀐 경로는 'n'으로 재등록)하도록 수정.
+      3. (진짜 버그라기보다 real hg 자신의 evolution 동작과의 gap) DROP된
+         리비전에 대해 prune obsmarker(빈 successor 집합)를 전혀 남기지 않아
+         DROP된 리비전이 real hg의 plain `hg log`에 영원히 계속 보임 — real
+         `hg histedit`를 `experimental.evolution=all`로 직접 재현해 대조
+         검증(DROP된 리비전에 대해 정확히 "precursor + 빈 successor 집합" 형태의
+         prune obsmarker를 남기고, `hg log`(evolution 없이도)에서 사라짐을 확인).
+         `StripCommand.call()`이 이미 쓰는 것과 동일한 `HgObsMarker.writeMarker(
+         ..., List.of(), "prune")` 패턴을 DROP 처리 분기에 추가.
+
+      **`RebaseCommand` 중복 여부 점검 결과 — 중복 아님**: `HisteditCommand`는
+      항상 "현재 체크아웃된 같은 브랜치의 연속 구간"만 재작성하는 구조라(별도의
+      diverging destination이 없음) rebase/graft가 필요로 하는 3-way merge
+      개념 자체가 이 명령의 설계상 구조적으로 불필요하다 — 각 리비전이 자기
+      자신의 "최종 절대 매니페스트 내용"을 그대로 재생(진짜 diff 적용이 아니라
+      스냅샷 복사)하는 방식이라 소스/목적지 분기(divergence)라는 개념 자체가
+      없다. 이 자체 설계는 이미 이전 세션에서 fold/roll의 파일 병합·저자/브랜치
+      유지·빈 설명 처리 등 다수의 실버그를 수정하며 상당히 하드닝되어 있었고,
+      이번 세션에서 발견한 2건(매니페스트 정렬, dirstate 재동기화)은 rebase의
+      cherry-pick 로직과는 무관한 이 명령 고유의 새 버그였다.
+
+    - **`GraftCommand`**: **native 6/6 + Docker 30/30 전부 GREEN** —
+      **`RebaseCommand`의 2026-09-04 하드닝 이전(구식) cherry-pick 로직을
+      독자적으로 재구현하고 있던 실제 사례를 발견, 공용 로직 재사용으로 전환**
+      (이번 wave의 핵심 발견 — 사용자가 미리 지시한 가설이 실제로 맞아떨어짐):
+      1. **3-way merge/conflict 감지가 전혀 없었음(진짜 data-loss 버그)**:
+         destination이 graft source와 공통 조상(source 리비전 자신의 parent)
+         이후 같은 경로를 다르게 바꿨어도 hg4j `GraftCommand`는 항상 source
+         내용으로 무조건 덮어써 destination의 독립적인 변경사항을 자동으로
+         유실시켰다. Real `hg graft` 7.2로 직접 재현해 대조 검증(동일 시나리오
+         에서 real hg는 "no tool found to merge", "file ... needs to be
+         resolved"로 멈추고 사용자에게 keep/take/leave를 묻는다 -- 절대
+         조용히 하나를 택하지 않음). `RebaseCommand`의 2026-09-04 하드닝에서
+         만든 `Merge3` 기반 3-way merge + `.hg/merge/state2` 충돌 마커 로직의
+         핵심 부분(`attemptThreeWayMerge`)을 `RebaseCommand`의 package-private
+         static 메서드로 추출해 `GraftCommand`가 **그대로 재사용**하도록
+         리팩터링(독립 재구현 아님 — 백로그 39 작업 지시의 "중복이면 공유
+         로직으로 교체" 원칙을 그대로 적용). `GraftCommand`에 `continueGraft()`/
+         `abort()`를 신규 추가해 `RebaseCommand`와 동일한 hg4j 자체
+         pause/resume 프로토콜(mid-flight 상태는 real hg와 바이트 단위로
+         맞출 필요 없음 — 최종 상태만 real hg로 왕복 검증되면 됨) 지원.
+      2. **크래시 안전 저널이 전혀 없었음**: `GraftCommand`는 `CommitCommand`를
+         `setSkipLockAndJournal(true)`로 호출하면서도 자기 자신의 저널/백업을
+         전혀 만들지 않았다 — 같은 패턴을 쓰는 `RebaseCommand`/`HisteditCommand`
+         는 둘 다 자체 저널을 갖고 있는 것과 비대칭. 논리적 실패(예외)는
+         `CommitCommand` 자신의 인메모리 롤백으로 이미 커버되지만, 실제
+         프로세스 크래시가 커밋 도중 발생하면 복구할 방법이 전혀 없는 실제
+         gap이었다. `HisteditCommand`와 동일한 패턴(사전 파일 크기 스냅샷 +
+         물리 저널 기록 + 예외 시 truncate 기반 롤백)을 커밋 위임 부분에
+         신규 추가.
+      3. **모든 graft에 무조건 obsolescence marker를 기록하던 버그**: real
+         `hg graft` 7.2로 직접 검증 — 평범한 `hg graft REV`(`--log` 없이)는
+         obsmarker를 전혀 남기지 않고 source 리비전이 grafted 결과와 나란히
+         plain `hg log`에 그대로 남는다(graft는 rewrite가 아니라 copy 연산).
+         hg4j `GraftCommand`는 무조건 predecessor(source)→successor(grafted)
+         obsmarker를 기록하고 있어서, real hg로 그 저장소를 읽으면 원본
+         source 리비전이 hidden 처리되어 사라지는 실제 버그(직접 재현: 임의의
+         두 리비전 사이에 real hg 자신의 `hg debugobsolete`로 동일한 형태의
+         마커를 수동으로 심어보니 "obsoleted 1 changesets"가 뜨며 원본이
+         plain log에서 사라짐을 확인 — hg4j를 전혀 거치지 않은 순정 real hg
+         재현). obsmarker 기록 코드 전체를 제거.
+
+      **검증**: 세 버그 모두 real hg 7.2 CLI로 직접 재현/대조 검증 후 수정,
+      `RequirementMatrixGraftCoreRoundTripTest`(native 6/6 — 각 조합마다
+      충돌 없는 diverging-branch graft + 충돌 발생·`hg resolve --list`/
+      `continueGraft()` 재개까지 두 시나리오 모두 확인)/
+      `RequirementMatrixGraftDockerRoundTripTest`(Docker 30/30, 동일 두
+      시나리오, conflict/continue 왕복은 `RequirementMatrixGraftHelperMain`의
+      `call`/`continue` 2-phase 서브프로세스로 처리)로 재확인. 기존
+      `GraftCommandCoverageTest`도 새로 옳아진 동작에 맞춰 갱신 -- 구식
+      "항상 source로 무조건 덮어쓰기" 동작을 정답으로 assert하던 테스트 1개를
+      real-hg-검증된 conflict-pause 동작(+ `abort()` 왕복)으로 교체, obsmarker
+      관련 테스트 2개는 제거/개명, 3-way merge 클린 케이스 및
+      `continueGraft()` 성공 케이스 테스트 2개 신규 추가.
+
+    - **공용 리팩터링(`RebaseCommand` 자신은 무변경 동작 재확인)**:
+      `RebaseCommand`의 cherry-pick 3-way-merge 핵심 로직(신규
+      `attemptThreeWayMerge` + `ThreeWayMergeOutcome`)과 워킹카피/머지상태
+      헬퍼(`checkoutNode`/`applyManifestToWorkingCopy`/`writeFileToWorkingCopy`/
+      `deleteFileFromWorkingCopy`/`applyResolvedContent`/`restoreWorkingCopyCleanTo`/
+      `cleanMergeDir`/`mergeStateFile`)를 인스턴스 메서드에서 `HgRepository`를
+      인자로 받는 (package-private 또는 그대로 private) static 메서드로
+      승격 — `GraftCommand`가 필요한 것만(`attemptThreeWayMerge`/
+      `restoreWorkingCopyCleanTo`/`cleanMergeDir`/`mergeStateFile`) 재사용.
+      순수 추출 리팩터링(동작 변경 없음)이라 `RebaseCommand`의 기존 테스트
+      전부(`RebaseCommandTest`/`RebaseCommandCoverageTest`/
+      `RebaseRealHgInteropTest`, 충돌 시나리오 3건 포함) +
+      `RequirementMatrixRebaseCoreRoundTripTest`(native 6/6) 재확인 —
+      새 회귀 없음.
+
     **남은 것(대부분 미착수)**: 나머지 로컬 명령 50개(`AddCommand`,
     `BookmarkCommand`, `MergeCommand`, `SubrepoCommand`, `BundleCommand`
     (조사 중 `PushCommand`의 수정 전과 동일한 cg1-only 하드코딩을 그대로

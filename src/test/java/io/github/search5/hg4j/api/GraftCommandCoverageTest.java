@@ -84,11 +84,11 @@ public class GraftCommandCoverageTest {
     }
 
     // ------------------------------------------------------------------
-    // Happy path: user/date/message preservation, obsolescence marker, hooks
+    // Happy path: user/date/message preservation, hooks
     // ------------------------------------------------------------------
 
     @Test
-    public void testGraftPreservesAuthorDateAndMessageAndRegistersObsMarker() throws Exception {
+    public void testGraftPreservesAuthorDateAndMessage() throws Exception {
         HgRepository repo = initRepo("graft_happy_path_repo");
         Hg hg = Hg.wrap(repo);
 
@@ -141,9 +141,13 @@ public class GraftCommandCoverageTest {
         // Real hg (no --log) leaves the description untouched -- no "(grafted from ...)" suffix.
         assertEquals("add b", grafted.getMessage());
 
-        // Obsolescence marker was written linking origNode -> newCommitNode.
+        // Since 2026-09-05: a plain graft must NOT write any obsolescence marker at all (verified
+        // live against real `hg graft` 7.2 -- see GraftCommand's own class javadoc) -- the source
+        // commit must stay fully visible, never spuriously hidden by a marker real hg itself
+        // would never have written for a plain, non---log graft.
         File obsstore = new File(repo.getStoreDir(), "obsstore");
-        assertTrue(obsstore.exists() && obsstore.length() > 0, "obsstore must contain the graft marker");
+        assertFalse(obsstore.exists() && obsstore.length() > 0,
+                "a plain graft must not write an obsolescence marker (real `hg graft` never does)");
 
         // POST_GRAFT hook fired with the expected context.
         assertEquals(1, hookCalls.get());
@@ -217,7 +221,7 @@ public class GraftCommandCoverageTest {
     }
 
     // ------------------------------------------------------------------
-    // Non-blocking failure paths (post-graft hook / obsolescence marker)
+    // Non-blocking failure paths (post-graft hook)
     // ------------------------------------------------------------------
 
     @Test
@@ -242,32 +246,6 @@ public class GraftCommandCoverageTest {
 
         String graftedHex = graft.call();
         assertNotNull(graftedHex, "a failing post-graft hook must not abort the already-committed graft");
-
-        hg.close();
-    }
-
-    @Test
-    public void testObsoleteMarkerWriteFailureDoesNotAbortGraft() throws Exception {
-        HgRepository repo = initRepo("graft_obsmarker_failure_repo");
-        Hg hg = Hg.wrap(repo);
-
-        Files.writeString(new File(repo.getDirectory(), "a.txt").toPath(), "hello\n");
-        hg.add().addFile("a.txt").call();
-        byte[] commitA = hg.commit().setAuthor("tester").setMessage("add a").call();
-
-        Files.writeString(new File(repo.getDirectory(), "b.txt").toPath(), "world\n");
-        hg.add().addFile("b.txt").call();
-        byte[] commitB = hg.commit().setAuthor("tester").setMessage("add b").call();
-
-        hg.update().setRevision(NodeIdUtil.toHex(commitA)).setForce(true).call();
-
-        // Force HgObsMarker.writeMarker's FileOutputStream open to fail by making "obsstore"
-        // a directory instead of a plain file.
-        File obsstoreAsDir = new File(repo.getStoreDir(), "obsstore");
-        assertTrue(obsstoreAsDir.mkdirs());
-
-        String graftedHex = new GraftCommand(repo).setSource(NodeIdUtil.toHex(commitB)).call();
-        assertNotNull(graftedHex, "an obsolescence-marker write failure must not abort the already-committed graft");
 
         hg.close();
     }
@@ -507,8 +485,22 @@ public class GraftCommandCoverageTest {
         hg.close();
     }
 
+    /**
+     * <b>Behavior corrected 2026-09-05.</b> Before this fix, {@link GraftCommand} had no 3-way
+     * merge/conflict detection at all: it always blindly overwrote the destination's file with
+     * the graft source's content, silently discarding whatever the destination had -- a real
+     * data-loss bug (this exact scenario used to assert the symlink replacement happened
+     * silently). Verified live against real {@code hg graft} 7.2: grafting a revision that adds
+     * {@code link.txt} as a symlink onto a destination that independently added {@code link.txt}
+     * as a different (regular-file) path since their common ancestor is a genuine "both sides
+     * added it differently" conflict -- real hg leaves it unresolved ("no tool found to merge
+     * link.txt" / "file 'link.txt' needs to be resolved") rather than silently picking either
+     * side. {@link GraftCommand} now shares {@link RebaseCommand}'s hardened 3-way-merge cherry-
+     * pick logic ({@link RebaseCommand#attemptThreeWayMerge}) and must pause the same way {@link
+     * RebaseCommand} does on a genuine same-path conflict.
+     */
     @Test
-    public void testGraftOfSymlinkReplacesExistingTrackedRegularFile() throws Exception {
+    public void testGraftOfDivergedFileAddedDifferentlyOnBothSidesPausesOnConflict() throws Exception {
         HgRepository repo = initRepo("graft_symlink_overwrite_repo");
         Hg hg = Hg.wrap(repo);
 
@@ -535,11 +527,107 @@ public class GraftCommandCoverageTest {
         hg.commit().setAuthor("tester").setMessage("add link.txt as regular file again").call();
         assertTrue(link.exists() && !Files.isSymbolicLink(link.toPath()));
 
-        String graftedHex = new GraftCommand(repo).setSource(NodeIdUtil.toHex(commitSymlink)).call();
+        GraftCommand graft = new GraftCommand(repo).setSource(NodeIdUtil.toHex(commitSymlink));
+        io.github.search5.hg4j.errors.HgMergeConflictException ex =
+                assertThrows(io.github.search5.hg4j.errors.HgMergeConflictException.class, graft::call,
+                        "diverged content on both sides must pause the graft instead of silently overwriting it");
+        assertEquals(java.util.List.of("link.txt"), ex.getConflictPaths());
+
+        // Aborting must cleanly restore the pre-graft state (mirrors RebaseCommand#abort()).
+        new GraftCommand(repo).abort();
+        assertTrue(link.exists() && !Files.isSymbolicLink(link.toPath()),
+                "abort() must restore link.txt to its pre-graft (regular file) content");
+        assertEquals("was-a-regular-file\n", Files.readString(link.toPath()));
+
+        hg.close();
+    }
+
+    // ------------------------------------------------------------------
+    // Real 3-way merge: clean (non-conflicting) divergence, and continueGraft() resumption
+    // ------------------------------------------------------------------
+
+    /**
+     * When the destination and the graft source changed *different lines* of the same file since
+     * their common ancestor, the new 3-way merge must combine both edits cleanly (no conflict),
+     * rather than either the pre-2026-09-05 "always take source" bug or a spurious conflict.
+     */
+    @Test
+    public void testGraftMergesDisjointLineEditsCleanlyWithoutConflict() throws Exception {
+        HgRepository repo = initRepo("graft_clean_merge_repo");
+        Hg hg = Hg.wrap(repo);
+
+        Files.writeString(new File(repo.getDirectory(), "f.txt").toPath(), "line1\nline2\nline3\n");
+        hg.add().addFile("f.txt").call();
+        byte[] commitBase = hg.commit().setAuthor("tester").setMessage("base").call();
+
+        // Source branch: changes line1 only.
+        Files.writeString(new File(repo.getDirectory(), "f.txt").toPath(), "line1-source\nline2\nline3\n");
+        byte[] commitSource = hg.commit().setAuthor("tester").setMessage("source changes line1").call();
+
+        // Destination branch (off base): changes line3 only -- disjoint from the source's edit.
+        hg.update().setRevision(NodeIdUtil.toHex(commitBase)).setForce(true).call();
+        Files.writeString(new File(repo.getDirectory(), "f.txt").toPath(), "line1\nline2\nline3-dest\n");
+        hg.commit().setAuthor("tester").setMessage("dest changes line3").call();
+
+        String graftedHex = new GraftCommand(repo).setSource(NodeIdUtil.toHex(commitSource)).call();
         assertNotNull(graftedHex);
 
-        assertTrue(Files.isSymbolicLink(link.toPath()), "grafting a symlink over an existing regular file must replace it with a symlink");
-        assertEquals("base.txt", Files.readSymbolicLink(link.toPath()).toString());
+        assertEquals("line1-source\nline2\nline3-dest\n",
+                Files.readString(new File(repo.getDirectory(), "f.txt").toPath()),
+                "a real 3-way merge must combine both sides' disjoint edits");
+
+        HgCommit grafted = findCommit(hg, graftedHex);
+        assertNotNull(grafted);
+        assertTrue(grafted.getFiles().contains("f.txt"));
+
+        hg.close();
+    }
+
+    /**
+     * Companion to {@link #testGraftOfDivergedFileAddedDifferentlyOnBothSidesPausesOnConflict}:
+     * after resolving the conflict on disk exactly like a real {@code hg resolve} session would,
+     * {@link GraftCommand#continueGraft()} must finish the paused commit.
+     */
+    @Test
+    public void testContinueGraftAfterManualResolutionCompletesTheGraft() throws Exception {
+        HgRepository repo = initRepo("graft_continue_repo");
+        Hg hg = Hg.wrap(repo);
+
+        Files.writeString(new File(repo.getDirectory(), "f.txt").toPath(), "line1\n");
+        hg.add().addFile("f.txt").call();
+        byte[] commitBase = hg.commit().setAuthor("tester").setMessage("base").call();
+
+        Files.writeString(new File(repo.getDirectory(), "f.txt").toPath(), "line1-source\n");
+        byte[] commitSource = hg.commit().setAuthor("tester").setMessage("source modifies f").call();
+
+        hg.update().setRevision(NodeIdUtil.toHex(commitBase)).setForce(true).call();
+        Files.writeString(new File(repo.getDirectory(), "f.txt").toPath(), "line1-dest\n");
+        hg.commit().setAuthor("tester").setMessage("dest modifies f (conflicts with source)").call();
+
+        GraftCommand graft = new GraftCommand(repo).setSource(NodeIdUtil.toHex(commitSource));
+        io.github.search5.hg4j.errors.HgMergeConflictException ex =
+                assertThrows(io.github.search5.hg4j.errors.HgMergeConflictException.class, graft::call);
+        assertEquals(java.util.List.of("f.txt"), ex.getConflictPaths());
+        assertEquals("<<<<<<< dest\nline1-dest\n=======\nline1-source\n>>>>>>> source\n",
+                Files.readString(new File(repo.getDirectory(), "f.txt").toPath()));
+
+        // Manually resolve, exactly like a user driving `hg resolve` would: overwrite the
+        // conflict-marked file with the merged content, then mark it resolved.
+        Files.writeString(new File(repo.getDirectory(), "f.txt").toPath(), "line1-dest\nline1-source\n");
+        new ResolveCommand(repo).setFile("f.txt").markResolved(true).call();
+
+        String graftedHex = new GraftCommand(repo).continueGraft();
+        assertNotNull(graftedHex);
+
+        HgCommit grafted = findCommit(hg, graftedHex);
+        assertNotNull(grafted, "grafted commit must be visible in log");
+        assertEquals("line1-dest\nline1-source\n", Files.readString(new File(repo.getDirectory(), "f.txt").toPath()));
+
+        // Nothing left in progress.
+        assertThrows(io.github.search5.hg4j.errors.HgValidationException.class,
+                () -> new GraftCommand(repo).continueGraft());
+        assertThrows(io.github.search5.hg4j.errors.HgValidationException.class,
+                () -> new GraftCommand(repo).abort());
 
         hg.close();
     }

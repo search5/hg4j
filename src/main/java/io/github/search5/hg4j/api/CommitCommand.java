@@ -876,11 +876,25 @@ public class CommitCommand {
             }
 
             // 활성 북마크가 존재하면 해당 북마크를 새로운 커밋 노드로 전진시킨다.
+            // force(true): 보통의 "하나 위에 커밋"은 항상 순수 fast-forward라 이 값이
+            // 필요없지만(옛 활성 위치가 새 커밋의 parent1 그 자체), AmendCommand처럼 CommitCommand를
+            // 내부적으로 재사용하는 리라이트 계열 호출은 새 커밋이 옛 활성 위치의 "형제"(같은
+            // parent를 공유)일 뿐 자손이 아닌 경우가 있다 — 이때 이 시점엔 아직 obsstore에
+            // predecessor->successor 마커조차 기록되지 않은 상태다(마커는 성공한 커밋의 노드
+            //해시가 있어야 쓸 수 있어 항상 커밋 다음에 쓰임, 예: AmendCommand#call). real hg
+            // 자신도 이런 내부 rewrite에 의한 bookmark 이동은 사용자용 `hg bookmark -r`의
+            // validdest 게이트를 거치지 않고 무조건 이동시킨다(`scmutil.cleanupnodes`) — 그
+            // 게이트는 사용자가 직접 입력하는 대화형 이동에만 해당하므로, 여기서도 동일하게
+            // 우회한다(2026-09-05, 백로그 #39 wave 3에서 BookmarkCommand에 force 게이트를
+            // 추가하며 함께 발견·수정 — 안 그러면 amend 직후 활성 bookmark 전진이
+            // HgValidationException으로 깨짐, `PushRealHgInteropTest#testPushOfBookmarkAdvancedAcrossAmendSucceedsWithoutForce`
+            // 로 재현).
             BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
             String active = bookmarkCmd.getActiveBookmark();
             if (active != null) {
                             bookmarkCmd.setBookmarkName(active)
                            .setRevision(NodeIdUtil.toHex(commitNode))
+                           .setForce(true)
                            .call();
             }
 

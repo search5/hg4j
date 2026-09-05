@@ -259,7 +259,7 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   sidedata 미전송 2개의 실버그가 남아 native 2/6·Docker 14/30만 GREEN(원인
   규명 완료, 수정은 다음 wave). 상세는 [[mercurial-spec-compliance-requirement]]
   백로그 #39 참고.
-  **Wave 3(2026-09-05)**: 4개 병렬 에이전트로 총 7개 명령 진행.
+  **Wave 3(2026-09-05)**: 4개 병렬 에이전트로 총 10개 명령 진행.
   `MergeCommand`/`SubrepoCommand` 둘 다 native 6/6 + Docker 30/30 전부
   GREEN — `SubrepoCommand`의 `init`/`update`가 pin된 리비전으로 실제
   체크아웃을 한 적이 없던 버그, `CommitCommand`의 미해결 머지 충돌 차단
@@ -271,11 +271,21 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   재구현하고 있던 실제 사례(3-way merge/conflict 감지 부재로 인한 data-loss,
   크래시 안전 저널 부재, 잘못된 obsolescence marker 기록) 3건을 발견해
   `RebaseCommand`의 공용 로직(`attemptThreeWayMerge` 등, package-private
-  static으로 추출)을 재사용하도록 수정. `BundleCommand`/`AddCommand`/
-  `BookmarkCommand`/`TagCommand`는 별도 wave 3 에이전트가 병렬 진행 중
-  (완료 시 이 문단에 추가 반영 예정). 상세는
-  [[mercurial-spec-compliance-requirement]] 백로그 #39 참고. 나머지 명령은
-  여전히 미착수.
+  static으로 추출)을 재사용하도록 수정. `AddCommand`/`BookmarkCommand`/
+  `TagCommand` 세 명령도 36개 조합 전부 GREEN(`AddCommand` native 6/6+Docker
+  30/30, `BookmarkCommand` native 6/6+Docker 30/30, `TagCommand` native
+  6/6+Docker 30/30) — 이 과정에서 `BookmarkCommand`의 진짜 hg4j 버그 3건을
+  발견·수정: (1) bookmark 이동에 `TagCommand`의 백로그 #36과 동일한 force
+  게이트가 아예 없던 것 — 추가한 게이트가 DAG 조상 관계뿐 아니라
+  `PushCommand`가 이미 쓰던 `obsutil.foreground`(obsolescence-successor
+  체인)까지 인정하도록 구현하지 않으면 `hg amend` 직후 활성 bookmark
+  자동전진이 깨진다는 것을 전체 회귀에서 발견해 함께 해결, (2) 그 과정에서
+  `CommitCommand`의 커밋마다 활성 bookmark를 전진시키는 내부 호출도 별도로
+  force 우회가 필요함을 발견·수정, (3) 마지막 bookmark 삭제 시 real hg는
+  `.hg/bookmarks`를 빈 파일로 남기는데 hg4j는 파일 자체를 지워버리던 것.
+  `BundleCommand`는 별도 wave 3 에이전트가 진행 중(완료 시 이 문단에 추가
+  반영 예정). 상세는 [[mercurial-spec-compliance-requirement]] 백로그 #39
+  참고. 나머지 명령은 여전히 미착수.
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

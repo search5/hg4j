@@ -428,7 +428,14 @@ public class PushRealHgInteropTest {
             Files.writeString(new File(localDir, "b.txt").toPath(), "divergent");
             new AddCommand(local).call();
             byte[] divergent = new CommitCommand(local).setAuthor("T").setMessage("divergent sibling").call();
-            new BookmarkCommand(local).setBookmarkName("main").setRevision(new NodeId(divergent).toHex()).call();
+            // backlog #39 wave 3: BookmarkCommand now has its own force gate (mirroring
+            // TagCommand's backlog #36 gate) for moving an existing bookmark somewhere that isn't
+            // reachable "forward" (descendant or obsolescence-successor) from its current
+            // position -- exactly real hg's own local `hg bookmark` behavior. This move is
+            // deliberately to a topologically unrelated divergent sibling, so it needs -f
+            // locally too (this test's actual target is the PUSH-time rejection below, not
+            // whether the local move itself needs force).
+            new BookmarkCommand(local).setBookmarkName("main").setRevision(new NodeId(divergent).toHex()).setForce(true).call();
 
             HgValidationException ex = assertThrows(HgValidationException.class,
                     () -> new PushCommand(local).setDestination(serve.url).call(),

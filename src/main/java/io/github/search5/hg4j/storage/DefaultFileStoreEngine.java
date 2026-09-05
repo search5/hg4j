@@ -19,17 +19,34 @@ public class DefaultFileStoreEngine implements StoreEngine {
 
     @Override
     public Revlog getRevlog(HgRepository repository, File indexFile, File dataFile) throws IOException {
-        // A repository-wide exp-revlogv2.2 requirement means EVERY revlog must be v2, including
-        // one that's never existed on disk before (e.g. the filelog for a file committed for the
-        // first time) -- v2-ness can't be auto-detected from nothing, so it must be requested
-        // explicitly here.
-        boolean createAsGeneralV2 = repository.isRevlogV2() && !indexFile.exists();
         // exp-changelog-v2 is narrower: it only ever applies to the changelog itself (real hg's
         // own requirement semantics -- manifests/filelogs stay v1 unless exp-revlogv2.2 is
         // *also* set), so this bootstrap path is gated on the index filename actually being
         // 00changelog.i, not just the requirement being present.
-        boolean createAsChangelogV2 = !createAsGeneralV2 && repository.isChangelogV2()
+        //
+        // For the changelog specifically, exp-changelog-v2 ALWAYS takes precedence over a
+        // repository-wide exp-revlogv2.2 (general-v2) requirement when both are set together --
+        // matches real hg's own precedence exactly (mercurial/revlog.py's `_init_opts`: `if
+        // 'changelogv2' in opts and revlog_kind == KIND_CHANGELOG: new_header = CHANGELOGV2 ...
+        // elif 'revlogv2' in opts: new_header = REVLOGV2` -- changelogv2 is checked first and wins
+        // outright for the changelog, general-v2 never overrides it there). A prior version of
+        // this method computed createAsGeneralV2 first and let it win whenever both requirements
+        // were active, silently bootstrapping the changelog as plain general-v2 (INDEX_ENTRY_V2,
+        // no `rank` field) instead of CHANGELOGV2 (INDEX_ENTRY_CL_V2, has `rank`) -- real hg's own
+        // `fast_rank()` unconditionally returns None for any revlog whose format_version isn't
+        // CHANGELOGV2, so a *second* real-hg commit on top of such an hg4j-created changelog
+        // crashed inside `revlog.py`'s `rank = 1 + self.fast_rank(p1r)` with `TypeError:
+        // unsupported operand type(s) for +: 'int' and 'NoneType'` -- found 2026-09-05 by the
+        // requirement matrix (RequirementMatrixInitDockerRoundTripTest, the `cl2/general-v2` and
+        // `cl2+sidedata/general-v2` combos) doing exactly that as its own acceptance check.
+        boolean createAsChangelogV2 = repository.isChangelogV2()
                 && "00changelog.i".equals(indexFile.getName()) && !indexFile.exists();
+        // A repository-wide exp-revlogv2.2 requirement means EVERY OTHER revlog must be v2,
+        // including one that's never existed on disk before (e.g. the filelog for a file committed
+        // for the first time) -- v2-ness can't be auto-detected from nothing, so it must be
+        // requested explicitly here. Excludes the changelog whenever createAsChangelogV2 already
+        // claimed it (see above).
+        boolean createAsGeneralV2 = repository.isRevlogV2() && !indexFile.exists() && !createAsChangelogV2;
         return new Revlog(indexFile, dataFile, repository.isUseZstdCompression(), createAsGeneralV2, createAsChangelogV2, repository.isPersistentNodemap());
     }
 

@@ -50,13 +50,41 @@ public class Revlog {
         }
     };
 
+    /**
+     * @param rank the changelog-v2-only {@code rank} field ({@code mercurial/revlogutils/
+     *     constants.py}'s {@code RANK_UNKNOWN = -1} sentinel when not applicable/not persisted --
+     *     every non-CHANGELOGV2 record uses this default via the compatibility constructor below).
+     *     Real hg defines it as "the size of the set ancestors(r), r included" and computes it
+     *     recursively as revisions are appended (see real hg's {@code revlog.py}
+     *     {@code addrevision}/{@code fast_rank}); {@link Revlog#appendRevisionV2} mirrors that
+     *     exact recursion for CL_V2 records instead of just writing {@code rev} (found to be wrong
+     *     2026-09-05: a lone initial commit's rank must be {@code 1}, not {@code 0}, or every
+     *     subsequent real-hg-computed rank on top silently drifts by one from what real hg itself
+     *     would have computed for the same history).
+     */
     public record IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
                              int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId,
-                             long sidedataOffset, int sidedataCompLen, int sidedataCompressionMode) {
+                             long sidedataOffset, int sidedataCompLen, int sidedataCompressionMode,
+                             int rank) {
         public IndexRecord {
             if (nodeId != null && nodeId.length > 20) {
                 nodeId = Arrays.copyOf(nodeId, 20);
             }
+        }
+
+        /**
+         * Backward-compatible constructor for every call site that doesn't carry sidedata/rank
+         * information (v1 revlogs, and general-v2 {@code INDEX_ENTRY_V2} records which have no
+         * {@code rank} field at all). Equivalent to the full constructor with
+         * {@code sidedataOffset=0}, {@code sidedataCompLen=0} (meaning "no sidedata" — see
+         * {@link Revlog#getSidedata(int)}), {@code sidedataCompressionMode=COMP_MODE_PLAIN}, and
+         * {@code rank=-1} (real hg's own {@code RANK_UNKNOWN} sentinel).
+         */
+        public IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
+                           int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId,
+                           long sidedataOffset, int sidedataCompLen, int sidedataCompressionMode) {
+            this(revision, offset, flags, compLen, uncompLen, baseRev, linkRev, parent1, parent2,
+                    nodeId, sidedataOffset, sidedataCompLen, sidedataCompressionMode, -1);
         }
 
         /**
@@ -68,7 +96,7 @@ public class Revlog {
         public IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
                            int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId) {
             this(revision, offset, flags, compLen, uncompLen, baseRev, linkRev, parent1, parent2,
-                    nodeId, 0L, 0, 0);
+                    nodeId, 0L, 0, 0, -1);
         }
 
         public int getRevision() { return revision; }
@@ -92,6 +120,8 @@ public class Revlog {
          * {@code mercurial/revlogutils/constants.py} {@code COMP_MODE_*}.
          */
         public int getSidedataCompressionMode() { return sidedataCompressionMode; }
+        /** See the class-level {@code @param rank} javadoc above. */
+        public int getRank() { return rank; }
     }
 
     public Revlog(File idxFile, File datFile) throws IOException {
@@ -935,7 +965,7 @@ public class Revlog {
             // 상위 2비트(2-3)는 sidedata의 압축 모드(COMP_MODE_PLAIN=0을 쓰므로 00 그대로,
             // 값 변경 불필요) — RevlogIndex의 `(compressionByte >> 2) & 3` 파싱과 대칭.
             recordBuf.put((byte) (changelogUsesCompression ? 1 : 0));
-            recordBuf.putInt(rev); // rank (단순화: 선형 히스토리 가정)
+            recordBuf.putInt(computeCl2Rank(parent1, parent2)); // rank (real hg's own recursive formula)
             recordBuf.put(new byte[23]); // 패딩
         } else {
             // INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x (96바이트, mercurial/revlogutils/constants.py 실측)
@@ -964,13 +994,56 @@ public class Revlog {
         }
 
         int recordedLinkRev = changelogV2 ? rev : linkRev;
+        int recordedRank = changelogV2 ? computeCl2Rank(parent1, parent2) : -1;
         index.addRecord(new IndexRecord(rev, offset, extraFlags, dataHunk.length, processedContent.length,
-                rev, recordedLinkRev, parent1, parent2, nodeId, sidedataOffset, sidedataCompLen, 0));
+                rev, recordedLinkRev, parent1, parent2, nodeId, sidedataOffset, sidedataCompLen, 0, recordedRank));
         updatePersistentNodeMapAfterAppend();
 
         byte[] hash = new byte[20];
         System.arraycopy(nodeId, 0, hash, 0, 20);
         return hash;
+    }
+
+    /**
+     * Mirrors real hg's own recursive {@code rank} computation for a CL_V2 (changelog-v2) revision
+     * exactly (see {@code mercurial/revlog.py}'s {@code addrevision}: {@code rank = 1} for a root,
+     * {@code rank = 1 + fast_rank(parent)} for a single-parent revision, {@code rank = 1 +
+     * fast_rank(max(p1, p2))} for a merge -- real hg itself uses this same non-rust-extension
+     * fallback formula, not a from-scratch ancestor-set count, so mirroring it exactly (rather than
+     * "more correctly" computing a true ancestor-set size) is what actually matches what real hg
+     * would have persisted for the same history). {@code parent1}/{@code parent2} are {@code -1}
+     * for "no parent" (nullrev), matching every other parent-index convention in this class.
+     *
+     * <p>Found wrong 2026-09-05 (backlog #39 requirement matrix, {@code
+     * RequirementMatrixInitDockerRoundTripTest}'s {@code general-v2} combos): a prior version of
+     * this method just wrote {@code rev} as the rank (rank 0 for the first commit), silently
+     * diverging from real hg's own convention that a root revision's rank is {@code 1} -- every
+     * later rank real hg itself computed on top of such a repository would then be off by one from
+     * what real hg would have computed for equivalent history it had written itself throughout.
+     */
+    private int computeCl2Rank(int parent1, int parent2) {
+        if (parent1 < 0 && parent2 < 0) {
+            return 1;
+        } else if (parent2 < 0) {
+            return 1 + rankOfAlreadyWritten(parent1);
+        } else if (parent1 < 0) {
+            return 1 + rankOfAlreadyWritten(parent2);
+        } else {
+            return 1 + rankOfAlreadyWritten(Math.max(parent1, parent2));
+        }
+    }
+
+    /** {@code rank} of an already-appended revision, treating nullrev/unknown defensively as 0
+     * (real hg's own convention for nullrev -- see {@code fast_rank}'s {@code if rev == nullrev:
+     * return 0} -- this should never actually observe an unknown rank for CL_V2-authored history,
+     * since every CL_V2 revision this class ever writes always gets a real one via {@link
+     * #computeCl2Rank}). */
+    private int rankOfAlreadyWritten(int rev) {
+        if (rev < 0) {
+            return 0;
+        }
+        int rank = getIndexRecord(rev).getRank();
+        return rank < 0 ? 0 : rank;
     }
 
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,

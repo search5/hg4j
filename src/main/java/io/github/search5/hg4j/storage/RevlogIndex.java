@@ -134,10 +134,20 @@ public class RevlogIndex {
         this.persistentNodeMap = persistentNodeMap;
         if (idxFile.exists()) {
             loadIndex();
+        } else if (createAsChangelogV2) {
+            // Precedence fix (2026-09-05): this branch must be checked BEFORE createAsGeneralV2 --
+            // this constructor's own javadoc above already documents "changelog-v2 takes
+            // precedence since it is the more specific format", but the branch order previously
+            // did the opposite (checked createAsGeneralV2 first), silently bootstrapping a
+            // changelog-v2+general-v2 repository's changelog as plain general-v2 (no `rank` field)
+            // instead of CHANGELOGV2. See DefaultFileStoreEngine#getRevlog's javadoc for the full
+            // real-hg crash this caused and how it was found. In practice the two call sites
+            // (DefaultFileStoreEngine) never pass both true simultaneously anymore after that fix,
+            // but this order is kept correct here too as the documented, defense-in-depth contract
+            // of this constructor.
+            initializeNewV2Docket(true, useZstd);
         } else if (createAsGeneralV2) {
             initializeNewV2Docket(false, useZstd);
-        } else if (createAsChangelogV2) {
-            initializeNewV2Docket(true, useZstd);
         }
     }
 
@@ -777,19 +787,25 @@ public class RevlogIndex {
         buf.get(nodeId);
 
         // Sidedata fields immediately follow the node-id section in BOTH INDEX_ENTRY_V2 and
-        // INDEX_ENTRY_CL_V2 (only the padding/rank bytes after them differ, which we don't need):
-        // 8 bytes sidedata offset, 4 bytes sidedata compressed length, 1 byte compression-mode
-        // byte whose bits 0-1 are the main data's compression mode and bits 2-3 are sidedata's
-        // own compression mode (mercurial/pure/parsers.py IndexObject2._unpack_entry: `data_comp
-        // = data[10] & 3`, `sidedata_comp = (data[10] & (3 << 2)) >> 2`).
+        // INDEX_ENTRY_CL_V2: 8 bytes sidedata offset, 4 bytes sidedata compressed length, 1 byte
+        // compression-mode byte whose bits 0-1 are the main data's compression mode and bits 2-3
+        // are sidedata's own compression mode (mercurial/pure/parsers.py
+        // IndexObject2._unpack_entry: `data_comp = data[10] & 3`,
+        // `sidedata_comp = (data[10] & (3 << 2)) >> 2`).
         long sidedataOffset = buf.getLong();
         int sidedataCompLen = buf.getInt();
         int compressionByte = buf.get() & 0xFF;
         int sidedataCompressionMode = (compressionByte >> 2) & 3;
 
+        // CL_V2 has one more 4-byte field here (`rank`, INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x)
+        // before the final padding; general V2 (INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x) has no rank
+        // field at all -- the remaining bytes there are pure padding, left unread (each record is
+        // decoded from its own fixed-size 96-byte slice, so not consuming the rest is harmless).
+        int rank = isChangelogV2 ? buf.getInt() : -1;
+
         return new Revlog.IndexRecord(rev, offset, flags, compLen, uncompLen,
                 baseRev, linkRev, parent1, parent2, nodeId,
-                sidedataOffset, sidedataCompLen, sidedataCompressionMode);
+                sidedataOffset, sidedataCompLen, sidedataCompressionMode, rank);
     }
 
     public synchronized long getFileOffset(int rev) {

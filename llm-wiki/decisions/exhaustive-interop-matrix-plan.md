@@ -294,6 +294,16 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   [[mercurial-spec-compliance-requirement]] 백로그 #39 참고. 나머지 44개
   명령은 여전히 미착수.
 
+  **Wave 4(2026-09-05, `BranchCommand`/`BranchesCommand`/`PhaseCommand`)**:
+  이 3개 명령에 36개 조합(native 6 + Docker 30) 적용, 전부 GREEN
+  (`BranchCommand`/`BranchesCommand` native 6/6+Docker 30/30,
+  `PhaseCommand` native 6/6+Docker 30/30). `PhaseCommand`는 real-hg
+  byte-for-byte `.hg/store/phaseroots` 비교 검증 설계 도중 진짜 hg4j
+  버그 3건(자체 phaseroots 재구현이 real hg의 최소-boundary-root 알고리즘과
+  달랐던 것, `CommitCommand`/`FetchCommand`가 매 커밋/pull마다 이미
+  상속되는 phase를 중복으로 명시 기록하던 것)을 발견·수정한 뒤 도달.
+  상세는 [[mercurial-spec-compliance-requirement]] 백로그 #39 참고.
+
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)
 - [x] `CloneCommand`/`PullCommand`/`PushCommand` 핵심 라운드트립 — **완료

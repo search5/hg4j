@@ -50,6 +50,31 @@ public class BundleCommandTest {
         assertTrue(ex.getMessage().contains("setBaseRevision"));
     }
 
+    // -- Treemanifest requires the -v3 BundleType family, matching real hg's own hard abort ------
+
+    @Test
+    public void treemanifestRepoWithDefaultV1TypeAbortsMatchingRealHg(@TempDir Path tempDir) throws Exception {
+        // Real hg 7.2 (verified 2026-09-05): `hg bundle --all --type none-v1 out.hg` -- and even
+        // the CLI's own default type with no --type at all -- ABORTS against a treemanifest
+        // repository ("repository does not support bundle version 01"/"02"); it never silently
+        // upgrades the format. BundleCommand mirrors that exactly instead of quietly producing a
+        // structurally-broken (missing every subdirectory) bundle the way it used to.
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        File requiresFile = new File(repo.getHgDir(), "requires");
+        List<String> lines = new java.util.ArrayList<>(Files.readAllLines(requiresFile.toPath()));
+        lines.add("treemanifest");
+        Files.write(requiresFile.toPath(), lines);
+        repo = new HgRepository(tempDir.toFile());
+
+        writeAndCommit(repo, "a.txt", "v1", "first");
+        File out = tempDir.resolve("out.hg").toFile();
+        BundleCommand cmd = new BundleCommand(repo).setOutputFile(out).setBaseRevision("null");
+        IllegalStateException ex = assertThrows(IllegalStateException.class, cmd::call);
+        assertTrue(ex.getMessage().contains("does not support bundle version"),
+                "must mirror real hg's own abort message: " + ex.getMessage());
+        assertFalse(out.exists(), "no bundle file should be written when the type/format mismatch aborts");
+    }
+
     @Test
     public void baseRevisionNotFoundThrowsIOException(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();

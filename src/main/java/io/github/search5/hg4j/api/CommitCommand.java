@@ -740,6 +740,20 @@ public class CommitCommand {
 
                             // Register only .i file paths in fncache (raw logical path as per native Mercurial specs)
                             fncachePaths.add("data/" + path + ".i");
+                            if (!filelog.isInline()) {
+                                // Backlog #43: a filelog that just grew past real hg's 131072-byte
+                                // inline threshold (Revlog.enforceInlineSize(), called from inside
+                                // appendRevision() above) splits into a separate .d file -- real
+                                // hg's own fncache tracks BOTH the .i and .d path for any
+                                // non-inline data/meta revlog (RE_FNCACHE_FILE in store.py matches
+                                // "(data|meta)/....[id]$"), confirmed live against real hg 7.2.
+                                // Without this, real hg's own `hg verify` on a repository into
+                                // which hg4j just committed such a file reports
+                                // "warning: revlog 'data/<path>.d' not in fncache!" (GcCommand's
+                                // own fncache rebuild already established this same convention for
+                                // its own, unrelated code path).
+                                fncachePaths.add("data/" + path + ".d");
+                            }
                             if (useFileIndex) {
                                 fileIndexPaths.add(path);
                             }

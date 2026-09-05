@@ -332,7 +332,7 @@ public class Wire2CommandsTest {
     public void changesetdataReportsSecretPhase(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         byte[] commit = writeAndCommit(tempDir.toFile(), repo, "a.txt", "hello", "c1");
-        new PhaseCommand(repo).setRevision(hex(commit)).setPhase(2).call(); // secret
+        new PhaseCommand(repo).setRevision(hex(commit)).setPhase(2).setForce(true).call(); // secret
 
         Map<String, Object> args = new LinkedHashMap<>();
         args.put("revisions", List.of(explicitSpec(commit)));
@@ -806,7 +806,7 @@ public class Wire2CommandsTest {
         byte[] secret = writeAndCommit(tempDir.toFile(), repo, "a.txt", "three", "c3");
         new PhaseCommand(repo).setRevision(hex(pub)).setPhase(0).call();
         new PhaseCommand(repo).setRevision(hex(draft)).setPhase(1).call();
-        new PhaseCommand(repo).setRevision(hex(secret)).setPhase(2).call();
+        new PhaseCommand(repo).setRevision(hex(secret)).setPhase(2).setForce(true).call();
 
         Map<String, String> keys = Wire2Commands.readListKeys(repo, "phases");
         assertFalse(keys.containsKey(hex(pub)), "public revisions are not reported as phase roots");

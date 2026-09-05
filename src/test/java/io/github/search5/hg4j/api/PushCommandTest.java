@@ -107,7 +107,7 @@ public class PushCommandTest {
         Files.writeString(new File(localDir, "a.txt").toPath(), "v1");
         new AddCommand(localRepo).call();
         new CommitCommand(localRepo).setMessage("secret commit").call();
-        new PhaseCommand(localRepo).setRevision("0").setPhase(2).call(); // SECRET
+        new PhaseCommand(localRepo).setRevision("0").setPhase(2).setForce(true).call(); // SECRET
 
         assertThrows(HgValidationException.class,
                 () -> new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).call());

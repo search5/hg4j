@@ -108,7 +108,13 @@ public class HeadsCommand {
         return allBranchHeads(changelog, count);
     }
 
-    /** Real hg's {@code hg heads --topo}: pure repo-wide topological leaves. */
+    /**
+     * Real hg's {@code hg heads --topo}: pure repo-wide topological leaves, listed highest
+     * revision first -- verified against hg 7.2.2 (2026-09-05): {@code --topo} uses the exact same
+     * revision-descending order as every other {@code hg heads} form, not changelog order. (Prior
+     * to that fix, this iterated ascending and returned leaves in the wrong order whenever more
+     * than one existed.)
+     */
     private List<String> topoHeads(Revlog changelog, int count) throws IOException {
         // Parent tracking: any revision that is a parent of another revision is not a head
         Set<Integer> parents = new HashSet<>();
@@ -121,7 +127,7 @@ public class HeadsCommand {
         }
 
         List<String> headList = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
+        for (int i = count - 1; i >= 0; i--) {
             if (!parents.contains(i)) {
                 headList.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
             }

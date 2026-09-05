@@ -359,6 +359,38 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `ImportCommand` 3개 명령을 앞선 wave 4 병합 결과(28/67)에 더해 로컬 명령
   기준 **31/67**로 증가.)
 
+  **Wave 5(2026-09-05, 가벼운 저장소 메타데이터 조회 8개 명령:
+  `HeadsCommand`/`IdentifyCommand`/`ParentsCommand`/`PathsCommand`/
+  `RootCommand`/`TipCommand`/`TagsCommand`/`SummaryCommand`)**: 기능이 가까운
+  명령끼리 3개 트리오(`Heads`+`Tip`+`Parents`, `Identify`+`Summary`,
+  `Tags`+`Paths`+`Root`)로 묶어 각 트리오 native 6/6 + Docker 30/30 =
+  36/36 GREEN(3트리오 = 8개 명령 전부). `PathsCommand`/`RootCommand`는 4축
+  어디에도 실제로 좌우되지 않는 명령이지만 예외 없이 36개 조합 전부
+  실측했다. 세 트리오 모두 hg4j 쪽은 순수 읽기만 하므로(저장소는 항상 real
+  hg CLI/`docker exec`로만 구축) `RequirementMatrixCommitHelperMain` 류의
+  서브프로세스 격리가 필요 없었음(그 우회는 hg4j 자신의 zstd **쓰기** 경로가
+  `docker exec`/`docker run` 스폰과 JVM을 공유할 때만 재현되는 문제였기
+  때문). real hg 7.2.2 직접 대조로 진짜 hg4j 버그 3건 발견·수정: (1)
+  `HeadsCommand --topo`가 리프를 changelog 오름차순으로 반환하던 것을
+  real hg처럼(다른 모든 `hg heads` 형태와 동일하게) 리비전 내림차순으로
+  수정(기존 `HeadsRealHgInteropTest`는 `hexSorted()` 비교라 이 순서 버그를
+  못 잡고 있었음), (2) `IdentifyCommand`를 real hg의 정확한 출력 규칙으로
+  전면 재작성 — 기본 브랜치 생략, dirty(`+`) 마커, 머지 2-parent, 태그/
+  북마크의 알파벳 순 `"/"` 조인(`TagsCommand`/`BookmarkCommand` 재사용),
+  `-r` 조회 신설(`setRevision`) — 재작성 도중 real hg 실측으로 두 가지를
+  추가 확인: 머지 중 태그/북마크는 p1+p2 양쪽에서 집계되고, `-r` 조회의
+  브랜치는 작업 사본의 현재 브랜치가 아니라 조회 대상 리비전 자신의
+  브랜치여야 함. 기존 `IdentifyCommandTest`/`PorcelainExtraCommandsTest`의
+  옛(틀린) 포맷 검증도 real hg 실측값으로 갱신. `SummaryCommand` 자체엔
+  버그가 없었으나, 이를 매트릭스로 검증하던 중 changelog-v2(docket 기반)
+  저장소를 오래 붙들고 있는 `HgRepository` 핸들이 external 커밋 이후에도
+  캐시된 revision count로 stale해지는 것을 실측(hg4j 버그가 아니라 테스트의
+  "실행 중 계속 real hg CLI로 저장소를 키우면서 핸들 재사용" 패턴이 원인 —
+  기존 공개 API `refreshIfChangedOnDisk()`로 테스트 쪽에서 해결). 전체
+  비-interop `test` 2282건 0 실패/0 에러(2 스킵) GREEN. 로컬 명령 완주 수는
+  31에서 8개 추가로 **39/67**로 증가(다른 wave 5 병렬 에이전트와 별도 취합
+  필요할 수 있음).
+
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)
 - [x] `CloneCommand`/`PullCommand`/`PushCommand` 핵심 라운드트립 — **완료

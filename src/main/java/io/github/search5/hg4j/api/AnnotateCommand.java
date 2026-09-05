@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lfs.HgLfsManager;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -190,6 +191,19 @@ public final class AnnotateCommand {
      *                       already on the current recursion stack (ordinary repository history
      *                       cannot produce this, but a corrupt one could).
      */
+    /**
+     * Backlog 42: {@code filelog}'s revision {@code rev} may be LFS-flagged ({@code
+     * REVIDX_EXTSTORED}), in which case its raw filelog content is the LFS pointer text, not the
+     * real file bytes -- resolve it the same way {@code UpdateCommand}'s checkout path does
+     * (shared via {@link HgLfsManager#resolveContent}) so annotate diffs/attributes the REAL
+     * content instead of the pointer's own text lines. Verified live 2026-09-06: a real hg 7.2
+     * {@code hg annotate} on an LFS-tracked, renamed file correctly attributes each real content
+     * line to the commit that introduced it (pre- and post-rename) -- hg4j must match.
+     */
+    private byte[] resolveContent(Revlog filelog, int rev, String path) throws IOException {
+        return HgLfsManager.resolveContent(repository, filelog.getRevisionContent(rev), filelog.isExtStored(rev), path);
+    }
+
     private TraceResult traceLines(String path, int targetRev, Set<String> visitingPaths) throws IOException {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         if (!flIdx.exists() || !visitingPaths.add(path)) {
@@ -226,7 +240,7 @@ public final class AnnotateCommand {
                 prevSources = crossed.linkRevs;
                 startRev = 0;
             } else {
-                byte[] bytes0 = filelog.getRevisionContent(0);
+                byte[] bytes0 = resolveContent(filelog, 0, path);
                 String text0 = new String(bytes0, StandardCharsets.UTF_8);
                 prevLines = splitLines(text0);
                 int linkRev0 = filelog.getIndexRecord(0).getLinkRev();
@@ -236,7 +250,7 @@ public final class AnnotateCommand {
             }
 
             for (int r = startRev; r <= targetRev; r++) {
-                byte[] bytesR = filelog.getRevisionContent(r);
+                byte[] bytesR = resolveContent(filelog, r, path);
                 String textR = new String(bytesR, StandardCharsets.UTF_8);
                 String[] currLines = splitLines(textR);
 

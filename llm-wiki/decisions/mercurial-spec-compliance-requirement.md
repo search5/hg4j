@@ -2506,15 +2506,17 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
       추가로 "changelog-v2인데 sidedata-copies 기능은 안 쓰는" 조합(`cl2`,
       `cl2+sidedata` 아님)에서 **real hg 자신의 결함**을 발견(아래 참고) —
       hg4j 문제가 아니므로 테스트에서 명시적으로 tolerate 처리.
-    - **`PushCommand`**: native 2/6, Docker 14/30만 GREEN — 나머지는 전부
-      **2가지 진짜 hg4j 프로덕션 버그**로 실패(아래 "발견했으나 이번 wave에서
-      수정하지 않은 버그" 참고, 원인은 정확히 규명했으나 수정 자체는 각각
-      상당한 작업량이라 이번 wave 범위 밖으로 남김). 실패 패턴이 매우
-      일관적임 — native/Docker 양쪽에서 실패한 조합은 전부 `treemanifest`
+    - **`PushCommand`**: **native 6/6 + Docker 30/30 전부 GREEN(2026-09-05,
+      사용자 지시로 같은 세션 내에서 즉시 후속 수정 — 아래 "발견·수정한
+      실버그" #3/#4 참고)**. 처음엔 native 2/6, Docker 14/30만 GREEN이었고
+      나머지는 전부 2가지 진짜 hg4j 프로덕션 버그(treemanifest dirlog 미전송,
+      changelog-v2+sidedata 미전송)로 실패했었다 — 실패 패턴이 매우
+      일관적이었음(native/Docker 양쪽에서 실패한 조합은 전부 `treemanifest`
       또는 `cl2+sidedata`를 포함하는 조합뿐이고, `persistent-nodemap`/
-      `fileindex-v1`/`general-v2`/`dirstate-v2` 자체가 새로운 실패를 유발한
-      적은 없음(Docker 16개 실패 = treemanifest 9개 + cl2+sidedata·flat 7개,
-      정확히 예측과 일치).
+      `fileindex-v1`/`general-v2`/`dirstate-v2` 자체는 새로운 실패를 유발한
+      적이 없어 Docker 16개 실패 = treemanifest 9개 + cl2+sidedata·flat 7개로
+      정확히 예측과 일치했음). 사용자가 "백로그 39 범위 안에서 지금 바로
+      고치라"고 지시해 같은 세션에서 두 버그 모두 수정, 재검증까지 완료.
 
     **발견·수정한 실버그 2건(`StripCommand`/`ShelveCommand` 공유 근본 원인)**:
     1. `StripCommand`/`ShelveCommand`가 각자 따로 구현하고 있던 revlog 물리
@@ -2555,29 +2557,57 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `hg shelve` → `hg unshelve` → `hg verify`만으로 100% 재현). 테스트에서
     이 특정 시그니처만 명시적으로 tolerate.
 
-    **발견했으나 이번 wave에서 수정하지 않은 진짜 hg4j 버그 2건(`PushCommand`)**:
-    1. **treemanifest 조합에서 디렉터리 manifest(dirlog)를 전혀 전송하지
-       않음**: `PushCommand`의 changegroup 빌드 로직(`repository.getManifestRevlog()`
+    **발견·수정한 진짜 hg4j 버그 2건 더(`PushCommand`, 2026-09-05 같은 세션
+    내 즉시 후속 수정 — 사용자가 "백로그 39 범위 안에서 지금 바로 고치라"고
+    명시적으로 지시)**:
+    3. **treemanifest 조합에서 디렉터리 manifest(dirlog)를 전혀 전송하지
+       않던 버그**: `PushCommand`의 changegroup 빌드 로직(`repository.getManifestRevlog()`
        만 사용)은 루트 manifest revlog 하나만 다루고, `meta/<dir>/00manifest.i`
-       형태의 디렉터리별 manifest revlog는 전혀 열거하지 않는다 — 반면
-       읽는 쪽인 `FetchCommand`의 적용 로직은 이미
-       `bundle.manifestGroups`(디렉터리별 그룹)를 완전히 지원한다
-       (`FetchCommand.java` 참고). 즉 "받는 쪽 적용 로직은 있는데 hg4j가
-       "보내는 쪽"(push)일 때 그 데이터 자체를 만들지 않는" 비대칭 — 서브
-       디렉터리에 있는 파일을 push하면 목적지에서 "no such file"로 나타남.
-    2. **changelog-v2 + sidedata-copies 조합에서 sidedata를 전혀 전송하지
-       않음**: `PushCommand`는 sidedata 관련 코드가 전무하다. 순정 real hg
-       끼리의 push+verify 컨트롤 재현(`hg init --config
-       format.exp-use-copies-side-data-changeset=yes` 두 저장소 간
-       `hg push`)은 무해한 경고 하나만 내고 깨끗하게 통과하는 반면, hg4j가
-       push하면 "in manifest but not in changeset"/"rev 0 points to
-       unexpected changeset 0" 같은 진짜 integrity error가 난다 — hg4j
-       원인인 것은 확인했으나, 정확히 어느 바이트 단위 메커니즘까지는
-       이번 pass에서 못 파고들었다(sidedata가 changeset의 "files" 목록
-       크로스체크에 관여하는 것으로 추정).
+       형태의 디렉터리별 manifest revlog는 전혀 열거하지 않았다 — 반면
+       읽는/받는 쪽인 `FetchCommand.applyBundle()`은 이미
+       `bundle.manifestGroups`(디렉터리별 그룹)를 완전히 지원하고 있었다.
+       근본 원인은 더 근본적이었다: `PushCommand`가 항상 cg1(`HG10UN`)만
+       하드코딩해서 만들고 있었는데, cg1 자체가 treemanifest 봉투(`bundle.
+       manifestGroups`)도 sidedata 청크도 구조적으로 실어 나를 수 없는
+       포맷이었다(`ChangegroupParser#isTreeCapableVersion`은 cg3/cg4/cg5만
+       true). `HgLocalClient#getBundle()`(pull/getbundle 응답 방향)이 이미
+       `bundleCaps`에서 버전을 협상해 `ChangegroupParser.writeBundle()`로
+       패킹하는 것과 같은 패턴을, push 쪽은 목적지 능력 협상 대신 **"이
+       push가 보내는 데이터 자체가 무엇을 요구하는지"로 직접 결정**하도록
+       수정(로컬 file:// 목적지는 애초에 capabilities에 bundle2= 정보가
+       없어 협상이 불가능함을 확인 후 내린 판단) — sidedata가 필요하면
+       cg5, treemanifest만 필요하면 cg3(둘 다 아니면 기존 그대로 cg1, 압도적
+       다수인 평범한 저장소는 와이어 바이트 변화 없음). 디렉터리 dirlog
+       열거는 fncache에 등록되지 않으므로(파일로그와 달리) `store/meta/`
+       트리를 직접 재귀 스캔해서 찾는 방식으로 구현(`CommitCommand
+       #writeTreeManifestDir`가 쓰는 것과 동일한 무-인코딩 경로 규칙 재사용).
+       hand-롤 cg1 전용 writer(`writeEntryChunk`/`writePathChunk`/
+       `writeTerminalChunk`)를 완전히 제거하고 `ChangegroupParser.writeBundle()`
+       (이미 cg1-5 전부 지원, `HgLocalClient#getBundle()`이 실전 검증한 것과
+       동일한 코드)을 재사용하도록 교체. 필요하면 `Bundle2Parser.
+       wrapChangegroupInBundle2()`로 HG20 봉투도 씌운다(로컬/서버 양쪽 다
+       `HgLocalClient#pushWithHooks()`가 이미 HG20 파싱을 지원 — 백로그 26).
+    4. **changelog-v2 + sidedata-copies 조합에서 sidedata를 전혀 전송하지
+       않던 버그**: `PushCommand`에는 sidedata 관련 코드가 아예 없었다.
+       `HgLocalClient#getBundle()`의 `packChangelogSidedata`(백로그 26)와
+       완전히 대칭인 로직을 push 쪽에도 추가 — 위에서 결정한 버전이 cg5이고
+       저장소가 `isSidedataCopies()`이면 각 changelog 엔트리에 `changelog.
+       getSidedata(r)`로 읽은 sidedata를 `SidedataCodec.serialize()`로
+       실어 보낸다. 받는 쪽(`Revlog.appendChangeGroupEntry`)은 이미
+       `entry.sidedata`를 처리하는 코드가 있었다(pull 방향에서 이미
+       검증됨) — push 쪽에 대칭 코드를 추가하는 것만으로 충분했다.
+       부수적으로 cg2+ 포맷이 요구하는 `deltabase`/`flags` 필드도 changelog/
+       manifest(root)/filelog 세 그룹 전부에 채워 넣었다(cg1은 스트림 순서로
+       암묵적으로 나타내던 것을 cg2+는 명시적 필드로 요구함) — 파일로그와
+       신규 dirlog 패킹은 완전히 동일한 규칙이라 `packRevlogRange()`라는
+       공용 헬퍼로 통합.
 
-       둘 다 상당한 신규 구현이 필요한 기능 격차라 이번 wave 범위 밖으로
-       남김 — 다음 wave에서 별도로 다룰 것을 권장.
+       **검증**: 두 수정 후 `RequirementMatrixPushCoreRoundTripTest`(native
+       6/6) + `RequirementMatrixPushDockerRoundTripTest`(Docker 30/30) 전부
+       GREEN 재확인. 기존 push 관련 테스트(`PushCommandTest`,
+       `CatUpdateClonePushCoverageTest`, `CHgPushRoundtripTest`,
+       `PushRealHgInteropTest`, `PushLockRaceRealHgInteropTest`)와 비-interop
+       `test` 전체(2270+건)도 회귀 없음 재확인.
 
     **환경 메모**: 이 세션에서 Docker의 `localhost/hg-rust-7.2.4` 태그가
     사라져 있어(이미지 자체는 `hg-rust-7.2.4:latest`로 존재) 처음엔 Docker
@@ -2585,14 +2615,30 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     localhost/hg-rust-7.2.4`로 로컬 재태깅해 해결(코드 변경 아님, 이 머신의
     Docker 상태일 뿐 — 다음 세션이 같은 머신이 아니면 다시 필요할 수 있음).
 
-    **남은 것(전부 미착수)**: 나머지 로컬 명령 51개(`AddCommand`,
-    `AmendCommand`, `BookmarkCommand`, `MergeCommand`, `SubrepoCommand`
-    등 — 전체 목록 [[exhaustive-interop-matrix-plan]] §3-2에서 이번에 다룬
-    4개 제외), `PushCommand`의 위 2가지 실버그 자체의 수정, wire 매트릭스의
-    나머지 5개 명령(`FetchCommand`/`IncomingCommand`/`OutgoingCommand`/
-    `ClonebundlesCommand`/`NarrowCloneCommand`). "67개 명령 × 매트릭스"
-    전체 목표 중 실제로 완주된 것은 이제 명령 기준 10/67(4+3+3, `PushCommand`는
-    실버그가 남아있어 완주로 세지 않음)뿐.
+    **Wave 2(2026-09-05, PushCommand 수정 완료 직후 사용자 지시로 계속
+    진행)**: 다음 우선순위 명령으로 `AmendCommand`를 선택 — `CommitCommand`
+    (이미 원본 36개 조합 전체에서 검증됨)에 실제 쓰기를 위임하고 obsstore에
+    평문 마커만 추가하는 얇은 명령이라, "이미 검증된 저수준 원시 동작에
+    위임하는 명령이 모든 조합에서 정말 안전하게 동작하는지"를 확인하는
+    좋은 다음 표본으로 판단(사용자가 권장한 "방금 고친 것과 코드 경로를
+    공유하는 명령" 기준과는 별개로, "이미 검증된 CommitCommand에 위임하는
+    명령들이 조합 전체에서 안전한지"라는 다른 유용한 신호). `RequirementMatrixAmendCoreRoundTripTest`
+    (native)/`RequirementMatrixAmendDockerRoundTripTest`(Docker) +
+    `RequirementMatrixAmendHelperMain`(subprocess 헬퍼) 신규 추가.
+    **Native 6/6 + Docker 30/30 전부 GREEN** — 새 실버그 없음(`CommitCommand`로의
+    위임이 모든 36개 조합에서 안전함을 재확인).
+
+    **남은 것(대부분 미착수)**: 나머지 로컬 명령 50개(`AddCommand`,
+    `BookmarkCommand`, `MergeCommand`, `SubrepoCommand`, `BundleCommand`
+    (조사 중 `PushCommand`의 수정 전과 동일한 cg1-only 하드코딩을 그대로
+    갖고 있는 것을 발견 — 다음 wave 후보로 유력) 등 — 전체 목록
+    [[exhaustive-interop-matrix-plan]] §3-2에서 이번에 다룬 5개
+    (`PushCommand`/`RebaseCommand`/`ShelveCommand`/`StripCommand`/
+    `AmendCommand`) 제외), wire 매트릭스의 나머지 5개 명령
+    (`FetchCommand`/`IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/
+    `NarrowCloneCommand`). "67개 명령 × 매트릭스" 전체 목표 중 실제로
+    완주된 것은 이제 명령 기준 11/67(4+3+4 — `PushCommand`도 이제 실버그
+    없이 완주로 카운트, `AmendCommand`도 native 확인 완료 기준으로 포함).
 
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서

@@ -1,8 +1,8 @@
 ---
 updated: 2026-09-06
-status: 번호 매겨진 백로그 1~45번 중 41번(SVN 서브저장소)과 45번(treemanifest
-  manifest fncache 미등록, 43번 작업 중 발견)만 미착수, 나머지 전부 완료(25번은
-  오탐으로 종결). 상세는 이 문서가 아니라 각 backlog/*.md 파일과
+status: 번호 매겨진 백로그 1~45번 중 45번(treemanifest manifest fncache 미등록,
+  43번 작업 중 발견)만 미착수, 나머지 전부 완료(25번은 오탐으로 종결; 41번 SVN
+  서브저장소는 2026-09-06 완료). 상세는 이 문서가 아니라 각 backlog/*.md 파일과
   known-bugs-registry.md/matrix-status.md를 참고할 것 — 이 파일은 **인덱스**로만
   유지한다(2026-09-06 재구조화, 이전 버전은 4508줄의 단일 누적 문서였음).
 ---
@@ -64,7 +64,7 @@ status: 번호 매겨진 백로그 1~45번 중 41번(SVN 서브저장소)과 45�
 | Narrow clone / narrowspec | `mercurial/narrowspec.py` | `NarrowCloneCommand`, `HgTreeFilter` | ✅ 완료(로컬 필터링 + wire-protocol genuine narrow 협상, 백로그 40 — ellipsis node 전제는 오판으로 폐기) | [[backlog/narrow-clone-and-lfs]] |
 | LFS(Large File Storage) | `mercurial/lfs/` | `HgLfsPointer`, `HgLfsManager` | ✅ 완료(세부 옵션 3가지 포함, 백로그 42) | [[backlog/narrow-clone-and-lfs]] |
 | Subrepositories (Git) | `mercurial/subrepo.py` | `GitSubrepoUtil`, `HgSubrepoParser` | ✅ 완료 | [[backlog/subrepo]] |
-| Subrepositories (SVN) | `[svn]` prefix | 해당 없음(미구현) | 🔶 진행 중(백로그 41, 최하 우선순위였으나 착수) | [[backlog/subrepo]] |
+| Subrepositories (SVN) | `[svn]` prefix, `svnsubrepo` | `SvnSubrepoUtil`, `HgSubrepoParser`, `HgSubrepoEntry` | ✅ 완료(백로그 41) | [[backlog/subrepo]] |
 | 심볼릭 링크 (`lstat` 처리 전반) | Java `File` vs NIO lstat | 10개+ 파일 | ✅ 완료 | [[symlink-handling]] |
 | Push 정확성/동시성 | `hg help internals.*` | `PushCommand` | ✅ 완료 | [[backlog/push-and-concurrency]] |
 | 워킹 브랜치 복원 (update/histedit/bisect/merge/strip) | — | 5개 명령 | ✅ 완료 | [[backlog/branch-restore-bugs]] |
@@ -113,7 +113,7 @@ status: 번호 매겨진 백로그 1~45번 중 41번(SVN 서브저장소)과 45�
 | 38 | 동시 push 레이스 컨디션 | ✅ | [[backlog/push-and-concurrency]] |
 | 39 | Exhaustive interop matrix (68개 명령) | ✅ | [[backlog/39-exhaustive-interop-matrix]] |
 | 40 | Narrow clone wire-protocol 진짜 협상(genuine, ellipsis 아님) | ✅ | [[backlog/narrow-clone-and-lfs]] |
-| 41 | SVN 서브저장소 지원 | 🔶 진행 중 | [[backlog/subrepo]] |
+| 41 | SVN 서브저장소 지원 | ✅ | [[backlog/subrepo]] |
 | 42 | LFS 세부 옵션 3가지 | ✅ | [[backlog/narrow-clone-and-lfs]] |
 | 43 | Revlog inline→non-inline 성장 전환 | ✅ | [[backlog/revlog-storage-formats]] |
 | 44 | Clonebundles 서버 매니페스트-없음 응답 | ✅ | [[backlog/clonebundles]] |

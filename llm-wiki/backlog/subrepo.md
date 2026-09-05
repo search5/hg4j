@@ -1,7 +1,6 @@
 ---
 updated: 2026-09-06
-status: item 32 completed; item 41 in progress (다른 에이전트가 이 문서 작성 시점에
-  병렬로 TDD 진행 중 — 완료되면 41번 절을 그 결과로 갱신할 것)
+status: item 32 completed; item 41 completed
 ---
 
 # 백로그 32, 41: Subrepositories (Git/SVN)
@@ -9,7 +8,7 @@ status: item 32 completed; item 41 in progress (다른 에이전트가 이 문�
 관련 항목: 32(subrepo 잔여 gap 4건 — `CommitCommand`/`UpdateCommand` 공유, git
 서브저장소 merge/commit 상태 갱신 포함, 사용자가 "범위 밖이라고 하는 건 없다"고 직접
 정정하며 전부 완전 구현 지시), 41(SVN 서브저장소 `[svn]` prefix 지원 — 코드베이스에
-관련 처리가 전혀 없어 맨땅에서 시작, 백로그 39 완료 후 신규 등록, 진행 중 — git
+관련 처리가 전혀 없어 맨땅에서 시작, 백로그 39 완료 후 신규 등록, 2026-09-06 완료 — git
 서브저장소 구현(`GitSubrepoUtil`/`HgSubrepoParser`/`HgSubrepoEntry`)을 대칭 참고 모델로
 사용).
 
@@ -221,18 +220,117 @@ status: item 32 completed; item 41 in progress (다른 에이전트가 이 문�
     231개(이번 hg-타입 테스트 1건 추가) 중 이 변경과 무관한 기존
     `StripRealHgInteropTest` 2건(위와 동일)만 실패, 나머지 전부 GREEN.
 
-41. **SVN 서브저장소(`[svn]` prefix) 지원 — 전혀 없음**. 신규, 2026-09-04
-    사용자 지시로 등록, **우선순위 최하** — 미착수. real hg의 `.hgsub`
-    스펙은 서브저장소로 Mercurial(기본)/Git(`[git]` prefix)/SVN(`[svn]`
-    prefix) 세 종류를 지원한다. Git 쪽은 `HgSubrepoParser`가 이미 URL
-    prefix 파싱은 해두고 있어(백로그 32번이 마무리하는 커밋측 상태 갱신만
-    남음) 그나마 절반은 진행된 상태지만, **SVN은 코드베이스 어디에도
-    관련 처리가 전혀 없다**(2026-09-04 `grep` 확인 — `HgSubrepoParser`의
-    prefix 인식조차 없음). 범위: `[svn]` URL 파싱, SVN 워킹카피 상태 조회
-    (`svn info`/`svn status` 상당의 로컬 SVN 클라이언트 연동 필요 —
-    hg4j에 SVN 관련 인프라가 전무해 맨땅에서 시작해야 함), `.hgsub`/
-    `.hgsubstate` 연동은 git 서브저장소 패턴을 참고해 대칭적으로 구현.
-    실사용 빈도가 낮고(Mercurial 자체에서도 SVN 서브저장소는 git보다
-    훨씬 드물게 쓰임) 작업량 대비 가치가 낮아 최하 우선순위로 등록 —
-    32/38/39/40번을 전부 마친 뒤에 착수할 것.
+41. ~~**SVN 서브저장소(`[svn]` prefix) 지원**~~ — ✅ **완료(2026-09-06)**. 코드베이스에
+    SVN 관련 처리가 전혀 없던 맨땅 상태에서, 이 머신에 실제 `svn`/`svnadmin` 1.14 CLI를
+    설치(`sudo apt-get install -y subversion` — 권한 있어 즉시 성공, Docker 불필요)한 뒤
+    real hg 7.2의 **설치된 실제 소스**(`/usr/lib/python3/dist-packages/mercurial/
+    subrepo.py`의 `svnsubrepo` 클래스, `subrepoutil.py`의 `precommit()`/`submerge()`)를
+    직접 읽고, 매 동작을 `svnadmin create` + `file://` 로컬 저장소로 라이브 재현해
+    오라클로 확보한 뒤 포팅했다 — git 서브저장소 구현(`GitSubrepoUtil`/
+    `HgSubrepoParser`/`HgSubrepoEntry`)을 대칭 참고 모델로 사용.
+
+    **아키텍처**: `HgSubrepoEntry`를 `isGit` 단일 boolean에서 `Type{HG,GIT,SVN}` enum
+    기반으로 확장(기존 4-arg/boolean 생성자와 `isGit()`은 완전히 하위 호환 유지, 신규
+    5-arg 생성자 `(path,url,rev,isGit,isSvn)`와 `Type` 생성자, `isSvn()`/`getType()`
+    추가). `HgSubrepoParser`가 `.hgsub`의 `[svn]` prefix를 `[git]`과 동일한 자리에서
+    인식해 벗겨내도록 확장. 신규 `io.github.search5.hg4j.submodule.SvnSubrepoUtil`(svn
+    CLI 쉘아웃 헬퍼)을 `GitSubrepoUtil`과 나란히 추가하고, `CommitCommand`/
+    `UpdateCommand`/`MergeCommand`/`SubrepoCommand`의 기존 `isGit()` 분기 옆에
+    `isSvn()` 분기를 대칭적으로 배선했다(`CloneCommand`는 `UpdateCommand.
+    recursiveSubrepoCheckout()`에 완전히 위임하는 구조라 무수정으로 자동 지원됨).
+
+    **real hg의 `svnsubrepo` 동작(라이브 확인, 2026-09-06) 및 이식**:
+    - **상태 포맷**: `.hgsubstate` 리비전은 git/hg처럼 40-hex sha가 아니라 **평범한
+      가변 길이 정수 문자열**(예: `"1 sub"`) — real hg CLI로 직접 재현해 byte-exact
+      확인.
+    - **로케일 함정(실측)**: real hg의 `_svncommand()`는 `LC_MESSAGES=C`를 강제하면서
+      나머지는 `LC_ALL`을 보존한다 — 이 샌드박스 기본 로케일이 한국어라 `svn commit`
+      출력이 그대로 나오면 `"Committed revision N."`이 `"커밋된 리비전 N."`으로
+      번역되어 real hg 자신의(그리고 hg4j `SvnSubrepoUtil.commit()`의) 정규식이 매칭에
+      실패함을 직접 재현해 확인 — `SvnSubrepoUtil`도 동일하게 `LC_MESSAGES=C`를
+      강제(`LC_ALL`은 보존)하도록 구현.
+    - **`get()`(체크아웃)**: real hg의 `svnsubrepo.get()`은 git과 달리 "이미 있으면
+      스킵"하는 fast path가 **전혀 없이** 매번 무조건 `svn checkout --force <url>@<rev>`
+      를 실행함을 라이브로 확인(기존 워킹카피 위에서도 안전하게 in-place로 리비전을
+      전환함을 직접 관측) — hg4j `SvnSubrepoUtil.get()`도 스킵 로직 없이 동일하게 매번
+      `checkout --force` 실행.
+    - **`dirty()`/`basestate()`/`commit()`**: `svn status --xml`/`svn info --xml`을
+      real hg와 동일한 필드(`wc-status item`/`props`, `entry`/`commit` revision)로
+      파싱하도록 포팅(`_wcchanged()`/`_wcrevs()` 알고리즘 그대로). `commit()`은 real
+      hg처럼 external/missing 변경 시 각각 `"cannot commit svn externals"`/
+      `"cannot commit missing svn entries"`로 abort, 정상 커밋 후 `svn commit` 출력에서
+      `"Committed revision N."`을 파싱해 새 리비전을 얻고 **명시적으로 `svn update -r
+      N`을 실행**(real hg와 동일 — 순수 `svn commit`은 로컬 워킹카피 리비전을 스스로
+      전진시키지 않음을 라이브로 확인)한 뒤 그 리비전을 반환.
+    - **미체크아웃 서브저장소의 커밋 시 처리**: real hg의 svn 서브저장소는 hg 타입과
+      달리 null-리비전 auto-vivify 폴백이 **없다** — `.svn`이 없고 이전에 기록된
+      리비전도 없는(처음 선언된) 경로는 `dirty()`가 `False`를 반환해 `precommit()`이
+      그대로 `basestate()`를 호출하는데, 이게 `svn info`를 존재하지 않는 워킹카피에
+      실행해 `"'<path>' is not a working copy"`로 실패 → **부모 커밋 전체가 abort**됨을
+      real hg CLI로 직접 재현 확인(git 서브저장소의 "No such file or directory" abort와
+      동일한 패턴). hg4j `CommitCommand.computeSvnSubrepoState()`도 동일하게 부모 커밋
+      전체를 `HgValidationException`으로 abort하도록 구현 — null-리비전 폴백을
+      추가하지 않았다(대칭성 있는 의도적 비-구현, git과 동일한 이유).
+    - **dirty 차단/`-S` 재귀 커밋**: git과 완전히 동일한 문자 그대로의 abort 메시지
+      `uncommitted changes in subrepository "<path>" (use --subrepos for recursive
+      commit)`를 real hg CLI로 재현해 확인, hg4j도 동일 메시지로 구현.
+    - **병합(diverged) — real hg 소스로 확인한 놀라운 사실**: `mercurial/subrepoutil.py`
+      `submerge()`의 "양쪽 다 변경됨" 3지선다 프롬프트(`Merge`/`Local`/`Remote`, 비대화형
+      기본값 index 0 = "Merge")는 git과 hg 타입 서브저장소에서는 실제로 무언가를
+      수행하지만, **`svnsubrepo.merge()` 자신의 내부 프롬프트**(`_updateprompt`,
+      "(l)ocal or (r)emote", 비대화형 기본값 index **0 = Local**)는 Python에서 `0`이
+      falsy이기 때문에 `if _updateprompt(...): self.get(...)` 자체가 실행되지 않아 —
+      **real hg의 실제 기본 동작은 diverged svn 서브저장소에 대해 완전한 no-op**이다
+      (워킹카피를 전혀 건드리지 않고 부모의 `.hgsubstate`는 이미 LOCAL 값으로 유지됨).
+      이 사실을 CPython 소스 레벨에서 직접 확인한 뒤, `SvnSubrepoUtil.mergeDiverged()`를
+      (git의 `mergeDiverged`와 호출부 대칭을 맞추기 위해) 의도적인 빈 no-op 메서드로
+      구현하고 `MergeCommand`의 diverged 분기에 배선 — 실제로 아무 것도 하지 않는 것이
+      정답이다.
+
+    **버그 발견 (웹훅 전송 완료)**: 이 작업 도중 기존 `SubrepoCommand`(4개 대상 파일
+    중 하나, "이미 완성된 git 대칭 모델"이라는 전제로 참고하려 했던 파일)에서 두 가지
+    실제 결함을 발견:
+    1. `SubrepoCommand`의 `init`/`update` 액션은 **`[git]` prefix를 전혀 인식하지
+       않았다** — `CommitCommand`/`UpdateCommand`/`MergeCommand`/`CloneCommand`는 이미
+       git 서브저장소를 완전히 지원하는데, 이 한 파일만 리터럴 `"[git]<url>"` 문자열을
+       그대로 `hg clone` 소스로 넘겨 사실상 git 서브저장소를 전혀 체크아웃하지 못하는
+       상태였다.
+    2. `.hgsubstate` 리비전 파싱이 `stateLine.substring(0, 40)` 고정폭이었다 — 모든
+       리비전이 40-hex sha(hg/git)라고 가정한 코드라, svn의 가변 길이 평문 리비전
+       번호(예: `"1 sub"`, 6글자)에 대해서는 `StringIndexOutOfBoundsException`을 던지거나
+       잘못된 부분 문자열을 읽었을 것이다.
+    두 결함 모두 이번 작업으로 함께 수정(첫 whitespace 기준 분리로 가변 길이 리비전
+    지원 + `[git]`/`[svn]` prefix 디스패치 추가)했고, 발견 즉시 웹훅으로 보고했다
+    (`SubrepoCommand`의 [git] 무지원 + 고정폭 파싱 버그, HTTP 302 성공 응답 확인).
+
+    **신규 검증(TDD, 전부 real svn 1.14 + real hg 7.2 CLI 오라클과 나란히 대조)**:
+    `SubrepoSvnRealHgInteropTest`(신규, `@Tag("interop")`) 8개 —
+    `hg4jParsesRealHgGeneratedSvnHgsubAndHgsubstate`,
+    `hg4jCommitAutoGeneratesSvnHgsubstateRealHgUnderstands`,
+    `hg4jCommitBlocksThenRecursivelyCommitsDirtySvnSubrepoMatchingRealHg`(오라클과
+    hg4j가 각각 독립된 `svnadmin create` 저장소를 써야 함 — svn 리비전 번호는 저장소
+    전역 카운터라 하나를 공유하면 두 쪽의 기대 리비전 번호가 서로 어긋나고 이미
+    버저닝된 경로에 `svn add`가 충돌한다는 것을 실제로 겪고 나서 분리),
+    `hg4jUpdateCheckoutMatchesRealHgAcrossSvnRevisionPins`,
+    `hg4jCommitAbortsWhenSvnSubrepoDeclaredButNotCheckedOutMatchingRealHg`,
+    `svnSubrepoUtilReadAndWritePrimitivesMatchRealSvnCli`(status/info/checkout/commit
+    직접 왕복), `subrepoCommandInitChecksOutPinnedSvnRevision`/
+    `subrepoCommandInitChecksOutPinnedGitRevision`(위 `SubrepoCommand` 버그 수정
+    회귀 테스트 — git 쪽도 함께 커버). 기존 `HgSubrepoTest`/`HgSubrepoEntryTest`에
+    `[svn]` prefix 파싱 및 `Type`/5-arg 생성자 단위 테스트 추가.
+
+    **회귀 확인**: `test` 태스크(interop 제외) 2299/2299 GREEN(신규 실패 없음),
+    `interopTest`를 `SubrepoSvnRealHgInteropTest`+`SubrepoRealHgInteropTest`로 스코프
+    지정해 실행 시 24/24 GREEN.
+
+    **읽기/쓰기 완전성 체크** (git 서브저장소가 지원하는 모든 연산과 대조):
+    | 연산 | git | svn | 비고 |
+    |---|---|---|---|
+    | 상태 조회 (read) | `git status --porcelain` | `svn status --xml` | 완료 |
+    | 리비전 읽기 (read) | `git rev-parse HEAD` | `svn info --xml` | 완료 |
+    | 체크아웃/pin (write) | `git checkout <sha>` | `svn checkout --force <url>@<rev>` | 완료 |
+    | 커밋 전파 (write) | `git commit -a` | `svn commit -m` + `svn update -r N` | 완료 |
+    | 미체크아웃 커밋 처리 | 전체 abort | 전체 abort | real hg와 동일하게 대칭 |
+    | diverged 병합 | 실제 `git merge --no-commit` 수행 | **의도적 no-op**(real hg 기본 동작 자체가 no-op) | 대칭 — svn 쪽만 "아무 것도 안 함"이 정답 |
+    | push 전파 | 지원(`PushCommand`가 재귀 처리하는지는 별도 백로그 영역) | real hg 자체가 "svn은 push no-op"이라 명시 — hg4j도 별도 구현 불필요 | `hg help subrepos` 명시 사항, 범위 밖 아님 — real hg 자체 사양 |
 

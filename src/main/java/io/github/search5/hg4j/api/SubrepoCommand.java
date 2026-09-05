@@ -2,6 +2,8 @@ package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.errors.HgLockException;
+import io.github.search5.hg4j.submodule.GitSubrepoUtil;
+import io.github.search5.hg4j.submodule.SvnSubrepoUtil;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -84,18 +86,70 @@ public class SubrepoCommand {
                     String path = line.substring(0, eq).trim();
                     String url = line.substring(eq + 1).trim();
 
+                    boolean isGitSub = false;
+                    boolean isSvnSub = false;
+                    if (url.startsWith("[git]")) {
+                        isGitSub = true;
+                        url = url.substring("[git]".length()).trim();
+                    } else if (url.startsWith("[svn]")) {
+                        isSvnSub = true;
+                        url = url.substring("[svn]".length()).trim();
+                    }
+
                     // Find configured revision in .hgsubstate; null means "no pinned revision"
                     // (leave the freshly cloned subrepo's own tip dirstate untouched).
+                    //
+                    // Backlog 41 bugfix: this used to grab a fixed-width `substring(0, 40)`,
+                    // which assumed every recorded revision is a 40-hex-char hg/git sha. A svn
+                    // subrepo's .hgsubstate revision is instead a plain (variable-length, often
+                    // much shorter) revision number -- e.g. "1 sub" -- so the fixed-width read
+                    // would either grab trailing garbage past the real revision or throw
+                    // StringIndexOutOfBoundsException outright on a short line. Split on the
+                    // first whitespace instead, matching real hg's own `.hgsubstate` line format
+                    // ("<revision> <path>") for every subrepo type uniformly.
                     String rev = null;
                     for (String stateLine : hgsubstateLines) {
-                        if (stateLine.endsWith(" " + path) || stateLine.endsWith("\t" + path)) {
-                            rev = stateLine.substring(0, 40).trim();
+                        String trimmedState = stateLine.trim();
+                        if (trimmedState.isEmpty()) {
+                            continue;
+                        }
+                        int sep = -1;
+                        for (int i = 0; i < trimmedState.length(); i++) {
+                            char c = trimmedState.charAt(i);
+                            if (c == ' ' || c == '\t') {
+                                sep = i;
+                                break;
+                            }
+                        }
+                        if (sep == -1) {
+                            continue;
+                        }
+                        if (trimmedState.substring(sep + 1).trim().equals(path)) {
+                            rev = trimmedState.substring(0, sep).trim();
                             break;
                         }
                     }
 
-                    // Recursively clone/initialize subrepo in target path from configured URL
                     File subrepoDir = new File(repository.getDirectory(), path);
+
+                    // Backlog 41: a [git]-prefixed entry previously fell straight through to the
+                    // plain-hg branches below, which would try to `hg clone` the literal string
+                    // "[git]<url>" as an hg source (or, once the prefix above is stripped, an
+                    // https URL that happens to be a GIT remote, silently producing a broken/
+                    // empty hg-format checkout) -- git subrepos were never actually usable via
+                    // this command despite CommitCommand/UpdateCommand/MergeCommand/CloneCommand
+                    // already fully supporting them. Dispatch git (and the new svn) entries to
+                    // their own type-aware checkout helpers instead, matching those commands.
+                    if (isGitSub) {
+                        checkoutGitEntry(subrepoDir, url, rev);
+                        continue;
+                    }
+                    if (isSvnSub) {
+                        checkoutSvnEntry(subrepoDir, url, rev);
+                        continue;
+                    }
+
+                    // Recursively clone/initialize subrepo in target path from configured URL
                     if (!subrepoDir.exists()) {
                         if (!url.isEmpty()) {
                             Hg.cloneRepository()
@@ -146,6 +200,51 @@ public class SubrepoCommand {
                     // untouched rather than overwriting arbitrary unrelated content.
                 }
             }
+        }
+    }
+
+    /**
+     * Checks out a {@code [git]}-prefixed {@code .hgsub} entry (backlog 41 fix -- see the class
+     * comment above): clones it if not already a git checkout, then checks out the pinned
+     * revision (fetching first if it isn't available locally yet).
+     */
+    private static void checkoutGitEntry(File subrepoDir, String url, String rev) throws IOException {
+        if (!GitSubrepoUtil.isGitCheckout(subrepoDir)) {
+            if (url.isEmpty()) {
+                throw new IOException("Subrepo URL cannot be null or empty for path: " + subrepoDir.getName());
+            }
+            GitSubrepoUtil.clone(subrepoDir.getParentFile(), url, subrepoDir);
+        }
+        if (rev != null && !rev.isEmpty()) {
+            if (!GitSubrepoUtil.hasLocally(subrepoDir, rev)) {
+                try {
+                    GitSubrepoUtil.fetch(subrepoDir);
+                } catch (IOException e) {
+                    // Best-effort, matching UpdateCommand.checkoutGitSubrepo's own tolerance.
+                }
+            }
+            GitSubrepoUtil.checkout(subrepoDir, rev);
+        }
+    }
+
+    /**
+     * Checks out a {@code [svn]}-prefixed {@code .hgsub} entry (backlog 41): {@code svn checkout
+     * --force <url>@<rev>} when a revision is pinned, matching real hg's own {@code
+     * svnsubrepo.get()} (see {@link SvnSubrepoUtil#get}); a plain HEAD checkout when the entry
+     * has been declared but not yet recorded in {@code .hgsubstate} (no pinned revision exists
+     * yet).
+     */
+    private static void checkoutSvnEntry(File subrepoDir, String url, String rev) throws IOException {
+        if (rev != null && !rev.isEmpty()) {
+            if (url.isEmpty() && !SvnSubrepoUtil.isSvnCheckout(subrepoDir)) {
+                throw new IOException("Subrepo URL cannot be null or empty for path: " + subrepoDir.getName());
+            }
+            SvnSubrepoUtil.get(subrepoDir.getParentFile(), url, rev, subrepoDir);
+        } else if (!SvnSubrepoUtil.isSvnCheckout(subrepoDir)) {
+            if (url.isEmpty()) {
+                throw new IOException("Subrepo URL cannot be null or empty for path: " + subrepoDir.getName());
+            }
+            SvnSubrepoUtil.checkoutHead(subrepoDir.getParentFile(), url, subrepoDir);
         }
     }
 }

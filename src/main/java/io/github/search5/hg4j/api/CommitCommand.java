@@ -37,6 +37,7 @@ import io.github.search5.hg4j.gpg.GpgSignature;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.phase.PhaseRoots;
 import io.github.search5.hg4j.submodule.GitSubrepoUtil;
+import io.github.search5.hg4j.submodule.SvnSubrepoUtil;
 import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.treewalk.TreeWalk;
 import io.github.search5.hg4j.treewalk.WorkingDirTreeIterator;
@@ -1295,6 +1296,7 @@ public class CommitCommand {
 
         Map<String, String> subUrls = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
         Set<String> gitPaths = new LinkedHashSet<>();
+        Set<String> svnPaths = new LinkedHashSet<>();
         if (hgsubFile.exists()) {
             for (String line : Files.readAllLines(hgsubFile.toPath(), StandardCharsets.UTF_8)) {
                 String trimmed = line.trim();
@@ -1310,6 +1312,9 @@ public class CommitCommand {
                 if (url.startsWith("[git]")) {
                     gitPaths.add(path);
                     url = url.substring("[git]".length()).trim();
+                } else if (url.startsWith("[svn]")) {
+                    svnPaths.add(path);
+                    url = url.substring("[svn]".length()).trim();
                 }
                 subUrls.put(path, url);
             }
@@ -1326,6 +1331,14 @@ public class CommitCommand {
                 String revHex = computeGitSubrepoState(subDir, path);
                 if (revHex != null) {
                     newState.put(path, revHex);
+                }
+                continue;
+            }
+
+            if (svnPaths.contains(path)) {
+                String rev = computeSvnSubrepoState(subDir, path, subUrls.get(path));
+                if (rev != null) {
+                    newState.put(path, rev);
                 }
                 continue;
             }
@@ -1451,6 +1464,56 @@ public class CommitCommand {
             return GitSubrepoUtil.revParseHead(subDir);
         } catch (IOException e) {
             throw new HgValidationException("Failed to read HEAD of git subrepository \"" + path + "\": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Resolves the {@code .hgsubstate} entry to record for a svn subrepo (backlog 41), mirroring
+     * real hg's {@code svnsubrepo.dirty(ignoreupdate=True)}/{@code basestate()}/{@code commit()}
+     * (read live from Mercurial 7.2's installed {@code subrepo.py}, reproduced with a real local
+     * svn repository).
+     *
+     * <p>Real hg's own {@code subrepoutil.precommit()} calls {@code dirtyreason(ignoreupdate=
+     * True)} then, if clean, {@code basestate()} unconditionally -- for a svn subrepo that was
+     * just declared in {@code .hgsub} but never checked out at all (no {@code .svn} directory,
+     * and no previously-recorded {@code .hgsubstate} revision, so {@code dirty()}'s {@code
+     * _svnmissing()} branch returns {@code false}), that unconditional {@code basestate()} call
+     * itself then fails (real {@code svn info} on a non-working-copy path aborts with {@code
+     * "'<path>' is not a working copy"}), aborting the WHOLE parent commit -- verified live
+     * against Mercurial 7.2 + svn 1.14, exactly like the git-typed sibling branch above
+     * ({@link #computeGitSubrepoState}) which has no null-revision fallback either.
+     *
+     * @return the svn revision to record, or {@code null} if there is nothing to record
+     */
+    private String computeSvnSubrepoState(File subDir, String path, String url) throws IOException {
+        if (!SvnSubrepoUtil.isSvnCheckout(subDir)) {
+            throw new HgValidationException("svn: '" + subDir.getAbsolutePath() + "' is not a working copy");
+        }
+
+        boolean dirty;
+        try {
+            dirty = SvnSubrepoUtil.isDirty(subDir, null, true);
+        } catch (IOException e) {
+            throw new HgValidationException("Failed to inspect svn subrepository \"" + path + "\": " + e.getMessage());
+        }
+
+        if (dirty) {
+            if (!this.subrepos) {
+                throw new HgValidationException(
+                        "uncommitted changes in subrepository \"" + path
+                                + "\" (use --subrepos for recursive commit)");
+            }
+            try {
+                return SvnSubrepoUtil.commit(subDir, this.message, url);
+            } catch (IOException e) {
+                throw new HgValidationException("Failed to commit svn subrepository \"" + path + "\": " + e.getMessage());
+            }
+        }
+
+        try {
+            return SvnSubrepoUtil.basestate(subDir, url);
+        } catch (IOException e) {
+            throw new HgValidationException("Failed to read state of svn subrepository \"" + path + "\": " + e.getMessage());
         }
     }
 

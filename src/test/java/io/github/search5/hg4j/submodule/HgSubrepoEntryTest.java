@@ -114,6 +114,55 @@ public class HgSubrepoEntryTest {
     }
 
     @Test
+    public void testSvnConstructorSetsSvnTypeAndNotGit() {
+        HgSubrepoEntry entry = new HgSubrepoEntry("libs/svnlib", "https://svn.example.com/trunk", "5", false, true);
+        assertTrue(entry.isSvn());
+        assertFalse(entry.isGit());
+        assertEquals(HgSubrepoEntry.Type.SVN, entry.getType());
+    }
+
+    @Test
+    public void testFiveArgConstructorGitFlagWhenSvnFalse() {
+        HgSubrepoEntry entry = new HgSubrepoEntry("libs/gitlib", "https://example.com/repo.git", "abc", true, false);
+        assertTrue(entry.isGit());
+        assertFalse(entry.isSvn());
+        assertEquals(HgSubrepoEntry.Type.GIT, entry.getType());
+    }
+
+    @Test
+    public void testFiveArgConstructorSvnWinsWhenBothFlagsSet() {
+        HgSubrepoEntry entry = new HgSubrepoEntry("libs/x", "url", "1", true, true);
+        assertTrue(entry.isSvn());
+        assertFalse(entry.isGit());
+    }
+
+    @Test
+    public void testTypeConstructorHgDefaultsWhenNull() {
+        HgSubrepoEntry entry = new HgSubrepoEntry("libs/x", "url", "1", (HgSubrepoEntry.Type) null);
+        assertEquals(HgSubrepoEntry.Type.HG, entry.getType());
+        assertFalse(entry.isGit());
+        assertFalse(entry.isSvn());
+    }
+
+    @Test
+    public void testEqualsDistinguishesSvnFromGitAndHg() {
+        HgSubrepoEntry hg = new HgSubrepoEntry("p", "u", "r", false, false);
+        HgSubrepoEntry git = new HgSubrepoEntry("p", "u", "r", true, false);
+        HgSubrepoEntry svn = new HgSubrepoEntry("p", "u", "r", false, true);
+        assertNotEquals(hg, git);
+        assertNotEquals(hg, svn);
+        assertNotEquals(git, svn);
+    }
+
+    @Test
+    public void testToStringContainsSvnFieldValue() {
+        HgSubrepoEntry entry = new HgSubrepoEntry("libs/svnlib", "https://svn.example.com/trunk", "5", false, true);
+        String s = entry.toString();
+        assertTrue(s.contains("isSvn=true"));
+        assertTrue(s.contains("isGit=false"));
+    }
+
+    @Test
     public void testToStringContainsFieldValues() {
         HgSubrepoEntry entry = new HgSubrepoEntry("libs/foo", "http://example.com", "abc123", true);
         String s = entry.toString();

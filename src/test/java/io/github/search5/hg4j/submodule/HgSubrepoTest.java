@@ -69,6 +69,39 @@ public class HgSubrepoTest {
     }
 
     @Test
+    public void testSubrepositoriesParsingSvnPrefixSuccess() throws IOException {
+        String hgsubText = "libs/svnlib = [svn]https://svn.example.com/repo/trunk\n";
+        String hgsubstateText = "42 libs/svnlib\n";
+
+        Map<String, HgSubrepoEntry> subrepos = HgSubrepoParser.parseSubrepositories(
+                hgsubText.getBytes(StandardCharsets.UTF_8),
+                hgsubstateText.getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertEquals(1, subrepos.size());
+        HgSubrepoEntry entry = subrepos.get("libs/svnlib");
+        assertNotNull(entry);
+        assertEquals("https://svn.example.com/repo/trunk", entry.getSourceUrl());
+        assertEquals("42", entry.getRevision());
+        assertTrue(entry.isSvn());
+        assertFalse(entry.isGit());
+        assertEquals(HgSubrepoEntry.Type.SVN, entry.getType());
+    }
+
+    @Test
+    public void testSubrepositoriesParsingSvnFallbackWithoutState() throws IOException {
+        String hgsubText = "libs/svnlib = [svn]https://svn.example.com/repo/trunk\n";
+
+        Map<String, HgSubrepoEntry> subrepos = HgSubrepoParser.parseSubrepositories(
+                hgsubText.getBytes(StandardCharsets.UTF_8), null);
+
+        HgSubrepoEntry entry = subrepos.get("libs/svnlib");
+        assertNotNull(entry);
+        assertTrue(entry.isSvn());
+        assertEquals("", entry.getRevision());
+    }
+
+    @Test
     public void testSubrepositoriesParsingMalformedConfigThrows() {
         String badHgsub = "libs/core https://hg.example.com/libs/core\n"; // missing '='
 

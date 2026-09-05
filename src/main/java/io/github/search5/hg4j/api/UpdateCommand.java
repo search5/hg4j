@@ -21,6 +21,7 @@ import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.submodule.GitSubrepoUtil;
 import io.github.search5.hg4j.submodule.HgSubrepoEntry;
 import io.github.search5.hg4j.submodule.HgSubrepoParser;
+import io.github.search5.hg4j.submodule.SvnSubrepoUtil;
 import io.github.search5.hg4j.treewalk.HgTreeFilter;
 import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.treewalk.TreeWalk;
@@ -403,6 +404,11 @@ public class UpdateCommand {
             return;
         }
 
+        if (subEntry.isSvn()) {
+            checkoutSvnSubrepo(subDir, subEntry);
+            return;
+        }
+
         try {
             HgRepository subRepo;
             if (!new File(subDir, ".hg").exists()) {
@@ -492,6 +498,32 @@ public class UpdateCommand {
             GitSubrepoUtil.checkout(subDir, targetSha);
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to perform recursive git subrepo checkout for " + subEntry.getPath() + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Checks out a {@code [svn]} subrepo to its {@code .hgsubstate}-pinned revision (backlog
+     * 41): {@code svn checkout --force <url>@<revision>}, real hg's own {@code svnsubrepo.get()}.
+     * Unlike the git-typed sibling ({@link #checkoutGitSubrepo}), real hg's svn {@code get()} has
+     * no "already there" fast path of its own -- it unconditionally re-runs {@code checkout
+     * --force} whether the working copy already exists at that revision or not (verified live:
+     * this is cheap/idempotent against svn's own incremental working-copy update), so this
+     * method does not add a skip either, to stay byte-for-byte faithful to real hg's behavior.
+     */
+    static void checkoutSvnSubrepo(File subDir, HgSubrepoEntry subEntry) {
+        String targetRev = subEntry.getRevision();
+        if (targetRev == null || targetRev.isEmpty()) {
+            return;
+        }
+        String url = subEntry.getSourceUrl();
+        if (url == null || url.isEmpty()) {
+            LOGGER.log(Level.WARNING, "Svn subrepo at " + subDir + " has no source URL to check out from");
+            return;
+        }
+        try {
+            SvnSubrepoUtil.get(subDir.getParentFile(), url, targetRev, subDir);
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to perform recursive svn subrepo checkout for " + subEntry.getPath() + ": " + e.getMessage(), e);
         }
     }
 }

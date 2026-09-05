@@ -201,21 +201,44 @@ public class DirstateV2Serializer {
             // 3. Configure file mode/mtime metadata flags if it represents a file entry
             int flagsVal = nodeView.getFlags() & 0xFFFF;
             if (node.entry != null) {
-                flagsVal |= DirstateV2Node.HAS_MODE_AND_SIZE;
-                flagsVal |= DirstateV2Node.HAS_MTIME;
-
-                // Executable or Symlink flags conversion
-                if ((mode & 0111) != 0) {
-                    flagsVal |= DirstateV2Node.MODE_EXEC_PERM;
+                // Mirror real hg's own DirstateItem.v2_data() (mercurial/pure/parsers.py): the
+                // HAS_MODE_AND_SIZE/HAS_MTIME bits are only set when a genuine cached stat value
+                // exists -- an ambiguous entry (Dirstate.Entry#isStatAmbiguous(), most commonly a
+                // same-second racy write, encoded here as size=-1 and/or time=AMBIGUOUS_TIME)
+                // must round-trip back out with those bits OMITTED, not with a fabricated
+                // concrete 0. Setting them unconditionally previously turned "ambiguous, needs a
+                // real content comparison" into a definite (and wrong) "this file is 0 bytes as
+                // of epoch" claim the instant ANY hg4j write command did a read-modify-write of a
+                // dirstate-v2 file that happened to contain such an entry for an ENTIRELY
+                // different, untouched path -- confirmed live: real hg's own `hg status`/`hg
+                // commit` afterward reported that untouched file as spuriously modified.
+                if (size >= 0) {
+                    flagsVal |= DirstateV2Node.HAS_MODE_AND_SIZE;
+                    // Real hg only derives the exec/symlink bits from `mode` INSIDE the "has a
+                    // real mode/size" branch (mode is `None` otherwise) -- gate identically so an
+                    // ambiguous entry's stray mode value (irrelevant once HAS_MODE_AND_SIZE is
+                    // unset) can never leak a spurious exec/symlink bit.
+                    if ((mode & 0111) != 0) {
+                        flagsVal |= DirstateV2Node.MODE_EXEC_PERM;
+                    }
+                    if ((mode & 0120000) == 0120000) {
+                        flagsVal |= DirstateV2Node.MODE_IS_SYMLINK;
+                    }
                 }
-                if ((mode & 0120000) == 0120000) {
-                    flagsVal |= DirstateV2Node.MODE_IS_SYMLINK;
+                if (time != Dirstate.Entry.AMBIGUOUS_TIME) {
+                    flagsVal |= DirstateV2Node.HAS_MTIME;
                 }
             }
             nodeView.setFlags((short) flagsVal);
 
-            // 4. Set size, mode (via adapter), time
-            nodeView.setMode(mode);
+            // 4. Set size, mode (via adapter), time. setMode() itself (re-)derives the
+            // exec/symlink flag bits from the raw `mode` value, so it must be skipped whenever
+            // HAS_MODE_AND_SIZE was deliberately left unset above (size < 0) -- otherwise it
+            // would silently re-introduce a stray exec/symlink bit for an ambiguous entry that
+            // real hg would never emit.
+            if (size >= 0) {
+                nodeView.setMode(mode);
+            }
             nodeView.setSize(size);
             nodeView.setMtime(time);
 

@@ -89,7 +89,17 @@ public class RemoveCommand {
                                     ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
                                     : diskFile.length();
                             long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
-                            boolean isDirty = entry.getSize() != diskSize || entry.getTime() != diskTime;
+                            // An entry whose cached stat is ambiguous (real hg's own "unset"
+                            // sentinel -- see Dirstate.Entry#isStatAmbiguous(), most commonly hit
+                            // when the file was committed within the same wall-clock second as
+                            // the dirstate write) can never be trusted via a raw size/mtime
+                            // comparison: its sentinel size (-1) never equals a real on-disk size,
+                            // which previously made EVERY such entry look permanently "modified"
+                            // and made `remove` (without --force) wrongly refuse a genuinely
+                            // untouched file -- confirmed live against a real hg-authored
+                            // dirstate produced by an add+commit that landed in the same second.
+                            boolean isDirty = !entry.isStatAmbiguous()
+                                    && (entry.getSize() != diskSize || entry.getTime() != diskTime);
                             if (!isDirty) {
                                 // Racy-hg check: content level comparison
                                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), file);

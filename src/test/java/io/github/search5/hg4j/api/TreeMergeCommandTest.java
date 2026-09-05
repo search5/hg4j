@@ -173,6 +173,55 @@ public class TreeMergeCommandTest {
     }
 
     @Test
+    public void takesTheirsExecutableBitEvenWhenContentIsUnchanged(@TempDir Path tempDir) throws Exception {
+        // Backlog #39: a flag-only change (chmod +x, identical bytes) used to be silently dropped
+        // by getChangedFiles() alone -- TreeMergeResult had no way to report the new mode at all.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "run.sh", "echo hi\n");
+        byte[] base = commit(repo, "base");
+        byte[] ours = base;
+
+        new File(repoDir, "run.sh").setExecutable(true, false);
+        new AddCommand(repo).call();
+        byte[] theirs = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("chmod +x").call();
+
+        TreeMergeCommand.TreeMergeResult result = new TreeMergeCommand(repo).setOurs(ours).setTheirs(theirs).call();
+
+        assertFalse(result.isConflicted());
+        assertTrue(result.getChangedFiles().containsKey("run.sh"), "a flag-only change must still be reported as changed");
+        assertEquals("echo hi\n", new String(result.getChangedFiles().get("run.sh"), StandardCharsets.UTF_8));
+        assertEquals(0755, result.getChangedModes().get("run.sh"), "the new executable mode must be reported");
+    }
+
+    @Test
+    public void reportsSymlinkModeForAddedSymlink(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        write(repoDir, "a.txt", "base\n");
+        byte[] base = commit(repo, "base");
+
+        write(repoDir, "ours-only.txt", "o\n");
+        byte[] ours = commit(repo, "ours");
+
+        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(base), io.github.search5.hg4j.lib.NodeId.NULL);
+        repo.writeDirstate(forkDirstate);
+        try {
+            Files.createSymbolicLink(new File(repoDir, "link.txt").toPath(), new File(repoDir, "a.txt").toPath());
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            return;
+        }
+        byte[] theirs = commit(repo, "theirs adds a symlink");
+
+        TreeMergeCommand.TreeMergeResult result = new TreeMergeCommand(repo).setOurs(ours).setTheirs(theirs).call();
+
+        assertFalse(result.isConflicted());
+        assertTrue(result.getChangedFiles().containsKey("link.txt"));
+        assertEquals(0120000, result.getChangedModes().get("link.txt"), "the symlink mode must be reported");
+    }
+
+    @Test
     public void throwsWhenOursNodeIdIsNotFound(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();

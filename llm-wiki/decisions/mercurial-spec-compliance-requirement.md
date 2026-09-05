@@ -3661,6 +3661,168 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `AnnotateCommand`/`ManifestCommand`, 진행 중) — 이 둘까지 병합되면
     로컬 매트릭스 67개 전체 완료, wire 매트릭스는 이미 8/8 완료 상태.
 
+    **Wave 5(2026-09-05, `ArchiveCommand`/`PurgeCommand`/`UpdateCommand`/
+    `TreeCommand`/`TreeMergeCommand`/`WorktreeCommand`, 워킹카피 조작 계열
+    6개를 한 에이전트에 배정)**: 6개 명령 전부 native 6/6 + Docker 30/30
+    = 36/36 GREEN 도달. 이 중 2건은 이 6개 명령의 범위를 넘어 **requirement
+    매트릭스 인프라 자체(모든 명령이 공유하는 revlog 압축 해제/dirstate-v2
+    직렬화 계층)에 있던 진짜 hg4j 버그**였다 — 다른 wave가 이미 "완료"로
+    표시한 명령들도 잠재적으로 영향받았을 수 있어 별도로 굵게 표시한다.
+
+    **진짜 hg4j 버그 7건 발견·수정**:
+    1. **(광범위 영향) `DeltaCodec.decompressZstd()`가 델타 리비전의 실제
+       압축 해제 길이를 무시하고 인덱스의 `uncompLen`만큼 통째로 반환**:
+       real hg의 revlog v1 포맷에서 `uncompLen`은 "이 델타 자체의 압축
+       해제 크기"가 아니라 "이 리비전까지 델타 체인을 다 적용했을 때
+       재구성되는 최종 fulltext 크기"다(델타를 적용한 결과가 줄어드는
+       경우, 즉 삭제/축소가 추가보다 큰 편집에서는 델타 자체의 압축 해제
+       바이트 수가 `uncompLen`보다 작다) — hg4j는 `dest = new
+       byte[uncompLen]`로 미리 할당해두고 `Zstd.decompress()`의 실제
+       반환 길이(`result`)를 무시한 채 버퍼 전체를 반환해, 델타 페이로드
+       뒤에 자바 배열 기본값인 0바이트가 패딩으로 남아 `DeltaEngine.
+       applyDelta()`가 이를 `start=0, end=0`의 가짜 델타 헝크로 오인,
+       `HgCorruptDataException`으로 실패했다. `hg-rust-7.2.4` 컨테이너가
+       만든 순정 2-커밋 저장소(스토리지 확장 없음, `dirstate1/cl1/
+       flatmanifest/none`처럼 가장 단순한 조합)를 hg4j `UpdateCommand`로
+       체크아웃하는 것만으로 100% 재현되는, **Docker 30개 조합 전체에
+       영향을 미치는 근본적인 읽기 버그**였다(다른 명령들의 매트릭스가
+       이를 피해간 것은 그 명령들의 시나리오가 마침 이 "델타가 줄어드는"
+       패턴을 건드리지 않았을 뿐). `Zstd.decompress()`의 실제 반환
+       길이로 잘라내도록(`Arrays.copyOf(dest, (int) result)`) 수정.
+    2. **(광범위 영향) `DirstateV2Node`/`DirstateV2Serializer`가
+       `MODE_EXEC_PERM`과 `MODE_IS_SYMLINK`를 상호 배타로 취급**: real hg
+       7.2.4의 Rust dirstate-v2 소스(`rust/hg-core/src/dirstate/entry.rs`
+       `mode_changed()`)를 직접 대조 확인 — `EXEC_BIT_MASK`는 소유자
+       실행 비트(`0o100`) 하나뿐이고, 실제 OS 심볼릭 링크의 `lstat` 모드는
+       항상 전체 `rwxrwxrwx`(0120777)를 보고하므로 **모든 심볼릭 링크는
+       항상 "실행 비트 있음"으로 관측된다** — 즉 심볼릭 링크 dirstate
+       항목은 `MODE_IS_SYMLINK`와 `MODE_EXEC_PERM`을 **둘 다** 켜야
+       real hg의 자체 검증과 일치한다. hg4j가 둘을 상호 배타로 처리해
+       심볼릭 링크에서 `MODE_EXEC_PERM`을 항상 꺼버렸던 탓에, dirstate-v2
+       저장소에서 hg4j가 만든(또는 다시 쓴) 심볼릭 링크 항목은 real hg
+       자신의 `hg status`가 항상 "M"(수정됨)으로 오판했다 — **`AddCommand`/
+       `CommitCommand`/`MergeCommand`/`RebaseCommand` 등 dirstate-v2 +
+       심볼릭 링크 조합을 다루는 모든 기존 완료 명령에도 동일하게 영향을
+       미쳤을 수 있는 공유 계층 버그**(각 명령의 기존 매트릭스가 심볼릭
+       링크를 시나리오에 포함하지 않았다면 가려져 있었을 뿐). 둘을 항상
+       함께 설정하도록 수정, 기존 `DirstateV2LayoutTest`의 "심볼릭 링크는
+       실행 비트가 꺼져야 한다"는 낡은(틀린) 기대치도 함께 정정.
+    3. **`UpdateCommand`가 심볼릭 링크의 dirstate 모드를 맨 `0120000`
+       (S_IFLNK 타입 비트만)으로 기록**: real hg 7.2 CLI로 직접 확인 —
+       실제 심볼릭 링크의 `lstat` 모드는 항상 `0120777`(타입 비트 +
+       전체 권한 비트)이고, dirstate-v1은 이 raw 정수 모드를 그대로
+       저장/비교하므로 맨 `0120000`으로 저장하면 real hg 자신의 `hg
+       status`가 매번 권한 불일치로 "M"을 보고했다(체크아웃 직후에도).
+       `0120777`로 수정 — 이 값이 위 dirstate-v2 버그(#2)의 실행 비트
+       충돌을 실제로 노출시킨 계기이기도 했다(맨 `0120000`이던 시절엔
+       `mode & 0111`이 항상 0이라 #2가 가려져 있었음).
+    4. **`ArchiveCommand`가 real hg의 `hg archive`와 구조적으로 전혀
+       다른 산출물을 만들고 있었음**: real hg 7.2 CLI로 직접 대조 —
+       (a) `.hg_archival.txt` 메타데이터 멤버(repo root hex/아카이브된
+       노드 hex/브랜치/최신 태그 정보)가 모든 아카이브 타입에 항상
+       포함되는데 hg4j는 전혀 만들지 않았음, (b) zip/tar 계열은 대상
+       파일명에서 확장자를 뺀 이름을 디렉터리 프리픽스로 항상 붙이는데
+       hg4j는 맨 경로만 썼음, (c) 실행 비트/심볼릭 링크 플래그를 완전히
+       무시하고 항상 평범한 파일로 씀, (d) tar/tgz/tbz2 타입 자체가
+       구현돼 있지 않아 zip과 디렉터리 두 가지뿐이었음, (e) 자체 구현한
+       평면 매니페스트 전용 파서를 써서 treemanifest 저장소의 하위
+       디렉터리가 통째로 누락됨. `HgRepository#getManifestAtCommit()`
+       (이미 treemanifest 대응됨, `TreeCommand`/`ManifestCommand`와
+       공유)로 교체하고, commons-compress의 `TarArchiveOutputStream`/
+       `ZipArchiveOutputStream`으로 tar/tgz/tbz2 + 실행 비트/심볼릭 링크
+       + `.hg_archival.txt`(단일 계보 히스토리 기준 latesttag/distance
+       알고리즘까지, real hg 소스 `archival.py`/`templatekw.py`로 검증)를
+       전부 새로 구현. `txz`(lzma)는 신규 의존성(`org.tukaani:xz`)이
+       필요해 의도적으로 범위 밖으로 남김(정직하게 기록).
+    5. **`PurgeCommand`가 심볼릭 링크로 연결된 디렉터리를 실제로 따라
+       들어가 그 안의 파일을 삭제할 수 있었음(실제 데이터 손실 버그)**:
+       `Files.isDirectory(path)`가 `LinkOption.NOFOLLOW_LINKS` 없이
+       심볼릭 링크를 그대로 따라가, 저장소 바깥의 임의 디렉터리를
+       가리키는 심볼릭 링크가 있으면 그 바깥 디렉터리의 파일까지
+       "추적 안 됨"으로 오판해 삭제할 수 있었다(실제로 외부 디렉터리에
+       파일을 만들고 심볼릭 링크로 연결해 재현: hg4j는 외부 파일을
+       지웠지만 real hg의 `hg purge`는 심볼릭 링크 자신만 지우고 외부
+       디렉터리는 전혀 건드리지 않음을 확인). 심볼릭 링크는 항상 불투명한
+       leaf로 취급(절대 내부 순회 안 함)하도록 수정. 부수적으로 두 건
+       더 발견: (a) 끊어진(대상이 없는) 심볼릭 링크가 `Files.exists()`가
+       false를 반환하는 바람에 조용히 건너뛰어지던 버그(real hg는 끊어진
+       심볼릭 링크도 삭제함, `NOFOLLOW_LINKS`로 수정), (b)
+       `purgeDirectories` 기본값이 `false`였는데 real hg 자신의 `hg
+       purge`는 플래그 없이도 기본으로 추적 안 된 빈 디렉터리를 지운다
+       (`--dirs`/`--files`는 범위를 좁히기만 할 뿐, 켜는 옵션이 아님) —
+       기본값을 `true`로 수정. `.hgsub` 선언 경로를 불투명 경계로 처리하는
+       로직도 추가(`HgRepository#loadSubrepoPaths()`를 public으로 승격해
+       재사용, `scanWorkingCopy()`와 동일 규칙).
+    6. **`WorktreeCommand`(`hg share` 상당)가 실제 체크아웃을 전혀
+       수행하지 않았음**: real hg 7.2의 `share` 확장(`--config
+       extensions.share=`)으로 직접 대조 — real `hg share`는 항상 공유
+       저장소의 tip으로 실제 체크아웃까지 수행하고("updating working
+       directory" 출력) 새 워크트리의 `.hg/requires`에 소스가 뭐였든
+       "shared" 마커 줄을 추가로 붙이는데, hg4j는 빈 40바이트 dirstate
+       스텁만 만들고 파일을 전혀 체크아웃하지 않았으며 requires도 그대로
+       복사만 했다. `UpdateCommand`로 실제 체크아웃하도록 수정하고
+       requires에 "shared" 줄을 추가. 이 수정 도중 2차 버그 발견:
+       기존의 무조건적인 40바이트(p1+p2 노드) dirstate 스텁 쓰기가
+       dirstate-v1 레이아웃을 가정한 것이라, dirstate-v2 공유 저장소에서는
+       유효한 V2 도켓이 아닌 쓰레기 바이트가 되어 `UpdateCommand`가 체크아웃
+       직전 현재 부모를 읽으려고 dirstate를 다시 읽는 순간
+       `BufferUnderflowException`으로 깨졌다(Docker 30개 조합 전체 재현).
+       공유 스토어에 리비전이 있을 때는 dirstate 파일을 아예 미리 쓰지 않고
+       `UpdateCommand`가 처음부터 새로 만들도록(파일이 없으면 빈 Dirstate로
+       시작하는 기존 경로 재사용) 수정 — 리비전이 0개인 예외 케이스에서만
+       기존 스텁 방식 유지(기존 `WorktreeCommandTest`의 "main이 비어있을 때"
+       기대치 보존).
+    7. **`TreeMergeCommand`(작업 디렉터리 없는 순수 3-way 병합 계산)의
+       결과 API에 파일 모드/플래그 정보가 아예 없었음**: `getChangedFiles()`
+       는 바이트만 반환해, 내용은 그대로인데 실행 비트나 심볼릭 링크
+       플래그만 바뀐 변경(예: `chmod +x`)이 호출자에게 조용히 유실될 수
+       있었다. `RebaseCommand.attemptThreeWayMerge()`가 이미 쓰는 것과
+       동일한 관례(로컬 우선, 없으면 상대편)로 모드를 계산하는
+       `getChangedModes()`를 신규 추가.
+
+    **확인만 하고 새 버그 없음으로 결론**: 이 wave에 배정된 "`UpdateCommand`의
+    알려진 불필요한 pull(redundant pull) 갭"은 실제로는 백로그 32(서브저장소)
+    작업에서 이미 `UpdateCommand.isRevisionPresentLocally()`로 완전히 수정돼
+    있었다(리비전이 로컬에 이미 있으면 pull/fetch를 건너뜀, `hg4jUpdateSkips
+    PullWhenSubrepoRevisionAlreadyLocalMatchingRealHg` 테스트로 이미 검증됨)
+    — 이 wave에서는 재확인만 하고 추가 조치 없음.
+
+    **검증**: 6개 명령 각각 `RequirementMatrix{Command}CoreRoundTripTest`
+    (native 6/6)/`...DockerRoundTripTest`(Docker 30/30) 신규 추가(총 12개
+    클래스 + 4개 헬퍼 서브프로세스 — `ArchiveCommand`/`PurgeCommand`/
+    `UpdateCommand`/`WorktreeCommand`는 실제 쓰기 커맨드라 패턴 일관성을 위해
+    헬퍼를 뒀고, `TreeCommand`/`TreeMergeCommand`는 순수 읽기/계산이라 헬퍼
+    없이 직접 호출), 전부 `src/test/java/io/github/search5/hg4j/api/`. 기존
+    `ArchiveCommandCoverageTest`(getManifestForCommit 관련 낡은 테스트 6개를
+    새 아키텍처에 맞게 제거·2개는 교체), `PurgeCommandTest`(기본값/심볼릭 링크
+    기대치 4개 갱신), `DirstateV2LayoutTest`(1개 갱신), `TreeMergeCommandTest`
+    (신규 2개 추가), `WorktreeCommandTest`(무변경, 7개 그대로 GREEN) 전부
+    회귀 확인. 전체 비-interop `test` 전부 GREEN(신규 실패 없음, 상세 수치는
+    이 문단 갱신 시점의 커밋 메시지 참고). 이로써 명령 기준 완주 수는 31에서
+    37(+`ArchiveCommand`/`PurgeCommand`/`UpdateCommand`/`TreeCommand`/
+    `TreeMergeCommand`/`WorktreeCommand`)로 증가 — 나머지 30개 로컬 명령과
+    wire 매트릭스 잔여 5개는 여전히 미착수(다른 wave 5 에이전트들과 병렬
+    진행 중이라 최종 합산은 조정자가 취합).
+
+    **조정자 취합(2026-09-05)**: 위 4개 wave 5 문단(메타데이터조회 +8,
+    core/query +7, admin/maintenance +6, 이 작업트리 wave +6)은 서로
+    다른 명령 집합에 대한 독립 병렬 작업으로 겹치지 않음. 이 wave의
+    버그 #1(`DeltaCodec.decompressZstd`)은 core/query·admin/maintenance
+    두 그룹이 이미 독립 발견·수정한 것과 같은 버그 — 병합 시 diff로
+    로직 동일함을 확인, 이미 반영된 버전(zstd 프레임 자체의
+    content-size로 목적지 버퍼를 정확히 사이징)을 채택하고 이 wave의
+    "uncompLen만큼 넉넉히 할당 후 트림" 버전은 이미 반영된 frameSize
+    기반 할당과 논리적으로 어긋나 폐기. 버그 #2(`DirstateV2Node`
+    exec/symlink 플래그 상호배타 버그)는 이 wave 스스로 "AddCommand/
+    CommitCommand/MergeCommand/RebaseCommand 등 이미 완료된 명령에도
+    같은 근본 원인이 잠재했을 수 있다"고 명시 — 병합 후 전체 비-interop
+    테스트가 여전히 GREEN임을 코디네이터가 별도로 재확인. 네 wave 병합
+    후 로컬 명령 완주 수는 31 + 8 + 7 + 6 + 6 = **58/67**. 남은 그룹:
+    콘텐츠/트리 읽기 6개(`CatCommand`/`FilesCommand`/`LocateCommand`/
+    `GrepCommand`/`AnnotateCommand`/`ManifestCommand`, 진행 중) —
+    병합되면 로컬 매트릭스 67개 전체 완료, wire 매트릭스는 이미 8/8
+    완료 상태.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

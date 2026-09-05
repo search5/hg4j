@@ -218,11 +218,17 @@ public class DirstateV2Serializer {
                     // real mode/size" branch (mode is `None` otherwise) -- gate identically so an
                     // ambiguous entry's stray mode value (irrelevant once HAS_MODE_AND_SIZE is
                     // unset) can never leak a spurious exec/symlink bit.
-                    if ((mode & 0111) != 0) {
-                        flagsVal |= DirstateV2Node.MODE_EXEC_PERM;
-                    }
+                    //
+                    // MODE_EXEC_PERM and MODE_IS_SYMLINK are NOT mutually exclusive -- see {@link
+                    // DirstateV2Node#setMode(int)}'s javadoc (step 4 below re-derives these same
+                    // two bits via that method whenever size >= 0, which is exactly this branch --
+                    // kept in sync here purely so this block's own flags never disagree with what
+                    // setMode() computes a few lines later).
                     if ((mode & 0120000) == 0120000) {
                         flagsVal |= DirstateV2Node.MODE_IS_SYMLINK;
+                        flagsVal |= DirstateV2Node.MODE_EXEC_PERM;
+                    } else if ((mode & 0111) != 0) {
+                        flagsVal |= DirstateV2Node.MODE_EXEC_PERM;
                     }
                 }
                 if (time != Dirstate.Entry.AMBIGUOUS_TIME) {

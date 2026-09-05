@@ -2980,6 +2980,80 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     이로써 "67개 명령 × 매트릭스" 목표의 명령 기준 완주 수는 11에서
     14(+`AddCommand`/`BookmarkCommand`/`TagCommand`)로 증가.
 
+    **Wave 4(2026-09-05, `ResolveCommand`/`BackoutCommand`/`RevertCommand`)**: 세
+    명령 모두 native 6/6 + Docker 30/30 전부 GREEN. `MergeCommand`/
+    `RebaseCommand`/`GraftCommand`가 이미 하드닝해 둔 3-way merge/충돌 처리
+    인프라(`Merge3`, `MergeState`, `RebaseCommand.attemptThreeWayMerge`)를 그대로
+    재사용. 진짜 hg4j 버그 6건을 TDD로 발견·수정:
+    1. `BackoutCommand`가 `REV`가 작업 디렉터리의 부모가 아닌 "오래된 조상"을
+       백아웃하는 경우(real hg의 `mergemod.back_out`에 해당하는 실제 3-way
+       merge 경로)를 전혀 구현하지 않고 있었다 — 항상 대상 리비전과 그 부모의
+       매니페스트 diff만 맹목적으로 적용해, 대상 리비전 이후의 독립적인 변경을
+       조용히 덮어쓰거나 무시하는 데이터 손실 가능성이 있었고 충돌 감지가 전혀
+       없었다. `RebaseCommand.attemptThreeWayMerge`를 재사용해 실제 3-way
+       merge(ancestor=백아웃 대상, local=현재 작업 디렉터리, other=대상의 부모)를
+       구현, 충돌 시 `HgMergeConflictException` + `.hg/merge/state2` 기록으로
+       전환(real hg도 `backout --continue`가 없어 수동 resolve+commit 흐름이라는
+       것까지 라이브 검증). 대상이 작업 디렉터리 조상이 아니면 거부하는 검증
+       (`cannot backout change that is not an ancestor`)과 root 커밋 백아웃
+       거부(`cannot backout a change with no parents`)도 추가 — 후자는 기존
+       테스트가 반대로("root 커밋도 백아웃된다") 잘못 단정하고 있던 실제
+       회귀였다(수정, 라이브 검증으로 확인).
+    2. `RevertCommand`가 `hg add`만 되고 커밋된 적 없는 파일을 되돌릴 때 디스크
+       콘텐츠를 통째로 **삭제**하고 있었다 — real hg는 그 내용을 그대로 두고
+       dirstate에서만 untrack한다(라이브 검증, 데이터 손실 버그). 반대로 대상
+       리비전에 존재하지 않는(과거에 커밋된 적 있는) 파일을 되돌릴 때는 real
+       hg가 삭제 + `R`(removed)로 마킹하는데 hg4j는 완전히 untrack만 하고
+       있어서 대칭이 깨져 있었다 — 두 경로 모두 수정.
+    3. `RevertCommand`가 real hg의 `<file>.orig` 백업(수정된 파일을 되돌리기
+       직전 원본을 보존)을 전혀 구현하지 않고 있었다 — "현재 파일이 실제로
+       modified 상태였는지"를 `StatusCommand`로 판단해 그 경우에만 백업하도록
+       추가(clean한 파일을 `-r`로 다른 리비전에 되돌릴 때는 백업이 생기지
+       않는 것까지 라이브로 검증).
+    4. `StatusCommand`가 real hg의 dirstate "possibly dirty" 센티널(mtime이
+       0xFFFFFFFF일 뿐 아니라 size도 -1로 동시에 기록되는 경우 —
+       `dirstatemap.py`의 `set_possibly_dirty()`)에서 size 필드를 전혀
+       처리하지 못해, 같은 초 안에 커밋된 파일을 곧바로 hg4j `StatusCommand`로
+       재확인하면 무조건 "modified"로 오판하는 버그를 발견 — `BackoutCommand`의
+       새 "작업 디렉터리 clean 확인" 전제조건이 이 버그에 걸려 native 6개
+       조합 전부 실패하면서 드러남. size<0을 ambiguousTime과 동일하게 content
+       비교로 폴백하도록 수정.
+    5. `RevertCommand`/`BackoutCommand`가 되돌린/백아웃된 파일에 항상 실제
+       mtime을 기록하고 있어, 같은 바이트 길이의 다른 내용으로 되돌리는 경우
+       (예: "v1\n" -> "v0\n") 같은 초 안에 실행되면 real hg 자신의 `hg status`
+       조차 이를 clean으로 오판하는 레이스가 있었다 — `ShelveCommand`가 이미
+       쓰고 있던 동일한 방어(항상 ambiguous-mtime 센티널 기록)를 두 명령의
+       'n' 상태 쓰기에도 적용.
+    6. `CommitCommand`가 `.hg/merge` 정리를 `parent2Rev != -1`(진짜 2-parent
+       병합) 조건에만 걸어 둬서, `BackoutCommand`의 새 단일-parent 충돌-해결
+       커밋처럼 `.hg/merge/state2`는 쓰지만 병합 커밋 자체는 single-parent인
+       경우 `.hg/merge`가 영원히 안 지워지는 버그도 발견·수정(real hg는
+       `ms.active()`만으로 무조건 정리 — 라이브 검증).
+
+    부가로, Docker 매트릭스 검증 중 dirstate-v2 포맷 자체의 별도 실버그 2건도
+    발견·수정: `DirstateV2Parser`가 real hg의 "HAS_MODE_AND_SIZE`/`HAS_MTIME`
+    플래그 없음"(v1의 size=-1/time=0xFFFFFFFF 센티널에 대응하는 v2식
+    "possibly dirty" 표현)을 그대로 리터럴 0/0으로 변환해 버려 위 버그 4와
+    동일한 오판을 dirstate-v2 조합에서 별도로 재현시켰고(수정: flag 부재를
+    동일한 v1식 센티널로 번역), `DirstateV2Serializer`도 반대 방향으로
+    센티널 값(size=-1/time=0xFFFFFFFF)을 실제 유효한 캐시값인 것처럼
+    `HAS_MODE_AND_SIZE`/`HAS_MTIME` 플래그를 무조건 세팅한 채 기록하고
+    있어 대칭으로 수정.
+
+    검증: `RequirementMatrixResolveCoreRoundTripTest`/`...DockerRoundTripTest`,
+    `RequirementMatrixBackoutCoreRoundTripTest`/`...DockerRoundTripTest`,
+    `RequirementMatrixRevertCoreRoundTripTest`/`...DockerRoundTripTest`(+각
+    Docker 서브프로세스 헬퍼 3개) 신규 추가, 전부 GREEN. 위 버그 (2)/root
+    커밋 백아웃 관련해 잘못된 기대값을 갖고 있던 기존 `RevertCommandTest`/
+    `WorkingCopySafetyTest`/`TrackCMissingCommandsInteropTest`/
+    `BackoutCommandCoverageTest`/`DirstateV2RealFixtureTest`의 해당 테스트를
+    real-hg-검증된 올바른 기대값으로 수정. 전체 비-interop `test`(2273건)
+    GREEN, 관련 `interopTest` 서브셋(Resolve/Backout/Revert Core+Docker,
+    `TrackCMissingCommandsInteropTest`) 전부 GREEN.
+
+    이로써 "67개 명령 × 매트릭스" 목표의 명령 기준 완주 수는 14에서
+    17(+`ResolveCommand`/`BackoutCommand`/`RevertCommand`)로 증가.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

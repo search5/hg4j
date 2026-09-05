@@ -293,6 +293,21 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   (hg4j가 고칠 수 없는 문제)로 명시적으로 tolerate 처리. 상세는
   [[mercurial-spec-compliance-requirement]] 백로그 #39 참고. 나머지 44개
   명령은 여전히 미착수.
+  **Wave 4(2026-09-05)**: `ResolveCommand`/`BackoutCommand`/`RevertCommand`
+  3개 명령에 requirement 매트릭스(native 6 + Docker 30 = 36개 조합) 확장
+  적용, 전부 GREEN. `MergeCommand`/`RebaseCommand`/`GraftCommand`의 기존
+  3-way merge/충돌 처리 하드닝(`Merge3`/`MergeState`/
+  `RebaseCommand.attemptThreeWayMerge`)을 그대로 재사용해 `BackoutCommand`가
+  이전엔 아예 없던 "오래된 조상 백아웃 시 3-way merge/충돌 감지" 경로를
+  갖추게 됨. `RevertCommand`의 진짜 데이터 손실 버그(add-uncommitted 파일
+  되돌릴 때 콘텐츠 통째 삭제) 및 `.orig` 백업 미구현도 발견·수정. 그
+  과정에서 `StatusCommand`/dirstate-v2 파서·시리얼라이저의 "possibly
+  dirty" 센티널 처리 누락(같은 초 안에 커밋된 파일이 무조건 modified로
+  오판되는 버그, native와 Docker 양쪽에서 각각 발견)과 `CommitCommand`의
+  `.hg/merge` 정리 조건 누락(단일-parent 충돌-해결 커밋 케이스)까지 총
+  6건의 진짜 hg4j 버그를 TDD로 발견·수정. 상세는
+  [[mercurial-spec-compliance-requirement]] 백로그 #39 참고. 명령 기준
+  완주 수는 14에서 17로 증가, 나머지 41개 명령은 여전히 미착수.
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

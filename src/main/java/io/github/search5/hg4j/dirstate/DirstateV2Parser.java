@@ -67,7 +67,29 @@ public class DirstateV2Parser {
 
             char state = node.getState();
             if (state != '\0' && state != 'd') {
-                decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), node.getSize(), node.getMtime(), node.getMtimeNanoseconds()));
+                // Real hg's dirstate-v2 marks an entry "possibly dirty" (the same concept as v1's
+                // size=-1/mtime=0xFFFFFFFF sentinels, see StatusCommand's AMBIGUOUS_TIME/
+                // nonNormalSize handling) by simply clearing the HAS_MODE_AND_SIZE/HAS_MTIME flag
+                // bits rather than writing a sentinel value -- DirstateV2Node.getSize()/getMtime()
+                // return a literal 0 in that case (verified live against a real-hg-committed
+                // dirstate-v2 repo, 2026-09-05, backlog #39 wave 4: a file committed within the
+                // same wall-clock second as the dirstate save gets flags with both bits cleared).
+                // Passing that literal 0 straight into the shared Dirstate.Entry (as this used to)
+                // collapses "no cached stat available" into "cached size/mtime is exactly 0",
+                // which StatusCommand's fast path then reads as a real recorded size/mtime and
+                // reports as modified even when byte-identical to the parent -- confirmed live via
+                // BackoutCommand's own precondition check tripping on every dirstate-v2 Docker
+                // combo. Translate the flag-absence into the same v1-style sentinels every other
+                // reader (StatusCommand) and writer (RevertCommand/BackoutCommand/ShelveCommand)
+                // already share, so both dirstate versions carry identical "possibly dirty"
+                // semantics up through the rest of hg4j.
+                int flags = node.getFlags() & 0xFFFF;
+                boolean hasModeAndSize = (flags & DirstateV2Node.HAS_MODE_AND_SIZE) != 0;
+                boolean hasMtime = (flags & DirstateV2Node.HAS_MTIME) != 0;
+                int size = hasModeAndSize ? node.getSize() : -1;
+                long mtime = hasMtime ? node.getMtime() : 0xFFFFFFFFL;
+                int nanos = hasMtime ? node.getMtimeNanoseconds() : 0;
+                decoded.addEntry(currentPath, new Dirstate.Entry(state, node.getMode(), size, mtime, nanos));
             }
 
             int copyOffset = node.getCopySourceOffset();

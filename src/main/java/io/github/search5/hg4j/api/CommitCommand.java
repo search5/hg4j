@@ -805,15 +805,20 @@ public class CommitCommand {
             // 6. Update and save Dirstate
             dirstate.setParents(new NodeId(commitNode), NodeId.NULL);
 
-            // Real hg fully removes .hg/merge/ once a two-parent merge is finalized by a
-            // successful commit (mercurial/mergestate.py's `mergestate.reset()` -- verified live
+            // Real hg fully removes .hg/merge/ once an active merge state is finalized by a
+            // successful commit (mercurial/mergestate.py's `mergestate.reset()`, called
+            // unconditionally by `localrepo.commit()` whenever `ms.active()` -- verified live
             // against real hg 7.2, 2026-09-05: right after `hg commit` following a two-parent
-            // merge, `.hg/merge` itself is gone, not just its `state2` file). This used to be
-            // left behind entirely by hg4j, so a subsequent `hg resolve --list`/`hg summary` run
-            // by real hg against an hg4j-produced merge commit would still (wrongly) report the
-            // just-committed file as unresolved, and stale per-file `.hg/merge/<localkey>`
-            // conflict backups would linger forever.
-            if (parent2Rev != -1) {
+            // merge OR a single-parent `hg backout` conflict resolution, `.hg/merge` itself is
+            // gone, not just its `state2` file). Gating this on `parent2Rev != -1` (a real
+            // two-parent commit) misses the single-parent case entirely -- {@link BackoutCommand}
+            // writes the exact same `.hg/merge/state2` bookkeeping for its own conflicting
+            // (older-ancestor) backout path even though its result commit keeps a single parent
+            // (real hg's own `mergemod.back_out`/`_update` does too) -- leaving `.hg/merge`
+            // behind forever after such a commit and making a subsequent real
+            // `hg resolve --list`/`hg summary` wrongly keep reporting the just-committed file as
+            // resolved-but-still-tracked instead of nothing at all.
+            if (activeMergeState.isActive()) {
                 deleteRecursively(new File(repository.getHgDir(), "merge"));
             }
 

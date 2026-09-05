@@ -201,8 +201,23 @@ public class DirstateV2Serializer {
             // 3. Configure file mode/mtime metadata flags if it represents a file entry
             int flagsVal = nodeView.getFlags() & 0xFFFF;
             if (node.entry != null) {
-                flagsVal |= DirstateV2Node.HAS_MODE_AND_SIZE;
-                flagsVal |= DirstateV2Node.HAS_MTIME;
+                // A "possibly dirty" entry (the shared hg4j convention for real hg's own
+                // "can't trust this cached stat" case -- see StatusCommand's AMBIGUOUS_TIME/
+                // nonNormalSize handling and DirstateV2Parser's matching read-side translation)
+                // carries size=-1 and/or time=0xFFFFFFFF as sentinels, mirroring dirstate-v1.
+                // Real hg's own dirstate-v2 has no such sentinel in the payload -- it represents
+                // exactly this by simply NOT setting HAS_MODE_AND_SIZE/HAS_MTIME at all. Setting
+                // those flags here regardless (as this used to) would assert "trust this cached
+                // size/mtime" while the payload is actually the sentinel garbage value, which is
+                // not how any real hg-authored v2 dirstate ever looks.
+                boolean sizeKnown = size >= 0;
+                boolean mtimeKnown = time != 0xFFFFFFFFL;
+                if (sizeKnown) {
+                    flagsVal |= DirstateV2Node.HAS_MODE_AND_SIZE;
+                }
+                if (mtimeKnown) {
+                    flagsVal |= DirstateV2Node.HAS_MTIME;
+                }
 
                 // Executable or Symlink flags conversion
                 if ((mode & 0111) != 0) {
@@ -216,8 +231,8 @@ public class DirstateV2Serializer {
 
             // 4. Set size, mode (via adapter), time
             nodeView.setMode(mode);
-            nodeView.setSize(size);
-            nodeView.setMtime(time);
+            nodeView.setSize(size >= 0 ? size : 0);
+            nodeView.setMtime(time != 0xFFFFFFFFL ? time : 0);
 
             // 5. Paths & tree structures
             nodeView.setPathOffset(dataOffset + pathOffsetMap.get(node));

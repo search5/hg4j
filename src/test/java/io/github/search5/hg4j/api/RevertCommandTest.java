@@ -61,7 +61,7 @@ public class RevertCommandTest {
     }
 
     @Test
-    public void revertsAddedButUncommittedFileByDeletingAndUntracking(@TempDir Path tempDir) throws Exception {
+    public void revertsAddedButUncommittedFileByUntrackingWithoutDeletingContent(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         File f = new File(tempDir.toFile(), "new.txt");
         Files.writeString(f.toPath(), "not committed yet");
@@ -69,7 +69,12 @@ public class RevertCommandTest {
 
         assertTrue(new RevertCommand(repo).setFile("new.txt").call());
 
-        assertFalse(f.exists());
+        // Real hg keeps the on-disk content of a reverted add-but-uncommitted file, only
+        // untracking it -- verified live against hg 7.2 (2026-09-05, backlog #39 wave 4): `hg
+        // revert` right after `hg add` leaves the file on disk, now shown as untracked "?".
+        // Deleting it (the previous behavior here) was a real data-loss bug.
+        assertTrue(f.exists());
+        assertEquals("not committed yet", Files.readString(f.toPath()));
         assertFalse(repo.getDirstate().getEntries().containsKey("new.txt"));
     }
 
@@ -98,7 +103,7 @@ public class RevertCommandTest {
     }
 
     @Test
-    public void revertsFileNotPresentAtTargetRevisionByDeletingAndUntracking(@TempDir Path tempDir) throws Exception {
+    public void revertsFileNotPresentAtTargetRevisionByDeletingAndMarkingRemoved(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         File f = new File(tempDir.toFile(), "a.txt");
         Files.writeString(f.toPath(), "v0");
@@ -113,8 +118,13 @@ public class RevertCommandTest {
 
         assertTrue(new RevertCommand(repo).setFile("later.txt").setRevision("0").call());
 
+        // Real hg deletes the file AND marks it removed ('r'), not merely untracked -- verified
+        // live against hg 7.2 (2026-09-05): `hg status` shows "R later.txt" afterward. This is
+        // distinct from reverting a file that was only ever `hg add`ed and never committed
+        // (which is untracked entirely, see revertsAddedButUncommittedFileByUntracking...).
         assertFalse(added.exists());
-        assertFalse(repo.getDirstate().getEntries().containsKey("later.txt"));
+        Dirstate.Entry entry = repo.getDirstate().getEntries().get("later.txt");
+        assertEquals('r', entry.getState());
     }
 
     @Test
@@ -164,7 +174,8 @@ public class RevertCommandTest {
         assertTrue(new RevertCommand(repo).setFile("later.txt").setRevision("0").call());
 
         assertFalse(added.exists());
-        assertFalse(repo.getDirstate().getEntries().containsKey("later.txt"));
+        Dirstate.Entry entry = repo.getDirstate().getEntries().get("later.txt");
+        assertEquals('r', entry.getState());
     }
 
     @Test
@@ -217,6 +228,47 @@ public class RevertCommandTest {
         IOException ex = assertThrows(IOException.class, () -> new RevertCommand(repo).setFile("a.txt").call());
         assertTrue(ex instanceof HgCorruptDataException, "Expected the underlying CatCommand failure to propagate unchanged");
         assertFalse(ex.getMessage().contains("File not tracked at target revision"));
+    }
+
+    @Test
+    public void revertingModifiedFileBacksUpPreRevertContentAsOrig(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        File f = new File(tempDir.toFile(), "a.txt");
+        Files.writeString(f.toPath(), "original");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("first").call();
+
+        Files.writeString(f.toPath(), "changed locally");
+        assertTrue(new RevertCommand(repo).setFile("a.txt").call());
+
+        // Real hg backs up a modified file's pre-revert content to <file>.orig before
+        // overwriting it -- verified live against hg 7.2 (2026-09-05, backlog #39 wave 4).
+        File orig = new File(tempDir.toFile(), "a.txt.orig");
+        assertTrue(orig.exists(), "a.txt.orig must be created for a modified file being reverted");
+        assertEquals("changed locally", Files.readString(orig.toPath()));
+        assertEquals("original", Files.readString(f.toPath()));
+    }
+
+    @Test
+    public void revertingCleanFileToAnOlderRevisionCreatesNoOrigBackup(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        File f = new File(tempDir.toFile(), "a.txt");
+        Files.writeString(f.toPath(), "v0");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("rev0").call();
+
+        Files.writeString(f.toPath(), "v1");
+        new CommitCommand(repo).setMessage("rev1").call();
+
+        // Working copy is clean (matches rev1) even though -r targets a different revision (0).
+        assertTrue(new RevertCommand(repo).setFile("a.txt").setRevision("0").call());
+
+        // No uncommitted work was at risk, so real hg creates no .orig here -- verified live
+        // against hg 7.2 (2026-09-05): the backup protects uncommitted edits, not the delta
+        // between the working copy and the revert's target.
+        File orig = new File(tempDir.toFile(), "a.txt.orig");
+        assertFalse(orig.exists(), "a clean file reverted to a different revision must not get an .orig backup");
+        assertEquals("v0", Files.readString(f.toPath()));
     }
 
     @Test

@@ -790,7 +790,40 @@ public class Revlog {
         return processed;
     }
 
+    /**
+     * Backlog 42 (LFS/copy-tracing gap): for an LFS-flagged revision ({@link #isExtStored}), real
+     * hg's {@code hgext/lfs/wrapper.py} {@code filelogrenamed} wrapper does NOT look at the
+     * ordinary {@code \x01\n...\x01\n} metadata block at all -- because for such a revision the
+     * stored content is the LFS pointer text itself, and the pointer's OWN {@code x-hg-<key>}
+     * fields (folded in there by real hg's {@code writetostore} instead of a separate metadata
+     * block, confirmed 2026-09-06 against a live {@code hg mv} + LFS commit) carry the copy
+     * metadata. Parses the pointer and returns those {@code x-hg-*} fields (prefix stripped) as
+     * if they were the ordinary block, so every existing caller of this method ({@code
+     * AnnotateCommand}'s rename-crossing, {@code LogCommand --follow}) transparently keeps
+     * working across an LFS-tracked rename with no caller-side change needed.
+     */
     public synchronized Map<String, String> getRevisionMetadata(int rev) throws IOException {
+        if (isExtStored(rev)) {
+            Map<String, String> lfsMeta = new HashMap<>();
+            byte[] rawPointer = getRawRevisionContent(rev);
+            if (rawPointer.length == 0) {
+                return lfsMeta;
+            }
+            try {
+                io.github.search5.hg4j.lfs.HgLfsPointer pointer = io.github.search5.hg4j.lfs.HgLfsPointer.parse(rawPointer);
+                for (Map.Entry<String, String> entry : pointer.getExtra().entrySet()) {
+                    if (entry.getKey().startsWith("x-hg-")) {
+                        lfsMeta.put(entry.getKey().substring("x-hg-".length()), entry.getValue());
+                    }
+                }
+            } catch (IOException malformedPointer) {
+                // Not a parseable pointer (shouldn't normally happen for a REVIDX_EXTSTORED
+                // revision) -- treat as "no copy metadata" rather than propagating a parse
+                // failure out of what every caller treats as a best-effort lookup.
+            }
+            return lfsMeta;
+        }
+
         byte[] raw = getRawRevisionContent(rev);
         Map<String, String> meta = new HashMap<>();
         if (raw.length >= 2 && raw[0] == '\u0001' && raw[1] == '\n') {
@@ -1129,6 +1162,48 @@ public class Revlog {
     }
 
     /**
+     * Builds the exact {@code "\x01\n<key>: <value>\n...\x01\n"}-prefixed byte array real hg's
+     * filelog storage uses to embed rename/copy (or other) metadata ahead of a revision's real
+     * content -- extracted out of {@link #appendRevision} so callers that need to precompute the
+     * SAME bytes for a purpose other than storage (e.g. {@code api.CommitCommand}'s LFS pipeline,
+     * which needs this exact metadata-wrapped form as the filelog node hash basis for a renamed
+     * file that is ALSO LFS-flagged -- real hg's LFS flag-processor hashes the real bytes as
+     * {@code readfromstore} would hand them back to a caller, which re-wraps any {@code x-hg-*}
+     * pointer fields into precisely this block; confirmed 2026-09-06 by reproducing a real hg 7.2
+     * rename+LFS commit and matching {@code SHA1(p1,p2,wrapMetadata(realBytes,copyMeta))} against
+     * the real filenode) can reuse it verbatim rather than re-deriving the format by hand.
+     *
+     * @param metadata rename/copy-style key/value pairs to prepend, or {@code null}/empty for none
+     * @return {@code content} unchanged when {@code metadata} is null/empty AND {@code content}
+     *     doesn't itself start with the {@code "\x01\n"} marker (in which case an empty
+     *     {@code "\x01\n\x01\n"} block is prepended instead, to disambiguate real leading marker
+     *     bytes in the content from an actual metadata block on the next read) -- otherwise the
+     *     metadata block followed by {@code content}.
+     */
+    public static byte[] wrapMetadata(byte[] content, Map<String, String> metadata) {
+        if (metadata != null && !metadata.isEmpty()) {
+            StringBuilder msb = new StringBuilder();
+            msb.append('\u0001').append('\n');
+            for (Map.Entry<String, String> entry : metadata.entrySet()) {
+                msb.append(entry.getKey()).append(": ").append(entry.getValue()).append('\n');
+            }
+            msb.append('\u0001').append('\n');
+            byte[] metaBytes = msb.toString().getBytes(StandardCharsets.UTF_8);
+            byte[] result = new byte[metaBytes.length + content.length];
+            System.arraycopy(metaBytes, 0, result, 0, metaBytes.length);
+            System.arraycopy(content, 0, result, metaBytes.length, content.length);
+            return result;
+        } else if (content.length >= 2 && content[0] == '\u0001' && content[1] == '\n') {
+            byte[] prefix = new byte[]{'\u0001', '\n', '\u0001', '\n'};
+            byte[] result = new byte[prefix.length + content.length];
+            System.arraycopy(prefix, 0, result, 0, prefix.length);
+            System.arraycopy(content, 0, result, prefix.length, content.length);
+            return result;
+        }
+        return content;
+    }
+
+    /**
      * @param extraFlags additional {@code flags} bits (e.g. {@link #REVIDX_EXTSTORED}) to OR into
      *     this revision's index record, on top of whatever this method already computes on its
      *     own (currently nothing -- flags are otherwise always 0 on this path). Used by {@code
@@ -1157,26 +1232,7 @@ public class Revlog {
         int rev = index.getRevisionCount();
 
         // Escaping logic for content and metadata
-        byte[] processedContent;
-        if (metadata != null && !metadata.isEmpty()) {
-            StringBuilder msb = new StringBuilder();
-            msb.append('\u0001').append('\n');
-            for (Map.Entry<String, String> entry : metadata.entrySet()) {
-                msb.append(entry.getKey()).append(": ").append(entry.getValue()).append('\n');
-            }
-            msb.append('\u0001').append('\n');
-            byte[] metaBytes = msb.toString().getBytes(StandardCharsets.UTF_8);
-            processedContent = new byte[metaBytes.length + content.length];
-            System.arraycopy(metaBytes, 0, processedContent, 0, metaBytes.length);
-            System.arraycopy(content, 0, processedContent, metaBytes.length, content.length);
-        } else if (content.length >= 2 && content[0] == '\u0001' && content[1] == '\n') {
-            byte[] prefix = new byte[]{'\u0001', '\n', '\u0001', '\n'};
-            processedContent = new byte[prefix.length + content.length];
-            System.arraycopy(prefix, 0, processedContent, 0, prefix.length);
-            System.arraycopy(content, 0, processedContent, prefix.length, content.length);
-        } else {
-            processedContent = content;
-        }
+        byte[] processedContent = wrapMetadata(content, metadata);
 
         // Calculate NodeID: SHA-1(p1Node + p2Node + hashBasis) where parents are sorted
         // lexicographically. hashBasis is normally processedContent (what actually gets stored),

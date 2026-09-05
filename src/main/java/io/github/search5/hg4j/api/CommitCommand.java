@@ -649,47 +649,79 @@ public class CommitCommand {
                                 sdTouched.add(path);
                             }
 
-                            // LFS pipeline (backlog 31): if this file is larger than the
-                            // configured [lfs] threshold, store an LFS pointer in the filelog
-                            // (flagged REVIDX_EXTSTORED) instead of the real bytes, and stash the
-                            // real bytes in the local LFS blob store -- matches real hg's
-                            // hgext/lfs `filelogaddrevision` wrapper (verified 2026-09-04 against
-                            // hgext/lfs/wrapper.py's writetostore/filelogaddrevision). Scoped down
-                            // to files with no rename/copy metadata for now (real hg folds
-                            // copy-tracing into the pointer's own x-hg-* keys, which this pipeline
-                            // does not attempt yet -- an out-of-scope simplification, documented in
-                            // the backlog entry) so a renamed-and-large file just takes the normal
-                            // non-LFS path here.
+                            // LFS pipeline (backlog 31, extended by backlog 42): if this file is
+                            // larger than the configured [lfs] threshold, store an LFS pointer in
+                            // the filelog (flagged REVIDX_EXTSTORED) instead of the real bytes,
+                            // and stash the real bytes in the local LFS blob store -- matches real
+                            // hg's hgext/lfs `filelogaddrevision` wrapper (verified 2026-09-04
+                            // against hgext/lfs/wrapper.py's writetostore/filelogaddrevision).
+                            //
+                            // Backlog 42 folded in real hg's rename+LFS handling (verified
+                            // 2026-09-06 against a live `hg mv` + LFS commit): when this file also
+                            // carries copy/rename metadata, that metadata is NOT wrapped as the
+                            // usual separate \x01\n...\x01\n filelog block -- it is instead folded
+                            // into the LFS pointer's own text as x-hg-<key> fields (writetostore's
+                            // behavior), and the filelog node hash is computed over the metadata-
+                            // wrapped REAL bytes (what readfromstore hands back to a caller), not
+                            // the pointer text and not the bare real bytes alone.
                             byte[] contentToStore = fileContent;
                             byte[] lfsHashBasis = null;
                             int extraRevFlags = 0;
-                            if (copyMeta == null) {
-                                long lfsThreshold = HgLfsManager.parseThresholdBytes(
-                                        repository.getConfig().get("lfs", "threshold"));
-                                if (lfsThreshold >= 0 && fileContent.length > lfsThreshold) {
-                                    String oidHex = HgLfsPointer.sha256Hex(fileContent);
-                                    HgLfsPointer pointer = new HgLfsPointer(
-                                            "https://git-lfs.github.com/spec/v1", oidHex, fileContent.length);
-                                    new HgLfsManager(repository.getHgDir()).cacheObject(pointer, fileContent);
-                                    contentToStore = pointer.serialize();
-                                    lfsHashBasis = fileContent;
-                                    extraRevFlags = Revlog.REVIDX_EXTSTORED;
-                                    // Real hg's lfs extension only fully activates its
-                                    // checkhash-bypass flag processor for a repo once "lfs" is in
-                                    // .hg/requires (hgext/lfs/__init__.py's commit.lfs hook adds it
-                                    // lazily on the first commit containing an LFS-flagged file,
-                                    // confirmed 2026-09-04 by reading that source directly) --
-                                    // without this, a real hg CLI reading an hg4j-written LFS
-                                    // commit fails with "abort: integrity check failed" because it
-                                    // tries to validate the node hash against the real (huge) blob
-                                    // instead of skipping that check for the pointer revision.
-                                    File requiresFile = new File(repository.getHgDir(), "requires");
-                                    List<String> requirements = new ArrayList<>(
-                                            Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8));
-                                    if (!requirements.contains("lfs")) {
-                                        requirements.add("lfs");
-                                        SafeFileIO.writeLinesAtomic(requiresFile, requirements);
+                            Map<String, String> filelogMetadata = copyMeta;
+                            // Backlog 42 bug fix: real hg's own lfs.threshold check is Python's
+                            // `if threshold:` (hgext/lfs/__init__.py) -- 0 is falsy in Python, so
+                            // an explicit `lfs.threshold = 0` behaves EXACTLY like leaving it
+                            // unset (no threshold-based LFS triggering at all), not "every
+                            // non-empty file is LFS" as `>= 0` used to implement here (confirmed
+                            // 2026-09-06 by reading hgext/lfs/__init__.py's _trackedmatcher
+                            // directly: `threshold = ui.configbytes(...); if threshold: ...`).
+                            long lfsThreshold = HgLfsManager.parseThresholdBytes(
+                                    repository.getConfig().get("lfs", "threshold"));
+                            if (lfsThreshold > 0 && fileContent.length > lfsThreshold) {
+                                String oidHex = HgLfsPointer.sha256Hex(fileContent);
+                                Map<String, String> extra = new LinkedHashMap<>();
+                                if (!isBinaryContent(fileContent)) {
+                                    // Real hg only adds x-is-binary (value "0") when the real
+                                    // content is NOT binary -- absence of the key is real hg's
+                                    // implicit "assume binary" default for LFS content (verified
+                                    // 2026-09-06 against hgext/lfs/wrapper.py's writetostore).
+                                    extra.put("x-is-binary", "0");
+                                }
+                                if (copyMeta != null) {
+                                    for (Map.Entry<String, String> copyEntry : copyMeta.entrySet()) {
+                                        extra.put("x-hg-" + copyEntry.getKey(), copyEntry.getValue());
                                     }
+                                }
+                                HgLfsPointer pointer = new HgLfsPointer(
+                                        "https://git-lfs.github.com/spec/v1", oidHex, fileContent.length, extra);
+                                new HgLfsManager(repository.getHgDir(), repository.getConfig())
+                                        .cacheObject(pointer, fileContent);
+                                contentToStore = pointer.serialize();
+                                // See Revlog#wrapMetadata's javadoc for the real-hg verification
+                                // this hash-basis formula is based on -- when copyMeta is null
+                                // this is exactly fileContent unchanged, matching the pre-backlog-42
+                                // plain-LFS behavior byte for byte.
+                                lfsHashBasis = Revlog.wrapMetadata(fileContent, copyMeta);
+                                extraRevFlags = Revlog.REVIDX_EXTSTORED;
+                                // The copy/rename metadata is now embedded in the pointer's own
+                                // x-hg-* fields above -- it must NOT also be wrapped as a separate
+                                // \x01\n...\x01\n block around the pointer text itself.
+                                filelogMetadata = null;
+                                // Real hg's lfs extension only fully activates its
+                                // checkhash-bypass flag processor for a repo once "lfs" is in
+                                // .hg/requires (hgext/lfs/__init__.py's commit.lfs hook adds it
+                                // lazily on the first commit containing an LFS-flagged file,
+                                // confirmed 2026-09-04 by reading that source directly) --
+                                // without this, a real hg CLI reading an hg4j-written LFS
+                                // commit fails with "abort: integrity check failed" because it
+                                // tries to validate the node hash against the real (huge) blob
+                                // instead of skipping that check for the pointer revision.
+                                File requiresFile = new File(repository.getHgDir(), "requires");
+                                List<String> requirements = new ArrayList<>(
+                                        Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8));
+                                if (!requirements.contains("lfs")) {
+                                    requirements.add("lfs");
+                                    SafeFileIO.writeLinesAtomic(requiresFile, requirements);
                                 }
                             }
 
@@ -724,7 +756,7 @@ public class CommitCommand {
                                 }
                             }
                             if (newFileNode == null) {
-                                newFileNode = filelog.appendRevision(contentToStore, copyMeta, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev, null, extraRevFlags, lfsHashBasis);
+                                newFileNode = filelog.appendRevision(contentToStore, filelogMetadata, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev, null, extraRevFlags, lfsHashBasis);
                             }
 
                             // Capture execution flag and symlink flag for serialization
@@ -1447,6 +1479,20 @@ public class CommitCommand {
         }
         return filelog.getRevisionContent(rev);
     }
+    /**
+     * Real hg's own binary-content test for LFS pointer purposes (confirmed 2026-09-06 against
+     * {@code mercurial/utils/stringutil.py}'s {@code binary()}): content is "binary" if and only
+     * if it contains at least one NUL byte anywhere -- nothing more elaborate.
+     */
+    private static boolean isBinaryContent(byte[] data) {
+        for (byte b : data) {
+            if (b == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean isNullNode(byte[] node) {
         if (node == null) {
             return true;

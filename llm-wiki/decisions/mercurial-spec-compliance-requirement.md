@@ -4173,15 +4173,96 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     훨씬 드물게 쓰임) 작업량 대비 가치가 낮아 최하 우선순위로 등록 —
     32/38/39/40번을 전부 마친 뒤에 착수할 것.
 
-42. **LFS 세부 옵션 3가지 — 백로그 31번 완료 시 범위 밖으로 남긴 것**.
-    신규, 2026-09-04 문서 재감사로 발견(gap table "LFS" 행/백로그 31번
-    완료 본문에 번호 없이 있던 캐비어트를 승격) — 미착수. 백로그 31번이
-    커밋/체크아웃 파이프라인 연동은 끝냈지만, 다음 3가지는 명시적으로
-    범위 밖으로 남겼다: (1) rename과 LFS가 동시에 걸린 파일의 copy-tracing
-    메타데이터 처리, (2) `[lfs] url` config로 원격 LFS 서버 주소를
-    override하는 기능, (3) `lfs.disableusercache` 등 캐시 동작 세부 옵션.
-    셋 다 real hg CLI로 실측해서 hg4j 동작과 대조 검증 후 필요한 만큼
-    구현할 것.
+42. ~~**LFS 세부 옵션 3가지 — 백로그 31번 완료 시 범위 밖으로 남긴 것**~~ —
+    ✅ **완료(2026-09-06)**. 3가지 전부 real hg 7.2(host native) CLI로
+    라이브 재현해서 hg4j 동작을 맞췄다.
+
+    **(1) rename+LFS copy-tracing**: real hg는 "그냥 알아서 되는" 게
+    아니라 명시적 특수 처리가 있었다 — `hgext/lfs/wrapper.py`의
+    `writetostore`/`readfromstore`/`filelogrenamed`를 실측 확인(`hg mv`
+    한 LFS 파일을 커밋 후 `hg debugdata`로 직접 바이트 확인): 보통의
+    rename처럼 별도 `\x01\n copy: ...\n copyrev: ...\n \x01\n` 메타데이터
+    블록을 앞에 붙이는 게 아니라, 그 메타데이터를 **포인터 파일 자체의
+    `x-hg-copy`/`x-hg-copyrev` 필드로 접어 넣는다**(파일노드 해시는
+    포인터가 아니라 "메타데이터로 감싼 실제 바이트" 기준으로 계산 —
+    `SHA1(p1,p2,realBytes)` 단독은 불일치, `SHA1(p1,p2,
+    packmeta(copyMeta,realBytes))`가 일치함을 직접 재현해 확인).
+    hg4j에 이식: `HgLfsPointer`가 임의 부가 필드(`getExtra()`)를 보존하도록
+    재작성, `Revlog.wrapMetadata()`(신설, `appendRevision` 내부 로직을
+    추출)로 해시 베이시스를 계산, `Revlog.getRevisionMetadata()`가
+    `REVIDX_EXTSTORED` 리비전에서는 포인터의 `x-hg-*` 필드를 대신 읽도록
+    분기(→ `AnnotateCommand`/`LogCommand --follow`가 코드 변경 없이 그대로
+    동작), `CommitCommand`가 copyMeta 유무와 무관하게 LFS 파이프라인을
+    타도록 게이팅 제거. 양방향 검증: real hg가 커밋한 rename+LFS 파일을
+    hg4j `AnnotateCommand`가 읽어 real hg `hg annotate -c` 출력과 정확히
+    일치(`hg4jFollowsRenameAcrossARealHgLfsCommitAndMatchesRealHgAnnotate`),
+    hg4j가 커밋한 rename+LFS 파일을 real hg `hg annotate`/`hg log
+    --follow`/`hg verify`가 정확히 읽음(무결성 오류 없음,
+    `realHgFollowsRenameAcrossAnLfsFileHg4jCommitted`).
+
+    **(2) `[lfs] url` override**: `hgext/lfs/blobstore.py`의 `remote()`를
+    실측 확인 — override가 없을 때 real hg의 기본 유추 규칙은 hg4j가
+    쓰던 `<remote>/info/lfs`가 **아니라 `<remote>/.git/info/lfs`**였다
+    (git-lfs server-discovery 컨벤션을 그대로 재사용 — 실제
+    `hg clone -v`로 재현해 `"lfs: assuming remote store:
+    http://host/.git/info/lfs"` 로그 라인으로 확정). **기존 hg4j 버그**
+    (`UpdateCommand`가 `/info/lfs`를 쓰고 있었음) — 웹훅으로 별도 보고함.
+    override가 있으면 그 값을 그대로 씀(추가 경로 없음, `hg clone
+    --config lfs.url=<custom>`으로 재현해 배치 요청이 정확히
+    `<custom>/objects/batch`로 감을 확인). `HgLfsManager.resolveServerUrl()`
+    신설(override 우선, 없으면 `.git/info/lfs` 유추)로 `UpdateCommand`와
+    새 `HgLfsManager.resolveContent()`(체크아웃/annotate 공용 read 경로)가
+    공유하도록 리팩터링. 검증: 실제 `hg serve`를 띄우고 hg4j가 그
+    `.git/info/lfs` URL로 실제 배치 API를 호출해 blob을 내려받음
+    (`hg4jFetchesLfsBlobFromRealHgServeViaGitInfoLfsConvention`), override
+    설정 시 기본 유추 경로가 아니라 override 경로로 감(`lfsUrlConfig
+    OverridesTheDefaultGitInfoLfsDerivation`). hg4j는 LFS blob을 서버로
+    서빙하는 기능이 전혀 없어(grep 확인) "쓰기 경로"는 해당 없음 — 정직하게
+    기록.
+
+    **(3) `lfs.disableusercache` 등 캐시 옵션**: 기존 hg4j는 usercache
+    개념이 아예 없이 `.hg/store/lfs/objects/`(저장소별 로컬 스토어)만
+    썼다. real hg는 그 위에 사용자 전역 캐시 계층이 하나 더 있다 —
+    `hgext/lfs/blobstore.py`의 `local` 클래스 실측: 기본 경로는
+    `lfutil._usercachedir`가 계산하는 POSIX `$XDG_CACHE_HOME/lfs`(없으면
+    `~/.cache/lfs`, `~/.cache/hg/lfs`가 아님 — 실제 `XDG_CACHE_HOME`을
+    지정해 `hg commit`을 재현해서 정확한 경로/샤딩(로컬 스토어와 동일한
+    2자 접두사 샤딩)을 확인), macOS `~/Library/Caches/lfs`, Windows
+    `%LOCALAPPDATA%\lfs`(폴백 `%APPDATA%`). `[lfs] usercache = <path>`가
+    있으면 그 경로를 그대로 씀(접미사 없이, 실측 확인).
+    `experimental.lfs.disableusercache`(주의: 섹션 `experimental`, 키
+    안에 점이 있는 `"lfs.disableusercache"` 리터럴 — 서브섹션 아님)가
+    true면 usercache를 완전히 끔(로컬 스토어는 그대로 채워짐 — 실측
+    확인). 커밋/다운로드 시 로컬 스토어 + usercache 양쪽에 다 쓰고, 읽을
+    때는 로컬 스토어 우선, 없으면 usercache에서 읽고 로컬 스토어에
+    백필. `HgLfsManager`에 `HgRcConfig` 인자를 받는 새 생성자와 이
+    2계층 로직을 전부 이식, `CommitCommand`/`UpdateCommand`가 그 생성자를
+    쓰도록 전환. 인자 없는 기존 1-인자 생성자는 **의도적으로** usercache를
+    비활성 상태로 유지(테스트/설정 없는 호출부가 실제 공유 호스트의
+    `~/.cache/lfs`를 실수로 건드리지 않도록 — 이 세션 중 실제로 이 문제가
+    한 번 발생해서(테스트가 진짜 호스트 캐시를 오염시킴) 고친 뒤 확정한
+    설계). 양방향 검증: real hg가 커스텀 usercache 경로에 채운 blob을
+    hg4j `HgLfsManager`가 그대로 읽어냄(로컬 스토어 사본을 지워도 usercache
+    단독으로 찾아내고 백필함,
+    `hg4jReadsAUsercacheBlobRealHgPopulatedViaLfsUsercacheConfig`),
+    disableusercache일 때 real hg 자신도 usercache 디렉터리를 안 만듦을
+    확인 후 hg4j의 설정 해석도 동일하게 null을 반환함을 대조
+    (`disableusercacheStopsRealHgFromPopulatingTheUsercache`).
+
+    **부수 발견(같은 코드를 감사하다 발견한 기존 버그, 웹훅 보고)**:
+    `[lfs] threshold = 0`이 hg4j에서는 "모든 비어있지 않은 파일을 LFS로
+    취급"으로 동작했는데, real hg의 실제 로직(`hgext/lfs/__init__.py`
+    `_trackedmatcher`: `threshold = ui.configbytes(...); if threshold:
+    ...`)은 파이썬 `if threshold:`가 falsy라서 **0은 "임계값 없음"과
+    완전히 동일**(비활성)하다 — `CommitCommand`의 비교를 `>= 0`에서
+    `> 0`으로 수정.
+
+    **정직하게 남겨둔 것(추가로 발견했지만 이번 3개 항목엔 없던 것)**:
+    real hg의 `lfs.track`(fileset 표현식 기반 추적 규칙, 예:
+    `path:bin/**`)은 hg4j에 구현 안 돼 있음 — hg4j는 여전히 `lfs.threshold`
+    (숫자 임계값)만 지원. `lfs.track`은 fileset 파서/평가기 전체가
+    필요한 별도 규모의 작업이라 이번 3개 항목 범위 밖으로 판단, 새 백로그
+    번호 없이 여기 기록만 해둠(추후 필요 시 재감사에서 승격).
 
 43. ~~**Revlog가 성장해도 inline→non-inline 전환을 안 함 (`_enforceinlinesize`
     상당 로직 없음)**~~ — ✅ **완료(2026-09-06)**. 신규, 2026-09-04 문서 재감사로
@@ -4291,13 +4372,27 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     범위(inline↔non-inline 전환) 밖이라 별도 항목으로 남겨둠(뒤에 후속 번호로
     등록).
 
-44. **Clonebundles 서버: 매니페스트 파일 없을 때 응답 포맷 미확인**. 신규,
-    2026-09-04 문서 재감사로 발견(clonebundles 실행 계획의 서버측 항목
-    9번, 원래도 "우선순위 낮음"으로 표시돼 있던 것을 정식 번호로 승격)
-    — 미착수, 우선순위 낮음. `?cmd=clonebundles` 핸들러가 매니페스트
-    파일이 아예 없는 상태에서 요청을 받았을 때 real hg가 빈 응답을 주는지
-    404를 주는지 실측 확인이 안 된 상태 — real hg CLI로 직접 재현해서
-    확인 후 hg4j 서버 동작을 맞출 것.
+44. ~~**Clonebundles 서버: 매니페스트 파일 없을 때 응답 포맷 미확인**~~ —
+    ✅ **완료(2026-09-06)**. real hg 7.2(host native)로 직접 재현해서
+    확인: `clonebundles` 확장을 켜고 `.hg/clonebundles.manifest` 파일이
+    아예 없는 상태로 `hg serve`를 띄우면 (1) `?cmd=capabilities`에
+    `clonebundles` 토큰 자체가 광고 안 됨(매니페스트 존재 여부로
+    게이팅 — hg4j의 기존 로직과 일치), (2) 그래도 클라이언트가 직접
+    `?cmd=clonebundles`를 호출하면 **HTTP 200 + 완전히 빈 바디**를
+    돌려줌(404 아님, 에러 메시지도 아님) — `mercurial/
+    wireprotov1server.py`의 `clonebundles()`가 `bytesresponse(repo.
+    tryread(b'clonebundles.manifest'))`를 쓰고, `vfs.tryread()`가
+    `ENOENT`를 삼켜 `b""`를 반환하기 때문. hg4j의 `Wire1Commands
+    .clonebundles()`는 이미 정확히 이 동작(빈 `byte[]`)을 구현하고
+    있었고, `HgHttpWireServer`의 `BYTES` 케이스도 0바이트 페이로드를
+    "Content-Length 없이 200"으로 정확히 내려보내 real hg와 100%
+    일치함이 확인됨 — **코드 수정 불필요, 검증만 추가**. HTTP 레벨
+    회귀 테스트 신설(`HgHttpWireServerTest
+    .clonebundlesCommandOverRawHttpIsAnEmptyTwoHundredWhenNoManifestFileExistsAtAll`)
+    로 raw HTTP 상태 코드/바디 길이를 고정. SSH 전송은 동일한
+    `Wire1Commands.clonebundles()`를 재사용하는 범용 `BYTES` 프레이밍
+    메커니즘이라(다른 커맨드들로 이미 간접 검증됨) 별도 SSH 전용
+    실측은 생략.
 
 45. **`CommitCommand`가 treemanifest 하위 디렉터리 manifest(`meta/<dir>/
     00manifest.i`/`.d`)를 fncache에 전혀 등록하지 않음**. 신규, 2026-09-06

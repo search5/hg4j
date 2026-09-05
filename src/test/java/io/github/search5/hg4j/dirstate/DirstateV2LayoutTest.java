@@ -132,7 +132,16 @@ public class DirstateV2LayoutTest {
     }
 
     @Test
-    public void testSetMode_symlinkMode_setsSymlinkFlagAndClearsExecFlag() {
+    public void testSetMode_symlinkMode_setsBothSymlinkAndExecFlags() {
+        // Backlog #39 fix (2026-09-05): MODE_EXEC_PERM and MODE_IS_SYMLINK are NOT mutually
+        // exclusive -- verified directly against real hg 7.2.4's Rust dirstate-v2 source
+        // (rust/hg-core/src/dirstate/entry.rs mode_changed(): EXEC_BIT_MASK is 0o100, the owner-
+        // exec bit, and a real OS symlink's `lstat()` mode ALWAYS reports the full rwxrwxrwx
+        // permission bits -- there is no such thing as a "non-executable" symlink at the
+        // filesystem level. Clearing MODE_EXEC_PERM for a symlink entry (the old, wrong behavior
+        // this test used to assert) made real hg's own `hg status` see every untouched symlink as
+        // modified after any hg4j-driven checkout/write (reproduced live against a real
+        // Rust-hg-written dirstate-v2 repository).
         byte[] buffer = new byte[DirstateV2Node.NODE_SIZE];
         DirstateV2Node node = new DirstateV2Node(buffer, 0);
         node.setState('n');
@@ -142,7 +151,7 @@ public class DirstateV2LayoutTest {
         node.setMode(0120777); // symlink mode (S_IFLNK | permission bits)
 
         assertEquals(0120000, node.getMode());
-        assertEquals(0, node.getFlags() & DirstateV2Node.MODE_EXEC_PERM);
+        assertEquals(DirstateV2Node.MODE_EXEC_PERM, node.getFlags() & DirstateV2Node.MODE_EXEC_PERM);
         assertEquals(DirstateV2Node.MODE_IS_SYMLINK, node.getFlags() & DirstateV2Node.MODE_IS_SYMLINK);
     }
 

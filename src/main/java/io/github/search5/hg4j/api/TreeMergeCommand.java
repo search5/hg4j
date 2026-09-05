@@ -50,12 +50,15 @@ public class TreeMergeCommand {
         private final boolean conflicted;
         private final List<String> conflicts;
         private final Map<String, byte[]> changedFiles;
+        private final Map<String, Integer> changedModes;
         private final Set<String> removedFiles;
 
-        TreeMergeResult(boolean conflicted, List<String> conflicts, Map<String, byte[]> changedFiles, Set<String> removedFiles) {
+        TreeMergeResult(boolean conflicted, List<String> conflicts, Map<String, byte[]> changedFiles,
+                Map<String, Integer> changedModes, Set<String> removedFiles) {
             this.conflicted = conflicted;
             this.conflicts = conflicts;
             this.changedFiles = changedFiles;
+            this.changedModes = changedModes;
             this.removedFiles = removedFiles;
         }
 
@@ -71,6 +74,21 @@ public class TreeMergeCommand {
         /** Paths that must be added or overwritten (relative to "ours") to reach the merged result, mapped to their final content. */
         public Map<String, byte[]> getChangedFiles() {
             return changedFiles;
+        }
+
+        /**
+         * The POSIX-style mode every {@link #getChangedFiles()} path should be applied with
+         * ({@code 0644} regular, {@code 0755} executable, {@code 0120000} symlink -- the same
+         * convention {@link TreeCommand.TreeEntry#getMode()} and {@link ArchiveCommand} use).
+         * Backlog #39 fix: this used to not exist at all, so a caller applying {@link
+         * #getChangedFiles()} verbatim would silently lose an executable-bit or symlink-vs-regular
+         * change introduced by "theirs" (or picked during a conflict) whenever the underlying
+         * bytes came out identical to what the flag alone changed -- always consult this map
+         * rather than re-deriving a mode from stat'd disk state, since there is no disk state
+         * here at all.
+         */
+        public Map<String, Integer> getChangedModes() {
+            return changedModes;
         }
 
         /** Paths that must be deleted (relative to "ours") to reach the merged result. */
@@ -110,6 +128,7 @@ public class TreeMergeCommand {
         allPaths.addAll(manifestP2.keySet());
 
         Map<String, byte[]> changedFiles = new LinkedHashMap<>();
+        Map<String, Integer> changedModes = new LinkedHashMap<>();
         Set<String> removedFiles = new LinkedHashSet<>();
         List<String> conflicts = new java.util.ArrayList<>();
         boolean conflicted = false;
@@ -127,6 +146,7 @@ public class TreeMergeCommand {
                 if (hLca == null) {
                     // Added by theirs only.
                     changedFiles.put(path, helper.getFileRevisionContent(path, hP2));
+                    changedModes.put(path, helper.getModeFromManifestHex(hP2));
                 }
                 // else: base had it, ours removed it, theirs left it alone -- stays removed, no delta.
             } else if (hP1 != null && hP2 == null) {
@@ -137,8 +157,11 @@ public class TreeMergeCommand {
                 // else: added by ours only -- already correct, no delta.
             } else {
                 if (Objects.equals(hP1, hLca)) {
-                    // Ours unmodified, theirs modified -- take theirs.
+                    // Ours unmodified, theirs modified -- take theirs (content AND mode/flag --
+                    // backlog #39 fix: a flag-only change, e.g. chmod +x with identical bytes,
+                    // used to be silently dropped since only content was ever returned).
                     changedFiles.put(path, helper.getFileRevisionContent(path, hP2));
+                    changedModes.put(path, helper.getModeFromManifestHex(hP2));
                 } else if (Objects.equals(hP2, hLca)) {
                     // Theirs unmodified, ours modified -- ours already correct, no delta.
                 } else {
@@ -153,6 +176,10 @@ public class TreeMergeCommand {
                         sb.append(line).append('\n');
                     }
                     changedFiles.put(path, sb.toString().getBytes(StandardCharsets.UTF_8));
+                    // Mode preference mirrors RebaseCommand.attemptThreeWayMerge's own convention
+                    // for a merged/conflicted path: prefer "ours" (local/p1) when both sides have
+                    // it, matching the already-hardened cherry-pick/rebase merge logic.
+                    changedModes.put(path, helper.getModeFromManifestHex(hP1 != null ? hP1 : hP2));
                     if (mergeRes.isConflicted()) {
                         conflicted = true;
                         conflicts.add(path);
@@ -161,6 +188,6 @@ public class TreeMergeCommand {
             }
         }
 
-        return new TreeMergeResult(conflicted, conflicts, changedFiles, removedFiles);
+        return new TreeMergeResult(conflicted, conflicts, changedFiles, changedModes, removedFiles);
     }
 }

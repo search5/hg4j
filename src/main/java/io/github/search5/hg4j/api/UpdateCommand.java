@@ -234,17 +234,36 @@ public class UpdateCommand {
                                 }
                             } catch (Exception ignored) {
                             }
+                        } else if (Files.isSymbolicLink(diskFile.toPath())) {
+                            // Skip the delete+recreate churn (and its symlink mtime bump) when the
+                            // target is already exactly right, mirroring the regular-file
+                            // unchanged-content fast path just above.
+                            try {
+                                String existingTarget = Files.readSymbolicLink(diskFile.toPath()).toString();
+                                String desiredTarget = new String(fileContent, StandardCharsets.UTF_8).trim();
+                                if (existingTarget.equals(desiredTarget)) {
+                                    needsWrite = false;
+                                }
+                            } catch (Exception ignored) {
+                            }
                         }
                         if (needsWrite) {
                             Files.delete(diskFile.toPath());
                         }
                     }
 
+                    // Backlog #39 fix: a symlink's dirstate mode must carry the full S_IFLNK +
+                    // rwxrwxrwx bits (0120777), not just the bare S_IFLNK type bits (0120000) --
+                    // verified live against real hg 7.2: every symlink's `lstat` mode is
+                    // unconditionally 0120777 (symlinks have no real permissions of their own), so
+                    // a dirstate entry recorded with the bare 0120000 makes real hg's own `hg
+                    // status` (which compares the stored mode against a fresh `lstat`) see a
+                    // spurious permission mismatch and report the untouched symlink as modified.
                     int mode = 0644;
                     if (needsWrite) {
                         diskFile.getParentFile().mkdirs();
                         if (symlink) {
-                            mode = 0120000;
+                            mode = 0120777;
                             String target = new String(fileContent, StandardCharsets.UTF_8).trim();
                             try {
                                 Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
@@ -258,7 +277,7 @@ public class UpdateCommand {
                         }
                     } else {
                         if (symlink) {
-                            mode = 0120000;
+                            mode = 0120777;
                         } else {
                             diskFile.setExecutable(executable, false);
                             mode = executable ? 0755 : 0644;

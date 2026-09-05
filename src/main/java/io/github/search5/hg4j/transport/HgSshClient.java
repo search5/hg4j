@@ -487,6 +487,33 @@ public class HgSshClient implements HgRemoteConnection {
         return map;
     }
 
+    /**
+     * SSH counterpart of {@link HgRemoteClient#supportsClonebundles()}/{@link
+     * HgRemoteClient#fetchClonebundlesManifest()} -- backlog item 39 wave 5 (wire-matrix track):
+     * real hg's own client attempts the clonebundles bypass over any transport ({@code
+     * remote.capable(b'clonebundles')} in {@code mercurial/exchange.py} is transport-agnostic), so
+     * an SSH-served repository with the {@code clonebundles} extension enabled must be able to
+     * serve this too, not just HTTP. {@code clonebundles} is a no-arg v1 wire command with a
+     * simple framed text response -- the exact same shape as {@code branchmap} above, just a
+     * different verb.
+     */
+    @Override
+    public boolean supportsClonebundles() {
+        return capabilities.contains("clonebundles");
+    }
+
+    @Override
+    public String fetchClonebundlesManifest() throws IOException {
+        ensureConnected();
+        if (protocolVersion == 2) {
+            writeLine("clonebundles");
+            writeLine("");
+            return readLine();
+        }
+        sendCommand("clonebundles", Map.of());
+        return new String(readFramedResponse(), StandardCharsets.UTF_8);
+    }
+
     @Override
     public byte[] getChangegroup(List<String> roots) throws IOException {
         ensureConnected();

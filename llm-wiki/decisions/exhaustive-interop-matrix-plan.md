@@ -369,8 +369,75 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `abort: potentially unsafe serve --stdio invocation` 보안 가드를 발견해 압축
   설정을 CLI 인자 대신 `.hg/hgrc`로 미리 써넣는 방식으로 우회(hg4j 버그 아님,
   테스트 설계 이슈).
-- [ ] `FetchCommand`/`IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/
-  `NarrowCloneCommand` — 미착수
+- [x] `FetchCommand`/`IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/
+  `NarrowCloneCommand` — **완료(2026-09-05, 백로그 39 wave 5)**. 상세는 바로
+  아래 wave 5 단락 참고.
+
+**Wave 5(2026-09-05, wire 매트릭스 나머지 5개 명령)**: `FetchCommand`/
+`IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/`NarrowCloneCommand`
+5개 명령 전부에 21개 조합(HTTP 18 + SSH 3) 적용, **전부 GREEN**
+(`FetchCommand` 21/21, `NarrowCloneCommand` 21/21, `ClonebundlesCommand`
+21/21, `IncomingCommand`+`OutgoingCommand` 49/49 — 21+21개 hg4j-클라이언트
+방향 + 6개 HTTP(tier x bundle2) + 1개 SSH 리버스 방향). 새 테스트 클래스 5개
+(`HgWireProtocolMatrixFetchTest`/`HgWireProtocolMatrixNarrowCloneTest`/
+`HgWireProtocolMatrixClonebundlesTest`/`HgWireProtocolMatrixIncomingOutgoingTest`,
+전부 `src/test/java/io/github/search5/hg4j/transport/`) + 기존
+`HgWireProtocolMatrixTest`의 콤보/서버 설정 보일러플레이트를 공유하는 신규
+헬퍼 3개(`WireMatrixCombos`/`HttpMatrixServer`/`SshMatrixServer`, 같은
+패키지) 추가. `IncomingCommand`/`OutgoingCommand`는 사용자 지시로 명시적으로
+양방향(hg4j 클라이언트 vs real-hg 서버 21개 + real-hg 클라이언트 vs
+hg4j-served 서버) 검증 — 단, hg4j의 `HgHttpWireServer`/SSH serving 경로는
+real hg의 `hg serve`와 달리 고정된 단일 capability 세트만 광고하고
+tier/압축/bundle2를 바꿀 config 노브가 없어서, 리버스 방향은 (프록시로
+강제 가능한) tier x bundle2 6개 HTTP 조합 + SSH 기본 1개로 그친다(§4-2
+클래스 javadoc에 이 제약을 명시).
+
+**발견·수정한 진짜 hg4j 버그 3건**:
+1. `IncomingCommand`가 항상 `client.getChangegroup(Collections.emptyList())`로
+   원격 전체 히스토리를 구식 `changegroup` wire 명령으로 요청하고
+   있었는데, **content가 있는 어떤 real hg 서버에 대해서도 이게 100% 깨져
+   있었다** — real hg 자신의 순정 `hg serve`에 맨 curl로 `?cmd=changegroup&
+   roots=`를 쳐서 hg4j 없이 독립 재현 확인(2026-09-05): real hg의
+   `discovery.outgoing()`(`mercurial/discovery.py`)이 `missingroots == []`
+   이면서 `ancestorsof`가 명시적으로 전달된 경우(서버 쪽 `changegroup()`
+   핸들러가 항상 이렇게 호출함) `repo.revs('::%ln', missingroots,
+   ancestorsof)`를 호출하는데, revset 표현식 `'::%ln'`에는 자리표시자가
+   하나뿐인데 치환값을 2개 넘겨서 `ParseError: too many revspec arguments
+   specified`로 서버가 uncaught exception을 던져 HTTP 500이 됨 — real hg
+   자신의 레거시 wire 명령 안에 있는 결함이지 hg4j 버그는 아니지만, hg4j가
+   그 경로를 절대 밟지 않아야 했음(real hg 자신의 최신 클라이언트는 항상
+   `getbundle`을 쓰지 레거시 `changegroup`을 empty-roots로 부르지 않음).
+   수정: `FetchCommand`에 이미 있던 "leaf 노드 계산" + "getbundle 우선
+   협상 + HG20/HG10 매직 해제" 로직을 `FetchCommand.computeLocalLeafHexes()`/
+   `FetchCommand.downloadChangegroupBundle()` 공용 정적 메서드로 추출해
+   `IncomingCommand.call()`이 재사용하도록 재작성 — `FetchCommand.call()`
+   자신도 이 공용 메서드를 쓰도록 리팩터링(동작 변화 없음, 코드 중복 제거).
+2. `HgRemoteClient.getChangegroup()`(HTTP)가 `roots` 인자가 빈 리스트일 때
+   파라미터 맵에서 아예 키 자체를 생략하던 버그 — real hg의 `changegroup`
+   wire 명령은 `roots`가 필수 선언 인자라 요청에서 키가 통째로 빠지면
+   서버의 `getargs()`(`wireprotoserver.py`)가 dict lookup에서 바로
+   `KeyError`(HTTP 500)를 던진다. `HgSshClient.getChangegroup()`은 이미
+   빈 문자열로라도 항상 보내고 있어(기존 주석에 이미 명시돼 있었음) 정확한
+   참조 구현이 있었다 — HTTP 클라이언트를 그 패턴에 맞춰 수정.
+3. `FetchCommand`의 clonebundles bypass 게이트가 `client instanceof
+   HgRemoteClient`(HTTP 전용)였던 것 — real hg 소스(`mercurial/
+   exchange.py`의 `remote.capable(b'clonebundles')`/`e.callcommand(
+   b'clonebundles', {})`) 확인 결과 이 메커니즘은 전송 방식과 무관하게
+   동작해야 한다. `HgRemoteConnection` 인터페이스에 `supportsClonebundles()`/
+   `fetchClonebundlesManifest()` 기본 메서드(false/UnsupportedOperationException)를
+   추가하고 `HgSshClient`에 실제 구현(`branchmap`과 동일한 형태의 무인자
+   v1 wire 명령)을 추가, `FetchCommand.tryApplyClonebundle()`을
+   `HgRemoteConnection` 제네릭으로 변경 — `HgWireProtocolMatrixClonebundlesTest`의
+   SSH 21개 조합이 실제로 이 새 경로를 밟아 검증됨(다운로드 서버 hit
+   카운터로 bypass가 실제로 발동했는지까지 확인).
+
+이 세 버그 중 1번(`IncomingCommand` 완전 broken)이 가장 심각 — 실사용
+환경에서 real hg 서버에 대고 `hg4j`의 `IncomingCommand`를 쓰면 콘텐츠가
+있는 저장소에서는 100% 실패했다(웹훅 알림 발송, 2026-09-05).
+
+회귀 확인: 비-interop `test` 2278건 전부 GREEN(2 스킵, 기존 무관 skip),
+이번 wave에서 만든 5개 새 클래스(21+21+21+49=112 테스트) 전부 GREEN, 기존
+`HgWireProtocolMatrixTest`(Clone/Pull/Push) 21개도 재확인 GREEN(회귀 없음).
 
 ## 관련 페이지
 [[mercurial-spec-compliance-requirement]] (백로그 29~40 — 이 매트릭스와 별개로,

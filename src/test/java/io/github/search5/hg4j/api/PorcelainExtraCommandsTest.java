@@ -37,7 +37,9 @@ public class PorcelainExtraCommandsTest {
 
         // 3. Test Identify & Heads
         String identity = new IdentifyCommand(repo).call();
-        assertTrue(identity.contains("default"));
+        // Real hg's `hg identify` omits the branch name entirely on the default branch
+        // (verified 2026-09-05) -- it only shows "tip" here, not "default".
+        assertTrue(identity.contains("tip"));
         assertTrue(identity.contains(hexB.substring(0, 12)));
 
         List<String> heads = new HeadsCommand(repo).call();

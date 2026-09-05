@@ -22,6 +22,7 @@ import io.github.search5.hg4j.revwalk.ChangesetGraph;
 import io.github.search5.hg4j.submodule.GitSubrepoUtil;
 import io.github.search5.hg4j.submodule.HgSubrepoEntry;
 import io.github.search5.hg4j.submodule.HgSubrepoParser;
+import io.github.search5.hg4j.submodule.SvnSubrepoUtil;
 import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.treewalk.TreeWalk;
 import io.github.search5.hg4j.util.SafeFileIO;
@@ -700,6 +701,10 @@ public class MergeCommand {
                     } catch (IOException e) {
                         LOGGER.log(Level.WARNING, "Failed to merge diverged git subrepo \"" + path + "\": " + e.getMessage(), e);
                     }
+                } else if (meta != null && meta.isSvn()) {
+                    // Backlog 41: real hg's svnsubrepo.merge() default (non-interactive) choice
+                    // is a pure no-op here -- see SvnSubrepoUtil.mergeDiverged's javadoc.
+                    SvnSubrepoUtil.mergeDiverged(subDir, r, l);
                 } else {
                     mergeDivergedHgSubrepo(subDir, l, r, meta != null ? meta.getSourceUrl() : null, path);
                 }

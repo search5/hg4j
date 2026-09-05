@@ -68,7 +68,7 @@ status: current
 | [backlog/23-core-command-interop-verification.md](backlog/23-core-command-interop-verification.md) | 23 | commit/push/branch/merge/tag(+rebase/shelve/bisect/strip/subrepo) 10개 카테고리 실전 종합 interop 검증 |
 | [backlog/sidedata-copy-tracing.md](backlog/sidedata-copy-tracing.md) | 17, 19, 27 | Sidedata SD_FILES, copy-tracing |
 | [backlog/narrow-clone-and-lfs.md](backlog/narrow-clone-and-lfs.md) | 28, 30, 31, 40, 42 | Narrow clone, LFS(40/42는 wire-ellipsis·세부 옵션, 진행 중) |
-| [backlog/subrepo.md](backlog/subrepo.md) | 32, 41 | Subrepo(Git 완료, 41 SVN은 진행 중) |
+| [backlog/subrepo.md](backlog/subrepo.md) | 32, 41 | Subrepo(Git, SVN 모두 완료) |
 | [backlog/requires-format-strings.md](backlog/requires-format-strings.md) | 29 | requires 문자열 재검증 |
 | [backlog/misc-command-fixes.md](backlog/misc-command-fixes.md) | 34, 36 | Bisect DAG 검증, Tag 재태깅 가드 |
 | [backlog/branch-restore-bugs.md](backlog/branch-restore-bugs.md) | (번호 없음) | update/histedit/bisect/merge/strip 워킹 브랜치 복원 버그 4건 + histedit 저널링 |
@@ -90,7 +90,7 @@ status: current
 | [decisions/checked-exception-conversion.md](decisions/checked-exception-conversion.md) | HgException unchecked → checked 전환(BUG-11) |
 | [decisions/jgit-parity-requirement.md](decisions/jgit-parity-requirement.md) | ⚠️ **향후 개발 필수 요건** — JGit과 동일한 패키지 구조(단, Hg 접두어·Mercurial 고유 개념명은 유지), 현재 격차표 |
 | [decisions/core-package-split-plan.md](decisions/core-package-split-plan.md) | `core` 패키지를 12단계(Phase 0~12)로 나눠 분리·최종 `lib`로 병합하는 실행 계획 (실행 완료) |
-| [decisions/mercurial-spec-compliance-requirement.md](decisions/mercurial-spec-compliance-requirement.md) | **얇은 인덱스(2026-09-06 재구조화, 4508줄→약 130줄)** — 스펙 영역별 gap table + 백로그 번호별 문서 목록만 유지, 상세 서술은 전부 위 `backlog/*.md`로 이관. 번호 매겨진 항목 1~39번 완료(25번은 오탐으로 종결), 40/41/42/43/44번은 진행 중. Python 확장 시스템은 **범위 밖 확정** |
+| [decisions/mercurial-spec-compliance-requirement.md](decisions/mercurial-spec-compliance-requirement.md) | **얇은 인덱스(2026-09-06 재구조화, 4508줄→약 130줄)** — 스펙 영역별 gap table + 백로그 번호별 문서 목록만 유지, 상세 서술은 전부 위 `backlog/*.md`로 이관. 번호 매겨진 항목 1~44번 완료(25번은 오탐으로 종결; 41 SVN 서브저장소는 2026-09-06 완료), 45번만 미착수. Python 확장 시스템은 **범위 밖 확정** |
 | [decisions/test-coverage-95-percent-initiative.md](decisions/test-coverage-95-percent-initiative.md) | JaCoCo BRANCH 커버리지 95% 목표 추진 기록 — 라운드별 TDD 대상 클래스, 확인된 방어적 죽은 코드(unreachable) 목록, 최신 수치. 지속 진행 중(가장 최근에 갱신되는 문서이므로 여기 수치를 중복 기재하지 않음) |
 | [decisions/exhaustive-interop-matrix-plan.md](decisions/exhaustive-interop-matrix-plan.md) | **설계만 남긴 축약판(2026-09-06, 844줄→235줄)** — requirement 36개 조합, wire 21개 조합, 68개 명령의 전송관여(8)/로컬전용(60) 분류 설계(§1~3)만 유지. 실제 웨이브별 구현 이력은 [backlog/39-exhaustive-interop-matrix.md](backlog/39-exhaustive-interop-matrix.md)로, 현재 GREEN/RED 데이터는 [matrix-status.md](matrix-status.md)로 이관 — **68/68 완료** |
 | [decisions/revlog-v2-support-plan.md](decisions/revlog-v2-support-plan.md) | Revlog v2 지원 — ✅ **2026-09-01 changelog-v2 완료**(실제 hg CLI로 읽기/쓰기/`hg verify` 상호운용 검증), 일반 revlog-v2·persistent-nodemap은 이 환경의 Rust 확장 부재로 의도적 보류 |

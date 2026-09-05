@@ -41,6 +41,18 @@ public class HgTestUtils {
         }
     }
 
+    public static boolean isSvnInstalled() {
+        try {
+            Process process = new ProcessBuilder("svn", "--version").start();
+            process.waitFor();
+            Process adminProcess = new ProcessBuilder("svnadmin", "--version").start();
+            adminProcess.waitFor();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public static String hg(File repoDir, String... args) throws Exception {
         String[] cmd = new String[args.length + 5];
         cmd[0] = "hg";
@@ -74,6 +86,59 @@ public class HgTestUtils {
         withConfig[1] = "subrepos.git:allowed=true";
         System.arraycopy(args, 0, withConfig, 2, args.length);
         return hg(repoDir, withConfig);
+    }
+
+    /** Same as {@link #hg(File, String...)} but with {@code [subrepos] svn:allowed = true} set
+     * (real hg 7.2 defaults this to false too; svn subrepo tests need it enabled). */
+    public static String hgSvnAllowed(File repoDir, String... args) throws Exception {
+        String[] withConfig = new String[args.length + 2];
+        withConfig[0] = "--config";
+        withConfig[1] = "subrepos.svn:allowed=true";
+        System.arraycopy(args, 0, withConfig, 2, args.length);
+        return hg(repoDir, withConfig);
+    }
+
+    /** Runs a plain {@code svn} CLI command, forcing {@code LC_ALL=C} (this sandbox's default
+     * locale is Korean, and both real hg's own svn-output parsing and these tests' own assertions
+     * depend on English messages -- e.g. "Committed revision N."). Used to build the svn subrepo
+     * fixtures real hg's own {@code svnsubrepo} class is tested against. */
+    public static String svn(File cwd, String... args) throws Exception {
+        String[] cmd = new String[args.length + 1];
+        cmd[0] = "svn";
+        System.arraycopy(args, 0, cmd, 1, args.length);
+
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.directory(cwd);
+        pb.redirectErrorStream(true);
+        pb.environment().put("LC_ALL", "C");
+        Process p = pb.start();
+
+        String out;
+        try (InputStream is = p.getInputStream()) {
+            out = new String(is.readAllBytes(), StandardCharsets.UTF_8).trim();
+        }
+        int code = p.waitFor();
+        if (code != 0) {
+            throw new AssertionError("svn " + Arrays.toString(args) + " failed with exit code " + code + ": " + out);
+        }
+        return out;
+    }
+
+    /** Creates a fresh local svn repository via {@code svnadmin create} and checks out a working
+     * copy from its {@code file://} URL, returning that URL. */
+    public static String createSvnRepo(File svnRepoDir) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder("svnadmin", "create", svnRepoDir.getAbsolutePath());
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String out;
+        try (InputStream is = p.getInputStream()) {
+            out = new String(is.readAllBytes(), StandardCharsets.UTF_8).trim();
+        }
+        int code = p.waitFor();
+        if (code != 0) {
+            throw new AssertionError("svnadmin create failed with exit code " + code + ": " + out);
+        }
+        return "file://" + svnRepoDir.getAbsolutePath();
     }
 
     /** Runs a plain {@code git} CLI command with a fixed local identity, for building the git

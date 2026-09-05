@@ -418,10 +418,21 @@ public class CommitCommand {
                             long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
                             Dirstate.Entry dEntry = dirstate.getEntries().get(path);
                             if (dEntry != null) {
-                                if (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime) {
+                                // An entry whose cached stat is ambiguous (real hg's own "unset"
+                                // sentinel -- see Dirstate.Entry#isStatAmbiguous(), most commonly
+                                // hit when a file was committed within the same wall-clock second
+                                // as the dirstate write) can never be trusted via a raw size/mtime
+                                // comparison: its sentinel size (-1) never equals a real on-disk
+                                // size, which previously made this branch treat EVERY such entry
+                                // as unconditionally "changed" (skipping the content-level check
+                                // below entirely) even when byte-identical to the parent --
+                                // confirmed live against a real hg-authored dirstate produced by
+                                // an add+commit that landed in the same second.
+                                boolean statAmbiguous = dEntry.isStatAmbiguous();
+                                if (!statAmbiguous && (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime)) {
                                     // Changed if size or mtime differs
                                     changed = true;
-                                } else if (diskTime >= txStartSec - 1) {
+                                } else if (statAmbiguous || diskTime >= txStartSec - 1) {
                                     // M-2: racy-hg check (accounting for 1-second resolution) --
                                     // compare against the CURRENT PARENT commit's own recorded
                                     // content for this path, not just "whatever the filelog's most
@@ -824,6 +835,9 @@ public class CommitCommand {
                 
                 if (entry.getState() == 'r') {
                     dirstate.removeEntry(path);
+                    // A removed path cannot still be a pending copy destination once it is
+                    // dropped from the dirstate entirely.
+                    dirstate.getCopyMap().remove(path);
                 } else if (entry.getState() == 'a' || entry.getState() == 'm' || filesModified.contains(path)) {
                     File diskFile = new File(repository.getDirectory(), path);
                     boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
@@ -836,6 +850,15 @@ public class CommitCommand {
                             : (int) diskFile.length();
                     long time = SafeFileIO.lastModifiedSeconds(diskFile);
                     dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
+                    // Real hg clears the dirstate's pending copy record for a path once it is
+                    // committed (verified live: `hg debugstate` shows "copy: a -> b" for an
+                    // uncommitted `hg copy a b`, but that line is gone immediately after `hg
+                    // commit` -- the copy info now lives in the filelog/changeset metadata
+                    // written above, not in the dirstate). Without this, hg4j would leave a
+                    // stale pending-copy record in the physical dirstate file after commit,
+                    // which real hg would still (incorrectly) report via `hg status -C` /
+                    // re-chase via a subsequent `hg copy` on the same destination.
+                    dirstate.getCopyMap().remove(path);
                 }
             }
             repository.writeDirstate(dirstate);

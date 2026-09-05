@@ -59,6 +59,30 @@ public class AddCommand {
                     throw new HgValidationException("File not found or is not a standard file: " + relPath);
                 }
 
+                // A path that already carries a dirstate entry was previously tracked (most
+                // commonly: removed via ForgetCommand/RemoveCommand, which leave a state 'r'
+                // entry behind for the next commit). Verified live against real hg 7.2:
+                // explicitly re-`add`ing such a path does NOT reset it to a fresh 'a' (added)
+                // entry -- it restores it via dirstate "normallookup", landing back on state
+                // 'n' with an ambiguous stat (mode/size/time all sentinel, forcing the next
+                // status/commit to fall back to a real content comparison rather than trusting
+                // now-stale cached stat info). This matters beyond bit-for-bit fidelity: if the
+                // path were instead marked 'a' here (as if brand new), CommitCommand's own 'a'
+                // handling has no prior filelog revision to link against, so the file's history
+                // would be silently severed (`hg log --follow` afterwards would stop at the
+                // re-add instead of continuing into the pre-forget/remove commits) -- confirmed
+                // against real hg, which DOES keep the new filelog revision's parent pointed at
+                // the pre-forget/remove revision. An entry already in state 'a' (a pending,
+                // uncommitted add) is untouched -- real hg's own `hg add` is a silent no-op on
+                // an already-added path ("already tracked!").
+                Dirstate.Entry existing = dirstate.getEntries().get(relPath);
+                if (existing != null) {
+                    if (existing.getState() != 'a') {
+                        dirstate.addEntry(relPath, new Dirstate.Entry('n', 0, -1, Dirstate.Entry.AMBIGUOUS_TIME));
+                    }
+                    continue;
+                }
+
                 boolean executable = !isSymlink && diskFile.canExecute();
                 int mode = executable ? 0755 : 0644;
                 // A symlink's tracked "size" is the length of its own target path string

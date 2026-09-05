@@ -3045,6 +3045,99 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     추가로 매트릭스 완주 — 백로그 39 전체(67개 명령) 관점에서는 여전히
     다수가 미착수인 부분 진행 상태(이 항목 자체를 "완료"로 표시하지 않음).
 
+    **Wave 4(2026-09-05, `CopyCommand`/`RenameCommand`/`ForgetCommand`/
+    `RemoveCommand`/`AddremoveCommand`, `AddCommand`와 묶인 소규모 dirstate
+    상태-전이 명령군)**: 5개 명령 모두 native 6/6 + Docker 30/30 = 36/36
+    **전부 GREEN**(새 테스트 클래스 15개 — 명령당
+    `RequirementMatrix{X}CoreRoundTripTest`/`...DockerRoundTripTest`/
+    `...HelperMain` 3종, 기존 8개 명령과 동일 패턴, 전부
+    `src/test/java/io/github/search5/hg4j/api/`). 이 과정에서 진짜 hg4j
+    프로덕션 버그 **4건**을 real hg 7.2 CLI 직접 대조로 발견·TDD로 수정:
+
+    1. **`AddCommand`의 "forget 후 재-add" 처리 누락(신규 발견, 백로그
+       #39 wave 3에서 "이미 매트릭스 커버리지 완료"로 표시됐던 명령의
+       엣지 케이스)**: real hg는 이미 dirstate 항목이 있는 경로(가장 흔하게는
+       `ForgetCommand`/`RemoveCommand`가 남긴 `r` 상태)에 대한 명시적
+       `hg add`를 `dirstate.normallookup()`으로 처리 — 신규 `a`(added)
+       항목이 아니라 `n` 상태 + 모호(ambiguous) stat(mode=0/size=-1/
+       mtime=all-1) 항목으로 되돌린다(CLI로 직접 검증: `hg forget f; hg add f`
+       직후 `hg debugstate` raw dirstate 바이트가 `n 0 -1 -1`). hg4j
+       `AddCommand`는 기존 dirstate 항목 존재 여부와 무관하게 항상 새
+       `a` 항목을 만들어 덮어썼는데, 이는 `CommitCommand`가 `a` 상태를
+       "부모 매니페스트에 없는 완전히 새 파일"로 처리하는 경로로 흘러가
+       **파일 히스토리가 통째로 끊기는(filelog p1이 null이 되어 forget
+       이전 리비전과 연결이 끊김) 실제 data-loss급 스펙 이탈**이었다(real
+       hg는 `hg debugindex`에서 재-add 후 리비전의 p1이 forget 이전
+       리비전을 정확히 가리킴을 확인). `AddCommand.call()`에 기존 항목
+       존재 시(상태가 이미 `a`가 아니면) `n` + 모호 stat sentinel로
+       복원하는 분기 추가.
+    2. **dirstate-v2 모호(ambiguous) stat 라운드트립 손상(신규 발견,
+       위 1번을 테스트하다 real hg 자신의 dirstate-v2 원시 바이트 검증
+       중 발견 — `AddCommand`/`RemoveCommand`/`StatusCommand`/
+       `ShelveCommand`/`CommitCommand` 5곳 모두에 존재하던 공용 버그)**:
+       real hg는 "이 파일의 캐시된 size/mtime을 신뢰할 수 없음(대부분
+       같은 초에 커밋된 racy-write)"을 dirstate-v1에서는 size=-1/
+       mtime=0xFFFFFFFF sentinel로, dirstate-v2에서는 `HAS_MODE_AND_SIZE`/
+       `HAS_MTIME` 플래그 비트를 아예 끔으로써 표현한다(`mercurial/pure/
+       parsers.py`의 `DirstateItem` 소스를 Docker 이미지 안에서 직접 읽어
+       대조 확인). hg4j의 `DirstateV2Node.getSize()`/`getMtime()`은 그
+       비트가 꺼져 있으면 **구체적이지만 틀린 값인 0을 반환**했고(정답은
+       "모름", 0이 아님), `RemoveCommand`/`StatusCommand`(2곳)/
+       `ShelveCommand`/`CommitCommand`의 dirty-check는 그 0을 실제
+       크기로 신뢰해 diskSize와 항상 불일치시켜 **건드리지도 않은 파일을
+       "수정됨"으로 오판**했다(실측: dirstate-v2 저장소에서 `hg copy` 한 번
+       만 해도 같은 초에 커밋된 `orig.txt`가 즉시 "M orig.txt"로 나타남).
+       `Dirstate.Entry`에 공용 `isStatAmbiguous()`/`AMBIGUOUS_TIME` 상수
+       신설, `DirstateV2Node.getSize()/getMtime()`이 플래그 없을 때
+       size=-1/AMBIGUOUS_TIME sentinel을 반환하도록 수정,
+       `DirstateV2Serializer`가 그 sentinel을 다시 쓸 때 real hg와 동일하게
+       `HAS_MODE_AND_SIZE`/`HAS_MTIME`(및 그에 종속된 exec/symlink 비트)을
+       생략하도록 수정, 그리고 `RemoveCommand`/`StatusCommand`(2곳)/
+       `ShelveCommand`/`CommitCommand`의 dirty-check 5곳 전부가 모호
+       항목을 무조건 "변경됨"으로 단정하지 않고 실제 콘텐츠 비교로
+       폴백하도록 수정. 기존 `DirstateV2LayoutTest`/`DirstateV2RealFixtureTest`
+       2건이 구버전(0 반환) 동작을 정답으로 assert하고 있어 함께 갱신(진짜
+       Mercurial 6.0 서버에서 캡처한 raw fixture 기준 재검증 — 그 fixture 자체가
+       "committed 안 된 add" 케이스라 애초에 sentinel이 정답이었음을 재확인).
+    3. **dirstate-v2 `Dirstate.read(File)`가 copyMap을 통째로 버림(신규
+       발견, `CopyCommand`의 "같은 원본에서 2개 목적지로 복사" 시나리오를
+       Docker 매트릭스로 테스트하다 발견)**: `Dirstate.read(File)`의
+       dirstate-v2 분기가 `DirstateV2Parser.parse()`가 정확히 복원한
+       `parsed.getEntries()`만 `this.entries`로 복사하고 `parsed.getCopyMap()`은
+       아예 옮기지 않는 한 줄 누락 버그 — dirstate-v2 저장소에서 커밋 전
+       `hg copy`를 두 번(또는 다른 hg4j 쓰기 명령을 사이에 끼워) 연달아
+       실행하면, 두 번째 호출이 dirstate를 다시 읽어들이는 순간 **첫 번째
+       복사의 copy-source 기록이 통째로 사라지고**, 이후 커밋된 changeset은
+       그 파일에 대해 아무 copy 메타데이터도 남기지 않았다(`hg log
+       --template {file_copies}`에서 조용히 누락, `hg log --follow`가 원본
+       히스토리를 못 찾음) — `CopyCommand`/`RenameCommand`가 여러 파일을
+       순차 처리하는 흔한 사용 패턴에서 실제로 발생하는 data-loss급
+       버그였다. `Dirstate.read(File)`에 `this.copyMap.clear(); this.copyMap.
+       putAll(parsed.getCopyMap());` 추가로 해결 — hg4j 자신의 저수준
+       파서(`DirstateV2Parser`)와 raw 바이트 자체는 처음부터 정확했고,
+       그 위 한 계층(`Dirstate.read`)만 결과를 버리고 있었다는 점에서
+       "발견하기 까다로운" 부류의 버그(scratch harness로 저수준 파서를
+       직접 호출하면 통과, `Dirstate.read(File)` 경유로만 재현).
+    4. **`CommitCommand`가 커밋된 파일의 dirstate copyMap 잔여 기록을
+       정리하지 않음(신규 발견, real hg `hg debugstate` 커밋 전/후 대조로
+       발견)**: real hg는 `hg copy a b; hg commit`처럼 copy가 커밋되면
+       그 순간 dirstate의 pending-copy 기록(`b -> a`)을 지운다(커밋 후
+       `hg debugstate`에 더 이상 `copy:` 줄이 없음) — 그 정보는 이제
+       changeset/filelog 메타데이터에 영구히 남기 때문이다. hg4j
+       `CommitCommand`는 파일을 `a`/`m` → `n`으로 전이시키면서도 copyMap
+       항목은 그대로 남겨둬, 커밋 후에도 물리 dirstate 파일에 이미 완료된
+       copy가 "아직 대기 중"인 것처럼 남는 스펙 이탈이 있었다 — 커밋 루프의
+       상태 전이 지점에 `dirstate.getCopyMap().remove(path)` 추가로 해결.
+
+    네 버그 모두 TDD로 수정 후 native 6/6 + Docker 30/30(5개 명령 전부) +
+    전체 비-interop `test`(회귀 0건, 2번 재확인 — 최초 회귀에서
+    `DirstateV2LayoutTest`/`DirstateV2RealFixtureTest` 2건 실패 발견 후
+    위 2번 항목에 맞춰 갱신하고 재확인) 재검증 완료. "67개 명령 ×
+    매트릭스" 목표의 명령 기준 완주 수는 14에서 19(+`CopyCommand`/
+    `RenameCommand`/`ForgetCommand`/`RemoveCommand`/`AddremoveCommand`)로
+    증가 — 단, 백로그 항목 자체는 나머지 48개 로컬 명령(및 wire 매트릭스
+    잔여 5개)이 남아 있으므로 여전히 미완료.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

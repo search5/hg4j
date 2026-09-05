@@ -86,8 +86,12 @@ public class DirstateV2RealFixtureTest {
         assertEquals('a', dirstate.getEntries().get("a.txt").getState());
         assertEquals('a', dirstate.getEntries().get("sub/b.txt").getState());
         // Neither has cached mode/size/mtime (HAS_MODE_AND_SIZE/HAS_MTIME both unset for a
-        // freshly-added file with no prior parent-manifest data to compare against).
-        assertEquals(0, dirstate.getEntries().get("a.txt").getSize());
+        // freshly-added file with no prior parent-manifest data to compare against) -- surfaced
+        // as the shared ambiguous-stat sentinel (backlog #39 wave 4, 2026-09-05: real hg's own
+        // DirstateItem treats an absent flag as "no meaningful value, needs a real lookup", not a
+        // literal size/mtime of zero -- see Dirstate.Entry#isStatAmbiguous()), not a bogus
+        // concrete 0/0 that would make this freshly-added file look like a genuine 0-byte file.
+        assertEquals(-1, dirstate.getEntries().get("a.txt").getSize());
     }
 
     @Test

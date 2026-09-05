@@ -45,6 +45,13 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
 (왜 이런 결정을 했는지, 격차 분석의 근거)은 `llm-wiki/decisions/jgit-parity-requirement.md`
 와 `llm-wiki/decisions/mercurial-spec-compliance-requirement.md`에 있습니다.
 
+> ⚠️ **새 명령/버그 작업 시작 전 필독 규칙 (2026-09-06 추가)**: 이 계획서의 어떤 Phase든
+> 새로 시작하기 전에 반드시 `llm-wiki/known-bugs-registry.md`를 먼저 검색해, 그 Phase가
+> 건드리는 명령이 호출하는 공유 클래스(`DeltaCodec`, `RevlogIndex`, `DirstateV2Node`,
+> `DirstateV2Serializer` 등)에 이미 알려진 버그가 없는지 확인하세요. 근거: 같은 세션에서
+> `DeltaCodec.decompressZstd`의 동일 버그를 4개의 병렬 웨이브가 각각 독립적으로 재발견해
+> 시간을 낭비한 사례 — 상세는 `llm-wiki/AGENTS.md`의 규칙 10 참고.
+
 ## 전체 작업 순서 (Track A/B/C 전부 완료)
 1. **Track A: 패키지 구조 재정렬** (Phase 0~12) — **완료됨**. 패키지 분할 및 재정렬 구조가 소스 코드에 전부 반영되었습니다. 이후 2026-09-03 자바 패키지 네임스페이스가 `com.github.search5.hg4j` → `io.github.search5.hg4j`로 재통합됐습니다 — 상세는 [[package-namespace-and-dual-publishing]] 참고.
 2. **Track B: Mercurial 스펙 준수 강화** (B-1 Revlog v2, B-2 Wireprotocol v2, B-3

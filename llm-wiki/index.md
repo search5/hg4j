@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-04
+updated: 2026-09-06
 status: current
 ---
 
@@ -7,12 +7,18 @@ status: current
 
 이 위키를 읽는 규칙은 [[AGENTS.md|AGENTS.md]]에 정의되어 있다. **이 파일을 항상 먼저 읽는다.**
 
-> ⚠️ **신규 기능 개발 전 필독 (요건 2건)**:
+> ⚠️ **신규 기능 개발 전 필독 (요건 2건 + 규칙 1건)**:
 > 1. [decisions/jgit-parity-requirement.md](decisions/jgit-parity-requirement.md) — 구조/패키지는
 >    JGit과 동일하게, 단 `Hg` 접두어와 Mercurial 고유 개념 이름은 유지(2026-08-31 확정).
 >    실행 계획은 [decisions/core-package-split-plan.md](decisions/core-package-split-plan.md).
 > 2. [decisions/mercurial-spec-compliance-requirement.md](decisions/mercurial-spec-compliance-requirement.md)
->    — Mercurial 공식 스펙(internals 문서 기준) 완전 준수 요건과 현재 항목별 준수 상태표.
+>    — Mercurial 공식 스펙(internals 문서 기준) 완전 준수 요건 **인덱스**(gap table). 상세는
+>    각 행이 링크하는 `backlog/*.md` 문서에 있다(2026-09-06 재구조화 — 이 문서 자체는 얇은
+>    인덱스로만 유지).
+> 3. **새 명령/버그 작업 전에는 [known-bugs-registry.md](known-bugs-registry.md)부터 검색할
+>    것** — 이미 알려진 버그를 다른 웨이브가 또 재발견하는 것을 막기 위한 규칙(`AGENTS.md`
+>    규칙 10). 68개 명령의 현재 GREEN/RED 상태 구조화 데이터는
+>    [matrix-status.md](matrix-status.md) 참고.
 >
 > **실제로 작업을 시작할 때는 [implementation-plan.md](implementation-plan.md)부터
 > 보세요** — 위 두 요건을 하나로 통합해 Phase별 실행 순서/체크리스트/검증 명령까지
@@ -40,6 +46,34 @@ status: current
 | [modules/lfs.md](modules/lfs.md) | LFS(Large File Storage) — Track A Phase 9에서 분리 |
 | [modules/gpg.md](modules/gpg.md) | 커밋 서명(GPG/OpenPGP) — Track A Phase 9에서 분리 |
 
+## backlog/ — 번호 매겨진 백로그 항목별 상세 문서 (2026-09-06 신설)
+
+`decisions/mercurial-spec-compliance-requirement.md`가 얇은 인덱스로 축소되면서, 각 백로그
+번호(또는 관련 번호 묶음)의 발견 경위·근본 원인·수정·검증·관련 커밋은 여기로 이관됐다.
+완료된 항목도 삭제하지 않고 상태 표시만 갱신한다(히스토리 보존 — 반복 버그 발견 방지 목적).
+
+| 페이지 | 다루는 백로그 번호 | 요약 |
+|---|---|---|
+| [backlog/01-resolve-mergestate.md](backlog/01-resolve-mergestate.md) | 1 | ResolveCommand ↔ MergeState 연동 |
+| [backlog/wire-protocol-negotiation.md](backlog/wire-protocol-negotiation.md) | 2, 3, 22, 24, 25 | HTTP/SSH 프로토콜 협상, v1 인자 전송 버그, SSH 전송 계층 재작성 |
+| [backlog/push-and-concurrency.md](backlog/push-and-concurrency.md) | 13, 33, 38 | Push 증분 처리, SSH checkheads, 동시 push 레이스 |
+| [backlog/revlog-storage-formats.md](backlog/revlog-storage-formats.md) | 4, 15, 21, 35, 43 | Revlog v2 일반/persistent-nodemap/fileindex-v1, inline 레이아웃·성장 전환 |
+| [backlog/dirstate-v2.md](backlog/dirstate-v2.md) | 5, 37 | Dirstate v2 바이트 레이아웃, 트리 구조 유실 버그(총 5건) |
+| [backlog/censor.md](backlog/censor.md) | 6, 7 | Censor 삭제, cg3 censor 지원(추가 2건 발견) |
+| [backlog/changegroup-versions.md](backlog/changegroup-versions.md) | 11, 16, 26 | Changegroup cg1~cg5, bundle2 자체 경로 |
+| [backlog/treemanifest.md](backlog/treemanifest.md) | 8, 18, 20 | Treemanifest 읽기/쓰기, wireprotocol v2 재귀 tree fetch |
+| [backlog/clonebundles.md](backlog/clonebundles.md) | 9, 44 | Clonebundles(44는 서버 매니페스트-없음 응답, 진행 중) |
+| [backlog/symlink-handling.md](backlog/symlink-handling.md) | 10, 14 | 심볼릭 링크 lstat 처리 전반(10개+ 파일) |
+| [backlog/porcelain-command-exposure.md](backlog/porcelain-command-exposure.md) | 12 | 포셀린 명령 노출 완전성 |
+| [backlog/23-core-command-interop-verification.md](backlog/23-core-command-interop-verification.md) | 23 | commit/push/branch/merge/tag(+rebase/shelve/bisect/strip/subrepo) 10개 카테고리 실전 종합 interop 검증 |
+| [backlog/sidedata-copy-tracing.md](backlog/sidedata-copy-tracing.md) | 17, 19, 27 | Sidedata SD_FILES, copy-tracing |
+| [backlog/narrow-clone-and-lfs.md](backlog/narrow-clone-and-lfs.md) | 28, 30, 31, 40, 42 | Narrow clone, LFS(40/42는 wire-ellipsis·세부 옵션, 진행 중) |
+| [backlog/subrepo.md](backlog/subrepo.md) | 32, 41 | Subrepo(Git 완료, 41 SVN은 진행 중) |
+| [backlog/requires-format-strings.md](backlog/requires-format-strings.md) | 29 | requires 문자열 재검증 |
+| [backlog/misc-command-fixes.md](backlog/misc-command-fixes.md) | 34, 36 | Bisect DAG 검증, Tag 재태깅 가드 |
+| [backlog/branch-restore-bugs.md](backlog/branch-restore-bugs.md) | (번호 없음) | update/histedit/bisect/merge/strip 워킹 브랜치 복원 버그 4건 + histedit 저널링 |
+| [backlog/39-exhaustive-interop-matrix.md](backlog/39-exhaustive-interop-matrix.md) | 39 | Exhaustive interop matrix(68개 명령) 웨이브 1~5 전체 진행 이력, 40여 건 버그 |
+
 ## concepts/ — Mercurial 도메인 개념
 | 페이지 | 요약 |
 |---|---|
@@ -56,14 +90,20 @@ status: current
 | [decisions/checked-exception-conversion.md](decisions/checked-exception-conversion.md) | HgException unchecked → checked 전환(BUG-11) |
 | [decisions/jgit-parity-requirement.md](decisions/jgit-parity-requirement.md) | ⚠️ **향후 개발 필수 요건** — JGit과 동일한 패키지 구조(단, Hg 접두어·Mercurial 고유 개념명은 유지), 현재 격차표 |
 | [decisions/core-package-split-plan.md](decisions/core-package-split-plan.md) | `core` 패키지를 12단계(Phase 0~12)로 나눠 분리·최종 `lib`로 병합하는 실행 계획 (실행 완료) |
-| [decisions/mercurial-spec-compliance-requirement.md](decisions/mercurial-spec-compliance-requirement.md) | Mercurial 공식 스펙(internals 문서) 항목별 완전 준수, 현재 준수 상태표. **Track B-1~B-5, Track C 검증 백로그(번호 매겨진 항목 1~28번) 전부 완료(2026-09-04 기준)** — changelog-v2/wireprotocol v2/Bookmark/저널링·rollback/Obsolescence marker에 더해 commit/push/branch/merge/tag/rebase/shelve/bisect/strip/subrepo까지 실제 hg CLI/서버와 양방향 상호운용 검증, 그 과정에서 push를 깨뜨리는 cg1 델타 버그·bookmark push no-op 버그·amend DAG 오류·strip revlog 손상 등 다수의 실제 버그 발견·수정. Python 확장 시스템은 **범위 밖 확정** |
+| [decisions/mercurial-spec-compliance-requirement.md](decisions/mercurial-spec-compliance-requirement.md) | **얇은 인덱스(2026-09-06 재구조화, 4508줄→약 130줄)** — 스펙 영역별 gap table + 백로그 번호별 문서 목록만 유지, 상세 서술은 전부 위 `backlog/*.md`로 이관. 번호 매겨진 항목 1~39번 완료(25번은 오탐으로 종결), 40/41/42/43/44번은 진행 중. Python 확장 시스템은 **범위 밖 확정** |
 | [decisions/test-coverage-95-percent-initiative.md](decisions/test-coverage-95-percent-initiative.md) | JaCoCo BRANCH 커버리지 95% 목표 추진 기록 — 라운드별 TDD 대상 클래스, 확인된 방어적 죽은 코드(unreachable) 목록, 최신 수치. 지속 진행 중(가장 최근에 갱신되는 문서이므로 여기 수치를 중복 기재하지 않음) |
-| [decisions/exhaustive-interop-matrix-plan.md](decisions/exhaustive-interop-matrix-plan.md) | 포셀린 명령 x wire protocol 조합 x requirement 조합 exhaustive interop 매트릭스 설계 — requirement 36개 조합(native 12 + `hg-rust-7.2.4` 컨테이너 실측 기반 Docker 24, general-v2/fileindex-v1/persistent-nodemap 포함), wire 21개 조합, 67개 명령을 전송 관여(8개)/로컬·저장소 전용(59개)으로 분류. 기존 fixture 테스트가 이미 커버하는 셀 명시적 매핑. 설계 완료, 구현은 native 12개 조합 핵심 라운드트립부터 착수(WIP) |
+| [decisions/exhaustive-interop-matrix-plan.md](decisions/exhaustive-interop-matrix-plan.md) | **설계만 남긴 축약판(2026-09-06, 844줄→235줄)** — requirement 36개 조합, wire 21개 조합, 68개 명령의 전송관여(8)/로컬전용(60) 분류 설계(§1~3)만 유지. 실제 웨이브별 구현 이력은 [backlog/39-exhaustive-interop-matrix.md](backlog/39-exhaustive-interop-matrix.md)로, 현재 GREEN/RED 데이터는 [matrix-status.md](matrix-status.md)로 이관 — **68/68 완료** |
 | [decisions/revlog-v2-support-plan.md](decisions/revlog-v2-support-plan.md) | Revlog v2 지원 — ✅ **2026-09-01 changelog-v2 완료**(실제 hg CLI로 읽기/쓰기/`hg verify` 상호운용 검증), 일반 revlog-v2·persistent-nodemap은 이 환경의 Rust 확장 부재로 의도적 보류 |
 | [decisions/wireprotocol-v2-support-plan.md](decisions/wireprotocol-v2-support-plan.md) | wireprotocol v2(프레임+cbor 기반) — ✅ **2026-09-01 전면 재구현 완료**, 이전 구현은 사실상 전부 가짜였음이 드러나 처음부터 다시 작성. 실제 v2 서버 코드가 남아있는 마지막 릴리스(Mercurial 6.0)를 Docker로 띄워 hg4j↔실제 hg 양방향으로 clone까지 검증(현재 배포되는 hg는 6.1부터 이 프로토콜 자체를 제거했음) |
 | [decisions/bookmark-full-support-plan.md](decisions/bookmark-full-support-plan.md) | Bookmark commit/update/pull/push 완전 연동 — ✅ **2026-09-01 완료**, 실제 hg CLI 검증 + 데이터 손실 버그 2건 발견·수정 |
 | [decisions/journaling-crash-recovery-plan.md](decisions/journaling-crash-recovery-plan.md) | 트랜잭션 저널링·rollback — ✅ **2026-09-01 완료**, pull 후 rollback이 아예 동작 안 하던 갭 발견·수정 |
 | [decisions/obsolescence-marker-completeness-plan.md](decisions/obsolescence-marker-completeness-plan.md) | Obsolescence marker — ✅ **2026-09-01 완료**, obsstore 바이너리 포맷 자체가 틀렸던 것을 발견해 전면 재작성(실제 hg와 양방향 검증) |
+
+## 최상위 데이터 문서 (2026-09-06 신설)
+| 페이지 | 요약 |
+|---|---|
+| [known-bugs-registry.md](known-bugs-registry.md) | 이 세션에서 발견한 실제 버그의 클래스/메서드 단위 색인("공유 인프라 계층" + "명령별 버그"). 새 명령/버그 작업 전 필수 검색 대상(`AGENTS.md` 규칙 10) |
+| [matrix-status.md](matrix-status.md) | 68개 명령(로컬 60 + wire 8) × requirement/wire 조합의 현재 GREEN/RED 상태, 구조화 표(프로즈 아님 — 총합 off-by-one 방지 목적) |
 
 ## sources/ — 원본 조사 스냅샷
 | 페이지 | 요약 |

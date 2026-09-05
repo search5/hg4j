@@ -154,4 +154,31 @@ public class HgHttpWireServerTest {
         assertTrue(after.supportsClonebundles(), "Once the manifest exists, the capability must be advertised");
         assertEquals(manifestBody, after.fetchClonebundlesManifest());
     }
+
+    /**
+     * Backlog 44: verified live against real hg 7.2 ({@code hg serve} with the {@code
+     * clonebundles} extension enabled but no {@code .hg/clonebundles.manifest} file on disk) --
+     * a direct {@code ?cmd=clonebundles} request (real hg routes here unconditionally; the
+     * capability advertisement above only gates whether a well-behaved CLIENT decides to ask)
+     * gets back HTTP 200 with a completely empty body, NOT a 404 and NOT any placeholder text.
+     * This matches real hg's {@code wireprotov1server.clonebundles()}, which returns {@code
+     * bytesresponse(repo.tryread(b'clonebundles.manifest'))} -- {@code vfs.tryread} swallows the
+     * missing-file {@code ENOENT} and yields {@code b""}. hg4j's {@code Wire1Commands
+     * .clonebundles()} already does the same (empty {@code byte[]} on a missing file), and this
+     * test pins that the raw HTTP transport preserves it end to end (200 status, zero-length
+     * body) rather than only checking it at the {@code Wire1Response} unit level.
+     */
+    @Test
+    public void clonebundlesCommandOverRawHttpIsAnEmptyTwoHundredWhenNoManifestFileExistsAtAll() throws Exception {
+        java.net.http.HttpClient httpClient = java.net.http.HttpClient.newHttpClient();
+        java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(baseUrl() + "/?cmd=clonebundles"))
+                .GET()
+                .build();
+        java.net.http.HttpResponse<byte[]> response =
+                httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(200, response.statusCode(), "Real hg 7.2 answers a manifest-missing request with 200, not 404");
+        assertEquals(0, response.body().length, "Real hg 7.2's body is completely empty when the manifest file is missing");
+    }
 }

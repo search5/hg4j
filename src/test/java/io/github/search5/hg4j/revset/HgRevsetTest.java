@@ -146,7 +146,7 @@ public class HgRevsetTest {
         assertEquals(List.of(0, 1, 2, 3), engine.query("draft()"));
         new PhaseCommand(repo).setRevision("0").setPhase(0).call(); // PUBLIC
         assertEquals(List.of(0), engine.query("public()"));
-        new PhaseCommand(repo).setRevision("3").setPhase(2).call(); // SECRET
+        new PhaseCommand(repo).setRevision("3").setPhase(2).setForce(true).call(); // SECRET
         assertEquals(List.of(3), engine.query("secret()"));
 
         List<Integer> byAuthor = engine.query("sort(descendants(0), \"author\")");

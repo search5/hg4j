@@ -2980,6 +2980,71 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     이로써 "67개 명령 × 매트릭스" 목표의 명령 기준 완주 수는 11에서
     14(+`AddCommand`/`BookmarkCommand`/`TagCommand`)로 증가.
 
+    **Wave 4(2026-09-05, `BranchCommand`/`BranchesCommand`/`PhaseCommand`)**:
+    이 3개 명령(스케줄링 편의상 묶음 — `BranchCommand`/`BranchesCommand`는
+    백로그 23에서 이미 real-hg-CLI 행위 검증을 받았지만 매트릭스 커버리지는
+    전무했고, `PhaseCommand`는 독립 로직)에 requirement 매트릭스(native 6 +
+    Docker 30 = 36개 조합)를 신규 적용. 새 테스트 클래스 6개 추가
+    (`RequirementMatrixBranchCoreRoundTripTest`/`RequirementMatrixBranchDockerRoundTripTest`/
+    `RequirementMatrixPhaseCoreRoundTripTest`/`RequirementMatrixPhaseDockerRoundTripTest`
+    + Docker 쓰기 경로 subprocess 헬퍼 2개 `RequirementMatrixBranchHelperMain`/
+    `RequirementMatrixPhaseHelperMain`, 전부 `src/test/java/io/github/search5/hg4j/api/`).
+
+    - **`BranchCommand`/`BranchesCommand`**: native 6/6 + Docker 30/30 전부
+      GREEN, 새 실버그 없음 — 이름 있는 브랜치 생성 → 커밋 → close →
+      `BranchesCommand` 목록 조회 시퀀스가 changelog v1/v2(+sidedata) x
+      flat/tree-manifest, Docker에서는 추가로 dirstate-v2/persistent-nodemap/
+      fileindex-v1/general-v2 전체 조합에서 실제 hg `branches`/`branches
+      --closed` 출력(순서 + closed 마커)과 정확히 일치.
+    - **`PhaseCommand`**: native 6/6 + Docker 30/30 전부 GREEN — 단, 이
+      명령 자체가 사실상 미완성 수준이어서 real hg와의 byte-for-byte
+      `.hg/store/phaseroots` 비교 검증을 설계하는 과정에서 **진짜 hg4j
+      버그 3건**을 발견·수정한 뒤에야 도달함:
+      (1) `PhaseCommand.call()`이 `phase.PhaseRoots`(다른 모든 호출자가
+      쓰는 공용 저장 계층)를 전혀 쓰지 않고 자체적으로 phaseroots를 "터치한
+      노드마다 한 줄씩 직접 추가/치환"하는 방식으로 재구현하고 있었다 —
+      real hg는 phaseroots를 각 phase의 **최소 boundary root 집합**으로
+      유지(조상 전체 이동/자손 전체 상속을 반영해 매번 전체 재계산)하는데
+      반해, 이 방식은 real hg가 절대 만들지 않는 중복/중첩 라인을 계속
+      쌓는다 — 실제 hg 7.2.4 CLI(`hg phase -r ... --public/--secret
+      [--force]`)로 다양한 DAG 시나리오를 직접 실측하고 real hg 소스
+      (`mercurial/phases.py`의 `advanceboundary`/`_retractboundary`)까지
+      대조해 알고리즘을 다시 구현: public으로 향하는 이동(advance)은
+      대상+모든 조상에 적용되고 무조건 허용, secret으로 향하는 이동
+      (retract)은 대상+모든 자손에 적용되고 **`--force` 없이는 거부**
+      (`setForce(boolean)` 신설, real hg와 동일한 "cannot move N changesets
+      to a higher phase, use --force" 게이트), 매번 전체 리비전에서 최소
+      root 집합을 재계산해 저장(줄 순서도 real hg의 `_write()`와 동일하게
+      phase 오름차순 → 리비전 번호 오름차순). (2) `CommitCommand`가 매
+      커밋마다 무조건 phaseroots에 draft root를 명시적으로 추가하고
+      있었다 — 부모가 이미 draft/secret이면 상속으로 충분해 real hg는
+      아무것도 쓰지 않는데, hg4j는 선형 커밋 체인마다 중복 줄을 계속
+      쌓고 있었다(N개 커밋 저장소가 real hg의 "루트 하나"짜리 phaseroots
+      대비 N-1줄 초과). 부모 phase가 draft 미만일 때만 기록하도록 수정.
+      (3) `FetchCommand`의 pull 시 phase 동기화도 동일한 무조건 기록
+      버그를 갖고 있어(당겨온 커밋마다, 원격 phase 키마다 무조건 기록)
+      같은 패턴으로 이미 원하는 phase면 건너뛰도록 방어적으로 수정(이
+      명령 자체의 완전한 매트릭스 검증은 이번 범위 밖). changelog-v2
+      저장소에서도 phaseroots 자체는 순수 텍스트 포맷이라 형식이 달라지지
+      않음을 real hg 7.2 CLI로 직접 확인(우려했던 "changelog-v2 phaseroots
+      포맷 차이"는 실재하지 않음). 검증: draft→secret(`--force`)→
+      draft(무조건 허용, 역방향)→draft→public 역방향(`--force`) 전이 +
+      `--force` 없는 상향 이동 거부 시나리오를, hg4j 구동 저장소와 동일한
+      고정-날짜 커밋의 real-hg 구동 대조 저장소 사이에서 `.hg/store/
+      phaseroots` 바이트 단위 비교로 매 단계 확인. 이 알고리즘 교체로
+      기존 `PhaseCommandCoverageTest`의 낡은(실제 hg와 다른) 기대치 2건도
+      함께 정정(미해결 노드 라인 보존 기대 → real hg처럼 드롭되는 것으로
+      정정), 신규 게이트 테스트 2건 추가. 부수적으로 이 게이트가 생기며
+      기존에 force 없이 `PhaseCommand`를 secret으로 강제 설정하던 테스트
+      픽스처 4곳(`Wire2CommandsTest` 2건, `PushCommandTest`,
+      `HgRevsetTest`)에 `.setForce(true)`를 추가(이 명령들 자체의 프로덕션
+      로직은 무관, 순수 픽스처 설정 코드). 전체 비-interop `test`(2273건)
+      0 실패로 재확인, 새 회귀 없음.
+
+    이 wave로 `BranchCommand`/`BranchesCommand`/`PhaseCommand` 3개 명령이
+    추가로 매트릭스 완주 — 백로그 39 전체(67개 명령) 관점에서는 여전히
+    다수가 미착수인 부분 진행 상태(이 항목 자체를 "완료"로 표시하지 않음).
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

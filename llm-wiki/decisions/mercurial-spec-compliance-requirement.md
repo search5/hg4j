@@ -2467,7 +2467,11 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
 
 39. **[[exhaustive-interop-matrix-plan]] 매트릭스 범위 확장 — 명령 커버리지가
     극히 일부에 머물러 있음**. 신규, 2026-09-04 사용자 지시로 등록 —
-    **Wave 1 부분 진행(2026-09-05), 나머지는 여전히 미착수 (아래 참고)**.
+    **완료(2026-09-05, wave 1~5). 로컬 매트릭스 대상 60개 명령 전부 +
+    wire 매트릭스 대상 8개 명령 전부, 합계 68개 명령이 예외 없이
+    36개(로컬) 또는 21개(wire) requirement 조합 전체에서 검증됨. 상세
+    진행 이력은 아래 각 wave 문단 및 [[exhaustive-interop-matrix-plan]]
+    §4 참고.**
     requirement 매트릭스(36개 조합, native 6 + Docker 30, 전부 GREEN 확정)는
     원래 `CommitCommand`/`LogCommand`/`StatusCommand`/`CatCommand` **4개 명령**
     에만 적용돼 있었고, 나머지 로컬/저장소 전용 명령 55개(`AddCommand`,
@@ -3822,6 +3826,131 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     `GrepCommand`/`AnnotateCommand`/`ManifestCommand`, 진행 중) —
     병합되면 로컬 매트릭스 67개 전체 완료, wire 매트릭스는 이미 8/8
     완료 상태.
+
+    **Wave 5(2026-09-05, `CatCommand`/`FilesCommand`/`LocateCommand`/
+    `GrepCommand`/`AnnotateCommand`/`ManifestCommand`)**: 이 6개 명령
+    (모두 읽기 전용, 트리/경로/콘텐츠 조회 계열)에 36개 조합(native 6 +
+    Docker 30) 적용, **전부 GREEN**. `CatCommand`는 이미 원래 4개 명령
+    (commit/log/status/cat)의 일부로 최소 커버리지가 있었지만 rename/
+    executable-bit/removal/nested-treemanifest 시나리오는 다루지 않았으므로
+    별도 전용 테스트로 재검증. 읽기 전용 명령들이라 hg4j 자신은 어떤 조합에서도
+    쓰기를 하지 않아 `HelperMain` 서브프로세스가 필요 없음(그 우회 대상이었던
+    docker-exec 인터리빙 손상은 hg4j 자신의 revlog *쓰기* 특유의 문제).
+    신규 테스트 클래스 4개(`RequirementMatrixCatFilesLocateManifestCoreRoundTripTest`/
+    `...DockerRoundTripTest`가 Cat+Files+Locate+Manifest 4개를, `RequirementMatrixGrepAnnotateCoreRoundTripTest`/
+    `...DockerRoundTripTest`가 Grep+Annotate 2개를 함께 검증 — 앞서 Copy/Rename/
+    Forget/Remove/Addremove를 묶은 전례와 같은 근거: 공유 manifest-읽기 경로를
+    한 번에 검증하면서 컨테이너 생성 오버헤드도 줄임), `src/test/java/io/github/search5/hg4j/api/`.
+    **결과**: `RequirementMatrixCatFilesLocateManifestCoreRoundTripTest` native 6/6,
+    `...DockerRoundTripTest` Docker 30/30; `RequirementMatrixGrepAnnotateCoreRoundTripTest`
+    native 18/18(6 조합 x 3 테스트 메서드), `...DockerRoundTripTest` Docker
+    90/90(30 조합 x 3 테스트 메서드). 비-interop `test` 전체 재확인: 2278건
+    0 실패/0 에러(2 스킵, 기존과 동일).
+
+    **발견·수정한 진짜 hg4j 버그 3건**:
+    1. **`DeltaCodec.decompressZstd`가 델타(비-리터럴) 리비전의 압축 해제
+       목표 버퍼 크기로 인덱스의 `uncompLen` 필드를 그대로 신뢰하던 버그** —
+       실제로는 이 필드가 "이 청크 자체의 압축 해제 후 크기"가 아니라
+       "델타를 전부 적용한 뒤의 최종 재구성 텍스트 크기"(`hg --debug
+       debugindex`의 `full-size` 컬럼과 정확히 일치)를 기록한다(real hg
+       소스/실측 양쪽으로 확인: `hg-rust-7.2.4`가 쓴 `format.use-fileindex-v1=yes`
+       매니페스트 리비전 1의 `uncompLen`이 210이었는데 실제 zstd 프레임을
+       디코드하면 140바이트 델타 스트림이 나왔고, 그 델타를 153바이트
+       베이스에 적용하면 정확히 210바이트 재구성 텍스트가 나옴 — 델타
+       청크 자체의 크기(140)와 재구성 텍스트 크기(210)가 다르다는 것을
+       바이트 단위로 확정). 기존 코드는 `new byte[uncompLen]`(210바이트)를
+       zstd 목적지 버퍼로 할당해 실제 140바이트만 채워지고 나머지 70바이트가
+       0으로 남는데, 이 배열을 잘라내지 않고 그대로 반환해 `DeltaEngine
+       .applyDelta`가 후행 0바이트를 "start=0,end=0"인 새 델타 헝크 헤더로
+       오인식 — `lastCopied`가 이미 전진해 있어 `start < lastCopied`
+       위반으로 `HgCorruptDataException("Invalid delta hunk offsets")`.
+       네이티브 테스트는 `HgTestUtils#hg`가 항상 zlib를 강제해서(zlib
+       경로는 `Inflater`가 크기와 무관하게 동작해 이 버그를 겪지 않음)
+       이 버그를 절대 드러낼 수 없었고, Docker 매트릭스도 지금까지는
+       리비전이 2개 이상인 매니페스트/파일로그를 zstd 압축 저장소에서
+       실제로 읽어본 적이 없어 처음 발각됨(이 캠페인의 다른 wave들이 만든
+       Docker 시나리오 다수가 재현 조건에 가까웠을 가능성이 있으나, 이번
+       조사 범위 밖이라 재검증하지 않음 — 별도 확인 필요 시 후속 항목으로).
+       수정: `Zstd.getFrameContentSize()`로 zstd 프레임 자신이 담고 있는
+       실제 압축 해제 크기를 얻어 목적지 버퍼 크기로 쓰고(이미 sidedata
+       청크 압축 해제 경로가 쓰던 것과 동일 패턴), 방어적으로
+       `Zstd.decompress()`가 실제로 반환한 바이트 수로 한 번 더 자름.
+       쓰기 경로(`Revlog.appendRevision`류)는 애초에 `uncompLen`에
+       "재구성된 전체 텍스트 길이"를 올바르게 기록하고 있어(`processedContent
+       .length`) 수정 불필요 — 읽기 경로만의 버그였음.
+    2. **`GrepCommand`가 `fileindex-v1`/`general-v2` 저장소에서 항상 빈
+       결과만 반환하던 버그** — 기존 구현은 `store/fncache` 파일 하나만
+       읽어 추적 대상 파일 목록을 얻었는데, `fileindex-v1`(및 이를
+       암시하는 `general-v2`)로 만든 저장소는 `fncache` 자체가 존재하지
+       않는다(실측: `hg-rust-7.2.4` 컨테이너에서 `format.use-fileindex-v1=yes`
+       저장소의 `store/requires`는 `store`만 있고 `fncache`/`dotencode`가
+       없음 — 자체 `fileindex`/`fileindex-list`/`fileindex-tree` 사이드카
+       파일이 같은 역할을 대신함). `hg grep` 자신은 매니페스트를 훑지
+       `fncache`에 의존하지 않으므로, 이는 유효한 저장소 형식 전체에서
+       조용히 결과가 0개가 되는 진짜 완결성 누락이었다(성능 최적화 누락이
+       아니라 스펙 위반). 수정: `fncache`가 없으면 `store/data/`를 직접
+       재귀 스캔해 `.i` 파일을 찾는 폴백 추가, 물리 경로를 논리 경로로
+       되돌리는 `NodeIdUtil.decodeStoreDataPath`(기존 `encodeFname`의
+       역함수, `~xx`/`_x`/`__` 이스케이프를 한 패스로 복원 — `auxEncode`가
+       추가하는 이스케이프도 같은 `~xx` 표기라 순서 무관하게 정확) 신규
+       추가. 겸사겸사 `fncache` 경로도 같은 디코더로 통일(기존 코드는
+       `fncache`에 적힌 "인코딩된" 경로를 디코딩 없이 그대로 `GrepResult
+       .path`에 넣던 잠재 버그였음 — 대문자/예약어가 포함된 파일명에서만
+       드러나는 것이라 이번 테스트의 순수 소문자 시나리오로는 검증되지
+       않았지만 안전하게 함께 수정).
+    3. **`AnnotateCommand.traceLines`의 rename-crossing 로직이 두 가지로
+       실제 hg와 다르게 동작**: (a) 파일 리비전 0에 copy/copyrev 메타데이터가
+       있어 이전 파일의 상태로 크로스했을 때, 크로스된 콘텐츠를 "베이스"로만
+       쓰고 그 파일 자신의 리비전 0 콘텐츠와의 실제 diff를 건너뛰던 버그 —
+       `hg mv old new; <new 내용 편집>; hg commit`처럼 rename과 편집이 같은
+       커밋에 함께 일어나는(실무에서 매우 흔한) 경우, 그 커밋에서 바뀌거나
+       추가된 줄이 통째로 유실되거나 잘못된 리비전으로 귀속됐다(재현: rename과
+       동시에 새 줄 하나를 추가하면 그 줄의 content가 빈 문자열로 나옴).
+       기존 테스트들은 전부 "순수 rename"(같은 커밋에 편집 없음) 시나리오만
+       썼기 때문에 크로스된 베이스와 리비전 0의 실제 콘텐츠가 우연히 같아
+       이 버그가 가려져 있었다. 리비전 0도 다른 리비전과 동일하게 루프에서
+       diff하도록 수정(크로스 시 루프 시작을 r=1이 아니라 r=0으로).
+       (b) 개행으로 끝나는(사실상 대부분의) 파일마다 가짜 빈 줄을 하나 더
+       만들어내던 버그(`split("\n", -1)`가 후행 개행 뒤 빈 문자열을 보존) —
+       `DiffCommand`에서 이미 한 번 발견·수정됐던 것과 정확히 같은 종류의
+       버그가 `AnnotateCommand`에도 남아 있었다. 이 버그는 기존 유닛
+       테스트(`HgAnnotateTest`/`AnnotateCommandCoverageTest`)의 기대값에도
+       그대로 박제돼 있었어서(주석에 "+ trailing empty" 명시) 함께 갱신.
+       두 수정 모두 real hg 7.2 CLI(`hg annotate -n`)와 직접 대조해 검증.
+    상세 근거·재현 절차는 각 신규 테스트 클래스의 javadoc 및
+    `DeltaCodec`/`GrepCommand`/`AnnotateCommand`의 갱신된 코드 주석 참고.
+    이로써 로컬 명령 기준 완주 수는 31에서 37로 증가(다른 wave 5 에이전트들과
+    병렬 진행 중이라 최종 합산은 조정자가 취합), 나머지 30개 로컬 명령 및
+    wire 매트릭스 잔여 5개는 여전히 미착수.
+
+    **조정자 최종 취합 및 백로그 39 완료 선언(2026-09-05)**: 위 5개
+    wave 5 문단(메타데이터조회 +8, core/query +7, admin/maintenance +6,
+    작업트리 +6, 이 콘텐츠/트리읽기 wave +6)은 서로 다른 명령 집합에
+    대한 독립 병렬 작업으로 겹치지 않음. 이 wave의 버그 #1
+    (`DeltaCodec.decompressZstd`)은 core/query·admin/maintenance·
+    작업트리 세 그룹이 이미 각각 독립적으로 발견·수정한 것과 정확히
+    같은 버그(이번 세션에서 4번째 독립 발견 — 4개 병렬 그룹이 서로
+    소통 없이 같은 근본 원인에 도달했다는 것 자체가 이 버그의 실제
+    파급력을 보여줌) — 병합 시 diff로 로직 동일함을 재확인, 이미 반영된
+    버전(zstd 프레임 자체의 content-size 기반 사이징)을 그대로 유지.
+
+    **다섯 wave 병합 후 정확한 최종 집계**: 이 문서 및
+    [[exhaustive-interop-matrix-plan]] 양쪽에서 계속 써온 "67개"라는
+    분모 자체가 처음부터 부정확했음이 드러남 —
+    [[exhaustive-interop-matrix-plan]] §3-2의 "로컬/저장소 전용,
+    59개"라는 소제목 아래 실제로 나열된 명령은 60개였고(소제목 자체의
+    표기 오류), 이후 모든 wave의 "X/67" 진행률은 이 잘못된 분모를
+    그대로 물려받은 근사치에 불과했다. 병합 완료 시점에 실제 명령 파일
+    전체 목록(`src/main/java/.../api/*Command.java`, 68개)과 두
+    설계 문서의 §3-1(wire 대상 8개)/§3-2(로컬 대상, 실제로는 60개)
+    나열, 그리고 실제 존재하는 모든 `RequirementMatrix*
+    CoreRoundTripTest`/`HgWireProtocolMatrix*Test` 클래스가 커버하는
+    명령을 3자 프로그램 대조한 결과: **로컬 매트릭스 대상 60개 전부와
+    wire 매트릭스 대상 8개 전부가 예외 없이 실제 매트릭스 테스트로
+    커버되어 있음을 확인**(로컬 60/60, wire 8/8, 합계 68/68 — 빠진
+    명령 없음, 초과 카운트도 없음). **이로써 백로그 항목 39("포셀린
+    명령 x wire protocol 조합 x requirement 조합 exhaustive interop
+    매트릭스")는 완료로 전환한다.**
 
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서

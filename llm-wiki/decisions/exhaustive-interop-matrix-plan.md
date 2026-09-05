@@ -1,21 +1,24 @@
 ---
 name: exhaustive-interop-matrix-plan
-updated: 2026-09-04
-status: **requirement 매트릭스 36개 조합 + wire 매트릭스 21개 조합, 전부
-  양방향(쓰기 포함) GREEN 완료(2026-09-04)**. native/Docker 분할은 12/24에서
-  6/30으로 재정정됨(dirstate-v2도 Docker 필요임이 TDD 중 드러남). 이 과정에서
-  실버그 3건 발견·수정: (1) changelog-v2 저장소의 zstd/zlib 코덱 혼동
-  (`Revlog`/`RevlogIndex`), (2) **dirstate-v2 트리 손상**(`DirstateV2Serializer`가
-  자식 노드를 정렬 없이 써서 real hg의 이진 탐색 리더가 못 찾던 문제 — [[mercurial-
-  spec-compliance-requirement]] 백로그 #37, 근본 원인까지 확정해 완전히 수정),
-  (3) wire 매트릭스에서는 새 프로덕션 버그 없음(백로그 22/26 협상 로직이 이미
-  정확했음 재확인). 기존 fixture 기반 테스트 7개를 라이브 쓰기 검증으로 보강하는
-  작업도 완료. `test`/`interopTest`(신규 gradle 태스크, 2026-09-04)로 실행 분리
-  — 평소 `./gradlew test`는 interop 제외로 빠르게, `./gradlew check`는 커버리지
-  게이트까지 정확하게. 나머지 65개 로컬/전송 명령(핵심 라운드트립 6개 제외)은
-  전부 미착수. 백로그 29~36과는 별개 축(개별 기능 gap이 아니라 "조합 공간을
-  체계적으로 훑는 인프라" 자체가 목적)이나, 이 매트릭스가 직접 새 백로그(#37,
-  #38)를 낳았다는 점에서 서로 피드백 관계에 있다.
+updated: 2026-09-05
+status: **완료(2026-09-05, wave 1~5)**. requirement 매트릭스(36개 조합,
+  native 6 + Docker 30)는 로컬/저장소 전용 대상 60개 명령 전부에, wire
+  매트릭스(21개 조합, HTTP 18 + SSH 3)는 전송 관여 대상 8개 명령 전부에
+  적용 완료 — 합계 68개 명령(§3의 "67개"라는 원래 소제목은 §3-2 목록이
+  실제로는 60개를 나열하고 있었다는 걸 뒤늦게 발견한 표기 오류였음, 최종
+  병합 시점에 프로그램적으로 재확인) 전부 양방향(쓰기 포함) GREEN. 그
+  과정에서 진짜 hg4j 프로덕션 버그 40건 이상 발견·수정(모두 즉시 완전
+  수정, 범위 축소 없음) — 가장 파급력 컸던 것들: `DeltaCodec
+  .decompressZstd`의 델타-리비전 버퍼 크기 버그(4개 병렬 wave가 서로
+  독립적으로 발견할 만큼 일반적인 real-world zstd 저장소 다수에 영향),
+  `BackoutCommand`/`PurgeCommand`의 데이터 손실 버그, `IncomingCommand`가
+  콘텐츠 있는 real hg 서버 어디에도 완전히 깨져 있던 버그,
+  `DirstateV2Node`의 exec/symlink 플래그 상호배타 처리 버그(dirstate-v2
+  심볼릭 링크를 다루는 여러 기존 명령에 공유). 상세 이력은 §4의 웨이브별
+  기록 및 [[mercurial-spec-compliance-requirement]] 백로그 #39 참고.
+  백로그 29~36과는 별개 축(개별 기능 gap이 아니라 "조합 공간을
+  체계적으로 훑는 인프라" 자체가 목적)이었으나, 이 매트릭스가 직접 새
+  백로그(#37, #38)를 낳았다는 점에서 서로 피드백 관계에 있었다.
 ---
 
 # 요건: 포셀린 명령 x wire protocol 조합 x requirement 조합 exhaustive interop 매트릭스
@@ -251,7 +254,8 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `DirstateV2RealFixtureTest`는 동일 조합의 라이브 커버리지가 이미 있는 곳(Docker
   매트릭스 파일)으로의 javadoc 상호 참조만 추가(같은 저장소 상태를 검증하는 3~4번째
   중복 하니스를 만들지 않기 위한 판단).
-- [ ] 나머지 58개 로컬 명령 — 대부분 미착수. **Wave 1(2026-09-05, 백로그 #39)**:
+- [x] 나머지 56개 로컬 명령 — **완료(2026-09-05, wave 1~5, 백로그 #39)**.
+  아래는 그 과정의 웨이브별 이력. **Wave 1(2026-09-05, 백로그 #39)**:
   우선순위 4개(`PushCommand`/`RebaseCommand`/`ShelveCommand`/`StripCommand`)에
   36개 조합(native 6 + Docker 30) 적용 완료 — `RebaseCommand`/`StripCommand`/
   `ShelveCommand` 3개는 전부 GREEN(그 과정에서 `Revlog.truncate()` 통합으로
@@ -619,6 +623,78 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   6개(`CatCommand`/`FilesCommand`/`LocateCommand`/`GrepCommand`/
   `AnnotateCommand`/`ManifestCommand`, 진행 중) — 병합되면 로컬 매트릭스
   67개 전체 완료, wire 매트릭스는 이미 8/8 완료.)
+
+  **Wave 5(2026-09-05, `CatCommand`/`FilesCommand`/`LocateCommand`/
+  `GrepCommand`/`AnnotateCommand`/`ManifestCommand`)**: 트리/경로/콘텐츠
+  조회 계열 6개 명령에 36개 조합(native 6 + Docker 30) 적용, 전부 GREEN.
+  전부 읽기 전용 명령이라 hg4j 자신은 어느 조합에서도 쓰기를 하지 않으므로
+  (`RequirementMatrixCommitHelperMain`이 우회하는 docker-exec 인터리빙
+  손상은 hg4j 자신의 revlog *쓰기* 특유의 문제) `HelperMain` 서브프로세스가
+  필요 없었음. 신규 테스트 클래스 4개(Cat+Files+Locate+Manifest를 묶은
+  `RequirementMatrixCatFilesLocateManifestCoreRoundTripTest`/
+  `...DockerRoundTripTest`, Grep+Annotate를 묶은
+  `RequirementMatrixGrepAnnotateCoreRoundTripTest`/`...DockerRoundTripTest`
+  — 앞선 wave의 Copy/Rename/Forget/Remove/Addremove 그룹핑과 같은 근거:
+  공유 manifest-읽기 경로를 한 저장소로 함께 검증하면서 Docker 컨테이너
+  생성 오버헤드도 줄임). 결과: Cat/Files/Locate/Manifest native 6/6 +
+  Docker 30/30, Grep/Annotate native 18/18(6 조합 x 3 테스트 메서드) +
+  Docker 90/90(30 조합 x 3 테스트 메서드). 비-interop `test` 2278건
+  0 실패/0 에러(2 스킵, 기존과 동일) 재확인.
+
+  진짜 hg4j 버그 3건 발견·수정(상세는
+  [[mercurial-spec-compliance-requirement]] 백로그 #39 참고): (1)
+  `DeltaCodec.decompressZstd`가 델타(비-리터럴) 리비전의 압축 해제
+  목적지 버퍼 크기로 인덱스의 `uncompLen`(실제로는 "이 청크 자체의
+  압축 해제 크기"가 아니라 "델타를 전부 적용한 뒤 최종 재구성 텍스트
+  크기" — `hg --debug debugindex`의 `full-size` 컬럼과 동일)를 그대로
+  신뢰해, 실제보다 큰 버퍼를 0으로 채운 채 반환하고 `DeltaEngine
+  .applyDelta`가 그 후행 0바이트를 가짜 델타 헝크 헤더로 오인식 —
+  네이티브 테스트는 항상 zlib를 강제해 절대 드러날 수 없었고 Docker
+  매트릭스도 지금까지 리비전 2개 이상인 매니페스트/파일로그를 zstd
+  압축 저장소에서 읽어본 적이 없어 이번에 처음 발각(zstd 프레임 자신의
+  임베디드 크기를 쓰도록 수정, 이미 sidedata 청크 경로가 쓰던 것과
+  같은 패턴). (2) `GrepCommand`가 `fileindex-v1`/`general-v2`
+  저장소(둘 다 `fncache` 자체가 없음 — 자체 `fileindex` 사이드카
+  파일이 대신함)에서 조용히 빈 결과만 반환하던 완결성 누락(`store/data/`
+  재귀 스캔 폴백 + 신규 `NodeIdUtil.decodeStoreDataPath` 디코더로 수정).
+  (3) `AnnotateCommand`가 rename과 콘텐츠 편집이 같은 커밋에 함께
+  일어날 때 그 커밋 자신의 diff를 건너뛰어 줄을 유실/오귀속하던 버그,
+  그리고 `DiffCommand`에서 이미 한 번 고쳤던 것과 같은 종류의 "후행
+  개행마다 가짜 빈 줄 생성" 버그 — 둘 다 real hg CLI와 직접 대조해 수정,
+  기존 유닛 테스트의 박제된 잘못된 기대값도 함께 갱신.
+
+  로컬 명령 기준 완주 수는 31에서 37로 증가(다른 wave 5 에이전트들과
+  병렬 진행 중이라 최종 합산은 조정자가 취합), 나머지 30개 로컬 명령 및
+  wire 매트릭스 잔여 5개는 여전히 미착수.
+
+  **조정자 최종 취합 및 완료 선언(2026-09-05)**: 위 5개 wave 5 문단
+  (메타데이터조회 +8, core/query +7, admin/maintenance +6, 작업트리
+  +6, 이 콘텐츠/트리읽기 wave +6)은 서로 다른 명령 집합에 대한 독립
+  병렬 작업으로 겹치지 않음. 이 wave가 발견한 버그 (1)
+  `DeltaCodec.decompressZstd`은 core/query·admin/maintenance·작업트리
+  세 그룹이 이미 각각 독립적으로 발견·수정한 것과 정확히 같은 버그(이번
+  세션에서만 4번째 독립 발견 — 총 4개 병렬 그룹이 서로 소통 없이 같은
+  근본 원인에 도달한 것은 이 버그의 파급력이 얼마나 컸는지 보여주는
+  방증) — 병합 시 로직 동일함을 diff로 재확인, 이미 반영된 버전(zstd
+  프레임 자체의 content-size로 목적지 버퍼 사이징) 유지.
+
+  **다섯 wave 병합 후 정확한 최종 집계**: 이 문서 §3의 "전체 67개
+  포셀린 명령"이라는 제목과 실제 §3-2 로컬 목록(명령을 세어보면 60개가
+  나열되어 있음 — 소제목 자체는 "59개"라고 적혀 있었음)의 숫자가
+  처음부터 서로 어긋나 있었다. 지금까지 각 wave 문단이 "31/67",
+  "39/67" 등으로 남긴 진행률 표기는 이 잘못된 분모(67)를 그대로
+  물려받은 근사치였을 뿐, 실제 유니크 명령 개수를 매번 정확히 재검증한
+  것은 아니었다. 병합 완료 시점에 전체 명령 파일 목록(68개
+  `*Command.java`, `ls src/main/java/.../api/*Command.java`)과 §3-1/
+  §3-2에 실제로 나열된 명령 이름, 그리고 실제 존재하는 모든
+  `RequirementMatrix*CoreRoundTripTest`/`HgWireProtocolMatrix*Test`
+  클래스가 커버하는 명령을 프로그램적으로 3자 대조한 결과: **로컬
+  매트릭스 대상은 60개, wire 매트릭스 대상은 8개, 합계 68개**가 옳은
+  숫자이고(문서 제목 "67개"는 초기 설계 단계의 단순 표기 오류, 이후
+  모든 wave의 진행률 분모에 그대로 전파됨), **60개 로컬 명령 전부와
+  8개 wire 명령 전부가 예외 없이 매트릭스 테스트로 실제 커버되어 있음을
+  확인**(로컬 60/60, wire 8/8, 합계 68/68 — 빠진 명령 없음, 초과
+  카운트도 없음). 백로그 항목 39는 이로써 완료 상태로 전환.
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

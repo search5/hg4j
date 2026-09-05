@@ -202,6 +202,8 @@ public final class DeltaCodec {
                 throw new HgCorruptDataException("Failed to decompress zstd revlog hunk: " + Zstd.getErrorName(result));
             }
             if (result != dest.length) {
+                // Defensive: even with a frame-size-derived destination, truncate to exactly
+                // what zstd reports it wrote rather than trusting either size blindly.
                 dest = Arrays.copyOf(dest, (int) result);
             }
         } catch (ZstdException e) {

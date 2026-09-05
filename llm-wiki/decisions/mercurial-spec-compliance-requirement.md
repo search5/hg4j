@@ -2980,6 +2980,60 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     이로써 "67개 명령 × 매트릭스" 목표의 명령 기준 완주 수는 11에서
     14(+`AddCommand`/`BookmarkCommand`/`TagCommand`)로 증가.
 
+    **Wave 4(2026-09-05)**: `UnbundleCommand`/`ImportCommand`/`ExportCommand`
+    3개 명령에 36개 조합(native 6 + Docker 30) 적용 — **전부 GREEN**
+    (`RequirementMatrixUnbundleCoreRoundTripTest` native 6/6 + Docker 30/30,
+    `RequirementMatrixExportImportCoreRoundTripTest`가 `ExportCommand`/
+    `ImportCommand`를 함께 native 6/6 + Docker 30/30, 총 72케이스).
+    - **`UnbundleCommand`**: 새 실버그 없음 — real hg가 만든 번들 파일(같은
+      백로그 항목에서 `BundleCommand`가 새로 갖추게 된 `none-v3`/treemanifest
+      cg3 타입 포함)을 `FetchCommand#applyBundle`에 위임해 적용하는 기존
+      경로가 이미 모든 조합에서 정확했음이 재확인됨(해당 위임 경로의
+      `bundle.manifestGroups` 처리는 `BundleCommand`의 송신측 fix 때 "수신측은
+      이미 완전 지원"이라고 문서화돼 있던 것과 일치). 테스트는 real hg가
+      `hg bundle`로 만든 파일을 hg4j가 적용한 뒤, 그 결과 저장소를 다시 real
+      hg가 읽어 검증하는 방향(`BundleCommand` 매트릭스의 송수신 반대 방향)으로
+      작성 — `cl2+sidedata` 조합은 `BundleCommand`와 동일한 근거로 confirmed
+      real-hg-only 파일 기반 bundle 한계를 tolerate 처리.
+    - **`ExportCommand`/`ImportCommand`**: **진짜 hg4j 프로덕션 버그 2건을
+      TDD로 발견·수정**. (1) `ImportCommand`가 patch/manifest/changelog를
+      전부 손수 조립하고 있어서 treemanifest 저장소에서는 구조적으로 아예
+      동작할 수 없었다(평평한 `path\0hex\n` 매니페스트 텍스트를 무조건
+      `00manifest.i`에 직접 쓰는 방식 — treemanifest는 `store/meta/` 하위
+      디렉터리별 revlog 트리라 이 방식 자체가 성립하지 않음). 이미 모든
+      조합에서 검증된 `CommitCommand`에 실제 커밋 작성을 위임하도록 재작성해
+      해결 — `ImportCommand`는 이제 패치를 파싱해 작업 디렉터리/dirstate에
+      반영(`AddCommand`/`RemoveCommand` 재사용)한 뒤 `CommitCommand`를
+      호출하는 얇은 계층이 됨(treemanifest/changelog-v2/sidedata 전부
+      `CommitCommand`가 이미 처리하던 로직을 그대로 상속). 부수적으로
+      real hg의 `--- /dev/null`(신규 파일)/`+++ /dev/null`(삭제 파일) 패치
+      규약도 처음으로 지원(이전엔 삭제 패치를 통째로 무시 — 파일이 디스크/
+      매니페스트에서 전혀 지워지지 않았음). (2) `DiffCommand#generateUnifiedDiff`
+      가 `text.split("\n", -1)`로 줄을 세면서, 줄바꿈으로 끝나는(거의 모든
+      텍스트 파일의) 콘텐츠마다 가짜 빈 줄을 하나 더 있는 것처럼 취급하는
+      버그를 발견 — `RequirementMatrixExportImportCoreRoundTripTest`가 hg4j가
+      내보낸 패치를 real hg `hg import`로 되읽어 커밋 노드 해시가 완전히
+      동일한지(단순 내용 비교가 아니라) 대조하는 과정에서 발각됨: 이 가짜 줄이
+      실제 hg import/hg4j import 양쪽 모두에 의해 파일 끝에 진짜 빈 줄로
+      기록돼버려 파일/매니페스트/체인지셋 노드 해시가 전부 달라졌다. 줄 분리
+      로직을 실제 diff 관례(후행 개행은 추가 줄이 아니라 마지막 줄의
+      종결자)에 맞게 수정하고, 파일이 정말로 후행 개행이 없는 경우를 위한
+      `\ No newline at end of file` 마커의 생성(`ExportCommand`)/파싱
+      (`ImportCommand`) 양쪽을 새로 구현. 이 수정으로 기존
+      `TreeAndDiffCommandTest`의 대용량 diff 테스트 하나가 가정하고 있던
+      (버그가 있던 시절의) 줄 수 상수도 올바른 값으로 함께 수정.
+    - **검증**: native 6/6 + Docker 30/30(두 클래스 합산 72케이스) 전부
+      GREEN, 전체 비-interop `test`(그 사이 늘어난 신규/수정 케이스 포함)
+      전부 GREEN. `interopTest`는 전체가 아니라 이 4개 신규 클래스(Unbundle
+      native/Docker, ExportImport native/Docker)로 스코프를 좁혀 재검증—
+      이전 wave들이 이미 기록한 "전체 interopTest 1회 완주는 너무 느림"
+      교훈을 그대로 따름.
+
+    이로써 "67개 명령 × 매트릭스" 목표의 명령 기준 완주 수는 (다른 wave 4
+    에이전트들과 병렬로 진행 중이라 이 문단 기준으로는) 14에서
+    17(+`UnbundleCommand`/`ImportCommand`/`ExportCommand`)로 증가 — 최종
+    합산은 조정자가 병렬 에이전트들의 기여를 모아 정리.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

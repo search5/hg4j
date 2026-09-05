@@ -302,6 +302,52 @@ public class ImportCommandTest {
         assertEquals("line1\nline2\nLINE3-CHANGED\nline4\nline5\n", Files.readString(written.toPath()));
     }
 
+    /**
+     * Backlog #39 (2026-09-05) regression: a delete-shaped hunk (real hg's own {@code --- a/<path>}
+     * / {@code +++ /dev/null} convention, verified against real {@code hg export} of a removed
+     * file) used to be silently no-op'd entirely -- the old parser only ever recognized a literal
+     * {@code "+++ b/"} prefix, so a patch whose new side was {@code /dev/null} never matched at
+     * all and the file was neither deleted from disk nor untracked. This is the first-ever test
+     * exercising that this command's delete path actually works (via {@link RemoveCommand}).
+     */
+    @Test
+    public void testDeleteHunkRemovesFileFromDiskAndManifest(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+
+        File toDelete = new File(repo.getDirectory(), "gone.txt");
+        Files.writeString(toDelete.toPath(), "line one\nline two\n");
+        new AddCommand(repo).addFile("gone.txt").call();
+        new CommitCommand(repo).setAuthor("Tester").setMessage("add gone.txt").call();
+
+        String patch = "# HG changeset patch\n" +
+                "# User Tester\n" +
+                "# Date 7000000 0\n" +
+                "Delete gone.txt\n" +
+                "\n" +
+                "diff -r 000000000000 -r 111111111111 gone.txt\n" +
+                "--- a/gone.txt\n" +
+                "+++ /dev/null\n" +
+                "@@ -1,2 +0,0 @@\n" +
+                "-line one\n" +
+                "-line two\n";
+
+        new ImportCommand(repo).setPatchText(patch).call();
+
+        assertFalse(toDelete.exists(), "the deleted file must be removed from the working directory");
+
+        Revlog cl = changelogOf(repo);
+        assertEquals(2, cl.getRevisionCount());
+        String cl1 = new String(cl.getRevisionContent(1), StandardCharsets.UTF_8);
+        // Real hg's own changelog file list DOES include a removed path (it shows which paths
+        // CHANGED, removals included) -- only the MANIFEST (checked below) must actually drop it.
+        String[] cl1Lines = cl1.split("\n");
+        assertEquals("gone.txt", cl1Lines[3], "second commit's file list must record the removal");
+
+        Revlog mf = manifestOf(repo);
+        String mfText1 = new String(mf.getRevisionContent(1), StandardCharsets.UTF_8);
+        assertNull(extractHashForPath(mfText1, "gone.txt"), "the new manifest must not list the deleted file");
+    }
+
     private static String extractHashForPath(String manifestText, String path) {
         for (String line : manifestText.split("\n")) {
             if (line.isEmpty()) continue;

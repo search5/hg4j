@@ -625,10 +625,13 @@ public class MergeCommandCoverageTest {
         byte[] r2 = commit(repo, "r2");
 
         // r3 = merge r1 into r2 (will itself conflict on shared.txt); resolve by keeping r1's
-        // side so the commit (which refuses to commit literal conflict markers) can proceed.
+        // side and marking it resolved (CommitCommand blocks on the merge state's own
+        // unresolved-count, matching real hg, not on literal markers still present in the file)
+        // so the commit can proceed.
         MergeCommand.MergeResult r3MergeRes = new MergeCommand(repo).setNodeId(r1).call();
         assertTrue(r3MergeRes.isConflicted());
         write(repoDir, "shared.txt", "l1\nA-CHANGE\nl3\n");
+        new ResolveCommand(repo).setFile("shared.txt").markResolved(true).call();
         byte[] r3 = commit(repo, "r3 (merge r1 into r2)");
 
         // r4 = merge r2 into r1 (will itself conflict on shared.txt); resolve by keeping r2's
@@ -642,6 +645,7 @@ public class MergeCommandCoverageTest {
         MergeCommand.MergeResult r4MergeRes = new MergeCommand(repo).setNodeId(r2).call();
         assertTrue(r4MergeRes.isConflicted());
         write(repoDir, "shared.txt", "l1\nB-CHANGE\nl3\n");
+        new ResolveCommand(repo).setFile("shared.txt").markResolved(true).call();
         byte[] r4 = commit(repo, "r4 (merge r2 into r1)");
 
         // Final criss-cross merge: LCA candidates are {r1, r2} -> virtual (rev == -1) base.

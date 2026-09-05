@@ -20,6 +20,7 @@ import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.gpg.GpgSignature;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.NodeId;
+import io.github.search5.hg4j.merge.MergeState;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -184,29 +185,54 @@ public class CommitCommandTest {
         }
     }
 
+    /**
+     * Mirrors real hg's actual commit-blocking check (mercurial/commands.py's {@code commit},
+     * via {@code mergestatemod.mergestate.read(repo)} + {@code ms.unresolvedcount()}): it is
+     * driven purely by the on-disk merge state's resolved/unresolved flags, never by re-scanning
+     * working-copy content for literal conflict markers (which this test used to simulate
+     * directly, without any real merge state at all -- a scenario real hg's own check would
+     * never have blocked, since {@code hg commit} never inspects file content for this).
+     */
     @Test
     public void testCommitBlocksOnUnresolvedConflicts(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
 
-            // 1. Create a file and commit
+            // 1. Create a file and commit twice, to have two real parent nodes to merge.
             File f1 = new File(repoDir, "a.txt");
             Files.writeString(f1.toPath(), "Clean Content\n");
             new AddCommand(repo).call();
-            new CommitCommand(repo).setMessage("Initial").call();
+            byte[] c1 = new CommitCommand(repo).setMessage("Initial").call();
 
-            // 2. Put file in 'm' state manually (simulating a conflict after merge)
+            Files.writeString(f1.toPath(), "Second Content\n");
+            byte[] c2 = new CommitCommand(repo).setMessage("second").call();
+
+            // 2. Simulate an active, unresolved two-parent merge exactly as MergeCommand would
+            // leave it: dirstate carries both parents, and .hg/merge/state2 records "a.txt" as
+            // unresolved.
             Dirstate dirstate = repo.getDirstate();
+            dirstate.setParents(new NodeId(c2), new NodeId(c1));
             dirstate.addEntry("a.txt", new Dirstate.Entry('m', 0644, 100, System.currentTimeMillis() / 1000));
             repo.writeDirstate(dirstate);
 
-            // 3. Inject unresolved conflict markers
+            MergeState mergeState = new MergeState();
+            mergeState.local = c2;
+            mergeState.other = c1;
+            mergeState.addMergedFile("a.txt", MergeState.getLocalKey("a.txt"), "a.txt", "a.txt",
+                    MergeState.NULL_HEX, "a.txt", MergeState.NULL_HEX, "");
+            mergeState.write(new File(repo.getHgDir(), "merge/state2"));
+
             Files.writeString(f1.toPath(), "<<<<<<< Yours\nMy modification\n=======\nTheir modification\n>>>>>>> Theirs\n");
 
-            // 4. Try to commit and assert it is blocked
+            // 3. Try to commit and assert it is blocked, matching real hg's exact message.
             CommitCommand commitCmd = new CommitCommand(repo).setMessage("Trying to commit conflict");
-            IllegalStateException ex = assertThrows(IllegalStateException.class, commitCmd::call);
-            assertTrue(ex.getMessage().contains("Commit blocked: Unresolved merge conflicts"));
+            HgValidationException ex = assertThrows(HgValidationException.class, commitCmd::call);
+            assertTrue(ex.getMessage().contains("unresolved merge conflicts"));
+
+            // 4. Marking it resolved (without touching the file's content at all) must unblock
+            // the commit, exactly like real hg -- since the check is state-based, not content-based.
+            new ResolveCommand(repo).setFile("a.txt").markResolved(true).call();
+            assertDoesNotThrow(commitCmd::call);
         }
     }
 
@@ -341,18 +367,33 @@ public class CommitCommandTest {
             // 2. Author setting boundary
             cmd.setAuthor(null);
             cmd.setAuthor("");
-            
-            // 3. Unresolved conflicts exception test
+
+            // 3. Unresolved conflicts exception test -- driven by a real, active merge state
+            // (matching real hg's own `ms.unresolvedcount()`-based check, see
+            // testCommitBlocksOnUnresolvedConflicts for the full rationale), not by scanning
+            // working-copy content for literal conflict markers with no actual merge in progress.
             File f1 = new File(repoDir, "conflict.txt");
             Files.writeString(f1.toPath(), "<<<<<<<\n=======\n>>>>>>>");
             new AddCommand(repo).call();
-            
+            byte[] c1 = new CommitCommand(repo).setMessage("c1").call();
+
+            Files.writeString(f1.toPath(), "other content");
+            byte[] c2 = new CommitCommand(repo).setMessage("c2").call();
+
             Dirstate d = repo.getDirstate();
+            d.setParents(new NodeId(c2), new NodeId(c1));
             d.addEntry("conflict.txt", new Dirstate.Entry('m', 0644, 20, System.currentTimeMillis() / 1000));
             repo.writeDirstate(d);
-            
+
+            MergeState mergeState = new MergeState();
+            mergeState.local = c2;
+            mergeState.other = c1;
+            mergeState.addMergedFile("conflict.txt", MergeState.getLocalKey("conflict.txt"), "conflict.txt", "conflict.txt",
+                    MergeState.NULL_HEX, "conflict.txt", MergeState.NULL_HEX, "");
+            mergeState.write(new File(repo.getHgDir(), "merge/state2"));
+
             CommitCommand conflictCmd = new CommitCommand(repo).setMessage("This must fail due to conflicts");
-            assertThrows(IllegalStateException.class, conflictCmd::call);
+            assertThrows(HgValidationException.class, conflictCmd::call);
         }
     }
 

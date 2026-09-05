@@ -8,8 +8,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
-import io.github.search5.hg4j.dirstate.Dirstate;
-import io.github.search5.hg4j.util.NodeIdUtil;
 
 /**
  * Subrepo command (submoduleAdd / Init / Update) for Mercurial repositories.
@@ -104,20 +102,48 @@ public class SubrepoCommand {
                               .setSource(url)
                               .setDirectory(subrepoDir)
                               .call();
+                            // A plain clone checks out its own tip, which may not be the revision
+                            // pinned in .hgsubstate (e.g. the source has advanced past the pin) --
+                            // force the working copy to the exact pinned revision, matching real
+                            // hg's `hg update -S`. Previously this only rewrote the subrepo's
+                            // dirstate parent pointer without touching any working-copy file,
+                            // leaving file content silently mismatched with the recorded pin
+                            // whenever it wasn't already the clone's default tip checkout.
+                            if (rev != null) {
+                                try (Hg hg = Hg.open(subrepoDir)) {
+                                    new UpdateCommand(hg.getRepository()).setRevision(rev).setForce(true).call();
+                                }
+                            }
                         } else {
                             throw new IOException("Subrepo URL cannot be null or empty for path: " + path);
                         }
-                    }
-                    // If a revision is pinned in .hgsubstate, point the subrepo's dirstate at it.
-                    // Otherwise leave the freshly cloned/existing subrepo's own dirstate as-is.
-                    if (rev != null) {
-                        try (Hg hg = Hg.open(subrepoDir)) {
-                            HgRepository subRepo = hg.getRepository();
-                            Dirstate d = subRepo.getDirstate();
-                            d.setParents(NodeIdUtil.fromHex(rev), new byte[20]);
-                            subRepo.writeDirstate(d);
+                    } else if (new File(subrepoDir, ".hg").exists()) {
+                        // Already an initialized subrepo checkout -- bring its working copy in
+                        // line with the pinned revision, exactly like real hg's `hg update -S`
+                        // (pulling first if the pin hasn't been fetched locally yet, e.g. after
+                        // .hgsubstate was bumped to a revision produced elsewhere). Previously
+                        // this branch only rewrote the subrepo's dirstate parent pointer -- it
+                        // never pulled the new pin nor actually checked out matching file
+                        // content, so a bumped .hgsubstate left the subrepo's working copy
+                        // silently stale.
+                        if (rev != null) {
+                            try (Hg hg = Hg.open(subrepoDir)) {
+                                HgRepository subRepo = hg.getRepository();
+                                if (!url.isEmpty() && !UpdateCommand.isRevisionPresentLocally(subRepo, rev)) {
+                                    try {
+                                        hg.pull().setSource(url).call();
+                                    } catch (Exception e) {
+                                        // Best-effort, matching
+                                        // UpdateCommand.checkoutSubrepoEntry's own tolerance for
+                                        // an unreachable/stale source URL.
+                                    }
+                                }
+                                new UpdateCommand(subRepo).setRevision(rev).setForce(true).call();
+                            }
                         }
                     }
+                    // else: an existing non-hg directory already occupies the path -- leave it
+                    // untouched rather than overwriting arbitrary unrelated content.
                 }
             }
         }

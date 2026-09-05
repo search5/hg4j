@@ -262,7 +262,15 @@ public class ShelveCommand {
                                 ? Files.readSymbolicLink(file.toPath()).toString().getBytes(StandardCharsets.UTF_8)
                                 : Files.readAllBytes(file.toPath());
                         boolean modified;
-                        if (entry.getSize() != diskSize || entry.getTime() != diskTime) {
+                        // An entry whose cached stat is ambiguous (real hg's own "unset"
+                        // sentinel -- see Dirstate.Entry#isStatAmbiguous(), most commonly hit
+                        // when the file was committed within the same wall-clock second as the
+                        // dirstate write) can never be trusted via a raw size/mtime comparison:
+                        // its sentinel size (-1) never equals a real on-disk size, which
+                        // previously made this branch treat EVERY such entry as unconditionally
+                        // "modified" (skipping the baseline content comparison below entirely)
+                        // even when byte-identical to the parent.
+                        if (!entry.isStatAmbiguous() && (entry.getSize() != diskSize || entry.getTime() != diskTime)) {
                             modified = true;
                         } else {
                             // Racy-write guard: a same-second edit that happens to keep the

@@ -27,22 +27,16 @@ public class StatusCommand {
     private final HgRepository repository;
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
-    /**
-     * Real Mercurial writes a dirstate entry's mtime as the 32-bit "-1" sentinel (0xFFFFFFFF)
-     * whenever it cannot trust an actual on-disk timestamp for that entry -- most commonly when
-     * the entry was (re)written within the very same wall-clock second as the dirstate file
-     * itself, so a same-second edit right afterward would otherwise be indistinguishable from
-     * "unchanged" by size/mtime alone (mercurial/dirstate.py's classic ambiguous-time handling;
-     * real hg's own internal {@code up_impl.update()} -- used by, among others, {@code hg shelve}'s
-     * revert-to-parent step -- writes this sentinel routinely, not just in rare corner cases).
-     * Treating that sentinel as a literal mtime value (comparing it against a real epoch-seconds
-     * disk mtime, which can never equal it) made every such entry look permanently "modified" even
-     * when byte-identical to the parent -- confirmed live against a real hg-authored dirstate
-     * (ShelveRealHgInteropTest, 2026-09-04). When present, size/time comparison below falls back to
-     * the same real content comparison already used for the "recorded mtime equals the dirstate
-     * file's own mtime" racy-write case.
-     */
-    private static final long AMBIGUOUS_TIME = 0xFFFFFFFFL;
+    // Real Mercurial can mark a dirstate entry's cached stat ambiguous -- most commonly when the
+    // entry was (re)written within the very same wall-clock second as the dirstate file itself,
+    // so a same-second edit right afterward would otherwise be indistinguishable from "unchanged"
+    // by size/mtime alone (mercurial/dirstate.py's classic ambiguous-stat handling; real hg's own
+    // internal `up_impl.update()` -- used by, among others, `hg shelve`'s revert-to-parent step --
+    // writes this sentinel routinely, not just in rare corner cases). See
+    // Dirstate.Entry#isStatAmbiguous() (backlog #39 wave 4, 2026-09-05) for the full sentinel
+    // shape -- originally this class only special-cased the mtime half of it (ShelveRealHgInteropTest,
+    // 2026-09-04), which left the paired size=-1 sentinel unguarded and looking permanently
+    // "modified" on its own.
 
     public StatusCommand(HgRepository repository) {
         this.repository = repository;
@@ -85,12 +79,21 @@ public class StatusCommand {
                     } else {
                         long diskSize = effectiveSize(diskFile, isSymlink);
                         long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
-                        boolean ambiguousTime = dEntry.getTime() == AMBIGUOUS_TIME;
-                        if (dEntry.getSize() != diskSize || (!ambiguousTime && dEntry.getTime() != diskTime)) {
+                        // Real hg's dirstate can mark an entry's ENTIRE cached stat ambiguous
+                        // (not just mtime) -- see Dirstate.Entry#isStatAmbiguous(): a same-second
+                        // racy commit lands a 'n' entry with size=-1/mtime=AMBIGUOUS_TIME
+                        // together (verified live: `hg add; hg commit` within the same
+                        // wall-clock second produces mode=0/size=-1/mtime=-1 all at once). Gating
+                        // only on mtime here left the size-sentinel (-1) comparison unguarded, so
+                        // it never equaled a real on-disk size and every such entry looked
+                        // permanently "modified" instead of falling through to the real content
+                        // comparison below.
+                        boolean statAmbiguous = dEntry.isStatAmbiguous();
+                        if (!statAmbiguous && (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime)) {
                             status.getModified().add(path);
                         } else {
                             boolean isRacyModified = false;
-                            if (ambiguousTime || diskTime == dirstateMtime) {
+                            if (statAmbiguous || diskTime == dirstateMtime) {
                                 try {
                                     byte[] parentContent = getParentCommitFileContent(dirstate, path);
                                     if (parentContent != null) {
@@ -177,12 +180,15 @@ public class StatusCommand {
                         if (dEntry != null) {
                             long diskSize = effectiveSize(diskFile, isSymlink);
                             long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
-                            boolean ambiguousTime = dEntry.getTime() == AMBIGUOUS_TIME;
-                            if (dEntry.getSize() != diskSize || (!ambiguousTime && dEntry.getTime() != diskTime)) {
+                            // See the identical comment on this same pattern in the fast-path
+                            // branch above -- an entry's cached stat can be fully ambiguous
+                            // (size AND mtime sentinel together), not just mtime alone.
+                            boolean statAmbiguous = dEntry.isStatAmbiguous();
+                            if (!statAmbiguous && (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime)) {
                                 status.getModified().add(path);
                             } else {
                                 boolean isRacyModified = false;
-                                if (ambiguousTime || diskTime == dirstateMtime) {
+                                if (statAmbiguous || diskTime == dirstateMtime) {
                                     try {
                                         byte[] parentContent = getParentCommitFileContent(dirstate, path);
                                         if (parentContent != null) {

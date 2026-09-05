@@ -45,6 +45,15 @@ public class Dirstate {
     }
 
     public record Entry(char state, int mode, int size, long time, int nanos) {
+        /**
+         * Real Mercurial's 32-bit "-1" sentinel for an entry's mtime (0xFFFFFFFF), written
+         * whenever it cannot trust an actual on-disk timestamp for that entry -- most commonly
+         * when the entry was (re)written within the very same wall-clock second as the dirstate
+         * file itself (mercurial/dirstate.py's classic ambiguous-time handling). See {@link
+         * #isStatAmbiguous()}.
+         */
+        public static final long AMBIGUOUS_TIME = 0xFFFFFFFFL;
+
         public Entry {
             // Mercurial dirstate-v1 stores mtime as unsigned 32-bit integer.
             // Valid range: 0 to 4294967295 (year 2106). Values beyond this will be truncated on serialization.
@@ -77,6 +86,22 @@ public class Dirstate {
 
         public int getNanos() {
             return nanos;
+        }
+
+        /**
+         * Whether this entry's cached stat info (size/mtime) cannot be trusted at face value and
+         * a genuine content-level comparison is required instead. Real hg ties this to BOTH a
+         * negative size (its own "unset"/needs-lookup size sentinel, e.g. minted for a brand new
+         * {@code hg add} or a same-second racy commit -- verified live: `hg commit` immediately
+         * after `hg add` on the same wall-clock second produces a 'n' entry with mode=0, size=-1,
+         * mtime=-1 all together) AND/OR the {@link #AMBIGUOUS_TIME} mtime sentinel alone. Every
+         * dirty-check that trusts a dirstate entry's cached size/mtime WITHOUT checking this first
+         * will wrongly treat such an entry as unconditionally "modified" the instant its real
+         * on-disk size differs from -1 (which is always, for any non-empty-sentinel file) --
+         * confirmed live against real hg 7.2's own dirstate output for exactly this scenario.
+         */
+        public boolean isStatAmbiguous() {
+            return size < 0 || time == AMBIGUOUS_TIME;
         }
     }
 
@@ -223,6 +248,18 @@ public class Dirstate {
                 this.parent2 = new NodeId(p2);
                 this.entries.clear();
                 this.entries.putAll(parsed.getEntries());
+                // BUG (backlog #39 wave 4, 2026-09-05): this used to only copy over the parsed
+                // entries, silently dropping the parsed copyMap entirely -- confirmed live: a
+                // dirstate-v2 repo that records a pending (uncommitted) `hg copy`'s copy-source
+                // metadata, then gets its dirstate re-read (e.g. by a SECOND hg4j write command
+                // running before the first copy is committed, such as a second `hg copy` from the
+                // same source), lost the first copy's copyMap record entirely on that re-read --
+                // the destination stayed correctly tracked as an added file, but its copy-source
+                // linkage vanished, so the eventual commit recorded no copy metadata for it at
+                // all (`hg log --template {file_copies}` silently missing that destination,
+                // `hg log --follow` unable to trace back through the copy).
+                this.copyMap.clear();
+                this.copyMap.putAll(parsed.getCopyMap());
                 return;
             }
         }

@@ -166,7 +166,16 @@ public class DirstateV2LayoutTest {
     }
 
     @Test
-    public void testGetSizeAndMtime_flagsNotSet_returnZero() {
+    public void testGetSizeAndMtime_flagsNotSet_returnAmbiguousSentinels() {
+        // Backlog #39 wave 4 (2026-09-05): real hg's own DirstateItem.from_v2_data
+        // (mercurial/pure/parsers.py) treats an absent HAS_MODE_AND_SIZE/HAS_MTIME bit as "no
+        // meaningful cached value, a full content comparison is required" -- NOT as a literal
+        // size/mtime of zero. Returning a concrete 0 (as this test used to assert) silently
+        // turned "ambiguous, needs lookup" into a definite (and wrong) "this file is 0 bytes as
+        // of epoch", corrupting any OTHER untouched dirstate-v2 entry that happened to be
+        // ambiguous the instant any hg4j write command did a read-modify-write of the dirstate.
+        // See Dirstate.Entry#isStatAmbiguous() for the shared sentinel convention this now
+        // matches (dirstate-v1 already used size=-1/AMBIGUOUS_TIME for the same concept).
         byte[] buffer = new byte[DirstateV2Node.NODE_SIZE];
         DirstateV2Node node = new DirstateV2Node(buffer, 0);
         node.setState('n');
@@ -174,8 +183,8 @@ public class DirstateV2LayoutTest {
         node.setMtime(999999L);
         node.setMtimeNanoseconds(42);
 
-        assertEquals(0, node.getSize());
-        assertEquals(0, node.getMtime());
+        assertEquals(-1, node.getSize());
+        assertEquals(Dirstate.Entry.AMBIGUOUS_TIME, node.getMtime());
         assertEquals(0, node.getMtimeNanoseconds());
     }
 }

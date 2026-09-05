@@ -293,6 +293,21 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   (hg4j가 고칠 수 없는 문제)로 명시적으로 tolerate 처리. 상세는
   [[mercurial-spec-compliance-requirement]] 백로그 #39 참고. 나머지 44개
   명령은 여전히 미착수.
+  **Wave 4(2026-09-05, `CopyCommand`/`RenameCommand`/`ForgetCommand`/
+  `RemoveCommand`/`AddremoveCommand`)**: 5개 명령 전부 native 6/6 + Docker
+  30/30 = 36/36 GREEN. 진짜 hg4j 버그 4건 발견·수정: (1) `AddCommand`가
+  이미 dirstate 항목이 있는 경로(forget/remove 이후 재-add)에 항상 신규
+  `a` 항목을 만들어 filelog 히스토리 연결이 끊기던 버그(real hg는
+  `normallookup`으로 `n`+모호 stat 복원), (2) dirstate-v2에서 "캐시된
+  size/mtime을 신뢰 불가"(HAS_MODE_AND_SIZE/HAS_MTIME 플래그 꺼짐)를
+  hg4j가 구체적이지만 틀린 0으로 읽어들여 `RemoveCommand`/`StatusCommand`/
+  `ShelveCommand`/`CommitCommand`가 건드리지 않은 파일을 "수정됨"으로
+  오판하던 공용 버그(`Dirstate.Entry#isStatAmbiguous()` 신설로 해결), (3)
+  `Dirstate.read(File)`의 dirstate-v2 분기가 파싱된 copyMap을 아예
+  버리던 한 줄 누락 버그(연속된 `hg copy` 호출 중 앞선 복사의 copy-source
+  기록이 사라짐), (4) `CommitCommand`가 커밋된 파일의 dirstate copyMap
+  잔여 기록을 정리하지 않던 버그. 상세는 [[mercurial-spec-compliance-requirement]]
+  백로그 #39 참고. 나머지 48개 로컬 명령은 여전히 미착수.
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

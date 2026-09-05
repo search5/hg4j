@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.bundle.ChangegroupParser;
+import io.github.search5.hg4j.bundle.Bundle2Parser;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.transport.HgRemoteConnection;
 import io.github.search5.hg4j.transport.HgRemoteConnectionFactory;
@@ -20,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import io.github.search5.hg4j.errors.HgValidationException;
@@ -232,6 +234,25 @@ public class PushCommand {
                 bundle.manifestEntries = new ArrayList<>();
                 bundle.fileGroups = new ArrayList<>();
 
+                // Backlog #39 (2026-09-05): negotiate a changegroup version from what THIS
+                // push's own data needs, mirroring HgLocalClient#getBundle's own version
+                // selection for the pull/getbundle response direction: cg5 whenever the
+                // repository carries changelog sidedata (exp-use-copies-side-data-changeset --
+                // cg5 is the only version able to carry a sidedata chunk at all), else cg3 (the
+                // minimum tree-capable version) whenever the repository is treemanifest (cg3/
+                // cg4/cg5 all wrap the manifest into the tree-capable envelope -- root group
+                // plus zero or more per-directory subgroups; real hg emits this same envelope
+                // even for a flat manifest once the version itself is cg3+, see
+                // ChangegroupParser#isTreeCapableVersion), else the original cg1 (unchanged wire
+                // bytes for every plain-format repo push, still the overwhelming majority).
+                // Previously PushCommand always hand-rolled bare cg1 bytes here, which
+                // structurally could not carry either a treemanifest directory group or a
+                // sidedata chunk -- root-caused via RequirementMatrixPush{Core,Docker}RoundTripTest.
+                boolean sidedataCopies = repository.isSidedataCopies();
+                boolean treemanifest = repository.isTreemanifest();
+                String version = sidedataCopies ? "05" : (treemanifest ? "03" : "01");
+                boolean treeCapable = !"01".equals(version);
+
                 // 1a. Pack Changelogs
                 // cg1은 각 엔트리의 델타를 "이 그룹 스트림에서 바로 직전에 패킹된 엔트리"를
                 // 기준으로 인코딩한다(mercurial/changegroup.py의 ChangeGroupPacker01,
@@ -244,23 +265,46 @@ public class PushCommand {
                 // 맞았고, 그렇지 않으면(예: 여러 head가 있는 저장소로의 push에서 startRev의
                 // 진짜 부모가 startRev-1보다 앞선 리비전인 경우) 수신측이 엉뚱한 베이스로
                 // 델타를 복원해 해시가 깨지고 unbundle이 실패한다(실제 hg 서버로 재현,
-                // 2026-09-04: divergent head를 강제 push하면 HTTP 500).
+                // 2026-09-04: divergent head를 강제 push하면 HTTP 500). cg2+에서는 이 같은
+                // 베이스를 deltabase 필드에도 명시적으로 실어야 한다(cg1은 스트림 순서로만
+                // 암묵적으로 나타냄) -- HgLocalClient#getBundle의 prevClNode와 동일한 패턴.
                 byte[] prevClContent = null;
+                byte[] prevClNode = new byte[20];
                 for (int r = startRev; r < count; r++) {
                     Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
                     ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
                     clEntry.node = clRec.getNodeId();
-                    clEntry.p1 = (clRec.getParent1() != -1) ? changelog.getIndexRecord(clRec.getParent1()).getNodeId() : new byte[20];
+                    byte[] clP1Node = (clRec.getParent1() != -1) ? changelog.getIndexRecord(clRec.getParent1()).getNodeId() : new byte[20];
+                    clEntry.p1 = clP1Node;
                     clEntry.p2 = (clRec.getParent2() != -1) ? changelog.getIndexRecord(clRec.getParent2()).getNodeId() : new byte[20];
                     clEntry.cs = clRec.getNodeId();
+                    clEntry.flags = clRec.getFlags();
 
                     byte[] content = changelog.getRevisionContent(r);
-                    byte[] deltaBasis = (r == startRev)
-                            ? ((clRec.getParent1() != -1) ? changelog.getRevisionContent(clRec.getParent1()) : new byte[0])
-                            : prevClContent;
+                    byte[] deltaBasis;
+                    byte[] deltaBaseNode;
+                    if (r == startRev) {
+                        deltaBasis = (clRec.getParent1() != -1) ? changelog.getRevisionContent(clRec.getParent1()) : new byte[0];
+                        deltaBaseNode = clP1Node;
+                    } else {
+                        deltaBasis = prevClContent;
+                        deltaBaseNode = prevClNode;
+                    }
+                    clEntry.deltabase = deltaBaseNode;
                     clEntry.delta = Revlog.createDelta(deltaBasis, content);
+                    if (sidedataCopies) {
+                        // Symmetric write-side counterpart of HgLocalClient#getBundle's own
+                        // packChangelogSidedata block (backlog 26) -- push needs to carry
+                        // outgoing sidedata into the pushed changegroup the same way getbundle
+                        // already does for pull responses.
+                        Map<Integer, byte[]> sidedata = changelog.getSidedata(r);
+                        if (sidedata != null && !sidedata.isEmpty()) {
+                            clEntry.sidedata = io.github.search5.hg4j.storage.SidedataCodec.serialize(sidedata);
+                        }
+                    }
                     bundle.changelogEntries.add(clEntry);
                     prevClContent = content;
+                    prevClNode = clRec.getNodeId();
                 }
 
                 // 1b. Pack Manifests
@@ -269,7 +313,9 @@ public class PushCommand {
                 // changelog와 동일한 규칙: 이 그룹의 "첫" 엔트리만 자신의 실제 p1 manifest
                 // 리비전 콘텐츠를 베이스로 삼고(cg1unpacker._deltaheader의 prevnode==None
                 // 규칙), 이후 엔트리는 직전에 패킹된 엔트리를 베이스로 삼는다.
+                List<ChangegroupParser.ChangeGroupEntry> rootMfEntries = new ArrayList<>();
                 byte[] prevMfContent = null;
+                byte[] prevMfNode = new byte[20];
                 for (int r = startRev; r < count; r++) {
                     byte[] clContent = changelog.getRevisionContent(r);
                     String clText = new String(clContent, StandardCharsets.UTF_8);
@@ -289,59 +335,87 @@ public class PushCommand {
                     Revlog.IndexRecord mfRec = manifest.getIndexRecord(mfRev);
                     ChangegroupParser.ChangeGroupEntry mfEntry = new ChangegroupParser.ChangeGroupEntry();
                     mfEntry.node = mfRec.getNodeId();
-                    mfEntry.p1 = (mfRec.getParent1() != -1) ? manifest.getIndexRecord(mfRec.getParent1()).getNodeId() : new byte[20];
+                    byte[] mfP1Node = (mfRec.getParent1() != -1) ? manifest.getIndexRecord(mfRec.getParent1()).getNodeId() : new byte[20];
+                    mfEntry.p1 = mfP1Node;
                     mfEntry.p2 = (mfRec.getParent2() != -1) ? manifest.getIndexRecord(mfRec.getParent2()).getNodeId() : new byte[20];
                     mfEntry.cs = changelog.getIndexRecord(r).getNodeId();
+                    mfEntry.flags = mfRec.getFlags();
 
                     byte[] content = manifest.getRevisionContent(mfRev);
-                    byte[] mfDeltaBasis = bundle.manifestEntries.isEmpty()
-                            ? ((mfRec.getParent1() != -1) ? manifest.getRevisionContent(mfRec.getParent1()) : new byte[0])
-                            : prevMfContent;
+                    byte[] mfDeltaBasis;
+                    byte[] mfDeltaBaseNode;
+                    if (rootMfEntries.isEmpty()) {
+                        mfDeltaBasis = (mfRec.getParent1() != -1) ? manifest.getRevisionContent(mfRec.getParent1()) : new byte[0];
+                        mfDeltaBaseNode = mfP1Node;
+                    } else {
+                        mfDeltaBasis = prevMfContent;
+                        mfDeltaBaseNode = prevMfNode;
+                    }
+                    mfEntry.deltabase = mfDeltaBaseNode;
                     mfEntry.delta = Revlog.createDelta(mfDeltaBasis, content);
-                    bundle.manifestEntries.add(mfEntry);
+                    rootMfEntries.add(mfEntry);
                     prevMfContent = content;
+                    prevMfNode = mfRec.getNodeId();
+                }
+
+                if (treeCapable) {
+                    // cg3/cg4/cg5 always wrap the manifest in the tree-capable envelope, even
+                    // for a flat manifest (root group only, no subdirectory groups) -- real hg
+                    // does the same (see ChangegroupParser#isTreeCapableVersion's javadoc).
+                    bundle.manifestEntries = null;
+                    bundle.manifestGroups = new ArrayList<>();
+                    ChangegroupParser.ManifestGroup rootGroup = new ChangegroupParser.ManifestGroup();
+                    rootGroup.path = "";
+                    rootGroup.entries = rootMfEntries;
+                    bundle.manifestGroups.add(rootGroup);
+
+                    if (treemanifest) {
+                        // Enumerate every directory manifest ("dirlog") this treemanifest
+                        // repository has ever written (meta/<dir>/00manifest.i, the same plain
+                        // -- unencoded -- path convention CommitCommand#writeTreeManifestDir
+                        // already writes) and pack whichever of its revisions fall in this
+                        // push's range, exactly like §1c below already does for filelogs (same
+                        // linkRev-range selection, same delta-basis chaining). The RECEIVING
+                        // side already fully supports this (FetchCommand#applyBundle's
+                        // bundle.manifestGroups handling) -- only the SENDING side (this method)
+                        // was missing it, which is the actual bug backlog #39's matrix found.
+                        List<String> treeDirs = findTreemanifestDirs(repository);
+                        Collections.sort(treeDirs);
+                        for (String dirPath : treeDirs) {
+                            File dirIdx = new File(repository.getStoreDir(), "meta/" + dirPath + "/00manifest.i");
+                            File dirDat = new File(repository.getStoreDir(), "meta/" + dirPath + "/00manifest.d");
+                            if (!dirIdx.exists()) {
+                                continue;
+                            }
+                            Revlog dirlog = repository.getRevlog(dirIdx, dirDat);
+                            List<ChangegroupParser.ChangeGroupEntry> dirEntries = packRevlogRange(dirlog, changelog, startRev);
+                            if (!dirEntries.isEmpty()) {
+                                ChangegroupParser.ManifestGroup mg = new ChangegroupParser.ManifestGroup();
+                                mg.path = dirPath;
+                                mg.entries = dirEntries;
+                                bundle.manifestGroups.add(mg);
+                            }
+                        }
+                    }
+                } else {
+                    bundle.manifestEntries = rootMfEntries;
                 }
 
                 // 1c. Pack Filelogs
+                // 같은 규칙: 각 파일은 자기만의 별도 cg1 그룹이므로, 이 파일에서 이번 push로
+                // 새로 패킹되는 "첫" 리비전은 그 리비전 자신의 실제 filelog p1 콘텐츠를
+                // 베이스로 삼아야 한다("linkRev < startRev 중 가장 최근 것"은 틀린 근사치였다
+                // -- 그 리비전이 첫 신규 리비전의 진짜 부모가 아닐 수 있다. 예: 같은 파일이
+                // 서로 다른 head에서 각각 수정된 경우). 이후 리비전은 직전에 패킹된 리비전을
+                // 베이스로 삼는다 -- packRevlogRange()로 일반화(§1b의 treemanifest dirlog
+                // 패킹과 완전히 동일한 규칙이라 backlog #39에서 공용 헬퍼로 뽑음).
                 for (String path : affectedFiles) {
                     File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                     File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                     if (!flIdx.exists()) continue;
 
                     Revlog fl = repository.getRevlog(flIdx, flDat);
-                    List<ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
-
-                    // 같은 규칙: 각 파일은 자기만의 별도 cg1 그룹이므로, 이 파일에서 이번 push로
-                    // 새로 패킹되는 "첫" 리비전은 그 리비전 자신의 실제 filelog p1 콘텐츠를
-                    // 베이스로 삼아야 한다("linkRev < startRev 중 가장 최근 것"은 틀린 근사치였다
-                    // -- 그 리비전이 첫 신규 리비전의 진짜 부모가 아닐 수 있다. 예: 같은 파일이
-                    // 서로 다른 head에서 각각 수정된 경우). 이후 리비전은 직전에 패킹된 리비전을
-                    // 베이스로 삼는다.
-                    byte[] prevFlContent = null;
-                    for (int i = 0; i < fl.getRevisionCount(); i++) {
-                        Revlog.IndexRecord flRec = fl.getIndexRecord(i);
-                        // Only pack revision if its linkRev is in our push range
-                        if (flRec.getLinkRev() >= startRev) {
-                            ChangegroupParser.ChangeGroupEntry flEntry = new ChangegroupParser.ChangeGroupEntry();
-                            flEntry.node = flRec.getNodeId();
-                            flEntry.p1 = (flRec.getParent1() != -1) ? fl.getIndexRecord(flRec.getParent1()).getNodeId() : new byte[20];
-                            flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
-                            flEntry.cs = changelog.getIndexRecord(flRec.getLinkRev()).getNodeId();
-
-                            // Raw (as-stored) content, not getRevisionContent(): a filelog
-                            // revision can be censored (Revlog.REVIDX_ISCENSORED), and bundling
-                            // must transfer its tombstone bytes as-is rather than throwing
-                            // HgCensoredContentException -- real hg's own changegroup packer
-                            // likewise always uses rawdata()/`_chunk()`, never the decoded text.
-                            byte[] content = fl.getRawRevisionContent(i);
-                            byte[] flDeltaBasis = flEntries.isEmpty()
-                                    ? ((flRec.getParent1() != -1) ? fl.getRawRevisionContent(flRec.getParent1()) : new byte[0])
-                                    : prevFlContent;
-                            flEntry.delta = Revlog.createDelta(flDeltaBasis, content);
-                            flEntries.add(flEntry);
-                            prevFlContent = content;
-                        }
-                    }
+                    List<ChangegroupParser.ChangeGroupEntry> flEntries = packRevlogRange(fl, changelog, startRev);
 
                     if (!flEntries.isEmpty()) {
                         ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
@@ -351,33 +425,34 @@ public class PushCommand {
                     }
                 }
 
-                // 2. Serialize bundle to binary bytes
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                try (DataOutputStream dos = new DataOutputStream(baos)) {
-                    // Write HG10UN magic bytes for uncompressed bundle1 format compatibility with native hg
-                    dos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
+                // 2. Serialize bundle to binary bytes at the negotiated version, reusing the
+                // same shared writer HgLocalClient#getBundle already relies on for the pull/
+                // getbundle response direction (backlog #39, 2026-09-05: PushCommand used to
+                // hand-roll bare cg1 bytes here via now-removed writeEntryChunk/writePathChunk/
+                // writeTerminalChunk helpers, which structurally could not carry a treemanifest
+                // directory group or a sidedata chunk).
+                ByteArrayOutputStream cgOut = new ByteArrayOutputStream();
+                ChangegroupParser.writeBundle(cgOut, bundle, version);
+                byte[] cgBytes = cgOut.toByteArray();
 
-                    // Changelog group
-                    for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
-                        writeEntryChunk(dos, entry);
+                byte[] bundleBytes;
+                if ("01".equals(version)) {
+                    // Unchanged wire shape for the common (plain-format) case: hg4j's own
+                    // "HG10UN" file-role convention (see HgLocalClient#getBundle's own
+                    // legacy-branch comment).
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    try (DataOutputStream dos = new DataOutputStream(baos)) {
+                        dos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
+                        dos.write(cgBytes);
                     }
-                    writeTerminalChunk(dos);
-
-                    // Manifest group
-                    for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
-                        writeEntryChunk(dos, entry);
-                    }
-                    writeTerminalChunk(dos);
-
-                    // File groups
-                    for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
-                        writePathChunk(dos, fg.path);
-                        for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
-                            writeEntryChunk(dos, entry);
-                        }
-                        writeTerminalChunk(dos);
-                    }
-                    writeTerminalChunk(dos);
+                    bundleBytes = baos.toByteArray();
+                } else {
+                    // cg3+/cg5 needs the HG20 bundle2 envelope -- every push destination this
+                    // repository can reach (local file://, or a wire server via
+                    // Wire1Commands/HgSshWireServer, all funneling into
+                    // HgLocalClient#pushWithHooks) only reads an explicit cgVersion off THIS
+                    // envelope; its plain "HG10" branch hardcodes cgVersion="01".
+                    bundleBytes = Bundle2Parser.wrapChangegroupInBundle2(cgBytes, version);
                 }
 
                 // 3. Dispatch bundle to remote destination.
@@ -390,7 +465,7 @@ public class PushCommand {
                 // is overriding a head conflict could get spuriously rejected as "raced" by a
                 // server-side check that (correctly, for a non-forced push) compares against the
                 // heads this client saw before building the bundle.
-                String response = client.push(baos.toByteArray(), force ? List.of("force") : remoteHeads);
+                String response = client.push(bundleBytes, force ? List.of("force") : remoteHeads);
 
                 // 3a. Sync local bookmarks to remote utilizing pushkey protocol
                 try {
@@ -814,24 +889,84 @@ public class PushCommand {
         return map;
     }
 
-    private void writeEntryChunk(DataOutputStream dos, ChangegroupParser.ChangeGroupEntry entry) throws IOException {
-        int totalLen = 4 + 80 + entry.delta.length;
-        dos.writeInt(totalLen);
-        dos.write(entry.node);
-        dos.write(entry.p1);
-        dos.write(entry.p2);
-        dos.write(entry.cs);
-        dos.write(entry.delta);
+    /**
+     * Packs every revision of {@code revlog} whose {@code linkRev} falls in {@code [startRev,
+     * end)} into changegroup entries -- shared by §1c's filelog packing and §1b's treemanifest
+     * dirlog packing (backlog #39, 2026-09-05: these were two independent, near-identical
+     * hand-copies of the same rule before being unified here). Each new entry's delta basis is
+     * its own real parent's content for the first packed revision, and the previously-packed
+     * revision for the rest ("linkRev < startRev 중 가장 최근 것" is NOT used as the first
+     * entry's base -- that revision may not actually be this entry's real parent, e.g. the same
+     * file/directory modified independently on two different heads). Content is always read via
+     * {@link Revlog#getRawRevisionContent} (never the decoded {@code getRevisionContent}) so a
+     * censored revision's tombstone bytes transfer as-is, matching real hg's own changegroup
+     * packer.
+     */
+    private static List<ChangegroupParser.ChangeGroupEntry> packRevlogRange(Revlog revlog, Revlog changelog, int startRev) throws IOException {
+        List<ChangegroupParser.ChangeGroupEntry> entries = new ArrayList<>();
+        byte[] prevContent = null;
+        byte[] prevNode = new byte[20];
+        for (int i = 0; i < revlog.getRevisionCount(); i++) {
+            Revlog.IndexRecord rec = revlog.getIndexRecord(i);
+            if (rec.getLinkRev() < startRev) {
+                continue;
+            }
+            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+            entry.node = rec.getNodeId();
+            byte[] p1Node = (rec.getParent1() != -1) ? revlog.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
+            entry.p1 = p1Node;
+            entry.p2 = (rec.getParent2() != -1) ? revlog.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
+            entry.cs = changelog.getIndexRecord(rec.getLinkRev()).getNodeId();
+            entry.flags = rec.getFlags();
+
+            byte[] content = revlog.getRawRevisionContent(i);
+            byte[] deltaBasis;
+            byte[] deltaBaseNode;
+            if (entries.isEmpty()) {
+                deltaBasis = (rec.getParent1() != -1) ? revlog.getRawRevisionContent(rec.getParent1()) : new byte[0];
+                deltaBaseNode = p1Node;
+            } else {
+                deltaBasis = prevContent;
+                deltaBaseNode = prevNode;
+            }
+            entry.deltabase = deltaBaseNode;
+            entry.delta = Revlog.createDelta(deltaBasis, content);
+            entries.add(entry);
+            prevContent = content;
+            prevNode = rec.getNodeId();
+        }
+        return entries;
     }
 
-    private void writePathChunk(DataOutputStream dos, String path) throws IOException {
-        byte[] pathBytes = path.getBytes(StandardCharsets.UTF_8);
-        int totalLen = 4 + pathBytes.length;
-        dos.writeInt(totalLen);
-        dos.write(pathBytes);
+    /**
+     * Enumerates every directory manifest ("dirlog") a treemanifest repository has ever written,
+     * as plain {@code dir/subdir}-style relative paths (matching {@code
+     * CommitCommand#writeTreeManifestDir}'s own unencoded {@code meta/<dir>/00manifest.i}
+     * convention exactly -- no fncache lookup needed, since treemanifest dirlogs are never
+     * registered there, unlike filelogs).
+     */
+    private static List<String> findTreemanifestDirs(HgRepository repository) {
+        List<String> dirs = new ArrayList<>();
+        File metaRoot = new File(repository.getStoreDir(), "meta");
+        if (metaRoot.isDirectory()) {
+            collectTreemanifestDirs(metaRoot, "", dirs);
+        }
+        return dirs;
     }
 
-    private void writeTerminalChunk(DataOutputStream dos) throws IOException {
-        dos.writeInt(0);
+    private static void collectTreemanifestDirs(File dir, String relPath, List<String> out) {
+        if (!relPath.isEmpty() && new File(dir, "00manifest.i").exists()) {
+            out.add(relPath);
+        }
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File child : children) {
+            if (child.isDirectory()) {
+                String childRel = relPath.isEmpty() ? child.getName() : relPath + "/" + child.getName();
+                collectTreemanifestDirs(child, childRel, out);
+            }
+        }
     }
 }

@@ -1468,6 +1468,11 @@ public class Revlog {
         return index.findRevision(nodeId);
     }
 
+    /** See {@link RevlogIndex#hasLocallyAddedRecords()}. */
+    public synchronized boolean hasLocallyAddedRecords() {
+        return index.hasLocallyAddedRecords();
+    }
+
     /** Delegates to {@link DeltaEngine}. */
     public static byte[] applyDelta(byte[] baseText, byte[] delta) throws IOException {
         return DeltaEngine.applyDelta(baseText, delta);

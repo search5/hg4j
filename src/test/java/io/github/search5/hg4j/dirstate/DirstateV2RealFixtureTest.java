@@ -91,6 +91,10 @@ public class DirstateV2RealFixtureTest {
         // DirstateItem treats an absent flag as "no meaningful value, needs a real lookup", not a
         // literal size/mtime of zero -- see Dirstate.Entry#isStatAmbiguous()), not a bogus
         // concrete 0/0 that would make this freshly-added file look like a genuine 0-byte file.
+        // DirstateV2Parser translates that flag absence into the same v1-style "possibly dirty"
+        // sentinel (-1) StatusCommand/RevertCommand/BackoutCommand/ShelveCommand already share,
+        // rather than passing through the raw (and misleading -- a literal 0 looks like a real
+        // cached zero-byte size) 0 the underlying DirstateV2Node getter returns when unset.
         assertEquals(-1, dirstate.getEntries().get("a.txt").getSize());
     }
 

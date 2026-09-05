@@ -120,10 +120,13 @@ public class WorkingCopySafetyTest {
         File f1 = new File(repoDir, "a.txt");
         Files.writeString(f1.toPath(), "Added file content\n");
         new AddCommand(repo).call(); // added, but parent commit is zero
-        
-        // Reverting this should succeed and delete/untrack the file because parent node is zero and file is added
+
+        // Reverting an added-but-never-committed file only untracks it -- real hg leaves its
+        // on-disk content untouched (verified live against hg 7.2, 2026-09-05, backlog #39
+        // wave 4); it must NOT be deleted.
         assertTrue(new RevertCommand(repo).setFile("a.txt").call());
-        assertFalse(f1.exists());
+        assertTrue(f1.exists());
+        assertEquals("Added file content\n", Files.readString(f1.toPath()));
         assertNull(repo.getDirstate().getEntries().get("a.txt"));
 
         // 2. Commit a file to revision 0
@@ -158,11 +161,14 @@ public class WorkingCopySafetyTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("Rev 1").call();
 
-        // Reverting b.txt to revision "0" (baseNode) where it wasn't tracked
-        // It should delete it from disk and untrack it completely because it's not tracked in target commit
+        // Reverting b.txt to revision "0" (baseNode) where it wasn't tracked: since b.txt WAS
+        // already committed (in "Rev 1"), real hg deletes it from disk and marks it removed
+        // ('r'), not merely untracked -- verified live against hg 7.2 (2026-09-05): `hg status`
+        // shows "R b.txt" afterward. This is distinct from reverting a file that was only ever
+        // `hg add`ed and never committed (case 1 above, which is untracked entirely).
         assertTrue(new RevertCommand(repo).setFile("b.txt").setRevision("0").call());
         assertFalse(f2.exists());
-        assertNull(repo.getDirstate().getEntries().get("b.txt"));
+        assertEquals('r', repo.getDirstate().getEntries().get("b.txt").getState());
     }
 
     @Test

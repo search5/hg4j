@@ -83,11 +83,13 @@ public class StatusCommand {
                         // (not just mtime) -- see Dirstate.Entry#isStatAmbiguous(): a same-second
                         // racy commit lands a 'n' entry with size=-1/mtime=AMBIGUOUS_TIME
                         // together (verified live: `hg add; hg commit` within the same
-                        // wall-clock second produces mode=0/size=-1/mtime=-1 all at once). Gating
-                        // only on mtime here left the size-sentinel (-1) comparison unguarded, so
-                        // it never equaled a real on-disk size and every such entry looked
-                        // permanently "modified" instead of falling through to the real content
-                        // comparison below.
+                        // wall-clock second produces mode=0/size=-1/mtime=-1 all at once; also
+                        // independently confirmed via BackoutCommand's own precondition check
+                        // tripping on a freshly, cleanly committed repo). Gating only on mtime
+                        // here left the size-sentinel (-1) comparison unguarded, so it never
+                        // equaled a real on-disk size and every such entry looked permanently
+                        // "modified" instead of falling through to the real content comparison
+                        // below.
                         boolean statAmbiguous = dEntry.isStatAmbiguous();
                         if (!statAmbiguous && (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime)) {
                             status.getModified().add(path);

@@ -253,15 +253,12 @@ audience: cross-agent handoff (Gemini 등 이 대화 맥락이 없는 외부 에
   추측이 아니라 실측. 실제 hg로 만든 changelog-v2 저장소를 hg4j로 읽고, hg4j로 새
   리비전을 쓴 뒤 그 저장소를 실제 `hg log`/`hg verify`로 열어 정확히 인식되는 것까지
   확인함(`hg verify` integrity error 0건). 상세: [decisions/revlog-v2-support-plan.md](decisions/revlog-v2-support-plan.md).
-- **미완료로 명시적으로 남긴 범위**: 일반 revlog-v2(`exp-revlogv2.2`, 매니페스트/파일로그)와
-  persistent-nodemap(`.n` 트라이 파일)은 **의도적으로 미착수**. 이 환경의 hg 바이너리는
-  Rust 확장이 없어 이 두 기능을 켜면 `abort: accessing ... without associated fast
-  implementation`으로 저장소 생성 자체가 안 됨 — 검증할 방법이 없는 채로 구현하면
-  changelog-v2와 같은 반려 사유(추측 기반 구현)가 재발하므로 보류. 바이트 레이아웃은
-  Mercurial 소스에서 확인했으나(`INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x`) hg4j 코드에는
-  반영하지 않음. Rust 포함 `hg` 바이너리를 구할 수 있는 환경에서 이어서 작업할 것 —
-  방법론(실제 저장소 생성 → hexdump/python struct 대조 → TDD → 실제 hg로 상호운용
-  재검증)은 changelog-v2와 동일하게 따르면 됨.
+- **(stale, 2026-09-01 시점 노트 — 이후 완료됨)** 이 문단은 원래 "일반 revlog-v2/
+  persistent-nodemap은 이 환경의 hg 바이너리에 Rust 확장이 없어 검증 불가하므로
+  의도적으로 미착수"라고 적어뒀었다. 이후 `docker/hg-rust-7.2.4/Dockerfile`로 Rust
+  확장이 활성화된 실제 Mercurial 7.2.4를 직접 빌드해 이 문제를 해결하고 두 기능
+  모두 완료했다 — ✅ **일반 revlog-v2(`exp-revlogv2.2`) + persistent-nodemap(`.n`
+  트라이 파일 읽기/쓰기) 전부 완료**(백로그 4/15/21). 상세: [[backlog/revlog-storage-formats]].
 - **영향받는 클래스(실제 반영됨)**: `storage.RevlogIndex`(v2 docket/index 파싱,
   `getIndexRecord()` v2 분기, `updateV2DocketSizes()`), `storage.Revlog`(v2 datFile
   자동 해석, `appendRevisionV2()`), `lib.HgRepository`(`.hg/store/requires`까지 읽도록

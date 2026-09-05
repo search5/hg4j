@@ -464,16 +464,39 @@ public class Revlog {
             case COMP_MODE_PLAIN:
                 return chunk;
             case COMP_MODE_DEFAULT: {
-                long size = Zstd.getFrameContentSize(chunk);
-                if (size < 0) {
-                    throw new HgCorruptDataException("Invalid zstd sidedata frame: could not determine content size");
+                // Backlog #39: COMP_MODE_DEFAULT does NOT mean "zstd" unconditionally here either
+                // -- exactly the same "whatever this repository's actual default engine is" point
+                // appendRevisionV2's javadoc makes for the MAIN data chunk applies equally to
+                // sidedata. A changelog-v2+sidedata repository created WITHOUT the
+                // revlog-compression-zstd requirement (real hg's own format.usezstd=false /
+                // format.revlog-compression=zlib) compresses its sidedata with plain zlib/DEFLATE
+                // instead when compression actually shrinks it -- unconditionally attempting zstd
+                // here threw "Invalid zstd sidedata frame: could not determine content size" on
+                // perfectly valid real-hg-written data, caught 2026-09-05 by
+                // RequirementMatrixSidedataChangedFilesCoreRoundTripTest (whose harness always
+                // forces zlib to keep byte output deterministic, matching every other
+                // RequirementMatrix*RoundTripTest in this suite).
+                //
+                // A genuine zstd frame's own magic number happens to start with byte 0x28 --
+                // exactly DeltaCodec.decompress's dedicated zstd marker byte -- so sniff that
+                // first, matching the COMP_MODE_INLINE branch below; only when it IS a zstd frame
+                // do we need the frame-embedded content size (sidedata has no separate uncompLen
+                // field to fall back on). Any other first byte is handed to DeltaCodec.decompress,
+                // whose zlib branch grows its own output buffer dynamically (the uncompLen
+                // argument is only a sizing hint there, never load-bearing for correctness).
+                if (chunk.length > 0 && (chunk[0] & 0xFF) == 0x28) {
+                    long size = Zstd.getFrameContentSize(chunk);
+                    if (size < 0) {
+                        throw new HgCorruptDataException("Invalid zstd sidedata frame: could not determine content size");
+                    }
+                    byte[] dest = new byte[(int) size];
+                    long result = Zstd.decompress(dest, chunk);
+                    if (Zstd.isError(result)) {
+                        throw new HgCorruptDataException("Failed to decompress zstd sidedata chunk: " + Zstd.getErrorName(result));
+                    }
+                    return dest;
                 }
-                byte[] dest = new byte[(int) size];
-                long result = Zstd.decompress(dest, chunk);
-                if (Zstd.isError(result)) {
-                    throw new HgCorruptDataException("Failed to decompress zstd sidedata chunk: " + Zstd.getErrorName(result));
-                }
-                return dest;
+                return DeltaCodec.decompress(chunk, Math.max(chunk.length * 4, 64));
             }
             case COMP_MODE_INLINE: {
                 // Legacy per-hunk marker-byte convention (same one used for v1 data chunks).

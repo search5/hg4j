@@ -51,6 +51,13 @@ public final class SidedataChangedFilesCommand {
             throw new IllegalStateException("Revision must be set to a non-negative value before calling call()");
         }
 
+        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
+        // changelog-v2 revlog after an external process appended a revision -- see
+        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Especially relevant
+        // here since this command only ever exists for changelog-v2+sidedata repositories (the
+        // exact format family whose docket-based revlog silently missed external changes before
+        // this fix). Cheap no-op in the common (freshly-opened-per-call) case.
+        repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);

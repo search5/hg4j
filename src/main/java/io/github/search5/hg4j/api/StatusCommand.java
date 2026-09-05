@@ -50,6 +50,11 @@ public class StatusCommand {
     }
 
     public Status call() throws IOException {
+        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
+        // changelog-v2 revlog after an external process appended a revision -- see
+        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
+        // common (freshly-opened-per-call) case.
+        repository.refreshIfChangedOnDisk();
         Status status = new Status();
         Dirstate dirstate = repository.getDirstate();
         File repoDir = repository.getDirectory();

@@ -525,8 +525,12 @@ public class HgRepository implements Repository {
      * repository's own tracked manifest -- verified live against real hg 7.2, where {@code hg
      * status}/{@code hg add} at the parent level never see inside a subrepo path at all.
      * Best-effort: any parse failure yields an empty set rather than failing the whole scan.
+     *
+     * <p>Public (backlog #39) so other working-copy-walking commands ({@link
+     * io.github.search5.hg4j.api.PurgeCommand}) can apply the exact same subrepo boundary without
+     * re-parsing {@code .hgsub} themselves.
      */
-    private java.util.Set<String> loadSubrepoPaths() {
+    public java.util.Set<String> loadSubrepoPaths() {
         File hgsubFile = new File(directory, ".hgsub");
         if (!hgsubFile.exists()) {
             return java.util.Collections.emptySet();

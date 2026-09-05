@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
@@ -114,6 +115,48 @@ class TreeManifestWriteTest {
         assertTrue(mf2.containsKey("e.txt"));
         assertNotEquals(mf.get("sub/deep/c.txt"), mf2.get("sub/deep/c.txt"), "c.txt content changed, its filelog node must differ");
         assertEquals(mf.get("sub2/d.txt"), mf2.get("sub2/d.txt"), "untouched sub2/d.txt's filelog node must be unchanged");
+    }
+
+    @Test
+    @DisplayName("hg4j가 커밋한 treemanifest 디렉터리 manifest가 fncache에 빠짐없이 등록된다 (backlog 45)")
+    void treemanifestDirlogsAreRegisteredInFncache() throws Exception {
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "real hg CLI not installed");
+
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgRepository repo = initTreemanifestRepo(repoDir);
+
+        write(repoDir, "a.txt", "root file\n");
+        write(repoDir, "sub/b.txt", "sub file\n");
+        write(repoDir, "sub/deep/c.txt", "deep file\n");
+        write(repoDir, "sub2/d.txt", "sub2 file\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("initial nested tree").call();
+
+        List<String> fncacheLines = Files.readAllLines(new File(repoDir, ".hg/store/fncache").toPath());
+        assertTrue(fncacheLines.contains("meta/sub/00manifest.i"), "fncache: " + fncacheLines);
+        assertTrue(fncacheLines.contains("meta/sub/deep/00manifest.i"), "fncache: " + fncacheLines);
+        assertTrue(fncacheLines.contains("meta/sub2/00manifest.i"), "fncache: " + fncacheLines);
+        // Real hg's own fncache never lists a paired ".d" for a dirlog that stayed inline (no such
+        // file exists on disk yet) -- confirmed live against a fresh real-hg-created treemanifest
+        // repo, whose fncache lists only the three ".i" lines above for these small dirlogs.
+        assertFalse(fncacheLines.contains("meta/sub/00manifest.d"), "fncache: " + fncacheLines);
+        assertFalse(fncacheLines.contains("meta/sub/deep/00manifest.d"), "fncache: " + fncacheLines);
+        assertFalse(fncacheLines.contains("meta/sub2/00manifest.d"), "fncache: " + fncacheLines);
+
+        // The authoritative real-hg-CLI proof: `hg debugrebuildfncache` (no `--and-fix`) is real
+        // hg's own dry-run fncache-completeness auditor -- it prints "adding <path>" for every
+        // entry hg4j's fncache is missing without touching the file. Before this fix it printed
+        // "adding meta/sub/00manifest.i" / "adding meta/sub/deep/00manifest.i" /
+        // "adding meta/sub2/00manifest.i" / "3 items added, 0 removed from fncache" here; note
+        // `hg verify` itself does NOT flag this gap (confirmed live) -- debugrebuildfncache is the
+        // only real-hg-CLI-visible symptom, which is why this test asserts against it directly
+        // rather than `hg verify`.
+        String rebuildOut = HgTestUtils.hg(repoDir, "debugrebuildfncache");
+        assertTrue(rebuildOut.contains("already up to date"),
+                "real hg must find hg4j's fncache already complete for treemanifest dirlogs, got: " + rebuildOut);
+
+        String verifyOut = HgTestUtils.hg(repoDir, "verify");
+        assertFalse(verifyOut.toLowerCase().contains("error"), "real hg verify: " + verifyOut);
     }
 
     @Test

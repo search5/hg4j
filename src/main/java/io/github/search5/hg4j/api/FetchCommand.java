@@ -636,7 +636,6 @@ public class FetchCommand {
                         mDat = new File(repository.getStoreDir(), NodeIdUtil.encodeFname(storeRel + ".d"));
                         
                         fncachePaths.add(NodeIdUtil.encodeFname(storeRel + ".i"));
-                        fncachePaths.add(NodeIdUtil.encodeFname(storeRel + ".d"));
 
                         if (!fileSizes.containsKey(mIdx)) {
                             long idxLen = mIdx.exists() ? mIdx.length() : 0L;
@@ -659,6 +658,16 @@ public class FetchCommand {
                             throw new HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
                         }
                         subManifest.appendChangeGroupEntry(entry, linkRev);
+                    }
+                    // Only register the .d fncache entry once the applied entries actually pushed
+                    // this dirlog past the inline threshold (backlog #45 cross-check) -- real hg's
+                    // fncache never lists a .d path for a directory manifest that stayed inline (no
+                    // such file exists on disk), confirmed live: a real-hg treemanifest repo whose
+                    // submanifests are all small lists only "meta/<dir>/00manifest.i" in fncache,
+                    // never a paired ".d". Mirrors the isInline() guard already used for filelogs
+                    // below.
+                    if (mg.path != null && !mg.path.isEmpty() && !subManifest.isInline()) {
+                        fncachePaths.add(NodeIdUtil.encodeFname("meta/" + mg.path + "/00manifest.d"));
                     }
                 }
             } else {

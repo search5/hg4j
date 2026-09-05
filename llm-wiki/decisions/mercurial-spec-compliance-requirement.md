@@ -1,8 +1,8 @@
 ---
 updated: 2026-09-06
-status: 번호 매겨진 백로그 1~45번 중 45번(treemanifest manifest fncache 미등록,
-  43번 작업 중 발견)만 미착수, 나머지 전부 완료(25번은 오탐으로 종결; 41번 SVN
-  서브저장소는 2026-09-06 완료). 상세는 이 문서가 아니라 각 backlog/*.md 파일과
+status: 번호 매겨진 백로그 1~45번 전부 완료(25번은 오탐으로 종결; 41번 SVN
+  서브저장소, 45번 treemanifest manifest fncache 미등록 둘 다 2026-09-06 완료).
+  상세는 이 문서가 아니라 각 backlog/*.md 파일과
   known-bugs-registry.md/matrix-status.md를 참고할 것 — 이 파일은 **인덱스**로만
   유지한다(2026-09-06 재구조화, 이전 버전은 4508줄의 단일 누적 문서였음).
 ---
@@ -117,7 +117,7 @@ status: 번호 매겨진 백로그 1~45번 중 45번(treemanifest manifest fncac
 | 42 | LFS 세부 옵션 3가지 | ✅ | [[backlog/narrow-clone-and-lfs]] |
 | 43 | Revlog inline→non-inline 성장 전환 | ✅ | [[backlog/revlog-storage-formats]] |
 | 44 | Clonebundles 서버 매니페스트-없음 응답 | ✅ | [[backlog/clonebundles]] |
-| 45 | CommitCommand가 treemanifest manifest를 fncache 미등록(43번 작업 중 발견) | 🔶 미착수 | [[backlog/revlog-storage-formats]] |
+| 45 | CommitCommand가 treemanifest manifest를 fncache 미등록(43번 작업 중 발견) | ✅ | [[backlog/revlog-storage-formats]] |
 | — | 워킹 브랜치 복원 버그 4건 + histedit 저널링 | ✅ | [[backlog/branch-restore-bugs]] |
 
 ## 반복 발견 방지 규칙

@@ -224,8 +224,21 @@ public class DirstateV2Node {
     }
 
     public int getSize() {
+        // Real hg's own DirstateItem (mercurial/pure/parsers.py's DirstateItem.from_v2_data)
+        // leaves size as `None` (no meaningful cached value -- a full content comparison is
+        // required) whenever the HAS_MODE_AND_SIZE bit is unset, most commonly for a same-second
+        // racy write. Returning a concrete 0 here (as if the file's real recorded size were
+        // genuinely zero) instead of the dirstate-v1 "-1" ambiguous-size sentinel already used
+        // elsewhere (see Dirstate.Entry#isStatAmbiguous()) silently converted "ambiguous, needs
+        // lookup" into a definite wrong value -- every dirty-check that trusts this size then
+        // wrongly concluded the file had shrunk to 0 bytes. Confirmed live: any hg4j write
+        // command that reads a real-hg-authored dirstate-v2 file containing such an entry (e.g.
+        // the OTHER, untouched file next to the one hg4j is actually modifying) and later writes
+        // the dirstate back out would re-serialize that untouched file's entry with a bogus
+        // concrete size=0/mtime=epoch, making real hg's next `status`/`commit` see it as spuriously
+        // modified.
         if ((getFlags() & HAS_MODE_AND_SIZE) == 0) {
-            return 0;
+            return -1;
         }
         return buffer.getInt(offset + 32);
     }
@@ -235,8 +248,10 @@ public class DirstateV2Node {
     }
 
     public long getMtime() {
+        // See the identical reasoning on getSize() above -- an absent HAS_MTIME bit means real
+        // hg has no meaningful cached mtime, not a real mtime of epoch zero.
         if ((getFlags() & HAS_MTIME) == 0) {
-            return 0;
+            return Dirstate.Entry.AMBIGUOUS_TIME;
         }
         return buffer.getInt(offset + 36) & 0xFFFFFFFFL;
     }

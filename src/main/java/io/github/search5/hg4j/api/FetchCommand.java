@@ -706,6 +706,16 @@ public class FetchCommand {
 
                 String rawPath = "data/" + path.replace('\\', '/');
                 fncachePaths.add(rawPath + ".i");
+                if (!filelog.isInline()) {
+                    // Backlog #43: applying this changegroup may have pushed a previously-inline
+                    // filelog past real hg's 131072-byte inline threshold
+                    // (Revlog.enforceInlineSize(), called from inside appendChangeGroupEntry()
+                    // above), splitting it into a separate .d file -- real hg's own fncache tracks
+                    // BOTH the .i and .d path for any non-inline data/meta revlog, confirmed live
+                    // against real hg 7.2 (see the identical fix in CommitCommand for the local
+                    // commit path, and GcCommand's own fncache rebuild for the same convention).
+                    fncachePaths.add(rawPath + ".d");
+                }
             }
 
             if (!fncachePaths.isEmpty()) {

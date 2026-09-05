@@ -2628,6 +2628,76 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     **Native 6/6 + Docker 30/30 전부 GREEN** — 새 실버그 없음(`CommitCommand`로의
     위임이 모든 36개 조합에서 안전함을 재확인).
 
+    **Wave 3(2026-09-05, 사용자 지시로 계속 진행)**: `MergeCommand`/`SubrepoCommand`
+    두 명령을 함께 배정(코드 공유는 없음, 스케줄링 편의상 묶음). 신규 테스트
+    클래스 6개 추가(`RequirementMatrixMergeCoreRoundTripTest`/
+    `RequirementMatrixMergeDockerRoundTripTest`/`RequirementMatrixMergeHelperMain`,
+    `RequirementMatrixSubrepoCoreRoundTripTest`/
+    `RequirementMatrixSubrepoDockerRoundTripTest`/`RequirementMatrixSubrepoHelperMain`).
+    **두 명령 다 native 6/6 + Docker 30/30 전부 GREEN.**
+    - **`MergeCommand`**: 두 갈래로 갈라진 히스토리의 충돌 없는 3-way 병합과,
+      양쪽이 같은 줄을 고쳐 진짜로 충돌하는 병합(마커 확인 + 실제 hg
+      `hg resolve --list`로 상태 대조 + hg4j `ResolveCommand`로 resolve 후
+      커밋까지) 둘 다 36개 조합 전체에서 검증. 이 과정에서 `CommitCommand`에
+      진짜 hg4j 버그 2건을 TDD로 발견·수정(아래).
+    - **`SubrepoCommand`**: 기존 `SubrepoRealHgInteropTest`(이번 세션 앞서
+      작성, git/hg 서브저장소 커밋·머지·체크아웃을 이미 상세히 검증)와
+      중복을 피하기 위해, PARENT 저장소의 포맷/버전 조합 차원만 타겟팅
+      — `add`로 서브저장소를 v1에 pin, `init`으로 clone+체크아웃, hg4j
+      `CommitCommand`로 커밋(자동 `.hgsubstate` 스냅샷), pin을 v2로
+      올린 뒤 `update`로 재체크아웃, 재커밋까지 36개 조합 전체에서 검증.
+      진짜 hg4j 버그 1건을 TDD로 발견·수정(아래).
+
+    **발견·수정한 진짜 hg4j 버그 3건**:
+    1. **`SubrepoCommand`의 `init`/`update`가 pin된 리비전으로 실제
+       워킹카피 체크아웃을 한 적이 없었음**: 기존 코드는 서브저장소를
+       clone한 뒤(또는 이미 체크아웃된 경우) `.hgsubstate`에 적힌 리비전을
+       서브저장소 dirstate의 parent 포인터에 그대로 써넣기만 했지, 그
+       리비전에 맞는 파일 내용으로 워킹카피를 갱신하는 실제 체크아웃은
+       한 번도 수행하지 않았다 — pin된 리비전이 clone 기본 체크아웃(tip)과
+       다르거나(멀티 리비전 소스), 이미 체크아웃된 서브저장소의 pin이
+       나중에 다른 값으로 bump된 경우(`update`의 원래 목적 그 자체) 워킹카피
+       내용이 조용히 어긋난 채로 남았다. 기존 단위테스트가 이 케이스를
+       놓친 이유는 전부 소스가 커밋 1개짜리라 clone 기본 tip == pin이라
+       버그가 우연히 가려져 있었기 때문. `UpdateCommand`(강제 업데이트,
+       필요시 pull까지)로 위임하도록 수정 — 이미 검증된
+       `UpdateCommand.checkoutSubrepoEntry`와 동일한 real-hg `hg update -S`
+       동작을 재사용.
+    2. **`CommitCommand`의 미해결 병합 충돌 차단 로직이 실제 hg와 다른
+       기준으로 동작**: 기존 코드는 dirstate가 `m` 상태인 파일의 "현재
+       디스크 내용에 `<<<<<<<`/`=======`/`>>>>>>>` 리터럴 텍스트가 있는지"만
+       스캔해서 커밋을 막았다 — 실제 hg(`mercurial/commands.py`의 `commit`,
+       `mergestatemod.mergestate.read(repo)` + `ms.unresolvedcount()`)는
+       머지 상태(`.hg/merge/state2`) 자체의 resolved/unresolved 플래그만
+       본다. 텍스트 스캔 방식은 두 방향 모두 실제 hg와 어긋난다: (a) 이미
+       resolve된 파일이 우연히 저 마커 문자열을 정당하게 담고 있으면(예:
+       diff/patch 파일 자체) 영원히 커밋이 막히고, (b) `hg resolve --tool
+       internal:local`/`:other`처럼 마커를 아예 안 쓰는 방식으로 resolve한
+       뒤에도 실제 hg는 여전히 막아야 하는데 이 스캔은 통과시켜버린다.
+       머지 상태 파일(`MergeState.read` + `unresolvedFiles()`)을 직접
+       확인하도록 수정, 예외 메시지도 실제 hg 문구(`"unresolved merge
+       conflicts (see 'hg help resolve')"`)로 맞춤. 기존 `CommitCommandTest`/
+       `MergeCommandCoverageTest`의 관련 테스트 2개는 실제 머지 상태 없이
+       텍스트만 흉내 내던 비현실적 시나리오였어서, 진짜 2-parent dirstate +
+       `.hg/merge/state2`를 갖춘 시나리오로 함께 갱신.
+    3. **`CommitCommand`가 성공적인 머지 커밋 후 `.hg/merge`를 전혀 정리하지
+       않음**: 실제 hg 7.2 CLI로 직접 재현해 확인(`hg merge` → 충돌 →
+       `hg resolve -m` → `hg commit` → `ls .hg/merge`가 "No such file or
+       directory") — 실제 hg는 머지가 커밋으로 확정되면 `.hg/merge` 디렉터리
+       자체를 통째로 지운다(`mergestatemod.mergestate.reset()`). hg4j는
+       이걸 전혀 하지 않아서, 커밋 후에도 실제 hg `hg resolve --list`가
+       이미 끝난 머지의 파일을 계속 unresolved로 잘못 보고하고, 충돌 시
+       남긴 `.hg/merge/<localkey>` 백업 파일들도 영원히 남아있었다.
+       2-parent 커밋이 실제로 진행된 경우(`dirstate.getParent2Node()` 존재)
+       커밋 성공 직후 `.hg/merge`를 재귀 삭제하도록 수정.
+
+    **검증**: 위 3건 수정 후 `RequirementMatrixMergeCoreRoundTripTest`(native
+    6/6, clean+conflict 각 6 = 12개) + `RequirementMatrixMergeDockerRoundTripTest`
+    (Docker 30/30 x 2 = 60개) + `RequirementMatrixSubrepoCoreRoundTripTest`
+    (native 6/6) + `RequirementMatrixSubrepoDockerRoundTripTest`(Docker 30/30)
+    전부 GREEN. 비-interop `test`(2270+건) + `interopTest`(587건, 무관한
+    사전 조건부 스킵 8건 제외 전부 통과) 전체 재확인 — 새 회귀 없음.
+
     **남은 것(대부분 미착수)**: 나머지 로컬 명령 50개(`AddCommand`,
     `BookmarkCommand`, `MergeCommand`, `SubrepoCommand`, `BundleCommand`
     (조사 중 `PushCommand`의 수정 전과 동일한 cg1-only 하드코딩을 그대로

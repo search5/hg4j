@@ -33,8 +33,8 @@ public class HgAnnotateTest {
                     .call();
 
             assertNotNull(lines);
-            assertEquals(3, lines.size()); // 2 lines + trailing empty line from split("\n", -1)
-            
+            assertEquals(2, lines.size());
+
             assertEquals(1, lines.get(0).getLineNumber());
             assertEquals(0, lines.get(0).getRevision());
             assertEquals("Alice <alice@example.com>", lines.get(0).getAuthor());
@@ -73,9 +73,8 @@ public class HgAnnotateTest {
                     .call();
 
             assertNotNull(lines);
-            // 3 non-empty lines + 1 empty line at the end
-            assertEquals(4, lines.size());
-            
+            assertEquals(3, lines.size());
+
             // Line 1.5 (should be Bob, revision 1)
             assertEquals("Line 1.5", lines.get(0).getContent());
             assertEquals(1, lines.get(0).getRevision());

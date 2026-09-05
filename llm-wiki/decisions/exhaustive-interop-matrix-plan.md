@@ -359,6 +359,49 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `ImportCommand` 3개 명령을 앞선 wave 4 병합 결과(28/67)에 더해 로컬 명령
   기준 **31/67**로 증가.)
 
+  **Wave 5(2026-09-05, `CatCommand`/`FilesCommand`/`LocateCommand`/
+  `GrepCommand`/`AnnotateCommand`/`ManifestCommand`)**: 트리/경로/콘텐츠
+  조회 계열 6개 명령에 36개 조합(native 6 + Docker 30) 적용, 전부 GREEN.
+  전부 읽기 전용 명령이라 hg4j 자신은 어느 조합에서도 쓰기를 하지 않으므로
+  (`RequirementMatrixCommitHelperMain`이 우회하는 docker-exec 인터리빙
+  손상은 hg4j 자신의 revlog *쓰기* 특유의 문제) `HelperMain` 서브프로세스가
+  필요 없었음. 신규 테스트 클래스 4개(Cat+Files+Locate+Manifest를 묶은
+  `RequirementMatrixCatFilesLocateManifestCoreRoundTripTest`/
+  `...DockerRoundTripTest`, Grep+Annotate를 묶은
+  `RequirementMatrixGrepAnnotateCoreRoundTripTest`/`...DockerRoundTripTest`
+  — 앞선 wave의 Copy/Rename/Forget/Remove/Addremove 그룹핑과 같은 근거:
+  공유 manifest-읽기 경로를 한 저장소로 함께 검증하면서 Docker 컨테이너
+  생성 오버헤드도 줄임). 결과: Cat/Files/Locate/Manifest native 6/6 +
+  Docker 30/30, Grep/Annotate native 18/18(6 조합 x 3 테스트 메서드) +
+  Docker 90/90(30 조합 x 3 테스트 메서드). 비-interop `test` 2278건
+  0 실패/0 에러(2 스킵, 기존과 동일) 재확인.
+
+  진짜 hg4j 버그 3건 발견·수정(상세는
+  [[mercurial-spec-compliance-requirement]] 백로그 #39 참고): (1)
+  `DeltaCodec.decompressZstd`가 델타(비-리터럴) 리비전의 압축 해제
+  목적지 버퍼 크기로 인덱스의 `uncompLen`(실제로는 "이 청크 자체의
+  압축 해제 크기"가 아니라 "델타를 전부 적용한 뒤 최종 재구성 텍스트
+  크기" — `hg --debug debugindex`의 `full-size` 컬럼과 동일)를 그대로
+  신뢰해, 실제보다 큰 버퍼를 0으로 채운 채 반환하고 `DeltaEngine
+  .applyDelta`가 그 후행 0바이트를 가짜 델타 헝크 헤더로 오인식 —
+  네이티브 테스트는 항상 zlib를 강제해 절대 드러날 수 없었고 Docker
+  매트릭스도 지금까지 리비전 2개 이상인 매니페스트/파일로그를 zstd
+  압축 저장소에서 읽어본 적이 없어 이번에 처음 발각(zstd 프레임 자신의
+  임베디드 크기를 쓰도록 수정, 이미 sidedata 청크 경로가 쓰던 것과
+  같은 패턴). (2) `GrepCommand`가 `fileindex-v1`/`general-v2`
+  저장소(둘 다 `fncache` 자체가 없음 — 자체 `fileindex` 사이드카
+  파일이 대신함)에서 조용히 빈 결과만 반환하던 완결성 누락(`store/data/`
+  재귀 스캔 폴백 + 신규 `NodeIdUtil.decodeStoreDataPath` 디코더로 수정).
+  (3) `AnnotateCommand`가 rename과 콘텐츠 편집이 같은 커밋에 함께
+  일어날 때 그 커밋 자신의 diff를 건너뛰어 줄을 유실/오귀속하던 버그,
+  그리고 `DiffCommand`에서 이미 한 번 고쳤던 것과 같은 종류의 "후행
+  개행마다 가짜 빈 줄 생성" 버그 — 둘 다 real hg CLI와 직접 대조해 수정,
+  기존 유닛 테스트의 박제된 잘못된 기대값도 함께 갱신.
+
+  로컬 명령 기준 완주 수는 31에서 37로 증가(다른 wave 5 에이전트들과
+  병렬 진행 중이라 최종 합산은 조정자가 취합), 나머지 30개 로컬 명령 및
+  wire 매트릭스 잔여 5개는 여전히 미착수.
+
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)
 - [x] `CloneCommand`/`PullCommand`/`PushCommand` 핵심 라운드트립 — **완료

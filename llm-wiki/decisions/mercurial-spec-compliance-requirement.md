@@ -2628,17 +2628,79 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     **Native 6/6 + Docker 30/30 전부 GREEN** — 새 실버그 없음(`CommitCommand`로의
     위임이 모든 36개 조합에서 안전함을 재확인).
 
-    **남은 것(대부분 미착수)**: 나머지 로컬 명령 50개(`AddCommand`,
-    `BookmarkCommand`, `MergeCommand`, `SubrepoCommand`, `BundleCommand`
-    (조사 중 `PushCommand`의 수정 전과 동일한 cg1-only 하드코딩을 그대로
-    갖고 있는 것을 발견 — 다음 wave 후보로 유력) 등 — 전체 목록
-    [[exhaustive-interop-matrix-plan]] §3-2에서 이번에 다룬 5개
+    **Wave 3(2026-09-05, `BundleCommand`)**: Wave 2 완료 시점에 이미
+    "`PushCommand`의 수정 전과 동일한 cg1-only 하드코딩"으로 지목돼 있던
+    `BundleCommand`(`hg bundle` — 독립 번들 FILE 산출, push/pull의
+    over-the-wire changegroup 전송과는 별개지만 changegroup 패킹 로직 대부분을
+    공유)에 requirement 매트릭스를 확장. 조사 결과 예상대로 `PushCommand`와
+    똑같은 근본 버그를 갖고 있었다 — 자체 `writeEntryChunk`/`writePathChunk`/
+    `writeTerminalChunk` 헬퍼로 bare cg1 바이트만 손으로 조립해서, treemanifest
+    서브디렉터리 그룹을 구조적으로 절대 실어보낼 수 없었다(어떤 `--type`을
+    줘도 항상 깨진 번들). `ChangegroupParser.writeBundle`(협상된 버전)로 교체하고,
+    `PushCommand`의 `packRevlogRange`와 동일한 규칙의 `packRevlogForSelectedRevs`
+    헬퍼로 treemanifest dirlog까지 패킹하도록 수정 — **BundleType에 `NONE_V3`/
+    `GZIP_V3`/`BZIP2_V3`(cg3-in-bundle2/HG20) 3종 신규 추가**, 기존 `NONE_V1`/
+    `GZIP_V1`/`BZIP2_V1`(cg1-only)은 완전히 하위호환 유지. real hg 자신이
+    treemanifest 저장소에 `--type none-v1`(및 명시적 `--type` 없는 기본값
+    `bzip2`조차)를 주면 "repository does not support bundle version 01/02"로
+    **abort**하는 것을 직접 재현 확인했으므로(`changegroup.supportedoutgoingversions()`가
+    treemanifest 저장소에선 `{03, 04}`뿐), `BundleCommand.call()`도 이를 그대로
+    미러링 — treemanifest 저장소에 v1 계열 타입을 요청하면 real hg와 동일한
+    문구로 `IllegalStateException`을 던지고, v3 계열 타입을 쓰면 정상 동작한다
+    (real hg `--type none-v3`와 byte-for-byte 대조 검증: cg3 payload는
+    `ChangegroupParser`가 이미 담당, bundle2 envelope 압축은 `Bundle2Parser`에
+    `wrapChangegroupInBundle2(bytes, version, compression)` 오버로드를 신규
+    추가해 GZ/BZ 스트림 압축까지 실제 hg 바이트와 대조 확인).
+
+    **sidedata(cg5)는 의도적으로 미대응** — `PushCommand`와 달리 이번엔 실제
+    hg 자신의 근본적 한계이지 hg4j 버그가 아님을 3중으로 직접 재현 확인(전부
+    2026-09-05, Mercurial 7.2.2 기준): (1) `hg bundle` CLI 자체
+    (`mercurial/cmd_impls/bundle.py`)가 cg 버전을 01/02/03/04 넷으로만
+    하드코딩 분기하고 그 외(05 포함)는 무조건
+    `error.ProgrammingError`을 던진다 — `--type "none-v2;cg.version=05"`로
+    직접 재현, repo가 실제로 `changegroup.supportedoutgoingversions()`에서
+    05를 지원하는지 여부와 무관하게 `hg bundle`에는 애초에 cg5를 만들
+    방법 자체가 없다(대응하는 `v4`/`v5` bundlespec도 없음). (2) CLI 가드를
+    우회해 Python `mercurial.changegroup`/`bundle2` API로 직접 cg5 bundle2
+    FILE을 만들어 real `hg unbundle`로 적용해도 `hg verify`가
+    "in manifest but not in changeset"/"rev 0 points to unexpected
+    changeset" 무결성 오류를 낸다. (3) 결정적으로, 이건 cg5나 수제 번들
+    한정 문제가 아니다 — **순정 real hg가 만든 평범한 cg1 `none-v1` 번들
+    FILE**을 real `hg unbundle`로 `exp-use-copies-side-data-changeset=yes`
+    저장소에 적용해도 **완전히 동일한** 무결성 오류가 난다(hg4j가 전혀
+    개입하지 않는 순수 real-hg-to-real-hg 컨트롤 재현). 같은 포맷에서
+    sidedata 플래그만 뺀 순수 `exp-changelog-v2`는 파일 기반
+    번들/unbundle 왕복이 깨끗하다 — 그리고 **라이브 peer-to-peer 교환**
+    (번들 FILE 없이 순수 `hg push`/`hg pull`)은 멀쩡하다(`PushCommand`가
+    cg5를 안전하게 지원할 수 있었던 이유). 즉 real hg 7.2의
+    `exp-copies-sidedata-changeset`(이름 그대로
+    `enable-unstable-format-and-corrupt-my-data`) 구현 자체가 파일 기반
+    bundle/unbundle 경로에서만 깨지는 것이지, hg4j가 "고칠" 수 있는 문제가
+    아니다(real hg 자신의 깨진 바이트에 맞추는 게 오히려 스펙 이탈).
+
+    **매트릭스 결과**: native 6/6 + Docker 30/30 전부 "GREEN"(테스트
+    성공)이지만, 이 중 `cl2+sidedata` 조합(native 2개, Docker 10개)은
+    "`hg verify` 무결성 오류 = 확인된 real hg 자체 한계"로 명시적으로
+    tolerate 처리(위 (3) 컨트롤 재현이 근거) — hg4j 회귀가 아님을 테스트
+    코드 자체에 근거와 함께 문서화. 나머지 24/36(비-sidedata 조합, 특히
+    treemanifest 포함)은 완전히 깨끗한 `hg verify` 통과. 새 테스트 클래스
+    3개 추가(`RequirementMatrixBundleCoreRoundTripTest`/
+    `RequirementMatrixBundleDockerRoundTripTest`/
+    `RequirementMatrixBundleHelperMain`, 전부
+    `src/test/java/io/github/search5/hg4j/api/`) — 기존
+    `BundleCommandTest`(8케이스, 전부 cg1/v1 타입 대상) 회귀 없음 재확인.
+
+    **남은 것(대부분 미착수)**: 나머지 로컬 명령 49개(`AddCommand`,
+    `BookmarkCommand`, `MergeCommand`, `SubrepoCommand` 등 — 전체 목록
+    [[exhaustive-interop-matrix-plan]] §3-2에서 이번에 다룬 6개
     (`PushCommand`/`RebaseCommand`/`ShelveCommand`/`StripCommand`/
-    `AmendCommand`) 제외), wire 매트릭스의 나머지 5개 명령
+    `AmendCommand`/`BundleCommand`) 제외), wire 매트릭스의 나머지 5개 명령
     (`FetchCommand`/`IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/
     `NarrowCloneCommand`). "67개 명령 × 매트릭스" 전체 목표 중 실제로
-    완주된 것은 이제 명령 기준 11/67(4+3+4 — `PushCommand`도 이제 실버그
-    없이 완주로 카운트, `AmendCommand`도 native 확인 완료 기준으로 포함).
+    완주된 것은 이제 명령 기준 12/67(4+3+5 — `PushCommand`도 이제 실버그
+    없이 완주로 카운트, `AmendCommand`/`BundleCommand`도 포함,
+    `BundleCommand`는 sidedata 조합의 real-hg-자체-한계 tolerate까지 포함해
+    완주로 카운트).
 
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서

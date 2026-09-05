@@ -841,9 +841,21 @@ public class CommitCommand {
             repository.writeDirstate(dirstate);
 
             // 6.5. Update Phase for the new commit (all new commits default to DRAFT)
+            //
+            // Real hg's phases.registernew() (mercurial/phases.py) only records an explicit
+            // phaseroots root when the new commit's phase is not already implied by its
+            // parent(s) -- a plain child of an existing draft/secret commit inherits that phase
+            // via ancestry and needs no explicit entry of its own. Recording one unconditionally
+            // (as this used to) appended one line per commit forever, so a repository with N
+            // linear commits diverged from real hg's phaseroots (a single root at the earliest
+            // draft commit) by having N-1 redundant lines -- verified against real hg 7.2.4.
             try {
                 PhaseRoots phaseRoots = repository.getPhaseRoots();
-                phaseRoots.setPhase(new NodeId(commitNode), PhaseRoots.Phase.DRAFT, changelog);
+                int p1Phase = phaseRoots.getPhase(new NodeId(p1CommitNodeHash), changelog).getValue();
+                int p2Phase = phaseRoots.getPhase(new NodeId(p2CommitNodeHash), changelog).getValue();
+                if (Math.max(p1Phase, p2Phase) < PhaseRoots.Phase.DRAFT.getValue()) {
+                    phaseRoots.setPhase(new NodeId(commitNode), PhaseRoots.Phase.DRAFT, changelog);
+                }
             } catch (Exception e) {
                 LOGGER.log(Level.WARNING, "Failed to set phase for new commit node", e);
             }

@@ -366,11 +366,22 @@ public class FetchCommand {
             BookmarkCommand.mergeFromRemote(repository, remoteBookmarks, null);
 
             // Phases Sync
+            //
+            // Real hg's own phase-registration for newly-pulled-in changesets
+            // (phases.registernew()/advanceboundary()) only records an explicit phaseroots
+            // entry when the target phase is not already implied by the changeset's parents'
+            // phase -- a plain descendant of an existing draft/secret changeset inherits that
+            // phase via ancestry and needs no root of its own. Calling setPhase() unconditionally
+            // for every one of newCommits (as this used to) would append one explicit line per
+            // pulled changeset forever, diverging from real hg's minimal-roots phaseroots file
+            // (see PhaseCommand/CommitCommand for the same fix applied to local commits).
             PhaseRoots phaseRoots = repository.getPhaseRoots();
             Map<String, String> remotePhases = client.listKeys("phases");
             for (byte[] nodeBytes : newCommits) {
                 NodeId nodeId = new NodeId(nodeBytes);
-                phaseRoots.setPhase(nodeId, PhaseRoots.Phase.DRAFT, localChangelog);
+                if (phaseRoots.getPhase(nodeId, localChangelog) != PhaseRoots.Phase.DRAFT) {
+                    phaseRoots.setPhase(nodeId, PhaseRoots.Phase.DRAFT, localChangelog);
+                }
             }
             if (remotePhases != null && !remotePhases.isEmpty()) {
                 for (Map.Entry<String, String> entry : remotePhases.entrySet()) {
@@ -379,7 +390,10 @@ public class FetchCommand {
                     byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
                     if (localChangelog.findRevision(nodeBytes) != -1) {
                         PhaseRoots.Phase p = PhaseRoots.Phase.fromValue(phaseVal);
-                        phaseRoots.setPhase(new NodeId(nodeBytes), p, localChangelog);
+                        NodeId nodeId = new NodeId(nodeBytes);
+                        if (phaseRoots.getPhase(nodeId, localChangelog) != p) {
+                            phaseRoots.setPhase(nodeId, p, localChangelog);
+                        }
                     }
                 }
             }

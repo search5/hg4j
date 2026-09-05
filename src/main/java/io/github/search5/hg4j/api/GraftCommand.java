@@ -2,6 +2,7 @@ package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.storage.RevlogIndex;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.util.SafeFileIO;
 import io.github.search5.hg4j.dirstate.Dirstate;
@@ -21,10 +22,13 @@ import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import io.github.search5.hg4j.lib.HgLock;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -375,6 +379,26 @@ public class GraftCommand {
      * next repository open via {@link HgRepository#checkAndPerformAutoRollback()} -- {@code
      * GraftCommand} previously had no such protection at all (unlike every sibling
      * history-rewriting command), a real gap this pass closes alongside the 3-way-merge fix.
+     *
+     * <p>v2/docket-aware since backlog #39 follow-up (2026-09-06): {@code 00changelog.i}/
+     * {@code 00manifest.i}/a filelog's {@code .i} are each, for a changelog-v2/general-v2
+     * repository ({@link RevlogIndex#isV2()}), a small FIXED-size docket header that never
+     * changes byte length on append -- only its CONTENT (the {@code index_end}/{@code data_end}/
+     * {@code sidedata_end} pointers) changes, and the actual growing payload lives in the
+     * docket's resolved companion {@code .idx}/{@code .dat}/{@code .sda} files ({@link
+     * RevlogIndex#getResolvedIndexFile()} etc). Recording only {@code idxFile}'s byte length (this
+     * class's own pre-fix behavior, mirroring the exact bug {@code CommitCommand}/{@code
+     * RollbackCommand}/{@code RecoverCommand} had before their own backlog #39 fix -- see {@code
+     * CommitCommand#recordRevlogRollbackState}'s javadoc for the full history) made both this
+     * method's own in-process failure recovery AND the on-disk crash-recovery journal a complete
+     * no-op for a failed/crashed graft onto a changelog-v2/general-v2 repository: the docket's
+     * pointers (and the resolved companion files they point past) stayed at their post-partial-
+     * write values, silently corrupting the repository instead of rolling it back. Fixed by
+     * mirroring {@code CommitCommand}'s pattern exactly: a full-content docket backup (restored
+     * via {@link SafeFileIO#writeAtomic} in-process, and via a {@code journal.docket.<uuid>.bck}
+     * sibling file plus the journal's existing generic {@code "backup <orig>\t<backup>"} line for
+     * crash recovery), and a truncate-only (never delete-on-zero) restore for the resolved
+     * companion files via {@code "trunc <path>\t<size>"} journal lines.
      */
     private byte[] commitGraftedRevision(byte[] origNode, GraftMeta meta) throws IOException, HgLockException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
@@ -383,6 +407,9 @@ public class GraftCommand {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
         Map<File, Long> fileSizes = new LinkedHashMap<>();
+        Map<File, byte[]> docketBackups = new LinkedHashMap<>();
+        List<File> docketBackupFiles = new ArrayList<>();
+        Set<File> truncateOnlyEntries = new HashSet<>();
         File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
         byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
         File journalFile = new File(repository.getStoreDir(), "journal");
@@ -393,15 +420,12 @@ public class GraftCommand {
             Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             appendToJournal(journalFile, "dirstate");
         }
-        recordAndJournal(clIdx, fileSizes, journalFile);
-        recordAndJournal(clDat, fileSizes, journalFile);
-        recordAndJournal(mfIdx, fileSizes, journalFile);
-        recordAndJournal(mfDat, fileSizes, journalFile);
+        recordRevlogRollbackState(clIdx, clDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
+        recordRevlogRollbackState(mfIdx, mfDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
         for (String path : meta.filesModified) {
             File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-            recordAndJournal(flIdx, fileSizes, journalFile);
-            recordAndJournal(flDat, fileSizes, journalFile);
+            recordRevlogRollbackState(flIdx, flDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
         }
 
         try {
@@ -432,17 +456,33 @@ public class GraftCommand {
 
             Files.deleteIfExists(journalFile.toPath());
             Files.deleteIfExists(dirstateBackupFile.toPath());
+            for (File backupFile : docketBackupFiles) {
+                Files.deleteIfExists(backupFile.toPath());
+            }
             return newCommitNode;
         } catch (Exception e) {
-            // Roll every touched revlog back to its pre-commit size and restore dirstate, same
-            // recovery strategy as CommitCommand/HisteditCommand/StripCommand.
+            // Restore v2/docket full-content backups first (same recovery strategy as
+            // CommitCommand/RollbackCommand/RecoverCommand's own docket-aware fix), then roll
+            // every touched classic revlog back to its pre-commit size (truncate-only, never
+            // delete-on-zero, for a v2 revlog's resolved companion files -- they must keep
+            // physically existing, even empty, as long as the just-restored docket references
+            // them) and restore dirstate.
+            for (Map.Entry<File, byte[]> docketEntry : docketBackups.entrySet()) {
+                try {
+                    SafeFileIO.writeAtomic(docketEntry.getKey(), docketEntry.getValue());
+                } catch (IOException ignored) {
+                    LOGGER.log(Level.WARNING, "Failed to restore docket backup during graft rollback: " + docketEntry.getKey(), ignored);
+                }
+            }
             for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
                 File file = sizeEntry.getKey();
                 long origSize = sizeEntry.getValue();
-                if (origSize == 0) {
+                if (origSize == 0 && !truncateOnlyEntries.contains(file)) {
                     Files.deleteIfExists(file.toPath());
-                } else if (file.exists()) {
-                    try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
+                } else {
+                    file.getParentFile().mkdirs();
+                    try (FileChannel outChan = FileChannel.open(file.toPath(),
+                            StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
                         outChan.truncate(origSize);
                         outChan.force(true);
                     }
@@ -453,19 +493,61 @@ public class GraftCommand {
             }
             Files.deleteIfExists(journalFile.toPath());
             Files.deleteIfExists(dirstateBackupFile.toPath());
+            for (File backupFile : docketBackupFiles) {
+                Files.deleteIfExists(backupFile.toPath());
+            }
             repository.clearRevlogCache();
             throw e;
         }
     }
 
-    private void recordAndJournal(File file, Map<File, Long> fileSizes, File journalFile) throws IOException {
-        if (fileSizes.containsKey(file)) {
+    /**
+     * Records enough state to undo a write to {@code idxFile}/{@code datFile} later, handling
+     * both physical revlog layouts uniformly -- see {@link #commitGraftedRevision}'s own javadoc
+     * and {@code CommitCommand#recordRevlogRollbackState}'s (the pattern this mirrors exactly).
+     * A no-op if {@code idxFile} was already recorded.
+     */
+    private void recordRevlogRollbackState(File idxFile, File datFile, Map<File, Long> fileSizes,
+                                            Map<File, byte[]> docketBackups, List<File> docketBackupFiles,
+                                            Set<File> truncateOnlyEntries, File journalFile) throws IOException {
+        if (fileSizes.containsKey(idxFile) || docketBackups.containsKey(idxFile)) {
             return;
         }
-        long size = file.exists() ? file.length() : 0L;
-        fileSizes.put(file, size);
-        String relPath = "store/" + repository.getStoreDir().toPath().relativize(file.toPath()).toString().replace(File.separatorChar, '/');
-        appendToJournal(journalFile, relPath + "\t" + size);
+        File storeDir = repository.getStoreDir();
+        if (idxFile.exists()) {
+            RevlogIndex probe = new RevlogIndex(idxFile);
+            if (probe.isV2()) {
+                byte[] docketBytes = Files.readAllBytes(idxFile.toPath());
+                docketBackups.put(idxFile, docketBytes);
+                String backupRel = "journal.docket." + UUID.randomUUID() + ".bck";
+                File backupFile = new File(storeDir, backupRel);
+                SafeFileIO.writeAtomic(backupFile, docketBytes);
+                docketBackupFiles.add(backupFile);
+                appendToJournal(journalFile, "backup store/" + relToStore(storeDir, idxFile) + "\tstore/" + backupRel);
+                for (File resolved : new File[]{probe.getResolvedIndexFile(), probe.getResolvedDataFile(), probe.getResolvedSidedataFile()}) {
+                    if (resolved == null) {
+                        continue;
+                    }
+                    long len = resolved.exists() ? resolved.length() : 0L;
+                    fileSizes.put(resolved, len);
+                    truncateOnlyEntries.add(resolved);
+                    appendToJournal(journalFile, "trunc store/" + relToStore(storeDir, resolved) + "\t" + len);
+                }
+                return;
+            }
+        }
+        long idxLen = idxFile.exists() ? idxFile.length() : 0L;
+        fileSizes.put(idxFile, idxLen);
+        appendToJournal(journalFile, "store/" + relToStore(storeDir, idxFile) + "\t" + idxLen);
+        if (datFile != null) {
+            long datLen = datFile.exists() ? datFile.length() : 0L;
+            fileSizes.put(datFile, datLen);
+            appendToJournal(journalFile, "store/" + relToStore(storeDir, datFile) + "\t" + datLen);
+        }
+    }
+
+    private static String relToStore(File storeDir, File f) {
+        return storeDir.toPath().relativize(f.toPath()).toString().replace(File.separatorChar, '/');
     }
 
     private void appendToJournal(File journalFile, String entry) throws IOException {

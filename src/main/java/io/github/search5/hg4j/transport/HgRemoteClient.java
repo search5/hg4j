@@ -163,6 +163,7 @@ public class HgRemoteClient implements HgRemoteConnection {
      * Whether the remote advertised the real {@code "clonebundles"} v1 capability token
      * (available only after {@link #getCapabilities()} has been called at least once).
      */
+    @Override
     public boolean supportsClonebundles() {
         return supportsClonebundles;
     }
@@ -178,6 +179,7 @@ public class HgRemoteClient implements HgRemoteConnection {
      * URL an entry in the manifest names — a plain HTTP(S) GET with no wire-protocol framing at
      * all, see {@code decisions/mercurial-spec-compliance-requirement.md}'s Clonebundles plan.</p>
      */
+    @Override
     public String fetchClonebundlesManifest() throws IOException {
         byte[] bytes = executeGetBinary("clonebundles");
         return new String(bytes, StandardCharsets.UTF_8);
@@ -277,15 +279,27 @@ public class HgRemoteClient implements HgRemoteConnection {
         if (delegate != null) {
             return delegate.getChangegroup(roots);
         }
+        // Real hg's "roots" is a required fixed arg of the "changegroup" wire command (spec:
+        // "roots") -- it must always be present in the request, sent as an empty string when
+        // there are no roots (meaning "give me the entire history"), never omitted. Real hg's
+        // server-side arg decoder (wireprotoserver.py's getargs()) does a plain dict lookup for
+        // every declared arg name with no default, so a request that omits the key entirely
+        // raises an uncaught KeyError server-side -- an HTTP 500, not a clean error -- confirmed
+        // 2026-09-05 while building HgWireProtocolMatrixIncomingOutgoingTest: IncomingCommand's
+        // full-history request (`getChangegroup(Collections.emptyList())`) failed against every
+        // single wire combo with exactly this HTTP 500 because this method used to only add
+        // "roots" to the params map when the list was non-empty. HgSshClient.getChangegroup()
+        // already got this right (see its own comment) -- this brought the HTTP client in line
+        // with it.
         Map<String, String> params = new HashMap<>();
-        if (roots != null && !roots.isEmpty()) {
-            StringBuilder sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
+        if (roots != null) {
             for (int i = 0; i < roots.size(); i++) {
                 if (i > 0) sb.append(" ");
                 sb.append(roots.get(i));
             }
-            params.put("roots", sb.toString());
         }
+        params.put("roots", sb.toString());
         return executeArgsCommand("changegroup", params);
     }
 

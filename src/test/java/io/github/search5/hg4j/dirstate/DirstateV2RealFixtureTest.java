@@ -86,8 +86,13 @@ public class DirstateV2RealFixtureTest {
         assertEquals('a', dirstate.getEntries().get("a.txt").getState());
         assertEquals('a', dirstate.getEntries().get("sub/b.txt").getState());
         // Neither has cached mode/size/mtime (HAS_MODE_AND_SIZE/HAS_MTIME both unset for a
-        // freshly-added file with no prior parent-manifest data to compare against).
-        assertEquals(0, dirstate.getEntries().get("a.txt").getSize());
+        // freshly-added file with no prior parent-manifest data to compare against). Backlog #39
+        // wave 4 (2026-09-05): DirstateV2Parser now translates that flag absence into the same
+        // v1-style "possibly dirty" sentinel (-1) StatusCommand/RevertCommand/BackoutCommand/
+        // ShelveCommand already share, rather than passing through the raw (and misleading -- a
+        // literal 0 looks like a real cached zero-byte size) 0 the underlying DirstateV2Node
+        // getter returns when the flag is unset.
+        assertEquals(-1, dirstate.getEntries().get("a.txt").getSize());
     }
 
     @Test

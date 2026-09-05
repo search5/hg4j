@@ -93,7 +93,14 @@ public class BackoutCommandCoverageTest {
     }
 
     @Test
-    public void testBackoutSkipsRemovalWhenAddedFileAlreadyGoneFromDisk(@TempDir Path tempDir) throws Exception {
+    public void testBackoutRemovesFileAddedByTheBackedOutRevision(@TempDir Path tempDir) throws Exception {
+        // Backlog #39 wave 4: BackoutCommand now enforces real hg's own precondition that the
+        // working copy be clean before backing out (scmutil.bail_if_changed), so the previous
+        // version of this test -- which staged an uncommitted `hg remove` before calling backout,
+        // to reach an internal "file already gone from disk" branch inside a now-removed
+        // RemoveCommand delegation -- no longer reflects a reachable, real-hg-compatible scenario.
+        // This instead verifies the same end result (backing out the revision that added a file
+        // deletes it) through the command's normal, real-hg-compatible direct-revert path.
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Hg hg = Hg.wrap(repo);
@@ -107,17 +114,9 @@ public class BackoutCommandCoverageTest {
         hg.add().addFile("added.txt").call();
         byte[] c2 = hg.commit().setAuthor("T").setMessage("c2").call();
 
-        // 대상 리비전이 added.txt를 추가했지만, backout 시점에는 이미(외부 요인으로) 디스크에서
-        // 사라진 상태 — RemoveCommand 호출을 건너뛰는 분기(diskFile.exists() == false)를 재현.
-        // dirstate도 미리 removed로 갱신해 둔다(디스크에 파일이 없으므로 force 없이도 안전하게
-        // 처리됨) — 그래야 backout 마지막 단계의 CommitCommand가 "추적 중인데 디스크에 없는
-        // 파일"로 걸리지 않는다.
-        assertTrue(added.delete(), "테스트 전제: added.txt를 미리 지울 수 있어야 함");
-        new RemoveCommand(repo).setFile("added.txt").call();
-
         byte[] c3 = new BackoutCommand(repo).setRevision(NodeIdUtil.toHex(c2)).setAuthor("T").call();
         assertNotNull(c3);
-        assertFalse(added.exists(), "added.txt는 여전히 디스크에 없어야 함");
+        assertFalse(added.exists(), "added.txt must be deleted by backing out the revision that added it");
     }
 
     @Test

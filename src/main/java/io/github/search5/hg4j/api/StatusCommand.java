@@ -85,8 +85,24 @@ public class StatusCommand {
                     } else {
                         long diskSize = effectiveSize(diskFile, isSymlink);
                         long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
-                        boolean ambiguousTime = dEntry.getTime() == AMBIGUOUS_TIME;
-                        if (dEntry.getSize() != diskSize || (!ambiguousTime && dEntry.getTime() != diskTime)) {
+                        // Real hg's dirstate writer marks an entry "possibly dirty" (mercurial/
+                        // dirstatemap.py's `set_possibly_dirty()`) by recording a negative size
+                        // (SIZE_NON_NORMAL, -1) alongside the ambiguous-mtime sentinel whenever a
+                        // write happens within the same wall-clock second as the dirstate file's
+                        // own save -- exactly the same "can't trust this timestamp" situation
+                        // AMBIGUOUS_TIME already documents above, just recorded on the size field
+                        // too (verified live against a real-hg-committed repo, 2026-09-05, backlog
+                        // #39 wave 4: a file committed and immediately re-checked within the same
+                        // second gets size=-1/time=0xFFFFFFFF). Comparing that -1 literally against
+                        // the real on-disk size (as this used to) always "mismatches" and reports
+                        // every such file as modified even when byte-identical to the parent --
+                        // confirmed live via BackoutCommand's own precondition check tripping on a
+                        // freshly, cleanly committed repo. A non-normal size must fall back to a
+                        // real content comparison exactly like an ambiguous mtime does, never be
+                        // compared as a literal recorded size.
+                        boolean nonNormalSize = dEntry.getSize() < 0;
+                        boolean ambiguousTime = dEntry.getTime() == AMBIGUOUS_TIME || nonNormalSize;
+                        if (!nonNormalSize && dEntry.getSize() != diskSize || (!ambiguousTime && dEntry.getTime() != diskTime)) {
                             status.getModified().add(path);
                         } else {
                             boolean isRacyModified = false;

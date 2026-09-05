@@ -26,6 +26,7 @@ public final class HgSubrepoParser {
         // 1. Parse .hgsub configurations
         Map<String, String> sources = new LinkedHashMap<>();
         Map<String, Boolean> gitFlags = new LinkedHashMap<>();
+        Map<String, Boolean> svnFlags = new LinkedHashMap<>();
         if (hgsubContent != null && hgsubContent.length > 0) {
             String text = new String(hgsubContent, StandardCharsets.UTF_8);
             String[] lines = text.split("\n");
@@ -42,13 +43,20 @@ public final class HgSubrepoParser {
                 String rawUrl = trimmed.substring(eqIdx + 1).trim();
 
                 boolean isGit = false;
+                boolean isSvn = false;
                 if (rawUrl.startsWith("[git]")) {
                     isGit = true;
                     rawUrl = rawUrl.substring("[git]".length()).trim();
+                } else if (rawUrl.startsWith("[svn]")) {
+                    // Backlog 41: real hg's own .hgsub grammar (see `hg help subrepos`),
+                    // e.g. "path/to/nested = [svn]https://example.com/nested/trunk/path".
+                    isSvn = true;
+                    rawUrl = rawUrl.substring("[svn]".length()).trim();
                 }
 
                 sources.put(path, rawUrl);
                 gitFlags.put(path, isGit);
+                svnFlags.put(path, isSvn);
             }
         }
 
@@ -70,15 +78,17 @@ public final class HgSubrepoParser {
 
                 String sourceUrl = sources.getOrDefault(path, "");
                 boolean isGit = gitFlags.getOrDefault(path, false);
+                boolean isSvn = svnFlags.getOrDefault(path, false);
 
-                subrepos.put(path, new HgSubrepoEntry(path, sourceUrl, revision, isGit));
+                subrepos.put(path, new HgSubrepoEntry(path, sourceUrl, revision, isGit, isSvn));
             }
         }
 
         // 3. Fallback: Add configured subrepos that do not have a recorded state yet
         for (String path : sources.keySet()) {
             if (!subrepos.containsKey(path)) {
-                subrepos.put(path, new HgSubrepoEntry(path, sources.get(path), "", gitFlags.getOrDefault(path, false)));
+                subrepos.put(path, new HgSubrepoEntry(path, sources.get(path), "",
+                        gitFlags.getOrDefault(path, false), svnFlags.getOrDefault(path, false)));
             }
         }
 

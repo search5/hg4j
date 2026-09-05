@@ -72,7 +72,7 @@ status: current
 | SidedataChangedFilesCommand | ✅ | RequirementMatrixSidedataChangedFilesCoreRoundTripTest / DockerRoundTripTest | |
 | StatusCommand | ✅ | RequirementMatrixStatusCoreRoundTripTest / DockerRoundTripTest | |
 | StripCommand | ✅ | RequirementMatrixStripCoreRoundTripTest / DockerRoundTripTest | |
-| SubrepoCommand | ✅ | RequirementMatrixSubrepoCoreRoundTripTest / DockerRoundTripTest | Git 서브저장소만; SVN은 [[backlog/subrepo]] 백로그 41번 진행 중 |
+| SubrepoCommand | ✅ | RequirementMatrixSubrepoCoreRoundTripTest / DockerRoundTripTest | Git+SVN 서브저장소 모두 지원(백로그 41 완료, [[backlog/subrepo]]) |
 | SummaryCommand | ✅ | RequirementMatrixIdentifyCoreRoundTripTest / DockerRoundTripTest | Identify와 트리오 |
 | TagCommand | ✅ | RequirementMatrixTagCoreRoundTripTest / DockerRoundTripTest | |
 | TagsCommand | ✅ | RequirementMatrixTagsCoreRoundTripTest / DockerRoundTripTest | Paths+Root와 트리오 |
@@ -109,4 +109,3 @@ status: current
   44번, [[backlog/clonebundles]].
 - `GraftCommand`: v2-docket rollback/journal gap — [[backlog/39-exhaustive-interop-matrix]]
   후속 항목 절.
-- `SubrepoCommand`: SVN(`[svn]` prefix) 미지원 — 백로그 41번, [[backlog/subrepo]].

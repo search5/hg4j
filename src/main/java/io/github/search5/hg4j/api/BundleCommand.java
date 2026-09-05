@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.bundle.Bundle2Parser;
 import io.github.search5.hg4j.bundle.ChangegroupParser;
 import io.github.search5.hg4j.errors.HgLockException;
 import io.github.search5.hg4j.lib.HgLock;
@@ -9,7 +10,6 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 
 import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -26,9 +26,9 @@ import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
 /**
- * Porcelain command corresponding to {@code hg bundle} -- writes the same "HG10UN"-prefixed cg1
- * changegroup bytes {@link PushCommand} sends over the wire to a local FILE instead, without any
- * network dispatch. Verified against real {@code hg} CLI (v7.2, 2026-09-02) on scratch repos:
+ * Porcelain command corresponding to {@code hg bundle} -- writes the same changegroup bytes
+ * {@link PushCommand} sends over the wire to a local FILE instead, without any network dispatch.
+ * Verified against real {@code hg} CLI (v7.2, 2026-09-02 and 2026-09-05) on scratch repos:
  *
  * <ul>
  *   <li>{@code hg bundle out.hg} with no destination and no -a/--base and no
@@ -63,6 +63,56 @@ import java.util.zip.DeflaterOutputStream;
  * {@code forcedeltaparentprev}) from a contiguous push range to an arbitrary ancestor-closure
  * selection.</p>
  *
+ * <p><b>Backlog #39 (2026-09-05) treemanifest/sidedata investigation:</b> extending hg4j's
+ * requirement matrix to this command (following the exact same real-hg-CLI-verification process
+ * that found and fixed {@link PushCommand}'s equivalent bug -- see its own {@code call()} comments
+ * on cg-version negotiation) turned up that {@code BundleCommand} had the SAME root bug as
+ * pre-fix {@code PushCommand}: it only ever wrote bare cg1 bytes via now-removed hand-rolled
+ * {@code writeEntryChunk}/{@code writePathChunk}/{@code writeTerminalChunk} helpers, which
+ * structurally cannot carry a treemanifest subdirectory group at all -- so bundling any
+ * treemanifest repo silently produced a bundle missing every subdirectory's file changes. Fixed
+ * by switching to {@link ChangegroupParser#writeBundle} at a negotiated version and, for cg3,
+ * packing every treemanifest dirlog the same way {@link PushCommand} does (see {@link
+ * #findTreemanifestDirs} / {@link #packRevlogForSelectedRevs}). Verified via real {@code hg bundle
+ * --type none-v3}/{@code hg unbundle}/{@code hg verify} on a treemanifest scratch repo.
+ *
+ * <p>Sidedata (cg5, {@code format.exp-use-copies-side-data-changeset=yes}) is deliberately NOT
+ * negotiated here, unlike {@link PushCommand} (which does carry it over the wire) -- this is a
+ * real {@code hg} limitation, not an hg4j gap, confirmed three independent ways against real
+ * Mercurial 7.2.2 on 2026-09-05:
+ * <ol>
+ *   <li>{@code hg bundle}'s own CLI ({@code mercurial/cmd_impls/bundle.py}) hardcodes {@code
+ *       if cgversion == b'01': ... elif cgversion in (b'02', b'03', b'04'): ... else: raise
+ *       error.ProgrammingError(b'bundle: unexpected changegroup version %s' % cgversion)} --
+ *       there is no {@code --type} spelling (no {@code v4}/{@code v5} bundlespec exists) that can
+ *       ever make real {@code hg bundle} emit a cg5 changegroup, on ANY repo format, regardless of
+ *       whether that repo's {@code changegroup.supportedoutgoingversions()} would otherwise allow
+ *       it. Reproduced directly: {@code hg bundle --type "none-v2;cg.version=05" out.hg} on a
+ *       sidedata repo raises exactly that {@code ProgrammingError}.</li>
+ *   <li>Even setting that CLI restriction aside, a hand-built real-hg cg5 bundle2 FILE (via the
+ *       Python {@code mercurial.changegroup}/{@code bundle2} APIs directly, bypassing the CLI
+ *       guard) applied with real {@code hg unbundle} into a matching sidedata destination produces
+ *       {@code hg verify} integrity errors ({@code "in manifest but not in changeset"}, {@code
+ *       "rev 0 points to unexpected changeset"}).</li>
+ *   <li>Critically, this is NOT specific to cg5 or to hand-built bundles: a plain real-hg-CREATED
+ *       cg1 {@code none-v1} bundle FILE, applied via real {@code hg unbundle} into a real-hg
+ *       {@code exp-use-copies-side-data-changeset=yes} destination, produces the IDENTICAL
+ *       integrity errors -- a pure real-hg-to-real-hg control with hg4j nowhere in the loop. The
+ *       same format WITHOUT the sidedata flag (plain {@code exp-use-changelog-v2} only) round-trips
+ *       through a file-based bundle/unbundle cleanly. Live peer-to-peer exchange (plain {@code hg
+ *       push}/{@code hg pull} between two such repos, no bundle FILE involved) is unaffected and
+ *       stays clean -- which is exactly why {@link PushCommand} could safely add cg5 support while
+ *       this class cannot: {@code hg bundle}/{@code hg unbundle}'s FILE-based path is where real
+ *       hg 7.2's {@code exp-copies-sidedata-changeset} implementation itself breaks down, a
+ *       pre-existing real-hg limitation for this explicitly experimental ({@code
+ *       enable-unstable-format-and-corrupt-my-data}) format that hg4j cannot "fix" without
+ *       diverging from real hg's own (broken) bytes.
+ * </ol>
+ * The requirement-matrix tests for this command therefore still exercise every {@code cl2+sidedata}
+ * combo (rather than skipping it) but treat a resulting real-{@code hg verify} integrity error on
+ * that specific combo as an expected, control-confirmed real-hg limitation rather than an hg4j
+ * regression.
+ *
  * <p><b>Scope note:</b> unlike real {@code hg bundle}, this command does not fall back to
  * resolving an implicit base by opening a connection to {@code paths.default-push}/{@code
  * paths.default} and running remote-heads discovery the way {@link PushCommand} does -- that
@@ -74,7 +124,7 @@ import java.util.zip.DeflaterOutputStream;
 public class BundleCommand {
 
     /**
-     * The bundle1 container/compression format to write, matching real {@code hg bundle}'s
+     * The bundle container/compression format to write, matching real {@code hg bundle}'s
      * {@code --type} values. Verified byte-for-byte against real {@code hg} 7.2.2 output
      * ({@code hg bundle --all --type <x> out.hg}, inspected with {@code xxd}):
      *
@@ -100,12 +150,32 @@ public class BundleCommand {
      *       UnbundleCommand}'s existing read path, which reads a 6-byte {@code "HG10BZ"} header and
      *       reconstructs the full bzip2 stream by prepending the literal bytes {@code "BZ"} back
      *       onto everything after byte 6 -- i.e. it already assumes exactly this layout.</li>
+     *   <li>{@link #NONE_V3}/{@link #GZIP_V3}/{@link #BZIP2_V3} ({@code none-v3}/{@code gzip-v3}/
+     *       {@code bzip2-v3}, backlog #39, 2026-09-05) -- the ONLY {@code --type} family real
+     *       {@code hg bundle} can use on a treemanifest repository at all (verified: {@code hg
+     *       bundle --all --type none-v1 out.hg} on a treemanifest repo aborts with "repository does
+     *       not support bundle version 01", and even the CLI's own DEFAULT type, plain
+     *       {@code bzip2} with no {@code -v1}/{@code -v3} suffix, aborts the same way with
+     *       "...bundle version 02" -- a treemanifest repo's {@code
+     *       changegroup.supportedoutgoingversions()} is exactly {@code {03, 04}}). Produces a
+     *       {@code "HG20"} bundle2 envelope wrapping a cg3 changegroup (tree-capable envelope: a
+     *       root manifest group plus zero or more per-directory subgroups), with the compression
+     *       engine applied at the bundle2 STREAM level rather than to the whole file (see {@link
+     *       Bundle2Parser#wrapChangegroupInBundle2(byte[], String, String)}'s javadoc for the
+     *       byte-for-byte verification against real {@code hg bundle --all --type bzip2-v3}).
+     *       Also fully usable (and real-hg-verified clean via {@code hg unbundle}/{@code hg
+     *       verify}) on a perfectly ordinary flat-manifest repo -- cg3's envelope is a strict
+     *       superset of cg1's, real {@code hg} itself accepts {@code --type none-v3} unconditionally
+     *       on any repo format.</li>
      * </ul>
      */
     public enum BundleType {
         NONE_V1("none-v1"),
         GZIP_V1("gzip-v1"),
-        BZIP2_V1("bzip2-v1");
+        BZIP2_V1("bzip2-v1"),
+        NONE_V3("none-v3"),
+        GZIP_V3("gzip-v3"),
+        BZIP2_V3("bzip2-v3");
 
         private final String cliName;
 
@@ -126,7 +196,22 @@ public class BundleCommand {
                 }
             }
             throw new IllegalArgumentException("Unsupported bundle --type: " + name
-                    + " (supported: none-v1, gzip-v1, bzip2-v1)");
+                    + " (supported: none-v1, gzip-v1, bzip2-v1, none-v3, gzip-v3, bzip2-v3)");
+        }
+
+        /** True for the {@code -v3} family -- the tree-capable (cg3-in-bundle2) formats. */
+        boolean isV3() {
+            return this == NONE_V3 || this == GZIP_V3 || this == BZIP2_V3;
+        }
+
+        /** The bundle2 STREAM compression token ({@link Bundle2Parser}'s {@code "GZ"}/{@code "BZ"}),
+         * or {@code null} for no compression -- only meaningful for the {@code -v3} family. */
+        String bundle2Compression() {
+            switch (this) {
+                case GZIP_V3: return "GZ";
+                case BZIP2_V3: return "BZ";
+                default: return null;
+            }
         }
     }
 
@@ -149,7 +234,10 @@ public class BundleCommand {
     /**
      * The container/compression format to write -- {@code hg bundle --type <x>}'s equivalent.
      * Defaults to {@link BundleType#NONE_V1} ({@code none-v1}, uncompressed {@code "HG10UN"}),
-     * matching this class's original single-format behavior.
+     * matching this class's original single-format behavior. Use one of the {@code -v3} values
+     * for a treemanifest repository (see {@link BundleType}'s javadoc) -- {@link #call()} mirrors
+     * real {@code hg bundle}'s own abort when a {@code -v1} type is requested against a
+     * treemanifest repository instead of silently upgrading the format underneath the caller.
      */
     public BundleCommand setType(BundleType type) {
         this.type = (type != null) ? type : BundleType.NONE_V1;
@@ -216,6 +304,23 @@ public class BundleCommand {
                 return 0;
             }
 
+            // Backlog #39 (2026-09-05): negotiate a changegroup version from what THIS bundle's
+            // repository format needs vs. what the requested BundleType can actually carry,
+            // mirroring real hg's own hard split between the "-v1" (cg1-only) and "-v3" (cg3,
+            // tree-capable) bundlespec families -- see BundleType's javadoc for the real-hg
+            // evidence. Unlike PushCommand, cg5/sidedata is never negotiated here (see this
+            // class's own javadoc for why: real hg's "hg bundle" CLI cannot produce a cg5 FILE at
+            // all, and even a cg1 FILE round-trip is independently broken by a real-hg bug for
+            // that specific format regardless of cg version).
+            boolean treemanifest = repository.isTreemanifest();
+            if (treemanifest && !type.isV3()) {
+                throw new IllegalStateException("abort: repository does not support bundle version 01"
+                        + " (this is a treemanifest repository -- use one of BundleType.NONE_V3/"
+                        + "GZIP_V3/BZIP2_V3, matching real hg's own 'hg bundle --type none-v3' etc.)");
+            }
+            String version = type.isV3() ? "03" : "01";
+            boolean treeCapable = "03".equals(version);
+
             Set<Integer> baseAncestors = resolveAncestorClosure(changelog, baseRevision);
 
             Set<Integer> targetAncestors;
@@ -252,14 +357,18 @@ public class BundleCommand {
 
             ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
             bundle.changelogEntries = new ArrayList<>();
-            bundle.manifestEntries = new ArrayList<>();
             bundle.fileGroups = new ArrayList<>();
 
             // 1a. Changelog entries, delta-encoded against whatever was packed immediately before
             // each one (cg1 forcedeltaparentprev rule) -- the very first packed entry deltas
             // against its own parent-1 content (empty/fulltext when it has none), matching
-            // mercurial/revlog.py's _emit_revisions: `prevrev = parents(revs[0])[0]`.
+            // mercurial/revlog.py's _emit_revisions: `prevrev = parents(revs[0])[0]`. deltabase/
+            // flags are populated regardless of version (cg1's writer simply ignores them) so the
+            // exact same entries serialize correctly whichever version gets negotiated above.
             byte[] prevClContent = ancestorSeedContent(changelog, changelog.getIndexRecord(selected.get(0)).getParent1());
+            byte[] prevClNode = (changelog.getIndexRecord(selected.get(0)).getParent1() != -1)
+                    ? changelog.getIndexRecord(changelog.getIndexRecord(selected.get(0)).getParent1()).getNodeId()
+                    : new byte[20];
             for (int r : selected) {
                 Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
                 ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
@@ -267,11 +376,14 @@ public class BundleCommand {
                 clEntry.p1 = (clRec.getParent1() != -1) ? changelog.getIndexRecord(clRec.getParent1()).getNodeId() : new byte[20];
                 clEntry.p2 = (clRec.getParent2() != -1) ? changelog.getIndexRecord(clRec.getParent2()).getNodeId() : new byte[20];
                 clEntry.cs = clRec.getNodeId();
+                clEntry.flags = clRec.getFlags();
 
                 byte[] content = changelog.getRevisionContent(r);
+                clEntry.deltabase = prevClNode;
                 clEntry.delta = Revlog.createDelta(prevClContent, content);
                 bundle.changelogEntries.add(clEntry);
                 prevClContent = content;
+                prevClNode = clRec.getNodeId();
             }
 
             // 1b. Manifest entries -- one per selected changeset (same per-changeset lookup
@@ -279,7 +391,9 @@ public class BundleCommand {
             // raw changelog text lists starting at line index 3.
             Revlog manifest = repository.getManifestRevlog();
             Set<String> affectedFiles = new TreeSet<>();
+            List<ChangegroupParser.ChangeGroupEntry> rootMfEntries = new ArrayList<>();
             byte[] prevMfContent = null;
+            byte[] prevMfNode = new byte[20];
             for (int r : selected) {
                 Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
                 byte[] clContent = changelog.getRevisionContent(r);
@@ -297,56 +411,81 @@ public class BundleCommand {
                 if (mfRev == -1) continue;
 
                 Revlog.IndexRecord mfRec = manifest.getIndexRecord(mfRev);
-                if (prevMfContent == null) {
+                byte[] mfP1Node = (mfRec.getParent1() != -1) ? manifest.getIndexRecord(mfRec.getParent1()).getNodeId() : new byte[20];
+                if (rootMfEntries.isEmpty()) {
                     prevMfContent = ancestorSeedContent(manifest, mfRec.getParent1());
+                    prevMfNode = mfP1Node;
                 }
 
                 ChangegroupParser.ChangeGroupEntry mfEntry = new ChangegroupParser.ChangeGroupEntry();
                 mfEntry.node = mfRec.getNodeId();
-                mfEntry.p1 = (mfRec.getParent1() != -1) ? manifest.getIndexRecord(mfRec.getParent1()).getNodeId() : new byte[20];
+                mfEntry.p1 = mfP1Node;
                 mfEntry.p2 = (mfRec.getParent2() != -1) ? manifest.getIndexRecord(mfRec.getParent2()).getNodeId() : new byte[20];
                 mfEntry.cs = clRec.getNodeId();
+                mfEntry.flags = mfRec.getFlags();
 
                 byte[] content = manifest.getRevisionContent(mfRev);
+                mfEntry.deltabase = prevMfNode;
                 mfEntry.delta = Revlog.createDelta(prevMfContent, content);
-                bundle.manifestEntries.add(mfEntry);
+                rootMfEntries.add(mfEntry);
                 prevMfContent = content;
+                prevMfNode = mfRec.getNodeId();
+            }
+
+            if (treeCapable) {
+                // cg3 always wraps the manifest in the tree-capable envelope, even for a flat
+                // manifest (root group only, no subdirectory groups) -- real hg does the same
+                // (see BundleType's javadoc).
+                bundle.manifestEntries = null;
+                bundle.manifestGroups = new ArrayList<>();
+                ChangegroupParser.ManifestGroup rootGroup = new ChangegroupParser.ManifestGroup();
+                rootGroup.path = "";
+                rootGroup.entries = rootMfEntries;
+                bundle.manifestGroups.add(rootGroup);
+
+                if (treemanifest) {
+                    // Enumerate every directory manifest ("dirlog") this treemanifest repository
+                    // has ever written and pack whichever of its revisions were selected above --
+                    // the exact bug PushCommand's own backlog #39 fix found and fixed on the
+                    // SENDING side (the RECEIVING side, FetchCommand#applyBundle's
+                    // bundle.manifestGroups handling, already fully supports this).
+                    List<String> treeDirs = findTreemanifestDirs(repository);
+                    Collections.sort(treeDirs);
+                    for (String dirPath : treeDirs) {
+                        File dirIdx = new File(repository.getStoreDir(), "meta/" + dirPath + "/00manifest.i");
+                        File dirDat = new File(repository.getStoreDir(), "meta/" + dirPath + "/00manifest.d");
+                        if (!dirIdx.exists()) {
+                            continue;
+                        }
+                        Revlog dirlog = repository.getRevlog(dirIdx, dirDat);
+                        List<ChangegroupParser.ChangeGroupEntry> dirEntries =
+                                packRevlogForSelectedRevs(dirlog, changelog, selectedSet);
+                        if (!dirEntries.isEmpty()) {
+                            ChangegroupParser.ManifestGroup mg = new ChangegroupParser.ManifestGroup();
+                            mg.path = dirPath;
+                            mg.entries = dirEntries;
+                            bundle.manifestGroups.add(mg);
+                        }
+                    }
+                }
+            } else {
+                bundle.manifestEntries = rootMfEntries;
             }
 
             // 1c. Filelog entries -- every revision of every touched file whose linkRev falls in
             // the selected changeset set (generalizing PushCommand's contiguous "linkRev >=
-            // startRev" test to arbitrary-set membership).
+            // startRev" test to arbitrary-set membership) -- shares packRevlogForSelectedRevs with
+            // the treemanifest dirlog packing above (both apply the identical "first packed entry
+            // uses its own real parent's content, later ones chain off the previous packed entry"
+            // rule).
             for (String path : affectedFiles) {
                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
                 if (!flIdx.exists()) continue;
 
                 Revlog fl = repository.getRevlog(flIdx, flDat);
-                List<ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
-
-                byte[] prevFlContent = null;
-                for (int i = 0; i < fl.getRevisionCount(); i++) {
-                    Revlog.IndexRecord flRec = fl.getIndexRecord(i);
-                    if (!selectedSet.contains(flRec.getLinkRev())) continue;
-
-                    if (prevFlContent == null) {
-                        prevFlContent = (flRec.getParent1() >= 0) ? fl.getRawRevisionContent(flRec.getParent1()) : new byte[0];
-                    }
-
-                    ChangegroupParser.ChangeGroupEntry flEntry = new ChangegroupParser.ChangeGroupEntry();
-                    flEntry.node = flRec.getNodeId();
-                    flEntry.p1 = (flRec.getParent1() != -1) ? fl.getIndexRecord(flRec.getParent1()).getNodeId() : new byte[20];
-                    flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
-                    flEntry.cs = changelog.getIndexRecord(flRec.getLinkRev()).getNodeId();
-
-                    // Raw (as-stored) content, not getRevisionContent(): a filelog revision can be
-                    // censored (Revlog.REVIDX_ISCENSORED), and bundling must transfer its tombstone
-                    // bytes as-is -- same reasoning as PushCommand's identical choice here.
-                    byte[] content = fl.getRawRevisionContent(i);
-                    flEntry.delta = Revlog.createDelta(prevFlContent, content);
-                    flEntries.add(flEntry);
-                    prevFlContent = content;
-                }
+                List<ChangegroupParser.ChangeGroupEntry> flEntries =
+                        packRevlogForSelectedRevs(fl, changelog, selectedSet);
 
                 if (!flEntries.isEmpty()) {
                     ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
@@ -356,62 +495,52 @@ public class BundleCommand {
                 }
             }
 
-            // 2. Serialize the cg1 changegroup payload -- same PushCommand-derived chunk stream
-            // regardless of container format (verified byte-for-byte against
-            // `hg bundle --all --type none-v1 out.hg`'s output).
-            ByteArrayOutputStream payload = new ByteArrayOutputStream();
-            try (DataOutputStream dos = new DataOutputStream(payload)) {
-                for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
-                    writeEntryChunk(dos, entry);
-                }
-                writeTerminalChunk(dos);
+            // 2. Serialize the changegroup payload at the negotiated version, reusing the same
+            // shared writer PushCommand/HgLocalClient#getBundle already rely on (backlog #39,
+            // 2026-09-05: BundleCommand used to hand-roll bare cg1 bytes here via now-removed
+            // writeEntryChunk/writePathChunk/writeTerminalChunk helpers, which structurally could
+            // not carry a treemanifest directory group).
+            ByteArrayOutputStream cgOut = new ByteArrayOutputStream();
+            ChangegroupParser.writeBundle(cgOut, bundle, version);
+            byte[] payloadBytes = cgOut.toByteArray();
 
-                for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
-                    writeEntryChunk(dos, entry);
-                }
-                writeTerminalChunk(dos);
-
-                for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
-                    writePathChunk(dos, fg.path);
-                    for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
-                        writeEntryChunk(dos, entry);
-                    }
-                    writeTerminalChunk(dos);
-                }
-                writeTerminalChunk(dos);
-            }
-
-            // 3. Wrap the payload in the requested bundle1 container/compression format (see
-            // BundleType's javadoc for exactly how each byte layout was verified against real hg)
-            // and write to disk -- this is the only way BundleCommand differs from PushCommand's
+            // 3. Wrap the payload in the requested container/compression format (see BundleType's
+            // javadoc for exactly how each byte layout was verified against real hg) and write to
+            // disk -- this remains the only way BundleCommand differs from PushCommand's
             // changegroup-building logic: no HgRemoteConnection dispatch, just a local file.
             ByteArrayOutputStream fileOut = new ByteArrayOutputStream();
-            byte[] payloadBytes = payload.toByteArray();
-            switch (type) {
-                case NONE_V1:
-                    fileOut.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
-                    fileOut.write(payloadBytes);
-                    break;
-                case GZIP_V1:
-                    fileOut.write("HG10GZ".getBytes(StandardCharsets.US_ASCII));
-                    // Plain zlib/DEFLATE (Deflater's default nowrap=false mode), NOT the gzip
-                    // container GZIPOutputStream would produce -- matches real hg's
-                    // zlib.compressobj() and UnbundleCommand's existing InflaterInputStream read.
-                    try (DeflaterOutputStream defOut = new DeflaterOutputStream(fileOut, new Deflater())) {
-                        defOut.write(payloadBytes);
-                    }
-                    break;
-                case BZIP2_V1:
-                    // Only 4 literal header bytes: the bzip2 stream's own "BZh9..." magic supplies
-                    // the rest of what reads back as the 6-byte "HG10BZ" prefix (see BundleType's
-                    // javadoc).
-                    fileOut.write("HG10".getBytes(StandardCharsets.US_ASCII));
-                    try (BZip2CompressorOutputStream bzOut = new BZip2CompressorOutputStream(fileOut)) {
-                        bzOut.write(payloadBytes);
-                    }
-                    break;
-                default:
-                    throw new IllegalStateException("Unhandled bundle type: " + type);
+            if (treeCapable) {
+                // -v3: HG20/bundle2 envelope, compression applied at the bundle2 STREAM level
+                // (Bundle2Parser's job) rather than to the raw payload directly.
+                byte[] wrapped = Bundle2Parser.wrapChangegroupInBundle2(payloadBytes, version, type.bundle2Compression());
+                fileOut.write(wrapped);
+            } else {
+                switch (type) {
+                    case NONE_V1:
+                        fileOut.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
+                        fileOut.write(payloadBytes);
+                        break;
+                    case GZIP_V1:
+                        fileOut.write("HG10GZ".getBytes(StandardCharsets.US_ASCII));
+                        // Plain zlib/DEFLATE (Deflater's default nowrap=false mode), NOT the gzip
+                        // container GZIPOutputStream would produce -- matches real hg's
+                        // zlib.compressobj() and UnbundleCommand's existing InflaterInputStream read.
+                        try (DeflaterOutputStream defOut = new DeflaterOutputStream(fileOut, new Deflater())) {
+                            defOut.write(payloadBytes);
+                        }
+                        break;
+                    case BZIP2_V1:
+                        // Only 4 literal header bytes: the bzip2 stream's own "BZh9..." magic supplies
+                        // the rest of what reads back as the 6-byte "HG10BZ" prefix (see BundleType's
+                        // javadoc).
+                        fileOut.write("HG10".getBytes(StandardCharsets.US_ASCII));
+                        try (BZip2CompressorOutputStream bzOut = new BZip2CompressorOutputStream(fileOut)) {
+                            bzOut.write(payloadBytes);
+                        }
+                        break;
+                    default:
+                        throw new IllegalStateException("Unhandled bundle type: " + type);
+                }
             }
             Files.write(outputFile.toPath(), fileOut.toByteArray());
 
@@ -465,24 +594,86 @@ public class BundleCommand {
         return (parent1Rev >= 0) ? revlog.getRevisionContent(parent1Rev) : new byte[0];
     }
 
-    private static void writeEntryChunk(DataOutputStream dos, ChangegroupParser.ChangeGroupEntry entry) throws IOException {
-        int totalLen = 4 + 80 + entry.delta.length;
-        dos.writeInt(totalLen);
-        dos.write(entry.node);
-        dos.write(entry.p1);
-        dos.write(entry.p2);
-        dos.write(entry.cs);
-        dos.write(entry.delta);
+    /**
+     * Packs every revision of {@code revlog} whose {@code linkRev} is a member of {@code
+     * selectedRevs} into changegroup entries -- shared by this command's filelog packing and its
+     * treemanifest dirlog packing (backlog #39, 2026-09-05: the same rule {@link
+     * PushCommand#packRevlogRange} uses for its own contiguous {@code startRev}-based selection,
+     * generalized here to BundleCommand's arbitrary ancestor-closure selection). Each new entry's
+     * delta basis is its own real parent's content for the first packed revision, and the
+     * previously-packed revision for the rest. Content is always read via {@link
+     * Revlog#getRawRevisionContent} (never the decoded {@code getRevisionContent}) so a censored
+     * revision's tombstone bytes transfer as-is, matching real hg's own changegroup packer.
+     */
+    private static List<ChangegroupParser.ChangeGroupEntry> packRevlogForSelectedRevs(
+            Revlog revlog, Revlog changelog, Set<Integer> selectedRevs) throws IOException {
+        List<ChangegroupParser.ChangeGroupEntry> entries = new ArrayList<>();
+        byte[] prevContent = null;
+        byte[] prevNode = new byte[20];
+        for (int i = 0; i < revlog.getRevisionCount(); i++) {
+            Revlog.IndexRecord rec = revlog.getIndexRecord(i);
+            if (!selectedRevs.contains(rec.getLinkRev())) {
+                continue;
+            }
+            ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();
+            entry.node = rec.getNodeId();
+            byte[] p1Node = (rec.getParent1() != -1) ? revlog.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
+            entry.p1 = p1Node;
+            entry.p2 = (rec.getParent2() != -1) ? revlog.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
+            entry.cs = changelog.getIndexRecord(rec.getLinkRev()).getNodeId();
+            entry.flags = rec.getFlags();
+
+            byte[] content = revlog.getRawRevisionContent(i);
+            byte[] deltaBasis;
+            byte[] deltaBaseNode;
+            if (entries.isEmpty()) {
+                deltaBasis = (rec.getParent1() != -1) ? revlog.getRawRevisionContent(rec.getParent1()) : new byte[0];
+                deltaBaseNode = p1Node;
+            } else {
+                deltaBasis = prevContent;
+                deltaBaseNode = prevNode;
+            }
+            entry.deltabase = deltaBaseNode;
+            entry.delta = Revlog.createDelta(deltaBasis, content);
+            entries.add(entry);
+            prevContent = content;
+            prevNode = rec.getNodeId();
+        }
+        return entries;
     }
 
-    private static void writePathChunk(DataOutputStream dos, String path) throws IOException {
-        byte[] pathBytes = path.getBytes(StandardCharsets.UTF_8);
-        int totalLen = 4 + pathBytes.length;
-        dos.writeInt(totalLen);
-        dos.write(pathBytes);
+    /**
+     * Enumerates every directory manifest ("dirlog") a treemanifest repository has ever written,
+     * as plain {@code dir/subdir}-style relative paths (matching {@code
+     * CommitCommand#writeTreeManifestDir}'s own unencoded {@code meta/<dir>/00manifest.i}
+     * convention exactly -- no fncache lookup needed, since treemanifest dirlogs are never
+     * registered there, unlike filelogs). Identical to {@code PushCommand}'s own private helper
+     * of the same shape -- kept as a separate copy since the two commands' packing loops differ
+     * (contiguous {@code startRev} range vs. arbitrary ancestor-closure set) and don't otherwise
+     * share a base class.
+     */
+    private static List<String> findTreemanifestDirs(HgRepository repository) {
+        List<String> dirs = new ArrayList<>();
+        File metaRoot = new File(repository.getStoreDir(), "meta");
+        if (metaRoot.isDirectory()) {
+            collectTreemanifestDirs(metaRoot, "", dirs);
+        }
+        return dirs;
     }
 
-    private static void writeTerminalChunk(DataOutputStream dos) throws IOException {
-        dos.writeInt(0);
+    private static void collectTreemanifestDirs(File dir, String relPath, List<String> out) {
+        if (!relPath.isEmpty() && new File(dir, "00manifest.i").exists()) {
+            out.add(relPath);
+        }
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File child : children) {
+            if (child.isDirectory()) {
+                String childRel = relPath.isEmpty() ? child.getName() : relPath + "/" + child.getName();
+                collectTreemanifestDirs(child, childRel, out);
+            }
+        }
     }
 }

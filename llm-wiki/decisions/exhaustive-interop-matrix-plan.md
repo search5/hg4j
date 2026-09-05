@@ -258,7 +258,19 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   실버그 2건 수정), `PushCommand`는 treemanifest dirlog 미전송 + changelog-v2
   sidedata 미전송 2개의 실버그가 남아 native 2/6·Docker 14/30만 GREEN(원인
   규명 완료, 수정은 다음 wave). 상세는 [[mercurial-spec-compliance-requirement]]
-  백로그 #39 참고. 나머지 54개 명령은 여전히 미착수.
+  백로그 #39 참고. **Wave 2**: `AmendCommand` native 6/6 + Docker 30/30 GREEN
+  (새 실버그 없음). **Wave 3(2026-09-05)**: `PushCommand`의 두 실버그(treemanifest
+  dirlog 미전송, sidedata 미전송) 수정 완료, native 6/6 + Docker 30/30 GREEN
+  전환. 이어서 `BundleCommand`(`hg bundle` — 독립 번들 FILE, push/pull과
+  changegroup 패킹 로직 공유)에 매트릭스 확장 — 예상대로 `PushCommand`의
+  수정 전과 동일한 cg1-only 하드코딩 버그를 갖고 있어 동일 패턴으로 수정
+  (`ChangegroupParser.writeBundle` + treemanifest dirlog 패킹 + 신규
+  `BundleType.NONE_V3`/`GZIP_V3`/`BZIP2_V3` cg3-in-bundle2 타입 추가).
+  native 6/6 + Docker 30/30 "GREEN"이지만 `cl2+sidedata` 조합(native 2, Docker
+  10)은 순정 real-hg-to-real-hg 컨트롤로 재현 확인한 **real hg 자신의 파일
+  기반 bundle/unbundle 한계**(hg4j가 고칠 수 없는 문제)로 명시적으로
+  tolerate 처리 — 상세 근거는 [[mercurial-spec-compliance-requirement]]
+  백로그 #39 Wave 3 항목 참고. 나머지 53개 명령은 여전히 미착수.
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

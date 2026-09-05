@@ -375,7 +375,17 @@ public class ChangegroupParser {
                     break;
                 }
                 ManifestGroup mg = new ManifestGroup();
-                mg.path = new String(pathChunk, StandardCharsets.UTF_8);
+                // Backlog #39 (2026-09-05): real hg's own wire format sends a treemanifest
+                // subdirectory's path chunk WITH a trailing slash (mercurial/changegroup.py's
+                // generatemanifests(): `subtree = tree + p + b'/'`, then `_fileheader(tree)`
+                // writes that exact string as the chunk payload -- verified directly against real
+                // hg 7.2.2 source and confirmed via a real `hg bundle --type v3` byte capture).
+                // Every hg4j caller of `ManifestGroup.path` (BundleCommand/PushCommand's own
+                // writers, FetchCommand#applyBundle's reader, HgRemoteClientV2's in-process
+                // wireproto-v2 assembly) uses the NO-trailing-slash convention internally, so this
+                // is normalized away right here at the wire deserialization boundary -- keeping
+                // every other caller unchanged. See `writeBundle`'s symmetric write-side fix.
+                mg.path = stripTrailingSlash(new String(pathChunk, StandardCharsets.UTF_8));
                 mg.entries = parseGroup(in, detectedVersion, versionHolder);
                 bundle.manifestGroups.add(mg);
             }
@@ -429,6 +439,19 @@ public class ChangegroupParser {
 
     private static void writePathChunk(OutputStream out, String path) throws IOException {
         writeChunk(out, path.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Real hg's own treemanifest subdirectory path chunk, WITH the trailing slash real hg's wire
+     * format requires (see {@link #parseBundle}'s read-side comment for the exact real-hg source
+     * evidence). Used only for manifest subdirectory groups -- file group paths never get this
+     * treatment (a plain filename like {@code "dir/b.txt"} is not a directory-tree path). */
+    private static void writeManifestGroupPathChunk(OutputStream out, String path) throws IOException {
+        writePathChunk(out, path.endsWith("/") ? path : path + "/");
+    }
+
+    /** Strips exactly one trailing {@code '/'} if present, else returns {@code s} unchanged. */
+    private static String stripTrailingSlash(String s) {
+        return (!s.isEmpty() && s.charAt(s.length() - 1) == '/') ? s.substring(0, s.length() - 1) : s;
     }
 
     /**
@@ -565,7 +588,7 @@ public class ChangegroupParser {
             writeGroup(out, bundle.manifestGroups.get(0).entries, version); // bare root group
             for (int i = 1; i < bundle.manifestGroups.size(); i++) {
                 ManifestGroup mg = bundle.manifestGroups.get(i);
-                writePathChunk(out, mg.path);
+                writeManifestGroupPathChunk(out, mg.path);
                 writeGroup(out, mg.entries, version);
             }
             if (treeCapable) {

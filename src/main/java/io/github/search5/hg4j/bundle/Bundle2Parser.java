@@ -422,6 +422,25 @@ public class Bundle2Parser {
      * chunk framing) + payload bytes + terminal chunk(int32 0) + final partHeaderSize(int32 0).
      */
     public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version) throws IOException {
+        return wrapChangegroupInBundle2(changegroupBytes, version, null);
+    }
+
+    /**
+     * Same as {@link #wrapChangegroupInBundle2(byte[], String)}, but additionally applies HG20's
+     * own STREAM-level compression (backlog #39, 2026-09-05, {@link
+     * io.github.search5.hg4j.api.BundleCommand}'s {@code --type gzip-v3}/{@code bzip2-v3}
+     * equivalents) -- everything in the envelope AFTER the stream-params block (part header,
+     * payload chunks, terminators) is compressed as one continuous stream, exactly matching real
+     * hg's own {@code bundle20.compressed}: verified byte-for-byte against real {@code hg bundle
+     * --all --type bzip2-v3 out.hg} (2026-09-05): {@code "HG20" + int32(14) + "Compression=BZ" +
+     * <rest of the envelope run through BZip2CompressorOutputStream>}; {@code gzip-v3} is
+     * identical but with {@code "Compression=GZ"} and plain zlib/DEFLATE instead (matching {@link
+     * #extractChangegroupDetailed}'s existing {@code "GZ"}/{@code "BZ"} read-side branches, which
+     * this is the write-side counterpart of). {@code compression} is {@code null}/empty for no
+     * stream compression (matching {@code none-v3}), {@code "GZ"}, or {@code "BZ"}
+     * (case-insensitive).
+     */
+    public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version, String compression) throws IOException {
         byte[] partName = "CHANGEGROUP".getBytes(StandardCharsets.US_ASCII);
         byte[] paramKey = "version".getBytes(StandardCharsets.US_ASCII);
         byte[] paramVal = version.getBytes(StandardCharsets.US_ASCII);
@@ -438,15 +457,39 @@ public class Bundle2Parser {
         header.write(paramVal);
         byte[] headerBytes = header.toByteArray();
 
+        java.io.ByteArrayOutputStream rest = new java.io.ByteArrayOutputStream();
+        writeInt32(rest, headerBytes.length);
+        rest.write(headerBytes);
+        writeInt32(rest, changegroupBytes.length); // payload chunk size (NOT self-inclusive)
+        rest.write(changegroupBytes);
+        writeInt32(rest, 0); // end of this part's payload
+        writeInt32(rest, 0); // end of bundle2 stream (no more parts)
+        byte[] restBytes = rest.toByteArray();
+
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         out.write("HG20".getBytes(StandardCharsets.US_ASCII));
-        writeInt32(out, 0); // stream params size (no compression)
-        writeInt32(out, headerBytes.length);
-        out.write(headerBytes);
-        writeInt32(out, changegroupBytes.length); // payload chunk size (NOT self-inclusive)
-        out.write(changegroupBytes);
-        writeInt32(out, 0); // end of this part's payload
-        writeInt32(out, 0); // end of bundle2 stream (no more parts)
+        if (compression == null || compression.isEmpty()) {
+            writeInt32(out, 0); // stream params size (no compression)
+            out.write(restBytes);
+        } else if ("GZ".equalsIgnoreCase(compression)) {
+            byte[] param = "Compression=GZ".getBytes(StandardCharsets.US_ASCII);
+            writeInt32(out, param.length);
+            out.write(param);
+            try (java.util.zip.DeflaterOutputStream defOut =
+                         new java.util.zip.DeflaterOutputStream(out, new java.util.zip.Deflater())) {
+                defOut.write(restBytes);
+            }
+        } else if ("BZ".equalsIgnoreCase(compression)) {
+            byte[] param = "Compression=BZ".getBytes(StandardCharsets.US_ASCII);
+            writeInt32(out, param.length);
+            out.write(param);
+            try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream bzOut =
+                         new org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream(out)) {
+                bzOut.write(restBytes);
+            }
+        } else {
+            throw new IllegalArgumentException("Unsupported bundle2 stream compression: " + compression);
+        }
         return out.toByteArray();
     }
 

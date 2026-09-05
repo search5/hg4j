@@ -359,6 +359,34 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   `ImportCommand` 3개 명령을 앞선 wave 4 병합 결과(28/67)에 더해 로컬 명령
   기준 **31/67**로 증가.)
 
+  **Wave 5(2026-09-05, `BisectCommand`/`DescribeCommand`/`DiffCommand`/
+  `LogCommand`/`StatusCommand`/`RevsetCommand`/`SidedataChangedFilesCommand`)**:
+  7개 명령 전부 native 6/6 + Docker 30/30 = 36/36 GREEN. `LogCommand`/
+  `StatusCommand`는 이전까지 4-명령-공용 `RequirementMatrixCoreRoundTripTest`의
+  부수적 검증만 있었을 뿐 전용 트리오가 없었던 지점을 이번에 채움. 진짜
+  hg4j 프로덕션 버그 4건 발견·수정(상세는
+  [[mercurial-spec-compliance-requirement]] 백로그 #39 참고): (1)
+  `BisectCommand`의 treemanifest 체크아웃 미지원(hand-roll 매니페스트
+  파싱 → treemanifest-aware `ManifestWalk`로 교체), (2)
+  `Revlog.decompressSidedataChunk`가 changelog-v2+sidedata 저장소의
+  sidedata 압축 모드를 zstd로 무조건 가정(zlib 압축 저장소의 유효한
+  sidedata를 못 읽음), (3) **`DeltaCodec.decompressZstd`가 델타 인코딩된
+  리비전의 압축 해제 목적지 버퍼 크기로 revlog 인덱스의 uncompLen(최종
+  재구성 크기이지 이 청크 자체의 압축 해제 크기가 아님)을 그대로 써서
+  크래시** -- native 매트릭스는 항상 zlib을 강제하고 hg4j 자신의 쓰기
+  경로는 델타 없이 항상 fulltext로 쓰기 때문에 지금까지 어떤 테스트도
+  건드린 적 없던 조합(real zstd + 델타 인코딩)이었고, 실제로는 일반적인
+  real-world zstd 압축 hg 저장소 다수에 영향을 미쳤을 이번 wave 최대
+  파급력 버그, (4) `HgRepository.refreshIfChangedOnDisk()`(원래
+  wire 서버 전용으로만 연결돼 있던 stale-changelog-v2-cache 방어
+  메서드)를 이번 7개 명령의 진입부에도 연결 -- 연결 안 됐을 때는 장수
+  repo 핸들이 외부 프로세스의 새 커밋을 못 보고 조용히 틀린 답을 냄.
+  전체 비-interop `test`(2278건) 재확인, `StripCommandCoverageTest` 1건
+  실패는 `git stash`로 이번 세션 변경분을 전부 되돌린 격리 재실행에서도
+  동일하게 재현되어 이 세션과 무관한 사전 존재 이슈로 확인(원인 규명은
+  범위 밖). 명령 기준 완주 수는 31에서 **38/67**로 증가, 나머지 29개
+  로컬 명령은 여전히 미착수.
+
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)
 - [x] `CloneCommand`/`PullCommand`/`PushCommand` 핵심 라운드트립 — **완료

@@ -2,10 +2,10 @@ package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.treewalk.ManifestWalk;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
@@ -13,7 +13,6 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +51,11 @@ public class BisectCommand {
             throw new IllegalStateException("Good and Bad revision nodes must be set prior to bisect query");
         }
 
+        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
+        // changelog-v2 revlog after an external process appended a revision -- see
+        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
+        // common (freshly-opened-per-call) case.
+        repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
@@ -78,17 +82,20 @@ public class BisectCommand {
         byte[] midNode = changelog.getIndexRecord(midRev).getNodeId();
 
         // 2. Physical File Checkout & Workspace Sync
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
-
-        Map<String, String> manifestMap = getManifestForCommit(changelog, manifestRevlog, midNode);
-        for (Map.Entry<String, String> entry : manifestMap.entrySet()) {
-            String path = entry.getKey();
-            String hexAndFlag = entry.getValue();
-            String fileHex = hexAndFlag.substring(0, 40);
-
-            byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
+        //
+        // Uses ManifestTreeIterator (the same treemanifest-aware reader ManifestCommand/
+        // StatusCommand/DiffCommand already rely on) rather than hand-parsing the root manifest
+        // revlog's raw text directly. The old hand-rolled parse (removed here, backlog #39)
+        // treated EVERY manifest line as a real file: under a treemanifest repository
+        // (experimental.treemanifest=1) the root manifest's entries for subdirectories are
+        // "t"-flagged pointers to a nested `meta/<dir>/00manifest.i` sub-manifest revision, not
+        // file content -- so bisect would try to open a (nonexistent) filelog for the raw
+        // directory name and either throw or silently skip every file that lived inside any
+        // subdirectory, leaving the working copy incompletely (or wrongly) checked out at each
+        // bisect step.
+        for (ManifestWalk.Entry entry : listManifestEntries(changelog, midNode)) {
+            String path = entry.getPath();
+            byte[] fileContent = getFileRevisionContent(repository, path, NodeIdUtil.toHex(entry.getNodeId()));
             File wFile = new File(repository.getDirectory(), path);
             wFile.getParentFile().mkdirs();
             Files.write(wFile.toPath(), fileContent);
@@ -220,35 +227,23 @@ public class BisectCommand {
         return candidates.get(bestIdx);
     }
 
-    private Map<String, String> getManifestForCommit(Revlog changelog, Revlog manifestRevlog, byte[] commitNode) throws IOException {
-        Map<String, String> manifestMap = new LinkedHashMap<>();
-        if (commitNode == null || NodeIdUtil.isAllZero(commitNode)) {
-            return manifestMap;
+    /**
+     * Lists every real file entry (fully expanded -- no "t"-flagged directory pointers) tracked
+     * at {@code commitNode}, using the same treemanifest-aware {@link ManifestWalk} (backed by
+     * {@link io.github.search5.hg4j.treewalk.ManifestTreeIterator}) that {@link ManifestCommand}/
+     * {@link StatusCommand}/{@link DiffCommand} already rely on (backlog #39 fix: the previous
+     * hand-rolled root-manifest-only parse silently mishandled/omitted every file living inside a
+     * subdirectory of a treemanifest repository).
+     */
+    private List<ManifestWalk.Entry> listManifestEntries(Revlog changelog, byte[] commitNode) throws IOException {
+        if (commitNode == null || NodeIdUtil.isAllZero(commitNode) || changelog.findRevision(commitNode) == -1) {
+            return List.of();
         }
-        int rev = changelog.findRevision(commitNode);
-        if (rev == -1) {
-            return manifestMap;
-        }
-        byte[] content = changelog.getRevisionContent(rev);
-        String text = new String(content, StandardCharsets.UTF_8);
-        String[] lines = text.split("\n");
-        if (lines.length == 0) return manifestMap;
-
-        String manifestHex = lines[0].trim();
-        byte[] manifestNode = NodeIdUtil.fromHex(manifestHex);
-        int mRev = manifestRevlog.findRevision(manifestNode);
-        if (mRev != -1) {
-            byte[] mContent = manifestRevlog.getRevisionContent(mRev);
-            String mText = new String(mContent, StandardCharsets.UTF_8);
-            for (String line : mText.split("\n")) {
-                if (line.isEmpty()) continue;
-                int nullIdx = line.indexOf('\0');
-                if (nullIdx != -1) {
-                    manifestMap.put(line.substring(0, nullIdx), line.substring(nullIdx + 1));
-                }
-            }
-        }
-        return manifestMap;
+        // The String-revision constructor (not the byte[]-manifestNode one) is required here --
+        // commitNode is a CHANGELOG node, and ManifestWalk's byte[] constructor instead expects a
+        // MANIFEST node directly; NodeIdUtil.resolveRevision (invoked internally for the String
+        // overload) is what actually maps a changeset hex to its manifest revision.
+        return new ManifestWalk(repository, NodeIdUtil.toHex(commitNode)).getEntries();
     }
 
     private byte[] getFileRevisionContent(HgRepository repository, String path, String nodeHex) throws IOException {

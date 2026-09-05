@@ -14,7 +14,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
+import java.util.List;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -303,7 +303,7 @@ public class BisectCommandCoverageTest {
     }
 
     @Test
-    public void getManifestForCommitReturnsEmptyMapForNullOrAllZeroOrUnknownNode(@TempDir Path tempDir) throws Exception {
+    public void listManifestEntriesReturnsEmptyListForNullOrAllZeroOrUnknownNode(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
@@ -313,25 +313,29 @@ public class BisectCommandCoverageTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog changelog = repo.getRevlog(clIdx, clDat);
-        File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repo.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repo.getRevlog(mfIdx, mfDat);
 
+        // backlog #39: BisectCommand's manifest walk was rewritten to reuse the treemanifest-aware
+        // io.github.search5.hg4j.treewalk.ManifestWalk instead of a hand-rolled flat-manifest-only
+        // parse (see BisectCommand#listManifestEntries's javadoc) -- this test was updated to match
+        // the new private method's name/signature.
         Method m = BisectCommand.class.getDeclaredMethod(
-                "getManifestForCommit", Revlog.class, Revlog.class, byte[].class);
+                "listManifestEntries", Revlog.class, byte[].class);
         m.setAccessible(true);
         BisectCommand bisect = new BisectCommand(repo);
 
         @SuppressWarnings("unchecked")
-        Map<String, String> forNull = (Map<String, String>) m.invoke(bisect, changelog, manifestRevlog, (byte[]) null);
+        List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry> forNull =
+                (List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry>) m.invoke(bisect, changelog, (byte[]) null);
         assertTrue(forNull.isEmpty());
 
         @SuppressWarnings("unchecked")
-        Map<String, String> forAllZero = (Map<String, String>) m.invoke(bisect, changelog, manifestRevlog, new byte[20]);
+        List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry> forAllZero =
+                (List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry>) m.invoke(bisect, changelog, new byte[20]);
         assertTrue(forAllZero.isEmpty());
 
         @SuppressWarnings("unchecked")
-        Map<String, String> forUnknown = (Map<String, String>) m.invoke(bisect, changelog, manifestRevlog, randomNodeId());
+        List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry> forUnknown =
+                (List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry>) m.invoke(bisect, changelog, randomNodeId());
         assertTrue(forUnknown.isEmpty());
     }
 

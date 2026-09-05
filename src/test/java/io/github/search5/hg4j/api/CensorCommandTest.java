@@ -44,7 +44,11 @@ public class CensorCommandTest {
         assertFalse(filelog.isCensored(0));
         assertArrayEquals("secret1\n".getBytes(StandardCharsets.UTF_8), filelog.getRevisionContent(0));
 
-        new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode)).call();
+        // rev 0 is the repo's only head here, and real hg's own censor refuses to censor a
+        // revision that is still live at a head (see the dedicated checkHeads* tests below) --
+        // this test is about tombstone mechanics only, so it opts out exactly like real hg's own
+        // `--no-check-heads`.
+        new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode)).setCheckHeads(false).call();
 
         Revlog reread = repo.getRevlog(flIdx, flDat);
         assertTrue(reread.isCensored(0), "Revision must be marked censored after CensorCommand runs");
@@ -161,8 +165,10 @@ public class CensorCommandTest {
         Revlog filelog = repo.getRevlog(flIdx, flDat);
         byte[] originalNode = filelog.getIndexRecord(0).getNodeId().clone();
 
+        // rev 0 is the repo's only head -- opt out of the check-heads guard, see the comment on
+        // censorReplacesTargetRevisionContentWithATombstoneAndMarksItCensored above.
         new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode))
-                .setTombstone("court order 1234").call();
+                .setTombstone("court order 1234").setCheckHeads(false).call();
 
         Revlog reread = repo.getRevlog(flIdx, flDat);
         assertTrue(reread.isCensored(0));
@@ -185,11 +191,92 @@ public class CensorCommandTest {
         Revlog filelog = repo.getRevlog(flIdx, flDat);
         byte[] originalNode = filelog.getIndexRecord(0).getNodeId().clone();
 
+        // rev 0 is the repo's only head -- opt out of the check-heads guard, see the comment on
+        // censorReplacesTargetRevisionContentWithATombstoneAndMarksItCensored above.
         new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode))
-                .setTombstone("some reason").setTombstone(null).call();
+                .setTombstone("some reason").setTombstone(null).setCheckHeads(false).call();
 
         Revlog reread = repo.getRevlog(flIdx, flDat);
         assertArrayEquals(CensorCommand.buildTombstone(""), reread.getRawRevisionContent(0),
                 "A null tombstone must reset to the empty-string default, matching real hg");
+    }
+
+    @Test
+    public void censorRefusesARevisionStillLiveAtARepositoryHead(@TempDir Path tempDir) throws Exception {
+        // Matches real hg 7.2's hgext.censor: "abort: cannot censor file in heads (<hex>)"
+        // (confirmed live 2026-09-04) -- a single-commit repo's only revision is always a head.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "secret1\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+
+        File flIdx = filelogIndex(repo, "a.txt");
+        File flDat = filelogData(flIdx);
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        byte[] originalNode = filelog.getIndexRecord(0).getNodeId().clone();
+
+        HgValidationException ex = assertThrows(HgValidationException.class, () ->
+                new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode)).call());
+        assertTrue(ex.getMessage().contains("cannot censor file in heads"), ex.getMessage());
+
+        Revlog reread = repo.getRevlog(flIdx, flDat);
+        assertFalse(reread.isCensored(0), "A refused censor attempt must leave the revision untouched");
+    }
+
+    @Test
+    public void censorRefusesTheWorkingDirectoryParentRevisionEvenWhenNotAHead(@TempDir Path tempDir) throws Exception {
+        // real hg's censor also separately guards the working-directory parent ("abort: cannot
+        // censor working directory", confirmed live 2026-09-04): here rev0's content is no longer
+        // a repository head's content (c1 changed the file), but the working copy has been moved
+        // back to c0 -- rev0's content -- so only the working-directory guard, not the heads
+        // guard, can be what trips.
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "secret1\n");
+        new AddCommand(repo).call();
+        byte[] c0 = new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+        Files.writeString(f.toPath(), "secret1\nsecret2\n");
+        new CommitCommand(repo).setMessage("v2").setAuthor("dev").call();
+
+        new UpdateCommand(repo).setRevision(NodeIdUtil.toHex(c0)).call();
+
+        File flIdx = filelogIndex(repo, "a.txt");
+        File flDat = filelogData(flIdx);
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        byte[] rev0Node = filelog.getIndexRecord(0).getNodeId().clone();
+
+        HgValidationException ex = assertThrows(HgValidationException.class, () ->
+                new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(rev0Node)).call());
+        assertTrue(ex.getMessage().contains("cannot censor working directory"), ex.getMessage());
+
+        Revlog reread = repo.getRevlog(flIdx, flDat);
+        assertFalse(reread.isCensored(0), "A refused censor attempt must leave the revision untouched");
+    }
+
+    @Test
+    public void censorNoCheckHeadsBypassesTheHeadGuardExactlyLikeRealHg(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File f = new File(repoDir, "a.txt");
+        Files.writeString(f.toPath(), "secret1\n");
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+
+        File flIdx = filelogIndex(repo, "a.txt");
+        File flDat = filelogData(flIdx);
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        byte[] originalNode = filelog.getIndexRecord(0).getNodeId().clone();
+
+        new CensorCommand(repo).setFile("a.txt").setRevision(NodeIdUtil.toHex(originalNode))
+                .setCheckHeads(false).call();
+
+        Revlog reread = repo.getRevlog(flIdx, flDat);
+        assertTrue(reread.isCensored(0), "setCheckHeads(false) must bypass the guard exactly like real hg's --no-check-heads");
     }
 }

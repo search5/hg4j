@@ -704,8 +704,13 @@ public class HgRemainingPorcelainCoverageTest {
         assertFalse(filelog.isCensored(0));
         String fileRevHex = NodeIdUtil.toHex(filelog.getIndexRecord(0).getNodeId());
 
+        // rev 0 is the repo's only head here (and the working-directory parent) -- real hg's own
+        // censor extension would likewise refuse without --no-check-heads (see CensorCommandTest's
+        // censorRefusesARevisionStillLiveAtARepositoryHead); this facade test is about the
+        // Hg-wrapper wiring, not the check-heads guard, so it opts out like real hg's own
+        // --no-check-heads.
         try (Hg hg = Hg.wrap(repo)) {
-            hg.censor().setFile("secret.txt").setRevision(fileRevHex).setTombstone("leaked credentials").call();
+            hg.censor().setFile("secret.txt").setRevision(fileRevHex).setTombstone("leaked credentials").setCheckHeads(false).call();
         }
 
         Revlog filelogAfter = repo.getRevlog(flIdx, flDat);

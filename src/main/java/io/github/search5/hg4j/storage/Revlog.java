@@ -539,6 +539,22 @@ public class Revlog {
      *
      * <p>This instance's own cache is refreshed in place via {@link #clearCache()} once the
      * on-disk files are swapped, so it remains usable after this call returns.</p>
+     *
+     * <p>2026-09-05 (backlog #39 wave 5): this method used to unconditionally rewrite the classic
+     * (revlogv1, 64-byte-record, {@code .i}/{@code .d}) on-disk layout no matter what the revlog's
+     * actual storage format was. For a general-v2 (docket-based {@code exp-revlogv2.2}) filelog --
+     * confirmed live via `hg-rust-7.2.4`: the classic {@code .i} path there is a tiny docket
+     * "pointer" file (magic {@code 00 00 de ad}), not a real index -- this silently clobbered the
+     * docket with a bare classic index and left the real companion {@code <basename>-<hash>.idx}/
+     * {@code .dat}/{@code .sda} files orphaned, corrupting the filelog so badly that real hg's own
+     * reader (`hg cat`) aborted trying to open a {@code .d} file that never legitimately exists for
+     * this format. {@link #index}{@code .isV2()} now routes to {@link
+     * #censorRevisionV2(int, int, byte[][], IndexRecord[])} instead, which reuses {@link
+     * #truncate(int)} (already correctly docket-aware, see its own javadoc) plus {@link
+     * #appendRevisionV2} (already correctly docket-aware and, crucially, takes an explicit {@code
+     * nodeId} rather than hashing content -- exactly what preserving node identity across a
+     * content-changing censor requires) to rebuild the revlog revision-by-revision in its native
+     * v2 layout instead.
      */
     public synchronized void censorRevision(int censorRev, byte[] tombstoneRawContent) throws IOException {
         int count = index.getRevisionCount();
@@ -555,6 +571,11 @@ public class Revlog {
         for (int r = 0; r < count; r++) {
             records[r] = getIndexRecord(r);
             rawContents[r] = (r == censorRev) ? tombstoneRawContent : getRawRevisionContent(r);
+        }
+
+        if (index.isV2()) {
+            censorRevisionV2(censorRev, count, rawContents, records);
+            return;
         }
 
         File tmpIdx = new File(idxFile.getParentFile(), idxFile.getName() + ".tmpcensored");
@@ -625,6 +646,27 @@ public class Revlog {
             }
         }
 
+        clearCache();
+    }
+
+    /**
+     * v2 (docket-based, {@code changelog-v2} or general-v2) counterpart of {@link
+     * #censorRevision(int, byte[])} -- see that method's javadoc for why this branch exists.
+     * Empties the revlog via {@link #truncate(int)} (already handles the docket bookkeeping
+     * correctly) and re-appends every revision via {@link #appendRevisionV2}, which -- because it
+     * always stores a revision as an independent fulltext (never a delta) and takes the node id as
+     * an explicit parameter rather than deriving it from content -- exactly matches what censoring
+     * needs: every revision's node identity, parents, and linkrev preserved verbatim, only {@code
+     * censorRev}'s payload replaced and flagged {@link #REVIDX_ISCENSORED}.
+     */
+    private void censorRevisionV2(int censorRev, int count, byte[][] rawContents, IndexRecord[] records) throws IOException {
+        truncate(0);
+        for (int r = 0; r < count; r++) {
+            IndexRecord rec = records[r];
+            int extraFlags = (r == censorRev) ? REVIDX_ISCENSORED : 0;
+            appendRevisionV2(r, rawContents[r], rec.getParent1(), rec.getParent2(), rec.getNodeId(),
+                    rec.getLinkRev(), null, extraFlags);
+        }
         clearCache();
     }
 

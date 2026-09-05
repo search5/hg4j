@@ -259,6 +259,13 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   sidedata 미전송 2개의 실버그가 남아 native 2/6·Docker 14/30만 GREEN(원인
   규명 완료, 수정은 다음 wave). 상세는 [[mercurial-spec-compliance-requirement]]
   백로그 #39 참고. 나머지 54개 명령은 여전히 미착수.
+  **Wave 3(2026-09-05)**: `MergeCommand`/`SubrepoCommand` 둘 다 native 6/6 +
+  Docker 30/30 전부 GREEN — `SubrepoCommand`의 `init`/`update`가 pin된
+  리비전으로 실제 체크아웃을 한 적이 없던 버그, `CommitCommand`의 미해결
+  머지 충돌 차단 로직(마커 텍스트 스캔 → 실제 머지 상태 기반으로 수정) 및
+  머지 커밋 후 `.hg/merge` 미정리 버그까지 진짜 hg4j 버그 3건을 TDD로
+  발견·수정. 상세는 [[mercurial-spec-compliance-requirement]] 백로그 #39
+  참고.
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

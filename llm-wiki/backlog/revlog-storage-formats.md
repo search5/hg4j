@@ -1,7 +1,6 @@
 ---
 updated: 2026-09-06
-status: completed (4/15/21/35/43 전부 완료; 45번은 43번 작업 중 발견된 신규 미착수
-  항목)
+status: completed (4/15/21/35/43/45 전부 완료)
 ---
 
 # 백로그 4, 15, 21, 35, 43, 45: Revlog 저장 포맷 확장 (v2 general/persistent-nodemap/fileindex-v1/inline)
@@ -12,7 +11,7 @@ status: completed (4/15/21/35/43 전부 완료; 45번은 43번 작업 중 발견
 `.n` 파일 쓰기), 35(revlog가 항상 non-inline으로만 쓰여 `hg verify` 경고를 내던 문제 —
 inline 레이아웃 지원), 43(revlog가 성장해도 inline→non-inline 전환을 안 함,
 `_enforceinlinesize` 상당 로직 구현, ✅ 완료), 45(43번 작업 중 발견 — `CommitCommand`가
-treemanifest 하위 manifest를 fncache에 등록 안 함, 미착수).
+treemanifest 하위 manifest를 fncache에 등록 안 함, ✅ 2026-09-06 완료).
 
 ## 원문
 4. ~~**Revlog v2 일반(`exp-revlogv2.2`, 매니페스트/파일로그) + persistent-nodemap**~~
@@ -204,16 +203,50 @@ treemanifest 하위 manifest를 fncache에 등록 안 함, 미착수).
     승격.
 
 45. **`CommitCommand`가 treemanifest 하위 디렉터리 manifest(`meta/<dir>/
-    00manifest.i`/`.d`)를 fncache에 전혀 등록하지 않음**. 신규, 2026-09-06
-    백로그 43번 작업 중 발견 — 미착수. `CommitCommand`는 파일이 바뀔 때마다
+    00manifest.i`/`.d`)를 fncache에 전혀 등록하지 않음**. 43번 작업 중 발견,
+    ✅ **완료(2026-09-06)**. `CommitCommand`는 파일이 바뀔 때마다
     `data/<path>.i`(+ 43번 수정 이후엔 `.d`도)를 `fncachePaths`에 추가하지만,
     treemanifest 저장소에서 디렉터리별로 쓰이는 `meta/<dir>/00manifest.i`/
-    `.d`는 어디에도 등록하는 코드가 없다 — real hg의 `RE_FNCACHE_FILE`은
-    `data/`와 `meta/` 둘 다 동일하게 추적 대상으로 삼으므로, treemanifest
-    저장소에서 real hg `hg verify`를 돌리면 모든 디렉터리 manifest revlog에
-    대해 "not in fncache" 경고가 날 가능성이 높다(코드 리딩으로만 발견,
-    이번 백로그에서는 실측하지 않음). real hg CLI로 treemanifest 저장소를
-    만들어 실제 fncache 내용과 대조 확인 후 `CommitCommand`(및 `FetchCommand`의
-    treemanifest 매니페스트 그룹 적용 경로도 동일 패턴인지 함께 점검)에
-    `meta/` 등록 로직을 추가할 것.
+    `.d`는 어디에도 등록하는 코드가 없었다.
+
+    **실측으로 정정된 사실**: 43번 작업 당시 문서에는 "real hg `hg verify`가
+    'not in fncache' 경고를 낼 것"이라고 추정만 적어뒀는데, 이번에 실제
+    hg 7.2(`experimental.treemanifest=1`)로 직접 검증해보니 **`hg verify`는
+    이 gap을 전혀 잡아내지 못한다** — `meta/<dir>/00manifest.i` 엔트리를
+    fncache에서 지우고 `hg verify -v`를 돌려도 경고가 전혀 없다. 실제로
+    이 gap을 검출하는 유일한 real-hg-CLI 도구는 **`hg debugrebuildfncache`**
+    (dry-run, `--and-fix` 없이)였다 — 빠진 엔트리마다 `adding meta/<dir>/
+    00manifest.i`를 출력하고 `N items added, 0 removed from fncache`로
+    요약한다. 이 사실이 정정되지 않았다면 회귀 테스트를 잘못된 real-hg
+    커맨드(`verify`) 기준으로 작성해 실제로는 아무것도 검증하지 못했을
+    것이다.
+
+    **수정**: `CommitCommand.writeTreeManifestDir`가 이제 `fncachePaths`
+    집합을 파라미터로 받아, 디렉터리별 revlog를 쓸 때마다 `meta/<dir>/
+    00manifest.i`를 등록하고 (같은 방식으로 43번에서 확립된 규칙대로)
+    `dirRevlog.isInline() == false`일 때만 `.d`도 함께 등록한다. 부수 효과로
+    fncache 파일의 실제 쓰기 시점(`SafeFileIO.writeLinesAtomic` 호출)을
+    파일 루프 직후에서 treemanifest 매니페스트 작성 단계 뒤로 옮겨야 했다
+    (그 전에는 `writeTreeManifestDir` 호출보다 fncache 쓰기가 먼저 실행되고
+    있었다 — 순서 자체가 이 gap의 근본 원인 중 하나).
+
+    **`FetchCommand` 교차 점검(문서에서 지시한 대로 함께 확인)**: `FetchCommand`의
+    treemanifest 매니페스트 그룹 적용 경로는 이미 `meta/<dir>/00manifest.i`/`.d`를
+    등록하고 있었지만(43번 이전부터 존재), **`.d`를 항상 무조건 추가**하고
+    있어서 43번이 확립한 "인라인이면 `.d` 없음" 규칙과 반대되는 별도의 진짜
+    버그였다 — 실제 hg는 인라인 상태로 남은 디렉터리 manifest에는 `.d`
+    엔트리를 절대 넣지 않는다(위와 같은 방식으로 실측 확인). `subManifest.
+    isInline()`을 체크하도록 고쳐 filelog 쪽과 동일한 패턴으로 통일했다.
+
+    **검증**: `TreeManifestWriteTest#treemanifestDirlogsAreRegisteredInFncache`
+    (신규) — hg4j만으로 nested treemanifest 저장소를 커밋한 뒤 real hg
+    `debugrebuildfncache`가 "already up to date"를 보고하는지, 그리고 `.i`만
+    있고 `.d`는 없는지 직접 확인(수정 전 코드로 되돌려 실제로 실패함을
+    확인 후 복원). 수정 전에는 이 테스트가 `meta/sub/00manifest.i` 등이
+    fncache에 없다며 실패했다. `FetchCommandCoverageTest.
+    applyBundleWritesTreemanifestManifestGroupsIncludingNestedPaths`의 기존
+    단언도 고쳤다 — 이 테스트는 (`FetchCommand`의 버그와 정확히 같은 모양으로)
+    인라인으로 남는 작은 nested manifest에 대해 `.d`가 **반드시 있어야 한다**고
+    잘못 단언하고 있었다(real hg 검증 없이 작성된 유닛 테스트였음). non-interop
+    전체(2299개) + treemanifest 관련 scoped interop 재검증 완료, 회귀 없음.
 

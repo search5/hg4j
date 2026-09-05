@@ -257,10 +257,24 @@ hg는 falsy-zero를 "비활성"으로 취급) — 함께 수정. 발견 이력: 
 **근본 원인**: 두 커맨드 모두 필드 등록된 `.i` 경로만 fncache에 넣고 `.d`는 넣지
 않음 — inline-by-default 이전에는 항상 처음부터 non-inline이라 가려져 있었음.
 **수정**: `filelog.isInline() == false`일 때 `.d` 엔트리도 추가(`GcCommand`의
-fncache 재구축 관례와 통일). **관련 미해결 gap**: `CommitCommand`가 treemanifest
+fncache 재구축 관례와 통일).
+
+**관련 후속(백로그 45번, ✅ 2026-09-06 완료)**: `CommitCommand`가 treemanifest
 하위 디렉터리 manifest(`meta/<dir>/00manifest.*`)는 애초에 `data/`/`meta/` 어느
-쪽으로도 fncache에 전혀 등록하지 않는 별개의 gap 발견(백로그 45번, 미착수).
-발견 이력: 백로그 43번(2026-09-06).
+쪽으로도 fncache에 전혀 등록하지 않는 별개의 gap이었음. **실측으로 정정된 사실**:
+43번 당시 문서에 "real `hg verify`가 경고할 것"이라 적었던 추정은 실제로는
+틀렸다 — real hg 7.2로 직접 확인한 결과 `hg verify`는 `meta/` fncache 누락을
+전혀 잡지 못하고, 유일하게 이 gap을 검출하는 real-hg-CLI 도구는
+`hg debugrebuildfncache`(dry-run)였다("adding meta/<dir>/00manifest.i" 출력).
+`writeTreeManifestDir`가 `fncachePaths`를 파라미터로 받아 디렉터리 revlog마다
+`.i`(+ 비인라인일 때만 `.d`)를 등록하도록 수정, fncache 실제 쓰기 시점도
+treemanifest 매니페스트 작성 이후로 이동(순서 자체가 근본 원인 중 하나였음).
+**교차 점검 중 발견한 별개의 진짜 버그**: `FetchCommand`의 treemanifest
+매니페스트 그룹 적용 경로는 이미 `meta/` 등록 코드가 있었지만 `.d`를
+`isInline()` 체크 없이 **항상 무조건** 추가하고 있어서, 43번이 확립한
+"인라인이면 `.d` 없음" 규칙과 정반대였다 — 같은 패턴(filelog isInline() 가드)으로
+통일. 상세: [[backlog/revlog-storage-formats]].
+발견 이력: 백로그 43번(2026-09-06), 45번 후속(2026-09-06).
 
 ## 관련 문서
 - [[dirstate-v2]], [[censor]], [[symlink-handling]], [[push-and-concurrency]],

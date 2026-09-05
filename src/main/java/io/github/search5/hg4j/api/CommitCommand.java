@@ -828,10 +828,6 @@ public class CommitCommand {
                 }
             }
 
-            // Write fncache back atomically
-            if (!fncachePaths.isEmpty()) {
-                SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
-            }
             if (useFileIndex) {
                 FileIndex.writeTrackedPaths(repository.getStoreDir(), fileIndexPaths);
             }
@@ -867,7 +863,7 @@ public class CommitCommand {
                 Map<String, byte[]> p1DirNodes = collectDirNodes(p1ManifestNode);
                 Map<String, byte[]> p2DirNodes = collectDirNodes(p2ManifestNode);
                 manifestNode = writeTreeManifestDir("", newManifest, p1DirNodes, p2DirNodes,
-                        declaredMfNode1, declaredMfNode2, manifestRevlog, newCommitRev);
+                        declaredMfNode1, declaredMfNode2, manifestRevlog, newCommitRev, fncachePaths);
             } else {
                 StringBuilder manifestSb = new StringBuilder();
                 for (Map.Entry<String, String> entry : newManifest.entrySet()) {
@@ -875,6 +871,14 @@ public class CommitCommand {
                 }
                 byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
                 manifestNode = manifestRevlog.appendRevision(manifestTextBytes, declaredMfRev1, declaredMfRev2, declaredMfNode1, declaredMfNode2, newCommitRev);
+            }
+
+            // Write fncache back atomically -- deliberately after the manifest write above (not
+            // right after the per-file loop) because backlog #45's fix makes writeTreeManifestDir
+            // append meta/<dir>/00manifest.i/.d entries into this same fncachePaths set as it
+            // writes each touched treemanifest dirlog.
+            if (!fncachePaths.isEmpty()) {
+                SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
             }
 
             // 5. Serialize and write new changelog (commit) revision
@@ -1662,7 +1666,8 @@ public class CommitCommand {
      */
     private byte[] writeTreeManifestDir(String dir, Map<String, String> flatManifest,
                                          Map<String, byte[]> p1DirNodes, Map<String, byte[]> p2DirNodes,
-                                         byte[] p1RootNode, byte[] p2RootNode, Revlog manifestRevlog, int linkRev) throws IOException {
+                                         byte[] p1RootNode, byte[] p2RootNode, Revlog manifestRevlog, int linkRev,
+                                         Set<String> fncachePaths) throws IOException {
         String prefix = dir.isEmpty() ? "" : dir + "/";
         Map<String, String> lines = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
         java.util.TreeSet<String> subdirNames = new java.util.TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
@@ -1682,7 +1687,7 @@ public class CommitCommand {
         for (String sub : subdirNames) {
             String subFullPath = prefix + sub;
             byte[] childNode = writeTreeManifestDir(subFullPath, flatManifest, p1DirNodes, p2DirNodes,
-                    p1RootNode, p2RootNode, manifestRevlog, linkRev);
+                    p1RootNode, p2RootNode, manifestRevlog, linkRev, fncachePaths);
             lines.put(sub, NodeIdUtil.toHex(childNode) + "t");
         }
 
@@ -1713,10 +1718,24 @@ public class CommitCommand {
             dirRevlog = repository.getRevlog(subIdx, subDat);
             p1 = p1DirNodes.getOrDefault(dir, new byte[20]);
             p2 = p2DirNodes.getOrDefault(dir, new byte[20]);
+            // Backlog #45: real hg's fncache tracks meta/<dir>/00manifest.i for every treemanifest
+            // dirlog it ever writes (RE_FNCACHE_FILE matches "data|meta" identically) -- confirmed
+            // live against real hg 7.2 (experimental.treemanifest=1): a fresh treemanifest repo's
+            // fncache lists "meta/<dir>/00manifest.i" per touched subdirectory. Before this fix
+            // CommitCommand never added these at all, so real hg's own `hg verify` on a repository
+            // hg4j committed into reports "warning: 'meta/<dir>/00manifest.i' not in fncache!".
+            fncachePaths.add("meta/" + dir + "/00manifest.i");
         }
         int p1Rev = isNullNode(p1) ? -1 : NodeIdUtil.findRevisionByNodeId(dirRevlog, p1);
         int p2Rev = isNullNode(p2) ? -1 : NodeIdUtil.findRevisionByNodeId(dirRevlog, p2);
-        return dirRevlog.appendRevision(content, p1Rev, p2Rev, p1, p2, linkRev);
+        byte[] result = dirRevlog.appendRevision(content, p1Rev, p2Rev, p1, p2, linkRev);
+        // Real hg only lists the paired ".d" once the dirlog actually grows past the inline
+        // threshold (confirmed live: small treemanifest dirlogs list only the ".i" entry) --
+        // mirrors the isInline() guard already used for filelog fncache entries above.
+        if (!dir.isEmpty() && !dirRevlog.isInline()) {
+            fncachePaths.add("meta/" + dir + "/00manifest.d");
+        }
+        return result;
     }
 
     private static byte[] extractManifestNode(byte[] clContent) {

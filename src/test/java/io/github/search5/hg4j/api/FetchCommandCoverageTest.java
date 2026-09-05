@@ -255,7 +255,14 @@ public class FetchCommandCoverageTest {
 
         List<String> fncacheLines = Files.readAllLines(new File(destRepo.getStoreDir(), "fncache").toPath());
         assertTrue(fncacheLines.contains(nestedIdxRel), "fncache must track the new nested manifest index file");
-        assertTrue(fncacheLines.contains(nestedDatRel), "fncache must track the new nested manifest data file");
+        // Backlog #45: real hg's fncache never lists a paired ".d" for a dirlog that stayed
+        // inline -- confirmed live against a real-hg-created treemanifest repo (see
+        // TreeManifestWriteTest#treemanifestDirlogsAreRegisteredInFncache). This nested manifest's
+        // content here is tiny (well under the 131072-byte inline threshold), so it must stay
+        // inline and the ".d" entry must NOT be registered; mirrors the isInline() guard already
+        // used for filelog fncache entries just below in this same method.
+        assertTrue(nestedRevlog.isInline(), "test fixture's nested manifest content must stay inline for this assertion to be meaningful");
+        assertFalse(fncacheLines.contains(nestedDatRel), "fncache must not list '.d' for a dirlog that stayed inline");
     }
 
     @Test

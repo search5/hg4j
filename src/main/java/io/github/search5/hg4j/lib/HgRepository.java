@@ -366,12 +366,27 @@ public class HgRepository implements Repository {
      * docket file's own length stays fixed while its {@code index_end}/{@code data_end} fields
      * are rewritten in place as more revisions are appended.
      *
-     * <p>This intentionally does <em>not</em> touch {@code RevlogIndex.checkAndUpdate()}'s
-     * existing incremental-reload logic (its {@code addedRecords}-emptiness guard is load-bearing
-     * for StripCommand/RebaseCommand/HisteditCommand reusing a handle right after a local
-     * truncate -- see that method's own comment) -- it instead forces a full, fresh reconstruction
-     * of every cached {@code Revlog}, which naturally starts with an empty {@code addedRecords}
-     * and so isn't affected by that guard's "has this instance ever written locally" state.
+     * <p>This must not blindly discard a cached changelog {@link Revlog} that has itself already
+     * written locally in this process (backlog #39, 2026-09-05, found while investigating a
+     * regression this method's own connection into 7 read commands introduced): {@code
+     * clearRevlogCache()} replaces every cached {@code Revlog}/{@code RevlogIndex} with a brand
+     * new instance whose {@code addedRecords} starts empty, which silently discards exactly the
+     * "this instance already knows its own local write history" trust that {@code
+     * RevlogIndex.checkAndUpdate()}'s own {@code addedRecords}-emptiness guard exists to protect
+     * (see that method's javadoc) -- a changelog.i size/mtime change right after this process's
+     * own local commit is indistinguishable from an external one by size/mtime alone, so a naive
+     * unconditional reload here breaks the common "commit, then immediately strip/rebase/histedit
+     * the same revision with the same handle" pattern: the stripped node's {@code findRevision}
+     * on the fresh instance finds no local-write history to trust, reloads from the
+     * already-truncated file, and silently loses track of a revision the caller (e.g.
+     * {@code StripCommand}'s bookmark-relocation loop) still needs to resolve (verified live:
+     * this exact regression reproduced in {@code StripCommandCoverageTest
+     * #stripMovesBookmarkPointingAtStrippedRevisionToNewTip}). So: only clear the cache when the
+     * cached changelog {@code Revlog} either doesn't exist yet or has never itself added a record
+     * locally -- a genuinely external change is unaffected by this (this process never wrote to
+     * it, so {@code hasLocallyAddedRecords()} is trivially false), while a local
+     * commit-then-mutate sequence on the same handle is now protected exactly like
+     * {@code RevlogIndex.checkAndUpdate()} already protects it.
      */
     public synchronized void refreshIfChangedOnDisk() {
         File clIdx = new File(storeDir, "00changelog.i");
@@ -380,7 +395,14 @@ public class HgRepository implements Repository {
         if (size != lastObservedChangelogSize || mtime != lastObservedChangelogMtime) {
             lastObservedChangelogSize = size;
             lastObservedChangelogMtime = mtime;
-            clearRevlogCache();
+            Revlog cachedChangelog = null;
+            try {
+                cachedChangelog = revlogCache.get(clIdx.getCanonicalFile());
+            } catch (IOException ignored) {
+            }
+            if (cachedChangelog == null || !cachedChangelog.hasLocallyAddedRecords()) {
+                clearRevlogCache();
+            }
         }
     }
 

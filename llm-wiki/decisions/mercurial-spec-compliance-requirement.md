@@ -3340,6 +3340,146 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     wave 5 병렬 에이전트들과 별도 취합 필요할 수 있음). 나머지 28개 로컬
     명령 및 wire 매트릭스 잔여 5개는 여전히 미착수.
 
+    **Wave 5(2026-09-05, `BisectCommand`/`DescribeCommand`/`DiffCommand`/
+    `LogCommand`/`StatusCommand`/`RevsetCommand`/`SidedataChangedFilesCommand`)**:
+    7개 명령 모두 native 6/6 + Docker 30/30 = 36/36 **전부 GREEN**(새 테스트
+    클래스 15개 -- 6개 명령은 명령당 `RequirementMatrix{X}CoreRoundTripTest`/
+    `...DockerRoundTripTest` 2종[전부 순수 read라 `HelperMain` 서브프로세스
+    불필요, 판단 근거는 `RequirementMatrixDescribeDockerRoundTripTest`의
+    javadoc], `BisectCommand`만 `next()`가 실제로 워킹 카피/dirstate를
+    쓰므로 `...HelperMain`까지 3종, 전부
+    `src/test/java/io/github/search5/hg4j/api/`). `LogCommand`/`StatusCommand`는
+    이번 wave 이전엔 `RequirementMatrixCoreRoundTripTest`(commit/log/status/cat
+    4개 명령 공용)의 부수적 검증(tip hex 개수 확인, 커밋 직후 clean 상태 확인)만
+    있었을 뿐 각 명령 자체의 전용 매트릭스 트리오는 없었다는 점을 이번에
+    확인·보강(백로그 39 작업 지시가 명시한 지점). 이 과정에서 진짜 hg4j
+    프로덕션 버그 **4건**을 TDD로 발견·수정:
+
+    1. **`BisectCommand`의 treemanifest 체크아웃 미지원(신규 발견)**:
+       `next()`가 매 bisect 후보 체크아웃 시 루트 매니페스트 revlog를
+       직접 hand-roll 파싱(`getManifestForCommit`)해 모든 라인을 실제 파일로
+       취급하고 있었다 -- `experimental.treemanifest=1` 저장소에서는 루트
+       매니페스트의 서브디렉터리 항목이 `t`-플래그가 붙은 `meta/<dir>/
+       00manifest.i` 서브매니페스트 포인터일 뿐 파일 콘텐츠가 아니므로,
+       하위 디렉터리에 있는 모든 파일이 체크아웃되지 않거나 잘못된 콘텐츠로
+       쓰였다. `ManifestCommand`/`StatusCommand`/`DiffCommand`가 이미 쓰는
+       treemanifest-aware `ManifestWalk`(→`ManifestTreeIterator`)로 교체해
+       해결 -- `RequirementMatrixBisectCoreRoundTripTest`/`...DockerRoundTripTest`
+       양쪽 모두 nested-directory 파일의 체크아웃 콘텐츠를 매 bisect 스텝마다
+       `hg cat`과 직접 대조해 이 수정을 검증.
+    2. **`Revlog.decompressSidedataChunk`가 `COMP_MODE_DEFAULT`를 zstd로
+       무조건 가정(신규 발견)**: `format.exp-use-changelog-v2` +
+       `format.exp-use-copies-side-data-changeset`는 켰지만
+       `revlog-compression-zstd` requirement는 없는(real hg의
+       `format.usezstd=false`/`format.revlog-compression=zlib`) 저장소에서
+       real hg 자신이 실제로 zlib로 압축한 사이드데이터 청크를 읽으면
+       "Invalid zstd sidedata frame: could not determine content size"로
+       실패 -- 완전히 유효한 real-hg 저장소의 데이터를 못 읽는 버그.
+       `RequirementMatrixSidedataChangedFilesCoreRoundTripTest`의
+       `cl2+sidedata` 콤보(이 스위트는 바이트 재현성을 위해 항상 zlib을
+       강제하므로 100% 재현) 개발 중 발견. 이미 `COMP_MODE_INLINE` 분기가
+       쓰던 것과 동일한 패턴(첫 바이트가 zstd 매직 `0x28`인지 스니핑,
+       아니면 `DeltaCodec.decompress`에 위임)으로 `COMP_MODE_DEFAULT` 분기도
+       수정.
+    3. **`DeltaCodec.decompressZstd`가 델타 인코딩된 리비전의 압축 해제
+       목적지 버퍼 크기로 revlog 인덱스의 `uncompLen`(최종 재구성된 풀텍스트
+       크기)을 그대로 써서 "Destination buffer is too small"로 크래시(신규
+       발견, 이번 wave에서 가장 파급력 큰 버그)**: real hg의 revlog v1
+       인덱스 `uncompressed_len` 필드는 항상 "이 리비전을 완전히 재구성했을
+       때의 최종 크기"를 기록하는 것이지 "이 리비전 자체가 저장하고 있는
+       (그리고 그래서 압축 해제되는) 바이트 수"가 아니다 -- 베이스 리비전이
+       아닌 델타 리비전(generaldelta가 기본인 v1 매니페스트/파일로그는
+       거의 항상 이 경우)의 경우 실제로 zstd 압축된 것은 bdiff 패치 자체
+       (헌크당 12바이트 헤더 + 교체 텍스트)이고 그 바이트 길이는 최종
+       풀텍스트 크기와 무관하다. `RequirementMatrixDiffDockerRoundTripTest`가
+       real hg 7.2.4(Docker, 강제 zlib 없이 진짜 zstd 사용)가 쓴 매니페스트의
+       두 번째 리비전(델타 인코딩됨)을 `ManifestTreeIterator`로 읽다가
+       30/30 전부 크래시로 발각 -- native 쪽(항상 zlib 강제)과 hg4j
+       자체 write 경로(델타 없이 항상 fulltext로 씀)는 이 조합을 지금껏
+       한 번도 건드린 적이 없어 숨어 있던, **일반적인 real-world zstd
+       압축 hg 저장소 다수에 실질적으로 영향을 미쳤을 버그**. 이미
+       사이드데이터 경로(`Revlog#getSidedata`)가 쓰던 것과 동일한 해법 --
+       zstd 프레임 자체에 내장된 콘텐츠 크기(`Zstd.getFrameContentSize`)를
+       읽어 목적지 버퍼를 정확히 사이징 -- 를 메인 콘텐츠 경로에도 적용해
+       해결(대상 메서드가 `DeltaCodec` 공용 유틸이라 델타/풀텍스트, 매니페스트/
+       파일로그/체인지로그 구분 없이 전부 수정됨).
+    4. **장수(long-lived) `HgRepository` 핸들이 changelog-v2 docket을 외부
+       프로세스가 갱신한 뒤에도 캐시된 stale 데이터를 조용히 반환(신규 발견)**:
+       `HgRepository.refreshIfChangedOnDisk()`(원래 `HgHttpWireServer`/
+       `HgSshWireServer` 전용으로 이미 존재하던, "바깥에서 hg CLI가 커밋했을 때"
+       대비 메서드)가 이번에 다루는 7개 read 명령 어디에도 연결돼 있지 않아,
+       같은 `HgRepository` 객체를 재사용한 채 외부(real hg CLI)가 새 커밋을
+       추가하면 changelog-v2(docket 기반, 파일 크기 불변 -- `index_end`/
+       `data_end`만 내부적으로 갱신) 저장소에서는 캐시된 옛 리비전 개수로
+       계속 답해 진짜처럼 보이지만 틀린 답(예: `DescribeCommand`가 있지도
+       않은 태그 매치를 반환)을 조용히 냈다(plain v1 revlog는 파일 크기
+       자체가 커져서 우연히 감지됨 -- `RequirementMatrixDescribeCoreRoundTripTest`의
+       `cl1` 콤보만 통과하고 `cl2`/`cl2+sidedata` 콤보만 실패하는 패턴으로
+       발각). 7개 명령의 `call()`/`next()` 진입부에
+       `repository.refreshIfChangedOnDisk()` 호출을 추가해 해결(정상적인
+       매번-새로-여는 사용 패턴에서는 `stat()` 2회의 공짜 방어일 뿐).
+       이 문제 자체는 이번에 다룬 7개 명령보다 훨씬 일반적(다른 wave가
+       이미 완료한 read-heavy 명령들도 잠재적으로 영향권)이지만, 이번
+       세션은 백로그 39 범위(이 7개 명령)에 한해 수정 -- 나머지 명령으로의
+       확장은 별도 후속 필요.
+
+    검증: native 6/6 + Docker 30/30(7개 명령 전부) 완료, 전체 비-interop
+    `test`(2278건) 재확인 -- `StripCommandCoverageTest#stripMovesBookmarkPointingAtStrippedRevisionToNewTip`
+    1건 실패 발견(원인 분석은 아래 조정자 정정 참고).
+    "67개 명령 × 매트릭스" 목표의 명령 기준 완주 수는 31에서 38로 증가.
+    나머지 29개 로컬 명령 및 wire 매트릭스 잔여 5개는 여전히 미착수.
+
+    **조정자 정정(2026-09-05)**: 위 `StripCommandCoverageTest` 실패를
+    "`git stash` 격리 재실행에서도 동일 실패, 이 세션과 무관한 사전
+    존재 버그/타이밍 플레이크"로 판단한 것은 **틀렸음** -- 직접
+    재검증한 결과 (1) 병합 직전 커밋(메타데이터-쿼리 wave까지 병합된
+    상태)에서 이 테스트만 격리 재현하면 **통과**하고, (2) 이 wave
+    브랜치 단독(공통 조상 커밋 기준, 다른 wave와 무관)에서도 이 테스트
+    메서드 하나만 돌려도 **결정론적으로 매번 실패**(11초 만에 재현,
+    타이밍 요소 없음) — 즉 이 wave 자신이 만든 진짜 회귀. 원래
+    "git stash 재현" 검증이 잘못된 결론에 도달한 이유는 재현 시
+    `-x jacocoTestReport` 플래그를 빠뜨려 전체 interop 스위트까지
+    딸려 실행되면서 30분+ 걸렸고, 그 상태를 "여전히 실패"로 잘못
+    해석했을 가능성이 있음(조정자도 동일한 실수로 한 번 헷갈렸다가
+    재시도로 바로잡음).
+
+    **근본 원인**: 이 wave가 위 버그 4번 항목(`refreshIfChangedOnDisk()`
+    연결)에서 7개 명령에 새로 연결한 이 메서드가, changelog.i 파일
+    크기/mtime 변화를 감지하면 무조건 `clearRevlogCache()`로 캐시된
+    모든 `Revlog`를 새 인스턴스로 통째로 교체한다 -- 새 인스턴스는
+    `addedRecords`(이 프로세스 안에서 로컬로 추가한 레코드 이력)가
+    빈 채로 시작하는데, 이는 `RevlogIndex.checkAndUpdate()` 자신의
+    "`addedRecords`가 비어 있을 때만 파일에서 리로드" 불변조건이
+    보호하려던 바로 그 상태(StripCommand/RebaseCommand/HisteditCommand가
+    로컬 truncate 직후 같은 핸들을 재사용하는 패턴)를 우회시켜버린다.
+    `StripCommandCoverageTest`의 시나리오: rev0 커밋 → `LogCommand`
+    호출(이제 `refreshIfChangedOnDisk()` 포함 → changelog 캐시 교체) →
+    rev1 커밋 → `LogCommand` 재호출(다시 캐시 교체, 이번 인스턴스는
+    rev1을 로컬로 추가한 이력이 없음) → 북마크 설정 → `StripCommand`가
+    rev1을 strip하며 이 "이력 없는" changelog 핸들로 북마크 재배치
+    루프에서 `findRevision(rev1의 노드)`를 호출 → 이미 truncate된
+    파일에서 다시 읽어 -1 반환 → "resolve 불가능한 노드"로 오인해
+    북마크를 재배치 대신 삭제.
+
+    **수정**(조정자가 이 wave 브랜치 자체에 직접 반영, 커밋 `b331e15`):
+    `RevlogIndex`/`Revlog`에 `hasLocallyAddedRecords()` public getter
+    신설, `HgRepository.refreshIfChangedOnDisk()`가 캐시된 changelog
+    `Revlog`가 이미 로컬 쓰기 이력을 갖고 있으면 `clearRevlogCache()`를
+    건너뛰도록 수정 -- 진짜 외부 변경(이 프로세스가 한 번도 쓴 적 없는
+    경우)은 영향 없이 그대로 감지되고, 로컬에서 커밋 직후 같은 핸들을
+    재사용하는 패턴만 보호됨. 수정 후 `StripCommandCoverageTest` 및
+    전체 비-interop 스위트 재검증 GREEN.
+
+    **후속 항목**: 이 브랜치의 버그 4번 문단이 스스로 인정했듯
+    `refreshIfChangedOnDisk()` 미연결(이번엔 반대로 "과도한 연결"까지)
+    문제는 이번 7개 명령보다 범위가 넓다 -- 다른 wave가 이미 완료한
+    read-heavy 명령들도 이 메서드를 연결하게 될 경우 동일한 클래스의
+    회귀에 잠재적으로 노출된다는 점을 백로그 39 전체 완료 후 전수
+    재점검 항목으로 유지한다. 또한 이 사건은 **"병합 중 발견한 무관해
+    보이는 테스트 실패는 병합한 에이전트의 판단을 그대로 신뢰하지 말고
+    반드시 직접 병합 전/후·브랜치 단독 여부로 격리 재현해 확인할 것"**
+    이라는 39번 표준 규칙 6을 재확인시켜준 사례로 기록한다.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

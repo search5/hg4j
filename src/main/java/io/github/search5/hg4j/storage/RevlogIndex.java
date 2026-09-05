@@ -801,6 +801,19 @@ public class RevlogIndex {
         return fileOffsets[rev];
     }
 
+    /**
+     * Whether this index currently holds any locally-added-but-not-yet-checkAndUpdate-visible
+     * records ({@code addedRecords} -- see {@link #checkAndUpdate()}'s own javadoc). Callers
+     * outside this class that hold a long-lived reference to this index (e.g. {@code
+     * HgRepository#refreshIfChangedOnDisk()}) must not force a reload of an index in this state:
+     * doing so silently discards the same "this instance already knows its own local write
+     * history" trust that {@code checkAndUpdate()}'s {@code addedRecords.isEmpty()} guard exists
+     * to protect (backlog #39, 2026-09-05).
+     */
+    public synchronized boolean hasLocallyAddedRecords() {
+        return !addedRecords.isEmpty();
+    }
+
     public synchronized int findRevision(byte[] nodeId) {
         checkAndUpdate();
         if (nodeId == null) return -1;

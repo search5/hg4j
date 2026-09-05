@@ -944,6 +944,102 @@ public class RevlogTest {
         Revlog.IndexRecord rec = revlog.getIndexRecord(1);
         assertEquals(0, rec.getBaseRev());
     }
+
+    /**
+     * Backlog #43 -- a small inline revlog (real hg's default v1 layout for any non-changelog
+     * filelog/manifest, backlog #35) must NEVER grow a {@code .d} file at all while its cumulative
+     * data stays under real hg's {@code _maxinline} (131072 bytes, {@code mercurial/revlog.py}).
+     * Regression guard against an over-eager transition.
+     */
+    @Test
+    public void testInlineRevlogStaysInlineWhenUnderMaxinlineThreshold(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("small.i").toFile();
+        File datFile = tempDir.resolve("small.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+        byte[] p = new byte[20];
+
+        revlog.appendRevision("small content".getBytes(StandardCharsets.UTF_8), -1, -1, p, p, 0);
+
+        assertTrue(revlog.isInline(), "a small revlog must stay inline");
+        assertFalse(datFile.exists(), "a small inline revlog must never create a .d file at all");
+    }
+
+    /**
+     * Backlog #43 -- real hg's {@code _enforceinlinesize()} (mercurial/revlog.py) converts an
+     * inline v1 revlog to the separate-{@code .i}/{@code .d} non-inline layout as soon as its
+     * cumulative data reaches 131072 bytes ({@code _maxinline}) -- live-tested against real hg 7.2
+     * (llm-wiki backlog #43): committing successively larger files (10000/30000/50000/70000
+     * bytes) transitions right after the commit that pushes the cumulative total (160000 bytes)
+     * past the threshold, and the resulting {@code .i} shrinks to a plain {@code revCount * 64}
+     * byte file. This mirrors that exact scenario directly against {@link Revlog}, independent of
+     * the higher-level commit pipeline.
+     */
+    @Test
+    public void testInlineRevlogTransitionsToNonInlinePastMaxinlineThreshold(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("grow.i").toFile();
+        File datFile = tempDir.resolve("grow.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+        assertTrue(revlog.isInline(), "a brand-new non-changelog v1 revlog must start inline (backlog #35)");
+
+        byte[] p = new byte[20];
+        java.util.Random rnd = new java.util.Random(43);
+        byte[] prevNode = p;
+        int[] sizes = {10000, 30000, 50000, 70000}; // cumulative crosses 131072 at the 4th revision
+        java.util.List<byte[]> contents = new java.util.ArrayList<>();
+        for (int i = 0; i < sizes.length; i++) {
+            byte[] content = new byte[sizes[i]];
+            rnd.nextBytes(content); // incompressible, like the real-hg live test, so on-disk size tracks raw size closely
+            contents.add(content);
+            int parent1 = i == 0 ? -1 : i - 1;
+            byte[] node = revlog.appendRevision(content, parent1, -1, prevNode, p, i);
+            prevNode = node;
+            if (i < sizes.length - 1) {
+                assertTrue(revlog.isInline(), "revlog must still be inline after revision " + i);
+            }
+        }
+
+        assertFalse(revlog.isInline(),
+                "revlog must have transitioned to non-inline after crossing 131072 cumulative bytes");
+        assertTrue(datFile.exists() && datFile.length() > 0, "split must have produced a non-empty .d file");
+        assertEquals((long) sizes.length * 64L, idxFile.length(),
+                "post-split .i file must hold only fixed 64-byte records, no interleaved data");
+
+        for (int i = 0; i < contents.size(); i++) {
+            assertArrayEquals(contents.get(i), revlog.getRevisionContent(i),
+                    "revision " + i + " content must survive the inline->non-inline split");
+        }
+
+        // A completely fresh Revlog instance re-opened from disk must also see the post-split
+        // non-inline layout and read every revision back correctly.
+        Revlog reopened = new Revlog(idxFile, datFile);
+        assertFalse(reopened.isInline());
+        assertEquals(sizes.length, reopened.getRevisionCount());
+        for (int i = 0; i < contents.size(); i++) {
+            assertArrayEquals(contents.get(i), reopened.getRevisionContent(i));
+        }
+    }
+
+    /**
+     * Backlog #43 -- live-tested against real hg 7.2: even a revlog's very FIRST revision, if its
+     * own compressed size alone already exceeds {@code _maxinline}, is written inline and then
+     * immediately split (real hg never leaves a revlog with just one, oversized inline revision).
+     */
+    @Test
+    public void testSingleRevisionLargerThanMaxinlineSplitsImmediately(@TempDir Path tempDir) throws Exception {
+        File idxFile = tempDir.resolve("huge.i").toFile();
+        File datFile = tempDir.resolve("huge.d").toFile();
+        Revlog revlog = new Revlog(idxFile, datFile);
+        byte[] p = new byte[20];
+        byte[] content = new byte[200000];
+        new java.util.Random(999).nextBytes(content);
+
+        revlog.appendRevision(content, -1, -1, p, p, 0);
+
+        assertFalse(revlog.isInline(),
+                "a single first revision exceeding 131072 bytes must split immediately, matching real hg 7.2");
+        assertEquals(64L, idxFile.length());
+        assertArrayEquals(content, revlog.getRevisionContent(0));
+    }
 }
 
 

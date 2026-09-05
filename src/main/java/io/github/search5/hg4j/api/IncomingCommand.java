@@ -13,7 +13,6 @@ import java.util.List;
 import io.github.search5.hg4j.bundle.ChangegroupParser;
 import io.github.search5.hg4j.diff.DeltaEngine;
 import java.io.ByteArrayInputStream;
-import java.util.Collections;
 
 /**
  * Incoming command for identifying changesets present in the remote repository
@@ -45,11 +44,13 @@ public class IncomingCommand {
         }
 
         List<byte[]> remoteHeads = new ArrayList<>();
+        List<String> remoteHeadsHex = new ArrayList<>();
         try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
             List<String> remoteHeadsStr = client.getHeads();
             if (remoteHeadsStr != null) {
                 for (String headStr : remoteHeadsStr) {
                     remoteHeads.add(NodeIdUtil.fromHex(headStr));
+                    remoteHeadsHex.add(headStr);
                 }
             }
         } catch (Exception e) {
@@ -74,12 +75,20 @@ public class IncomingCommand {
             return incomingMessages;
         }
 
-        // Fetch actual missing changegroup binary from the remote server
+        // Fetch the missing changegroup content from the remote server -- via getbundle whenever
+        // the remote supports it (matching real hg's own modern client, and required to avoid a
+        // real landmine in real hg's legacy `changegroup` wire command, see
+        // FetchCommand#downloadChangegroupBundle's javadoc: calling it with an always-empty roots
+        // list against a non-empty remote used to make IncomingCommand fail against literally any
+        // real hg server that had content, backlog item 39 wave 5).
         try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
-            byte[] bundleBytes = client.getChangegroup(Collections.emptyList());
-            if (bundleBytes != null && bundleBytes.length > 0) {
-                try (ByteArrayInputStream bin = new ByteArrayInputStream(bundleBytes)) {
-                    ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(bin);
+            List<String> caps = client.getCapabilities();
+            List<String> common = FetchCommand.computeLocalLeafHexes(changelog);
+            FetchCommand.DownloadedChangegroup downloaded =
+                    FetchCommand.downloadChangegroupBundle(client, caps, common, remoteHeadsHex);
+            if (downloaded != null) {
+                try (ByteArrayInputStream bin = new ByteArrayInputStream(downloaded.changegroupBytes)) {
+                    ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(bin, downloaded.cgVersion);
                     if (bundle != null && bundle.changelogEntries != null) {
                         byte[] currentBase = new byte[0];
                         for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {

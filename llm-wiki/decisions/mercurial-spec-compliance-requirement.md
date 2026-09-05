@@ -3480,6 +3480,68 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     반드시 직접 병합 전/후·브랜치 단독 여부로 격리 재현해 확인할 것"**
     이라는 39번 표준 규칙 6을 재확인시켜준 사례로 기록한다.
 
+    **Wire 매트릭스 wave 5(2026-09-05)**: [[exhaustive-interop-matrix-plan]]
+    §4-2가 "미착수"로 남겨뒀던 wire 매트릭스 잔여 5개 명령(`FetchCommand`/
+    `IncomingCommand`/`OutgoingCommand`/`ClonebundlesCommand`/
+    `NarrowCloneCommand`)에 21개 조합(HTTP 18 + SSH 3)을 전부 적용,
+    **5개 명령 전부 GREEN**: `FetchCommand` 21/21, `NarrowCloneCommand`
+    21/21, `ClonebundlesCommand` 21/21, `IncomingCommand`+`OutgoingCommand`
+    49/49(hg4j-클라이언트 vs real-hg-서버 방향 21+21개 + real-hg-클라이언트
+    vs hg4j-served-서버 리버스 방향 6+1개 — 사용자가 이 두 명령만 명시적으로
+    양방향 검증을 요구했음). 새 테스트 클래스 4개(`HgWireProtocolMatrixFetchTest`/
+    `HgWireProtocolMatrixNarrowCloneTest`/`HgWireProtocolMatrixClonebundlesTest`/
+    `HgWireProtocolMatrixIncomingOutgoingTest`, 전부
+    `src/test/java/io/github/search5/hg4j/transport/`) + 공유 헬퍼 3개
+    (`WireMatrixCombos`/`HttpMatrixServer`/`SshMatrixServer`, 기존
+    `HgWireProtocolMatrixTest`의 콤보/서버 보일러플레이트를 추출).
+
+    **발견·수정한 진짜 hg4j 프로덕션 버그 3건**:
+    1. **`IncomingCommand`가 content 있는 real hg 서버 어디에 대해서도
+       100% 깨져 있었다**(가장 심각, 웹훅 알림 발송): 항상
+       `client.getChangegroup(Collections.emptyList())`로 원격 전체
+       히스토리를 구식 `changegroup` wire 명령에 빈 `roots`로 요청하고
+       있었는데, real hg 자신의 순정 `hg serve`에 맨 curl로
+       `?cmd=changegroup&roots=`를 쳐서 **hg4j 없이 독립 재현 확인**
+       (2026-09-05): real hg의 `discovery.outgoing()`(`mercurial/
+       discovery.py`)이 `missingroots == []`이면서 서버 쪽 핸들러가 항상
+       명시적으로 `ancestorsof=repo.heads()`를 넘기는 경우
+       `repo.revs('::%ln', missingroots, ancestorsof)`를 호출하는데,
+       revset `'::%ln'`에는 자리표시자가 하나뿐인데 치환값을 2개 넘겨
+       `ParseError: too many revspec arguments specified`로 서버가
+       uncaught exception(HTTP 500)을 던진다 — real hg 자신의 레거시
+       코드 결함이지 hg4j 버그는 아니지만, real hg 자신의 최신 클라이언트는
+       이 경로를 절대 밟지 않는다(항상 `getbundle` 우선). 수정:
+       `FetchCommand`에 이미 있던 "로컬 leaf 노드 계산" + "getbundle 우선
+       협상 + HG20/HG10 매직 해제" 로직을 `FetchCommand.
+       computeLocalLeafHexes()`/`FetchCommand.downloadChangegroupBundle()`
+       공용 정적 메서드로 추출해 `IncomingCommand.call()`이 재사용하도록
+       재작성(`FetchCommand.call()` 자신도 이 공용 메서드를 쓰도록
+       리팩터링, 동작 변화 없음).
+    2. `HgRemoteClient.getChangegroup()`(HTTP)가 `roots`가 빈 리스트일 때
+       요청 파라미터 맵에서 그 키 자체를 아예 생략하던 버그 — real hg의
+       `changegroup` wire 명령은 `roots`가 필수 선언 인자라 키가 통째로
+       빠지면 서버의 `getargs()`가 dict lookup에서 바로 `KeyError`(HTTP
+       500)를 던진다. `HgSshClient.getChangegroup()`은 이미 빈 문자열로
+       라도 항상 보내고 있어(기존 주석에 이미 명시) 정확한 참조 구현이
+       있었다 — HTTP 클라이언트를 그 패턴에 맞춰 수정.
+    3. `FetchCommand`의 clonebundles bypass 게이트가 `client instanceof
+       HgRemoteClient`(HTTP 전용)였던 것 — real hg 소스(`mercurial/
+       exchange.py`의 `remote.capable(b'clonebundles')`/`e.callcommand(
+       b'clonebundles', {})`)는 전송 방식과 무관하게 동작한다. `HgRemoteConnection`
+       인터페이스에 `supportsClonebundles()`/`fetchClonebundlesManifest()`
+       기본 메서드를 추가하고 `HgSshClient`에 실제 구현(`branchmap`과
+       동일한 형태의 무인자 v1 wire 명령)을 추가, `FetchCommand
+       .tryApplyClonebundle()`을 `HgRemoteConnection` 제네릭으로 변경 —
+       `HgWireProtocolMatrixClonebundlesTest`의 SSH 21개 조합이 실제로
+       이 새 경로(다운로드 서버 hit 카운터로 bypass 발동 자체를 확인)를
+       밟아 검증됨.
+
+    **회귀 확인**: 비-interop `test` 2278건 전부 GREEN(2 스킵, 기존 무관
+    skip), 이번 wave 신규 4개 클래스(21+21+21+49=112 테스트) 전부 GREEN,
+    기존 `HgWireProtocolMatrixTest`(Clone/Pull/Push) 21개도 재확인 GREEN
+    (회귀 없음). 이로써 [[exhaustive-interop-matrix-plan]]의 wire 매트릭스
+    (§4-2) 8개 명령 전부 완료.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

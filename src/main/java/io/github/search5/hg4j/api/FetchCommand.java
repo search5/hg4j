@@ -30,7 +30,6 @@ import io.github.search5.hg4j.bundle.ClonebundlesManifest;
 import io.github.search5.hg4j.errors.HgCorruptDataException;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.phase.PhaseRoots;
-import io.github.search5.hg4j.transport.HgRemoteClient;
 import io.github.search5.hg4j.treewalk.HgTreeFilter;
 import java.nio.channels.FileChannel;
 import java.nio.file.StandardCopyOption;
@@ -121,14 +120,21 @@ public class FetchCommand {
             // decisions/mercurial-spec-compliance-requirement.md's Clonebundles plan): only
             // attempted for a genuinely empty local repository (i.e. this call is effectively a
             // clone, not an incremental pull -- matching real hg, which only tries this during
-            // `clone`) against an HTTP remote that actually advertised the capability. A download
-            // or apply failure here is NOT caught -- real hg deliberately never falls back to a
-            // normal pull on clonebundle failure (see the plan doc for why), so the exception
-            // propagates and fails the whole fetch.
+            // `clone`) against a remote that actually advertised the capability. Real hg's own
+            // client checks this transport-agnostically (`remote.capable(b'clonebundles')` in
+            // `mercurial/exchange.py` works the same for an HTTP or SSH peer) -- previously this
+            // was gated on `client instanceof HgRemoteClient` (HTTP only), which meant hg4j never
+            // even attempted the bypass over SSH even when the SSH server advertised the
+            // capability (backlog item 39 wave 5, wire-matrix track: a real hg4j-vs-real-hg
+            // production bug, fixed by moving `supportsClonebundles()`/
+            // `fetchClonebundlesManifest()` onto the shared `HgRemoteConnection` interface and
+            // implementing them in `HgSshClient` too). A download or apply failure here is NOT
+            // caught -- real hg deliberately never falls back to a normal pull on clonebundle
+            // failure (see the plan doc for why), so the exception propagates and fails the whole
+            // fetch.
             List<byte[]> clonebundleImported = null;
-            if (localChangelog.getRevisionCount() == 0 && client instanceof HgRemoteClient httpClient
-                    && httpClient.supportsClonebundles()) {
-                clonebundleImported = tryApplyClonebundle(httpClient);
+            if (localChangelog.getRevisionCount() == 0 && client.supportsClonebundles()) {
+                clonebundleImported = tryApplyClonebundle(client);
                 if (clonebundleImported != null) {
                     repository.clearRevlogCache();
                     localChangelog = repository.getRevlog(clIdx, clDat);
@@ -196,96 +202,23 @@ public class FetchCommand {
                 }
             }
 
-            if (count > 0) {
-                boolean[] isParent = new boolean[count];
-                for (int i = 0; i < count; i++) {
-                    Revlog.IndexRecord rec = localChangelog.getIndexRecord(i);
-                    if (rec.getParent1() >= 0 && rec.getParent1() < count) {
-                        isParent[rec.getParent1()] = true;
-                    }
-                    if (rec.getParent2() >= 0 && rec.getParent2() < count) {
-                        isParent[rec.getParent2()] = true;
-                    }
-                }
-                for (int i = 0; i < count; i++) {
-                    if (!isParent[i]) {
-                        byte[] node = localChangelog.getIndexRecord(i).getNodeId();
-                        String hexNode = NodeIdUtil.toHex(node);
-                        if (!common.contains(hexNode)) {
-                            common.add(hexNode);
-                        }
-                    }
+            for (String hexNode : computeLocalLeafHexes(localChangelog)) {
+                if (!common.contains(hexNode)) {
+                    common.add(hexNode);
                 }
             }
 
-            boolean supportsGetBundle = caps.contains("getbundle") || caps.stream().anyMatch(c -> c.startsWith("getbundle"));
-
-            byte[] bundleBytes;
-            if (supportsGetBundle) {
-                List<String> bundleCaps = new ArrayList<>();
-                boolean supportsBundle2 = caps.contains("bundle2") || caps.stream().anyMatch(c -> c.startsWith("bundle2"));
-                if (supportsBundle2) {
-                    // 실제 스펙(mercurial/exchange.py): 원격은 changegroup 버전 목록과 자신의
-                    // supportedoutgoingversions()의 교집합 중 max()를 그대로 골라 응답한다
-                    // (별도 우선순위 없이 단순 숫자 최댓값) — hg4j의 ChangegroupParser가 cg4/cg5
-                    // 델타 헤더까지 파싱할 수 있게 된 뒤로는(2026-09-03) 04/05까지 광고해야
-                    // 최신 hg(예: experimental.changegroup4/5=yes 켠 저장소)와 최적 포맷으로
-                    // 주고받는다. 기본 설정 저장소는 여전히 cg4/cg5를 광고하지 않으므로
-                    // 대부분은 그대로 cg3로 협상된다(실사용 회귀 없음).
-                    //
-                    // 실측(2026-09-03, Bundle2Parser#buildChangegroupBundleCaps 주석 참고): 이
-                    // changegroup 버전 목록은 평평한 "changegroup=..." 토큰이 아니라
-                    // "bundle2=<blob>" 토큰 안에 중첩돼야만 실제 hg가 인식한다 — 예전의 평평한
-                    // 토큰 방식으로는 bundle2 자체는 (bare "HG20" 토큰 덕에) 켜져도 버전
-                    // 교집합이 항상 비어 사실상 구식 bundle1(cg1)로 계속 폴백되고 있었다.
-                    bundleCaps.add("HG20");
-                    bundleCaps.add(Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05"));
-                    bundleCaps.add("compression=GZ,BZ,ZS");
-                }
-                bundleBytes = client.getBundle(common, remoteHeads, bundleCaps);
-            } else {
-                bundleBytes = client.getChangegroup(common);
-            }
             monitor.update(1);
 
-            if (bundleBytes == null || bundleBytes.length == 0) {
+            DownloadedChangegroup downloaded = downloadChangegroupBundle(client, caps, common, remoteHeads);
+            if (downloaded == null) {
                 syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
                 monitor.end();
                 return mergeClonebundleResults(clonebundleImported, new ArrayList<>());
             }
 
-            byte[] changegroupBytes = bundleBytes;
-            String cgVersion = "01";
-            if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
-                Bundle2Parser.ExtractedBundle2 ext = Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
-                changegroupBytes = ext.changegroupBytes;
-                cgVersion = ext.cgVersion;
-            } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
-                String comp = new String(bundleBytes, 4, 2, StandardCharsets.US_ASCII);
-                ByteArrayInputStream bais = new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
-                if ("UN".equals(comp)) {
-                    changegroupBytes = bais.readAllBytes();
-                } else if ("GZ".equals(comp)) {
-                    try (InflaterInputStream iis = new InflaterInputStream(bais)) {
-                        changegroupBytes = iis.readAllBytes();
-                    }
-                } else if ("BZ".equals(comp)) {
-                    byte[] rawData = bais.readAllBytes();
-                    byte[] bzData = new byte[rawData.length + 2];
-                    bzData[0] = 'B';
-                    bzData[1] = 'Z';
-                    System.arraycopy(rawData, 0, bzData, 2, rawData.length);
-                    try (BZip2CompressorInputStream bzis = 
-                                 new BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
-                        changegroupBytes = bzis.readAllBytes();
-                    }
-                } else {
-                    throw new HgCorruptDataException("Unsupported bundle1 compression format: HG10" + comp);
-                }
-                cgVersion = "01";
-            }
-
-            ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(changegroupBytes), cgVersion);
+            ChangegroupParser.ChangegroupBundle bundle =
+                    ChangegroupParser.parseBundle(new ByteArrayInputStream(downloaded.changegroupBytes), downloaded.cgVersion);
             List<byte[]> results = applyBundle(bundle);
 
             syncBookmarksAndPhases(client, localChangelog, results);
@@ -294,6 +227,144 @@ public class FetchCommand {
             monitor.end();
             return mergeClonebundleResults(clonebundleImported, results);
         }
+    }
+
+    /**
+     * The local changelog's own "leaf" revisions (those that are nobody's parent) as hex node
+     * IDs -- real hg's own cheapest possible approximation of "what the local side already has"
+     * to offer the remote as a common-ancestor hint, used both here and by {@link
+     * IncomingCommand#call()} (backlog item 39 wave 5, wire-matrix track: extracted so both
+     * commands share exactly one implementation instead of {@code IncomingCommand} reimplementing
+     * it slightly differently).
+     */
+    static List<String> computeLocalLeafHexes(Revlog localChangelog) {
+        List<String> leaves = new ArrayList<>();
+        int count = localChangelog.getRevisionCount();
+        if (count == 0) {
+            return leaves;
+        }
+        boolean[] isParent = new boolean[count];
+        for (int i = 0; i < count; i++) {
+            Revlog.IndexRecord rec = localChangelog.getIndexRecord(i);
+            if (rec.getParent1() >= 0 && rec.getParent1() < count) {
+                isParent[rec.getParent1()] = true;
+            }
+            if (rec.getParent2() >= 0 && rec.getParent2() < count) {
+                isParent[rec.getParent2()] = true;
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            if (!isParent[i]) {
+                leaves.add(NodeIdUtil.toHex(localChangelog.getIndexRecord(i).getNodeId()));
+            }
+        }
+        return leaves;
+    }
+
+    /** The result of {@link #downloadChangegroupBundle}: a raw changegroup payload already
+     * unwrapped from any HG20 (bundle2) or HG10 (bundle1) envelope/compression, plus the
+     * changegroup format version it's encoded in. */
+    static final class DownloadedChangegroup {
+        final byte[] changegroupBytes;
+        final String cgVersion;
+
+        DownloadedChangegroup(byte[] changegroupBytes, String cgVersion) {
+            this.changegroupBytes = changegroupBytes;
+            this.cgVersion = cgVersion;
+        }
+    }
+
+    /**
+     * Shared by {@link #call()} and {@link IncomingCommand#call()} (backlog item 39 wave 5,
+     * wire-matrix track): negotiates {@code getbundle} vs. the legacy {@code changegroup} wire
+     * command, downloads the bundle, and unwraps it down to a raw changegroup payload + its
+     * format version.
+     *
+     * <p>Preferring {@code getbundle} whenever the remote advertises it (exactly like real hg's
+     * own modern client always does) isn't just an optimization here -- it avoids a real
+     * landmine in real hg's own <em>legacy</em> {@code changegroup} wire command handler
+     * (confirmed independently of hg4j entirely, 2026-09-05, via plain {@code curl} against an
+     * unmodified {@code hg serve}): {@code discovery.outgoing()} in {@code mercurial/
+     * discovery.py} throws an uncaught {@code ParseError} ("too many revspec arguments
+     * specified") server-side -- an HTTP 500, not a clean protocol error -- whenever the {@code
+     * changegroup} command's {@code roots} argument is an empty list against a non-empty
+     * repository, because it calls {@code repo.revs('::%ln', missingroots, ancestorsof)} with
+     * <em>two</em> positional substitution values for a revset expression that only has
+     * <em>one</em> {@code %ln} placeholder. {@code IncomingCommand} used to always call {@code
+     * getChangegroup(Collections.emptyList())} directly regardless of getbundle support, which
+     * hit this on every single real-hg server that had any content at all -- i.e.
+     * {@code IncomingCommand} was completely broken against any real, non-empty remote before
+     * this fix.
+     *
+     * @return {@code null} if there is nothing to fetch (an empty response)
+     */
+    static DownloadedChangegroup downloadChangegroupBundle(HgRemoteConnection client, List<String> caps,
+                                                            List<String> common, List<String> remoteHeads) throws IOException {
+        boolean supportsGetBundle = caps.contains("getbundle") || caps.stream().anyMatch(c -> c.startsWith("getbundle"));
+
+        byte[] bundleBytes;
+        if (supportsGetBundle) {
+            List<String> bundleCaps = new ArrayList<>();
+            boolean supportsBundle2 = caps.contains("bundle2") || caps.stream().anyMatch(c -> c.startsWith("bundle2"));
+            if (supportsBundle2) {
+                // 실제 스펙(mercurial/exchange.py): 원격은 changegroup 버전 목록과 자신의
+                // supportedoutgoingversions()의 교집합 중 max()를 그대로 골라 응답한다
+                // (별도 우선순위 없이 단순 숫자 최댓값) — hg4j의 ChangegroupParser가 cg4/cg5
+                // 델타 헤더까지 파싱할 수 있게 된 뒤로는(2026-09-03) 04/05까지 광고해야
+                // 최신 hg(예: experimental.changegroup4/5=yes 켠 저장소)와 최적 포맷으로
+                // 주고받는다. 기본 설정 저장소는 여전히 cg4/cg5를 광고하지 않으므로
+                // 대부분은 그대로 cg3로 협상된다(실사용 회귀 없음).
+                //
+                // 실측(2026-09-03, Bundle2Parser#buildChangegroupBundleCaps 주석 참고): 이
+                // changegroup 버전 목록은 평평한 "changegroup=..." 토큰이 아니라
+                // "bundle2=<blob>" 토큰 안에 중첩돼야만 실제 hg가 인식한다 — 예전의 평평한
+                // 토큰 방식으로는 bundle2 자체는 (bare "HG20" 토큰 덕에) 켜져도 버전
+                // 교집합이 항상 비어 사실상 구식 bundle1(cg1)로 계속 폴백되고 있었다.
+                bundleCaps.add("HG20");
+                bundleCaps.add(Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05"));
+                bundleCaps.add("compression=GZ,BZ,ZS");
+            }
+            bundleBytes = client.getBundle(common, remoteHeads, bundleCaps);
+        } else {
+            bundleBytes = client.getChangegroup(common);
+        }
+
+        if (bundleBytes == null || bundleBytes.length == 0) {
+            return null;
+        }
+
+        byte[] changegroupBytes = bundleBytes;
+        String cgVersion = "01";
+        if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
+            Bundle2Parser.ExtractedBundle2 ext = Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
+            changegroupBytes = ext.changegroupBytes;
+            cgVersion = ext.cgVersion;
+        } else if (bundleBytes.length >= 6 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '1' && bundleBytes[3] == '0') {
+            String comp = new String(bundleBytes, 4, 2, StandardCharsets.US_ASCII);
+            ByteArrayInputStream bais = new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
+            if ("UN".equals(comp)) {
+                changegroupBytes = bais.readAllBytes();
+            } else if ("GZ".equals(comp)) {
+                try (InflaterInputStream iis = new InflaterInputStream(bais)) {
+                    changegroupBytes = iis.readAllBytes();
+                }
+            } else if ("BZ".equals(comp)) {
+                byte[] rawData = bais.readAllBytes();
+                byte[] bzData = new byte[rawData.length + 2];
+                bzData[0] = 'B';
+                bzData[1] = 'Z';
+                System.arraycopy(rawData, 0, bzData, 2, rawData.length);
+                try (BZip2CompressorInputStream bzis =
+                             new BZip2CompressorInputStream(new ByteArrayInputStream(bzData))) {
+                    changegroupBytes = bzis.readAllBytes();
+                }
+            } else {
+                throw new HgCorruptDataException("Unsupported bundle1 compression format: HG10" + comp);
+            }
+            cgVersion = "01";
+        }
+
+        return new DownloadedChangegroup(changegroupBytes, cgVersion);
     }
 
     /**
@@ -333,8 +404,8 @@ public class FetchCommand {
      *         the bundle happened to be empty), or {@code null} if no clonebundle was applied at
      *         all (caller must refresh its {@link Revlog} view only in the non-null case)
      */
-    private List<byte[]> tryApplyClonebundle(HgRemoteClient httpClient) throws IOException, HgLockException {
-        String manifestText = httpClient.fetchClonebundlesManifest();
+    private List<byte[]> tryApplyClonebundle(HgRemoteConnection client) throws IOException, HgLockException {
+        String manifestText = client.fetchClonebundlesManifest();
         List<ClonebundlesManifest.Entry> entries =
                 ClonebundlesManifest.filterSupported(
                         ClonebundlesManifest.parse(manifestText));

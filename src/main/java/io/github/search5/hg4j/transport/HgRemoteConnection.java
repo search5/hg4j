@@ -90,4 +90,32 @@ public interface HgRemoteConnection extends Closeable {
     default void setCredentialsProvider(CredentialsProvider provider) {
         // Default no-op
     }
+
+    /**
+     * Whether the remote advertised the {@code "clonebundles"} v1 capability token (available
+     * only after {@link #getCapabilities()} has been called at least once). Real hg's own client
+     * checks this generically via {@code remote.capable(b'clonebundles')} regardless of transport
+     * ({@code mercurial/exchange.py}'s {@code trypullbundlefromurl}) -- confirmed 2026-09-05 by
+     * reading that source directly -- so the bypass is not an HTTP-only feature in real hg, and
+     * this interface-level default (overridden by {@link HgRemoteClient} and {@link HgSshClient},
+     * the two transports that actually support it) keeps hg4j's client from artificially
+     * restricting the bypass to HTTP the way an earlier version of {@link
+     * io.github.search5.hg4j.api.FetchCommand} did (an {@code instanceof HgRemoteClient} check
+     * instead of this capability, backlog item 39 wave 5 wire-matrix track).
+     */
+    default boolean supportsClonebundles() {
+        return false;
+    }
+
+    /**
+     * Fetches the raw text of the remote's clonebundles manifest via the {@code clonebundles} wire
+     * command (the underlying transport framing differs between HTTP's {@code ?cmd=clonebundles}
+     * and SSH's line-based v1 command protocol, but the semantics -- return {@code
+     * .hg/clonebundles.manifest}'s content verbatim -- are identical). Only meaningful when {@link
+     * #supportsClonebundles()} is {@code true}; the default here throws since the base interface
+     * has no transport to actually issue the command on.
+     */
+    default String fetchClonebundlesManifest() throws IOException {
+        throw new UnsupportedOperationException("This connection does not support the clonebundles wire command");
+    }
 }

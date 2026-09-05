@@ -72,7 +72,7 @@ public class AnnotateCommandCoverageTest {
                     .setRevision(0)
                     .call();
 
-            assertEquals(2, atRev0.size()); // "Alice Line" + trailing empty split
+            assertEquals(1, atRev0.size());
             assertEquals("Alice Line", atRev0.get(0).getContent());
             assertEquals(0, atRev0.get(0).getRevision());
             assertEquals("Alice <alice@example.com>", atRev0.get(0).getAuthor());
@@ -81,7 +81,7 @@ public class AnnotateCommandCoverageTest {
             List<AnnotateCommand.BlameLine> atLatest = hg.annotate()
                     .setPath("blame.txt")
                     .call();
-            assertEquals(3, atLatest.size());
+            assertEquals(2, atLatest.size());
             assertEquals("Bob Line", atLatest.get(1).getContent());
             assertEquals(1, atLatest.get(1).getRevision());
         }
@@ -192,7 +192,7 @@ public class AnnotateCommandCoverageTest {
                     .setPath("blame.txt")
                     .call();
 
-            assertEquals(5, lines.size()); // A,B,X,C + trailing empty
+            assertEquals(4, lines.size()); // A,B,X,C
             assertEquals("A", lines.get(0).getContent());
             assertEquals(0, lines.get(0).getRevision());
             assertEquals("B", lines.get(1).getContent());
@@ -223,7 +223,7 @@ public class AnnotateCommandCoverageTest {
                     .setPath("blame.txt")
                     .call();
 
-            assertEquals(3, lines.size()); // A,C + trailing empty
+            assertEquals(2, lines.size()); // A,C
             assertEquals("A", lines.get(0).getContent());
             assertEquals(0, lines.get(0).getRevision());
             assertEquals("C", lines.get(1).getContent());
@@ -299,7 +299,7 @@ public class AnnotateCommandCoverageTest {
 
             List<AnnotateCommand.BlameLine> lines = hg.annotate().setPath("new.txt").call();
 
-            assertEquals(4, lines.size()); // line1, line2, line3 + trailing empty
+            assertEquals(3, lines.size()); // line1, line2, line3
             assertEquals("line1", lines.get(0).getContent());
             assertEquals("Alice", lines.get(0).getAuthor());
             assertEquals(0, lines.get(0).getRevision());
@@ -328,14 +328,14 @@ public class AnnotateCommandCoverageTest {
             hg.commit().setAuthor("Bob").setMessage("copy to copy.txt").call(); // rev 1
 
             List<AnnotateCommand.BlameLine> copyLines = hg.annotate().setPath("copy.txt").call();
-            assertEquals(2, copyLines.size()); // "shared line" + trailing empty
+            assertEquals(1, copyLines.size()); // "shared line"
             assertEquals("shared line", copyLines.get(0).getContent());
             assertEquals("Alice", copyLines.get(0).getAuthor());
             assertEquals(0, copyLines.get(0).getRevision());
 
             // The original file's own annotate is unaffected by the copy.
             List<AnnotateCommand.BlameLine> origLines = hg.annotate().setPath("orig.txt").call();
-            assertEquals(2, origLines.size());
+            assertEquals(1, origLines.size());
             assertEquals("Alice", origLines.get(0).getAuthor());
             assertEquals(0, origLines.get(0).getRevision());
         }

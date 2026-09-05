@@ -153,6 +153,33 @@ public final class AnnotateCommand {
     }
 
     /**
+     * Splits file content into lines the way real hg's own line-oriented diff/annotate machinery
+     * does ({@code mercurial/mdiff.py}'s {@code splitnewlines}) -- found and fixed 2026-09-05
+     * (backlog #39, requirement-matrix expansion to Cat/Files/Locate/Grep/Annotate/Manifest):
+     * plain {@code text.split("\n", -1)} (the old behavior) manufactures one spurious trailing
+     * empty "line" for any content ending in a newline -- i.e. virtually every real text file --
+     * since Java's split with a negative limit keeps the empty string produced after the final
+     * delimiter. Real hg never counts that trailing terminator as its own line: a 2-line file
+     * ending in {@code "\n"} annotates as exactly 2 lines, not 3. Dropping the trailing empty
+     * element only when the content actually ends with {@code "\n"} (leaving genuine embedded or
+     * multiple trailing blank lines untouched, and leaving a final line with no terminating
+     * newline exactly as-is) reproduces that. This bug was long-standing and was previously baked
+     * into this codebase's own unit test expectations (see {@code HgAnnotateTest}/{@code
+     * AnnotateCommandCoverageTest}, updated alongside this fix) -- the same class of off-by-one
+     * already found and fixed once before in {@code DiffCommand} for the same underlying reason.
+     */
+    private static String[] splitLines(String text) {
+        if (text.isEmpty()) {
+            return new String[0];
+        }
+        String[] parts = text.split("\n", -1);
+        if (text.endsWith("\n")) {
+            return Arrays.copyOf(parts, parts.length - 1);
+        }
+        return parts;
+    }
+
+    /**
      * Computes {@code path}'s filelog revision {@code targetRev}'s content lines and, per line,
      * the changelog revision it was introduced in -- following a rename/copy boundary back into
      * the copy source (recursively) whenever {@code path}'s own filelog revision 0 carries
@@ -175,29 +202,43 @@ public final class AnnotateCommand {
                 return new TraceResult(new String[0], new int[0]);
             }
 
-            String[] baseLines;
-            int[] baseLinkRevs;
+            String[] prevLines;
+            int[] prevSources;
+            int startRev;
 
+            // Found and fixed 2026-09-05 (backlog #39, requirement-matrix expansion to
+            // Cat/Files/Locate/Grep/Annotate/Manifest): when a copy/rename boundary is crossed,
+            // the crossed content is the PRE-rename baseline, not this revision's own final
+            // content -- filelog revision 0 must still be diffed against it like any other
+            // revision (the loop below), starting at r=0, not skipped by treating the crossed
+            // baseline as already-final. The old code set `baseLines = crossed.lines` directly
+            // and started the loop at r=1, silently skipping revision 0's own diff whenever a
+            // rename and a content edit landed in the very same commit (an extremely common real
+            // workflow, `hg mv old new; edit new; hg commit`) -- any line changed or added in
+            // that same commit was lost or misattributed to the pre-rename revision instead.
+            // This was invisible to every prior test because they only exercised a bare rename
+            // (no simultaneous edit), where the skipped diff happens to be a no-op. When there is
+            // no crossing, revision 0 legitimately has no prior state to diff against (it IS the
+            // file's own origin), so it is still seeded directly and the loop still starts at r=1.
             TraceResult crossed = tryCrossRenameBoundary(filelog, visitingPaths);
             if (crossed != null) {
-                baseLines = crossed.lines;
-                baseLinkRevs = crossed.linkRevs;
+                prevLines = crossed.lines;
+                prevSources = crossed.linkRevs;
+                startRev = 0;
             } else {
                 byte[] bytes0 = filelog.getRevisionContent(0);
                 String text0 = new String(bytes0, StandardCharsets.UTF_8);
-                baseLines = text0.split("\n", -1);
+                prevLines = splitLines(text0);
                 int linkRev0 = filelog.getIndexRecord(0).getLinkRev();
-                baseLinkRevs = new int[baseLines.length];
-                Arrays.fill(baseLinkRevs, linkRev0);
+                prevSources = new int[prevLines.length];
+                Arrays.fill(prevSources, linkRev0);
+                startRev = 1;
             }
 
-            String[] prevLines = baseLines;
-            int[] prevSources = baseLinkRevs;
-
-            for (int r = 1; r <= targetRev; r++) {
+            for (int r = startRev; r <= targetRev; r++) {
                 byte[] bytesR = filelog.getRevisionContent(r);
                 String textR = new String(bytesR, StandardCharsets.UTF_8);
-                String[] currLines = textR.split("\n", -1);
+                String[] currLines = splitLines(textR);
 
                 int prevN = prevLines.length;
                 int currM = currLines.length;

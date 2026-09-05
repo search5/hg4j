@@ -279,6 +279,83 @@ public final class NodeIdUtil {
         return result;
     }
 
+    /**
+     * Reverses {@link #encodeFname}'s ordinary (non hash-encoded) path -- given a store-relative
+     * path exactly as found on disk under {@code store/data/} (e.g. {@code "data/dir/b.txt.i"},
+     * from a plain recursive directory walk), returns the original logical repository-relative
+     * path (e.g. {@code "dir/b.txt"}).
+     *
+     * <p>Added 2026-09-05 (backlog #39, requirement-matrix expansion to
+     * Cat/Files/Locate/Grep/Annotate/Manifest) as the counterpart {@link GrepCommand} needs to
+     * enumerate tracked files without {@code fncache} -- verified against a real {@code
+     * hg-rust-7.2.4} {@code format.use-fileindex-v1=yes} repository, whose {@code store/requires}
+     * lists {@code store} but neither {@code fncache} nor {@code dotencode}: it has no {@code
+     * fncache} file at all (its own {@code fileindex}/{@code fileindex-list}/{@code
+     * fileindex-tree} sidecar files serve the same "which paths exist" purpose internally, in a
+     * format this library does not otherwise need to parse), so the on-disk {@code data/} tree
+     * itself -- walked directly -- is the only available enumeration source.
+     *
+     * <p>Every character {@link #encodeFnameBytes} or {@link #auxEncode} can introduce
+     * ({@code __}, {@code _<lowercase>}, {@code ~xx}) is unambiguous and reversible in a single
+     * left-to-right pass, in any order the two encoding layers happened to apply them in -- both
+     * layers write the exact same {@code ~xx} textual escape for a raw byte, and {@code
+     * auxEncode} only ever adds more such escapes around the already-{@code
+     * encodeFnameBytes}-encoded text, never reinterprets an existing one -- so a single decode
+     * pass over the raw escape/marker syntax is exact regardless of which pass introduced which
+     * marker. Hash-encoded ({@code dh/}-prefixed, {@link #hashEncode}) paths are NOT
+     * reversible (real hg's own hash scheme is intentionally one-way) and are returned verbatim,
+     * matching real hg's own inability to recover the original name from one either --
+     * unreachable in practice here since {@code fileindex-v1}/{@code general-v2} lack the
+     * {@code fncache} requirement typically paired with needing the long-path hash fallback in
+     * the first place, and the paths this method is applied to come directly from a real
+     * filesystem walk, so they were short enough to exist as literal directories/files already.
+     */
+    public static String decodeStoreDataPath(String storeRelPath) {
+        String noExt = storeRelPath.endsWith(".i") ? storeRelPath.substring(0, storeRelPath.length() - 2) : storeRelPath;
+        String prefixStripped = (noExt.startsWith("data/") || noExt.startsWith("meta/")) ? noExt.substring(5) : noExt;
+        if (prefixStripped.startsWith("dh/")) {
+            return prefixStripped; // hash-encoded -- not reversible, return as-is (see javadoc)
+        }
+        byte[] decodedBytes = decodeFnameBytes(prefixStripped);
+        String decoded = new String(decodedBytes, StandardCharsets.UTF_8);
+        return decoded.replace(".hg.hg/", ".hg/").replace(".i.hg/", ".i/").replace(".d.hg/", ".d/");
+    }
+
+    /** Byte-wise inverse of {@link #encodeFnameBytes} (and, transparently, {@link #auxEncode}'s
+     * additional {@code ~xx} escapes -- see {@link #decodeStoreDataPath}). */
+    private static byte[] decodeFnameBytes(String s) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(s.length());
+        int i = 0;
+        int n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (c == '~' && i + 2 < n) {
+                int hi = Character.digit(s.charAt(i + 1), 16);
+                int lo = Character.digit(s.charAt(i + 2), 16);
+                if (hi >= 0 && lo >= 0) {
+                    out.write((hi << 4) | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+            if (c == '_' && i + 1 < n) {
+                char next = s.charAt(i + 1);
+                if (next == '_') {
+                    out.write('_');
+                    i += 2;
+                    continue;
+                } else if (next >= 'a' && next <= 'z') {
+                    out.write(Character.toUpperCase(next));
+                    i += 2;
+                    continue;
+                }
+            }
+            out.write(c);
+            i += 1;
+        }
+        return out.toByteArray();
+    }
+
     public static final Comparator<String> UTF8_STRING_COMPARATOR = (s1, s2) -> {
         byte[] b1 = s1.getBytes(StandardCharsets.UTF_8);
         byte[] b2 = s2.getBytes(StandardCharsets.UTF_8);

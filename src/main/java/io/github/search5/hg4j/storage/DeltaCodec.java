@@ -137,17 +137,53 @@ public final class DeltaCodec {
     /**
      * Decompresses a Zstd-compressed revlog hunk (header byte {@code 0x28}).
      *
+     * <p><b>{@code uncompLen} is NOT a reliable size hint for this hunk's own decompressed
+     * length</b> -- found and fixed 2026-09-05 (backlog #39, requirement-matrix expansion to
+     * Cat/Files/Locate/Grep/Annotate/Manifest): real hg's on-disk "uncompressed length" index
+     * field records the size of the fully-reconstructed revision TEXT (what {@code hg --debug
+     * debugindex} labels {@code full-size}), not the size of this particular chunk's own
+     * decompressed bytes -- those are identical only for a literal/snapshot revision (where the
+     * chunk IS the full text) but differ for any DELTA revision, where the chunk decompresses to
+     * a much smaller multi-hunk delta instruction stream (verified against a real hg-rust-7.2.4
+     * -written {@code revlog-compression-zstd} manifest revlog: a revision whose {@code
+     * uncompLen} field read 210 actually decompressed to a 140-byte delta stream that fully and
+     * correctly reconstructs a 210-byte fulltext once applied). Allocating a
+     * {@code uncompLen}-sized destination buffer for the zstd call and unconditionally returning
+     * it (the pre-fix behavior) left the tail zero-padded with garbage whenever the chunk's own
+     * decompressed length was smaller, which {@link io.github.search5.hg4j.diff.DeltaEngine
+     * #applyDelta} then misparsed as a spurious trailing delta hunk header, corrupting or
+     * outright failing every read of a zstd-compressed delta revision -- this could not be
+     * caught by any test built on plain {@code hg} (this repo's {@code HgTestUtils#hg} always
+     * forces zlib compression for exactly this reason) and only surfaces under the Docker matrix
+     * (whose {@code hg-rust-7.2.4} image defaults to zstd) once a revlog actually needs a second,
+     * non-literal revision.
+     *
+     * <p>The fix mirrors {@code Revlog#decompressSidedataChunk}'s already-correct handling of
+     * sidedata chunks (which already reads {@link Zstd#getFrameContentSize}): Zstd frames are
+     * self-describing, so the frame's own embedded content size -- not the untrustworthy index
+     * hint -- is what actually determines the destination buffer, with {@code uncompLen} kept
+     * only as a last-resort fallback for the (real-hg-impossible) case of a frame with no
+     * embedded size, and a defensive truncation to whatever {@link Zstd#decompress} actually
+     * reports it wrote, in case the two still disagree.
+     *
      * <p>zstd-jni's {@code Zstd.decompress} can either return an error code (testable via
      * {@link Zstd#isError(long)}) or throw an unchecked {@link ZstdException} for malformed
      * or truncated input, depending on where the failure occurs. Both are normalized here into
      * {@link HgCorruptDataException}, matching how {@link #decompressZlib} reports zlib errors.
      */
     private static byte[] decompressZstd(byte[] hunk, int uncompLen) throws HgCorruptDataException {
-        byte[] dest = new byte[uncompLen];
+        long frameSize = Zstd.getFrameContentSize(hunk);
+        int destSize = frameSize >= 0 ? (int) frameSize : uncompLen;
+        byte[] dest = new byte[destSize];
         try {
             long result = Zstd.decompress(dest, hunk);
             if (Zstd.isError(result)) {
                 throw new HgCorruptDataException("Failed to decompress zstd revlog hunk: " + Zstd.getErrorName(result));
+            }
+            if (result != dest.length) {
+                // Defensive: even with a frame-size-derived destination, truncate to exactly
+                // what zstd reports it wrote rather than trusting either size blindly.
+                dest = Arrays.copyOf(dest, (int) result);
             }
         } catch (ZstdException e) {
             throw new HgCorruptDataException("Failed to decompress zstd revlog hunk", e);

@@ -258,7 +258,17 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   실버그 2건 수정), `PushCommand`는 treemanifest dirlog 미전송 + changelog-v2
   sidedata 미전송 2개의 실버그가 남아 native 2/6·Docker 14/30만 GREEN(원인
   규명 완료, 수정은 다음 wave). 상세는 [[mercurial-spec-compliance-requirement]]
-  백로그 #39 참고. 나머지 54개 명령은 여전히 미착수.
+  백로그 #39 참고. **Wave 3(2026-09-05)**: `HisteditCommand`/`GraftCommand`에
+  36개 조합(native 6 + Docker 30) 적용 완료 — 둘 다 전부 GREEN.
+  `HisteditCommand`는 매니페스트 정렬/dirstate 재동기화 실버그 2건 수정.
+  `GraftCommand`는 `RebaseCommand`의 하드닝 이전 cherry-pick 로직을 독자
+  재구현하고 있던 실제 사례(3-way merge/conflict 감지 부재로 인한 data-loss,
+  크래시 안전 저널 부재, 잘못된 obsolescence marker 기록) 3건을 발견해
+  `RebaseCommand`의 공용 로직(`attemptThreeWayMerge` 등, package-private
+  static으로 추출)을 재사용하도록 수정. 상세는
+  [[mercurial-spec-compliance-requirement]] 백로그 #39 참고. 나머지 명령은
+  여전히 미착수(정확한 잔여 개수는 이 문단을 동시에 편집 중인 다른 wave 3
+  에이전트들의 결과를 합산해야 함 — 조정자가 병합 시 갱신).
 
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)

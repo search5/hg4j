@@ -78,6 +78,23 @@ public class RebaseCommand {
         String branch;
     }
 
+    /**
+     * Result of {@link #attemptThreeWayMerge}: whether the path ended up genuinely conflicted,
+     * and the accumulated {@link MergeState} to persist so a paused caller can resume via a plain
+     * {@code hg resolve} session -- pass a call's returned {@code mergeState} back in as the next
+     * call's {@code existingMergeState} so every conflicted path of the same cherry-pick/graft
+     * attempt lands in one shared {@code .hg/merge/state2}.
+     */
+    static final class ThreeWayMergeOutcome {
+        final boolean conflicted;
+        final MergeState mergeState;
+
+        ThreeWayMergeOutcome(boolean conflicted, MergeState mergeState) {
+            this.conflicted = conflicted;
+            this.mergeState = mergeState;
+        }
+    }
+
     /** Result of attempting to cherry-pick a single original revision onto {@code currentBase}. */
     private static final class CherryPickOutcome {
         final byte[] originalNode;
@@ -219,7 +236,7 @@ public class RebaseCommand {
 
             PausedRebaseState state = readRebaseState();
 
-            MergeState ms = MergeState.read(mergeStateFile());
+            MergeState ms = MergeState.read(mergeStateFile(repository));
             if (!ms.unresolvedFiles().isEmpty()) {
                 throw new HgValidationException(
                         "unresolved merge conflicts (see 'hg resolve --list'): " + ms.unresolvedFiles());
@@ -251,7 +268,7 @@ public class RebaseCommand {
                         .setSkipLockAndJournal(true);
                 byte[] newNode = commitCmd.call();
 
-                cleanMergeDir();
+                cleanMergeDir(repository);
                 try {
                     HgObsMarker.writeMarker(repository.getStoreDir(), firstOrigNode, List.of(newNode), "rebase");
                 } catch (Exception e) {
@@ -300,8 +317,8 @@ public class RebaseCommand {
             Map<File, File> backupMapping = reconstructBackupMapping(backupDir);
             performPhysicalRollback(backupMapping, backupDir);
 
-            restoreWorkingCopyCleanTo(state.originalWdParent);
-            cleanMergeDir();
+            restoreWorkingCopyCleanTo(repository, state.originalWdParent);
+            cleanMergeDir(repository);
             deleteRebaseStateFile();
         }
     }
@@ -344,7 +361,7 @@ public class RebaseCommand {
     }
 
     private byte[] finalizeRebase(byte[] currentBase, File backupDir) throws IOException {
-        checkoutNode(currentBase);
+        checkoutNode(repository, currentBase);
 
         deleteRebaseJournal();
         deleteDirRecursively(backupDir);
@@ -383,7 +400,7 @@ public class RebaseCommand {
         int parent2Rev = rec.getParent2();
 
         // 1. Reset the working copy fully to the destination's currently-checked-out state.
-        checkoutNode(currentBase);
+        checkoutNode(repository, currentBase);
         Dirstate dirstate = repository.getDirstate();
 
         int currentBaseRev = NodeIdUtil.findRevisionByNodeId(changelog, currentBase);
@@ -410,10 +427,10 @@ public class RebaseCommand {
                     continue;
                 }
                 if (hOther == null) {
-                    deleteFileFromWorkingCopy(path);
+                    deleteFileFromWorkingCopy(repository, path);
                     dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
                 } else {
-                    applyResolvedContent(dirstate, helper, path, hOther, 'n');
+                    applyResolvedContent(repository, dirstate, helper, path, hOther, 'n');
                 }
             }
         } else {
@@ -439,7 +456,7 @@ public class RebaseCommand {
                 if (hOther == null) {
                     // The original revision removed this path.
                     if (hLocal != null && Objects.equals(hLocal, hAnc)) {
-                        deleteFileFromWorkingCopy(path);
+                        deleteFileFromWorkingCopy(repository, path);
                         dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
                     }
                     // Otherwise dest never had it, or dest's own content has diverged from the
@@ -451,7 +468,7 @@ public class RebaseCommand {
                     // Dest doesn't have this path at all, or is unchanged since the original
                     // revision's own parent -- fast-forward to the original revision's content
                     // (the common, non-conflicting case; preserves prior behavior exactly).
-                    applyResolvedContent(dirstate, helper, path, hOther, 'n');
+                    applyResolvedContent(repository, dirstate, helper, path, hOther, 'n');
                     continue;
                 }
 
@@ -460,47 +477,17 @@ public class RebaseCommand {
                 }
 
                 // Dest and the original revision changed this path differently since their common
-                // point of reference (or both independently added it): attempt a real 3-way merge.
-                byte[] baseContent = hAnc == null ? new byte[0] : helper.getFileRevisionContent(path, hAnc);
-                byte[] localContent = helper.getFileRevisionContent(path, hLocal);
-                byte[] otherContent = helper.getFileRevisionContent(path, hOther);
-
-                List<String> baseLines = helper.readLines(baseContent);
-                List<String> localLines = helper.readLines(localContent);
-                List<String> otherLines = helper.readLines(otherContent);
-
-                Merge3.MergeResult mergeRes = Merge3.merge(baseLines, localLines, otherLines, "dest", "source");
-                StringBuilder sb = new StringBuilder();
-                for (String line : mergeRes.getMergedLines()) {
-                    sb.append(line).append('\n');
-                }
-                byte[] mergedBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
-                int mode = helper.getModeFromManifestHex(hLocal != null ? hLocal : hOther);
-
-                writeFileToWorkingCopy(path, mergedBytes, mode);
-                dirstate.addEntry(path, new Dirstate.Entry('m', mode, mergedBytes.length,
-                        SafeFileIO.lastModifiedSeconds(new File(repository.getDirectory(), path))));
-
-                if (mergeRes.isConflicted()) {
+                // point of reference (or both independently added it): attempt a real 3-way merge
+                // (shared with GraftCommand, which hits the exact same decision -- see
+                // attemptThreeWayMerge's own javadoc).
+                byte[] ancestorLinkNode = parent1Rev != -1
+                        ? changelog.getIndexRecord(parent1Rev).getNodeId()
+                        : new byte[20];
+                ThreeWayMergeOutcome mergeOutcome = attemptThreeWayMerge(repository, helper, path,
+                        hAnc, hLocal, hOther, ancestorLinkNode, currentBase, originalNode, dirstate, mergeState);
+                mergeState = mergeOutcome.mergeState;
+                if (mergeOutcome.conflicted) {
                     conflicts.add(path);
-                    if (mergeState == null) {
-                        mergeState = new MergeState();
-                        mergeState.local = currentBase;
-                        mergeState.other = originalNode;
-                    }
-                    String localKey = MergeState.getLocalKey(path);
-                    File localBackup = new File(repository.getHgDir(), "merge/" + localKey);
-                    localBackup.getParentFile().mkdirs();
-                    Files.write(localBackup.toPath(), localContent);
-
-                    byte[] ancestorLinkNode = parent1Rev != -1
-                            ? changelog.getIndexRecord(parent1Rev).getNodeId()
-                            : new byte[20];
-                    mergeState.addMergedFile(path, localKey, path, path, cleanHexOf(hAnc), path, cleanHexOf(hOther),
-                            flagOf(hLocal != null ? hLocal : hOther));
-                    mergeState.stateExtras
-                            .computeIfAbsent(path, k -> new LinkedHashMap<>())
-                            .put("ancestorlinknode", NodeIdUtil.toHex(ancestorLinkNode));
                 }
             }
         }
@@ -509,12 +496,12 @@ public class RebaseCommand {
         repository.writeDirstate(dirstate);
 
         if (!conflicts.isEmpty()) {
-            mergeState.write(mergeStateFile());
+            mergeState.write(mergeStateFile(repository));
             return new CherryPickOutcome(originalNode, null, conflicts);
         }
 
         // No leftover conflict state from a previous, now-superseded attempt at this same revision.
-        cleanMergeDir();
+        cleanMergeDir(repository);
 
         RevisionMeta meta = readRevisionMeta(origRev, changelog);
         if (meta.branch != null && !meta.branch.isEmpty() && !"default".equals(meta.branch)) {
@@ -533,13 +520,93 @@ public class RebaseCommand {
         return new CherryPickOutcome(originalNode, newNode, Collections.emptyList());
     }
 
-    private void applyResolvedContent(Dirstate dirstate, MergeCommand helper, String path, String hexFlag, char state)
-            throws IOException {
+    private static void applyResolvedContent(HgRepository repository, Dirstate dirstate, MergeCommand helper,
+            String path, String hexFlag, char state) throws IOException {
         byte[] content = helper.getFileRevisionContent(path, hexFlag);
         int mode = helper.getModeFromManifestHex(hexFlag);
-        writeFileToWorkingCopy(path, content, mode);
+        writeFileToWorkingCopy(repository, path, content, mode);
         dirstate.addEntry(path, new Dirstate.Entry(state, mode, content.length,
                 SafeFileIO.lastModifiedSeconds(new File(repository.getDirectory(), path))));
+    }
+
+    /**
+     * Attempts a real 3-way text merge (via {@link Merge3}, the same engine {@link MergeCommand}
+     * uses) for one path where {@code localHex} (the destination/working-copy side) and {@code
+     * otherHex} (the revision being cherry-picked/grafted) changed the same file differently since
+     * their common ancestor {@code ancestorHex}. Shared by {@link RebaseCommand} and {@link
+     * GraftCommand} -- both hit the exact same "dest and the incoming revision both touched this
+     * path since their common point of reference" decision, and this is the hardened, real-hg-
+     * verified (2026-09-04, see this class's own javadoc) implementation of it; {@code
+     * GraftCommand} must reuse it rather than re-implement its own, weaker version (which -- before
+     * this fix -- silently discarded the destination's own diverged content instead of merging or
+     * flagging a conflict, verified live as a real data-loss bug against real {@code hg graft} 7.2).
+     *
+     * <p>Writes the merged (or, if genuinely conflicted, conflict-marker-laden -- byte-for-byte
+     * matching real hg's default {@code internal:merge} tool) content to the working copy and
+     * stages it in {@code dirstate} as {@code 'm'}. On a genuine conflict, also backs up the
+     * pre-merge local content under {@code .hg/merge/<localkey>} and folds the conflict into
+     * {@code existingMergeState} (or a freshly-created one, keyed to {@code localCommitNode}/
+     * {@code otherCommitNode}, if {@code existingMergeState} is {@code null}) -- the exact same
+     * real-hg-compatible {@code .hg/merge/state2} format {@link MergeCommand#call()} itself
+     * already writes, so real {@code hg resolve --list} can see it.
+     *
+     * @param ancestorHex      the ancestor's manifest hex+flag for this path, or {@code null} if
+     *                         the ancestor didn't have it
+     * @param localHex         the destination/working-copy side's manifest hex+flag, or
+     *                         {@code null} if it never had this path
+     * @param otherHex         the incoming revision's manifest hex+flag (never {@code null} --
+     *                         callers only reach this method when the incoming side has content)
+     * @param ancestorLinkNode the changelog node of the ancestor revision (or all-zero if there is
+     *                         none), recorded into the merge state's {@code ancestorlinknode} extra
+     * @param localCommitNode  the destination commit node, recorded as {@code mergeState.local}
+     * @param otherCommitNode  the incoming revision's own node, recorded as {@code mergeState.other}
+     */
+    static ThreeWayMergeOutcome attemptThreeWayMerge(HgRepository repository, MergeCommand helper, String path,
+            String ancestorHex, String localHex, String otherHex, byte[] ancestorLinkNode,
+            byte[] localCommitNode, byte[] otherCommitNode, Dirstate dirstate, MergeState existingMergeState)
+            throws IOException {
+        byte[] baseContent = ancestorHex == null ? new byte[0] : helper.getFileRevisionContent(path, ancestorHex);
+        byte[] localContent = helper.getFileRevisionContent(path, localHex);
+        byte[] otherContent = helper.getFileRevisionContent(path, otherHex);
+
+        List<String> baseLines = helper.readLines(baseContent);
+        List<String> localLines = helper.readLines(localContent);
+        List<String> otherLines = helper.readLines(otherContent);
+
+        Merge3.MergeResult mergeRes = Merge3.merge(baseLines, localLines, otherLines, "dest", "source");
+        StringBuilder sb = new StringBuilder();
+        for (String line : mergeRes.getMergedLines()) {
+            sb.append(line).append('\n');
+        }
+        byte[] mergedBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
+        int mode = helper.getModeFromManifestHex(localHex != null ? localHex : otherHex);
+
+        writeFileToWorkingCopy(repository, path, mergedBytes, mode);
+        dirstate.addEntry(path, new Dirstate.Entry('m', mode, mergedBytes.length,
+                SafeFileIO.lastModifiedSeconds(new File(repository.getDirectory(), path))));
+
+        if (!mergeRes.isConflicted()) {
+            return new ThreeWayMergeOutcome(false, existingMergeState);
+        }
+
+        MergeState mergeState = existingMergeState;
+        if (mergeState == null) {
+            mergeState = new MergeState();
+            mergeState.local = localCommitNode;
+            mergeState.other = otherCommitNode;
+        }
+        String localKey = MergeState.getLocalKey(path);
+        File localBackup = new File(repository.getHgDir(), "merge/" + localKey);
+        localBackup.getParentFile().mkdirs();
+        Files.write(localBackup.toPath(), localContent);
+
+        mergeState.addMergedFile(path, localKey, path, path, cleanHexOf(ancestorHex), path, cleanHexOf(otherHex),
+                flagOf(localHex != null ? localHex : otherHex));
+        mergeState.stateExtras
+                .computeIfAbsent(path, k -> new LinkedHashMap<>())
+                .put("ancestorlinknode", NodeIdUtil.toHex(ancestorLinkNode));
+
+        return new ThreeWayMergeOutcome(true, mergeState);
     }
 
     private static String cleanHexOf(String manifestHex) {
@@ -616,7 +683,8 @@ public class RebaseCommand {
     // Working copy helpers
     // ------------------------------------------------------------------
 
-    private void writeFileToWorkingCopy(String path, byte[] content, int mode) throws IOException {
+    private static void writeFileToWorkingCopy(HgRepository repository, String path, byte[] content, int mode)
+            throws IOException {
         File f = new File(repository.getDirectory(), path);
         f.getParentFile().mkdirs();
         if (f.exists() || Files.isSymbolicLink(f.toPath())) {
@@ -637,7 +705,7 @@ public class RebaseCommand {
         }
     }
 
-    private void deleteFileFromWorkingCopy(String path) throws IOException {
+    private static void deleteFileFromWorkingCopy(HgRepository repository, String path) throws IOException {
         File f = new File(repository.getDirectory(), path);
         if (f.exists() || Files.isSymbolicLink(f.toPath())) {
             Files.delete(f.toPath());
@@ -651,8 +719,12 @@ public class RebaseCommand {
      * paths, since every other caller only ever moves forward across cherry-picks that never leave
      * stray added paths behind), {@link #abort()} must also clean up any path that only exists
      * because of the aborted rebase's already-applied-but-uncommitted cherry-pick.
+     *
+     * <p>Package-private so {@link GraftCommand#abort()} can reuse it too -- a paused, conflicted
+     * graft leaves exactly the same kind of stray already-staged-but-uncommitted working-copy
+     * state behind as a paused rebase does.
      */
-    private void restoreWorkingCopyCleanTo(byte[] targetNode) throws IOException {
+    static void restoreWorkingCopyCleanTo(HgRepository repository, byte[] targetNode) throws IOException {
         Map<String, String> targetManifest;
         if (targetNode == null || NodeIdUtil.isAllZero(targetNode)) {
             targetManifest = Collections.emptyMap();
@@ -677,12 +749,12 @@ public class RebaseCommand {
         for (String path : allPaths) {
             String hexFlag = targetManifest.get(path);
             if (hexFlag == null) {
-                deleteFileFromWorkingCopy(path);
+                deleteFileFromWorkingCopy(repository, path);
                 dirstate.removeEntry(path);
             } else {
                 byte[] content = helper.getFileRevisionContent(path, hexFlag);
                 int mode = helper.getModeFromManifestHex(hexFlag);
-                writeFileToWorkingCopy(path, content, mode);
+                writeFileToWorkingCopy(repository, path, content, mode);
                 dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length,
                         SafeFileIO.lastModifiedSeconds(new File(repository.getDirectory(), path))));
             }
@@ -693,7 +765,7 @@ public class RebaseCommand {
         repository.writeDirstate(dirstate);
     }
 
-    private void applyManifestToWorkingCopy(byte[] manifestNode) throws IOException {
+    private static void applyManifestToWorkingCopy(HgRepository repository, byte[] manifestNode) throws IOException {
         Revlog manifest = repository.getManifestRevlog();
 
         int mfRev = NodeIdUtil.findRevisionByNodeId(manifest, manifestNode);
@@ -756,7 +828,7 @@ public class RebaseCommand {
         repository.writeDirstate(dirstate);
     }
 
-    private void checkoutNode(byte[] node) throws IOException {
+    private static void checkoutNode(HgRepository repository, byte[] node) throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);
@@ -767,7 +839,7 @@ public class RebaseCommand {
         String firstLine = clText.split("\n")[0];
         byte[] mfNode = NodeIdUtil.fromHex(firstLine.trim().substring(0, 40));
 
-        applyManifestToWorkingCopy(mfNode);
+        applyManifestToWorkingCopy(repository, mfNode);
 
         Dirstate dirstate = repository.getDirstate();
         dirstate.setParents(node, new byte[20]);
@@ -845,7 +917,7 @@ public class RebaseCommand {
         return mapping;
     }
 
-    private void deleteDirRecursively(File file) {
+    private static void deleteDirRecursively(File file) {
         if (file.isDirectory()) {
             File[] children = file.listFiles();
             if (children != null) {
@@ -915,7 +987,9 @@ public class RebaseCommand {
         return new File(repository.getHgDir(), "rebasestate-hg4j");
     }
 
-    private File mergeStateFile() {
+    /** Package-private so {@link GraftCommand} can write/read the same {@code .hg/merge/state2}
+     * file for its own paused-on-conflict graft state. */
+    static File mergeStateFile(HgRepository repository) {
         return new File(repository.getHgDir(), "merge/state2");
     }
 
@@ -928,8 +1002,12 @@ public class RebaseCommand {
      * is absent, so leaving it behind made a completed rebase's {@code hg resolve --list} keep
      * reporting the just-resolved file as {@code R <path>} instead of nothing at all (caught live
      * against real hg 7.2 in {@code RebaseRealHgInteropTest}).
+     *
+     * <p>Package-private so {@link GraftCommand} can reuse the exact same real-hg-compat cleanup
+     * for its own paused-on-conflict graft state instead of a second, easy-to-forget-the-v1-fallback
+     * re-implementation.
      */
-    private void cleanMergeDir() {
+    static void cleanMergeDir(HgRepository repository) {
         deleteDirRecursively(new File(repository.getHgDir(), "merge"));
     }
 

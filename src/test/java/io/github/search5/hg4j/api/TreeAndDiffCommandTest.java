@@ -233,7 +233,10 @@ public class TreeAndDiffCommandTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(hugeEntry);
-        assertTrue(hugeEntry.getDiffContent().contains("@@ -1,2002 +1,2003 @@"));
+        // Backlog #39 (2026-09-05): counts corrected from the pre-fix 2002/2003 -- content ending
+        // in a trailing newline ("A\n".repeat(2001) is 2001 real lines, not 2002; see
+        // DiffCommand#splitLines's javadoc for the phantom-trailing-empty-line bug this fixed.
+        assertTrue(hugeEntry.getDiffContent().contains("@@ -1,2001 +1,2002 @@"));
     }
 
     @Test

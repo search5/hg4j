@@ -75,6 +75,11 @@ public class LogCommand {
     }
 
     public List<HgCommit> call() throws IOException {
+        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
+        // changelog-v2 revlog after an external process appended a revision -- see
+        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
+        // common (freshly-opened-per-call) case.
+        repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
 

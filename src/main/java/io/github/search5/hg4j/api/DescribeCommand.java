@@ -30,6 +30,18 @@ public class DescribeCommand {
      * @throws IOException if history parsing fails
      */
     public String call() throws IOException {
+        // Backlog #39: a long-lived HgRepository handle whose changelog is changelog-v2
+        // (docket-based, fixed .i file length -- content changes are in-place index_end/data_end
+        // rewrites) silently served STALE cached revlog data after an external process (real hg
+        // CLI, another hg4j writer) appended a revision, because RevlogIndex's own incremental
+        // "did the file grow" check never fires for a docket whose length never changes -- caught
+        // by RequirementMatrixDescribeCoreRoundTripTest's cl2/cl2+sidedata combos, which got back
+        // a stale-but-plausible-looking WRONG answer (an exact tag match one revision too early)
+        // rather than an error. repository.refreshIfChangedOnDisk() already existed for exactly
+        // this class of problem (previously wired up only for the long-lived HgHttpWireServer/
+        // HgSshWireServer handles) -- reusing it here at zero cost in the common case (a
+        // freshly-opened HgRepository whose changelog never changed under it: two stat() calls).
+        repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
         Revlog changelog = repository.getRevlog(clIdx, clDat);

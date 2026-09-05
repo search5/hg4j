@@ -391,6 +391,56 @@ zlib/none을 SSH에서 개별로 강제한 테스트는 없다 — 사실상 SSH
   31에서 8개 추가로 **39/67**로 증가(다른 wave 5 병렬 에이전트와 별도 취합
   필요할 수 있음).
 
+  **Wave 5(2026-09-05, `BisectCommand`/`DescribeCommand`/`DiffCommand`/
+  `LogCommand`/`StatusCommand`/`RevsetCommand`/`SidedataChangedFilesCommand`)**:
+  7개 명령 전부 native 6/6 + Docker 30/30 = 36/36 GREEN. `LogCommand`/
+  `StatusCommand`는 이전까지 4-명령-공용 `RequirementMatrixCoreRoundTripTest`의
+  부수적 검증만 있었을 뿐 전용 트리오가 없었던 지점을 이번에 채움. 진짜
+  hg4j 프로덕션 버그 4건 발견·수정(상세는
+  [[mercurial-spec-compliance-requirement]] 백로그 #39 참고): (1)
+  `BisectCommand`의 treemanifest 체크아웃 미지원(hand-roll 매니페스트
+  파싱 → treemanifest-aware `ManifestWalk`로 교체), (2)
+  `Revlog.decompressSidedataChunk`가 changelog-v2+sidedata 저장소의
+  sidedata 압축 모드를 zstd로 무조건 가정(zlib 압축 저장소의 유효한
+  sidedata를 못 읽음), (3) **`DeltaCodec.decompressZstd`가 델타 인코딩된
+  리비전의 압축 해제 목적지 버퍼 크기로 revlog 인덱스의 uncompLen(최종
+  재구성 크기이지 이 청크 자체의 압축 해제 크기가 아님)을 그대로 써서
+  크래시** -- native 매트릭스는 항상 zlib을 강제하고 hg4j 자신의 쓰기
+  경로는 델타 없이 항상 fulltext로 쓰기 때문에 지금까지 어떤 테스트도
+  건드린 적 없던 조합(real zstd + 델타 인코딩)이었고, 실제로는 일반적인
+  real-world zstd 압축 hg 저장소 다수에 영향을 미쳤을 이번 wave 최대
+  파급력 버그, (4) `HgRepository.refreshIfChangedOnDisk()`(원래
+  wire 서버 전용으로만 연결돼 있던 stale-changelog-v2-cache 방어
+  메서드)를 이번 7개 명령의 진입부에도 연결 -- 연결 안 됐을 때는 장수
+  repo 핸들이 외부 프로세스의 새 커밋을 못 보고 조용히 틀린 답을 냄.
+  전체 비-interop `test`(2278건) 재확인, `StripCommandCoverageTest` 1건
+  실패 발견. 명령 기준 완주 수는 31에서 **38/67**로 증가, 나머지 29개
+  로컬 명령은 여전히 미착수.
+
+  (조정자 정정, 2026-09-05: 위 `StripCommandCoverageTest` 1건 실패를
+  "이 세션과 무관한 사전 존재 이슈"로 판단한 것은 **틀렸음** — 병합
+  직전 커밋(메타데이터-쿼리 wave 병합 완료 시점)에서 격리 재현했더니
+  통과했고, 이 wave 브랜치 단독(공통 조상 기준)에서도 동일 테스트가
+  결정론적으로 실패해(타이밍 문제 아님, 재현률 100%) 이 wave 자신이
+  만든 진짜 회귀임을 확인. 근본 원인: 이 wave가 7개 명령에 새로 연결한
+  `HgRepository.refreshIfChangedOnDisk()`가 changelog.i 크기/mtime
+  변화를 감지하면 무조건 `clearRevlogCache()`로 캐시된 모든 Revlog를
+  새 인스턴스로 교체 — 이 과정에서 "로컬에서 이미 쓴 적 있는
+  RevlogIndex는 리로드하면 안 된다"는 `RevlogIndex.checkAndUpdate()`
+  자신의 `addedRecords`-empty 가드가 우회됨. 커밋 직후 같은 handle로
+  strip하는 흔한 패턴(`StripCommand`의 북마크 재배치 로직이 방금
+  stripped된 노드를 `findRevision()`으로 찾으려 시도)에서, 리프레시로
+  새로 생성된 인스턴스는 "로컬 쓰기 이력"을 모르는 채 시작하므로
+  이미 truncate된 파일에서 다시 읽어 stripped 노드를 찾지 못하고
+  -1을 반환 — 북마크가 재배치되지 않고 조용히 삭제됨. 조정자가
+  `RevlogIndex`/`Revlog`에 `hasLocallyAddedRecords()` 노출, 캐시된
+  changelog가 이미 로컬 쓰기 이력이 있으면 `refreshIfChangedOnDisk()`가
+  `clearRevlogCache()`를 건너뛰도록 수정(커밋 `b331e15`, 이 wave
+  브랜치 자체에 반영) — 이 수정 후 해당 테스트 및 전체 비-interop
+  스위트 재확인 GREEN. 교훈: 병합 중 발견한 "무관해 보이는" 테스트
+  실패는 병합한 에이전트의 판단을 그대로 신뢰하지 말고 반드시 직접
+  격리 재현(병합 전/후, 브랜치 단독 여부)으로 재확인할 것.)
+
 ### 4-2. Wire 매트릭스 대상 명령
 - [x] 설계(§2) 확정, 21개 조합 확정(2026-09-04)
 - [x] `CloneCommand`/`PullCommand`/`PushCommand` 핵심 라운드트립 — **완료

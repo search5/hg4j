@@ -141,9 +141,35 @@ public final class DeltaCodec {
      * {@link Zstd#isError(long)}) or throw an unchecked {@link ZstdException} for malformed
      * or truncated input, depending on where the failure occurs. Both are normalized here into
      * {@link HgCorruptDataException}, matching how {@link #decompressZlib} reports zlib errors.
+     *
+     * <p>Backlog #39 (2026-09-05): {@code uncompLen} is NOT a reliable destination-buffer size for
+     * a DELTA-encoded revision (the common case for any generaldelta v1 revlog -- manifests and
+     * filelogs are delta-chained by default, real hg only ever writes a full/fulltext hunk for the
+     * chain's own base revision). The revlog index's {@code uncompressed_len} field always records
+     * the length of this revision's fully-RECONSTRUCTED text (after the whole delta chain is
+     * applied), never the length of what is actually stored (and therefore decompressed) in THIS
+     * hunk -- for a delta revision, what's actually zstd-compressed here is the bdiff patch itself
+     * (a 12-byte-per-hunk header + replacement bytes), whose own byte length is essentially
+     * unrelated to the final fulltext size. Passing the fulltext size as the destination buffer
+     * size crashed zstd-jni with "Destination buffer is too small" on perfectly valid,
+     * real-hg-written delta revisions -- caught 2026-09-05 by
+     * RequirementMatrixDiffDockerRoundTripTest (whose Docker-container hg CLI uses real zstd
+     * compression with no forced zlib override, unlike every native-side {@code
+     * RequirementMatrix*CoreRoundTripTest}, which forces zlib and therefore never exercised this
+     * exact zstd+delta combination; hg4j's own writers also never delta-encode on the way out, so
+     * no hg4j-authored fixture had ever hit this either). Real hg's own zstd decompressor (a
+     * streaming {@code zstd.ZstdDecompressor().decompressobj()}) never needs to know the output
+     * size upfront at all; the fix here instead reads the size zstd's own frame header embeds
+     * (present for any frame written by a one-shot {@code compress()} call, which is how every
+     * revlog zstd frame -- delta or full -- is written) via {@link Zstd#getFrameContentSize(byte[])},
+     * exactly like {@link Revlog#getSidedata(int)}'s own COMP_MODE_DEFAULT branch already does for
+     * the identical reason. Falls back to the caller-supplied {@code uncompLen} only on the
+     * defensive/unexpected case where the frame doesn't declare a content size at all.
      */
     private static byte[] decompressZstd(byte[] hunk, int uncompLen) throws HgCorruptDataException {
-        byte[] dest = new byte[uncompLen];
+        long frameSize = Zstd.getFrameContentSize(hunk);
+        int destSize = frameSize >= 0 ? (int) frameSize : uncompLen;
+        byte[] dest = new byte[destSize];
         try {
             long result = Zstd.decompress(dest, hunk);
             if (Zstd.isError(result)) {

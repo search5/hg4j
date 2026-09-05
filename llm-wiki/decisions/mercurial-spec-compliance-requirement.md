@@ -2824,6 +2824,99 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     완주된 것은 이제 명령 기준 11/67(4+3+4 — `PushCommand`도 이제 실버그
     없이 완주로 카운트, `AmendCommand`도 native 확인 완료 기준으로 포함).
 
+    **Wave 3(2026-09-05, `AddCommand`/`BookmarkCommand`/`TagCommand`, 사용자
+    지시로 독립 진행)**: 세 명령 각각에 native 6개 + Docker 30개 = 36개 조합
+    테스트 클래스 세트(`RequirementMatrix{Add,Bookmark,Tag}CoreRoundTripTest`/
+    `...DockerRoundTripTest`/`...HelperMain`, 기존 8개와 동일 패턴 재사용)를
+    신설. **세 명령 모두 native 6/6 + Docker 30/30 전부 GREEN.**
+
+    - **`AddCommand`**: 새 실버그 없음. 시나리오는 이미 커밋된 루트 파일 1개 +
+      신규 루트 파일 1개 + 신규 하위 디렉터리 파일 1개(루트 레벨 경로 세그먼트
+      3개)를 추가해, 백로그 #37(dirstate-v2 자식 노드 정렬)이 재현하려면
+      필요했던 "형제가 2개 이상인 루트" 모양을 정확히 만들어 그 수정이 커밋
+      경로뿐 아니라 `AddCommand`가 직접 쓰는 dirstate 경로에서도 여전히
+      유효함을 재확인.
+    - **`BookmarkCommand`**: 진짜 hg4j 프로덕션 버그 3건 발견·수정(1건은
+      매트릭스 통과 *이후* 전체 회귀에서 드러남 — 아래 참고).
+      (1) `BookmarkCommand`에 `TagCommand`의 백로그 #36 force 게이트에
+      대응하는 장치가 전혀 없었다 — 이미 존재하는 bookmark를 그 현재 위치의
+      자손이 아닌 리비전으로 옮길 때 real hg 7.2는 `abort: bookmark '<name>'
+      already exists (use -f to force)`로 거부하는데(CLI로 직접 실측,
+      2026-09-05), hg4j는 아무 검사 없이 조용히 덮어썼다 — 순방향(자손,
+      fast-forward) 이동과 동일 대상으로의 이동은 여전히 force 없이 허용,
+      새 이름 생성도 그대로 허용, 되돌리기(backward)/divergent 이동만
+      `HgValidationException` + 동일 메시지로 거부하도록 게이트 신설
+      (`setForce(boolean)` 추가). 이 게이트의 "순방향" 판정은 처음엔 단순
+      changelog DAG 조상 관계(`ChangesetGraph#isAncestor`)만 봤는데, 전체
+      회귀(`test`+`interopTest`)를 돌리자 기존 `PushRealHgInteropTest#
+      testPushOfBookmarkAdvancedAcrossAmendSucceedsWithoutForce`가
+      즉시 깨졌다 — `hg amend`로 만든 후속 커밋은 원본 커밋의 **형제**(같은
+      parent를 공유)일 뿐 자손이 아니므로, "amend 직후 활성 bookmark를
+      후속 커밋으로 전진"이라는 실제 hg 자신의 표준 동작이 새 게이트에 막혀버렸다.
+      `PushCommand`가 이미 `discovery._postprocessobsolete`/`bookmarks.
+      validdest` 대응으로 구현해둔 것과 똑같은 "obsolescence-successor 체인도
+      순방향으로 인정"하는 `obsutil.foreground` 로직(`isInForeground` +
+      `.hg/store/obsstore` 파싱)을 `BookmarkCommand`에도 자체 구현(코드
+      결합을 피하려 이미 검증된 `PushCommand`의 사본을 건드리지 않고 독립
+      복사본으로 추가)해 최종 해결. 이 과정에서 진짜 2번째 버그도 드러났다:
+      **`CommitCommand`가 매 커밋마다 활성 bookmark를 새 커밋으로 자동
+      전진시키는 내부 호출**(active bookmark 자동 추적)이 새로 추가된 이
+      게이트를 그대로 통과해야 했는데, `AmendCommand`는 obsmarker를 성공한
+      커밋의 노드 해시가 있어야만 쓸 수 있어 항상 커밋 **다음**에 기록한다
+      — 즉 `CommitCommand`의 내부 자동전진 호출 시점엔 obsstore에 predecessor→
+      successor 링크가 아직 존재하지 않아 이 경로만은 foreground 판정이
+      실패했다. real hg 자신도 이런 내부 재작성(`scmutil.cleanupnodes`)에
+      의한 bookmark 이동은 사용자 대화형 `hg bookmark -r`의 validdest 게이트를
+      거치지 않고 무조건 이동시키므로, `CommitCommand`의 그 한 곳만
+      `.setForce(true)`로 게이트를 우회하도록 수정(일반 커밋의 경우 새 커밋의
+      parent1이 정확히 옛 활성 위치라 어차피 항상 순수 fast-forward였으므로
+      동작 변화 없음 — 변화는 amend류 내부 위임 경로에서만 발생). 별도로,
+      `mergeFromRemote`가 이미 스스로 올바른 판단(로컬이 사라진 리비전을
+      가리킬 때 원격을 그대로 채택)을 내린 뒤 호출하는 한 곳도 새 게이트를
+      우회하도록 `setForce(true)`를 추가해 기존 pull/fetch 병합 동작은 그대로
+      유지. (2) 마지막 남은 bookmark를 삭제하면 real hg는 `.hg/bookmarks`를
+      0바이트 빈 파일로 남겨두는데(CLI로 직접 실측: 한 번이라도 생성된 적
+      있는 파일은 지우지 않음), hg4j는 파일 자체를 삭제해버렸다 — 실질적 동작
+      차이는 없지만(양쪽 다 "bookmark 없음"으로 읽힘) real hg와 바이트 단위로
+      맞추도록 빈 문자열을 씀으로 수정. (3) 위 게이트 수정과 별개로, 기존
+      `PushRealHgInteropTest#testPushRejectedWhenBookmarkMovedToDivergentSiblingWithoutObsolescenceLink`
+      는 진짜 divergent(조상도 후속자도 아닌) 이동을 로컬 `BookmarkCommand`
+      호출에서 force 없이 하고 있었다 — 그 테스트 자신의 기존 javadoc이 이미
+      "실제 hg CLI 검증 시 force-moved"라고 적어뒀던 대로, 새 게이트가 생긴
+      지금은 그 로컬 호출에 `.setForce(true)`를 붙이는 게 맞는 수정(테스트의
+      실제 검증 대상은 그 다음 PUSH 시점의 거부이지, 로컬 이동 자체가 아님)
+      — 테스트 쪽만 수정, `BookmarkCommand`/`PushCommand` 프로덕션 로직은
+      그대로. 부수적으로, 매트릭스 시나리오를 작성하며 **하나의
+      `HgRepository` 핸들을 real hg CLI의 외부 커밋 이후에도 계속 재사용하면
+      안 된다**는 사실을 재확인(캐시된 `Revlog`가 외부에서 새로 쓰인 리비전을
+      보지 못해 `HgRevisionNotFoundException`으로 실패) — 이건 hg4j
+      프로덕션 코드의 버그가 아니라 `HgRepository#refreshIfChangedOnDisk()`
+      의 javadoc이 이미 명시적으로 문서화한, 장기 보관 핸들(wire 서버)에만
+      해당하는 의도된 설계이므로 테스트 쪽을 "명령마다 새 `HgRepository`"라는
+      기존 매트릭스 전체의 관례에 맞게 고쳤을 뿐, 프로덕션 코드는 건드리지
+      않음. **검증**: native 6/6+Docker 30/30 재확인, 위에서 깨졌던
+      `PushRealHgInteropTest`(전체) 재확인, `RebaseRealHgInteropTest`/
+      `ShelveRealHgInteropTest`/`StripRealHgInteropTest`/`TagRealHgInteropTest`
+      /`BookmarkRealHgInteropTest`/`CommitCommandTest`/`CommitCommandCoverageTest`
+      전부 GREEN, 전체 비-interop `test`(587건) GREEN. 전체 `interopTest`
+      1회 완주 시도에서 무관한 기존 타이밍 플레이크(`PushLockRaceRealHgInteropTest`
+      의 SSH 동시 레이스 테스트, 단독 재실행 시 통과 확인 — 동시 실행 중이던
+      다른 wave-3 에이전트들의 부하로 인한 것으로 추정, hg4j 로직과 무관)
+      1건 외 전부 통과.
+    - **`TagCommand`**: 새 실버그 없음. 기존 `TagRealHgInteropTest`(백로그
+      23)가 이미 동작 자체(생성/이동/삭제/로컬/force 게이트/병합 커밋 태깅)를
+      기본 포맷 저장소 하나로 철저히 검증해뒀으므로, 이번 매트릭스는 그
+      테스트가 전혀 다루지 않은 축(changelog v1/v2(+sidedata) x flat/tree
+      manifest, Docker에서는 추가로 dirstate-v2/persistent-nodemap/
+      fileindex-v1/general-v2)에서 태그 생성 → 로컬 태그 → 강제 이동 → 삭제
+      전체 시퀀스(매번 `CommitCommand`로 실제 커밋)가 살아남는지만 확인 —
+      전부 GREEN. `AmendCommand`(wave 2)와 마찬가지로 이미 검증된
+      `CommitCommand`에 위임하는 명령이 모든 조합에서 안전함을 다시 한 번
+      재확인한 표본.
+
+    이로써 "67개 명령 × 매트릭스" 목표의 명령 기준 완주 수는 11에서
+    14(+`AddCommand`/`BookmarkCommand`/`TagCommand`)로 증가.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

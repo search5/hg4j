@@ -262,6 +262,85 @@ public class HgSshWireServerRealHgInteropTest {
                 "Expected a real-hg-understood error message, got: " + failure.getMessage());
     }
 
+    /**
+     * Backlog item 40, server direction over SSH: same scenario as {@code
+     * HgHttpWireServerNarrowInteropTest#realHgNarrowClonesFromHg4jServedOverHttp} but over the SSH
+     * transport, proving {@link Wire1Commands#getbundle}'s narrow filtering (shared, transport-
+     * agnostic code both {@link HgHttpWireServer} and {@link HgSshWireServer} delegate to) is
+     * actually reached and applied when the request arrives framed as SSH v1 args rather than
+     * HTTP query/header args.
+     */
+    @Test
+    public void realHgNarrowClonesFromHg4jServedOverSsh(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(isNarrowExtensionAvailable(), "Native hg's narrow extension is not available. Skipping.");
+
+        File serverRepoDir = tempDir.resolve("server_repo").toFile();
+        HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        File includedDir = new File(serverRepoDir, "included");
+        File excludedDir = new File(serverRepoDir, "excluded");
+        includedDir.mkdirs();
+        excludedDir.mkdirs();
+        for (int i = 0; i < 20; i++) {
+            Files.writeString(new File(includedDir, "f" + i + ".txt").toPath(), "small line " + i);
+        }
+        java.util.Random rnd = new java.util.Random(7);
+        for (int i = 0; i < 80; i++) {
+            byte[] filler = new byte[20_000];
+            rnd.nextBytes(filler);
+            Files.write(new File(excludedDir, "big" + i + ".bin").toPath(), filler);
+        }
+        new AddCommand(serverRepo).call();
+        new CommitCommand(serverRepo).setMessage("seed").setAuthor("dev").call();
+
+        File plainDestDir = tempDir.resolve("plain_client_repo").toFile();
+        HgTestUtils.hg(tempDir.toFile(), "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", sshUrl(serverRepoDir), plainDestDir.getAbsolutePath());
+        long plainStoreSize = directorySize(new File(plainDestDir, ".hg/store"));
+
+        File narrowDestDir = tempDir.resolve("narrow_client_repo").toFile();
+        ProcessBuilder pb = new ProcessBuilder("hg", "--config", "extensions.narrow=",
+                "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
+                "clone", "--narrow", "--include=included",
+                sshUrl(serverRepoDir), narrowDestDir.getAbsolutePath());
+        pb.directory(tempDir.toFile());
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String out = new String(p.getInputStream().readAllBytes());
+        int code = p.waitFor();
+        assertTrue(code == 0, "real hg --narrow clone over SSH against hg4j server failed: " + out);
+
+        assertTrue(new File(narrowDestDir, "included/f0.txt").exists(), "in-scope file must be checked out");
+        assertFalse(new File(narrowDestDir, "excluded").exists(), "out-of-scope dir must not be checked out");
+
+        long narrowStoreSize = directorySize(new File(narrowDestDir, ".hg/store"));
+        assertTrue(plainStoreSize > 1_000_000,
+                "sanity: the plain clone's on-disk store should be dominated by the 80 x 20KB excluded files, was "
+                        + plainStoreSize + " bytes");
+        assertTrue(narrowStoreSize < plainStoreSize / 4,
+                "hg4j's SSH server must actually send a reduced changegroup to a real hg narrow client "
+                        + "(local store " + narrowStoreSize + " bytes) compared to a plain clone against the "
+                        + "same repository (" + plainStoreSize + " bytes)");
+    }
+
+    private static long directorySize(File dir) {
+        File[] children = dir.listFiles();
+        if (children == null) return 0;
+        long total = 0;
+        for (File c : children) {
+            total += c.isDirectory() ? directorySize(c) : c.length();
+        }
+        return total;
+    }
+
+    private static boolean isNarrowExtensionAvailable() {
+        try {
+            Process p = new ProcessBuilder("hg", "--config", "extensions.narrow=", "version").start();
+            return p.waitFor() == 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @Test
     public void realHgSeesExternalRepoChangesAcrossConnectionsOnALongLivedSshServer(@TempDir Path tempDir) throws Exception {
         // Every other test in this class opens a brand-new HgRepository per SSH connection

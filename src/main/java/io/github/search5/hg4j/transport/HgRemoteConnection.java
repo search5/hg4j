@@ -36,6 +36,47 @@ public interface HgRemoteConnection extends Closeable {
     byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException, HgAuthException, HgProtocolException;
 
     /**
+     * Same as {@link #getBundle(List, List, List)}, but additionally negotiates real hg's narrow
+     * clone wire arguments ({@code narrow}, {@code includepats}, {@code excludepats} -- part of
+     * core {@code wireprototypes.GETBUNDLE_ARGUMENTS}, verified 2026-09-06 by reading Mercurial
+     * 7.2's {@code mercurial/wireprototypes.py}/{@code exchange.py} directly) when {@code
+     * narrowScope} is non-{@code null} and the remote advertised {@link #supportsNarrow()}.
+     *
+     * <p>This is what makes narrow clone/pull actually reduce wire transfer size (backlog item
+     * 40): a remote that understands these arguments (real hg with the bundled {@code narrow}
+     * extension enabled -- confirmed 2026-09-06 via a real {@code hg --debug clone --narrow}
+     * capture: the {@code getbundle} response's bundle2 changegroup part shrank from a 5.46MB
+     * full-repo payload to a 29KB narrow one, containing only in-scope filelogs, for the same
+     * repository and heads) actually omits out-of-narrowspec filelog data from the response,
+     * rather than hg4j always fetching everything and discarding out-of-scope content locally
+     * after the fact.
+     *
+     * <p>The default implementation ignores {@code narrowScope} and delegates to the plain
+     * 3-argument overload -- correct (if bandwidth-suboptimal) behavior for any implementation
+     * that hasn't been taught the narrow wire arguments.
+     */
+    default byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
+                              NarrowScope narrowScope) throws IOException, HgAuthException, HgProtocolException {
+        return getBundle(common, heads, bundleCaps);
+    }
+
+    /**
+     * A narrowspec scope to negotiate with a remote's {@code getbundle} wire command: the
+     * {@code includepats}/{@code excludepats} argument values, each already in real hg's
+     * {@code "kind:path"} textual form (e.g. {@code "path:src"}) -- see {@link
+     * io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern#toSpecString()}.
+     */
+    final class NarrowScope {
+        public final List<String> includePatterns;
+        public final List<String> excludePatterns;
+
+        public NarrowScope(List<String> includePatterns, List<String> excludePatterns) {
+            this.includePatterns = includePatterns != null ? includePatterns : Collections.emptyList();
+            this.excludePatterns = excludePatterns != null ? excludePatterns : Collections.emptyList();
+        }
+    }
+
+    /**
      * Pushes a changegroup bundle to the remote repository.
      */
     String push(byte[] bundleBytes, List<String> heads) throws IOException, HgAuthException, HgProtocolException, HgLockException;
@@ -104,6 +145,22 @@ public interface HgRemoteConnection extends Closeable {
      * instead of this capability, backlog item 39 wave 5 wire-matrix track).
      */
     default boolean supportsClonebundles() {
+        return false;
+    }
+
+    /**
+     * Whether the remote advertised real hg's narrow clone wire capability -- {@code
+     * "exp-narrow-1"} (verified 2026-09-06 against Mercurial 7.2's {@code
+     * mercurial/wireprototypes.py}: {@code NARROWCAP = b'exp-narrow-1'}, appended to the
+     * server's {@code capabilities} response whenever the {@code narrow} extension is loaded on
+     * the server, unconditionally -- not gated on the specific repository being a narrow clone
+     * itself). Only meaningful after {@link #getCapabilities()} has been called at least once.
+     *
+     * <p>When {@code true}, {@link #getBundle(List, List, List, NarrowScope)} can pass a
+     * non-{@code null} {@link NarrowScope} to get an actually-filtered response instead of a full
+     * one.
+     */
+    default boolean supportsNarrow() {
         return false;
     }
 

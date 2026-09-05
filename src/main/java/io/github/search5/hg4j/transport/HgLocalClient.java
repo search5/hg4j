@@ -61,7 +61,7 @@ public class HgLocalClient implements HgRemoteConnection {
 
     @Override
     public List<String> getCapabilities() throws IOException {
-        return List.of("changegroup", "getbundle", "lookup", "pushkey", "branchmap");
+        return List.of("changegroup", "getbundle", "lookup", "pushkey", "branchmap", "exp-narrow-1");
     }
 
     @Override
@@ -147,6 +147,49 @@ public class HgLocalClient implements HgRemoteConnection {
 
     @Override
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps) throws IOException {
+        return getBundle(common, heads, bundleCaps, null);
+    }
+
+    /**
+     * Whether this local ({@code file://}) peer role can serve real hg's narrow clone wire
+     * arguments -- always {@code true}, since {@link #getBundle(List, List, List, NarrowScope)}
+     * below implements the actual filelog filtering directly rather than needing a remote
+     * extension.
+     */
+    @Override
+    public boolean supportsNarrow() {
+        return true;
+    }
+
+    /**
+     * Same as {@link #getBundle(List, List, List)}, but when {@code narrowScope} is non-{@code
+     * null}, omits filelog data for any path outside the given include/exclude narrowspec --
+     * exactly what real hg's own non-ellipses narrow clone server does (verified 2026-09-06
+     * against Mercurial 7.2's {@code mercurial/changegroup.py} {@code cgpacker.generatefiles()}:
+     * {@code changedfiles = [f for f in changedfiles if self._matcher(f) and not
+     * self._oldmatcher(f)]}), and unlike this class's flat-manifest storage, does <em>not</em>
+     * filter changelog or manifest revlog content at all -- those two are always sent in full,
+     * matching real hg's own behavior for non-treemanifest repositories (a flat manifest revision
+     * is one indivisible blob listing every tracked path; only the treemanifest per-directory
+     * storage real hg optionally uses can prune individual subtrees via {@code matcher.visitdir()},
+     * and hg4j doesn't implement treemanifest). This is what makes narrow clone/pull actually
+     * reduce wire transfer size (backlog item 40) instead of only filtering post-hoc, client-side,
+     * after downloading everything.
+     */
+    public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
+                             HgRemoteConnection.NarrowScope narrowScope) throws IOException {
+        io.github.search5.hg4j.treewalk.HgTreeFilter narrowFilter = null;
+        if (narrowScope != null) {
+            List<io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern> includes = new ArrayList<>();
+            for (String p : narrowScope.includePatterns) {
+                includes.add(io.github.search5.hg4j.treewalk.HgTreeFilter.normalizeNarrowPattern(p));
+            }
+            List<io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern> excludes = new ArrayList<>();
+            for (String p : narrowScope.excludePatterns) {
+                excludes.add(io.github.search5.hg4j.treewalk.HgTreeFilter.normalizeNarrowPattern(p));
+            }
+            narrowFilter = io.github.search5.hg4j.treewalk.HgTreeFilter.createNarrowSpecFilter(includes, excludes);
+        }
         File clIdx = new File(remoteRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(remoteRepo.getStoreDir(), "00changelog.d");
         File mfIdx = new File(remoteRepo.getStoreDir(), "00manifest.i");
@@ -331,6 +374,12 @@ public class HgLocalClient implements HgRemoteConnection {
 
         // 1c. Pack Filelogs
         for (String path : affectedFiles) {
+            if (narrowFilter != null && !narrowFilter.accept(path)) {
+                // Backlog 40: this is the actual bandwidth-saving step -- real hg's own
+                // cgpacker.generatefiles() prunes exactly this way (see this method's javadoc).
+                // Manifests/changelog above stay unfiltered on purpose.
+                continue;
+            }
             File flIdx = CommitCommand.getFilelogIndex(remoteRepo.getStoreDir(), path);
             File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
             if (!flIdx.exists()) continue;

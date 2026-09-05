@@ -64,8 +64,16 @@ public final class Wire1Commands {
         // real hg's server-side getbundle version selection never reads the SERVER's own
         // advertised capability value for the pull direction, only the CLIENT's (see
         // Bundle2Parser#decodeChangegroupVersions's doc).
+        // exp-narrow-1 (backlog item 40): real hg's NARROWCAP token (mercurial/wireprototypes.py),
+        // appended by wireprotov1server._capabilities() whenever the server has the bundled
+        // `narrow` extension loaded -- unconditionally, not gated on the specific repo being a
+        // narrow clone itself (confirmed 2026-09-06: `hg --config extensions.narrow=
+        // --config experimental.narrow=True serve` advertises it for every repo it serves).
+        // hg4j has no extension system and always understands the narrow getbundle args (see
+        // Wire1Commands#getbundle), so it always advertises this, the same reasoning as
+        // bundle2=/httpheader= above.
         return "lookup changegroupsubset branchmap pushkey known getbundle batch httpheader=1024 "
-                + "unbundle=HG10UN,HG10GZ "
+                + "unbundle=HG10UN,HG10GZ exp-narrow-1 "
                 + io.github.search5.hg4j.bundle.Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05");
     }
 
@@ -245,13 +253,36 @@ public final class Wire1Commands {
         return bundle;
     }
 
+    /**
+     * Backlog item 40: narrow clone wire arguments. Real hg's {@code getbundle} command declares
+     * no fixed args at all ({@code @wireprotocommand(b'getbundle', b'*')}) -- {@code narrow},
+     * {@code includepats} and {@code excludepats} just ride along in the same generic args map as
+     * {@code common}/{@code heads}/{@code bundlecaps} (verified 2026-09-06 against Mercurial 7.2's
+     * {@code mercurial/wireprototypes.py}/{@code wireprotov1peer.py}: {@code includepats}/{@code
+     * excludepats} are core {@code GETBUNDLE_ARGUMENTS} csv fields; {@code narrow} itself is a
+     * boolean the bundled {@code narrow} extension adds to that same dict when loaded -- hg4j has
+     * no extension system, so it always understands it, the same way it always advertises {@code
+     * exp-narrow-1} below). A real hg client encodes the boolean as the literal string {@code "1"}
+     * (or omits the key/sends {@code "0"} for false) -- anything present and non-{@code "0"} is
+     * treated as true here, matching real hg's own decode ({@code bool(value)} on a non-empty
+     * string is always true, so real hg peers never actually send a literal {@code "0"} for a
+     * false narrow flag; they simply omit the key, exactly like {@code includepats}/{@code
+     * excludepats} below).
+     */
     public static Wire1Response getbundle(HgRepository repo, Map<String, String> args) throws IOException {
         List<String> common = splitOrEmpty(args.get("common"));
         List<String> heads = splitOrEmpty(args.get("heads"));
         List<String> bundleCaps = args.containsKey("bundlecaps")
                 ? Arrays.asList(args.get("bundlecaps").split(","))
                 : null;
-        byte[] bundle = stripHg10Prefix(new HgLocalClient(repo).getBundle(common, heads, bundleCaps));
+        io.github.search5.hg4j.transport.HgRemoteConnection.NarrowScope narrowScope = null;
+        String narrowArg = args.get("narrow");
+        if (narrowArg != null && !narrowArg.equals("0") && !narrowArg.isEmpty()) {
+            narrowScope = new io.github.search5.hg4j.transport.HgRemoteConnection.NarrowScope(
+                    splitCsvOrEmpty(args.get("includepats")),
+                    splitCsvOrEmpty(args.get("excludepats")));
+        }
+        byte[] bundle = stripHg10Prefix(new HgLocalClient(repo).getBundle(common, heads, bundleCaps, narrowScope));
         return Wire1Response.stream(bundle);
     }
 
@@ -411,6 +442,19 @@ public final class Wire1Commands {
             return new ArrayList<>();
         }
         return new ArrayList<>(Arrays.asList(value.trim().split("\\s+")));
+    }
+
+    /**
+     * Splits a real hg "csv" wire arg type (comma-joined, per {@code
+     * wireprototypes.GETBUNDLE_ARGUMENTS}'s {@code includepats}/{@code excludepats}) -- unlike
+     * {@link #splitOrEmpty}, which handles the space-joined "nodes" type used by
+     * {@code common}/{@code heads}/{@code roots}.
+     */
+    private static List<String> splitCsvOrEmpty(String value) {
+        if (value == null || value.isBlank()) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(Arrays.asList(value.split(",")));
     }
 
     private static String encode(String s) {

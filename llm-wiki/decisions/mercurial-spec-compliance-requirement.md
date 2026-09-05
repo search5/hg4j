@@ -3289,6 +3289,57 @@ Track B(B-1~B-5)와 Track C의 나머지 항목이 이번 세션에 전부 실�
     이전 wave까지의 17개에 더해 로컬 명령 기준 총 **31/67**로 증가.
     나머지 36개 로컬 명령 및 wire 매트릭스 잔여 5개는 여전히 미착수.)
 
+    **Wave 5(2026-09-05, "가벼운 저장소 메타데이터 조회" 8개 명령:
+    `HeadsCommand`/`IdentifyCommand`/`ParentsCommand`/`PathsCommand`/
+    `RootCommand`/`TipCommand`/`TagsCommand`/`SummaryCommand`)**: 기능적으로
+    가까운 명령끼리 3개 트리오로 묶어(다른 wave의 Branch/Branches/Phase
+    선례를 따름) 각 트리오당 native 6/6 + Docker 30/30 = 36/36 전부 GREEN —
+    `HeadsCommand`/`TipCommand`/`ParentsCommand` 트리오, `IdentifyCommand`/
+    `SummaryCommand` 트리오, `TagsCommand`/`PathsCommand`/`RootCommand`
+    트리오 3개 전부. `PathsCommand`/`RootCommand`는 4축(dirstate/changelog/
+    manifest/storage-확장) 어디에도 실제로 의존하지 않는 명령이지만, 과제
+    범위대로 예외 없이 36개 조합 전부에 통과시켰다(가정이 아니라 실측
+    커버리지를 남긴다는 취지). 세 트리오 모두 hg4j 자신은 순수 읽기만
+    수행하므로(저장소 자체는 항상 real hg CLI/`docker exec`로만 구축)
+    `RequirementMatrixCommitHelperMain` 류의 별도 서브프로세스 격리가
+    필요 없었다(그 우회는 hg4j의 zstd 압축 **쓰기** 경로가 `docker exec`/
+    `docker run` 프로세스 스폰과 같은 JVM에서 겹칠 때만 재현되는 문제였음).
+
+    real hg 7.2.2 직접 실측 대조로 진짜 hg4j 버그 3건을 발견·수정:
+    (1) `HeadsCommand`의 `--topo`가 리프를 changelog 오름차순으로 반환하고
+    있었는데, real hg의 `hg heads --topo`는 다른 모든 `hg heads` 형태와
+    마찬가지로 리비전 내림차순으로 나열함 — 리프가 2개 이상인 시나리오에서만
+    드러나는 순서 버그(기존 `HeadsRealHgInteropTest`는 우연히 항상
+    `hexSorted()`로 비교해 이 버그를 놓치고 있었음), 내림차순 순회로 수정.
+    (2)~(4) `IdentifyCommand`(기존엔 real hg와 전혀 다른 자체 포맷:
+    `hexShort [tag] [branch]`처럼 항상 브랜치를 리터럴로 붙이고 dirty
+    마커/북마크/머지 2-parent를 전혀 다루지 않았음)를 real hg의
+    `hg identify` 정확한 출력 규칙으로 전면 재작성 — 기본 브랜치는 아예
+    생략(비-기본일 때만 괄호로 표시), dirty 마커(`+`)와 머지 중 2-parent
+    처리, 태그/북마크는 `TagsCommand`/`BookmarkCommand`를 재사용해 알파벳
+    순으로 `"/"` 조인(가짜 `tip` 의사-태그도 이름 순서 그대로 정렬),
+    `-r` 조회(`setRevision` 신설) 지원까지 추가. 그 과정에서 재작성 도중
+    두 가지를 실측으로 추가 확인: (a) 머지 중에는 태그/북마크가 p1뿐
+    아니라 p1+p2 **양쪽 모두**에서 집계됨(p2에만 있는 로컬 태그도 표시됨),
+    (b) `-r` 조회의 브랜치는 작업 사본의 현재 `.hg/branch`가 아니라 **조회
+    대상 리비전 자신의** 브랜치(체인지로그 extra 필드)여야 함 — 둘 다 처음
+    구현에서 놓쳐 매트릭스 테스트 작성 중 즉시 잡힘. 기존
+    `IdentifyCommandTest`의 여러 단위 테스트가 옛(틀린) 포맷을 그대로
+    검증하고 있어 real hg 실측값으로 전부 갱신, `PorcelainExtraCommandsTest`
+    1건도 함께 수정. 부수적으로 `SummaryCommand`(별도 버그는 없었음, 이미
+    정확했음 확인)를 테스트하다가 changelog-v2(docket 기반) 저장소를 오래
+    붙들고 있는 `HgRepository` 핸들이 external(real hg CLI) 커밋 이후에도
+    같은 revision count를 캐시해 stale 상태를 보이는 것을 실측(docket 파일
+    자체 크기는 append로 변하지 않는다는 기존 `refreshIfChangedOnDisk`
+    javadoc의 근거와 일치) — 이는 hg4j 버그가 아니라 이 테스트 설계 자체의
+    "실행 중 real hg CLI로 저장소를 계속 키우면서 같은 `HgRepository`
+    핸들을 재사용" 패턴이 원인이라 테스트 쪽에서 `refreshIfChangedOnDisk()`
+    호출/핸들 재생성으로 해결(문서화된 기존 공개 API를 그대로 사용).
+    전체 비-interop `test` 2282건 0 실패/0 에러(2 스킵) GREEN 재확인.
+    이로써 로컬 명령 완주 수는 31에서 8개 추가로 **39/67**로 증가(다른
+    wave 5 병렬 에이전트들과 별도 취합 필요할 수 있음). 나머지 28개 로컬
+    명령 및 wire 매트릭스 잔여 5개는 여전히 미착수.
+
 40. **Narrow clone의 진짜 wire-protocol 수준 ellipsis node 왕복 — 여전히
     구현 자체가 없음**. 신규, 2026-09-04 사용자 지시로 등록(백로그 28/30에서
     각각 "범위 밖으로 명시적으로 남긴 것"으로 이미 문서화됐던 것을 별도

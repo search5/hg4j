@@ -4,8 +4,9 @@ import io.github.search5.hg4j.api.HgHook;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.transport.wireprotov1.Wire1Commands;
 import io.github.search5.hg4j.transport.wireprotov1.Wire1Response;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,11 +31,12 @@ import java.util.zip.DeflaterOutputStream;
  * UploadPackServlet}, {@code ReceivePackServlet}): pure transport glue over the protocol-agnostic
  * cores, {@link Wire1Commands} (v1) and {@code Wire2Commands}/{@code Wire2Transport} (v2).
  *
- * <p>Implements {@link HttpHandler} for use with the JDK's built-in {@code
- * com.sun.net.httpserver.HttpServer} — no new dependency, matching how this codebase's own tests
- * already stand up throwaway HTTP servers.</p>
+ * <p>A plain {@link HttpServlet} — deploy it in whatever servlet container the embedding
+ * application already uses (e.g. {@code ServletContextHandler.addServlet(new
+ * ServletHolder(new HgHttpWireServer(repo)), "/*")} on Jetty), matching JGit's own
+ * {@code GitServlet} being a servlet rather than owning its own listening socket.</p>
  */
-public class HgHttpWireServer implements HttpHandler {
+public class HgHttpWireServer extends HttpServlet {
 
     private final HgRepository repository;
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
@@ -58,17 +60,17 @@ public class HgHttpWireServer implements HttpHandler {
     }
 
     @Override
-    public void handle(HttpExchange exchange) throws IOException {
+    protected void service(HttpServletRequest request, HttpServletResponse response) throws IOException {
         try {
             repository.refreshIfChangedOnDisk();
-            String path = exchange.getRequestURI().getPath();
-            String query = exchange.getRequestURI().getQuery();
+            String path = request.getRequestURI();
+            String query = request.getQueryString();
 
             if ("/".equals(path) && query != null && query.contains("cmd=capabilities")
-                    && exchange.getRequestHeaders().getFirst("X-HgUpgrade-1") != null) {
-                exchange.getResponseHeaders().set("Content-Type", "application/mercurial-cbor");
-                exchange.sendResponseHeaders(200, 0);
-                try (OutputStream out = exchange.getResponseBody()) {
+                    && request.getHeader("X-HgUpgrade-1") != null) {
+                response.setStatus(200);
+                response.setHeader("Content-Type", "application/mercurial-cbor");
+                try (OutputStream out = response.getOutputStream()) {
                     handleCapabilitiesDiscovery(Wire1Commands.capabilitiesString(repository), out);
                 }
                 return;
@@ -85,12 +87,13 @@ public class HgHttpWireServer implements HttpHandler {
                     // below unable to send its fallback "abort:" body -- the client would see an
                     // empty response instead of a diagnosable error.
                     byte[] responseBody;
-                    try (InputStream in = exchange.getRequestBody()) {
+                    try (InputStream in = request.getInputStream()) {
                         responseBody = handleWire2Request(parts[1], parts[2], in);
                     }
-                    exchange.getResponseHeaders().set("Content-Type", Wire2Transport.FRAMINGTYPE);
-                    exchange.sendResponseHeaders(200, responseBody.length == 0 ? -1 : responseBody.length);
-                    try (OutputStream out = exchange.getResponseBody()) {
+                    response.setStatus(200);
+                    response.setHeader("Content-Type", Wire2Transport.FRAMINGTYPE);
+                    response.setContentLength(responseBody.length);
+                    try (OutputStream out = response.getOutputStream()) {
                         out.write(responseBody);
                     }
                     return;
@@ -99,15 +102,16 @@ public class HgHttpWireServer implements HttpHandler {
 
             String cmd = queryParam(query, "cmd");
             if (cmd == null) {
-                exchange.sendResponseHeaders(404, -1);
+                response.setStatus(404);
                 return;
             }
-            handleV1Command(exchange, cmd, query);
+            handleV1Command(request, response, cmd, query);
         } catch (Exception e) {
             byte[] body = ("abort: " + e.getMessage()).getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.1");
-            exchange.sendResponseHeaders(200, body.length);
-            try (OutputStream out = exchange.getResponseBody()) {
+            response.setStatus(200);
+            response.setHeader("Content-Type", "application/mercurial-0.1");
+            response.setContentLength(body.length);
+            try (OutputStream out = response.getOutputStream()) {
                 out.write(body);
             }
         }
@@ -207,33 +211,33 @@ public class HgHttpWireServer implements HttpHandler {
         }
     }
 
-    private void handleV1Command(HttpExchange exchange, String cmd, String query) throws Exception {
+    private void handleV1Command(HttpServletRequest request, HttpServletResponse response, String cmd, String query) throws Exception {
         Map<String, String> args = parseQueryParams(query);
         // Real hg's primary v1 arg transport for GET requests: the urlencoded arg string is split
         // across X-HgArg-1, X-HgArg-2, ... request headers (see HgRemoteClient#executeArgsCommand)
         // rather than appended to the query string. Reassemble and merge them in first so a
         // present query string or POST body (below) can still take precedence on collision.
-        String reassembledArgHeaders = reassembleHeaderChain(exchange, "X-HgArg");
+        String reassembledArgHeaders = reassembleHeaderChain(request, "X-HgArg");
         if (!reassembledArgHeaders.isEmpty()) {
             args.putAll(parseQueryParams(reassembledArgHeaders));
         }
 
-        Wire1Response response;
+        Wire1Response wireResponse;
         if ("unbundle".equals(cmd)) {
             byte[] bundleBytes;
-            try (InputStream in = exchange.getRequestBody()) {
+            try (InputStream in = request.getInputStream()) {
                 bundleBytes = in.readAllBytes();
             }
-            response = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
+            wireResponse = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
         } else {
             // Real hg sends some commands' args over GET query string, others as a POST
             // form-encoded body (and hg4j's own HgRemoteClient doesn't always agree with real hg
             // on which); accepting args from either location for every command (merged, POST body
             // taking precedence on collision) makes this server correct against both without
             // needing a per-command GET/POST table.
-            if ("POST".equals(exchange.getRequestMethod())) {
+            if ("POST".equals(request.getMethod())) {
                 byte[] body;
-                try (InputStream in = exchange.getRequestBody()) {
+                try (InputStream in = request.getInputStream()) {
                     body = in.readAllBytes();
                 }
                 // Same urlencoded-args format whether this is the legacy form-encoded body or the
@@ -241,17 +245,18 @@ public class HgHttpWireServer implements HttpHandler {
                 // covers both.
                 args.putAll(parseQueryParams(new String(body, StandardCharsets.UTF_8)));
             }
-            response = dispatch(cmd, args);
+            wireResponse = dispatch(cmd, args);
         }
 
-        switch (response.getKind()) {
+        switch (wireResponse.getKind()) {
             case OOB_ERROR -> {
                 // Real hg's ooberror uses a distinct content type and an always-uncompressed body
                 // (wireprotoserver.py's _callhttp: setresponse(HTTP_OK, HGERRTYPE, bodybytes=...)).
-                exchange.getResponseHeaders().set("Content-Type", "application/hg-error");
-                byte[] body = response.getErrorMessage().getBytes(StandardCharsets.UTF_8);
-                exchange.sendResponseHeaders(200, body.length);
-                try (OutputStream out = exchange.getResponseBody()) {
+                response.setStatus(200);
+                response.setHeader("Content-Type", "application/hg-error");
+                byte[] body = wireResponse.getErrorMessage().getBytes(StandardCharsets.UTF_8);
+                response.setContentLength(body.length);
+                try (OutputStream out = response.getOutputStream()) {
                     out.write(body);
                 }
             }
@@ -267,10 +272,11 @@ public class HgHttpWireServer implements HttpHandler {
                 // gets the exact same uncompressed treatment ("elif isinstance(rsp,
                 // streamreslegacy): setresponse(HTTP_OK, HGTYPE, bodygen=rsp.gen)" -- no
                 // compression call either, unlike the plain `streamres` case just below).
-                exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.1");
-                byte[] body = response.getPayload();
-                exchange.sendResponseHeaders(200, body.length == 0 ? -1 : body.length);
-                try (OutputStream out = exchange.getResponseBody()) {
+                response.setStatus(200);
+                response.setHeader("Content-Type", "application/mercurial-0.1");
+                byte[] body = wireResponse.getPayload();
+                response.setContentLength(body.length);
+                try (OutputStream out = response.getOutputStream()) {
                     out.write(body);
                 }
             }
@@ -278,10 +284,11 @@ public class HgHttpWireServer implements HttpHandler {
                 // Real hg's server contract: `streamres` (changegroup/getbundle/unbundle) is the
                 // ONLY response kind that gets zlib-compressed under -0.1 (wireprotoserver.py's
                 // comment: "we only compress streamres at the moment").
-                exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.1");
-                byte[] body = deflate(response.getPayload());
-                exchange.sendResponseHeaders(200, body.length == 0 ? -1 : body.length);
-                try (OutputStream out = exchange.getResponseBody()) {
+                response.setStatus(200);
+                response.setHeader("Content-Type", "application/mercurial-0.1");
+                byte[] body = deflate(wireResponse.getPayload());
+                response.setContentLength(body.length);
+                try (OutputStream out = response.getOutputStream()) {
                     out.write(body);
                 }
             }
@@ -308,13 +315,13 @@ public class HgHttpWireServer implements HttpHandler {
      * Reassembles a real hg {@code encodevalueinheaders}-split header chain ({@code <prefix>-1},
      * {@code <prefix>-2}, ...) back into the single urlencoded string it was split from. Headers
      * are read in order starting at 1 and stop at the first missing index (real hg never leaves a
-     * gap). {@code HttpExchange}'s header map is case-insensitive, matching real HTTP semantics.
+     * gap). {@code HttpServletRequest.getHeader} is case-insensitive, matching real HTTP semantics.
      */
-    private static String reassembleHeaderChain(HttpExchange exchange, String prefix) {
+    private static String reassembleHeaderChain(HttpServletRequest request, String prefix) {
         StringBuilder sb = new StringBuilder();
         int n = 1;
         while (true) {
-            String chunk = exchange.getRequestHeaders().getFirst(prefix + "-" + n);
+            String chunk = request.getHeader(prefix + "-" + n);
             if (chunk == null) {
                 break;
             }

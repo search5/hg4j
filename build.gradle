@@ -38,18 +38,26 @@ dependencies {
     implementation 'org.bouncycastle:bcpg-jdk18on:1.78'
     implementation 'org.bouncycastle:bcprov-jdk18on:1.78'
     implementation 'org.bouncycastle:bcutil-jdk18on:1.78'
+    // HgHttpWireServer is a jakarta.servlet.http.HttpServlet -- callers/tests host it in whatever
+    // servlet container they like (only the API is a compile/runtime dependency of the library
+    // itself; the container is a test-only concern, see the jetty-ee11 deps below).
+    implementation 'jakarta.servlet:jakarta.servlet-api:6.1.0'
 
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    
+
     testImplementation 'org.bouncycastle:bcpg-jdk18on:1.78'
     testImplementation 'org.bouncycastle:bcprov-jdk18on:1.78'
     testImplementation 'org.bouncycastle:bcutil-jdk18on:1.78'
-    
+
     testImplementation 'org.apache.sshd:sshd-core:2.12.0'
     testImplementation 'org.apache.sshd:sshd-common:2.12.0'
     testImplementation 'org.slf4j:slf4j-simple:2.0.12'
+    // Embedded servlet container to actually host HgHttpWireServer in tests (ee11 = Jakarta EE 11 /
+    // Servlet 6.1, matching jakarta.servlet-api above).
+    testImplementation 'org.eclipse.jetty:jetty-server:12.1.12'
+    testImplementation 'org.eclipse.jetty.ee11:jetty-ee11-servlet:12.1.12'
 }
 
 publishing {

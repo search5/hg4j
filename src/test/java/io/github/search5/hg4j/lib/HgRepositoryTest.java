@@ -270,4 +270,68 @@ public class HgRepositoryTest {
         repoA.close();
         repoB.close();
     }
+
+    /**
+     * Regression test for a genuine bug found live 2026-09-06 while migrating {@code
+     * HgHttpWireServer} to {@code jakarta.servlet.http.HttpServlet} (unrelated to that migration
+     * itself -- reproduced identically on the pre-migration code too, confirmed via {@code git
+     * stash}): once an {@code HgRepository} handle makes even ONE local commit of its own (e.g. a
+     * server's initial seed commit at startup, done via its own {@code CommitCommand}), {@code
+     * RevlogIndex.hasLocallyAddedRecords()} becomes permanently {@code true} for its cached
+     * changelog {@code Revlog} -- and {@code checkAndUpdate()}'s own staleness-detection logic
+     * used to unconditionally skip ANY further refresh whenever {@code addedRecords} was
+     * non-empty, even though {@code lastKnownSize} (kept accurate by {@code addRecord()} on every
+     * local write) already correctly detects when the on-disk file has grown beyond what this
+     * instance knows about. The net effect: a long-lived server handle that ever committed once
+     * would never again notice further commits appended by a separate, external {@code hg}
+     * process (or, as reproduced here without needing real {@code hg} CLI, a second independent
+     * {@code HgRepository}/{@code CommitCommand} instance) for the rest of its lifetime -- exactly
+     * the failure mode {@link io.github.search5.hg4j.transport.HgHttpWireServer} hit in {@code
+     * HgHttpWireServerRealHgInteropTest#realHgClonesMultipleBranchesBookmarksAndTagsFromHg4jServedOverHttp}.
+     *
+     * <p>Fixed by adding a narrow branch to {@code RevlogIndex.checkAndUpdate()}: pure growth
+     * beyond {@code lastKnownSize} is picked up via the same append-only {@code
+     * loadIndexIncremental} already used for the {@code addedRecords}-empty case, which only adds
+     * new tail entries and never touches/clears the existing {@code addedRecords}/{@code nodeMap}
+     * -- so it cannot regress the separate "commit, then immediately strip/rebase/histedit the
+     * same revision with the same handle" protection this same guard exists for (verified
+     * separately via {@code StripCommandCoverageTest}, unaffected by this change since that
+     * scenario is a file-size <em>decrease</em>, which this new branch's {@code currentSize >
+     * lastKnownSize} condition never matches).
+     */
+    @Test
+    public void testGetRevlogDetectsExternalWritesEvenAfterThisHandleMadeItsOwnEarlierLocalCommit(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+
+        // repoA makes ONE local commit itself -- its cached changelog Revlog now permanently has
+        // hasLocallyAddedRecords() == true, which used to block all further staleness detection.
+        HgRepository repoA = Hg.init().setDirectory(repoDir).call();
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
+        new AddCommand(repoA).call();
+        new CommitCommand(repoA).setMessage("first, by repoA itself").call();
+
+        File clIdx = new File(repoA.getStoreDir(), "00changelog.i");
+        File clDat = new File(repoA.getStoreDir(), "00changelog.d");
+        assertEquals(1, repoA.getRevlog(clIdx, clDat).getRevisionCount());
+        assertTrue(repoA.getRevlog(clIdx, clDat).hasLocallyAddedRecords(),
+                "repoA's own commit must mark its cached changelog as having locally-added records");
+
+        // A second, independent HgRepository instance -- standing in for an external `hg` CLI
+        // process or a separate hg4j client -- appends another commit to the same store.
+        HgRepository repoB = new HgRepository(repoDir);
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "v2");
+        new AddCommand(repoB).call();
+        new CommitCommand(repoB).setMessage("second, external to repoA").call();
+
+        // repoA must notice repoB's externally-added commit -- not keep serving its stale,
+        // pre-existing count forever just because it once wrote something itself.
+        assertEquals(2, repoA.getRevlog(clIdx, clDat).getRevisionCount(),
+                "repoA must see repoB's externally-written second commit, not stay stuck at 1 "
+                        + "forever just because repoA itself made the first commit");
+        assertTrue(repoA.getRevlog(clIdx, clDat).hasLocallyAddedRecords(),
+                "repoA's own first commit must remain resolvable after the incremental refresh");
+
+        repoA.close();
+        repoB.close();
+    }
 }

@@ -4,15 +4,15 @@ import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.FetchCommand;
 import io.github.search5.hg4j.api.Hg;
+import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.lib.HgRepository;
-import com.sun.net.httpserver.HttpServer;
+import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
-import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -43,13 +43,13 @@ class Wire2TreeManifestFetchTest {
     @TempDir
     Path tempDir;
 
-    private HttpServer server;
+    private Server server;
     private int port;
 
     @AfterEach
     void tearDown() {
         if (server != null) {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -85,10 +85,8 @@ class Wire2TreeManifestFetchTest {
         new AddCommand(serverRepo).call();
         new CommitCommand(serverRepo).setMessage("nested tree").call();
 
-        server = HttpServer.create(new InetSocketAddress(0), 0);
-        port = server.getAddress().getPort();
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
+        port = HgTestUtils.port(server);
 
         File clientDir = tempDir.resolve("client_repo").toFile();
         HgRepository clientRepo = Hg.init().setDirectory(clientDir).call();

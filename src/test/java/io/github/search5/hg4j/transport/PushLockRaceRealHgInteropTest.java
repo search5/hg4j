@@ -6,7 +6,7 @@ import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.HgRepository;
-import com.sun.net.httpserver.HttpServer;
+import org.eclipse.jetty.server.Server;
 import org.apache.sshd.server.ExitCallback;
 import org.apache.sshd.server.SshServer;
 import org.apache.sshd.server.auth.pubkey.AcceptAllPublickeyAuthenticator;
@@ -24,14 +24,11 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
@@ -159,12 +156,9 @@ public class PushLockRaceRealHgInteropTest {
         // guards against the test itself hanging forever if the fix regresses to "never retry".
         HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.setExecutor(Executors.newFixedThreadPool(4));
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
-            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+            String baseUrl = "http://127.0.0.1:" + HgTestUtils.port(server) + "/";
 
             File clientDir = tempDir.resolve("client").toFile();
             HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl, clientDir.getAbsolutePath());
@@ -196,7 +190,7 @@ public class PushLockRaceRealHgInteropTest {
             String verify = HgTestUtils.hg(serverRepoDir, "verify");
             assertFalse(verify.toLowerCase().contains("error"), "server repository must remain valid: " + verify);
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -213,12 +207,9 @@ public class PushLockRaceRealHgInteropTest {
         int timeoutSeconds = 1;
         HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, timeoutSeconds);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.setExecutor(Executors.newFixedThreadPool(4));
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
-            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+            String baseUrl = "http://127.0.0.1:" + HgTestUtils.port(server) + "/";
 
             File clientDir = tempDir.resolve("client").toFile();
             HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl, clientDir.getAbsolutePath());
@@ -263,7 +254,7 @@ public class PushLockRaceRealHgInteropTest {
             var cl2 = serverRepo.getRevlog(clIdx, clDat);
             assertEquals(2, cl2.getRevisionCount(), "a later uncontended push must still succeed normally");
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -285,12 +276,9 @@ public class PushLockRaceRealHgInteropTest {
         new CommitCommand(bootstrap).setMessage("c0").setAuthor("dev").call();
         HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.setExecutor(Executors.newFixedThreadPool(8));
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
-            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+            String baseUrl = "http://127.0.0.1:" + HgTestUtils.port(server) + "/";
 
             File clientA = tempDir.resolve("client_a").toFile();
             File clientB = tempDir.resolve("client_b").toFile();
@@ -385,7 +373,7 @@ public class PushLockRaceRealHgInteropTest {
                             + "real-hg-served equivalent of this exact race would produce -- not two: "
                             + headsAfter);
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -506,12 +494,9 @@ public class PushLockRaceRealHgInteropTest {
         new CommitCommand(bootstrap).setMessage("c0").setAuthor("dev").call();
         HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.setExecutor(Executors.newFixedThreadPool(8));
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
-            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+            String baseUrl = "http://127.0.0.1:" + HgTestUtils.port(server) + "/";
 
             File clientA = tempDir.resolve("client_a").toFile();
             HgTestUtils.hg(tempDir.toFile(), "clone", baseUrl, clientA.getAbsolutePath());
@@ -543,7 +528,7 @@ public class PushLockRaceRealHgInteropTest {
             String verify = HgTestUtils.hg(serverRepoDir, "verify");
             assertFalse(verify.toLowerCase().contains("error"), "server repository must remain valid: " + verify);
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -565,12 +550,9 @@ public class PushLockRaceRealHgInteropTest {
         new CommitCommand(bootstrap).setMessage("c0").setAuthor("dev").call();
         HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.setExecutor(Executors.newFixedThreadPool(8));
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
-            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+            String baseUrl = "http://127.0.0.1:" + HgTestUtils.port(server) + "/";
 
             File clientA = tempDir.resolve("client_a").toFile();
             File clientNoOp = tempDir.resolve("client_noop").toFile();
@@ -628,7 +610,7 @@ public class PushLockRaceRealHgInteropTest {
             String verify = HgTestUtils.hg(serverRepoDir, "verify");
             assertFalse(verify.toLowerCase().contains("error"), "server repository must remain valid: " + verify);
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 

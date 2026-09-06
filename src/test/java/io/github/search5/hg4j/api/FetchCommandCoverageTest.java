@@ -13,6 +13,7 @@ import io.github.search5.hg4j.transport.TransportProtocol;
 import io.github.search5.hg4j.treewalk.HgTreeFilter;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import com.sun.net.httpserver.HttpServer;
+import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -634,9 +635,7 @@ public class FetchCommandCoverageTest {
         });
         bundleServer.start();
 
-        HttpServer wireServer = HttpServer.create(new InetSocketAddress(0), 0);
-        wireServer.createContext("/", new HgHttpWireServer(serverRepo));
-        wireServer.start();
+        Server wireServer = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
             String manifestUrl = "http://127.0.0.1:" + bundleServer.getAddress().getPort() + "/empty.hg";
             Files.writeString(new File(serverRepo.getHgDir(), "clonebundles.manifest").toPath(),
@@ -644,7 +643,7 @@ public class FetchCommandCoverageTest {
 
             File destDir = tempDir.resolve("dest").toFile();
             HgRepository destRepo = Hg.init().setDirectory(destDir).call();
-            String wireUrl = "http://127.0.0.1:" + wireServer.getAddress().getPort();
+            String wireUrl = "http://127.0.0.1:" + HgTestUtils.port(wireServer);
 
             List<byte[]> imported = new FetchCommand(destRepo).setSource(wireUrl).call();
 
@@ -652,7 +651,7 @@ public class FetchCommandCoverageTest {
                     "An empty (but validly applied) clonebundle must not stop the normal catch-up pull from running");
             assertArrayEquals(commitNode, imported.get(0));
         } finally {
-            wireServer.stop(0);
+            HgTestUtils.stop(wireServer);
             bundleServer.stop(0);
         }
     }

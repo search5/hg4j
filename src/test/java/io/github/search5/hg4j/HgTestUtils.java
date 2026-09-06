@@ -6,6 +6,11 @@ import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.api.CommitCommand;
+import jakarta.servlet.http.HttpServlet;
+import org.eclipse.jetty.ee11.servlet.ServletContextHandler;
+import org.eclipse.jetty.ee11.servlet.ServletHolder;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -316,5 +321,34 @@ public class HgTestUtils {
             dos.writeInt(0);
         }
         return baos.toByteArray();
+    }
+
+    /**
+     * Starts an embedded Jetty server on a random free port hosting {@code servlet} at {@code
+     * /*} (mirrors production usage of {@link io.github.search5.hg4j.transport.HgHttpWireServer},
+     * which is a plain {@code jakarta.servlet.http.HttpServlet} deployed in whatever container the
+     * embedder chooses -- this is that "chosen container" for tests). Stop it with {@link
+     * #stop(Server)}, read its port with {@link #port(Server)}.
+     */
+    public static Server startServlet(HttpServlet servlet) throws Exception {
+        Server server = new Server(0);
+        ServletContextHandler context = new ServletContextHandler();
+        context.setContextPath("/");
+        context.addServlet(new ServletHolder(servlet), "/*");
+        server.setHandler(context);
+        server.start();
+        return server;
+    }
+
+    public static int port(Server server) {
+        return ((ServerConnector) server.getConnectors()[0]).getLocalPort();
+    }
+
+    public static void stop(Server server) {
+        try {
+            server.stop();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }

@@ -5,8 +5,14 @@ import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.lib.HgRepository;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletOutputStream;
+import jakarta.servlet.WriteListener;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponseWrapper;
+import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,8 +20,9 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.net.InetSocketAddress;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("interop")
 public class HgHttpWireServerNarrowInteropTest {
 
-    private HttpServer server;
+    private Server server;
     private HgRepository serverRepo;
     private File serverRepoDir;
     private final AtomicReference<byte[]> capturedGetbundleResponse = new AtomicReference<>();
@@ -71,23 +78,24 @@ public class HgHttpWireServerNarrowInteropTest {
         new CommitCommand(serverRepo).setMessage("seed").setAuthor("dev").call();
 
         HgHttpWireServer delegate = new HgHttpWireServer(serverRepo);
-        server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.createContext("/", exchange -> {
-            boolean isGetbundle = exchange.getRequestURI().getRawQuery() != null
-                    && exchange.getRequestURI().getRawQuery().contains("cmd=getbundle");
-            if (!isGetbundle) {
-                delegate.handle(exchange);
-                return;
+        server = HgTestUtils.startServlet(new HttpServlet() {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+                boolean isGetbundle = request.getQueryString() != null
+                        && request.getQueryString().contains("cmd=getbundle");
+                if (!isGetbundle) {
+                    delegate.service(request, response);
+                    return;
+                }
+                delegate.service(request, new ResponseCapturingHttpServletResponse(response, capturedGetbundleResponse));
             }
-            delegate.handle(new ResponseCapturingHttpExchange(exchange, capturedGetbundleResponse));
         });
-        server.start();
     }
 
     @AfterEach
     public void tearDown() {
         if (server != null) {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -101,7 +109,7 @@ public class HgHttpWireServerNarrowInteropTest {
     }
 
     private String baseUrl() {
-        return "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+        return "http://127.0.0.1:" + HgTestUtils.port(server) + "/";
     }
 
     @Test
@@ -141,60 +149,42 @@ public class HgHttpWireServerNarrowInteropTest {
     }
 
     /**
-     * Delegates every {@link HttpExchange} method to a wrapped real exchange except {@link
-     * #getResponseBody()}, which tees whatever bytes get written through it into {@code capture}
-     * as well -- copied from {@link HgHttpWireServerRealHgInteropTest} (kept private there), same
-     * approach: lets a test observe exactly what {@link HgHttpWireServer} sent for one specific
-     * request without any production-code changes.
+     * A thin {@link HttpServletResponseWrapper} that tees everything written to the response body
+     * into {@code capture} as well as the real client socket -- the servlet-API equivalent of the
+     * old {@code HttpExchange} subclass this replaced (that had to override every delegating
+     * method by hand; {@code HttpServletResponseWrapper} does that forwarding for free, leaving
+     * only {@link #getOutputStream()} to override).
      */
-    private static final class ResponseCapturingHttpExchange extends HttpExchange {
-        private final HttpExchange delegate;
+    private static final class ResponseCapturingHttpServletResponse extends HttpServletResponseWrapper {
         private final AtomicReference<byte[]> capture;
-        private java.io.OutputStream teeStream;
+        private ServletOutputStream teeStream;
 
-        ResponseCapturingHttpExchange(HttpExchange delegate, AtomicReference<byte[]> capture) {
-            this.delegate = delegate;
+        ResponseCapturingHttpServletResponse(HttpServletResponse response, AtomicReference<byte[]> capture) {
+            super(response);
             this.capture = capture;
         }
 
         @Override
-        public java.io.OutputStream getResponseBody() {
+        public ServletOutputStream getOutputStream() throws IOException {
             if (teeStream == null) {
-                java.io.OutputStream real = delegate.getResponseBody();
-                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
-                teeStream = new java.io.OutputStream() {
-                    @Override public void write(int b) throws java.io.IOException { real.write(b); buffer.write(b); }
-                    @Override public void write(byte[] b, int off, int len) throws java.io.IOException {
+                ServletOutputStream real = super.getOutputStream();
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                teeStream = new ServletOutputStream() {
+                    @Override public void write(int b) throws IOException { real.write(b); buffer.write(b); }
+                    @Override public void write(byte[] b, int off, int len) throws IOException {
                         real.write(b, off, len);
                         buffer.write(b, off, len);
                     }
-                    @Override public void flush() throws java.io.IOException { real.flush(); }
-                    @Override public void close() throws java.io.IOException {
+                    @Override public void flush() throws IOException { real.flush(); }
+                    @Override public void close() throws IOException {
                         real.close();
                         capture.set(buffer.toByteArray());
                     }
+                    @Override public boolean isReady() { return true; }
+                    @Override public void setWriteListener(WriteListener writeListener) { }
                 };
             }
             return teeStream;
         }
-
-        @Override public com.sun.net.httpserver.Headers getRequestHeaders() { return delegate.getRequestHeaders(); }
-        @Override public com.sun.net.httpserver.Headers getResponseHeaders() { return delegate.getResponseHeaders(); }
-        @Override public java.net.URI getRequestURI() { return delegate.getRequestURI(); }
-        @Override public String getRequestMethod() { return delegate.getRequestMethod(); }
-        @Override public com.sun.net.httpserver.HttpContext getHttpContext() { return delegate.getHttpContext(); }
-        @Override public void close() { delegate.close(); }
-        @Override public java.io.InputStream getRequestBody() { return delegate.getRequestBody(); }
-        @Override public void sendResponseHeaders(int rCode, long responseLength) throws java.io.IOException {
-            delegate.sendResponseHeaders(rCode, responseLength);
-        }
-        @Override public java.net.InetSocketAddress getRemoteAddress() { return delegate.getRemoteAddress(); }
-        @Override public int getResponseCode() { return delegate.getResponseCode(); }
-        @Override public java.net.InetSocketAddress getLocalAddress() { return delegate.getLocalAddress(); }
-        @Override public String getProtocol() { return delegate.getProtocol(); }
-        @Override public Object getAttribute(String name) { return delegate.getAttribute(name); }
-        @Override public void setAttribute(String name, Object value) { delegate.setAttribute(name, value); }
-        @Override public void setStreams(java.io.InputStream i, java.io.OutputStream o) { delegate.setStreams(i, o); }
-        @Override public com.sun.net.httpserver.HttpPrincipal getPrincipal() { return delegate.getPrincipal(); }
     }
 }

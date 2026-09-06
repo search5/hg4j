@@ -19,6 +19,7 @@ import io.github.search5.hg4j.transport.TransportProtocol;
 import io.github.search5.hg4j.transport.HgHttpWireServer;
 import io.github.search5.hg4j.errors.HgCorruptDataException;
 import com.sun.net.httpserver.HttpServer;
+import org.eclipse.jetty.server.Server;
 import java.lang.reflect.Field;
 
 import java.io.File;
@@ -742,9 +743,7 @@ public class FetchCommandTest {
         });
         bundleServer.start();
 
-        HttpServer wireServer = HttpServer.create(new InetSocketAddress(0), 0);
-        wireServer.createContext("/", new HgHttpWireServer(serverRepo));
-        wireServer.start();
+        Server wireServer = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
             String manifestUrl = "http://127.0.0.1:" + bundleServer.getAddress().getPort() + "/full.hg";
             Files.writeString(new File(serverRepo.getHgDir(), "clonebundles.manifest").toPath(),
@@ -752,7 +751,7 @@ public class FetchCommandTest {
 
             File destDir = tempDir.resolve("dest").toFile();
             HgRepository destRepo = Hg.init().setDirectory(destDir).call();
-            String wireUrl = "http://127.0.0.1:" + wireServer.getAddress().getPort();
+            String wireUrl = "http://127.0.0.1:" + HgTestUtils.port(wireServer);
 
             List<byte[]> imported = new FetchCommand(destRepo).setSource(wireUrl).call();
 
@@ -762,7 +761,7 @@ public class FetchCommandTest {
             Revlog cl = new Revlog(new File(destRepo.getStoreDir(), "00changelog.i"), new File(destRepo.getStoreDir(), "00changelog.d"));
             assertEquals(1, cl.getRevisionCount());
         } finally {
-            wireServer.stop(0);
+            HgTestUtils.stop(wireServer);
             bundleServer.stop(0);
         }
     }
@@ -775,16 +774,14 @@ public class FetchCommandTest {
         new AddCommand(serverRepo).call();
         byte[] commitNode = new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
 
-        HttpServer wireServer = HttpServer.create(new InetSocketAddress(0), 0);
-        wireServer.createContext("/", new HgHttpWireServer(serverRepo));
-        wireServer.start();
+        Server wireServer = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
             Files.writeString(new File(serverRepo.getHgDir(), "clonebundles.manifest").toPath(),
                     "https://example.invalid/bundle.hg BUNDLESPEC=zstd-v3-experimental\n");
 
             File destDir = tempDir.resolve("dest").toFile();
             HgRepository destRepo = Hg.init().setDirectory(destDir).call();
-            String wireUrl = "http://127.0.0.1:" + wireServer.getAddress().getPort();
+            String wireUrl = "http://127.0.0.1:" + HgTestUtils.port(wireServer);
 
             List<byte[]> imported = new FetchCommand(destRepo).setSource(wireUrl).call();
 
@@ -792,7 +789,7 @@ public class FetchCommandTest {
                     "With no usable clonebundle entry, fetch must still complete via a normal pull");
             assertArrayEquals(commitNode, imported.get(0));
         } finally {
-            wireServer.stop(0);
+            HgTestUtils.stop(wireServer);
         }
     }
 
@@ -804,21 +801,19 @@ public class FetchCommandTest {
         new AddCommand(serverRepo).call();
         new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
 
-        HttpServer wireServer = HttpServer.create(new InetSocketAddress(0), 0);
-        wireServer.createContext("/", new HgHttpWireServer(serverRepo));
-        wireServer.start();
+        Server wireServer = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
             Files.writeString(new File(serverRepo.getHgDir(), "clonebundles.manifest").toPath(),
                     "http://127.0.0.1:1/does-not-exist.hg BUNDLESPEC=none-v1\n");
 
             File destDir = tempDir.resolve("dest").toFile();
             HgRepository destRepo = Hg.init().setDirectory(destDir).call();
-            String wireUrl = "http://127.0.0.1:" + wireServer.getAddress().getPort();
+            String wireUrl = "http://127.0.0.1:" + HgTestUtils.port(wireServer);
 
             assertThrows(Exception.class, () -> new FetchCommand(destRepo).setSource(wireUrl).call(),
                     "A clonebundle download failure must fail the whole fetch, never fall back silently");
         } finally {
-            wireServer.stop(0);
+            HgTestUtils.stop(wireServer);
         }
     }
 }

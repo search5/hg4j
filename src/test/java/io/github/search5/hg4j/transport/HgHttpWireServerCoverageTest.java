@@ -11,7 +11,8 @@ import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.transport.wireprotov2.Wire2Frame;
 import io.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
 import io.github.search5.hg4j.util.NodeIdUtil;
-import com.sun.net.httpserver.HttpServer;
+import io.github.search5.hg4j.HgTestUtils;
+import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,7 +23,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class HgHttpWireServerCoverageTest {
 
-    private HttpServer server;
+    private Server server;
     private HgRepository serverRepo;
     private byte[] commitNode;
 
@@ -58,20 +58,18 @@ public class HgHttpWireServerCoverageTest {
         new AddCommand(serverRepo).call();
         commitNode = new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
 
-        server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
     }
 
     @AfterEach
     public void tearDown() {
         if (server != null) {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
     private String baseUrl() {
-        return "http://127.0.0.1:" + server.getAddress().getPort();
+        return "http://127.0.0.1:" + HgTestUtils.port(server);
     }
 
     private HttpURLConnection get(String pathAndQuery) throws IOException {
@@ -174,9 +172,7 @@ public class HgHttpWireServerCoverageTest {
             return false; // reject
         });
 
-        HttpServer pushServer = HttpServer.create(new InetSocketAddress(0), 0);
-        pushServer.createContext("/", pushTargetHandler);
-        pushServer.start();
+        Server pushServer = HgTestUtils.startServlet(pushTargetHandler);
         try {
             File clientRepoDir = tempDir.resolve("push_client_repo").toFile();
             HgRepository clientRepo = Hg.init().setDirectory(clientRepoDir).call();
@@ -184,7 +180,7 @@ public class HgHttpWireServerCoverageTest {
             new AddCommand(clientRepo).call();
             byte[] pushedCommit = new CommitCommand(clientRepo).setMessage("pushed").setAuthor("dev").call();
 
-            String pushUrl = "http://127.0.0.1:" + pushServer.getAddress().getPort();
+            String pushUrl = "http://127.0.0.1:" + HgTestUtils.port(pushServer);
             String result = new PushCommand(clientRepo).setDestination(pushUrl).call();
 
             assertNotNull(result);
@@ -199,7 +195,7 @@ public class HgHttpWireServerCoverageTest {
             var cl = emptyServerRepo.getRevlog(clIdx, clDat);
             assertEquals(0, cl.getRevisionCount(), "Nothing must have been applied once the pre-hook rejected the push");
         } finally {
-            pushServer.stop(0);
+            HgTestUtils.stop(pushServer);
         }
     }
 

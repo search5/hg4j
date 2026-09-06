@@ -207,8 +207,33 @@ changelog-v2+sidedata 저장소의 sidedata 압축 모드를 zstd로 무조건 �
 압축 저장소를 못 읽음. 발견 이력: 백로그 39 wave 5 core/query 그룹.
 
 ### `HgHttpWireServer`/`HgSshWireServer` — 외부 프로세스 stale 캐시
-장수 서버 핸들이 hg CLI로 직접 수정된 저장소를 못 봄 —
-`HgRepository.refreshIfChangedOnDisk()` 신설로 해결. 발견 이력: 백로그 24번.
+**1차 발견(백로그 24번)**: 장수 서버 핸들이 hg CLI로 직접 수정된 저장소를 못 봄 —
+`HgRepository.refreshIfChangedOnDisk()` 신설로 해결.
+
+**2차 발견(재발, 2026-09-06)**: 백로그 39번(2026-09-05)이 `StripCommandCoverageTest`
+회귀(커밋 직후 같은 핸들로 strip/rebase/histedit 시 방금 쓴 리비전을 잃어버리는 문제)를
+고치려고 `refreshIfChangedOnDisk()`/`RevlogIndex.checkAndUpdate()`에
+`hasLocallyAddedRecords()` 가드를 추가했는데, 이 가드가 "이 인스턴스가 로컬로 뭔가
+쓴 적이 있으면" 영구적으로(그 이후 몇 번을 더 써도) true로 고정돼버려서, **백로그
+24번이 원래 고쳤던 바로 그 시나리오를 다시 깨뜨렸다** — 장수 서버 핸들이 시작 시
+로컬 커밋을 딱 한 번만 해도(예: 초기 seed 커밋), 그 이후로는 외부 `hg` 프로세스가
+아무리 커밋을 더 쌓아도 영원히 못 봄. `jakarta.servlet` 마이그레이션과는 무관하게
+`HgHttpWireServerRealHgInteropTest
+#realHgClonesMultipleBranchesBookmarksAndTagsFromHg4jServedOverHttp`에서 발견,
+`git stash`로 마이그레이션 이전 원본 코드에서도 3/3 동일 재현 확인.
+**근본 원인**: `RevlogIndex.addRecord()`는 로컬 쓰기마다 `lastKnownSize`를 실제
+디스크 크기로 정확히 갱신해두는데, `checkAndUpdate()`가 `addedRecords`가 비어있지
+않으면 이 정확한 `lastKnownSize` 정보를 아예 활용을 안 하고 통째로 건너뛰어버림.
+**수정**: `checkAndUpdate()`에 `addedRecords`가 비어있지 않아도 `currentSize >
+lastKnownSize`(순수 성장)일 때만 기존 `loadIndexIncremental()`(꼬리에 새 항목만
+추가, 기존 `addedRecords`/`nodeMap`은 절대 안 건드림)을 타도록 분기 추가 — StripCommand
+시나리오는 항상 크기 *감소*라 이 새 분기 조건에 걸리지 않아 기존 보호는 그대로 유지됨
+(`StripCommandCoverageTest`로 회귀 없음 재확인). 회귀 테스트:
+`HgRepositoryTest#testGetRevlogDetectsExternalWritesEvenAfterThisHandleMadeItsOwnEarlierLocalCommit`
+(real hg CLI 불필요, TDD로 수정 전 실패 확인 후 복원). **교훈**: 한 버그를 고치려고
+추가한 가드가 다른 버그를 되살릴 수 있다 — 새 가드를 넣을 때는 그 가드가 어떤 기존
+동작을 되돌리는지 항상 재검증할 것. 발견 이력: 백로그 24번(1차), 45번 이후 후속
+작업 중(2차, 2026-09-06).
 
 ### `HgRemoteClient.getBundle()` — bundlecaps 인코딩
 스페이스 join(틀림) → 콤마 join(실제 스펙). 이로 인해 cg 버전 협상이 항상

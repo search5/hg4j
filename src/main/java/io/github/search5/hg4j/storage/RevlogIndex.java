@@ -376,7 +376,33 @@ public class RevlogIndex {
                     }
                 } catch (IOException ignored) {
                 }
+            } else if (currentSize > lastKnownSize && lastKnownSize > 0) {
+                // Pure growth beyond what this instance itself already knows about (including
+                // its own local additions -- addRecord() above keeps lastKnownSize in sync with
+                // every local append) can only be genuinely external data appended after
+                // everything this instance has ever seen. Unlike the addedRecords-empty branch
+                // above, we do NOT fall back to clearCache() here even though addedRecords is
+                // non-empty: clearCache() would wipe addedRecords itself, which is exactly the
+                // "commit, then immediately strip/rebase/histedit the same revision with the same
+                // handle" regression this class's hasLocallyAddedRecords()-based protection exists
+                // to prevent (see HgRepository#refreshIfChangedOnDisk()'s javadoc). A pure
+                // incremental load only appends new tail entries and never touches existing
+                // nodeMap/fileOffsets/addedRecords entries, so it is safe to run even with pending
+                // local additions -- found live 2026-09-06: a long-lived HgHttpWireServer/
+                // HgSshWireServer HgRepository handle that made exactly one local commit (e.g. at
+                // server startup) would otherwise never again notice further commits appended by
+                // an external `hg` CLI process for the rest of the server's lifetime, since
+                // hasLocallyAddedRecords() stays permanently true once any local write ever
+                // happens (confirmed via HgHttpWireServerRealHgInteropTest#
+                // realHgClonesMultipleBranchesBookmarksAndTagsFromHg4jServedOverHttp).
+                try {
+                    loadIndexIncremental(lastKnownSize);
+                } catch (IOException ignored) {
+                }
             }
+            // else (file shrank, or lastKnownSize is 0, while addedRecords is non-empty): leave
+            // everything untouched, preserving the exact same StripCommand-continuity guarantee
+            // as before this change.
         }
     }
 

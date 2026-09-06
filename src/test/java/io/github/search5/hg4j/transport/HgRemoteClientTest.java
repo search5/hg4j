@@ -1,4 +1,5 @@
 package io.github.search5.hg4j.transport;
+import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.bundle.Bundle2Parser;
 import io.github.search5.hg4j.bundle.ChangegroupParser;
@@ -24,6 +25,7 @@ import io.github.search5.hg4j.api.*;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
+import org.eclipse.jetty.server.Server;
 
 import static org.junit.jupiter.api.Assertions.*;
 import io.github.search5.hg4j.errors.HgCorruptDataException;
@@ -869,12 +871,9 @@ public class HgRemoteClientTest {
     public void getCapabilitiesAutoUpgradesToV2WhenServerAdvertisesTheRealHandshake() throws Exception {
         HgRepository repo = Hg.init().setDirectory(Files.createTempDirectory("hg4j-v2-upgrade-server").toFile()).call();
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repo));
         try {
-            server.createContext("/", new HgHttpWireServer(repo));
-            server.start();
-
-            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort());
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(server));
             List<String> caps = client.getCapabilities();
 
             // Real v2's command set (heads/known/listkeys/... — see HgHttpTransportV2RoundtripTest),
@@ -882,7 +881,7 @@ public class HgRemoteClientTest {
             // upgrade not been detected — proves HgRemoteClient itself auto-upgraded.
             assertTrue(caps.contains("changesetdata"), "Auto-upgrade must have switched to the real v2 command set");
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -1019,13 +1018,10 @@ public class HgRemoteClientTest {
     public void testHgWireServerV2Integration() throws Exception {
         File tempStore = Files.createTempDirectory("hg4j_server_v2").toFile();
         tempStore.deleteOnExit();
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        HgRepository repository = new HgRepository(tempStore);
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repository));
         try {
-            HgRepository repository = new HgRepository(tempStore);
-            server.createContext("/", new HgHttpWireServer(repository));
-            server.start();
-
-            URL url = new URL("http://127.0.0.1:" + server.getAddress().getPort() + "/?cmd=capabilities");
+            URL url = new URL("http://127.0.0.1:" + HgTestUtils.port(server) + "/?cmd=capabilities");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestProperty("X-HgUpgrade-1", "exp-http-v2-0003");
             conn.setRequestProperty("X-HgProto-1", "cbor");
@@ -1054,7 +1050,7 @@ public class HgRemoteClientTest {
             }
             assertTrue(framingTypes.contains(Wire2Transport.FRAMINGTYPE));
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
             deleteRecursive(tempStore);
         }
     }

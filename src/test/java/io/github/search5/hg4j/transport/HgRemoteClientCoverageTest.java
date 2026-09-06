@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.transport;
 
+import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.errors.HgAuthException;
 import io.github.search5.hg4j.errors.HgProtocolException;
@@ -11,6 +12,7 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import org.eclipse.jetty.server.Server;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -653,12 +655,9 @@ public class HgRemoteClientCoverageTest {
         byte[] commitNode = hg.commit().setMessage("coverage commit").call();
         String hex = NodeIdUtil.toHex(commitNode).substring(0, 40);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repo));
         try {
-            server.createContext("/", new HgHttpWireServer(repo));
-            server.start();
-
-            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(server))) {
 
             // Triggers the real X-HgUpgrade-1/X-HgProto-1 handshake and wires up the delegate.
             List<String> caps = client.getCapabilities();
@@ -687,7 +686,7 @@ public class HgRemoteClientCoverageTest {
             assertTrue(e.getMessage().contains("no push/unbundle command"), "Message was: " + e.getMessage());
             }
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
@@ -860,12 +859,9 @@ public class HgRemoteClientCoverageTest {
     @Test
     public void secondCapabilitiesCallAfterV2UpgradeShortCircuitsToDelegate(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.resolve("v2_second_call_repo").toFile()).call();
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repo));
         try {
-            server.createContext("/", new HgHttpWireServer(repo));
-            server.start();
-
-            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort())) {
+            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(server))) {
             List<String> first = client.getCapabilities();
             assertTrue(first.contains("changesetdata"));
 
@@ -875,7 +871,7 @@ public class HgRemoteClientCoverageTest {
             assertEquals(first, second);
             }
         } finally {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 

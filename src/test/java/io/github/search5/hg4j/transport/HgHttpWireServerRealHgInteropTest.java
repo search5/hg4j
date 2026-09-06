@@ -6,8 +6,14 @@ import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletOutputStream;
+import jakarta.servlet.WriteListener;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponseWrapper;
+import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,10 +21,12 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.net.InetSocketAddress;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -32,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @Tag("interop")
 public class HgHttpWireServerRealHgInteropTest {
 
-    private HttpServer server;
+    private Server server;
     private HgRepository serverRepo;
     private byte[] commitNode;
     private File serverRepoDir;
@@ -48,20 +56,18 @@ public class HgHttpWireServerRealHgInteropTest {
         new AddCommand(serverRepo).call();
         commitNode = new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
 
-        server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
     }
 
     @AfterEach
     public void tearDown() {
         if (server != null) {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
     private String baseUrl() {
-        return "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+        return "http://127.0.0.1:" + HgTestUtils.port(server) + "/";
     }
 
     @Test
@@ -217,8 +223,8 @@ public class HgHttpWireServerRealHgInteropTest {
      * client's OWN default capabilities actually negotiates a changegroup version above cg1 on
      * the wire, not merely that hg4j's advertised capability string looks correct. Captures the
      * literal HTTP response bytes {@code HgHttpWireServer} sends back for the {@code
-     * ?cmd=getbundle} request a real {@code hg clone} issues (by wrapping the {@link HttpExchange}
-     * this test's own {@link HttpServer} instance hands to {@link HgHttpWireServer}, so no
+     * ?cmd=getbundle} request a real {@code hg clone} issues (by wrapping the response object
+     * this test's own servlet container hands to {@link HgHttpWireServer}, so no
      * production code needs any debug-only hook) and decodes the bundle2 {@code CHANGEGROUP}
      * part's own {@code version} parameter directly -- the strongest possible evidence that the
      * bytes that actually left the wire were not cg1, distinct from asserting anything about
@@ -226,21 +232,22 @@ public class HgHttpWireServerRealHgInteropTest {
      */
     @Test
     public void realHgCloneWithDefaultCapabilitiesNegotiatesAboveCg1OnTheWire(@TempDir Path tempDir) throws Exception {
-        java.util.concurrent.atomic.AtomicReference<byte[]> capturedGetbundleResponse = new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicReference<byte[]> capturedGetbundleResponse = new AtomicReference<>();
         HgHttpWireServer delegate = new HgHttpWireServer(serverRepo);
-        HttpServer capturingServer = HttpServer.create(new InetSocketAddress(0), 0);
-        capturingServer.createContext("/", exchange -> {
-            boolean isGetbundle = exchange.getRequestURI().getRawQuery() != null
-                    && exchange.getRequestURI().getRawQuery().contains("cmd=getbundle");
-            if (!isGetbundle) {
-                delegate.handle(exchange);
-                return;
+        Server capturingServer = HgTestUtils.startServlet(new HttpServlet() {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+                boolean isGetbundle = request.getQueryString() != null
+                        && request.getQueryString().contains("cmd=getbundle");
+                if (!isGetbundle) {
+                    delegate.service(request, response);
+                    return;
+                }
+                delegate.service(request, new ResponseCapturingHttpServletResponse(response, capturedGetbundleResponse));
             }
-            delegate.handle(new ResponseCapturingHttpExchange(exchange, capturedGetbundleResponse));
         });
-        capturingServer.start();
         try {
-            String url = "http://127.0.0.1:" + capturingServer.getAddress().getPort() + "/";
+            String url = "http://127.0.0.1:" + HgTestUtils.port(capturingServer) + "/";
             File destDir = tempDir.resolve("client_repo").toFile();
             HgTestUtils.hg(tempDir.toFile(), "clone", url, destDir.getAbsolutePath());
 
@@ -270,65 +277,45 @@ public class HgHttpWireServerRealHgInteropTest {
             String log = HgTestUtils.hg(destDir, "log", "-T", "{node}\n");
             assertEquals(NodeIdUtil.toHex(commitNode), log.trim());
         } finally {
-            capturingServer.stop(0);
+            HgTestUtils.stop(capturingServer);
         }
     }
 
     /**
-     * Delegates every {@link HttpExchange} method to a wrapped real exchange except {@link
-     * #getResponseBody()}, which tees whatever bytes get written through it into {@code capture}
-     * as well -- lets a test observe exactly what {@link HgHttpWireServer} sent for one specific
-     * request without any production-code changes.
+     * A thin {@link HttpServletResponseWrapper} that tees everything written to the response body
+     * into {@code capture} as well as the real client socket -- lets a test observe exactly what
+     * {@link HgHttpWireServer} sent for one specific request without any production-code changes.
      */
-    private static final class ResponseCapturingHttpExchange extends com.sun.net.httpserver.HttpExchange {
-        private final com.sun.net.httpserver.HttpExchange delegate;
-        private final java.util.concurrent.atomic.AtomicReference<byte[]> capture;
-        private java.io.OutputStream teeStream;
+    private static final class ResponseCapturingHttpServletResponse extends HttpServletResponseWrapper {
+        private final AtomicReference<byte[]> capture;
+        private ServletOutputStream teeStream;
 
-        ResponseCapturingHttpExchange(com.sun.net.httpserver.HttpExchange delegate,
-                                       java.util.concurrent.atomic.AtomicReference<byte[]> capture) {
-            this.delegate = delegate;
+        ResponseCapturingHttpServletResponse(HttpServletResponse response, AtomicReference<byte[]> capture) {
+            super(response);
             this.capture = capture;
         }
 
         @Override
-        public java.io.OutputStream getResponseBody() {
+        public ServletOutputStream getOutputStream() throws IOException {
             if (teeStream == null) {
-                java.io.OutputStream real = delegate.getResponseBody();
-                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
-                teeStream = new java.io.OutputStream() {
-                    @Override public void write(int b) throws java.io.IOException { real.write(b); buffer.write(b); }
-                    @Override public void write(byte[] b, int off, int len) throws java.io.IOException {
+                ServletOutputStream real = super.getOutputStream();
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                teeStream = new ServletOutputStream() {
+                    @Override public void write(int b) throws IOException { real.write(b); buffer.write(b); }
+                    @Override public void write(byte[] b, int off, int len) throws IOException {
                         real.write(b, off, len);
                         buffer.write(b, off, len);
                     }
-                    @Override public void flush() throws java.io.IOException { real.flush(); }
-                    @Override public void close() throws java.io.IOException {
+                    @Override public void flush() throws IOException { real.flush(); }
+                    @Override public void close() throws IOException {
                         real.close();
                         capture.set(buffer.toByteArray());
                     }
+                    @Override public boolean isReady() { return true; }
+                    @Override public void setWriteListener(WriteListener writeListener) { }
                 };
             }
             return teeStream;
         }
-
-        @Override public com.sun.net.httpserver.Headers getRequestHeaders() { return delegate.getRequestHeaders(); }
-        @Override public com.sun.net.httpserver.Headers getResponseHeaders() { return delegate.getResponseHeaders(); }
-        @Override public java.net.URI getRequestURI() { return delegate.getRequestURI(); }
-        @Override public String getRequestMethod() { return delegate.getRequestMethod(); }
-        @Override public com.sun.net.httpserver.HttpContext getHttpContext() { return delegate.getHttpContext(); }
-        @Override public void close() { delegate.close(); }
-        @Override public java.io.InputStream getRequestBody() { return delegate.getRequestBody(); }
-        @Override public void sendResponseHeaders(int rCode, long responseLength) throws java.io.IOException {
-            delegate.sendResponseHeaders(rCode, responseLength);
-        }
-        @Override public java.net.InetSocketAddress getRemoteAddress() { return delegate.getRemoteAddress(); }
-        @Override public int getResponseCode() { return delegate.getResponseCode(); }
-        @Override public java.net.InetSocketAddress getLocalAddress() { return delegate.getLocalAddress(); }
-        @Override public String getProtocol() { return delegate.getProtocol(); }
-        @Override public Object getAttribute(String name) { return delegate.getAttribute(name); }
-        @Override public void setAttribute(String name, Object value) { delegate.setAttribute(name, value); }
-        @Override public void setStreams(java.io.InputStream i, java.io.OutputStream o) { delegate.setStreams(i, o); }
-        @Override public com.sun.net.httpserver.HttpPrincipal getPrincipal() { return delegate.getPrincipal(); }
     }
 }

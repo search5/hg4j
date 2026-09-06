@@ -1,10 +1,11 @@
 package io.github.search5.hg4j.transport;
 
-import com.sun.net.httpserver.HttpServer;
+import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.api.Hg;
+import org.eclipse.jetty.server.Server;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,7 +14,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
-import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -37,7 +37,7 @@ public class HgHttpTransportV2RoundtripTest {
     @TempDir
     Path tempDir;
 
-    private HttpServer server;
+    private Server server;
     private int port;
     private HgRepository repository;
     private File repoDir;
@@ -47,16 +47,14 @@ public class HgHttpTransportV2RoundtripTest {
         repoDir = tempDir.resolve("server_repo").toFile();
         repository = Hg.init().setDirectory(repoDir).call();
 
-        server = HttpServer.create(new InetSocketAddress(0), 0);
-        port = server.getAddress().getPort();
-        server.createContext("/", new HgHttpWireServer(repository));
-        server.start();
+        server = HgTestUtils.startServlet(new HgHttpWireServer(repository));
+        port = HgTestUtils.port(server);
     }
 
     @AfterEach
     void tearDown() {
         if (server != null) {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 

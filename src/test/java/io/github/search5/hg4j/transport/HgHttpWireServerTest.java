@@ -5,16 +5,16 @@ import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.FetchCommand;
 import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.api.PushCommand;
+import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
-import com.sun.net.httpserver.HttpServer;
+import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
-import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class HgHttpWireServerTest {
 
-    private HttpServer server;
+    private Server server;
     private HgRepository serverRepo;
     private byte[] commitNode;
 
@@ -43,20 +43,18 @@ public class HgHttpWireServerTest {
         new AddCommand(serverRepo).call();
         commitNode = new CommitCommand(serverRepo).setMessage("v1").setAuthor("dev").call();
 
-        server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.createContext("/", new HgHttpWireServer(serverRepo));
-        server.start();
+        server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
     }
 
     @AfterEach
     public void tearDown() {
         if (server != null) {
-            server.stop(0);
+            HgTestUtils.stop(server);
         }
     }
 
     private String baseUrl() {
-        return "http://127.0.0.1:" + server.getAddress().getPort();
+        return "http://127.0.0.1:" + HgTestUtils.port(server);
     }
 
     @Test
@@ -105,9 +103,7 @@ public class HgHttpWireServerTest {
             return true;
         });
 
-        HttpServer pushServer = HttpServer.create(new InetSocketAddress(0), 0);
-        pushServer.createContext("/", pushTargetHandler);
-        pushServer.start();
+        Server pushServer = HgTestUtils.startServlet(pushTargetHandler);
         try {
             File clientRepoDir = tempDir.resolve("push_client_repo").toFile();
             HgRepository clientRepo = Hg.init().setDirectory(clientRepoDir).call();
@@ -115,7 +111,7 @@ public class HgHttpWireServerTest {
             new AddCommand(clientRepo).call();
             byte[] pushedCommit = new CommitCommand(clientRepo).setMessage("pushed").setAuthor("dev").call();
 
-            String pushUrl = "http://127.0.0.1:" + pushServer.getAddress().getPort();
+            String pushUrl = "http://127.0.0.1:" + HgTestUtils.port(pushServer);
             String result = new PushCommand(clientRepo).setDestination(pushUrl).call();
             assertNotNull(result);
 
@@ -124,7 +120,7 @@ public class HgHttpWireServerTest {
             List<String> nodes = (List<String>) observedContexts.get(0).get("nodes");
             assertEquals(List.of(NodeIdUtil.toHex(pushedCommit)), nodes);
         } finally {
-            pushServer.stop(0);
+            HgTestUtils.stop(pushServer);
         }
     }
 

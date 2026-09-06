@@ -1,14 +1,17 @@
 ---
-updated: 2026-09-04
+updated: 2026-09-06
 status: completed
 ---
 
-# 백로그 2, 3, 22, 24, 25: HTTP/SSH 와이어 프로토콜 협상과 서버 견고성
+# 백로그 2, 3, 22, 24, 25, 46, 47: HTTP/SSH 와이어 프로토콜 협상과 서버 견고성
 
 관련 항목: 2(v1→v2 자동 업그레이드), 3(실제 hg 서버와의 라이브 통신 검증),
 22(HTTP/SSH "실전 통신·협상" 테스트 확충 4개 그룹), 24(장수 서버 핸들의 stale 캐시),
 25(외부에서 새 브랜치에 커밋된 파일 내용이 clone 시 전달 안 됨 — 조사 결과 오탐으로
-판명, real hg 자체의 정상 동작이었음). 추가로 HTTP v1 인자 전송(X-HgArg-N/-0.2 프레이밍)
+판명, real hg 자체의 정상 동작이었음), 46(HgHttpWireServer를 com.sun.net.httpserver.
+HttpHandler에서 jakarta.servlet.http.HttpServlet으로 마이그레이션), 47(46번 검증
+중 발견 — 24번이 고쳤던 장수 서버 핸들 stale 캐시 버그가 39번의 StripCommand 회귀
+수정으로 인해 재발한 것을 확인·수정). 추가로 HTTP v1 인자 전송(X-HgArg-N/-0.2 프레이밍)
 버그, SSH 전송 계층 전면 재구현, unbundlehash 최적화 세션 기록도 이 문서에 통합.
 
 모든 항목 real hg CLI/서버(host native 7.2.2, Docker `hg-rust-7.2.4`, Docker Mercurial
@@ -382,6 +385,103 @@ serverSupportsUnbundleHash)`로 HTTP(`HgRemoteClient`)·SSH(`HgSshClient`) 양�
 요청을 직접 보내 재확인 — SSH는 `hashed` sentinel 전송 후 precheck 빈 프레임→error-or-empty
 빈 프레임→`result=1`(성공), HTTP는 `"1\nadding changesets..."` 성공 응답을 실제로 받았다.
 전체 회귀(2278 테스트) 재실행 결과 실패 1건(`CommitCommandTest`의 심링크 테스트, 트랜스포트와
+
+## 백로그 46: HgHttpWireServer를 jakarta.servlet.http.HttpServlet으로 마이그레이션
+
+✅ **완료(2026-09-06)**. 사용자 지시로 `HgHttpWireServer`가 JDK 내장
+`com.sun.net.httpserver.HttpHandler` 대신 `jakarta.servlet.http.HttpServlet`을
+구현하도록 변경. 라이브러리 자체는 이제 어떤 서블릿 컨테이너에도 꽂을 수 있는
+순수 서블릿만 제공한다(JGit의 `GitServlet`이 자체 리스닝 소켓을 갖지 않는 것과
+동일한 설계).
+
+**변경 범위**:
+- `build.gradle`: `implementation 'jakarta.servlet:jakarta.servlet-api:6.1.0'`
+  (컴파일/런타임에 필요한 API만, 컨테이너는 소비자 책임 — 라이브러리에 무거운
+  서블릿 컨테이너를 강제하지 않음). 테스트 전용으로
+  `org.eclipse.jetty:jetty-server:12.1.12` + `org.eclipse.jetty.ee11:
+  jetty-ee11-servlet:12.1.12`(jakarta.servlet 6.1과 매칭되는 Jetty 12 ee11
+  환경) 추가.
+- `HgHttpWireServer.java`: `implements HttpHandler` → `extends HttpServlet`,
+  `handle(HttpExchange)` → `protected service(HttpServletRequest,
+  HttpServletResponse)`. `HttpExchange`의 `getResponseHeaders()/
+  sendResponseHeaders()/getResponseBody()` 등을 서블릿 API의
+  `setHeader()/setStatus()/setContentLength()/getOutputStream()`으로 1:1 대응
+  치환 — 응답 흐름(200/404/OOB_ERROR/BYTES/STREAM_UNCOMPRESSED/STREAM 케이스별
+  content-type·압축 규칙)은 완전히 동일하게 보존.
+- `HgTestUtils.java`(테스트 전용)에 `startServlet(HttpServlet)`/`port(Server)`/
+  `stop(Server)` 헬퍼 3개 신설 — 임베디드 Jetty를 랜덤 포트로 띄워 서블릿을
+  `/*`에 마운트.
+- **13개 테스트 파일**이 `HgHttpWireServer`를 직접 `com.sun.net.httpserver.
+  HttpServer.createContext(...)`로 등록하고 있어서 전부 Jetty 기반으로 함께
+  전환 필요(`FetchCommandTest`/`FetchCommandCoverageTest`/
+  `HgHttpTransportV2RoundtripTest`/`HgHttpWireServerTest`/
+  `HgHttpWireServerCoverageTest`/`HgHttpWireServerNarrowInteropTest`/
+  `HgHttpWireServerRealHgInteropTest`/`HgRemoteClientCoverageTest`/
+  `HgRemoteClientTest`/`HgRemoteClientV2Test`/
+  `HgWireProtocolMatrixIncomingOutgoingTest`/`PushLockRaceRealHgInteropTest`/
+  `Wire2TreeManifestFetchTest`). `HgRemoteClientCoverageTest`/`HgRemoteClientTest`
+  처럼 같은 파일에 `HgHttpWireServer`와 무관한 순수 mock `HttpHandler`(클라이언트
+  측 테스트용)가 섞여 있는 경우는 그 부분만 정확히 남겨두고 `HgHttpWireServer`
+  관련 블록만 선별적으로 전환. `HgHttpWireServerNarrowInteropTest`/
+  `HgHttpWireServerRealHgInteropTest`처럼 응답 바이트를 가로채는 테스트 전용
+  래퍼(`ResponseCapturingHttpExchange`)는 `HttpServletResponseWrapper` 기반
+  `ResponseCapturingHttpServletResponse`로 재작성 — 서블릿 API의 래퍼 클래스가
+  위임 보일러플레이트를 대신 처리해줘서 원래 버전보다 코드가 훨씬 짧아짐.
+
+**검증**: non-interop 전체 통과, 영향받는 non-interop 테스트 185개(9개 파일)
+개별 확인 zero failures. Scoped interop(`HgHttpWireServerRealHgInteropTest`/
+`HgHttpWireServerNarrowInteropTest`/`PushLockRaceRealHgInteropTest`/
+`HgWireProtocolMatrixIncomingOutgoingTest`)도 47번 수정과 함께 전부 통과 확인.
+
+**검증 중 발견한 실제로 멈춰있던 버그(수정 안 함, 별개)**: `HgWireProtocolMatrixIncomingOutgoingTest`의
+`sshMatrixOutgoing`가 특정 조합(`ssh-out-matrix-zstd`)에서 real `hg outgoing`
+서브프로세스가 SSH 임베디드 테스트 서버(`serve --stdio`)와 통신하다 6분 넘게
+멈춘 사례를 관측함(이번 서블릿 마이그레이션과 무관한 SSH 경로, 재실행 시
+재현 안 됨 — 간헐적). 별도 조사 필요 시 참고할 것.
+
+## 백로그 47: RevlogIndex 장수 서버 핸들 stale 캐시 재발(24번 회귀)
+
+✅ **완료(2026-09-06)**. 46번 검증 중 `HgHttpWireServerRealHgInteropTest
+#realHgClonesMultipleBranchesBookmarksAndTagsFromHg4jServedOverHttp`가 실패해
+처음엔 서블릿 마이그레이션 회귀로 의심했으나, `git stash`로 마이그레이션 이전
+원본 코드로 되돌려 3번 재실행해도 동일하게 실패 — **서블릿 마이그레이션과
+무관한 pre-existing 버그**로 확인.
+
+**증상**: 장수 `HgHttpWireServer`/`HgSshWireServer` 핸들이 시작 시 로컬 커밋을
+단 한 번이라도 하면(예: 테스트의 초기 seed 커밋), 그 이후로는 외부 `hg` CLI
+프로세스가 같은 저장소에 아무리 커밋을 더 쌓아도 서버가 영원히 그 변경을 못 봄
+— 정확히 백로그 24번이 원래 고쳤던 시나리오의 재발.
+
+**근본 원인**: 백로그 39번(2026-09-05)이 `StripCommandCoverageTest` 회귀(커밋
+직후 같은 핸들로 strip하면 방금 쓴 리비전을 잃어버리는 문제)를 고치려고
+`RevlogIndex.checkAndUpdate()`에 `addedRecords.isEmpty()` 가드를 추가했는데,
+이게 "이 인스턴스가 로컬로 뭔가 쓴 적이 있으면" 영구적으로 true가 되는 조건이라
+— `addRecord()`가 로컬 쓰기마다 정확히 갱신해두는 `lastKnownSize` 정보를 아예
+활용을 안 하고 전체를 건너뛰게 만들었다. 실측(`Repro.java` 임시 스크립트로
+직접 재현): 로컬 커밋 후 `hasLocallyAddedRecords()=true`, 외부 hg CLI가 커밋을
+추가해 디스크 크기가 커져도(`00changelog.i` 64→128바이트) `refreshIfChangedOnDisk()`
+호출 후에도 `revisionCount`가 여전히 1로 고정, 캐시된 `Revlog` 인스턴스도
+교체 안 됨(`sameInstance=true`).
+
+**수정**: `checkAndUpdate()`에 `addedRecords`가 비어있지 않은 경우를 위한 새
+분기 추가 — `currentSize > lastKnownSize`(순수 성장)일 때만 기존
+`loadIndexIncremental()`(꼬리에 새 레코드만 추가, 기존 `addedRecords`/
+`nodeMap`은 절대 안 건드림)을 태워 안전하게 따라잡는다. StripCommand
+시나리오는 항상 크기 *감소*(truncate)라 이 새 분기의 `currentSize >
+lastKnownSize` 조건에 애초에 걸리지 않으므로 기존 보호는 전혀 손상되지 않음
+— `StripCommandCoverageTest` 재실행으로 회귀 없음 확인.
+
+**검증**: `HgRepositoryTest
+#testGetRevlogDetectsExternalWritesEvenAfterThisHandleMadeItsOwnEarlierLocalCommit`
+(신규, real hg CLI 불필요 — 두 번째 독립 `HgRepository`/`CommitCommand` 인스턴스로
+"외부 프로세스"를 시뮬레이션). TDD로 수정 전 실제로 실패함을 확인한 뒤 수정 →
+통과. `HgHttpWireServerRealHgInteropTest`의 원래 실패 테스트도 통과 확인.
+전체 non-interop + `StripCommandCoverageTest` 회귀 없음.
+
+**교훈**: 한 버그(StripCommand 회귀)를 고치려고 추가한 가드가 완전히 다른,
+이미 한 번 고쳤던 버그(장수 서버 핸들 stale 캐시, 백로그 24번)를 되살렸다 —
+새 가드/조건을 추가할 때는 그게 어떤 기존 동작을 되돌리는지 항상 재검증할
+것. 상세: [[known-bugs-registry]]의 `HgHttpWireServer`/`HgSshWireServer` 항목.
 무관 — 단독 재실행 시 통과, 이 세션 앞부분에서 이미 조사된 기존 타이밍성 플레이키와 동일)
 외 전부 통과.
 

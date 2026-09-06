@@ -10,10 +10,16 @@ import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.transport.wireprotov2.Cbor;
 import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
+import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.server.Server;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -56,11 +62,15 @@ public class HgRemoteClientV2Test {
     Path tempDir;
 
     private HttpServer server;
+    private Server jettyServer;
 
     @AfterEach
     void tearDown() {
         if (server != null) {
             server.stop(0);
+        }
+        if (jettyServer != null) {
+            HgTestUtils.stop(jettyServer);
         }
     }
 
@@ -69,6 +79,14 @@ public class HgRemoteClientV2Test {
         server.createContext("/", handler);
         server.start();
         return server.getAddress().getPort();
+    }
+
+    /** Overload for {@link HgHttpWireServer} itself (now a servlet) -- hosted in an embedded
+     * Jetty container rather than the JDK's {@code HttpServer}, unlike the hand-rolled {@link
+     * HttpHandler} overload above. */
+    private int startServer(HttpServlet servlet) throws Exception {
+        jettyServer = HgTestUtils.startServlet(servlet);
+        return HgTestUtils.port(jettyServer);
     }
 
     private HgRepository initRepo(String name) throws Exception {
@@ -94,9 +112,12 @@ public class HgRemoteClientV2Test {
         HgRepository repo = initRepo("auth_repo");
         HgHttpWireServer real = new HgHttpWireServer(repo);
         List<String> capturedAuth = new ArrayList<>();
-        int port = startServer(exchange -> {
-            capturedAuth.add(exchange.getRequestHeaders().getFirst("Authorization"));
-            real.handle(exchange);
+        int port = startServer(new HttpServlet() {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+                capturedAuth.add(request.getHeader("Authorization"));
+                real.service(request, response);
+            }
         });
 
         HgRemoteClientV2 client = new HgRemoteClientV2("http://127.0.0.1:" + port);
@@ -117,9 +138,12 @@ public class HgRemoteClientV2Test {
         HgRepository repo = initRepo("provider_repo");
         HgHttpWireServer real = new HgHttpWireServer(repo);
         List<String> capturedAuth = new ArrayList<>();
-        int port = startServer(exchange -> {
-            capturedAuth.add(exchange.getRequestHeaders().getFirst("Authorization"));
-            real.handle(exchange);
+        int port = startServer(new HttpServlet() {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+                capturedAuth.add(request.getHeader("Authorization"));
+                real.service(request, response);
+            }
         });
 
         HgRemoteClientV2 client = new HgRemoteClientV2("http://127.0.0.1:" + port);

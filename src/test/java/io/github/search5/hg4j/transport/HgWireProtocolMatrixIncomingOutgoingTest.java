@@ -9,6 +9,7 @@ import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.api.PullCommand;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.transport.WireMatrixCombos.HttpCombo;
+import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -281,11 +282,9 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
         new AddCommand(serverRepo).call();
         new CommitCommand(serverRepo).setAuthor("hg4j <hg4j@example.com>").setMessage("server seed commit").call();
 
-        com.sun.net.httpserver.HttpServer httpServer = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(0), 0);
-        httpServer.createContext("/", new HgHttpWireServer(serverRepo));
-        httpServer.start();
+        Server httpServer = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));
         try {
-            String backendUrl = "http://127.0.0.1:" + httpServer.getAddress().getPort() + "/";
+            String backendUrl = "http://127.0.0.1:" + HgTestUtils.port(httpServer) + "/";
 
             Set<String> strip = new HashSet<>();
             if (combo.tier() == ReverseTier.LEGACY_GET) {
@@ -326,7 +325,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
                 }
             }
         } finally {
-            httpServer.stop(0);
+            HgTestUtils.stop(httpServer);
         }
     }
 

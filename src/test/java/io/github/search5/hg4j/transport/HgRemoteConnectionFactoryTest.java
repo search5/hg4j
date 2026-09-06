@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.net.Proxy;
 import java.util.Collections;
 import java.util.Map;
+import java.io.File;
 
 /**
  * Unit tests for HgRemoteConnectionFactory, the HgRemoteConnection interface,
@@ -75,7 +76,7 @@ public class HgRemoteConnectionFactoryTest {
     @Test
     @DisplayName("존재하지만 디렉터리가 아닌(일반 파일) 스킴 없는 경로 → HTTP 폴백으로 떨어진다")
     public void testCreateConnection_barePathExistsButIsNotDirectory_fallsBackToHttpClient(@TempDir Path tempDir) throws IOException {
-        java.io.File plainFile = new java.io.File(tempDir.toFile(), "not-a-directory.txt");
+        File plainFile = new File(tempDir.toFile(), "not-a-directory.txt");
         assertTrue(plainFile.createNewFile());
         HgRemoteConnection conn = HgRemoteConnectionFactory.createConnection(plainFile.getAbsolutePath());
         assertNotNull(conn);
@@ -334,7 +335,7 @@ public class HgRemoteConnectionFactoryTest {
         assertEquals(List.of("custom-head"), conn.getHeads());
     }
 
-    @org.junit.jupiter.api.Test
+    @Test
     public void testRegisterNullProtocolIsANoOp() {
         int before = HgRemoteConnectionFactory.getRegisteredProtocols().size();
         HgRemoteConnectionFactory.register(null);

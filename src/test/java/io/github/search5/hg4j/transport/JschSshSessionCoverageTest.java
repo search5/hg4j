@@ -14,6 +14,12 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.InputStream;
+import java.io.OutputStream;
+import org.apache.sshd.server.Environment;
+import org.apache.sshd.server.ExitCallback;
+import org.apache.sshd.server.channel.ChannelSession;
+import org.apache.sshd.server.command.Command;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -41,16 +47,16 @@ public class JschSshSessionCoverageTest {
 
         sshServer.setPasswordAuthenticator((username, password, session) ->
                 "hg4juser".equals(username) && "hg4jpass".equals(password));
-        sshServer.setCommandFactory((channel, command) -> new org.apache.sshd.server.command.Command() {
-            private org.apache.sshd.server.ExitCallback callback;
-            @Override public void setInputStream(java.io.InputStream in) {}
-            @Override public void setOutputStream(java.io.OutputStream out) {}
-            @Override public void setErrorStream(java.io.OutputStream err) {}
-            @Override public void setExitCallback(org.apache.sshd.server.ExitCallback callback) { this.callback = callback; }
-            @Override public void start(org.apache.sshd.server.channel.ChannelSession session, org.apache.sshd.server.Environment env) {
+        sshServer.setCommandFactory((channel, command) -> new Command() {
+            private ExitCallback callback;
+            @Override public void setInputStream(InputStream in) {}
+            @Override public void setOutputStream(OutputStream out) {}
+            @Override public void setErrorStream(OutputStream err) {}
+            @Override public void setExitCallback(ExitCallback callback) { this.callback = callback; }
+            @Override public void start(ChannelSession session, Environment env) {
                 callback.onExit(0);
             }
-            @Override public void destroy(org.apache.sshd.server.channel.ChannelSession session) {}
+            @Override public void destroy(ChannelSession session) {}
         });
         sshServer.start();
         port = sshServer.getPort();

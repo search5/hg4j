@@ -15,6 +15,8 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntFunction;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Reader for the on-disk "persistent nodemap" ({@code persistent-nodemap} requirement) that real
@@ -211,7 +213,7 @@ public final class NodeMapFile {
             int numBlocks = (int) (dataLength / BLOCK_SIZE);
             int[][] blocks = new int[numBlocks][];
             if (numBlocks > 0) {
-                try (var channel = java.nio.channels.FileChannel.open(dataFile.toPath(), java.nio.file.StandardOpenOption.READ)) {
+                try (var channel = FileChannel.open(dataFile.toPath(), StandardOpenOption.READ)) {
                     ByteBuffer blockBuf = ByteBuffer.allocate((int) dataLength).order(ByteOrder.BIG_ENDIAN);
                     while (blockBuf.hasRemaining()) {
                         if (channel.read(blockBuf) == -1) break;

@@ -17,6 +17,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
+import java.io.ByteArrayInputStream;
 
 /**
  * Shell-out helper replicating the pieces of a {@code [svn]}-prefixed {@code .hgsub} subrepo's
@@ -299,7 +300,7 @@ public final class SvnSubrepoUtil {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             DocumentBuilder builder = factory.newDocumentBuilder();
-            return builder.parse(new java.io.ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+            return builder.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception e) {
             throw new IOException("Failed to parse svn XML output: " + e.getMessage(), e);
         }

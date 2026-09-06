@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
+import org.junit.jupiter.api.Assumptions;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -398,7 +399,7 @@ public class PhaseRootsCoverageTest {
     }
 
     private static void assumeHgAvailable() {
-        org.junit.jupiter.api.Assumptions.assumeTrue(HgTestUtils.isHgInstalled(),
+        Assumptions.assumeTrue(HgTestUtils.isHgInstalled(),
                 "Real 'hg' CLI not available in this environment");
     }
 }

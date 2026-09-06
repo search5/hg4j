@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -77,7 +78,7 @@ class ChangelogV2BootstrapTest {
         assertTrue(changelog.getIndex().isV2());
         assertTrue(changelog.getIndex().isChangelogV2());
         assertEquals(1, changelog.getRevisionCount());
-        assertArrayEquals(rev0, java.util.Arrays.copyOf(changelog.getIndexRecord(0).getNodeId(), rev0.length));
+        assertArrayEquals(rev0, Arrays.copyOf(changelog.getIndexRecord(0).getNodeId(), rev0.length));
 
         // Second commit -- proves appendRevisionV2 correctly extends a docket hg4j itself
         // bootstrapped (parent linkage, docket index_end/data_end bookkeeping), not just an
@@ -87,7 +88,7 @@ class ChangelogV2BootstrapTest {
         byte[] rev1 = new CommitCommand(repo).setMessage("second commit").setDate(1756857700L, 0).call();
         Revlog changelog2 = repo.getRevlog(clIdx, new File(repoDir, ".hg/store/00changelog.d"));
         assertEquals(2, changelog2.getRevisionCount());
-        assertArrayEquals(rev1, java.util.Arrays.copyOf(changelog2.getIndexRecord(1).getNodeId(), rev1.length));
+        assertArrayEquals(rev1, Arrays.copyOf(changelog2.getIndexRecord(1).getNodeId(), rev1.length));
     }
 
     @Test

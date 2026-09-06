@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.ArrayList;
 
 /**
  * A working-copy-free 3-way merge computation -- JGit {@code ThreeWayMerger} parity. Takes two
@@ -130,7 +131,7 @@ public class TreeMergeCommand {
         Map<String, byte[]> changedFiles = new LinkedHashMap<>();
         Map<String, Integer> changedModes = new LinkedHashMap<>();
         Set<String> removedFiles = new LinkedHashSet<>();
-        List<String> conflicts = new java.util.ArrayList<>();
+        List<String> conflicts = new ArrayList<>();
         boolean conflicted = false;
 
         for (String path : allPaths) {

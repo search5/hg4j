@@ -26,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.IOException;
+import java.util.Arrays;
 
 /**
  * Coverage-focused tests for {@link IncomingCommand}, driving branches that are impractical to
@@ -125,7 +127,7 @@ public class IncomingCommandCoverageTest {
 
     private static byte[] node(int fillByte) {
         byte[] n = new byte[20];
-        java.util.Arrays.fill(n, (byte) fillByte);
+        Arrays.fill(n, (byte) fillByte);
         return n;
     }
 
@@ -174,7 +176,7 @@ public class IncomingCommandCoverageTest {
         String url = registerScripted(conn);
 
         IncomingCommand cmd = new IncomingCommand(repo).setSource(url);
-        Exception ex = assertThrows(java.io.IOException.class, cmd::call);
+        Exception ex = assertThrows(IOException.class, cmd::call);
         assertTrue(ex.getMessage().contains(url), "Wrapped exception must mention the failing source URL");
         assertEquals("simulated wire failure", ex.getCause().getMessage());
     }

@@ -14,6 +14,8 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -95,7 +97,7 @@ public class CommitRealHgInteropTest {
 
         // Real hg must see the correct per-file flags on the merge commit.
         String flags = HgTestUtils.hg(repoDir, "files", "-r", mergeHex, "-T", "{path}\\0{flags}\\n");
-        java.util.Map<String, String> flagByPath = new java.util.HashMap<>();
+        Map<String, String> flagByPath = new HashMap<>();
         for (String line : flags.split("\n")) {
             if (line.isEmpty()) continue;
             String[] parts = line.split("\0", -1);

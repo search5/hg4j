@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
+import java.util.ArrayList;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -68,7 +69,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class PullSidedataRealHgInteropTest {
 
     private static void runHg(File cwd, String... args) throws Exception {
-        List<String> cmd = new java.util.ArrayList<>();
+        List<String> cmd = new ArrayList<>();
         cmd.add("hg");
         for (String a : args) cmd.add(a);
         Process p = new ProcessBuilder(cmd).directory(cwd).redirectErrorStream(true).start();

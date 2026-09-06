@@ -9,6 +9,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.io.IOException;
+import org.junit.jupiter.api.Assumptions;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -367,7 +369,7 @@ public class CopyCommandTest {
                     .setSource("committed.txt")
                     .setDestination("blocker/sub/target.txt");
 
-            assertThrows(java.io.IOException.class, cmd::call);
+            assertThrows(IOException.class, cmd::call);
 
             // Source file must never be touched by a failed copy.
             assertTrue(committedFile.exists());
@@ -382,7 +384,7 @@ public class CopyCommandTest {
 
     private static void assumeExecutableSupported(File file) {
         boolean toggled = file.setExecutable(true, false);
-        org.junit.jupiter.api.Assumptions.assumeTrue(toggled && file.canExecute(),
+        Assumptions.assumeTrue(toggled && file.canExecute(),
                 "Executable bit is not supported on this filesystem");
     }
 }

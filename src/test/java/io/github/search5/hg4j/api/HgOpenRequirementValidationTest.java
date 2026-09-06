@@ -17,6 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.errors.HgValidationException;
 
 /**
  * Backlog #29 ("requires 파일 세부 문자열 커버리지 재검증"). {@link Hg#open(File)} has its own,
@@ -130,6 +131,6 @@ public class HgOpenRequirementValidationTest {
         HgTestUtils.hg(repoDir, "init");
         Files.writeString(repoDir.toPath().resolve(".hg/requires"), "totally-made-up-requirement-xyz\n",
                 StandardOpenOption.APPEND);
-        assertThrows(io.github.search5.hg4j.errors.HgValidationException.class, () -> Hg.open(repoDir));
+        assertThrows(HgValidationException.class, () -> Hg.open(repoDir));
     }
 }

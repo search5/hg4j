@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.Collections;
 
 /**
  * Reader/writer for the {@code fileindex-v1} requirement's on-disk structure — a persistent radix
@@ -83,7 +84,7 @@ public final class FileIndex {
     public static Snapshot snapshot(File storeDir) throws IOException {
         File docketFile = new File(storeDir, "fileindex");
         if (!docketFile.exists()) {
-            return new Snapshot(null, java.util.Collections.emptyMap());
+            return new Snapshot(null, Collections.emptyMap());
         }
         byte[] docketBytes = Files.readAllBytes(docketFile.toPath());
         Docket docket = Docket.parse(docketBytes);

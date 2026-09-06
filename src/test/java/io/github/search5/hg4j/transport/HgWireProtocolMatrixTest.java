@@ -42,6 +42,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Wire protocol <b>matrix</b>: cross-multiplies the axes that
@@ -77,7 +78,7 @@ public class HgWireProtocolMatrixTest {
         HgTestUtils.hg(repoDir, "init");
         Files.writeString(repoDir.toPath().resolve(".hg/hgrc"),
                 "[web]\nallow-push = *\npush_ssl = false\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         Files.writeString(repoDir.toPath().resolve("a.txt"), "first content");
         HgTestUtils.hg(repoDir, "add");
         HgTestUtils.hg(repoDir, "commit", "-m", "first commit", "-u", "dev");
@@ -247,7 +248,7 @@ public class HgWireProtocolMatrixTest {
         HgTestUtils.hg(tempDir.toFile(), "init", repoDir.getAbsolutePath());
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[server]\ncompressionengines = " + compression + "\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         Files.writeString(repoDir.toPath().resolve("seed.txt"), "seed for ssh " + compression);
         HgTestUtils.hg(repoDir, "add");
         HgTestUtils.hg(repoDir, "commit", "-m", "seed", "-u", "dev");

@@ -27,6 +27,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
+import io.github.search5.hg4j.bundle.Bundle2Parser;
+import io.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2;
+import java.io.ByteArrayInputStream;
+import java.time.Duration;
+import java.util.zip.InflaterInputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -197,7 +202,7 @@ public class HgHttpWireServerRealHgInteropTest {
         String bogusRev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
         AssertionError failure = assertThrows(AssertionError.class, () ->
-                assertTimeoutPreemptively(java.time.Duration.ofSeconds(30), () ->
+                assertTimeoutPreemptively(Duration.ofSeconds(30), () ->
                         HgTestUtils.hg(tempDir.toFile(), "clone", "-r", bogusRev, baseUrl(), destDir.getAbsolutePath())));
         assertTrue(failure.getMessage().toLowerCase().contains("unknown revision")
                         || failure.getMessage().toLowerCase().contains("abort"),
@@ -211,7 +216,7 @@ public class HgHttpWireServerRealHgInteropTest {
 
         String bogusRev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
         AssertionError failure = assertThrows(AssertionError.class, () ->
-                assertTimeoutPreemptively(java.time.Duration.ofSeconds(30), () ->
+                assertTimeoutPreemptively(Duration.ofSeconds(30), () ->
                         HgTestUtils.hg(destDir, "pull", "-r", bogusRev)));
         assertTrue(failure.getMessage().toLowerCase().contains("unknown revision")
                         || failure.getMessage().toLowerCase().contains("abort"),
@@ -258,17 +263,17 @@ public class HgHttpWireServerRealHgInteropTest {
             // compressed on the wire (HgHttpWireServer#deflate / real hg's own "we only compress
             // streamres" rule) -- inflate before decoding the bundle2 envelope underneath.
             byte[] inflated;
-            try (java.util.zip.InflaterInputStream iis =
-                         new java.util.zip.InflaterInputStream(new java.io.ByteArrayInputStream(responseBytes))) {
+            try (InflaterInputStream iis =
+                         new InflaterInputStream(new ByteArrayInputStream(responseBytes))) {
                 inflated = iis.readAllBytes();
             }
             assertTrue(inflated.length >= 4 && inflated[0] == 'H' && inflated[1] == 'G'
                             && inflated[2] == '2' && inflated[3] == '0',
                     "expected a bundle2-framed (HG20) response now that hg4j's capabilities advertise bundle2=");
 
-            io.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 extracted =
-                    io.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(
-                            new java.io.ByteArrayInputStream(inflated));
+            ExtractedBundle2 extracted =
+                    Bundle2Parser.extractChangegroupDetailed(
+                            new ByteArrayInputStream(inflated));
             assertNotEquals("01", extracted.cgVersion,
                     "a real hg 7.2 client's own default incoming-changegroup capability list is "
                             + "changegroup=01,02,03 -- negotiation must not silently degrade to cg1");

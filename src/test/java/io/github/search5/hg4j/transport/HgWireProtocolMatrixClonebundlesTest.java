@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Backlog item 39, wave 5 (wire matrix track): the Clonebundles "bypass" mechanism (see {@link
@@ -156,7 +157,7 @@ public class HgWireProtocolMatrixClonebundlesTest {
         HgTestUtils.hg(tempDir.toFile(), "init", repoDir.getAbsolutePath());
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[server]\ncompressionengines = " + compression + "\n[extensions]\nclonebundles =\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         Files.writeString(repoDir.toPath().resolve("a.txt"), "first content ssh " + compression);
         HgTestUtils.hg(repoDir, "add");
         HgTestUtils.hg(repoDir, "commit", "-m", "first commit", "-u", "dev");

@@ -34,6 +34,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.nio.channels.FileChannel;
 
 /**
  * Porcelain command to rebase revisions on top of another base revision.
@@ -944,7 +945,7 @@ public class RebaseCommand {
             sb.append("backup ").append(origRel).append("\t").append(backupRel).append("\n");
         }
         Files.writeString(journalFile.toPath(), sb.toString(), StandardCharsets.UTF_8);
-        try (var fc = java.nio.channels.FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
+        try (var fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
             fc.force(true);
         }
     }

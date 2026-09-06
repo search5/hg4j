@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import io.github.search5.hg4j.util.NodeIdUtil;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -113,7 +114,7 @@ class NodeMapFileFixtureTest {
         // NodeMapFile#findRevision의 javadoc과 RevlogIndex의 후속 전체-노드 검증이 다루는
         // 지점이다. 이 테스트는 순수 트라이 워크 자체의 no-entry 케이스만 확인한다.)
         byte[] bogus = new byte[20];
-        java.util.Arrays.fill(bogus, (byte) 0x99);
+        Arrays.fill(bogus, (byte) 0x99);
         assertNull(nodeMap.findRevision(bogus));
     }
 

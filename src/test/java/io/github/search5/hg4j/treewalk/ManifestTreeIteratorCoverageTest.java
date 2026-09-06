@@ -23,6 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.api.AddCommand;
+import io.github.search5.hg4j.api.CommitCommand;
+import io.github.search5.hg4j.util.NodeIdUtil;
+import java.util.ArrayList;
 
 /**
  * Targeted coverage for {@link ManifestTreeIterator}: the raw {@code parseManifestContent}
@@ -448,7 +452,7 @@ public class ManifestTreeIteratorCoverageTest {
         List<String> baseLines = Files.readAllLines(requiresFile.toPath());
         File storeDir = new File(tempRepoDir, ".hg/store");
         Files.write(new File(storeDir, "requires").toPath(), baseLines);
-        List<String> lines = new java.util.ArrayList<>(baseLines);
+        List<String> lines = new ArrayList<>(baseLines);
         lines.add("treemanifest");
         Files.write(requiresFile.toPath(), lines);
         repo = new HgRepository(tempRepoDir); // re-open so isTreemanifest() reflects the new requires
@@ -456,8 +460,8 @@ public class ManifestTreeIteratorCoverageTest {
         File subFile = new File(tempRepoDir, "sub/b.txt");
         Files.createDirectories(subFile.getParentFile().toPath());
         Files.writeString(subFile.toPath(), "sub file content");
-        new io.github.search5.hg4j.api.AddCommand(repo).call();
-        byte[] commitNode = new io.github.search5.hg4j.api.CommitCommand(repo).setMessage("add sub/b.txt").call();
+        new AddCommand(repo).call();
+        byte[] commitNode = new CommitCommand(repo).setMessage("add sub/b.txt").call();
 
         File subMfIdx = new File(storeDir, "meta/sub/00manifest.i");
         File subMfDat = new File(storeDir, "meta/sub/00manifest.d");
@@ -471,7 +475,7 @@ public class ManifestTreeIteratorCoverageTest {
 
         // Re-open so no stale cached Revlog (opened against the pre-corruption file) is reused.
         HgRepository freshRepo = new HgRepository(tempRepoDir);
-        String hex = io.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode);
+        String hex = NodeIdUtil.toHex(commitNode);
         ManifestTreeIterator it = new ManifestTreeIterator(freshRepo, hex);
         IOException ex = assertThrows(IOException.class, it::reset);
         assertTrue(ex.getMessage().contains("Sub-manifest revision not found"), ex.getMessage());

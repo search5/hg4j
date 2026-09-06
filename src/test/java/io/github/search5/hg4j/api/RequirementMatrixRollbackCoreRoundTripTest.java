@@ -18,6 +18,9 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.ArrayList;
+import java.util.Map;
+import org.junit.jupiter.api.Assertions;
 
 /**
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
@@ -70,10 +73,10 @@ public class RequirementMatrixRollbackCoreRoundTripTest {
     private static final List<String> TREEMANIFEST_ON = List.of("experimental.treemanifest=1");
 
     static Stream<RequirementCombo> combos() {
-        List<RequirementCombo> out = new java.util.ArrayList<>();
-        for (var cl : List.of(java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2), java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", TREEMANIFEST_OFF), java.util.Map.entry("treemanifest", TREEMANIFEST_ON))) {
-                List<String> args = new java.util.ArrayList<>();
+        List<RequirementCombo> out = new ArrayList<>();
+        for (var cl : List.of(Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2), Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
+            for (var tm : List.of(Map.entry("flatmanifest", TREEMANIFEST_OFF), Map.entry("treemanifest", TREEMANIFEST_ON))) {
+                List<String> args = new ArrayList<>();
                 args.addAll(cl.getValue());
                 args.addAll(tm.getValue());
                 out.add(new RequirementCombo(cl.getKey() + "/" + tm.getKey(), args));
@@ -85,7 +88,7 @@ public class RequirementMatrixRollbackCoreRoundTripTest {
     private static File initWithCombo(Path tempDir, RequirementCombo combo, String suffix) throws Exception {
         File repoDir = tempDir.resolve("repo-" + combo.label().replace("/", "-").replace("+", "_") + "-" + suffix).toFile();
         repoDir.mkdirs();
-        List<String> args = new java.util.ArrayList<>();
+        List<String> args = new ArrayList<>();
         args.add("init");
         for (String c : combo.initConfigArgs()) {
             args.add("--config");
@@ -146,7 +149,7 @@ public class RequirementMatrixRollbackCoreRoundTripTest {
         File repoDir = initWithCombo(tempDir, combo, "rollback-noundo");
 
         HgRepository repo = new HgRepository(repoDir);
-        assertTrue(org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+        assertTrue(Assertions.assertThrows(IllegalStateException.class,
                 () -> new RollbackCommand(repo).call()).getMessage().contains("No rollback information available"),
                 "combo " + combo);
     }

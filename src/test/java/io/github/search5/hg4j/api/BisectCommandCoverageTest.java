@@ -16,6 +16,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Random;
+import io.github.search5.hg4j.treewalk.ManifestWalk.Entry;
+import java.nio.file.StandardOpenOption;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -197,8 +199,8 @@ public class BisectCommandCoverageTest {
         File f = new File(repoDir, "f.txt");
         byte[][] nodes = new byte[5][];
         for (int i = 0; i < 5; i++) {
-            Files.writeString(f.toPath(), "line" + i + "\n", java.nio.file.StandardOpenOption.CREATE,
-                    java.nio.file.StandardOpenOption.APPEND);
+            Files.writeString(f.toPath(), "line" + i + "\n", StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND);
             if (i == 0) {
                 new AddCommand(repo).call();
             }
@@ -324,18 +326,18 @@ public class BisectCommandCoverageTest {
         BisectCommand bisect = new BisectCommand(repo);
 
         @SuppressWarnings("unchecked")
-        List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry> forNull =
-                (List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry>) m.invoke(bisect, changelog, (byte[]) null);
+        List<Entry> forNull =
+                (List<Entry>) m.invoke(bisect, changelog, (byte[]) null);
         assertTrue(forNull.isEmpty());
 
         @SuppressWarnings("unchecked")
-        List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry> forAllZero =
-                (List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry>) m.invoke(bisect, changelog, new byte[20]);
+        List<Entry> forAllZero =
+                (List<Entry>) m.invoke(bisect, changelog, new byte[20]);
         assertTrue(forAllZero.isEmpty());
 
         @SuppressWarnings("unchecked")
-        List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry> forUnknown =
-                (List<io.github.search5.hg4j.treewalk.ManifestWalk.Entry>) m.invoke(bisect, changelog, randomNodeId());
+        List<Entry> forUnknown =
+                (List<Entry>) m.invoke(bisect, changelog, randomNodeId());
         assertTrue(forUnknown.isEmpty());
     }
 

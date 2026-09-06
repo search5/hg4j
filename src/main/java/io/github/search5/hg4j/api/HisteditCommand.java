@@ -26,6 +26,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Porcelain command for Interactive Rebase (histedit) on Mercurial repositories.
@@ -202,7 +203,7 @@ public class HisteditCommand implements AutoCloseable {
             Map<String, String> oldManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, originalParent);
             Map<String, String> finalManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, lastCommittedNode);
             Dirstate d = repository.getDirstate();
-            Set<String> allTouchedPaths = new java.util.TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+            Set<String> allTouchedPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
             allTouchedPaths.addAll(oldManifest.keySet());
             allTouchedPaths.addAll(finalManifest.keySet());
             for (String path : allTouchedPaths) {

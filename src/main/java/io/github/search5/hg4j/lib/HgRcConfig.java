@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Collections;
 
 /**
  * Parses and manages Mercurial configuration files (.hg/hgrc, ~/.hgrc) in INI format.
@@ -177,7 +178,7 @@ public final class HgRcConfig {
         if (sec == null || sec.isEmpty()) {
             return Map.of();
         }
-        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(sec));
+        return Collections.unmodifiableMap(new LinkedHashMap<>(sec));
     }
 
     /**

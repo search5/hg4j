@@ -27,6 +27,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Represents a local Mercurial repository.
@@ -552,12 +555,12 @@ public class HgRepository implements Repository {
      * io.github.search5.hg4j.api.PurgeCommand}) can apply the exact same subrepo boundary without
      * re-parsing {@code .hgsub} themselves.
      */
-    public java.util.Set<String> loadSubrepoPaths() {
+    public Set<String> loadSubrepoPaths() {
         File hgsubFile = new File(directory, ".hgsub");
         if (!hgsubFile.exists()) {
-            return java.util.Collections.emptySet();
+            return Collections.emptySet();
         }
-        java.util.Set<String> paths = new java.util.HashSet<>();
+        Set<String> paths = new HashSet<>();
         try {
             for (String line : Files.readAllLines(hgsubFile.toPath(), StandardCharsets.UTF_8)) {
                 String trimmed = line.trim();
@@ -579,7 +582,7 @@ public class HgRepository implements Repository {
         return paths;
     }
 
-    private void scanDirectory(File dir, File root, List<String> result, java.util.Set<String> subrepoPaths) {
+    private void scanDirectory(File dir, File root, List<String> result, Set<String> subrepoPaths) {
         File[] children = dir.listFiles();
         if (children == null) {
             return;

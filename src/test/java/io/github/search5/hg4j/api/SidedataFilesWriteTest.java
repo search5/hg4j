@@ -13,6 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -52,7 +54,7 @@ class SidedataFilesWriteTest {
     }
 
     private static void runHg(File cwd, String... args) throws Exception {
-        List<String> cmd = new java.util.ArrayList<>();
+        List<String> cmd = new ArrayList<>();
         cmd.add("hg");
         for (String a : args) cmd.add(a);
         Process p = new ProcessBuilder(cmd).directory(cwd).redirectErrorStream(true).start();
@@ -89,8 +91,8 @@ class SidedataFilesWriteTest {
                 .setDate(1756857600L, 0).call();
 
         ChangingFiles cf = new SidedataChangedFilesCommand(repo).setRevision(1).call();
-        assertEquals(java.util.Set.of("b.txt", "c.txt"), cf.getAdded());
-        assertEquals(java.util.Set.of("a.txt"), cf.getRemoved());
+        assertEquals(Set.of("b.txt", "c.txt"), cf.getAdded());
+        assertEquals(Set.of("a.txt"), cf.getRemoved());
         assertEquals("a.txt", cf.getCopiedFromP1().get("b.txt"));
         assertTrue(cf.getCopiedFromP2().isEmpty());
 

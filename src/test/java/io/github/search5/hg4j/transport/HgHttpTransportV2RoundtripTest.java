@@ -24,6 +24,7 @@ import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
+import io.github.search5.hg4j.api.CommitCommand;
 
 /**
  * hg4j 서버({@link HgHttpWireServer})와 hg4j 클라이언트(HgRemoteClientV2) 양쪽 모두 real hg 6.0
@@ -204,7 +205,7 @@ public class HgHttpTransportV2RoundtripTest {
         byte[] mfRev1Content = clientManifest.getRevisionContent(1);
         assertTrue(new String(mfRev1Content, StandardCharsets.UTF_8).contains("a.txt"));
 
-        File flIdx = io.github.search5.hg4j.api.CommitCommand.getFilelogIndex(clientRepo.getStoreDir(), "a.txt");
+        File flIdx = CommitCommand.getFilelogIndex(clientRepo.getStoreDir(), "a.txt");
         File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
         Revlog clientFilelog = clientRepo.getRevlog(flIdx, flDat);
         assertEquals(2, clientFilelog.getRevisionCount(), "a.txt filelog에도 두 리비전 모두 있어야 함");

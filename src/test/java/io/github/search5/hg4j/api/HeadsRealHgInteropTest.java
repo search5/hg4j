@@ -14,6 +14,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.Collectors;
+import io.github.search5.hg4j.dirstate.Dirstate;
+import io.github.search5.hg4j.lib.NodeId;
+import static io.github.search5.hg4j.lib.NodeId.NULL;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -35,8 +38,8 @@ public class HeadsRealHgInteropTest {
     }
 
     private static void setParentTo(HgRepository repo, byte[] node) throws Exception {
-        io.github.search5.hg4j.dirstate.Dirstate dirstate = repo.getDirstate();
-        dirstate.setParents(new io.github.search5.hg4j.lib.NodeId(node), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.setParents(new NodeId(node), NULL);
         repo.writeDirstate(dirstate);
     }
 

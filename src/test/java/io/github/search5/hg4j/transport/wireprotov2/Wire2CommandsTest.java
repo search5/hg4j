@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -399,10 +400,10 @@ public class Wire2CommandsTest {
         List<Object> result = Wire2Commands.changesetdata(repo, args);
 
         List<byte[]> p = parents(recordAt(result, 1));
-        assertFalse(java.util.Arrays.equals(NULL_NODE, p.get(1)), "a merge commit's second parent must be a real node, not the null node");
+        assertFalse(Arrays.equals(NULL_NODE, p.get(1)), "a merge commit's second parent must be a real node, not the null node");
         List<byte[]> actual = List.of(p.get(0), p.get(1));
-        assertTrue(actual.stream().anyMatch(n -> java.util.Arrays.equals(n, yours)));
-        assertTrue(actual.stream().anyMatch(n -> java.util.Arrays.equals(n, theirs)));
+        assertTrue(actual.stream().anyMatch(n -> Arrays.equals(n, yours)));
+        assertTrue(actual.stream().anyMatch(n -> Arrays.equals(n, theirs)));
     }
 
     // ==================== resolveRevisions / resolveDagRange ====================

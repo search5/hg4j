@@ -239,7 +239,7 @@ public final class HgLfsManager {
         if (value == null || value.isBlank()) {
             return -1;
         }
-        String t = value.trim().toLowerCase(java.util.Locale.ROOT);
+        String t = value.trim().toLowerCase(Locale.ROOT);
         String[] suffixes = {"kb", "mb", "gb", "k", "m", "g", "b"};
         long[] units = {1L << 10, 1L << 20, 1L << 30, 1L << 10, 1L << 20, 1L << 30, 1L};
         for (int i = 0; i < suffixes.length; i++) {

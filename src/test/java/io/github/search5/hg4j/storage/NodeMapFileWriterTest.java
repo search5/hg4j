@@ -22,6 +22,10 @@ import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.function.IntFunction;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -93,7 +97,7 @@ class NodeMapFileWriterTest {
             assertEquals(entry.getKey(), written.findRevision(entry.getValue()), "rev " + entry.getKey());
         }
         byte[] bogus = new byte[20];
-        java.util.Arrays.fill(bogus, (byte) 0x77);
+        Arrays.fill(bogus, (byte) 0x77);
         assertNull(written.findRevision(bogus));
 
         // re-load from disk independently (not the in-memory object persist() handed back) --
@@ -112,7 +116,7 @@ class NodeMapFileWriterTest {
         File idxFile = tempDir.resolve("00changelog.i").toFile();
         Map<Integer, byte[]> groundTruth = loadGroundTruthRevs();
         RevlogIndex rawIndex = new RevlogIndex(idxFile);
-        java.util.function.IntFunction<byte[]> nodeOf = rev -> rawIndex.getIndexRecord(rev).getNodeId();
+        IntFunction<byte[]> nodeOf = rev -> rawIndex.getIndexRecord(rev).getNodeId();
 
         NodeMapFile step1 = NodeMapFile.persist(idxFile, null, 10, nodeOf);
         assertNotNull(step1);
@@ -162,7 +166,7 @@ class NodeMapFileWriterTest {
         File storeDir = new File(repoDir, ".hg/store");
         Files.createDirectories(storeDir.toPath());
         File storeRequires = new File(storeDir, "requires");
-        List<String> lines = new java.util.ArrayList<>(Files.readAllLines(new File(repoDir, ".hg/requires").toPath()));
+        List<String> lines = new ArrayList<>(Files.readAllLines(new File(repoDir, ".hg/requires").toPath()));
         lines.add("persistent-nodemap");
         Files.write(storeRequires.toPath(), lines);
         repo = new HgRepository(repoDir);
@@ -170,7 +174,7 @@ class NodeMapFileWriterTest {
 
         for (int i = 1; i <= 8; i++) {
             File f = new File(repoDir, "file.txt");
-            Files.writeString(f.toPath(), "line " + i + "\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            Files.writeString(f.toPath(), "line " + i + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             new AddCommand(repo).call();
             new CommitCommand(repo).setMessage("commit " + i).call();
         }

@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -588,7 +589,7 @@ public class FetchCommandCoverageTest {
      */
     @Test
     public void mergeClonebundleResultsConcatenatesClonebundleImportsBeforeCatchUpResults() throws Exception {
-        java.lang.reflect.Method merge = FetchCommand.class.getDeclaredMethod(
+        Method merge = FetchCommand.class.getDeclaredMethod(
                 "mergeClonebundleResults", List.class, List.class);
         merge.setAccessible(true);
 

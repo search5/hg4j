@@ -8,6 +8,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.io.IOException;
+import java.nio.file.Path;
+import org.junit.jupiter.api.Assumptions;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -251,7 +254,7 @@ public class HgRenameTest {
                     .setSource("victim.txt")
                     .setTarget("blocker/sub/target.txt");
 
-            assertThrows(java.io.IOException.class, cmd::call);
+            assertThrows(IOException.class, cmd::call);
 
             // Source file was never moved because the failure happened during Files.move
             assertTrue(srcFile.exists());
@@ -281,7 +284,7 @@ public class HgRenameTest {
                     .setSource("victim.txt")
                     .setTarget("blocker/sub/target.txt");
 
-            assertThrows(java.io.IOException.class, cmd::call);
+            assertThrows(IOException.class, cmd::call);
 
             assertTrue(srcFile.exists());
             assertFalse(new File(tempDir, ".hg/dirstate").exists());
@@ -291,7 +294,7 @@ public class HgRenameTest {
 
     private static void assumeExecutableSupported(File file) {
         boolean toggled = file.setExecutable(true, false);
-        org.junit.jupiter.api.Assumptions.assumeTrue(toggled && file.canExecute(),
+        Assumptions.assumeTrue(toggled && file.canExecute(),
                 "Executable bit is not supported on this filesystem");
     }
 
@@ -309,7 +312,7 @@ public class HgRenameTest {
             File targetFile = new File(tempDir, "target.txt");
             Files.writeString(targetFile.toPath(), "hello");
             File linkFile = new File(tempDir, "link.txt");
-            Files.createSymbolicLink(linkFile.toPath(), java.nio.file.Path.of("target.txt"));
+            Files.createSymbolicLink(linkFile.toPath(), Path.of("target.txt"));
 
             hg.rename().setSource("link.txt").setTarget("renamed-link.txt").call();
 
@@ -330,7 +333,7 @@ public class HgRenameTest {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
         try (Hg hg = Hg.wrap(repo)) {
             File linkFile = new File(tempDir, "dangling-link.txt");
-            Files.createSymbolicLink(linkFile.toPath(), java.nio.file.Path.of("does-not-exist.txt"));
+            Files.createSymbolicLink(linkFile.toPath(), Path.of("does-not-exist.txt"));
 
             // File#exists() follows a symlink and returns false for a dangling target -- the
             // command's own source-existence check must use lstat semantics instead, exactly

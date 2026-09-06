@@ -10,6 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import io.github.search5.hg4j.dirstate.Dirstate;
+import io.github.search5.hg4j.lib.NodeId;
+import static io.github.search5.hg4j.lib.NodeId.NULL;
+import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -44,8 +48,8 @@ public class TreeMergeCommandTest {
         byte[] ours = commit(repo, "ours");
 
         // "theirs" branches from base, unrelated file, a.txt left untouched.
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(base), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(base), NULL);
         repo.writeDirstate(forkDirstate);
         write(repoDir, "unrelated.txt", "x\n");
         byte[] theirs = commit(repo, "theirs");
@@ -85,8 +89,8 @@ public class TreeMergeCommandTest {
         write(repoDir, "a.txt", "line1 OURS\nline2\nline3\n");
         byte[] ours = commit(repo, "ours");
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(base), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(base), NULL);
         repo.writeDirstate(forkDirstate);
         write(repoDir, "a.txt", "line1\nline2\nline3 THEIRS\n");
         byte[] theirs = commit(repo, "theirs");
@@ -108,8 +112,8 @@ public class TreeMergeCommandTest {
         write(repoDir, "a.txt", "ours version\n");
         byte[] ours = commit(repo, "ours");
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(base), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(base), NULL);
         repo.writeDirstate(forkDirstate);
         write(repoDir, "a.txt", "theirs version\n");
         byte[] theirs = commit(repo, "theirs");
@@ -133,8 +137,8 @@ public class TreeMergeCommandTest {
         write(repoDir, "ours-only.txt", "o\n");
         byte[] ours = commit(repo, "ours");
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(base), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(base), NULL);
         repo.writeDirstate(forkDirstate);
         new RemoveCommand(repo).setFile("gone.txt").call();
         byte[] theirs = commit(repo, "theirs removes gone.txt");
@@ -156,8 +160,8 @@ public class TreeMergeCommandTest {
         write(repoDir, "a.txt", "ours\n");
         byte[] ours = commit(repo, "ours");
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(base), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(base), NULL);
         repo.writeDirstate(forkDirstate);
         write(repoDir, "a.txt", "theirs\n");
         byte[] theirs = commit(repo, "theirs");
@@ -204,12 +208,12 @@ public class TreeMergeCommandTest {
         write(repoDir, "ours-only.txt", "o\n");
         byte[] ours = commit(repo, "ours");
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(base), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(base), NULL);
         repo.writeDirstate(forkDirstate);
         try {
             Files.createSymbolicLink(new File(repoDir, "link.txt").toPath(), new File(repoDir, "a.txt").toPath());
-        } catch (UnsupportedOperationException | java.io.IOException e) {
+        } catch (UnsupportedOperationException | IOException e) {
             return;
         }
         byte[] theirs = commit(repo, "theirs adds a symlink");

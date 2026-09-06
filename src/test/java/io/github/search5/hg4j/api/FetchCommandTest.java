@@ -39,6 +39,8 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 
 import static org.junit.jupiter.api.Assertions.*;
 import io.github.search5.hg4j.HgTestUtils;
+import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
 
 public class FetchCommandTest {
 
@@ -616,7 +618,7 @@ public class FetchCommandTest {
         byte[] commitNode = new CommitCommand(srcRepo).setAuthor("dev").setMessage("v1").call();
         byte[] changegroupBytes = HgTestUtils.serializeBundleToBytes(HgTestUtils.createMockBundleFromRepo(srcRepo));
 
-        java.io.ByteArrayOutputStream compressed = new java.io.ByteArrayOutputStream();
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (DeflaterOutputStream dos = new DeflaterOutputStream(compressed)) {
             dos.write(changegroupBytes);
         }
@@ -644,14 +646,14 @@ public class FetchCommandTest {
         byte[] commitNode = new CommitCommand(srcRepo).setAuthor("dev").setMessage("v1").call();
         byte[] changegroupBytes = HgTestUtils.serializeBundleToBytes(HgTestUtils.createMockBundleFromRepo(srcRepo));
 
-        java.io.ByteArrayOutputStream compressed = new java.io.ByteArrayOutputStream();
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (BZip2CompressorOutputStream bzos = new BZip2CompressorOutputStream(compressed)) {
             bzos.write(changegroupBytes);
         }
         // FetchCommand re-prepends the "BZ" magic real hg strips off the wire; the compressed
         // payload it expects is therefore the real bzip2 stream minus its own leading "BZ".
         byte[] fullBz = compressed.toByteArray();
-        byte[] strippedBz = java.util.Arrays.copyOfRange(fullBz, 2, fullBz.length);
+        byte[] strippedBz = Arrays.copyOfRange(fullBz, 2, fullBz.length);
         byte[] wireBytes = concat(bundle1Header("BZ"), strippedBz);
 
         HgRepository destRepo = Hg.init().setDirectory(destDir).call();

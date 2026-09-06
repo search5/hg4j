@@ -30,6 +30,20 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import io.github.search5.hg4j.util.NodeIdUtil;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import org.apache.sshd.server.Environment;
+import org.apache.sshd.server.ExitCallback;
+import org.apache.sshd.server.SshServer;
+import org.apache.sshd.server.auth.pubkey.AcceptAllPublickeyAuthenticator;
+import org.apache.sshd.server.channel.ChannelSession;
+import org.apache.sshd.server.command.Command;
+import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
 
 /**
  * Backlog item 39, wave 5 (wire matrix track): {@link IncomingCommand}/{@link OutgoingCommand}
@@ -99,7 +113,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
     }
 
     private static Set<String> realHgShortHashes(String output) {
-        return java.util.Arrays.stream(output.split("\n"))
+        return Arrays.stream(output.split("\n"))
                 .map(String::trim)
                 .filter(s -> SHORT_HASH_LINE.matcher(s).matches())
                 .map(String::toLowerCase)
@@ -139,7 +153,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
         List<String> incoming = new IncomingCommand(local).setSource(url).call();
         Set<String> hg4jHashes = extractHashes(incoming);
 
-        List<String> realArgs = new java.util.ArrayList<>(List.of(extraRealHgArgs));
+        List<String> realArgs = new ArrayList<>(List.of(extraRealHgArgs));
         realArgs.addAll(List.of("incoming", "--template", "{node|short}\n", groundTruthUrl));
         String realOut = HgTestUtils.hg(local.getDirectory(), realArgs.toArray(new String[0]));
         Set<String> realHashes = realHgShortHashes(realOut);
@@ -169,7 +183,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
         List<String> outgoing = new OutgoingCommand(local).setDestination(url).call();
         Set<String> hg4jHashes = extractHashes(outgoing);
 
-        List<String> realArgs = new java.util.ArrayList<>(List.of(extraRealHgArgs));
+        List<String> realArgs = new ArrayList<>(List.of(extraRealHgArgs));
         realArgs.addAll(List.of("outgoing", "--template", "{node|short}\n", groundTruthUrl));
         String realOut = HgTestUtils.hg(local.getDirectory(), realArgs.toArray(new String[0]));
         Set<String> realHashes = realHgShortHashes(realOut);
@@ -208,7 +222,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
         HgTestUtils.hg(tempDir.toFile(), "init", repoDir.getAbsolutePath());
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[server]\ncompressionengines = " + compression + "\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         Files.writeString(repoDir.toPath().resolve("a.txt"), "first content ssh " + compression);
         HgTestUtils.hg(repoDir, "add");
         HgTestUtils.hg(repoDir, "commit", "-m", "first commit", "-u", "dev");
@@ -232,7 +246,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
         HgTestUtils.hg(tempDir.toFile(), "init", repoDir.getAbsolutePath());
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[server]\ncompressionengines = " + compression + "\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         Files.writeString(repoDir.toPath().resolve("a.txt"), "first content ssh " + compression);
         HgTestUtils.hg(repoDir, "add");
         HgTestUtils.hg(repoDir, "commit", "-m", "first commit", "-u", "dev");
@@ -264,7 +278,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
     }
 
     static List<ReverseCombo> reverseCombos() {
-        List<ReverseCombo> out = new java.util.ArrayList<>();
+        List<ReverseCombo> out = new ArrayList<>();
         for (ReverseTier tier : ReverseTier.values()) {
             for (boolean b2 : List.of(true, false)) {
                 out.add(new ReverseCombo(tier, b2));
@@ -306,7 +320,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
                 byte[] secondNode = new CommitCommand(serverRepo).setAuthor("hg4j <hg4j@example.com>").setMessage("server second commit").call();
 
                 String incomingOut = HgTestUtils.hg(clientDir, "incoming", "--template", "{node}\n", url);
-                assertEquals(io.github.search5.hg4j.util.NodeIdUtil.toHex(secondNode), singleFullNodeLine(incomingOut),
+                assertEquals(NodeIdUtil.toHex(secondNode), singleFullNodeLine(incomingOut),
                         "real hg's own incoming against the hg4j-served repo must see exactly the new server commit, combo=" + combo);
 
                 // Outgoing half: the client makes a local commit of its own; real hg's "hg
@@ -342,11 +356,11 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
         File sshKeyFile = tempDir.resolve("id_test").toFile();
         runProcess("ssh-keygen", "-t", "rsa", "-b", "2048", "-f", sshKeyFile.getAbsolutePath(), "-N", "");
 
-        org.apache.sshd.server.SshServer sshServer = org.apache.sshd.server.SshServer.setUpDefaultServer();
+        SshServer sshServer = SshServer.setUpDefaultServer();
         sshServer.setPort(0);
         Path hostKey = tempDir.resolve("host_key");
-        sshServer.setKeyPairProvider(new org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider(hostKey));
-        sshServer.setPublickeyAuthenticator(org.apache.sshd.server.auth.pubkey.AcceptAllPublickeyAuthenticator.INSTANCE);
+        sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(hostKey));
+        sshServer.setPublickeyAuthenticator(AcceptAllPublickeyAuthenticator.INSTANCE);
         sshServer.setCommandFactory((channel, command) -> new Hg4jWireCommand(command));
         sshServer.start();
         int port = sshServer.getPort();
@@ -372,7 +386,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
 
             String incomingOut = HgTestUtils.hg(clientDir, "--config", "ui.ssh=" + uiSsh,
                     "incoming", "--template", "{node}\n", url);
-            assertEquals(io.github.search5.hg4j.util.NodeIdUtil.toHex(secondNode), singleFullNodeLine(incomingOut),
+            assertEquals(NodeIdUtil.toHex(secondNode), singleFullNodeLine(incomingOut),
                     "real hg's own incoming over SSH against the hg4j-served repo must see exactly the new server commit");
 
             Files.writeString(new File(clientDir, "c.txt").toPath(), "client local");
@@ -409,34 +423,34 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
     /** Server-side {@code Command} adapter attaching {@link HgSshWireServer} to a fresh
      * {@link HgRepository} instance per connection -- same shape as {@code
      * HgSshWireServerRealHgInteropTest.HgWireCommand}. */
-    private static class Hg4jWireCommand implements org.apache.sshd.server.command.Command, Runnable {
+    private static class Hg4jWireCommand implements Command, Runnable {
         private static final Pattern REPO_PATH = Pattern.compile("-R\\s+'?([^'\\s]+)'?");
 
         private final String command;
-        private java.io.InputStream in;
-        private java.io.OutputStream out;
-        private java.io.OutputStream err;
-        private org.apache.sshd.server.ExitCallback callback;
+        private InputStream in;
+        private OutputStream out;
+        private OutputStream err;
+        private ExitCallback callback;
         private Thread thread;
 
         Hg4jWireCommand(String command) {
             this.command = command;
         }
 
-        @Override public void setInputStream(java.io.InputStream in) { this.in = in; }
-        @Override public void setOutputStream(java.io.OutputStream out) { this.out = out; }
-        @Override public void setErrorStream(java.io.OutputStream err) { this.err = err; }
-        @Override public void setExitCallback(org.apache.sshd.server.ExitCallback callback) { this.callback = callback; }
+        @Override public void setInputStream(InputStream in) { this.in = in; }
+        @Override public void setOutputStream(OutputStream out) { this.out = out; }
+        @Override public void setErrorStream(OutputStream err) { this.err = err; }
+        @Override public void setExitCallback(ExitCallback callback) { this.callback = callback; }
 
         @Override
-        public void start(org.apache.sshd.server.channel.ChannelSession session, org.apache.sshd.server.Environment env) {
+        public void start(ChannelSession session, Environment env) {
             thread = new Thread(this, "hg4j-ssh-wire-matrix-test");
             thread.setDaemon(true);
             thread.start();
         }
 
         @Override
-        public void destroy(org.apache.sshd.server.channel.ChannelSession session) {
+        public void destroy(ChannelSession session) {
             if (thread != null) {
                 thread.interrupt();
             }
@@ -459,7 +473,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
                 try {
                     err.write((e + "\n").getBytes());
                     err.flush();
-                } catch (java.io.IOException ignored) {
+                } catch (IOException ignored) {
                 }
                 callback.onExit(1);
             }

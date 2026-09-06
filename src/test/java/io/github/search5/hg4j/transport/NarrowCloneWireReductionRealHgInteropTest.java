@@ -17,6 +17,9 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.bundle.Bundle2Parser;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * Backlog item 40: hg4j as a narrow CLIENT against a REAL hg SERVER, verifying that narrow clone
@@ -68,8 +71,8 @@ public class NarrowCloneWireReductionRealHgInteropTest {
             Files.writeString(new File(includedDir, "f" + i + ".txt").toPath(), "small line " + i);
         }
         byte[] filler = new byte[20_000];
-        java.util.Arrays.fill(filler, (byte) 'x');
-        String fillerText = new String(filler, java.nio.charset.StandardCharsets.US_ASCII);
+        Arrays.fill(filler, (byte) 'x');
+        String fillerText = new String(filler, StandardCharsets.US_ASCII);
         for (int i = 0; i < 80; i++) {
             Files.writeString(new File(excludedDir, "big" + i + ".bin").toPath(), fillerText + i);
         }
@@ -97,7 +100,7 @@ public class NarrowCloneWireReductionRealHgInteropTest {
             assertTrue(client.supportsNarrow(), "HgRemoteClient must recognize exp-narrow-1 after getCapabilities()");
 
             List<String> bundleCaps = List.of("HG20",
-                    io.github.search5.hg4j.bundle.Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05"),
+                    Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05"),
                     "compression=GZ,BZ,ZS");
 
             byte[] fullResponse = client.getBundle(List.of(), List.of(), bundleCaps, null);

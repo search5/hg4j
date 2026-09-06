@@ -22,6 +22,14 @@ import org.apache.commons.compress.archivers.zip.ZipFile;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.FileInputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 
 /**
  * Extends the requirement matrix (see {@link RequirementMatrixMergeCoreRoundTripTest} for the
@@ -79,10 +87,10 @@ public class RequirementMatrixArchiveCoreRoundTripTest {
     private static final List<String> TREEMANIFEST_ON = List.of("experimental.treemanifest=1");
 
     static Stream<RequirementCombo> combos() {
-        List<RequirementCombo> out = new java.util.ArrayList<>();
-        for (var cl : List.of(java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2), java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", TREEMANIFEST_OFF), java.util.Map.entry("treemanifest", TREEMANIFEST_ON))) {
-                List<String> args = new java.util.ArrayList<>();
+        List<RequirementCombo> out = new ArrayList<>();
+        for (var cl : List.of(Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2), Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
+            for (var tm : List.of(Map.entry("flatmanifest", TREEMANIFEST_OFF), Map.entry("treemanifest", TREEMANIFEST_ON))) {
+                List<String> args = new ArrayList<>();
                 args.addAll(cl.getValue());
                 args.addAll(tm.getValue());
                 out.add(new RequirementCombo(cl.getKey() + "/" + tm.getKey(), args));
@@ -94,7 +102,7 @@ public class RequirementMatrixArchiveCoreRoundTripTest {
     private static File initWithCombo(Path tempDir, RequirementCombo combo, String suffix) throws Exception {
         File repoDir = tempDir.resolve("repo-" + combo.label().replace("/", "-").replace("+", "_") + "-" + suffix).toFile();
         repoDir.mkdirs();
-        List<String> args = new java.util.ArrayList<>();
+        List<String> args = new ArrayList<>();
         args.add("init");
         for (String c : combo.initConfigArgs()) {
             args.add("--config");
@@ -217,7 +225,7 @@ public class RequirementMatrixArchiveCoreRoundTripTest {
 
     private static Set<String> zipNames(ZipFile zf) {
         Set<String> names = new TreeSet<>();
-        java.util.Collections.list(zf.getEntries()).forEach(e -> names.add(e.getName()));
+        Collections.list(zf.getEntries()).forEach(e -> names.add(e.getName()));
         return names;
     }
 
@@ -261,20 +269,20 @@ public class RequirementMatrixArchiveCoreRoundTripTest {
      * zip oracle to avoid needing a second oracle archiver. */
     private static void assertTarGzMatchesOracleZip(File oracleZip, String oracleLabel, File hg4jTarGz, String hg4jLabel, RequirementCombo combo) throws Exception {
         try (ZipFile oz = new ZipFile(oracleZip);
-             var fis = new java.io.FileInputStream(hg4jTarGz);
-             var gzin = new org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(fis);
-             var tin = new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(gzin)) {
+             var fis = new FileInputStream(hg4jTarGz);
+             var gzin = new GzipCompressorInputStream(fis);
+             var tin = new TarArchiveInputStream(gzin)) {
 
             Set<String> oracleNames = zipNames(oz);
             String archivalMemberName = oracleNames.stream().filter(n -> n.endsWith(".hg_archival.txt")).findFirst().orElseThrow();
             String prefixOracle = archivalMemberName.substring(0, archivalMemberName.length() - ".hg_archival.txt".length());
 
             Set<String> tarRelNames = new TreeSet<>();
-            org.apache.commons.compress.archivers.tar.TarArchiveEntry te;
+            TarArchiveEntry te;
             String tarPrefix = null;
-            java.util.Map<String, byte[]> tarContents = new java.util.HashMap<>();
-            java.util.Map<String, Boolean> tarExec = new java.util.HashMap<>();
-            java.util.Map<String, String> tarSymlinks = new java.util.HashMap<>();
+            Map<String, byte[]> tarContents = new HashMap<>();
+            Map<String, Boolean> tarExec = new HashMap<>();
+            Map<String, String> tarSymlinks = new HashMap<>();
             while ((te = tin.getNextEntry()) != null) {
                 String name = te.getName();
                 if (tarPrefix == null) {

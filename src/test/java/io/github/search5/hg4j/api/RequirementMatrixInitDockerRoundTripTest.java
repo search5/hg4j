@@ -20,6 +20,8 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -111,7 +113,7 @@ public class RequirementMatrixInitDockerRoundTripTest {
             test.run(containerName, workDir);
         } finally {
             try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
             } catch (Exception ignored) {
                 // best effort
             }
@@ -188,12 +190,12 @@ public class RequirementMatrixInitDockerRoundTripTest {
         }
         List<Cl> changelogs = List.of(new Cl("cl1", false, false), new Cl("cl2", true, false),
                 new Cl("cl2+sidedata", true, true));
-        List<java.util.Map.Entry<String, Boolean>> dirstates = List.of(
-                java.util.Map.entry("dirstate1", false), java.util.Map.entry("dirstate2", true));
+        List<Map.Entry<String, Boolean>> dirstates = List.of(
+                Map.entry("dirstate1", false), Map.entry("dirstate2", true));
 
         // dirstate-v2 x changelog x manifest, storage-ext = none (cells 7-12)
         for (Cl cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", false), java.util.Map.entry("treemanifest", true))) {
+            for (var tm : List.of(Map.entry("flatmanifest", false), Map.entry("treemanifest", true))) {
                 List<String> expected = baseRequires(true, false, false);
                 if (cl.cl2()) expected.add("exp-changelog-v2");
                 if (cl.sidedata()) expected.add("exp-copies-sidedata-changeset");
@@ -206,7 +208,7 @@ public class RequirementMatrixInitDockerRoundTripTest {
         // dirstate(v1/v2) x changelog x manifest x storage-ext(pnodemap/fileindex-v1/general-v2)
         for (var dirstate : dirstates) {
             for (Cl cl : changelogs) {
-                for (var tm : List.of(java.util.Map.entry("flatmanifest", false), java.util.Map.entry("treemanifest", true))) {
+                for (var tm : List.of(Map.entry("flatmanifest", false), Map.entry("treemanifest", true))) {
                     List<String> expected = baseRequires(dirstate.getValue(), false, false);
                     if (cl.cl2()) expected.add("exp-changelog-v2");
                     if (cl.sidedata()) expected.add("exp-copies-sidedata-changeset");

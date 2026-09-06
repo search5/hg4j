@@ -19,6 +19,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.Comparator;
+import java.util.Map;
 
 /**
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
@@ -66,8 +68,8 @@ public class RequirementMatrixCatFilesLocateManifestCoreRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        for (var cl : List.of(java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2), java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", TREEMANIFEST_OFF), java.util.Map.entry("treemanifest", TREEMANIFEST_ON))) {
+        for (var cl : List.of(Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2), Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
+            for (var tm : List.of(Map.entry("flatmanifest", TREEMANIFEST_OFF), Map.entry("treemanifest", TREEMANIFEST_ON))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(cl.getValue());
                 args.addAll(tm.getValue());
@@ -114,7 +116,7 @@ public class RequirementMatrixCatFilesLocateManifestCoreRoundTripTest {
         for (String l : out.split("\n")) {
             lines.add(RealManifestLine.parse(l));
         }
-        lines.sort(java.util.Comparator.comparing(RealManifestLine::path));
+        lines.sort(Comparator.comparing(RealManifestLine::path));
         return lines;
     }
 
@@ -199,7 +201,7 @@ public class RequirementMatrixCatFilesLocateManifestCoreRoundTripTest {
     private static void assertManifestMatches(HgRepository repo, File repoDir, String rev, RequirementCombo combo) throws Exception {
         List<RealManifestLine> expected = realManifest(repoDir, rev);
         List<ManifestCommand.ManifestEntry> actual = new ManifestCommand(repo).setRevision(rev).call();
-        actual.sort(java.util.Comparator.comparing(ManifestCommand.ManifestEntry::getPath));
+        actual.sort(Comparator.comparing(ManifestCommand.ManifestEntry::getPath));
 
         List<String> expectedPaths = expected.stream().map(RealManifestLine::path).collect(Collectors.toList());
         List<String> actualPaths = actual.stream().map(ManifestCommand.ManifestEntry::getPath).collect(Collectors.toList());

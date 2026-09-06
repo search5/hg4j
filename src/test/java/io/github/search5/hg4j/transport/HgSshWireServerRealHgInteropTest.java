@@ -30,6 +30,8 @@ import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 import org.apache.sshd.server.Environment;
+import java.time.Duration;
+import java.util.Random;
 
 /**
  * Verifies {@link HgSshWireServer} against the real {@code hg} CLI as an SSH client, using an
@@ -253,7 +255,7 @@ public class HgSshWireServerRealHgInteropTest {
         String bogusRev = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
         AssertionError failure = assertThrows(AssertionError.class, () ->
-                assertTimeoutPreemptively(java.time.Duration.ofSeconds(30), () ->
+                assertTimeoutPreemptively(Duration.ofSeconds(30), () ->
                         HgTestUtils.hg(tempDir.toFile(),
                                 "--config", "ui.ssh=" + remoteCmdForTest(tempDir),
                                 "clone", "-r", bogusRev, sshUrl(serverRepoDir), destDir.getAbsolutePath())));
@@ -283,7 +285,7 @@ public class HgSshWireServerRealHgInteropTest {
         for (int i = 0; i < 20; i++) {
             Files.writeString(new File(includedDir, "f" + i + ".txt").toPath(), "small line " + i);
         }
-        java.util.Random rnd = new java.util.Random(7);
+        Random rnd = new Random(7);
         for (int i = 0; i < 80; i++) {
             byte[] filler = new byte[20_000];
             rnd.nextBytes(filler);

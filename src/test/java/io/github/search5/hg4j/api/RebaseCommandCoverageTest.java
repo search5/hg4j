@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Arrays;
+import java.util.function.UnaryOperator;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -744,7 +745,7 @@ public class RebaseCommandCoverageTest {
         return changelogText.substring(0, secondNl + 1) + newDateLine + "\n" + changelogText.substring(thirdNl + 1);
     }
 
-    private static void patchLastChangelogRevision(HgRepository repo, java.util.function.UnaryOperator<String> transform) throws IOException {
+    private static void patchLastChangelogRevision(HgRepository repo, UnaryOperator<String> transform) throws IOException {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog changelog = repo.getRevlog(clIdx, clDat);

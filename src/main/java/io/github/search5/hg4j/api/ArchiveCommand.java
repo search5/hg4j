@@ -26,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.zip.ZipEntry;
 
 /**
  * Archive command for extracting an unversioned snapshot of a repository revision -- {@code hg
@@ -233,7 +234,7 @@ public class ArchiveCommand {
             parent.mkdirs();
         }
         try (ZipArchiveOutputStream zos = new ZipArchiveOutputStream(destination)) {
-            zos.setMethod(compress ? java.util.zip.ZipEntry.DEFLATED : java.util.zip.ZipEntry.STORED);
+            zos.setMethod(compress ? ZipEntry.DEFLATED : ZipEntry.STORED);
 
             ZipArchiveEntry metaEntry = new ZipArchiveEntry(memberPath(prefix, ".hg_archival.txt"));
             byte[] metaBytes = archivalText.getBytes(StandardCharsets.UTF_8);

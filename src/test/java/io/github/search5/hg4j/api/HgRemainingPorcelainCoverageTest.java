@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -383,7 +384,7 @@ public class HgRemainingPorcelainCoverageTest {
             // one of the two known endpoints (a 2-revision range has no interior midpoint).
             byte[] candidate = hg.bisect().setGood(good).setBad(bad).next();
             assertNotNull(candidate);
-            assertTrue(java.util.Arrays.equals(candidate, good) || java.util.Arrays.equals(candidate, bad));
+            assertTrue(Arrays.equals(candidate, good) || Arrays.equals(candidate, bad));
 
             // histedit(): a single PICK rule re-commits the picked changeset on top of history
             // (this implementation appends rather than truncating), so the picked message must

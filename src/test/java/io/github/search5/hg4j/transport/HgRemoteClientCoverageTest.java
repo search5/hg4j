@@ -36,6 +36,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStreamReader;
+import java.lang.reflect.Field;
+import java.nio.file.Files;
+import java.util.Base64;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -109,7 +115,7 @@ public class HgRemoteClientCoverageTest {
             client.getHeads();
 
             assertNotNull(authHeader[0], "Authorization header must be set from the provider's credentials");
-            String expected = "Basic " + java.util.Base64.getEncoder().encodeToString("bob:s3cr3t".getBytes(StandardCharsets.UTF_8));
+            String expected = "Basic " + Base64.getEncoder().encodeToString("bob:s3cr3t".getBytes(StandardCharsets.UTF_8));
             assertEquals(expected, authHeader[0]);
             }
         } finally {
@@ -496,8 +502,8 @@ public class HgRemoteClientCoverageTest {
             int port = serverSocket.getLocalPort();
             Thread serverThread = new Thread(() -> {
                 try (Socket socket = serverSocket.accept()) {
-                    java.io.BufferedReader reader = new java.io.BufferedReader(
-                            new java.io.InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
                     // Consume the request line/headers, then the small pushed bundle body.
                     String line;
                     int contentLength = 0;
@@ -648,8 +654,8 @@ public class HgRemoteClientCoverageTest {
     @Test
     public void allPublicMethodsDelegateToV2AfterAutoUpgrade(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.resolve("v2_delegate_repo").toFile()).call();
-        java.io.File testFile = new java.io.File(repo.getDirectory(), "a.txt");
-        java.nio.file.Files.writeString(testFile.toPath(), "content", StandardCharsets.UTF_8);
+        File testFile = new File(repo.getDirectory(), "a.txt");
+        Files.writeString(testFile.toPath(), "content", StandardCharsets.UTF_8);
         Hg hg = Hg.wrap(repo);
         hg.add().addFile("a.txt").call();
         byte[] commitNode = hg.commit().setMessage("coverage commit").call();
@@ -965,8 +971,8 @@ public class HgRemoteClientCoverageTest {
             int port = serverSocket.getLocalPort();
             Thread serverThread = new Thread(() -> {
                 try (Socket socket = serverSocket.accept()) {
-                    java.io.BufferedReader reader = new java.io.BufferedReader(
-                            new java.io.InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
                     String line;
                     while ((line = reader.readLine()) != null && !line.isEmpty()) {
                     }
@@ -1004,8 +1010,8 @@ public class HgRemoteClientCoverageTest {
             int port = serverSocket.getLocalPort();
             Thread serverThread = new Thread(() -> {
                 try (Socket socket = serverSocket.accept()) {
-                    java.io.BufferedReader reader = new java.io.BufferedReader(
-                            new java.io.InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
                     String line;
                     int contentLength = 0;
                     while ((line = reader.readLine()) != null && !line.isEmpty()) {
@@ -1065,7 +1071,7 @@ public class HgRemoteClientCoverageTest {
             client.getChangegroup(List.of("root1"));
 
             assertNotNull(authHeader[0]);
-            String expected = "Basic " + java.util.Base64.getEncoder().encodeToString("carol:pw123".getBytes(StandardCharsets.UTF_8));
+            String expected = "Basic " + Base64.getEncoder().encodeToString("carol:pw123".getBytes(StandardCharsets.UTF_8));
             assertEquals(expected, authHeader[0]);
             }
         } finally {
@@ -1206,7 +1212,7 @@ public class HgRemoteClientCoverageTest {
     @Test
     public void pushDelegatesToV2AndReturnsSuccessfully() throws Exception {
         try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        java.lang.reflect.Field delegateField = HgRemoteClient.class.getDeclaredField("delegate");
+        Field delegateField = HgRemoteClient.class.getDeclaredField("delegate");
         delegateField.setAccessible(true);
         delegateField.set(client, new SucceedingHgRemoteClientV2Stub("http://127.0.0.1/"));
 
@@ -1271,7 +1277,7 @@ public class HgRemoteClientCoverageTest {
             client.push(new byte[]{1, 2, 3}, List.of("head1"));
 
             assertNotNull(authHeader[0]);
-            String expected = "Basic " + java.util.Base64.getEncoder().encodeToString("dave:pw456".getBytes(StandardCharsets.UTF_8));
+            String expected = "Basic " + Base64.getEncoder().encodeToString("dave:pw456".getBytes(StandardCharsets.UTF_8));
             assertEquals(expected, authHeader[0]);
             }
         } finally {

@@ -29,6 +29,12 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import io.github.search5.hg4j.lfs.HgLfsPointer;
+import java.io.ByteArrayOutputStream;
+import java.io.FileWriter;
+import java.io.Writer;
+import java.util.Collections;
+import java.util.zip.Deflater;
 
 /**
  * Core implementation for Mercurial Revlog (index .i and data .d files).
@@ -452,7 +458,7 @@ public class Revlog {
     public synchronized Map<Integer, byte[]> getSidedata(int rev) throws IOException {
         IndexRecord rec = getIndexRecord(rev);
         if (rec.getSidedataCompLen() <= 0) {
-            return java.util.Collections.emptyMap();
+            return Collections.emptyMap();
         }
         File sdaFile = index.getResolvedSidedataFile();
         if (sdaFile == null || !sdaFile.exists()) {
@@ -810,7 +816,7 @@ public class Revlog {
                 return lfsMeta;
             }
             try {
-                io.github.search5.hg4j.lfs.HgLfsPointer pointer = io.github.search5.hg4j.lfs.HgLfsPointer.parse(rawPointer);
+                HgLfsPointer pointer = HgLfsPointer.parse(rawPointer);
                 for (Map.Entry<String, String> entry : pointer.getExtra().entrySet()) {
                     if (entry.getKey().startsWith("x-hg-")) {
                         lfsMeta.put(entry.getKey().substring("x-hg-".length()), entry.getValue());
@@ -1082,7 +1088,7 @@ public class Revlog {
             String dataEntry = storeRelative.substring(0, storeRelative.length() - ".i".length()) + ".d";
             List<String> existing = Files.readAllLines(fncacheFile.toPath());
             if (!existing.contains(dataEntry)) {
-                try (java.io.Writer w = new java.io.FileWriter(fncacheFile, true)) {
+                try (Writer w = new FileWriter(fncacheFile, true)) {
                     w.write(dataEntry);
                     w.write("\n");
                 }
@@ -1126,10 +1132,10 @@ public class Revlog {
      * default settings -- the same codec real hg itself falls back to.
      */
     private static byte[] deflateNoMarker(byte[] data) {
-        java.util.zip.Deflater deflater = new java.util.zip.Deflater();
+        Deflater deflater = new Deflater();
         deflater.setInput(data);
         deflater.finish();
-        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(data.length);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream(data.length);
         byte[] buf = new byte[1024];
         try {
             while (!deflater.finished()) {

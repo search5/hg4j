@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.dirstate.Dirstate;
+import java.util.Arrays;
 
 /**
  * Tests for {@link ManifestCommand}, the porcelain wrapper for {@code hg manifest}.
@@ -289,9 +291,9 @@ public class ManifestCommandTest {
             hg.commit().setAuthor("tester <test@example.com>").setMessage("rev0").call();
         }
 
-        io.github.search5.hg4j.dirstate.Dirstate dirstate = repository.getDirstate();
+        Dirstate dirstate = repository.getDirstate();
         byte[] unknownNode = new byte[20];
-        java.util.Arrays.fill(unknownNode, (byte) 0xAB);
+        Arrays.fill(unknownNode, (byte) 0xAB);
         dirstate.setParents(unknownNode, new byte[20]);
         repository.writeDirstate(dirstate);
 

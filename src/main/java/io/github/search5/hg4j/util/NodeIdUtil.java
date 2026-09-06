@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.io.ByteArrayOutputStream;
 
 
 /**
@@ -324,7 +325,7 @@ public final class NodeIdUtil {
     /** Byte-wise inverse of {@link #encodeFnameBytes} (and, transparently, {@link #auxEncode}'s
      * additional {@code ~xx} escapes -- see {@link #decodeStoreDataPath}). */
     private static byte[] decodeFnameBytes(String s) {
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(s.length());
+        ByteArrayOutputStream out = new ByteArrayOutputStream(s.length());
         int i = 0;
         int n = s.length();
         while (i < n) {

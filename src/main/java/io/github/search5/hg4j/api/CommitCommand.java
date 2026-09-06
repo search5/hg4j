@@ -38,7 +38,6 @@ import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.phase.PhaseRoots;
 import io.github.search5.hg4j.submodule.GitSubrepoUtil;
 import io.github.search5.hg4j.submodule.SvnSubrepoUtil;
-import io.github.search5.hg4j.treewalk.ManifestTreeIterator;
 import io.github.search5.hg4j.treewalk.TreeWalk;
 import io.github.search5.hg4j.treewalk.WorkingDirTreeIterator;
 import java.nio.ByteBuffer;
@@ -48,6 +47,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.TimeZone;
 import java.util.UUID;
+import io.github.search5.hg4j.storage.SidedataCodec;
+import static io.github.search5.hg4j.storage.SidedataCodec.SD_FILES;
+import java.util.HashSet;
+import java.util.TreeSet;
 
 /**
  * Commits tracked changes to the repository history.
@@ -216,7 +219,7 @@ public class CommitCommand {
 
         fileSizes = new HashMap<>();
         docketBackups = new HashMap<>();
-        truncateOnlyEntries = new java.util.HashSet<>();
+        truncateOnlyEntries = new HashSet<>();
         File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
         byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
         // N-2: snapshot the dirstate-v2 data file this backup's docket references (if any), so a
@@ -931,8 +934,8 @@ public class CommitCommand {
             if (repository.isSidedataCopies()) {
                 byte[] sdFiles = ChangingFiles.encode(sdAdded, sdRemoved, Set.of(), Set.of(), sdTouched, sdCopiedFromP1, sdCopiedFromP2);
                 if (sdFiles.length > 0) {
-                    sidedataContainer = io.github.search5.hg4j.storage.SidedataCodec.serialize(
-                            Map.of(io.github.search5.hg4j.storage.SidedataCodec.SD_FILES, sdFiles));
+                    sidedataContainer = SidedataCodec.serialize(
+                            Map.of(SD_FILES, sdFiles));
                 }
             }
             byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, declaredClRev1, declaredClRev2, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
@@ -1670,7 +1673,7 @@ public class CommitCommand {
                                          Set<String> fncachePaths) throws IOException {
         String prefix = dir.isEmpty() ? "" : dir + "/";
         Map<String, String> lines = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-        java.util.TreeSet<String> subdirNames = new java.util.TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        TreeSet<String> subdirNames = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
         for (Map.Entry<String, String> e : flatManifest.entrySet()) {
             String path = e.getKey();
             if (!path.startsWith(prefix)) {

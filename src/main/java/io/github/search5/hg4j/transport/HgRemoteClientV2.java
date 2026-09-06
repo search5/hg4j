@@ -26,6 +26,9 @@ import java.net.Proxy;
 import java.net.URI;
 import java.util.Base64;
 import java.util.LinkedHashSet;
+import java.util.ArrayDeque;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Real hg wireprotocol v2 client: capability discovery via the {@code X-HgUpgrade-1}/
@@ -500,8 +503,8 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
                 rootGroup.entries = rootEntries;
                 bundle.manifestGroups.add(rootGroup);
 
-                java.util.ArrayDeque<String> queue = new java.util.ArrayDeque<>(subdirNodeHexesInOrder.keySet());
-                java.util.Set<String> queued = new java.util.HashSet<>(subdirNodeHexesInOrder.keySet());
+                ArrayDeque<String> queue = new ArrayDeque<>(subdirNodeHexesInOrder.keySet());
+                Set<String> queued = new HashSet<>(subdirNodeHexesInOrder.keySet());
                 while (!queue.isEmpty()) {
                     String dir = queue.poll();
                     List<Object> dirNodes = new ArrayList<>();

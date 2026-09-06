@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.ArrayDeque;
 
 /**
  * Phase command for querying or setting the SCM phase (public, draft, secret) of specific
@@ -198,7 +199,7 @@ public class PhaseCommand {
 
     private static boolean[] ancestorsOrSelf(int rev, Revlog changelog) {
         boolean[] visited = new boolean[changelog.getRevisionCount()];
-        java.util.ArrayDeque<Integer> stack = new java.util.ArrayDeque<>();
+        ArrayDeque<Integer> stack = new ArrayDeque<>();
         stack.push(rev);
         visited[rev] = true;
         while (!stack.isEmpty()) {

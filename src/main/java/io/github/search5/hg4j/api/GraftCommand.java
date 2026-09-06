@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.nio.file.Path;
 
 /**
  * Graft command (equivalent to git cherry-pick) for Mercurial repositories.
@@ -270,7 +271,7 @@ public class GraftCommand {
                     }
                     String target = new String(fileContent, StandardCharsets.UTF_8).trim();
                     try {
-                        Files.createSymbolicLink(wFile.toPath(), java.nio.file.Path.of(target));
+                        Files.createSymbolicLink(wFile.toPath(), Path.of(target));
                     } catch (Exception e) {
                         Files.write(wFile.toPath(), fileContent);
                     }

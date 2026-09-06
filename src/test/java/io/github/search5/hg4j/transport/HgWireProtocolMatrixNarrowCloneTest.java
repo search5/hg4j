@@ -21,6 +21,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Backlog item 39, wave 5 (wire matrix track): {@link NarrowCloneCommand} across the same 21-combo
@@ -118,7 +119,7 @@ public class HgWireProtocolMatrixNarrowCloneTest {
         HgTestUtils.hg(tempDir.toFile(), "init", repoDir.getAbsolutePath());
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[server]\ncompressionengines = " + compression + "\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         writeFile(repoDir, "srcdir/A.java", "class A");
         writeFile(repoDir, "srcdir/sub/B.java", "class B");
         writeFile(repoDir, "docs/readme.txt", "doc readme");

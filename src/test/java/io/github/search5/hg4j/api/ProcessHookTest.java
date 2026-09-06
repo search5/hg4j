@@ -22,6 +22,7 @@ import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
+import java.util.ArrayList;
 
 public class ProcessHookTest {
 
@@ -137,7 +138,7 @@ public class ProcessHookTest {
         Map<String, Object> context = new HashMap<>();
 
         Logger logger = Logger.getLogger(ProcessHook.class.getName());
-        List<String> capturedMessages = new java.util.ArrayList<>();
+        List<String> capturedMessages = new ArrayList<>();
         Handler handler = new Handler() {
             @Override
             public void publish(LogRecord record) {

@@ -13,6 +13,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import io.github.search5.hg4j.util.NodeIdUtil;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -62,14 +63,14 @@ public class MergeRealHgInteropTest {
 
         // hg4j로 병합: dev(devTipNode) <- default(defaultTipNode)
         HgTestUtils.hg(repoDir, "update", "dev");
-        MergeCommand.MergeResult result = new MergeCommand(repo).setNodeId(io.github.search5.hg4j.util.NodeIdUtil.fromHex(defaultTipNode)).call();
+        MergeCommand.MergeResult result = new MergeCommand(repo).setNodeId(NodeIdUtil.fromHex(defaultTipNode)).call();
         assertFalse(result.isConflicted(), "unrelated-file-only merge must not conflict");
 
         byte[] mergeNode = new CommitCommand(repo)
                 .setAuthor("T <t@example.com>")
                 .setMessage("merge default into dev using hg4j")
                 .call();
-        String mergeHex = io.github.search5.hg4j.util.NodeIdUtil.toHex(mergeNode);
+        String mergeHex = NodeIdUtil.toHex(mergeNode);
 
         String verify = HgTestUtils.hg(repoDir, "verify");
         assertFalse(verify.contains("integrity error"), "Repository integrity error!\n" + verify);
@@ -116,7 +117,7 @@ public class MergeRealHgInteropTest {
         HgTestUtils.hg(repoDir, "commit", "-m", "c1B modifies f on default");
         String p1Node = HgTestUtils.hg(repoDir, "log", "-r", ".", "--template", "{node}");
 
-        MergeCommand mergeCmd = new MergeCommand(repo).setNodeId(io.github.search5.hg4j.util.NodeIdUtil.fromHex(devTipNode));
+        MergeCommand mergeCmd = new MergeCommand(repo).setNodeId(NodeIdUtil.fromHex(devTipNode));
         MergeCommand.MergeResult result = mergeCmd.call();
         assertFalse(result.isConflicted());
 

@@ -12,6 +12,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -131,7 +132,7 @@ public class HgHttpUnbundleHashTest {
     }
 
     private static Map<String, String> decodeQuery(String query) {
-        Map<String, String> args = new java.util.LinkedHashMap<>();
+        Map<String, String> args = new LinkedHashMap<>();
         for (String pair : query.split("&")) {
             int eq = pair.indexOf('=');
             if (eq == -1) continue;

@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.NoSuchElementException;
 
 /**
  * Coverage-focused tests for {@link ChangesetGraph}, targeting branches/lines left uncovered by
@@ -194,7 +195,7 @@ public class ChangesetGraphCoverageTest {
     void testLazyAncestorsDefaultNextThrowsAfterExhaustion() {
         Iterator<Integer> it = graph.lazyAncestors(-1, parentLookup);
         assertFalse(it.hasNext());
-        assertThrows(java.util.NoSuchElementException.class, it::next);
+        assertThrows(NoSuchElementException.class, it::next);
     }
 
     /**

@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -245,7 +246,7 @@ public class HgHttpWireServerCoverageTest {
 
         List<Object> objs = Wire2Transport.readCommandResponse(Wire2Transport.toStream(response));
         assertEquals(1, objs.size());
-        assertArrayEquals(java.util.Arrays.copyOf(commitNode, 20), Cbor.asBytes(objs.get(0)));
+        assertArrayEquals(Arrays.copyOf(commitNode, 20), Cbor.asBytes(objs.get(0)));
     }
 
     @Test
@@ -281,7 +282,7 @@ public class HgHttpWireServerCoverageTest {
         assertEquals(1, branchToHeads.size());
         List<Object> heads = Cbor.asList(branchToHeads.get("default"));
         assertEquals(1, heads.size());
-        assertArrayEquals(java.util.Arrays.copyOf(commitNode, 20), Cbor.asBytes(heads.get(0)));
+        assertArrayEquals(Arrays.copyOf(commitNode, 20), Cbor.asBytes(heads.get(0)));
     }
 
     @Test

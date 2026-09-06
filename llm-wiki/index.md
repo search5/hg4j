@@ -98,6 +98,7 @@ status: current
 | [decisions/bookmark-full-support-plan.md](decisions/bookmark-full-support-plan.md) | Bookmark commit/update/pull/push 완전 연동 — ✅ **2026-09-01 완료**, 실제 hg CLI 검증 + 데이터 손실 버그 2건 발견·수정 |
 | [decisions/journaling-crash-recovery-plan.md](decisions/journaling-crash-recovery-plan.md) | 트랜잭션 저널링·rollback — ✅ **2026-09-01 완료**, pull 후 rollback이 아예 동작 안 하던 갭 발견·수정 |
 | [decisions/obsolescence-marker-completeness-plan.md](decisions/obsolescence-marker-completeness-plan.md) | Obsolescence marker — ✅ **2026-09-01 완료**, obsstore 바이너리 포맷 자체가 틀렸던 것을 발견해 전면 재작성(실제 hg와 양방향 검증) |
+| [decisions/interop-test-fixture-caching-tradeoff.md](decisions/interop-test-fixture-caching-tradeoff.md) | Interop 테스트를 픽스처로 캐싱할지에 대한 결정 — 포맷/바이트 검증은 캐싱 가능, 프로토콜·행동 검증은 라이브 유지 권장(구현 안 함, 질문에 대한 답변만 문서화) |
 
 ## 최상위 데이터 문서 (2026-09-06 신설)
 | 페이지 | 요약 |

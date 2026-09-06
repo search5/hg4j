@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.ArrayList;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -152,7 +153,7 @@ public class WorkingDirWalkTest {
             hg.commit().setAuthor("tester").setMessage("Commit 1").call();
 
             WorkingDirWalk walk = hg.walkWorkingDir();
-            List<String> paths = new java.util.ArrayList<>();
+            List<String> paths = new ArrayList<>();
             // A for-each loop calls List.iterator(), which the anonymous
             // AbstractList overrides to return a fresh lazyEntries() iterator
             // rather than driving its own cache.

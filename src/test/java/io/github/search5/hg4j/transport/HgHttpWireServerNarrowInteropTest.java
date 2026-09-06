@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.Random;
 
 /**
  * Backlog item 40, server direction: a REAL hg CLIENT narrow-cloning from an {@link
@@ -68,7 +69,7 @@ public class HgHttpWireServerNarrowInteropTest {
         // zlib-deflated on the wire (HgHttpWireServer#deflate), and a repeated-byte filler would
         // compress away to almost nothing, making the "full vs narrow response size" comparison
         // below meaningless regardless of whether narrow filtering actually did anything.
-        java.util.Random rnd = new java.util.Random(42);
+        Random rnd = new Random(42);
         for (int i = 0; i < 80; i++) {
             byte[] filler = new byte[20_000];
             rnd.nextBytes(filler);

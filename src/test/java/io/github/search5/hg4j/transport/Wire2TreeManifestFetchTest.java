@@ -19,6 +19,8 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.util.NodeIdUtil;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -112,19 +114,19 @@ class Wire2TreeManifestFetchTest {
     }
 
     private static byte[] headNode(HgRepository repo) throws Exception {
-        io.github.search5.hg4j.storage.Revlog changelog = repo.getRevlog(
+        Revlog changelog = repo.getRevlog(
                 new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
         return changelog.getIndexRecord(changelog.getRevisionCount() - 1).getNodeId();
     }
 
     private static byte[] getFileContent(HgRepository repo, String path, String hexNodeAndFlag) throws Exception {
         String hex = hexNodeAndFlag.length() >= 40 ? hexNodeAndFlag.substring(0, 40) : hexNodeAndFlag;
-        byte[] node = io.github.search5.hg4j.util.NodeIdUtil.fromHex(hex);
-        String encoded = io.github.search5.hg4j.util.NodeIdUtil.encodeFname("data/" + path);
+        byte[] node = NodeIdUtil.fromHex(hex);
+        String encoded = NodeIdUtil.encodeFname("data/" + path);
         File flIdx = new File(repo.getStoreDir(), encoded + ".i");
         File flDat = new File(repo.getStoreDir(), encoded + ".d");
-        io.github.search5.hg4j.storage.Revlog filelog = repo.getRevlog(flIdx, flDat);
-        int rev = io.github.search5.hg4j.util.NodeIdUtil.findRevisionByNodeId(filelog, node);
+        Revlog filelog = repo.getRevlog(flIdx, flDat);
+        int rev = NodeIdUtil.findRevisionByNodeId(filelog, node);
         assertTrue(rev >= 0, "filelog revision not found for " + path);
         return filelog.getRevisionContent(rev);
     }

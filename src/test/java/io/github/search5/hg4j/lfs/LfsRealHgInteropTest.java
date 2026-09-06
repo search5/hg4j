@@ -29,6 +29,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import com.sun.net.httpserver.HttpServer;
+import io.github.search5.hg4j.util.NodeIdUtil;
+import java.nio.file.StandardOpenOption;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -119,7 +121,7 @@ public class LfsRealHgInteropTest {
         });
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n",
-                java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.APPEND);
 
         byte[] originalContent = new byte[4096];
         new Random(42).nextBytes(originalContent);
@@ -177,7 +179,7 @@ public class LfsRealHgInteropTest {
         });
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n",
-                java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.APPEND);
 
         byte[] originalContent = new byte[2048];
         new Random(7).nextBytes(originalContent);
@@ -218,7 +220,7 @@ public class LfsRealHgInteropTest {
         });
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n",
-                java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.APPEND);
 
         byte[] originalContent = new byte[4096];
         new Random(99).nextBytes(originalContent);
@@ -249,7 +251,7 @@ public class LfsRealHgInteropTest {
     @Test
     public void hg4jCommitsLfsFileAndRealHgSeesFullContent(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
-        new io.github.search5.hg4j.api.InitCommand().setDirectory(repoDir).call();
+        new InitCommand().setDirectory(repoDir).call();
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n");
 
@@ -297,7 +299,7 @@ public class LfsRealHgInteropTest {
         });
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\ntrack = all()\n[experimental]\nlfs.disableusercache = True\n",
-                java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.APPEND);
 
         Files.writeString(new File(repoDir, "a.txt").toPath(), "line1\nline2\nline3\n");
         HgTestUtils.hg(repoDir, "add", "a.txt");
@@ -339,8 +341,8 @@ public class LfsRealHgInteropTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog changelog = repo.getRevlog(clIdx, clDat);
-        String hg4jRev0Hash = io.github.search5.hg4j.util.NodeIdUtil.toHex(changelog.getIndexRecord(lines.get(0).getRevision()).getNodeId()).substring(0, rev0Hash.length());
-        String hg4jRev1Hash = io.github.search5.hg4j.util.NodeIdUtil.toHex(changelog.getIndexRecord(lines.get(3).getRevision()).getNodeId()).substring(0, rev1Hash.length());
+        String hg4jRev0Hash = NodeIdUtil.toHex(changelog.getIndexRecord(lines.get(0).getRevision()).getNodeId()).substring(0, rev0Hash.length());
+        String hg4jRev1Hash = NodeIdUtil.toHex(changelog.getIndexRecord(lines.get(3).getRevision()).getNodeId()).substring(0, rev1Hash.length());
         assertEquals(rev0Hash, hg4jRev0Hash, "hg4j's line 1-3 attribution must name the same changeset real hg did");
         assertEquals(rev1Hash, hg4jRev1Hash, "hg4j's line 4 attribution must name the same changeset real hg did");
     }
@@ -409,7 +411,7 @@ public class LfsRealHgInteropTest {
         Files.writeString(new File(serverRepoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\ntrack = all()\n[web]\npush_ssl = false\n"
                         + "[experimental]\nlfs.disableusercache = true\n",
-                java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.APPEND);
         byte[] originalContent = new byte[3000];
         new Random(2026).nextBytes(originalContent);
         Files.write(new File(serverRepoDir, "big.bin").toPath(), originalContent);
@@ -534,7 +536,7 @@ public class LfsRealHgInteropTest {
         });
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\ntrack = all()\nusercache = " + usercacheDir.getAbsolutePath() + "\n",
-                java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.APPEND);
 
         byte[] originalContent = "content real hg puts in a custom usercache dir".getBytes(StandardCharsets.UTF_8);
         Files.write(new File(repoDir, "big.bin").toPath(), originalContent);
@@ -580,7 +582,7 @@ public class LfsRealHgInteropTest {
         Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
                 "[extensions]\nlfs =\n[lfs]\ntrack = all()\nusercache = " + usercacheDir.getAbsolutePath()
                         + "\n[experimental]\nlfs.disableusercache = yes\n",
-                java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.APPEND);
 
         Files.write(new File(repoDir, "big.bin").toPath(), "disabled usercache content".getBytes(StandardCharsets.UTF_8));
         HgTestUtils.hg(repoDir, "add", "big.bin");

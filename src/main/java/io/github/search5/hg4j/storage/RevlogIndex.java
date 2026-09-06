@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.security.SecureRandom;
 
 /**
  * Class responsible for managing and parsing the index (.i) file of a revlog.
@@ -173,7 +174,7 @@ public class RevlogIndex {
         this.versionHeader = asChangelogV2 ? MAGIC_CHANGELOGV2 : MAGIC_REVLOGV2;
         this.radix = deriveRadix(idxFile.getName());
 
-        java.security.SecureRandom rnd = new java.security.SecureRandom();
+        SecureRandom rnd = new SecureRandom();
         String indexUuid = randomUid(rnd);
         String dataUuid = randomUid(rnd);
         String sidedataUuid = randomUid(rnd);
@@ -233,7 +234,7 @@ public class RevlogIndex {
 
     private static final int UID_SIZE = 8;
 
-    private static String randomUid(java.security.SecureRandom rnd) {
+    private static String randomUid(SecureRandom rnd) {
         byte[] raw = new byte[UID_SIZE / 2];
         rnd.nextBytes(raw);
         StringBuilder sb = new StringBuilder(UID_SIZE);

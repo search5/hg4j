@@ -20,6 +20,9 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -114,7 +117,7 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
             test.run(containerName, workDir);
         } finally {
             try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
             } catch (Exception ignored) {
                 // best effort
             }
@@ -162,15 +165,15 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        List<java.util.Map.Entry<String, List<String>>> dirstates = List.of(
-                java.util.Map.entry("dirstate1", List.<String>of()), java.util.Map.entry("dirstate2", DIRSTATE_V2));
-        List<java.util.Map.Entry<String, List<String>>> changelogs = List.of(
-                java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2),
-                java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
+        List<Map.Entry<String, List<String>>> dirstates = List.of(
+                Map.entry("dirstate1", List.<String>of()), Map.entry("dirstate2", DIRSTATE_V2));
+        List<Map.Entry<String, List<String>>> changelogs = List.of(
+                Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2),
+                Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
 
         for (var cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                    java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+            for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                    Map.entry("treemanifest", TREEMANIFEST))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(DIRSTATE_V2);
                 args.addAll(cl.getValue());
@@ -181,8 +184,8 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
 
         for (var dirstate : dirstates) {
             for (var cl : changelogs) {
-                for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                        java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+                for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                        Map.entry("treemanifest", TREEMANIFEST))) {
                     List<String> args = new ArrayList<>();
                     args.addAll(dirstate.getValue());
                     args.addAll(cl.getValue());
@@ -226,7 +229,7 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
         for (String l : out.split("\n")) {
             lines.add(RealManifestLine.parse(l));
         }
-        lines.sort(java.util.Comparator.comparing(RealManifestLine::path));
+        lines.sort(Comparator.comparing(RealManifestLine::path));
         return lines;
     }
 
@@ -317,7 +320,7 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
     private static void assertManifestMatches(HgRepository repo, String container, String repoRelPath, String rev, RequirementCombo combo) throws Exception {
         List<RealManifestLine> expected = realManifest(container, repoRelPath, rev);
         List<ManifestCommand.ManifestEntry> actual = new ManifestCommand(repo).setRevision(rev).call();
-        actual.sort(java.util.Comparator.comparing(ManifestCommand.ManifestEntry::getPath));
+        actual.sort(Comparator.comparing(ManifestCommand.ManifestEntry::getPath));
 
         List<String> expectedPaths = expected.stream().map(RealManifestLine::path).collect(Collectors.toList());
         List<String> actualPaths = actual.stream().map(ManifestCommand.ManifestEntry::getPath).collect(Collectors.toList());

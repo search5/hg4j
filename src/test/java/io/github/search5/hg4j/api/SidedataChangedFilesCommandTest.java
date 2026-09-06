@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -93,7 +94,7 @@ public class SidedataChangedFilesCommandTest {
 
         assertEquals("b.txt", files.getCopySource("d.txt"));
         assertNull(files.getCopySource("c.txt"), "c.txt was freshly added, not copied");
-        assertTrue(files.getAdded().containsAll(java.util.Set.of("c.txt", "d.txt")));
+        assertTrue(files.getAdded().containsAll(Set.of("c.txt", "d.txt")));
     }
 
     @Test
@@ -105,6 +106,6 @@ public class SidedataChangedFilesCommandTest {
 
         assertTrue(files.getCopiedFromP1().isEmpty());
         assertTrue(files.getCopiedFromP2().isEmpty());
-        assertEquals(java.util.Set.of("a.txt"), files.getAdded());
+        assertEquals(Set.of("a.txt"), files.getAdded());
     }
 }

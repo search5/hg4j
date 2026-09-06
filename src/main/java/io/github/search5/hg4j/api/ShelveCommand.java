@@ -29,6 +29,10 @@ import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import io.github.search5.hg4j.bundle.Bundle2Parser;
+import io.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 
 /**
  * Porcelain command to shelve and unshelve local working copy changes.
@@ -435,7 +439,7 @@ public class ShelveCommand {
             // which real hg's bundle2 CHANGEGROUP part handler accepts regardless of local repo
             // format (it only requires the part's own `version` parameter, matching
             // Bundle2Parser.wrapChangegroupInBundle2's own javadoc).
-            java.io.ByteArrayOutputStream rawCg = new java.io.ByteArrayOutputStream();
+            ByteArrayOutputStream rawCg = new ByteArrayOutputStream();
             try (DataOutputStream dos = new DataOutputStream(rawCg)) {
                 // Changelog group
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
@@ -459,7 +463,7 @@ public class ShelveCommand {
                 }
                 writeTerminalChunk(dos);
             }
-            byte[] wrappedBundle = io.github.search5.hg4j.bundle.Bundle2Parser.wrapChangegroupInBundle2(rawCg.toByteArray(), "01");
+            byte[] wrappedBundle = Bundle2Parser.wrapChangegroupInBundle2(rawCg.toByteArray(), "01");
             Files.write(hgBundleFile.toPath(), wrappedBundle);
 
             // Real hg's own shelve also writes a minimal "<name>.shelve" info file (a single
@@ -522,12 +526,12 @@ public class ShelveCommand {
         byte[] bundleFileBytes = Files.readAllBytes(hgBundleFile.toPath());
         if (bundleFileBytes.length >= 4 && bundleFileBytes[0] == 'H' && bundleFileBytes[1] == 'G'
                 && bundleFileBytes[2] == '2' && bundleFileBytes[3] == '0') {
-            io.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 ext =
-                    io.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(
-                            new java.io.ByteArrayInputStream(bundleFileBytes));
-            bundle = ChangegroupParser.parseBundle(new java.io.ByteArrayInputStream(ext.changegroupBytes), ext.cgVersion);
+            ExtractedBundle2 ext =
+                    Bundle2Parser.extractChangegroupDetailed(
+                            new ByteArrayInputStream(bundleFileBytes));
+            bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(ext.changegroupBytes), ext.cgVersion);
         } else {
-            bundle = ChangegroupParser.parseBundle(new java.io.ByteArrayInputStream(bundleFileBytes));
+            bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(bundleFileBytes));
         }
         // Real hg's own shelve bundle is not always a single-commit changegroup: `writebundle()`
         // bundles the outgoing set for `mutableancestors(shelvectx)` (the shelved commit AND any

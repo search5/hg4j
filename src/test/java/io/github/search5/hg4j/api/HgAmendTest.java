@@ -9,6 +9,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.nio.file.Files;
 import java.util.List;
+import io.github.search5.hg4j.storage.Revlog;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -99,10 +101,10 @@ public class HgAmendTest {
             byte[] amendedNode = hg.amend().call();
             assertNotNull(amendedNode);
 
-            io.github.search5.hg4j.storage.Revlog changelog = new io.github.search5.hg4j.storage.Revlog(
+            Revlog changelog = new Revlog(
                     new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
             byte[] content = changelog.getRevisionContent(changelog.getRevisionCount() - 1);
-            String text = new String(content, java.nio.charset.StandardCharsets.UTF_8);
+            String text = new String(content, StandardCharsets.UTF_8);
             String[] lines = text.split("\n", -1);
             assertEquals("Developer", lines[1], "author must be reused from the amended-away commit");
             assertTrue(text.endsWith("Original message"), "message must be reused from the amended-away commit: " + text);

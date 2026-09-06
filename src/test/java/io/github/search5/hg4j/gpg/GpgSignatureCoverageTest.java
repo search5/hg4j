@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.bouncycastle.openpgp.PGPException;
 
 /**
  * Coverage-focused tests for {@link GpgSignature}, targeting error paths and
@@ -188,7 +189,7 @@ public class GpgSignatureCoverageTest {
         GeneralSecurityException ex = assertThrows(GeneralSecurityException.class,
                 () -> sig.verify(content, keyPair.getPublic()));
         assertEquals("Failed to verify OpenPGP signature", ex.getMessage());
-        assertTrue(ex.getCause() instanceof org.bouncycastle.openpgp.PGPException);
+        assertTrue(ex.getCause() instanceof PGPException);
         assertTrue(ex.getCause().getMessage().contains("No PGP signature found"));
     }
 

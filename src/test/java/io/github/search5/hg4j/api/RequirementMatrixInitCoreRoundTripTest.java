@@ -21,6 +21,8 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 /**
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
@@ -70,7 +72,7 @@ public class RequirementMatrixInitCoreRoundTripTest {
         List<Cl> changelogs = List.of(new Cl("cl1", false, false), new Cl("cl2", true, false),
                 new Cl("cl2+sidedata", true, true));
         for (Cl cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", false), java.util.Map.entry("treemanifest", true))) {
+            for (var tm : List.of(Map.entry("flatmanifest", false), Map.entry("treemanifest", true))) {
                 List<String> expected = baseRequires(tm.getValue());
                 if (cl.cl2()) {
                     expected.add("exp-changelog-v2");
@@ -142,7 +144,7 @@ public class RequirementMatrixInitCoreRoundTripTest {
         HgRepository reopened = new HgRepository(repoDir);
         byte[] c1NodeBytes = NodeIdUtil.fromHex(c1Hex);
         byte[] catContent = new CatCommand(reopened).setFile("sub/a.txt").setRevision(NodeIdUtil.toHex(c1NodeBytes)).call();
-        assertEquals("changed by real hg\n", new String(catContent, java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("changed by real hg\n", new String(catContent, StandardCharsets.UTF_8));
 
         assertTrue(reopened.isTreemanifest() == combo.treemanifest(),
                 "hg4j reopening its own init'd repo must see the same treemanifest flag for combo " + combo);

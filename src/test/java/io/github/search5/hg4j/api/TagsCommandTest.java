@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -232,7 +233,7 @@ public class TagsCommandTest {
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
 
         byte[] fakeNode = new byte[20];
-        java.util.Arrays.fill(fakeNode, (byte) 0xCD);
+        Arrays.fill(fakeNode, (byte) 0xCD);
         Files.writeString(new File(repoDir, ".hgtags").toPath(),
                 NodeIdUtil.toHex(fakeNode) + " v0.1\n", StandardCharsets.UTF_8);
 

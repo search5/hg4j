@@ -33,6 +33,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import io.github.search5.hg4j.storage.SidedataCodec;
+import java.util.TreeSet;
 
 /**
  * Porcelain command to push local commits to a remote Mercurial repository.
@@ -299,7 +301,7 @@ public class PushCommand {
                         // already does for pull responses.
                         Map<Integer, byte[]> sidedata = changelog.getSidedata(r);
                         if (sidedata != null && !sidedata.isEmpty()) {
-                            clEntry.sidedata = io.github.search5.hg4j.storage.SidedataCodec.serialize(sidedata);
+                            clEntry.sidedata = SidedataCodec.serialize(sidedata);
                         }
                     }
                     bundle.changelogEntries.add(clEntry);
@@ -588,7 +590,7 @@ public class PushCommand {
             branchByRev[i] = CommitCommand.getBranchOfRevision(changelog, i);
         }
 
-        java.util.TreeSet<String> touchedBranches = new java.util.TreeSet<>();
+        TreeSet<String> touchedBranches = new TreeSet<>();
         for (int r = startRev; r < count; r++) {
             touchedBranches.add(branchByRev[r]);
         }

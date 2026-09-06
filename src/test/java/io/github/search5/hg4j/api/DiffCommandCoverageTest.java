@@ -13,6 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import io.github.search5.hg4j.storage.Revlog;
+import java.lang.reflect.InvocationTargetException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -32,7 +34,7 @@ public class DiffCommandCoverageTest {
         m.setAccessible(true);
         try {
             return m.invoke(target, args);
-        } catch (java.lang.reflect.InvocationTargetException e) {
+        } catch (InvocationTargetException e) {
             if (e.getCause() instanceof Exception) {
                 throw (Exception) e.getCause();
             }
@@ -168,7 +170,7 @@ public class DiffCommandCoverageTest {
         DiffCommand cmd = new DiffCommand(repo);
         @SuppressWarnings("unchecked")
         Map<String, String> result = (Map<String, String>) invokePrivate(cmd, "loadManifest",
-                new Class<?>[]{io.github.search5.hg4j.storage.Revlog.class, int.class},
+                new Class<?>[]{Revlog.class, int.class},
                 changelog, -1);
         assertTrue(result.isEmpty());
     }
@@ -190,7 +192,7 @@ public class DiffCommandCoverageTest {
         DiffCommand cmd = new DiffCommand(repo);
         @SuppressWarnings("unchecked")
         Map<String, String> result = (Map<String, String>) invokePrivate(cmd, "loadManifest",
-                new Class<?>[]{io.github.search5.hg4j.storage.Revlog.class, int.class},
+                new Class<?>[]{Revlog.class, int.class},
                 changelog, 99);
         assertTrue(result.isEmpty());
     }
@@ -212,7 +214,7 @@ public class DiffCommandCoverageTest {
         DiffCommand cmd = new DiffCommand(repo);
         @SuppressWarnings("unchecked")
         Map<String, String> result = (Map<String, String>) invokePrivate(cmd, "loadManifest",
-                new Class<?>[]{io.github.search5.hg4j.storage.Revlog.class, int.class},
+                new Class<?>[]{Revlog.class, int.class},
                 changelog, 0);
         assertTrue(result.containsKey("a.txt"));
     }

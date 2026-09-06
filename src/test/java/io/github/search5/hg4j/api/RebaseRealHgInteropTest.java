@@ -15,6 +15,8 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -138,7 +140,7 @@ public class RebaseRealHgInteropTest {
         pb.directory(repoDir);
         pb.redirectErrorStream(true);
         Process p = pb.start();
-        String output = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         int exit = p.waitFor();
 
         assertEquals(0, exit, "명령 자체는 성공해야 함: " + output);
@@ -190,7 +192,7 @@ public class RebaseRealHgInteropTest {
 
         HgMergeConflictException ex = assertThrows(HgMergeConflictException.class, rebaseCmd::call,
                 "a genuine same-file conflict must pause the rebase instead of silently overwriting it");
-        assertEquals(java.util.List.of("f.txt"), ex.getConflictPaths());
+        assertEquals(List.of("f.txt"), ex.getConflictPaths());
 
         // Byte-for-byte match against real hg 7.2's own default internal:merge conflict markers
         // (verified live, see this file's class javadoc / the top-of-file real-hg repro).
@@ -337,10 +339,10 @@ public class RebaseRealHgInteropTest {
         pb.directory(repoDir);
         pb.redirectErrorStream(true);
         Process p = pb.start();
-        String out = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
         int code = p.waitFor();
         if (code != 0) {
-            throw new AssertionError("hg " + java.util.Arrays.toString(args) + " failed with exit code " + code + ": " + out);
+            throw new AssertionError("hg " + Arrays.toString(args) + " failed with exit code " + code + ": " + out);
         }
         return out;
     }

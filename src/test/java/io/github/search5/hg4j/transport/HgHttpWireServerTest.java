@@ -20,6 +20,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -166,13 +170,13 @@ public class HgHttpWireServerTest {
      */
     @Test
     public void clonebundlesCommandOverRawHttpIsAnEmptyTwoHundredWhenNoManifestFileExistsAtAll() throws Exception {
-        java.net.http.HttpClient httpClient = java.net.http.HttpClient.newHttpClient();
-        java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create(baseUrl() + "/?cmd=clonebundles"))
+        HttpClient httpClient = HttpClient.newHttpClient();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl() + "/?cmd=clonebundles"))
                 .GET()
                 .build();
-        java.net.http.HttpResponse<byte[]> response =
-                httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> response =
+                httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
 
         assertEquals(200, response.statusCode(), "Real hg 7.2 answers a manifest-missing request with 200, not 404");
         assertEquals(0, response.body().length, "Real hg 7.2's body is completely empty when the manifest file is missing");

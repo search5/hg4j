@@ -27,6 +27,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
 
 public class RevlogTest {
 
@@ -982,10 +985,10 @@ public class RevlogTest {
         assertTrue(revlog.isInline(), "a brand-new non-changelog v1 revlog must start inline (backlog #35)");
 
         byte[] p = new byte[20];
-        java.util.Random rnd = new java.util.Random(43);
+        Random rnd = new Random(43);
         byte[] prevNode = p;
         int[] sizes = {10000, 30000, 50000, 70000}; // cumulative crosses 131072 at the 4th revision
-        java.util.List<byte[]> contents = new java.util.ArrayList<>();
+        List<byte[]> contents = new ArrayList<>();
         for (int i = 0; i < sizes.length; i++) {
             byte[] content = new byte[sizes[i]];
             rnd.nextBytes(content); // incompressible, like the real-hg live test, so on-disk size tracks raw size closely
@@ -1031,7 +1034,7 @@ public class RevlogTest {
         Revlog revlog = new Revlog(idxFile, datFile);
         byte[] p = new byte[20];
         byte[] content = new byte[200000];
-        new java.util.Random(999).nextBytes(content);
+        new Random(999).nextBytes(content);
 
         revlog.appendRevision(content, -1, -1, p, p, 0);
 

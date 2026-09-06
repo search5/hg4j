@@ -14,6 +14,8 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.io.IOException;
+import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -170,7 +172,7 @@ public class HgLockCoverageTest {
     public void testStaleLockRecoveryTreatsActualHostnameAsLocalHost(@TempDir Path tempDir) throws Exception {
         // Exercises the localHost.equals(ownerHost) branch of the isLocal OR-chain (as opposed to
         // the literal "localhost"/"127.0.0.1" aliases exercised elsewhere).
-        java.lang.reflect.Method m = HgLock.class.getDeclaredMethod("getLocalHostName");
+        Method m = HgLock.class.getDeclaredMethod("getLocalHostName");
         m.setAccessible(true);
         String realHostName = (String) m.invoke(null);
 
@@ -415,7 +417,7 @@ public class HgLockCoverageTest {
     private static void writeFakeOwner(File lockFile, String ownerText) throws Exception {
         try {
             Files.createSymbolicLink(lockFile.toPath(), Path.of(ownerText));
-        } catch (UnsupportedOperationException | java.io.IOException e) {
+        } catch (UnsupportedOperationException | IOException e) {
             Files.writeString(lockFile.toPath(), ownerText + "\n", StandardCharsets.UTF_8);
         }
     }

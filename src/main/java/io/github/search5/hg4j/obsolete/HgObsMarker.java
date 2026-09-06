@@ -10,6 +10,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.io.FileWriter;
+import java.nio.file.Files;
 
 /**
  * Represents a single Obsolescence Marker (Evolve mechanism).
@@ -171,13 +173,13 @@ public final class HgObsMarker {
         File hgrc = new File(hgDir, "hgrc");
         String existing = "";
         if (hgrc.exists()) {
-            existing = new String(java.nio.file.Files.readAllBytes(hgrc.toPath()), StandardCharsets.UTF_8);
+            existing = new String(Files.readAllBytes(hgrc.toPath()), StandardCharsets.UTF_8);
             if (existing.contains("createmarkers") || existing.contains("evolution")) {
                 return;
             }
         }
         String addition = "[experimental]\nevolution.createmarkers = true\n";
-        try (java.io.FileWriter w = new java.io.FileWriter(hgrc, StandardCharsets.UTF_8, true)) {
+        try (FileWriter w = new FileWriter(hgrc, StandardCharsets.UTF_8, true)) {
             w.write(addition);
         }
     }

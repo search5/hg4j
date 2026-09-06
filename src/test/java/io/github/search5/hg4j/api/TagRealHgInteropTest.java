@@ -17,6 +17,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import io.github.search5.hg4j.dirstate.Dirstate;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -73,7 +75,7 @@ public class TagRealHgInteropTest {
         HgRepository repo = new HgRepository(repoDir);
         List<TagsCommand.Tag> tags = new TagsCommand(repo).call();
         Map<String, String> byName = tags.stream()
-                .collect(java.util.stream.Collectors.toMap(TagsCommand.Tag::getName,
+                .collect(Collectors.toMap(TagsCommand.Tag::getName,
                         t -> NodeIdUtil.toHex(t.getNode())));
 
         String v10RealHex = HgTestUtils.hg(repoDir, "log", "-r", "v2.0", "--template", "{node}");
@@ -340,14 +342,14 @@ public class TagRealHgInteropTest {
         new AddCommand(repo).call();
         byte[] c1 = new CommitCommand(repo).setAuthor("T").setMessage("c1").call();
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
+        Dirstate forkDirstate = repo.getDirstate();
         forkDirstate.setParents(new NodeId(c0), NodeId.NULL);
         repo.writeDirstate(forkDirstate);
         Files.writeString(new File(repoDir, "c.txt").toPath(), "2");
         new AddCommand(repo).call();
         byte[] c2 = new CommitCommand(repo).setAuthor("T").setMessage("c2 (second head)").call();
 
-        io.github.search5.hg4j.dirstate.Dirstate mergeDirstate = repo.getDirstate();
+        Dirstate mergeDirstate = repo.getDirstate();
         mergeDirstate.setParents(new NodeId(c2), new NodeId(c1));
         repo.writeDirstate(mergeDirstate);
         byte[] merge = new CommitCommand(repo).setAuthor("T").setMessage("merge").call();

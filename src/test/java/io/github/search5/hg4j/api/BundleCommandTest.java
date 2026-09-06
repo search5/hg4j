@@ -19,6 +19,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.util.NodeIdUtil;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 
 /**
  * Tests for {@link BundleCommand}, the local-file-writing counterpart of {@code hg bundle}.
@@ -61,7 +64,7 @@ public class BundleCommandTest {
         // structurally-broken (missing every subdirectory) bundle the way it used to.
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         File requiresFile = new File(repo.getHgDir(), "requires");
-        List<String> lines = new java.util.ArrayList<>(Files.readAllLines(requiresFile.toPath()));
+        List<String> lines = new ArrayList<>(Files.readAllLines(requiresFile.toPath()));
         lines.add("treemanifest");
         Files.write(requiresFile.toPath(), lines);
         repo = new HgRepository(tempDir.toFile());
@@ -187,7 +190,7 @@ public class BundleCommandTest {
         File out = tempDir.resolve("out.hg").toFile();
         int count = new BundleCommand(repo).setOutputFile(out)
                 .setBaseRevision("null")
-                .setRevision(io.github.search5.hg4j.util.NodeIdUtil.toHex(r2))
+                .setRevision(NodeIdUtil.toHex(r2))
                 .call();
         assertEquals(2, count, "only r0 and r2 are ancestors of r2; r1 must be excluded");
 
@@ -275,7 +278,7 @@ public class BundleCommandTest {
         assertEquals(2, count);
 
         byte[] header = Files.readAllBytes(out.toPath());
-        assertEquals("HG10GZ", new String(header, 0, 6, java.nio.charset.StandardCharsets.US_ASCII),
+        assertEquals("HG10GZ", new String(header, 0, 6, StandardCharsets.US_ASCII),
                 "gzip-v1 bundle must start with the HG10GZ container header");
 
         File nativeDst = tempDir.resolve("native-dst").toFile();
@@ -300,7 +303,7 @@ public class BundleCommandTest {
         assertEquals(2, count);
 
         byte[] header = Files.readAllBytes(out.toPath());
-        assertEquals("HG10BZ", new String(header, 0, 6, java.nio.charset.StandardCharsets.US_ASCII),
+        assertEquals("HG10BZ", new String(header, 0, 6, StandardCharsets.US_ASCII),
                 "bzip2-v1 bundle must start with the HG10BZ container header");
 
         File nativeDst = tempDir.resolve("native-dst").toFile();

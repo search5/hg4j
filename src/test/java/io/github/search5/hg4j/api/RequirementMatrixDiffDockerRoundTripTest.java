@@ -22,6 +22,8 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import io.github.search5.hg4j.util.NodeIdUtil;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest} for
@@ -106,7 +108,7 @@ public class RequirementMatrixDiffDockerRoundTripTest {
             test.run(containerName, workDir);
         } finally {
             try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
             } catch (Exception ignored) {
                 // best effort
             }
@@ -153,15 +155,15 @@ public class RequirementMatrixDiffDockerRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        List<java.util.Map.Entry<String, List<String>>> dirstates = List.of(
-                java.util.Map.entry("dirstate1", List.<String>of()), java.util.Map.entry("dirstate2", DIRSTATE_V2));
-        List<java.util.Map.Entry<String, List<String>>> changelogs = List.of(
-                java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2),
-                java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
+        List<Map.Entry<String, List<String>>> dirstates = List.of(
+                Map.entry("dirstate1", List.<String>of()), Map.entry("dirstate2", DIRSTATE_V2));
+        List<Map.Entry<String, List<String>>> changelogs = List.of(
+                Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2),
+                Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
 
         for (var cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                    java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+            for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                    Map.entry("treemanifest", TREEMANIFEST))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(DIRSTATE_V2);
                 args.addAll(cl.getValue());
@@ -172,8 +174,8 @@ public class RequirementMatrixDiffDockerRoundTripTest {
 
         for (var dirstate : dirstates) {
             for (var cl : changelogs) {
-                for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                        java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+                for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                        Map.entry("treemanifest", TREEMANIFEST))) {
                     List<String> args = new ArrayList<>();
                     args.addAll(dirstate.getValue());
                     args.addAll(cl.getValue());
@@ -248,8 +250,8 @@ public class RequirementMatrixDiffDockerRoundTripTest {
                     "classification must match real hg's own status, combo " + combo);
 
             List<DiffCommand.DiffEntry> diffsByNode = new DiffCommand(repo)
-                    .setOldRevision(new NodeId(io.github.search5.hg4j.util.NodeIdUtil.fromHex(hex0)))
-                    .setNewRevision(new NodeId(io.github.search5.hg4j.util.NodeIdUtil.fromHex(hex1)))
+                    .setOldRevision(new NodeId(NodeIdUtil.fromHex(hex0)))
+                    .setNewRevision(new NodeId(NodeIdUtil.fromHex(hex1)))
                     .call();
             Map<String, DiffCommand.ChangeType> byPathNode = new HashMap<>();
             for (DiffCommand.DiffEntry e : diffsByNode) {

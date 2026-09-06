@@ -23,6 +23,14 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.FileInputStream;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -116,7 +124,7 @@ public class RequirementMatrixArchiveDockerRoundTripTest {
             test.run(containerName, workDir);
         } finally {
             try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
             } catch (Exception ignored) {
                 // best effort
             }
@@ -159,7 +167,7 @@ public class RequirementMatrixArchiveDockerRoundTripTest {
 
     private static Set<String> zipNames(ZipFile zf) {
         Set<String> names = new TreeSet<>();
-        java.util.Collections.list(zf.getEntries()).forEach(e -> names.add(e.getName()));
+        Collections.list(zf.getEntries()).forEach(e -> names.add(e.getName()));
         return names;
     }
 
@@ -186,15 +194,15 @@ public class RequirementMatrixArchiveDockerRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        List<java.util.Map.Entry<String, List<String>>> dirstates = List.of(
-                java.util.Map.entry("dirstate1", List.<String>of()), java.util.Map.entry("dirstate2", DIRSTATE_V2));
-        List<java.util.Map.Entry<String, List<String>>> changelogs = List.of(
-                java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2),
-                java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
+        List<Map.Entry<String, List<String>>> dirstates = List.of(
+                Map.entry("dirstate1", List.<String>of()), Map.entry("dirstate2", DIRSTATE_V2));
+        List<Map.Entry<String, List<String>>> changelogs = List.of(
+                Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2),
+                Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
 
         for (var cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                    java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+            for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                    Map.entry("treemanifest", TREEMANIFEST))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(DIRSTATE_V2);
                 args.addAll(cl.getValue());
@@ -205,8 +213,8 @@ public class RequirementMatrixArchiveDockerRoundTripTest {
 
         for (var dirstate : dirstates) {
             for (var cl : changelogs) {
-                for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                        java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+                for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                        Map.entry("treemanifest", TREEMANIFEST))) {
                     List<String> args = new ArrayList<>();
                     args.addAll(dirstate.getValue());
                     args.addAll(cl.getValue());
@@ -317,9 +325,9 @@ public class RequirementMatrixArchiveDockerRoundTripTest {
 
             // tar.gz output.
             try (ZipFile oz = new ZipFile(oracleZip);
-                 var fis = new java.io.FileInputStream(hg4jTarGz);
-                 var gzin = new org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(fis);
-                 var tin = new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(gzin)) {
+                 var fis = new FileInputStream(hg4jTarGz);
+                 var gzin = new GzipCompressorInputStream(fis);
+                 var tin = new TarArchiveInputStream(gzin)) {
                 Set<String> oracleNames = zipNames(oz);
                 String archivalName = oracleNames.stream().filter(n -> n.endsWith(".hg_archival.txt")).findFirst().orElseThrow();
                 String prefix = archivalName.substring(0, archivalName.length() - ".hg_archival.txt".length());
@@ -329,9 +337,9 @@ public class RequirementMatrixArchiveDockerRoundTripTest {
                 }
 
                 Set<String> tarRel = new TreeSet<>();
-                java.util.Map<String, byte[]> tarContents = new java.util.HashMap<>();
-                java.util.Map<String, String> tarSymlinks = new java.util.HashMap<>();
-                org.apache.commons.compress.archivers.tar.TarArchiveEntry te;
+                Map<String, byte[]> tarContents = new HashMap<>();
+                Map<String, String> tarSymlinks = new HashMap<>();
+                TarArchiveEntry te;
                 String tarPrefix = null;
                 while ((te = tin.getNextEntry()) != null) {
                     String name = te.getName();

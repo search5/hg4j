@@ -35,6 +35,9 @@ import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 import org.apache.sshd.server.Environment;
+import io.github.search5.hg4j.api.UpdateCommand;
+import io.github.search5.hg4j.errors.HgValidationException;
+import java.io.ByteArrayInputStream;
 
 /**
  * Verifies {@link HgSshClient} against the real {@code hg} CLI as an SSH server (spawned as a
@@ -108,7 +111,7 @@ public class HgSshClientRealHgInteropTest {
                             && bundleBytes[2] == '2' && bundleBytes[3] == '0',
                     "expected a bundle2-framed response (HG20 magic)");
             Bundle2Parser.ExtractedBundle2 ext = Bundle2Parser.extractChangegroupDetailed(
-                    new java.io.ByteArrayInputStream(bundleBytes));
+                    new ByteArrayInputStream(bundleBytes));
             assertNotEquals("01", ext.cgVersion,
                     "negotiation must not silently degrade to legacy bundle1/cg1 against a real SSH server");
         } finally {
@@ -214,13 +217,13 @@ public class HgSshClientRealHgInteropTest {
         File clientDir = tempDir.resolve("client_repo").toFile();
         HgRepository client = Hg.init().setDirectory(clientDir).call();
         new PullCommand(client).setSource(sshUrl(serverRepoDir)).call();
-        new io.github.search5.hg4j.api.UpdateCommand(client).setRevision(baseHex).call();
+        new UpdateCommand(client).setRevision(baseHex).call();
         Files.writeString(new File(clientDir, "other.txt").toPath(), "divergent");
         new AddCommand(client).call();
         new CommitCommand(client).setAuthor("T").setMessage("divergent local head").call();
 
-        io.github.search5.hg4j.errors.HgValidationException ex = assertThrows(
-                io.github.search5.hg4j.errors.HgValidationException.class,
+        HgValidationException ex = assertThrows(
+                HgValidationException.class,
                 () -> new PushCommand(client).setDestination(sshUrl(serverRepoDir)).call(),
                 "push creating a new remote head over SSH must be rejected without --force");
         assertTrue(ex.getMessage().contains("new remote head") || ex.getMessage().contains("new heads"),

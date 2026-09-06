@@ -201,7 +201,7 @@ public class RevertCommand {
         if (entry.getState() == 'm') {
             modified = true;
         } else {
-            io.github.search5.hg4j.api.Status status = new StatusCommand(repository).call();
+            Status status = new StatusCommand(repository).call();
             modified = status.getModified().contains(file);
         }
         if (!modified) {

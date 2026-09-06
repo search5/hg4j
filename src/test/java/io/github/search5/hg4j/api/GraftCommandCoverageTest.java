@@ -19,6 +19,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.errors.HgMergeConflictException;
+import io.github.search5.hg4j.errors.HgValidationException;
+import java.nio.file.Path;
+import java.util.List;
 
 /**
  * Coverage-focused TDD tests for {@link GraftCommand}.
@@ -468,7 +472,7 @@ public class GraftCommandCoverageTest {
         byte[] commitBase = hg.commit().setAuthor("tester").setMessage("base").call();
 
         File link = new File(repo.getDirectory(), "link.txt");
-        Files.createSymbolicLink(link.toPath(), java.nio.file.Path.of("base.txt"));
+        Files.createSymbolicLink(link.toPath(), Path.of("base.txt"));
         hg.add().addFile("link.txt").call();
         byte[] commitLink = hg.commit().setAuthor("tester").setMessage("add symlink").call();
 
@@ -516,7 +520,7 @@ public class GraftCommandCoverageTest {
         // Source branch (off base): link.txt is a symlink instead.
         hg.update().setRevision(NodeIdUtil.toHex(commitBase)).setForce(true).call();
         File link = new File(repo.getDirectory(), "link.txt");
-        Files.createSymbolicLink(link.toPath(), java.nio.file.Path.of("base.txt"));
+        Files.createSymbolicLink(link.toPath(), Path.of("base.txt"));
         hg.add().addFile("link.txt").call();
         byte[] commitSymlink = hg.commit().setAuthor("tester").setMessage("replace with symlink").call();
 
@@ -528,10 +532,10 @@ public class GraftCommandCoverageTest {
         assertTrue(link.exists() && !Files.isSymbolicLink(link.toPath()));
 
         GraftCommand graft = new GraftCommand(repo).setSource(NodeIdUtil.toHex(commitSymlink));
-        io.github.search5.hg4j.errors.HgMergeConflictException ex =
-                assertThrows(io.github.search5.hg4j.errors.HgMergeConflictException.class, graft::call,
+        HgMergeConflictException ex =
+                assertThrows(HgMergeConflictException.class, graft::call,
                         "diverged content on both sides must pause the graft instead of silently overwriting it");
-        assertEquals(java.util.List.of("link.txt"), ex.getConflictPaths());
+        assertEquals(List.of("link.txt"), ex.getConflictPaths());
 
         // Aborting must cleanly restore the pre-graft state (mirrors RebaseCommand#abort()).
         new GraftCommand(repo).abort();
@@ -605,9 +609,9 @@ public class GraftCommandCoverageTest {
         hg.commit().setAuthor("tester").setMessage("dest modifies f (conflicts with source)").call();
 
         GraftCommand graft = new GraftCommand(repo).setSource(NodeIdUtil.toHex(commitSource));
-        io.github.search5.hg4j.errors.HgMergeConflictException ex =
-                assertThrows(io.github.search5.hg4j.errors.HgMergeConflictException.class, graft::call);
-        assertEquals(java.util.List.of("f.txt"), ex.getConflictPaths());
+        HgMergeConflictException ex =
+                assertThrows(HgMergeConflictException.class, graft::call);
+        assertEquals(List.of("f.txt"), ex.getConflictPaths());
         assertEquals("<<<<<<< dest\nline1-dest\n=======\nline1-source\n>>>>>>> source\n",
                 Files.readString(new File(repo.getDirectory(), "f.txt").toPath()));
 
@@ -624,9 +628,9 @@ public class GraftCommandCoverageTest {
         assertEquals("line1-dest\nline1-source\n", Files.readString(new File(repo.getDirectory(), "f.txt").toPath()));
 
         // Nothing left in progress.
-        assertThrows(io.github.search5.hg4j.errors.HgValidationException.class,
+        assertThrows(HgValidationException.class,
                 () -> new GraftCommand(repo).continueGraft());
-        assertThrows(io.github.search5.hg4j.errors.HgValidationException.class,
+        assertThrows(HgValidationException.class,
                 () -> new GraftCommand(repo).abort());
 
         hg.close();

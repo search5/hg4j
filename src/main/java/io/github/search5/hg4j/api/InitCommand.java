@@ -9,6 +9,7 @@ import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgValidationException;
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Initializes a new Mercurial repository.
@@ -224,7 +225,7 @@ public class InitCommand {
         File legacyGuard = new File(hgDir, "00changelog.i");
         if (!legacyGuard.exists()) {
             byte[] suffix = " dummy changelog to prevent using the old repo layout"
-                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                    .getBytes(StandardCharsets.US_ASCII);
             byte[] guardContent = new byte[4 + suffix.length];
             guardContent[0] = 0x00;
             guardContent[1] = 0x00;

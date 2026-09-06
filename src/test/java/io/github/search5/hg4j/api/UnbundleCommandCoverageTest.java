@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.zip.DeflaterOutputStream;
+import java.io.DataOutputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -154,7 +155,7 @@ public class UnbundleCommandCoverageTest {
     /** Minimal HG20 bundle2 stream wrapping {@code changegroupBytes} in a single CHANGEGROUP part. */
     private static byte[] wrapInBundle2(byte[] changegroupBytes) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        java.io.DataOutputStream dos = new java.io.DataOutputStream(out);
+        DataOutputStream dos = new DataOutputStream(out);
 
         dos.write("HG20".getBytes(StandardCharsets.US_ASCII));
         dos.writeInt(0); // empty stream params

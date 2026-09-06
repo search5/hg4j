@@ -24,6 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.util.zip.InflaterInputStream;
 
 /**
  * Narrow interop coverage for the cg4/cg5 changegroup support added 2026-09-03 (see backlog item
@@ -293,10 +297,10 @@ public class ChangegroupV4V5Test {
             throws Exception {
         StringBuilder url = new StringBuilder(remoteUrl);
         url.append("?cmd=getbundle&common=&cg=true");
-        url.append("&heads=").append(java.net.URLEncoder.encode(String.join(" ", heads), StandardCharsets.UTF_8));
-        url.append("&bundlecaps=").append(java.net.URLEncoder.encode(bundleCapsValue, StandardCharsets.UTF_8));
+        url.append("&heads=").append(URLEncoder.encode(String.join(" ", heads), StandardCharsets.UTF_8));
+        url.append("&bundlecaps=").append(URLEncoder.encode(bundleCapsValue, StandardCharsets.UTF_8));
 
-        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URI(url.toString()).toURL().openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URI(url.toString()).toURL().openConnection();
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Accept", "application/mercurial-0.1, application/mercurial-0.2");
         byte[] raw;
@@ -308,8 +312,8 @@ public class ChangegroupV4V5Test {
         // by the standard zlib 2-byte header), otherwise passed through as-is.
         if (raw.length >= 2 && (raw[0] & 0xFF) == 0x78
                 && ((raw[1] & 0xFF) == 0x9C || (raw[1] & 0xFF) == 0x01 || (raw[1] & 0xFF) == 0x5E || (raw[1] & 0xFF) == 0xDA)) {
-            try (java.util.zip.InflaterInputStream iis =
-                         new java.util.zip.InflaterInputStream(new ByteArrayInputStream(raw))) {
+            try (InflaterInputStream iis =
+                         new InflaterInputStream(new ByteArrayInputStream(raw))) {
                 return iis.readAllBytes();
             }
         }

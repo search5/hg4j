@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.Assumptions;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -749,7 +750,7 @@ public class HgRepositoryCoverageTest {
             new CommitCommand(repo).setMessage("c1").call();
 
             boolean setExec = script.setExecutable(true, false);
-            org.junit.jupiter.api.Assumptions.assumeTrue(setExec, "chmod +x not supported on this filesystem");
+            Assumptions.assumeTrue(setExec, "chmod +x not supported on this filesystem");
 
             Files.writeString(new File(repo.getHgDir(), "dirstate").toPath(), "corrupted-on-purpose");
 
@@ -797,7 +798,7 @@ public class HgRepositoryCoverageTest {
             Files.createSymbolicLink(link, target);
             Files.delete(link);
         } catch (Exception e) {
-            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks not supported on this filesystem: " + e);
+            Assumptions.assumeTrue(false, "symlinks not supported on this filesystem: " + e);
         }
     }
 }

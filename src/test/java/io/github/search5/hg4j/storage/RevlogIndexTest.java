@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
+import io.github.search5.hg4j.util.NodeIdUtil;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -699,7 +700,7 @@ public class RevlogIndexTest {
 
         RevlogIndex index = new RevlogIndex(file);
 
-        String prefix0 = io.github.search5.hg4j.util.NodeIdUtil.toHex(node0).substring(0, 2);
+        String prefix0 = NodeIdUtil.toHex(node0).substring(0, 2);
         assertEquals(1, index.findByHexPrefix(prefix0).size());
         assertArrayEquals(node0, index.findByHexPrefix(prefix0).get(0));
 

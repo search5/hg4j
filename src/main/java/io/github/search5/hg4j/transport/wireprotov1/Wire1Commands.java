@@ -18,6 +18,9 @@ import java.util.Map;
 import java.util.TreeMap;
 import io.github.search5.hg4j.api.HgHook;
 import java.util.LinkedHashMap;
+import io.github.search5.hg4j.bundle.Bundle2Parser;
+import io.github.search5.hg4j.transport.HgRemoteConnection.NarrowScope;
+import java.nio.file.Files;
 
 /**
  * Server-side implementations of real hg's wireprotocol v1 commands (transport-agnostic —
@@ -74,7 +77,7 @@ public final class Wire1Commands {
         // bundle2=/httpheader= above.
         return "lookup changegroupsubset branchmap pushkey known getbundle batch httpheader=1024 "
                 + "unbundle=HG10UN,HG10GZ exp-narrow-1 "
-                + io.github.search5.hg4j.bundle.Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05");
+                + Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05");
     }
 
     /**
@@ -107,7 +110,7 @@ public final class Wire1Commands {
      */
     public static Wire1Response clonebundles(HgRepository repo) throws IOException {
         File manifest = new File(repo.getHgDir(), "clonebundles.manifest");
-        byte[] body = manifest.exists() ? java.nio.file.Files.readAllBytes(manifest.toPath()) : new byte[0];
+        byte[] body = manifest.exists() ? Files.readAllBytes(manifest.toPath()) : new byte[0];
         return Wire1Response.bytes(body);
     }
 
@@ -275,10 +278,10 @@ public final class Wire1Commands {
         List<String> bundleCaps = args.containsKey("bundlecaps")
                 ? Arrays.asList(args.get("bundlecaps").split(","))
                 : null;
-        io.github.search5.hg4j.transport.HgRemoteConnection.NarrowScope narrowScope = null;
+        NarrowScope narrowScope = null;
         String narrowArg = args.get("narrow");
         if (narrowArg != null && !narrowArg.equals("0") && !narrowArg.isEmpty()) {
-            narrowScope = new io.github.search5.hg4j.transport.HgRemoteConnection.NarrowScope(
+            narrowScope = new NarrowScope(
                     splitCsvOrEmpty(args.get("includepats")),
                     splitCsvOrEmpty(args.get("excludepats")));
         }
@@ -328,8 +331,8 @@ public final class Wire1Commands {
         int changegroupPartId = -1;
         if (isBundle2Request) {
             try {
-                changegroupPartId = io.github.search5.hg4j.bundle.Bundle2Parser
-                        .extractChangegroupDetailed(new java.io.ByteArrayInputStream(bundleBytes))
+                changegroupPartId = Bundle2Parser
+                        .extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes))
                         .changegroupPartId;
             } catch (Exception noChangegroupPart) {
                 // 실제 hg 스펙(bundle2 파트는 changegroup 하나로 고정돼 있지 않음): 예를 들어
@@ -348,15 +351,15 @@ public final class Wire1Commands {
             if (isBundle2Request) {
                 if (changegroupPartId >= 0) {
                     int cgResult = added ? Math.max(1, result.importedNodeHexes.size()) : 0;
-                    return Wire1Response.streamUncompressed(io.github.search5.hg4j.bundle.Bundle2Parser
+                    return Wire1Response.streamUncompressed(Bundle2Parser
                             .buildChangegroupReplyBundle2(changegroupPartId, cgResult));
                 }
-                return Wire1Response.streamUncompressed(io.github.search5.hg4j.bundle.Bundle2Parser.buildEmptyBundle2Reply());
+                return Wire1Response.streamUncompressed(Bundle2Parser.buildEmptyBundle2Reply());
             }
             return Wire1Response.bytes(((added ? "1\n" : "0\n") + result.status).getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             if (isBundle2Request) {
-                return Wire1Response.streamUncompressed(io.github.search5.hg4j.bundle.Bundle2Parser
+                return Wire1Response.streamUncompressed(Bundle2Parser
                         .buildErrorAbortBundle2(String.valueOf(e.getMessage())));
             }
             return Wire1Response.bytes(("0\n" + e.getMessage()).getBytes(StandardCharsets.UTF_8));

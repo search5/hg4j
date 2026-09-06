@@ -13,6 +13,14 @@ import java.util.Map;
 import io.github.search5.hg4j.revwalk.ChangesetGraph;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.errors.HgValidationException;
+import io.github.search5.hg4j.obsolete.HgObsMarker;
+import io.github.search5.hg4j.obsolete.HgObsolescenceParser;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Commands for bookmark management (listing, creating, or deleting bookmarks).
@@ -287,8 +295,8 @@ public class BookmarkCommand {
         if (startRev == targetRev) {
             return true;
         }
-        java.util.Set<Integer> visited = new java.util.HashSet<>();
-        java.util.Deque<Integer> stack = new java.util.ArrayDeque<>();
+        Set<Integer> visited = new HashSet<>();
+        Deque<Integer> stack = new ArrayDeque<>();
         stack.push(startRev);
         visited.add(startRev);
         while (!stack.isEmpty()) {
@@ -314,15 +322,15 @@ public class BookmarkCommand {
 
     /** All child revisions of every revision in the local changelog, {@code rev -> [children]}. */
     private Map<Integer, List<Integer>> buildChildrenMap(Revlog changelog) throws IOException {
-        Map<Integer, List<Integer>> children = new java.util.HashMap<>();
+        Map<Integer, List<Integer>> children = new HashMap<>();
         int count = changelog.getRevisionCount();
         for (int i = 0; i < count; i++) {
             Revlog.IndexRecord rec = changelog.getIndexRecord(i);
             if (rec.getParent1() >= 0) {
-                children.computeIfAbsent(rec.getParent1(), k -> new java.util.ArrayList<>()).add(i);
+                children.computeIfAbsent(rec.getParent1(), k -> new ArrayList<>()).add(i);
             }
             if (rec.getParent2() >= 0) {
-                children.computeIfAbsent(rec.getParent2(), k -> new java.util.ArrayList<>()).add(i);
+                children.computeIfAbsent(rec.getParent2(), k -> new ArrayList<>()).add(i);
             }
         }
         return children;
@@ -337,11 +345,11 @@ public class BookmarkCommand {
             return Map.of();
         }
         byte[] bytes = Files.readAllBytes(obsstoreFile.toPath());
-        List<io.github.search5.hg4j.obsolete.HgObsMarker> markers = io.github.search5.hg4j.obsolete.HgObsolescenceParser.parse(bytes);
-        Map<String, List<String>> map = new java.util.HashMap<>();
-        for (io.github.search5.hg4j.obsolete.HgObsMarker marker : markers) {
+        List<HgObsMarker> markers = HgObsolescenceParser.parse(bytes);
+        Map<String, List<String>> map = new HashMap<>();
+        for (HgObsMarker marker : markers) {
             String predHex = NodeIdUtil.toHex(marker.getPredecessor());
-            List<String> succHexes = map.computeIfAbsent(predHex, k -> new java.util.ArrayList<>());
+            List<String> succHexes = map.computeIfAbsent(predHex, k -> new ArrayList<>());
             for (byte[] succ : marker.getSuccessors()) {
                 succHexes.add(NodeIdUtil.toHex(succ));
             }

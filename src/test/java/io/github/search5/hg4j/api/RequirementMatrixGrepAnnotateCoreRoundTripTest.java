@@ -18,6 +18,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.Map;
 
 /**
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
@@ -75,8 +76,8 @@ public class RequirementMatrixGrepAnnotateCoreRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        for (var cl : List.of(java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2), java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", TREEMANIFEST_OFF), java.util.Map.entry("treemanifest", TREEMANIFEST_ON))) {
+        for (var cl : List.of(Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2), Map.entry("cl2+sidedata", CL_V2_SIDEDATA))) {
+            for (var tm : List.of(Map.entry("flatmanifest", TREEMANIFEST_OFF), Map.entry("treemanifest", TREEMANIFEST_ON))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(cl.getValue());
                 args.addAll(tm.getValue());

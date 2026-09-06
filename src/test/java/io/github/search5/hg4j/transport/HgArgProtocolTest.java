@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -34,7 +35,7 @@ public class HgArgProtocolTest {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", new HttpHandler() {
             @Override
-            public void handle(HttpExchange exchange) throws java.io.IOException {
+            public void handle(HttpExchange exchange) throws IOException {
                 String query = exchange.getRequestURI().getQuery();
                 if (query != null && query.contains("cmd=capabilities")) {
                     byte[] resp = capabilities.getBytes(StandardCharsets.UTF_8);

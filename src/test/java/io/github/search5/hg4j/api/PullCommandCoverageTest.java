@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import io.github.search5.hg4j.util.NodeIdUtil;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -161,7 +162,7 @@ public class PullCommandCoverageTest {
         assertTrue(imported.isEmpty());
 
         Dirstate dirstate = destRepo.getDirstate();
-        assertTrue(io.github.search5.hg4j.util.NodeIdUtil.isAllZero(dirstate.getParent1()),
+        assertTrue(NodeIdUtil.isAllZero(dirstate.getParent1()),
                 "an empty bundle apply must not touch the dirstate parent");
     }
 }

@@ -23,6 +23,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -225,7 +226,7 @@ public class PushRealHgInteropTest {
             new InitCommand().setDirectory(localDir).call();
             HgRepository local = new HgRepository(localDir);
             new PullCommand(local).setSource(serve.url).call();
-            java.util.Map<String, String> pulledBookmarks = new BookmarkCommand(local).call();
+            Map<String, String> pulledBookmarks = new BookmarkCommand(local).call();
             assertEquals(1, pulledBookmarks.size());
 
             // UpdateCommand.setRevision() only resolves "tip"/numeric-rev/hex(-prefix)
@@ -374,7 +375,7 @@ public class PushRealHgInteropTest {
             new InitCommand().setDirectory(localDir).call();
             HgRepository local = new HgRepository(localDir);
             new PullCommand(local).setSource(serve.url).call();
-            java.util.Map<String, String> pulledBookmarks = new BookmarkCommand(local).call();
+            Map<String, String> pulledBookmarks = new BookmarkCommand(local).call();
             new UpdateCommand(local).setRevision(pulledBookmarks.get("main")).call();
 
             byte[] amended = new AmendCommand(local).setMessage("c1 amended locally").call();

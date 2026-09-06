@@ -20,6 +20,8 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -117,7 +119,7 @@ public class RequirementMatrixBundleDockerRoundTripTest {
             test.run(containerName, workDir);
         } finally {
             try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
             } catch (Exception ignored) {
                 // best effort
             }
@@ -194,15 +196,15 @@ public class RequirementMatrixBundleDockerRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        List<java.util.Map.Entry<String, List<String>>> dirstates = List.of(
-                java.util.Map.entry("dirstate1", List.<String>of()), java.util.Map.entry("dirstate2", DIRSTATE_V2));
+        List<Map.Entry<String, List<String>>> dirstates = List.of(
+                Map.entry("dirstate1", List.<String>of()), Map.entry("dirstate2", DIRSTATE_V2));
         List<ClEntry> changelogs = List.of(
                 new ClEntry("cl1", CL_V1, false), new ClEntry("cl2", CL_V2, false),
                 new ClEntry("cl2+sidedata", CL_V2_SIDEDATA, true));
 
         for (ClEntry cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                    java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+            for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                    Map.entry("treemanifest", TREEMANIFEST))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(DIRSTATE_V2);
                 args.addAll(cl.args());
@@ -214,8 +216,8 @@ public class RequirementMatrixBundleDockerRoundTripTest {
 
         for (var dirstate : dirstates) {
             for (ClEntry cl : changelogs) {
-                for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                        java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+                for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                        Map.entry("treemanifest", TREEMANIFEST))) {
                     List<String> args = new ArrayList<>();
                     args.addAll(dirstate.getValue());
                     args.addAll(cl.args());

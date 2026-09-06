@@ -32,6 +32,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import io.github.search5.hg4j.errors.HgPushRacedException;
 import io.github.search5.hg4j.api.FetchCommand;
+import io.github.search5.hg4j.storage.SidedataCodec;
+import io.github.search5.hg4j.treewalk.HgTreeFilter;
+import io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern;
 
 /**
  * Pure Java transport that provides a connection to a Mercurial repository on the local filesystem.
@@ -178,17 +181,17 @@ public class HgLocalClient implements HgRemoteConnection {
      */
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
                              HgRemoteConnection.NarrowScope narrowScope) throws IOException {
-        io.github.search5.hg4j.treewalk.HgTreeFilter narrowFilter = null;
+        HgTreeFilter narrowFilter = null;
         if (narrowScope != null) {
-            List<io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern> includes = new ArrayList<>();
+            List<NarrowPattern> includes = new ArrayList<>();
             for (String p : narrowScope.includePatterns) {
-                includes.add(io.github.search5.hg4j.treewalk.HgTreeFilter.normalizeNarrowPattern(p));
+                includes.add(HgTreeFilter.normalizeNarrowPattern(p));
             }
-            List<io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern> excludes = new ArrayList<>();
+            List<NarrowPattern> excludes = new ArrayList<>();
             for (String p : narrowScope.excludePatterns) {
-                excludes.add(io.github.search5.hg4j.treewalk.HgTreeFilter.normalizeNarrowPattern(p));
+                excludes.add(HgTreeFilter.normalizeNarrowPattern(p));
             }
-            narrowFilter = io.github.search5.hg4j.treewalk.HgTreeFilter.createNarrowSpecFilter(includes, excludes);
+            narrowFilter = HgTreeFilter.createNarrowSpecFilter(includes, excludes);
         }
         File clIdx = new File(remoteRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(remoteRepo.getStoreDir(), "00changelog.d");
@@ -312,7 +315,7 @@ public class HgLocalClient implements HgRemoteConnection {
             if (packChangelogSidedata) {
                 Map<Integer, byte[]> sidedata = changelog.getSidedata(r);
                 if (sidedata != null && !sidedata.isEmpty()) {
-                    clEntry.sidedata = io.github.search5.hg4j.storage.SidedataCodec.serialize(sidedata);
+                    clEntry.sidedata = SidedataCodec.serialize(sidedata);
                 }
             }
             bundle.changelogEntries.add(clEntry);

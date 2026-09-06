@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.net.URLDecoder;
+import io.github.search5.hg4j.bundle.Bundle2Parser;
 
 /**
  * pure Java SSH Client communicating with remote Mercurial repositories
@@ -576,7 +577,7 @@ public class HgSshClient implements HgRemoteConnection {
                 writeLine("bundlecaps " + String.join(",", bundleCaps));
             } else {
                 writeLine("bundlecaps "
-                        + io.github.search5.hg4j.bundle.Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
+                        + Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
                         + ",compression=GZ,BZ,ZS");
             }
             if (narrowScope != null) {
@@ -624,7 +625,7 @@ public class HgSshClient implements HgRemoteConnection {
             extra.put("bundlecaps", String.join(",", bundleCaps));
         } else {
             extra.put("bundlecaps",
-                    io.github.search5.hg4j.bundle.Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
+                    Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
                             + ",compression=GZ,BZ,ZS");
         }
 

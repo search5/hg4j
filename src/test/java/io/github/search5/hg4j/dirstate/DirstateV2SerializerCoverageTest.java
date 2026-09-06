@@ -7,6 +7,7 @@ import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.*;
 import io.github.search5.hg4j.errors.HgValidationException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Targeted coverage tests for {@link DirstateV2Serializer}, filling in the lines/branches that
@@ -97,7 +98,7 @@ public class DirstateV2SerializerCoverageTest {
         int pathOffset = node.getPathOffset();
         int pathLen = node.getPathLen() & 0xFFFF;
         int basenameStart = node.getBasenameStart() & 0xFFFF;
-        String fullPath = new String(data, pathOffset, pathLen, java.nio.charset.StandardCharsets.UTF_8);
+        String fullPath = new String(data, pathOffset, pathLen, StandardCharsets.UTF_8);
         return fullPath.substring(basenameStart);
     }
 

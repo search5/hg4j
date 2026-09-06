@@ -30,6 +30,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.zip.InflaterInputStream;
+import com.github.luben.zstd.ZstdInputStream;
+import io.github.search5.hg4j.bundle.Bundle2Parser;
 
 /**
  * Client for communicating with remote Mercurial repositories using the HTTP Wire Protocol v1.
@@ -398,7 +400,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             // 광고해야 최신 hg와 최적 포맷으로 주고받는다. changegroup 버전 목록은
             // "bundle2=<blob>" 토큰 안에 중첩돼야만 실제로 반영된다 — 위 주석 참고.
             params.put("bundlecaps",
-                    io.github.search5.hg4j.bundle.Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
+                    Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
                             + ",compression=GZ,BZ,ZS");
         }
         
@@ -729,7 +731,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             if ("zlib".equalsIgnoreCase(compName) || "deflate".equalsIgnoreCase(compName)) {
                 return new InflaterInputStream(in);
             } else if ("zstd".equalsIgnoreCase(compName)) {
-                return new com.github.luben.zstd.ZstdInputStream(in);
+                return new ZstdInputStream(in);
             } else if ("none".equalsIgnoreCase(compName) || compName.isEmpty()) {
                 return in;
             } else {

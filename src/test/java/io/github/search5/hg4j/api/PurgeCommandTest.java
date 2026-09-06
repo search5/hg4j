@@ -7,6 +7,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.IOException;
+import java.nio.file.LinkOption;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -182,14 +184,14 @@ public class PurgeCommandTest {
         Path brokenLink = repoDir.toPath().resolve("broken-link");
         try {
             Files.createSymbolicLink(brokenLink, repoDir.toPath().resolve("does-not-exist"));
-        } catch (UnsupportedOperationException | java.io.IOException e) {
+        } catch (UnsupportedOperationException | IOException e) {
             return;
         }
         assertFalse(Files.exists(brokenLink), "Symlink target must not exist for this test");
 
         new PurgeCommand(repo).call();
 
-        assertFalse(Files.exists(brokenLink, java.nio.file.LinkOption.NOFOLLOW_LINKS),
+        assertFalse(Files.exists(brokenLink, LinkOption.NOFOLLOW_LINKS),
                 "A broken symlink must be deleted by purge, matching real hg");
     }
 
@@ -214,13 +216,13 @@ public class PurgeCommandTest {
         Path linkDir = repoDir.toPath().resolve("linkdir");
         try {
             Files.createSymbolicLink(linkDir, externalDir.toPath());
-        } catch (UnsupportedOperationException | java.io.IOException e) {
+        } catch (UnsupportedOperationException | IOException e) {
             return;
         }
 
         new PurgeCommand(repo).call();
 
-        assertFalse(Files.exists(linkDir, java.nio.file.LinkOption.NOFOLLOW_LINKS),
+        assertFalse(Files.exists(linkDir, LinkOption.NOFOLLOW_LINKS),
                 "The symlink itself must be purged, matching real hg");
         assertTrue(precious.exists(), "A file reachable only through a directory symlink must NEVER be deleted by purge");
     }

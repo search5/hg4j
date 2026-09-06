@@ -13,6 +13,10 @@ import com.github.luben.zstd.ZstdInputStream;
 import io.github.search5.hg4j.errors.HgCorruptDataException;
 import java.nio.charset.StandardCharsets;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
+import java.io.OutputStream;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 
 /**
  * Lightweight, production-grade parser for decoding the Mercurial bundle2 (HG20) container format.
@@ -324,7 +328,7 @@ public class Bundle2Parser {
                     continue;
                 }
                 String val = line.substring(eq + 1);
-                List<String> versions = new java.util.ArrayList<>();
+                List<String> versions = new ArrayList<>();
                 for (String v : val.split(",", -1)) {
                     if (!v.isEmpty()) {
                         versions.add(pythonUnquote(v));
@@ -445,7 +449,7 @@ public class Bundle2Parser {
         byte[] paramKey = "version".getBytes(StandardCharsets.US_ASCII);
         byte[] paramVal = version.getBytes(StandardCharsets.US_ASCII);
 
-        java.io.ByteArrayOutputStream header = new java.io.ByteArrayOutputStream();
+        ByteArrayOutputStream header = new ByteArrayOutputStream();
         header.write(partName.length);
         header.write(partName);
         header.write(new byte[]{0, 0, 0, 0}); // part id (unused by a standalone file-level unbundle)
@@ -457,7 +461,7 @@ public class Bundle2Parser {
         header.write(paramVal);
         byte[] headerBytes = header.toByteArray();
 
-        java.io.ByteArrayOutputStream rest = new java.io.ByteArrayOutputStream();
+        ByteArrayOutputStream rest = new ByteArrayOutputStream();
         writeInt32(rest, headerBytes.length);
         rest.write(headerBytes);
         writeInt32(rest, changegroupBytes.length); // payload chunk size (NOT self-inclusive)
@@ -466,7 +470,7 @@ public class Bundle2Parser {
         writeInt32(rest, 0); // end of bundle2 stream (no more parts)
         byte[] restBytes = rest.toByteArray();
 
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write("HG20".getBytes(StandardCharsets.US_ASCII));
         if (compression == null || compression.isEmpty()) {
             writeInt32(out, 0); // stream params size (no compression)
@@ -475,16 +479,16 @@ public class Bundle2Parser {
             byte[] param = "Compression=GZ".getBytes(StandardCharsets.US_ASCII);
             writeInt32(out, param.length);
             out.write(param);
-            try (java.util.zip.DeflaterOutputStream defOut =
-                         new java.util.zip.DeflaterOutputStream(out, new java.util.zip.Deflater())) {
+            try (DeflaterOutputStream defOut =
+                         new DeflaterOutputStream(out, new Deflater())) {
                 defOut.write(restBytes);
             }
         } else if ("BZ".equalsIgnoreCase(compression)) {
             byte[] param = "Compression=BZ".getBytes(StandardCharsets.US_ASCII);
             writeInt32(out, param.length);
             out.write(param);
-            try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream bzOut =
-                         new org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream(out)) {
+            try (BZip2CompressorOutputStream bzOut =
+                         new BZip2CompressorOutputStream(out)) {
                 bzOut.write(restBytes);
             }
         } else {
@@ -493,7 +497,7 @@ public class Bundle2Parser {
         return out.toByteArray();
     }
 
-    private static void writeInt32(java.io.OutputStream out, int value) throws IOException {
+    private static void writeInt32(OutputStream out, int value) throws IOException {
         out.write((value >>> 24) & 0xFF);
         out.write((value >>> 16) & 0xFF);
         out.write((value >>> 8) & 0xFF);

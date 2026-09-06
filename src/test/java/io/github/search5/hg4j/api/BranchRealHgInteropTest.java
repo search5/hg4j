@@ -17,6 +17,11 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import io.github.search5.hg4j.dirstate.Dirstate;
+import io.github.search5.hg4j.lib.NodeId;
+import static io.github.search5.hg4j.lib.NodeId.NULL;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -96,8 +101,8 @@ public class BranchRealHgInteropTest {
         List<String> hg4jOrder = hg4jBranches.stream().map(BranchesCommand.BranchHead::getBranch).toList();
 
         String nativeOut = HgTestUtils.hg(repoDir, "branches");
-        List<String> nativeOrder = new java.util.ArrayList<>();
-        Map<String, Boolean> nativeActive = new java.util.HashMap<>();
+        List<String> nativeOrder = new ArrayList<>();
+        Map<String, Boolean> nativeActive = new HashMap<>();
         for (String line : nativeOut.split("\n")) {
             Matcher m = BRANCHES_LINE.matcher(line.trim());
             assertTrue(m.matches(), "unparsable hg branches line: [" + line + "]");
@@ -173,7 +178,7 @@ public class BranchRealHgInteropTest {
                 .stream().map(BranchesCommand.BranchHead::getBranch).toList();
 
         String nativeOut = HgTestUtils.hg(repoDir, "branches", "--closed");
-        List<String> nativeOrder = new java.util.ArrayList<>();
+        List<String> nativeOrder = new ArrayList<>();
         for (String line : nativeOut.split("\n")) {
             Matcher m = BRANCHES_LINE.matcher(line.trim());
             assertTrue(m.matches(), "unparsable hg branches line: [" + line + "]");
@@ -259,8 +264,8 @@ public class BranchRealHgInteropTest {
     }
 
     private static void setParentTo(HgRepository repo, byte[] node) throws Exception {
-        io.github.search5.hg4j.dirstate.Dirstate dirstate = repo.getDirstate();
-        dirstate.setParents(new io.github.search5.hg4j.lib.NodeId(node), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.setParents(new NodeId(node), NULL);
         repo.writeDirstate(dirstate);
     }
 }

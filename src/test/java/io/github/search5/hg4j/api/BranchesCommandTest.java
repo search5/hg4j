@@ -11,6 +11,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import io.github.search5.hg4j.dirstate.Dirstate;
+import io.github.search5.hg4j.lib.NodeId;
+import static io.github.search5.hg4j.lib.NodeId.NULL;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -75,8 +78,8 @@ public class BranchesCommandTest {
 
         // Fork a second head on the same "feature" branch from c0 (real hg's `hg update -r 0 && hg
         // branch feature --force && hg commit`, reproduced directly via dirstate + CommitCommand).
-        io.github.search5.hg4j.dirstate.Dirstate dirstate = repo.getDirstate();
-        dirstate.setParents(new io.github.search5.hg4j.lib.NodeId(c0), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate dirstate = repo.getDirstate();
+        dirstate.setParents(new NodeId(c0), NULL);
         repo.writeDirstate(dirstate);
         repo.setBranch("feature");
         Files.writeString(new File(tempDir.toFile(), "c.txt").toPath(), "c");
@@ -157,16 +160,16 @@ public class BranchesCommandTest {
         new AddCommand(repo).call();
         byte[] c1 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("feature c1").call();
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(c0), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(c0), NULL);
         repo.writeDirstate(forkDirstate);
         repo.setBranch("feature");
         Files.writeString(new File(tempDir.toFile(), "c.txt").toPath(), "c");
         new AddCommand(repo).call();
         byte[] c2 = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("feature c2 (second head)").call();
 
-        io.github.search5.hg4j.dirstate.Dirstate mergeDirstate = repo.getDirstate();
-        mergeDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(c1), new io.github.search5.hg4j.lib.NodeId(c2));
+        Dirstate mergeDirstate = repo.getDirstate();
+        mergeDirstate.setParents(new NodeId(c1), new NodeId(c2));
         repo.writeDirstate(mergeDirstate);
         repo.setBranch("feature");
         byte[] merge = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("merge feature heads").call();
@@ -192,8 +195,8 @@ public class BranchesCommandTest {
         new AddCommand(repo).call();
         byte[] featureTip = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("feature c1").call();
 
-        io.github.search5.hg4j.dirstate.Dirstate mergeDirstate = repo.getDirstate();
-        mergeDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(c0), new io.github.search5.hg4j.lib.NodeId(featureTip));
+        Dirstate mergeDirstate = repo.getDirstate();
+        mergeDirstate.setParents(new NodeId(c0), new NodeId(featureTip));
         repo.writeDirstate(mergeDirstate);
         repo.setBranch("default");
         byte[] merge = new CommitCommand(repo).setAuthor("u <u@example.com>").setMessage("merge feature into default").call();
@@ -221,8 +224,8 @@ public class BranchesCommandTest {
         byte[] c1Close = new CommitCommand(repo).setAuthor("u <u@example.com>")
                 .setMessage("feature c1, closed").setCloseBranch(true).call();
 
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = repo.getDirstate();
-        forkDirstate.setParents(new io.github.search5.hg4j.lib.NodeId(c0), io.github.search5.hg4j.lib.NodeId.NULL);
+        Dirstate forkDirstate = repo.getDirstate();
+        forkDirstate.setParents(new NodeId(c0), NULL);
         repo.writeDirstate(forkDirstate);
         repo.setBranch("feature");
         Files.writeString(new File(tempDir.toFile(), "c.txt").toPath(), "c");

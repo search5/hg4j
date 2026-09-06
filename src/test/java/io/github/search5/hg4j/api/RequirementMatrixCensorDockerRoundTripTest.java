@@ -20,6 +20,10 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.util.NodeIdUtil;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -111,7 +115,7 @@ public class RequirementMatrixCensorDockerRoundTripTest {
             test.run(containerName, workDir);
         } finally {
             try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
             } catch (Exception ignored) {
                 // best effort
             }
@@ -183,15 +187,15 @@ public class RequirementMatrixCensorDockerRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        List<java.util.Map.Entry<String, List<String>>> dirstates = List.of(
-                java.util.Map.entry("dirstate1", List.<String>of()), java.util.Map.entry("dirstate2", DIRSTATE_V2));
-        List<java.util.Map.Entry<String, List<String>>> changelogs = List.of(
-                java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2),
-                java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
+        List<Map.Entry<String, List<String>>> dirstates = List.of(
+                Map.entry("dirstate1", List.<String>of()), Map.entry("dirstate2", DIRSTATE_V2));
+        List<Map.Entry<String, List<String>>> changelogs = List.of(
+                Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2),
+                Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
 
         for (var cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                    java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+            for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                    Map.entry("treemanifest", TREEMANIFEST))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(DIRSTATE_V2);
                 args.addAll(cl.getValue());
@@ -202,8 +206,8 @@ public class RequirementMatrixCensorDockerRoundTripTest {
 
         for (var dirstate : dirstates) {
             for (var cl : changelogs) {
-                for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                        java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+                for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                        Map.entry("treemanifest", TREEMANIFEST))) {
                     List<String> args = new ArrayList<>();
                     args.addAll(dirstate.getValue());
                     args.addAll(cl.getValue());
@@ -249,9 +253,9 @@ public class RequirementMatrixCensorDockerRoundTripTest {
 
             File flIdx = CommitCommand.getFilelogIndex(hostRepoDir.resolve(".hg/store").toFile(), "a.txt");
             assertTrue(flIdx.exists(), "a.txt's filelog index must exist for combo " + combo);
-            io.github.search5.hg4j.storage.Revlog filelog = new io.github.search5.hg4j.storage.Revlog(flIdx,
+            Revlog filelog = new Revlog(flIdx,
                     new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d"));
-            String rev0Hex = io.github.search5.hg4j.util.NodeIdUtil.toHex(filelog.getIndexRecord(0).getNodeId());
+            String rev0Hex = NodeIdUtil.toHex(filelog.getIndexRecord(0).getNodeId());
 
             censorInSubprocess(hostRepoDir, "censor", "a.txt", rev0Hex);
 
@@ -302,16 +306,16 @@ public class RequirementMatrixCensorDockerRoundTripTest {
 
             File flIdx = CommitCommand.getFilelogIndex(hostRepoDir.resolve(".hg/store").toFile(), "a.txt");
             assertTrue(flIdx.exists(), "a.txt's filelog index must exist for combo " + combo);
-            io.github.search5.hg4j.storage.Revlog filelog = new io.github.search5.hg4j.storage.Revlog(flIdx,
+            Revlog filelog = new Revlog(flIdx,
                     new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d"));
-            String rev0Hex = io.github.search5.hg4j.util.NodeIdUtil.toHex(filelog.getIndexRecord(0).getNodeId());
+            String rev0Hex = NodeIdUtil.toHex(filelog.getIndexRecord(0).getNodeId());
 
             String hg4jRefusal = censorInSubprocess(hostRepoDir, "refuse", "a.txt", rev0Hex);
             assertTrue(hg4jRefusal.contains("cannot censor"),
                     "hg4j's CensorCommand must refuse to censor the sole head/working-directory-parent revision for combo "
                             + combo + ", got: " + hg4jRefusal);
 
-            io.github.search5.hg4j.storage.Revlog reread = new io.github.search5.hg4j.storage.Revlog(flIdx,
+            Revlog reread = new Revlog(flIdx,
                     new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d"));
             assertFalse(reread.isCensored(0), "a refused censor attempt must leave the revision untouched for combo " + combo);
         });

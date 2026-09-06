@@ -17,6 +17,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import io.github.search5.hg4j.dirstate.Dirstate;
+import static io.github.search5.hg4j.lib.NodeId.NULL;
+import java.io.IOException;
+import java.nio.file.StandardCopyOption;
+import org.junit.jupiter.api.Assertions;
 
 /**
  * 백로그 23 (bisect 카테고리): {@code hg4j}의 {@link BisectCommand}가 실제 {@code hg
@@ -174,8 +179,8 @@ public class BisectRealHgInteropTest {
         byte[] rev2 = new CommitCommand(origRepo).setAuthor("T").setMessage("rev2").call();
 
         // Fork branch B off rev0.
-        io.github.search5.hg4j.dirstate.Dirstate forkDirstate = origRepo.getDirstate();
-        forkDirstate.setParents(rev0, io.github.search5.hg4j.lib.NodeId.NULL.getBytes());
+        Dirstate forkDirstate = origRepo.getDirstate();
+        forkDirstate.setParents(rev0, NULL.getBytes());
         origRepo.writeDirstate(forkDirstate);
         // branchA.txt is left physically on disk (still dirstate-tracked from the rev1/rev2
         // commits) rather than deleted -- deleting it here trips CommitCommand's merge-time
@@ -287,7 +292,7 @@ public class BisectRealHgInteropTest {
     }
 
     /** True once good/bad are adjacent enough along every DAG path that no further candidate exists. */
-    private static boolean isAdjacentAlongEveryPath(Revlog changelog, int goodRev, int badRev) throws java.io.IOException {
+    private static boolean isAdjacentAlongEveryPath(Revlog changelog, int goodRev, int badRev) throws IOException {
         int min = Math.min(goodRev, badRev);
         int max = Math.max(goodRev, badRev);
         for (int i = min + 1; i < max; i++) {
@@ -301,7 +306,7 @@ public class BisectRealHgInteropTest {
         return true;
     }
 
-    private static boolean isDescendantOf(Revlog changelog, int rev, int min, int max) throws java.io.IOException {
+    private static boolean isDescendantOf(Revlog changelog, int rev, int min, int max) throws IOException {
         boolean[] seen = new boolean[max + 1];
         seen[min] = true;
         for (int i = min + 1; i <= max; i++) {
@@ -315,7 +320,7 @@ public class BisectRealHgInteropTest {
         return seen[rev];
     }
 
-    private static boolean isAncestorOf(Revlog changelog, int rev, int min, int max) throws java.io.IOException {
+    private static boolean isAncestorOf(Revlog changelog, int rev, int min, int max) throws IOException {
         boolean[] seen = new boolean[max + 1];
         seen[max] = true;
         for (int i = max; i > min; i--) {
@@ -329,7 +334,7 @@ public class BisectRealHgInteropTest {
         return seen[rev];
     }
 
-    private static void copyDirectory(Path source, Path target) throws java.io.IOException {
+    private static void copyDirectory(Path source, Path target) throws IOException {
         try (var stream = Files.walk(source)) {
             for (Path src : (Iterable<Path>) stream::iterator) {
                 Path dest = target.resolve(source.relativize(src));
@@ -340,7 +345,7 @@ public class BisectRealHgInteropTest {
                     if (Files.isSymbolicLink(src)) {
                         Files.createSymbolicLink(dest, Files.readSymbolicLink(src));
                     } else {
-                        Files.copy(src, dest, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+                        Files.copy(src, dest, StandardCopyOption.COPY_ATTRIBUTES);
                     }
                 }
             }
@@ -358,6 +363,6 @@ public class BisectRealHgInteropTest {
     }
 
     private static void assertTrue(boolean cond, String msg) {
-        org.junit.jupiter.api.Assertions.assertTrue(cond, msg);
+        Assertions.assertTrue(cond, msg);
     }
 }

@@ -45,6 +45,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.ByteArrayInputStream;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.function.BiFunction;
 
 /**
  * Targeted coverage for {@link HgRemoteClientV2}'s error/exception paths, {@code known()},
@@ -126,7 +130,7 @@ public class HgRemoteClientV2Test {
         assertNotNull(heads);
 
         assertTrue(capturedAuth.stream().anyMatch(h -> h != null), "적어도 한 요청에 Authorization 헤더가 있어야 함");
-        String expected = "Basic " + java.util.Base64.getEncoder().encodeToString("alice:s3cret".getBytes(StandardCharsets.UTF_8));
+        String expected = "Basic " + Base64.getEncoder().encodeToString("alice:s3cret".getBytes(StandardCharsets.UTF_8));
         assertTrue(capturedAuth.contains(expected), "Basic 인증 헤더 값이 user:pass의 Base64 인코딩과 일치해야 함");
 
         client.close();
@@ -160,7 +164,7 @@ public class HgRemoteClientV2Test {
         client.setCredentialsProvider(provider);
         client.getHeads();
 
-        String expected = "Basic " + java.util.Base64.getEncoder().encodeToString("bob:hunter2".getBytes(StandardCharsets.UTF_8));
+        String expected = "Basic " + Base64.getEncoder().encodeToString("bob:hunter2".getBytes(StandardCharsets.UTF_8));
         assertTrue(capturedAuth.contains(expected), "CredentialsProvider가 채운 값이 Basic 헤더로 전송돼야 함");
     }
 
@@ -299,9 +303,9 @@ public class HgRemoteClientV2Test {
         assertTrue(bundleBytes.length > 0);
 
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
-                new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+                new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertEquals(1, bundle.changelogEntries.size(), "root로 지정된 c1은 결과에서 빠지고 c2만 포함돼야 함");
-        assertArrayEquals(java.util.Arrays.copyOf(c2, 20), bundle.changelogEntries.get(0).node);
+        assertArrayEquals(Arrays.copyOf(c2, 20), bundle.changelogEntries.get(0).node);
     }
 
     @Test
@@ -341,7 +345,7 @@ public class HgRemoteClientV2Test {
 
         byte[] bundleBytes = client.getBundle(List.of(), client.getHeads(), List.of());
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
-                new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+                new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertEquals(2, bundle.fileGroups.size());
         List<String> paths = bundle.fileGroups.stream().map(fg -> fg.path).sorted().toList();
         assertEquals(List.of("a.txt", "b.txt"), paths);
@@ -393,7 +397,7 @@ public class HgRemoteClientV2Test {
         assertNotNull(bundleBytes);
 
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
-                new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+                new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertTrue(bundle.fileGroups.isEmpty(), "path 헤더 없는 레코드는 어떤 fileGroup에도 들어가지 않아야 함");
     }
 
@@ -467,7 +471,7 @@ public class HgRemoteClientV2Test {
         assertNotNull(bundleBytes);
 
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
-                new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+                new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertEquals(2, bundle.changelogEntries.size());
         assertEquals(2, bundle.manifestEntries.size(), "delta로 보내진 두 번째 manifest 레코드도 정상적으로 복원돼야 함");
     }
@@ -659,7 +663,7 @@ public class HgRemoteClientV2Test {
         HgRemoteClientV2 client = new HgRemoteClientV2("http://127.0.0.1:" + port);
         byte[] bundleBytes = client.getBundle(List.of(), client.getHeads(), List.of());
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
-                new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+                new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertEquals(1, bundle.changelogEntries.size());
         assertArrayEquals(new byte[20], bundle.changelogEntries.get(0).p1);
         assertArrayEquals(new byte[20], bundle.changelogEntries.get(0).p2);
@@ -706,7 +710,7 @@ public class HgRemoteClientV2Test {
         HgRemoteClientV2 client = new HgRemoteClientV2("http://127.0.0.1:" + port);
         byte[] bundleBytes = client.getBundle(List.of(), client.getHeads(), List.of());
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
-                new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+                new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertEquals(1, bundle.manifestEntries.size());
         assertArrayEquals(new byte[20], bundle.manifestEntries.get(0).p1);
         assertArrayEquals(new byte[20], bundle.manifestEntries.get(0).p2);
@@ -758,7 +762,7 @@ public class HgRemoteClientV2Test {
         HgRemoteClientV2 client = new HgRemoteClientV2("http://127.0.0.1:" + port);
         byte[] bundleBytes = client.getBundle(List.of(), client.getHeads(), List.of());
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
-                new java.io.ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
+                new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6), "01");
         assertEquals(1, bundle.fileGroups.size());
         ChangegroupParser.ChangeGroupEntry entry = bundle.fileGroups.get(0).entries.get(0);
         assertArrayEquals(new byte[20], entry.p1);
@@ -777,9 +781,9 @@ public class HgRemoteClientV2Test {
      */
     private static final class OverridingWire2Handler implements HttpHandler {
         private final HgRepository repo;
-        private final java.util.function.BiFunction<String, Map<String, Object>, List<Object>> override;
+        private final BiFunction<String, Map<String, Object>, List<Object>> override;
 
-        OverridingWire2Handler(HgRepository repo, java.util.function.BiFunction<String, Map<String, Object>, List<Object>> override) {
+        OverridingWire2Handler(HgRepository repo, BiFunction<String, Map<String, Object>, List<Object>> override) {
             this.repo = repo;
             this.override = override;
         }

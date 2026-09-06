@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.github.search5.hg4j.util.NodeIdUtil;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -90,7 +91,7 @@ class RevlogIndexPersistentNodeMapTest {
 
         // 존재하지 않는 노드는 두 경로 모두 -1.
         byte[] bogus = new byte[20];
-        java.util.Arrays.fill(bogus, (byte) 0x77);
+        Arrays.fill(bogus, (byte) 0x77);
         assertEquals(-1, sequential.findRevision(bogus));
         assertEquals(-1, accelerated.findRevision(bogus));
 
@@ -136,7 +137,7 @@ class RevlogIndexPersistentNodeMapTest {
         // "미래"를 가리키므로 stale로 취급돼야 한다.
         byte[] fullIndexBytes = Files.readAllBytes(idxFile.toPath());
         File truncatedIdx = tempDir.resolve("truncated.i").toFile();
-        Files.write(truncatedIdx.toPath(), java.util.Arrays.copyOf(fullIndexBytes, 20 * 64));
+        Files.write(truncatedIdx.toPath(), Arrays.copyOf(fullIndexBytes, 20 * 64));
 
         RevlogIndex accelerated = new RevlogIndex(truncatedIdx, freshNodeMap);
         assertFalse(accelerated.isNodeMapDeferred(),

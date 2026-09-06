@@ -25,6 +25,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Backlog 22, "범위(포함)" groups 1/4 (HTTP half): individually forces each of real hg's three
@@ -62,7 +63,7 @@ public class HgHttpV1NegotiationForcingInteropTest {
         HgTestUtils.hg(repoDir, "init");
         Files.writeString(repoDir.toPath().resolve(".hg/hgrc"),
                 "[web]\nallow-push = *\npush_ssl = false\n",
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         Files.writeString(repoDir.toPath().resolve("a.txt"), "first content");
         HgTestUtils.hg(repoDir, "add");
         HgTestUtils.hg(repoDir, "commit", "-m", "first commit", "-u", "dev");

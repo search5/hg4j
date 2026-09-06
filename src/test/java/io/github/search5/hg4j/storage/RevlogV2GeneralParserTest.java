@@ -22,6 +22,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardOpenOption;
 
 /**
  * General (non-changelog) revlog v2 (`exp-revlogv2.2`, applied here to a filelog: {@code a.txt})
@@ -199,7 +200,7 @@ public class RevlogV2GeneralParserTest {
 
         for (int i = 1; i <= 3; i++) {
             Files.writeString(new File(repoDir, "a.txt").toPath(), "line " + i + "\n",
-                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             new AddCommand(repo).call();
             new CommitCommand(repo).setMessage("commit " + i).call();
         }

@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Test-only helper: spawns a real, host-installed {@code hg serve} process against a given
@@ -38,7 +39,7 @@ final class RealHgServeSupport {
         public void close() {
             process.destroy();
             try {
-                if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                if (!process.waitFor(5, TimeUnit.SECONDS)) {
                     process.destroyForcibly();
                 }
             } catch (InterruptedException ignored) {

@@ -13,6 +13,11 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import io.github.search5.hg4j.errors.HgCorruptDataException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -58,7 +63,7 @@ public class FileIndexTest {
     void truncatedDocketThrowsCorruptData() throws IOException {
         File storeDir = tempDir.toFile();
         Files.write(new File(storeDir, "fileindex").toPath(), new byte[10]);
-        assertThrows(io.github.search5.hg4j.errors.HgCorruptDataException.class,
+        assertThrows(HgCorruptDataException.class,
                 () -> FileIndex.snapshot(storeDir));
     }
 
@@ -66,7 +71,7 @@ public class FileIndexTest {
     @DisplayName("writeTrackedPaths with enough paths forces GrowableBuffer past its initial 256-byte capacity")
     void writeTrackedPathsWithManyPathsGrowsInternalBuffer() throws IOException {
         File storeDir = tempDir.toFile();
-        List<String> manyPaths = new java.util.ArrayList<>();
+        List<String> manyPaths = new ArrayList<>();
         for (int i = 0; i < 200; i++) {
             manyPaths.add("some/reasonably/long/directory/structure/file" + i + ".txt");
         }
@@ -106,7 +111,7 @@ public class FileIndexTest {
         assertEquals(1, metaFiles.length);
         assertTrue(metaFiles[0].delete());
 
-        assertThrows(io.github.search5.hg4j.errors.HgCorruptDataException.class,
+        assertThrows(HgCorruptDataException.class,
                 () -> FileIndex.readTrackedPaths(storeDir));
     }
 
@@ -122,7 +127,7 @@ public class FileIndexTest {
         byte[] full = Files.readAllBytes(metaFiles[0].toPath());
         Files.write(metaFiles[0].toPath(), Arrays.copyOf(full, full.length - 1));
 
-        assertThrows(io.github.search5.hg4j.errors.HgCorruptDataException.class,
+        assertThrows(HgCorruptDataException.class,
                 () -> FileIndex.readTrackedPaths(storeDir));
     }
 
@@ -148,9 +153,9 @@ public class FileIndexTest {
         File storeDir = tempDir.toFile();
         // 60 bytes total, correct length but the first 12 bytes are not "fileindex-v1".
         byte[] bogus = new byte[60];
-        System.arraycopy("not-the-marker".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, bogus, 0, 12);
+        System.arraycopy("not-the-marker".getBytes(StandardCharsets.US_ASCII), 0, bogus, 0, 12);
         Files.write(new File(storeDir, "fileindex").toPath(), bogus);
-        assertThrows(io.github.search5.hg4j.errors.HgCorruptDataException.class,
+        assertThrows(HgCorruptDataException.class,
                 () -> FileIndex.snapshot(storeDir));
     }
 
@@ -204,7 +209,7 @@ public class FileIndexTest {
     @DisplayName("writing an empty path set when no fileindex exists yet is a no-op")
     void writingEmptySetWithNoExistingFileIndexIsNoOp() throws IOException {
         File storeDir = Files.createDirectory(tempDir.resolve("store")).toFile();
-        FileIndex.writeTrackedPaths(storeDir, java.util.Collections.emptyList());
+        FileIndex.writeTrackedPaths(storeDir, Collections.emptyList());
         assertFalse(new File(storeDir, "fileindex").exists());
     }
 
@@ -228,7 +233,7 @@ public class FileIndexTest {
         assertEquals(new LinkedHashSet<>(Arrays.asList("a.txt", "b.txt")), FileIndex.readTrackedPaths(storeDir));
         String[] restoredCompanions = storeDir.list((dir, name) -> name.startsWith("fileindex-"));
         assertNotNull(restoredCompanions);
-        assertEquals(new java.util.HashSet<>(Arrays.asList(gen1Companions)), new java.util.HashSet<>(Arrays.asList(restoredCompanions)),
+        assertEquals(new HashSet<>(Arrays.asList(gen1Companions)), new HashSet<>(Arrays.asList(restoredCompanions)),
                 "restore should bring back exactly the pre-snapshot companion files and remove the newer generation's");
     }
 
@@ -296,8 +301,8 @@ public class FileIndexTest {
         String[] afterSecondRestore = storeDir.list((dir, name) -> name.startsWith("fileindex-"));
 
         assertNotNull(afterFirstRestore);
-        assertEquals(new java.util.HashSet<>(Arrays.asList(afterFirstRestore)),
-                new java.util.HashSet<>(Arrays.asList(afterSecondRestore)));
+        assertEquals(new HashSet<>(Arrays.asList(afterFirstRestore)),
+                new HashSet<>(Arrays.asList(afterSecondRestore)));
         assertEquals(new LinkedHashSet<>(Arrays.asList("a.txt", "b.txt")), FileIndex.readTrackedPaths(storeDir));
     }
 
@@ -310,9 +315,9 @@ public class FileIndexTest {
         Files.write(storeDir.toPath().resolve("fileindex"), docketBytes);
 
         // Docket layout: 12-byte marker + 3x uint32 sizes + 3x 8-byte ascii uid, in that order.
-        String listUid = new String(docketBytes, 24, 8, java.nio.charset.StandardCharsets.US_ASCII);
-        String metaUid = new String(docketBytes, 32, 8, java.nio.charset.StandardCharsets.US_ASCII);
-        String treeUid = new String(docketBytes, 40, 8, java.nio.charset.StandardCharsets.US_ASCII);
+        String listUid = new String(docketBytes, 24, 8, StandardCharsets.US_ASCII);
+        String metaUid = new String(docketBytes, 32, 8, StandardCharsets.US_ASCII);
+        String treeUid = new String(docketBytes, 40, 8, StandardCharsets.US_ASCII);
 
         Files.write(storeDir.toPath().resolve("fileindex-list." + listUid), readFixtureResource("list"));
         Files.write(storeDir.toPath().resolve("fileindex-meta." + metaUid), readFixtureResource("meta"));

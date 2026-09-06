@@ -16,6 +16,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.search5.hg4j.util.NodeIdUtil;
 
 /**
  * 백로그 23 (strip 카테고리): {@code hg4j}의 {@link StripCommand}가 만든 결과물을 실제
@@ -69,7 +70,7 @@ public class StripRealHgInteropTest {
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog changelogBefore = repo.getRevlog(clIdx, clDat);
         assertEquals(4, changelogBefore.getRevisionCount());
-        String rev2NodeHex = io.github.search5.hg4j.util.NodeIdUtil.toHex(changelogBefore.getIndexRecord(2).getNodeId());
+        String rev2NodeHex = NodeIdUtil.toHex(changelogBefore.getIndexRecord(2).getNodeId());
 
         new StripCommand(repo).setRevision("3").call();
 

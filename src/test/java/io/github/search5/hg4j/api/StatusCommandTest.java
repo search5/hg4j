@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 import io.github.search5.hg4j.treewalk.HgTreeFilter;
 import java.util.List;
+import java.util.Arrays;
 
 public class StatusCommandTest {
 
@@ -329,7 +330,7 @@ public class StatusCommandTest {
 
         Dirstate dirstate = repo.getDirstate();
         byte[] fakeParent = new byte[20];
-        java.util.Arrays.fill(fakeParent, (byte) 0x7A);
+        Arrays.fill(fakeParent, (byte) 0x7A);
         dirstate.setParents(fakeParent, new byte[20]);
         dirstate.addEntry("orphan2.txt", new Dirstate.Entry('n', 0644, content.length(), diskTime));
         repo.writeDirstate(dirstate);
@@ -361,7 +362,7 @@ public class StatusCommandTest {
         Dirstate.Entry entry = dirstate.getEntries().get("real.txt");
         dirstate.addEntry("real.txt", new Dirstate.Entry(entry.getState(), entry.getMode(), rewritten.length(), diskTime));
         byte[] bogusParent = new byte[20];
-        java.util.Arrays.fill(bogusParent, (byte) 0xFF);
+        Arrays.fill(bogusParent, (byte) 0xFF);
         dirstate.setParents(bogusParent, new byte[20]);
         repo.writeDirstate(dirstate);
         assertTrue(new File(repo.getHgDir(), "dirstate").setLastModified(diskTime * 1000));
@@ -663,7 +664,7 @@ public class StatusCommandTest {
 
         Dirstate dirstate = repo.getDirstate();
         byte[] bogusParent = new byte[20];
-        java.util.Arrays.fill(bogusParent, (byte) 0xEE);
+        Arrays.fill(bogusParent, (byte) 0xEE);
         dirstate.setParents(bogusParent, new byte[20]);
         repo.writeDirstate(dirstate);
 

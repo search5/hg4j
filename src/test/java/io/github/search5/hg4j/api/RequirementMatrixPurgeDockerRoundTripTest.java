@@ -20,6 +20,9 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.LinkOption;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -112,7 +115,7 @@ public class RequirementMatrixPurgeDockerRoundTripTest {
             test.run(containerName, workDir);
         } finally {
             try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
             } catch (Exception ignored) {
                 // best effort
             }
@@ -168,15 +171,15 @@ public class RequirementMatrixPurgeDockerRoundTripTest {
 
     static Stream<RequirementCombo> combos() {
         List<RequirementCombo> out = new ArrayList<>();
-        List<java.util.Map.Entry<String, List<String>>> dirstates = List.of(
-                java.util.Map.entry("dirstate1", List.<String>of()), java.util.Map.entry("dirstate2", DIRSTATE_V2));
-        List<java.util.Map.Entry<String, List<String>>> changelogs = List.of(
-                java.util.Map.entry("cl1", CL_V1), java.util.Map.entry("cl2", CL_V2),
-                java.util.Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
+        List<Map.Entry<String, List<String>>> dirstates = List.of(
+                Map.entry("dirstate1", List.<String>of()), Map.entry("dirstate2", DIRSTATE_V2));
+        List<Map.Entry<String, List<String>>> changelogs = List.of(
+                Map.entry("cl1", CL_V1), Map.entry("cl2", CL_V2),
+                Map.entry("cl2+sidedata", CL_V2_SIDEDATA));
 
         for (var cl : changelogs) {
-            for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                    java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+            for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                    Map.entry("treemanifest", TREEMANIFEST))) {
                 List<String> args = new ArrayList<>();
                 args.addAll(DIRSTATE_V2);
                 args.addAll(cl.getValue());
@@ -187,8 +190,8 @@ public class RequirementMatrixPurgeDockerRoundTripTest {
 
         for (var dirstate : dirstates) {
             for (var cl : changelogs) {
-                for (var tm : List.of(java.util.Map.entry("flatmanifest", List.<String>of()),
-                        java.util.Map.entry("treemanifest", TREEMANIFEST))) {
+                for (var tm : List.of(Map.entry("flatmanifest", List.<String>of()),
+                        Map.entry("treemanifest", TREEMANIFEST))) {
                     List<String> args = new ArrayList<>();
                     args.addAll(dirstate.getValue());
                     args.addAll(cl.getValue());
@@ -249,7 +252,7 @@ public class RequirementMatrixPurgeDockerRoundTripTest {
             assertFalse(Files.exists(hostRepoDir.resolve("untracked.txt")), "untracked root file must be purged for combo " + combo);
             assertFalse(Files.exists(hostRepoDir.resolve("junkdir")), "untracked dir emptied by purge must itself be purged for combo " + combo);
             assertFalse(Files.exists(hostRepoDir.resolve("emptydir")), "pre-existing empty untracked dir must be purged by default for combo " + combo);
-            assertFalse(Files.exists(hostRepoDir.resolve("broken-link"), java.nio.file.LinkOption.NOFOLLOW_LINKS),
+            assertFalse(Files.exists(hostRepoDir.resolve("broken-link"), LinkOption.NOFOLLOW_LINKS),
                     "a dangling symlink must be purged for combo " + combo);
 
             assertEquals("", dockerHgIn(containerName, repoRelPath, "status"),

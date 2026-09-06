@@ -2,6 +2,7 @@ package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.lib.HgRepository;
+import java.io.File;
 
 /**
  * Standalone JVM entry point used ONLY by {@link RequirementMatrixCensorDockerRoundTripTest},
@@ -25,7 +26,7 @@ public final class RequirementMatrixCensorHelperMain {
         String mode = args[1];
         String path = args[2];
         String nodeHex = args[3];
-        HgRepository repo = new HgRepository(new java.io.File(repoDir));
+        HgRepository repo = new HgRepository(new File(repoDir));
 
         if ("refuse".equals(mode)) {
             try {

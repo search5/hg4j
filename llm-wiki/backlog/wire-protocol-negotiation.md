@@ -433,11 +433,34 @@ serverSupportsUnbundleHash)`로 HTTP(`HgRemoteClient`)·SSH(`HgSshClient`) 양�
 `HgHttpWireServerNarrowInteropTest`/`PushLockRaceRealHgInteropTest`/
 `HgWireProtocolMatrixIncomingOutgoingTest`)도 47번 수정과 함께 전부 통과 확인.
 
-**검증 중 발견한 실제로 멈춰있던 버그(수정 안 함, 별개)**: `HgWireProtocolMatrixIncomingOutgoingTest`의
-`sshMatrixOutgoing`가 특정 조합(`ssh-out-matrix-zstd`)에서 real `hg outgoing`
-서브프로세스가 SSH 임베디드 테스트 서버(`serve --stdio`)와 통신하다 6분 넘게
-멈춘 사례를 관측함(이번 서블릿 마이그레이션과 무관한 SSH 경로, 재실행 시
-재현 안 됨 — 간헐적). 별도 조사 필요 시 참고할 것.
+**검증 중 발견한 실제로 멈춰있던 버그 — ✅ 완료(2026-09-07, 근본 원인 확정·수정)**:
+위에서 "간헐적, 재실행 시 재현 안 됨"으로 남겨뒀던 `HgWireProtocolMatrixIncomingOutgoingTest`
+의 `sshMatrixOutgoing`/`sshMatrixIncoming` 행업을, post-pull(백로그 1~47 완료) 상태를
+`./gradlew check` 단독 전체 재검증하던 중 다시 만나 이번엔 끝까지 추적했다. "간헐적"이라는
+평가 자체가 틀렸다 — 실제로는 압축(zlib/zstd/none)이나 incoming/outgoing 방향과 무관하게
+**항상 재현 가능한 결정론적 버그**였고, 단지 어느 조합에서 걸리는지가 타이밍에 따라
+달라졌을 뿐이다(이번에 zstd-outgoing, none-outgoing, zlib-outgoing, zlib-incoming 전부
+각각 독립적으로 재현됨).
+
+**근본 원인** (`jstack` 스레드 덤프로 확정): 4개 테스트 헬퍼 파일
+(`SshMatrixServer.java`, `HgWireProtocolMatrixTest.java`, `HgSshClientRealHgInteropTest.java`,
+`HgSshUnbundleHashOffInteropTest.java`)에 문자 그대로 동일하게 복제된
+`RealHgServeCommand.pump(InputStream src, OutputStream dst)` 메서드가, `src`가
+EOF나 예외로 끝나도 `dst`를 닫지 않고 있었다. 이 메서드는 SSH exec 채널의
+입력 스트림을 spawn된 real `hg serve --stdio` 서브프로세스의 stdin으로 파이핑하는
+용도로도 쓰이는데, `dst`(서브프로세스 stdin)를 안 닫으면 그 서브프로세스는
+EOF 신호를 영원히 못 받는다 — 자기 stdin이 기술적으로는 여전히 열려있다고
+보고 다음 입력을 계속 기다리며 완전히 멈춘다. `jstack`으로 확인: `real-hg-serve-stdin`
+펌프 스레드는 이미 조용히 종료돼 있었고(`dst`를 안 닫은 채로), `real-hg-serve-stdout`/
+`real-hg-serve-wait` 스레드는 그 하위 프로세스가 다시는 응답을 안 줘서
+영원히 블로킹돼 있었다. hg4j 프로덕션 코드가 아니라 실제 hg CLI 양쪽(client/server)을
+잇는 테스트 헬퍼 브리지 로직 자체의 버그.
+
+**수정**: 4개 파일 전부 `pump()`의 `finally` 블록에 `dst.close()` 추가 — 어느 방향이든
+EOF를 downstream(서브프로세스 stdin 또는 SSH 채널 출력 스트림)에 정확히 전파하도록
+수정. `HgWireProtocolMatrixIncomingOutgoingTest` 전체(incoming+outgoing, zlib/zstd/none
+6개 조합)를 10분 OS 레벨 타임아웃으로 감싸 재실행, `BUILD SUCCESSFUL in 2m 55s`로
+행업 없이 통과 확인.
 
 ## 백로그 47: RevlogIndex 장수 서버 핸들 stale 캐시 재발(24번 회귀)
 

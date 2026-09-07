@@ -190,6 +190,17 @@ final class SshMatrixServer implements AutoCloseable {
                 }
             } catch (IOException ignored) {
                 // channel/process torn down -- nothing more to pump
+            } finally {
+                // Real hang found 2026-09-07: without this, the pump thread exiting (EOF or
+                // exception on src) left `dst` open with no EOF signal. When `dst` is a spawned
+                // `hg serve --stdio` process's stdin, real hg can end up blocked forever waiting
+                // for more input that will never come -- the channel side already closed, but the
+                // subprocess never finds out. Closing `dst` here propagates EOF to whichever side
+                // is downstream (subprocess stdin, or the SSH channel's output stream).
+                try {
+                    dst.close();
+                } catch (IOException ignored) {
+                }
             }
         }
 

@@ -198,6 +198,15 @@ public class HgSshUnbundleHashOffInteropTest {
                 }
             } catch (IOException ignored) {
                 // channel/process torn down -- nothing more to pump
+            } finally {
+                // Real hang found 2026-09-07 (see SshMatrixServer's copy of this method): without
+                // this, the pump thread exiting leaves `dst` open with no EOF signal, and a
+                // downstream `hg serve --stdio` subprocess can block forever waiting for input
+                // that will never arrive.
+                try {
+                    dst.close();
+                } catch (IOException ignored) {
+                }
             }
         }
 

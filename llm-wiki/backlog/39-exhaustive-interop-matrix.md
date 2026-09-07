@@ -2220,3 +2220,45 @@ tier/압축/bundle2를 바꿀 config 노브가 없어서, 리버스 방향은 (�
 - **미착수**: 32번(subrepo, 31 완료로 이제 착수 가능), 38번(동시 push
   레이스 컨디션), 39번(매트릭스 확장), 40번(narrow ellipsis node).
 
+> **위 인수인계는 이미 전부 해소됨(2026-09-04 17:50 시점 스냅샷) — 그 이후
+> 백로그 32/38/39(전체 웨이브)/40~47번까지 전부 완료됐다.** 상세는 이
+> 문서 상단과 `mercurial-spec-compliance-requirement.md`/`matrix-status.md`
+> 참고. 이 절은 옛 상태로 두되(히스토리 보존), 착오 방지를 위해 이 안내만
+> 남긴다.
+
+## 후속 회귀 발견 (2026-09-07, `git pull`로 대량 웨이브 병합 직후 독립 재검증 중)
+
+68/68 완주로 표시된 이후에도, `./gradlew check` 단독 전체 재검증(다른 gradle
+빌드 없이) 중 `RequirementMatrixWorktreeCoreRoundTripTest`의 6개 조합
+**전부**(cl1/cl2/cl2+sidedata × flat/tree) `assertEquals` 실패(라인 133,
+`.hg/sharedpath` 검증)가 발견됐다.
+
+**근본 원인**: `WorktreeCommand.call()`이 `.hg/sharedpath`에
+`mainHgDir.getAbsolutePath()`(심볼릭 링크 미해석)를 쓰고 있었다. 실제 hg의
+`share` 확장(`mercurial/share.py`)은 항상 `os.path.realpath()`(심볼릭 링크
+완전 해석)를 쓴다는 것을 이 호스트에서 `hg --config extensions.share=`로
+직접 재현해 확인(`/private/var/folders/...` 형태로 나옴, macOS의
+`/var` → `/private/var` 심볼릭 링크) — 이번 세션 초반 Docker `/tmp` →
+`/private/tmp` 마운트 이슈와 정확히 같은 패턴. 흥미롭게도
+`RequirementMatrixWorktreeDockerRoundTripTest`(같은 wave에서 함께 작성됨)는
+이미 `getCanonicalPath()`로 정확히 검증하고 있었다 — Docker 변형 테스트는
+맞게 짜였는데 정작 프로덕션 코드(`WorktreeCommand`)와 native 변형 테스트
+양쪽 다 이 사실을 놓치고 있었던 것으로 보인다(native 쪽은 처음부터
+`getAbsolutePath()`를 검증 기준으로 삼아 우연히 자기 자신과는 항상
+일치했을 것 — 자기 자신과의 라운드트립만 검증되는 이 세션에서 반복된
+패턴과 동일).
+
+**수정**: `WorktreeCommand.java`의 `sharedpathFile` 작성 부분을
+`mainHgDir.getCanonicalPath()`로 변경(`call()`이 이미 `IOException`을
+선언하고 있어 시그니처 변경 불필요). `.hg/sharedpath`를 읽는 유일한 다른
+지점(`HgRepository`)은 문자열을 그대로 신뢰해서 쓰므로 영향 없음.
+
+**검증**: `RequirementMatrixWorktreeCoreRoundTripTest` 단독 재실행,
+6/6 GREEN(`BUILD SUCCESSFUL`). 전체 회귀는 병행 중인 `./gradlew check`
+완료 후 별도 확인.
+
+**교훈**: `matrix-status.md`가 "68/68 GREEN"이라고 기록한 뒤에도 실제
+회귀가 있었다 — 매트릭스가 한 번 GREEN을 찍었다고 그 상태가 영구히
+유지된다고 가정하지 말고, 이후 코드 변경(특히 같은 명령 근처를 건드리는
+후속 커밋)이 있으면 재검증이 필요함을 시사한다.
+

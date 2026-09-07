@@ -49,10 +49,17 @@ public class WorktreeCommand {
         File newHgDir = new File(newWorktreeDir, ".hg");
         newHgDir.mkdirs();
 
-        // 1. Create sharedpath linking back to the central store's .hg directory
+        // 1. Create sharedpath linking back to the central store's .hg directory. Real hg's own
+        // share extension (mercurial/share.py) writes os.path.realpath() of the source .hg dir --
+        // i.e. with symlinks fully resolved, not just made absolute (verified live against real hg
+        // 7.2 on macOS 2026-09-07: a share created under a temp dir whose path traverses the
+        // /var -> /private/var symlink comes out with the /private/var form in .hg/sharedpath).
+        // getAbsolutePath() alone does NOT resolve symlinks, so it silently diverged from real hg
+        // on any host where the repository lives under a symlinked path -- getCanonicalPath() is
+        // the Java equivalent of realpath().
         File mainHgDir = repository.getHgDir();
         File sharedpathFile = new File(newHgDir, "sharedpath");
-        SafeFileIO.writeStringAtomic(sharedpathFile, mainHgDir.getAbsolutePath().replace('\\', '/'));
+        SafeFileIO.writeStringAtomic(sharedpathFile, mainHgDir.getCanonicalPath().replace('\\', '/'));
 
         // 2. Clone main requires specification to new worktree's requires -- plus the "shared"
         // marker line real hg's own `hg share` (mercurial/share.py) always adds to the new

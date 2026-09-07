@@ -82,7 +82,7 @@ status: current
 | UnbundleCommand | ✅ | RequirementMatrixUnbundleCoreRoundTripTest / DockerRoundTripTest | |
 | UpdateCommand | ✅ | RequirementMatrixUpdateCoreRoundTripTest / DockerRoundTripTest / HelperMain | 심볼릭 링크 모드 버그 발견·수정 |
 | VerifyCommand | ✅ | RequirementMatrixVerifyCoreRoundTripTest / DockerRoundTripTest / HelperMain | fileindex-v1/general-v2/treemanifest 검사 누락 발견·수정 |
-| WorktreeCommand | ✅ | RequirementMatrixWorktreeCoreRoundTripTest / DockerRoundTripTest / HelperMain | 실제 체크아웃 미수행 버그 발견·수정 |
+| WorktreeCommand | ✅ | RequirementMatrixWorktreeCoreRoundTripTest / DockerRoundTripTest / HelperMain | 실제 체크아웃 미수행 버그 발견·수정. **2026-09-07 재검증에서 회귀 발견·수정**: sharedpath가 getAbsolutePath()(심볼릭 링크 미해석)를 써서 real hg의 realpath 기준과 macOS 심볼릭 링크 경로에서 어긋나던 버그, getCanonicalPath()로 수정 — [[39-exhaustive-interop-matrix]] "후속 회귀 발견" 절 참고 |
 
 (전부 `src/test/java/io/github/search5/hg4j/api/`)
 

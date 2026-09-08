@@ -3,11 +3,13 @@ package io.github.search5.hg4j.transport.wireprotov1;
 import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
+import io.github.search5.hg4j.bundle.ChangegroupParser;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -37,13 +39,40 @@ public class Wire1CommandsCoverageTest {
 
     // ==================== changegroup / changegroupsubset ====================
 
+    /**
+     * Bug fix (2026-09-08, see {@code llm-wiki/known-bugs-registry.md}'s {@code
+     * HgLocalClient.getBundle()} entry, and P3-25 in yona's parity backlog for the follow-up that
+     * caught this test still asserting the pre-fix expectation): before that fix, {@code
+     * HgLocalClient.getBundle()} short-circuited to a bare {@code new byte[0]} whenever there was
+     * nothing to send -- including a brand-new, zero-revision repository, exactly the case this
+     * test constructs. That {@code new byte[0]} is what {@code assertEquals(0, ...length)} below
+     * used to check for, but it was never actually a valid wire response: a real hg client cannot
+     * tell "zero bytes because the changegroup is empty" apart from "zero bytes because the stream
+     * got truncated", and reproduced live as either an immediate HTTP abort ({@code "stream ended
+     * unexpectedly (got 0 bytes, expected 4)"}) or an indefinite hang on the raw SSH-relay path.
+     * The fix made {@code getBundle} fall through to the normal bundle-building path instead,
+     * producing a well-formed-but-empty cg1 changegroup (a real terminator-chunk-only group, not
+     * an empty byte array) -- which is what a real hg client actually needs to receive. This test
+     * now asserts that shape (verified via {@link ChangegroupParser#parseBundle}, the same way
+     * {@code HgLocalClientCoverageTest} verifies the equivalent {@code HgLocalClient.getBundle()}
+     * cases) instead of the stale {@code new byte[0]} expectation. See
+     * {@code HgHttpWireServerEmptyRepoRealHgInteropTest} for the real-hg-CLI-driven regression
+     * coverage of the underlying production fix.
+     */
     @Test
-    public void changegroupOnAnEmptyRepositoryReturnsAnEmptyStream(@TempDir Path tempDir) throws Exception {
+    public void changegroupOnAnEmptyRepositoryReturnsAWellFormedEmptyStream(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         Wire1Response r = Wire1Commands.changegroup(repo, new LinkedHashMap<>());
         assertEquals(Wire1Response.Kind.STREAM, r.getKind());
-        assertEquals(0, r.getPayload().length,
-                "An empty repository's changegroup is empty bytes, too short to carry the HG10 on-disk prefix");
+        byte[] payload = r.getPayload();
+        assertTrue(payload.length > 0,
+                "An empty repository's changegroup is still a well-formed cg1 stream (terminator "
+                        + "chunks only), not a bare empty byte array a real hg client can't tell apart "
+                        + "from a truncated stream");
+        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(payload));
+        assertEquals(0, bundle.changelogEntries.size());
+        assertEquals(0, bundle.manifestEntries.size());
+        assertEquals(0, bundle.fileGroups.size());
     }
 
     @Test

@@ -198,15 +198,29 @@ public class HgLocalClient implements HgRemoteConnection {
         File mfIdx = new File(remoteRepo.getStoreDir(), "00manifest.i");
         File mfDat = new File(remoteRepo.getStoreDir(), "00manifest.d");
 
-        if (!clIdx.exists()) {
-            return new byte[0];
-        }
-
+        // 버그 수정(2026-09-08, llm-wiki/known-bugs-registry.md의 `HgLocalClient.getBundle()`
+        // 항목 참고): 여기서(그리고 아래 "startRev >= count"에서도) 예전엔 `new byte[0]`을
+        // 그대로 반환했다 -- 실제 hg 클라이언트에게는 "정상적으로 봉투에 감싸인, 아무 내용도
+        // 없는 changegroup/bundle2 응답"과 "스트림이 잘렸다"를 구분할 방법이 전혀 없는
+        // 무효한 응답이다(HTTP 경로: "stream ended unexpectedly (got 0 bytes, expected 4)"로
+        // 즉시 abort, SSH raw-stream 경로: 4바이트 길이 헤더를 영원히 기다리며 hang). 커밋이
+        // 0개인 갓 `hg init`된 저장소(yona로 새 Mercurial 프로젝트를 만들면 항상 이 상태)를
+        // 최초로 clone하는 시나리오가 정확히 이 경로를 타서 100% 재현됐다. 실제 hg 자신의
+        // `exchange.getbundlechunks()`(mercurial/exchange.py)는 보낼 게 하나도 없어도 절대
+        // 조기 반환하지 않고 항상 같은 청크 생성 경로를 타 "그룹이 비어 있음을 뜻하는 종료
+        // 청크만 있는" 올바른 changegroup을 만든다 -- 아래로 그냥 흘려보내면(다음의 changelog/
+        // manifest/filelog 루프들은 count==0이면 그냥 0번 반복하고 끝난다는 것을 확인했다)
+        // `ChangegroupParser.writeBundle`이 그 "종료 청크만 있는" 올바른 빈 changegroup을
+        // 만들고, 이어서 (bundle2 요청 시) `Bundle2Parser.wrapChangegroupInBundle2`이 이를
+        // 정상적인 HG20 봉투로 감싸거나 (레거시 요청 시) "HG10UN" 접두사가 그대로 붙는다 --
+        // 클라이언트 입장에서는 "커밋이 없는 원격"과 "커밋은 있지만 이미 다 common이라
+        // 새로 보낼 게 없는 원격"이 완전히 동일한, 유효한 빈 changegroup으로 보인다(실제
+        // hg도 이 둘을 구분하지 않는다). `remoteRepo.getRevlog()`는 idxFile이 아예 없어도
+        // (일반 v1 저장소 기준) 디스크에 아무것도 안 쓰고 revisionCount=0인 빈 Revlog를
+        // 안전하게 만들어준다는 것도 `RevlogIndex`(idxFile.exists()가 false면 v1 분기는
+        // 아무 side effect 없이 기본 빈 상태로 남는다) 실측으로 확인했다.
         Revlog changelog = remoteRepo.getRevlog(clIdx, clDat);
         int count = changelog.getRevisionCount();
-        if (count == 0) {
-            return new byte[0];
-        }
 
         // Calculate startRev based on common bases
         int startRev = 0;
@@ -245,9 +259,11 @@ public class HgLocalClient implements HgRemoteConnection {
             startRev = firstNewRev;
         }
 
-        if (startRev >= count) {
-            return new byte[0];
-        }
+        // (더 이상 여기서 startRev >= count일 때 `new byte[0]`을 조기 반환하지 않는다 -- 바로
+        // 위의 count==0 케이스와 같은 이유. 클라이언트가 이미 최신 상태라 새로 보낼 리비전이
+        // 없는 일반적인 "no-op pull"도 이 분기를 타는데, 아래 changelog/manifest/filelog
+        // 루프들은 전부 `for (int r = startRev; r < count; r++)` 형태라 startRev>=count면 그냥
+        // 0번 반복하고 끝나 정상적으로 빈 bundle이 만들어진다.)
 
         // 백로그 26번: bundleCaps에서 실제로 클라이언트가 요청한 changegroup 버전을 협상한다
         // (실제 스펙, mercurial/exchange.py 실측): 클라이언트가 "HG2"로 시작하는 토큰을 하나도

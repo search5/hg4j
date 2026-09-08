@@ -140,6 +140,51 @@ public class HgHttpWireServerTest {
         assertEquals(NodeIdUtil.toHex(commitNode), keys.get("mybook"));
     }
 
+    // yona-wiki P3-21/P3-22 — the actual reason registerPrePushkeyHook/registerPostPushkeyHook
+    // exist: a real bookmark push over HTTP must be observable/rejectable, exactly like
+    // registerPre/PostChangegroupHook above is for the changegroup (raw changesets) half of a push.
+    @Test
+    public void prePushkeyHookCanRejectARealBookmarkPushOverHttp() throws Exception {
+        HgHttpWireServer handler = new HgHttpWireServer(serverRepo);
+        handler.registerPrePushkeyHook(ctx -> false);
+
+        Server hookedServer = HgTestUtils.startServlet(handler);
+        try {
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(hookedServer));
+            boolean ok = client.pushkey("bookmarks", "mybook", "", NodeIdUtil.toHex(commitNode));
+            assertFalse(ok, "A rejecting pre-pushkey hook must fail the pushkey");
+            assertTrue(client.listKeys("bookmarks").isEmpty(), "The bookmark must not have moved");
+        } finally {
+            HgTestUtils.stop(hookedServer);
+        }
+    }
+
+    @Test
+    public void postPushkeyHookFiresWithTheBookmarkMoveDetailsAfterARealPushOverHttp() throws Exception {
+        HgHttpWireServer handler = new HgHttpWireServer(serverRepo);
+        List<Map<String, Object>> observedContexts = new ArrayList<>();
+        handler.registerPostPushkeyHook(ctx -> {
+            observedContexts.add(ctx);
+            return true;
+        });
+
+        Server hookedServer = HgTestUtils.startServlet(handler);
+        try {
+            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(hookedServer));
+            boolean ok = client.pushkey("bookmarks", "mybook", "", NodeIdUtil.toHex(commitNode));
+            assertTrue(ok);
+
+            assertEquals(1, observedContexts.size(), "The post-pushkey hook must fire exactly once");
+            Map<String, Object> ctx = observedContexts.get(0);
+            assertEquals("bookmarks", ctx.get("namespace"));
+            assertEquals("mybook", ctx.get("key"));
+            assertEquals("", ctx.get("old"));
+            assertEquals(NodeIdUtil.toHex(commitNode), ctx.get("new"));
+        } finally {
+            HgTestUtils.stop(hookedServer);
+        }
+    }
+
     @Test
     public void serverAdvertisesAndServesClonebundlesOnceTheManifestFileExists() throws Exception {
         HgRemoteClient before = new HgRemoteClient(baseUrl());

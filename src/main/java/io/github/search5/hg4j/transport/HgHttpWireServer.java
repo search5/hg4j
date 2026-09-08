@@ -41,6 +41,11 @@ public class HgHttpWireServer extends HttpServlet {
     private final HgRepository repository;
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
+    // yona-wiki P3-21/P3-22 — see Wire1Commands#pushkey(HgRepository, Map, List, List): the
+    // changegroup hooks above never see which ref (bookmark) moved, only raw changeset nodes —
+    // that only happens in the separate `pushkey` wire command, hence a separate hook list.
+    private final List<HgHook> prePushkeyHooks = new ArrayList<>();
+    private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
     public HgHttpWireServer(HgRepository repository) {
         this.repository = repository;
@@ -56,6 +61,20 @@ public class HgHttpWireServer extends HttpServlet {
     /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
     public HgHttpWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
+        return this;
+    }
+
+    /** Registers a hook run before an incoming {@code pushkey} (e.g. a bookmark move — the actual
+     * "branch update" wire event, see {@link Wire1Commands#pushkey}) is applied — returning
+     * {@code false} aborts it, surfaced to the client as the real hg pushkey failure response. */
+    public HgHttpWireServer registerPrePushkeyHook(HgHook hook) {
+        prePushkeyHooks.add(hook);
+        return this;
+    }
+
+    /** Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully. */
+    public HgHttpWireServer registerPostPushkeyHook(HgHook hook) {
+        postPushkeyHooks.add(hook);
         return this;
     }
 
@@ -245,7 +264,13 @@ public class HgHttpWireServer extends HttpServlet {
                 // covers both.
                 args.putAll(parseQueryParams(new String(body, StandardCharsets.UTF_8)));
             }
-            wireResponse = dispatch(cmd, args);
+            // yona-wiki P3-21/P3-22 — pushkey (bookmark moves) is handled directly rather than via
+            // dispatch()/batch() so branch-protection/notification hooks apply the same way
+            // unbundle's hooks do above; real hg clients never batch pushkey with other commands
+            // anyway (it's the actual write, not discovery — see Wire1Commands#batch's doc).
+            wireResponse = "pushkey".equals(cmd)
+                    ? Wire1Commands.pushkey(repository, args, prePushkeyHooks, postPushkeyHooks)
+                    : dispatch(cmd, args);
         }
 
         switch (wireResponse.getKind()) {

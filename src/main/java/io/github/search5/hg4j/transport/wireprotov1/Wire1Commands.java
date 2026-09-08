@@ -207,7 +207,57 @@ public final class Wire1Commands {
 
     /** Real hg's response is {@code "<0-or-1>\n<output>"}; {@code output} is always empty here (no server-side hooks to capture). */
     public static Wire1Response pushkey(HgRepository repo, Map<String, String> args) throws IOException {
-        boolean ok = Wire2Commands.applyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"));
+        return pushkey(repo, args, List.of(), List.of());
+    }
+
+    /**
+     * Same as {@link #pushkey(HgRepository, Map)}, but also runs server-side {@link HgHook}
+     * callbacks around applying the incoming pushkey (yona-wiki P3-21/P3-22 — real hg's pushkey
+     * wire command is the ONLY place a bookmark move actually happens, so this is the equivalent
+     * hook point to {@link #unbundle(HgRepository, byte[], Map, List, List)}'s
+     * {@code preChangegroupHooks}/{@code postChangegroupHooks} for "which ref moved from where to
+     * where", which {@code unbundle}'s own hooks never see — {@code unbundle} only ever sees raw
+     * changeset nodes, never bookmark/ref names). A pre-hook rejection surfaces through the same
+     * {@code "0\n"} failure response a genuine {@link Wire2Commands#applyPushkey} failure (e.g. a
+     * concurrent-update race on {@code old}) would — real hg's own pushkey wire response never
+     * distinguishes "hook declined" from "compare-and-swap failed" either (both are a bare
+     * {@code 0}), so this keeps parity rather than inventing a new response shape.
+     *
+     * <p>The context map handed to every hook carries the same information a JGit {@code
+     * ReceiveCommand} would for an equivalent ref update: {@code namespace} (only
+     * {@code "bookmarks"} is a real ref move today — {@link Wire2Commands#applyPushkey} itself
+     * already no-ops any other namespace), {@code key} (the bookmark name), {@code old}/{@code
+     * new} (node hex, or {@code ""} for a bookmark being created/deleted respectively — never
+     * {@code null}, matching real hg's own wire encoding of an absent node), and {@code
+     * repository}.</p>
+     */
+    public static Wire1Response pushkey(HgRepository repo, Map<String, String> args,
+                                         List<HgHook> prePushkeyHooks,
+                                         List<HgHook> postPushkeyHooks) throws IOException {
+        String namespace = args.get("namespace");
+        String key = args.get("key");
+        String oldVal = args.getOrDefault("old", "");
+        String newVal = args.getOrDefault("new", "");
+
+        Map<String, Object> context = new LinkedHashMap<>();
+        context.put("namespace", namespace);
+        context.put("key", key);
+        context.put("old", oldVal);
+        context.put("new", newVal);
+        context.put("repository", repo);
+
+        for (HgHook hook : prePushkeyHooks) {
+            if (!hook.run(context)) {
+                return Wire1Response.bytes("0\n".getBytes(StandardCharsets.US_ASCII));
+            }
+        }
+
+        boolean ok = Wire2Commands.applyPushkey(repo, namespace, key, args.get("old"), args.get("new"));
+        if (ok) {
+            for (HgHook hook : postPushkeyHooks) {
+                hook.run(context);
+            }
+        }
         return Wire1Response.bytes((ok ? "1\n" : "0\n").getBytes(StandardCharsets.US_ASCII));
     }
 

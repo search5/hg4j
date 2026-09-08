@@ -115,6 +115,113 @@ public class Wire1CommandsTest {
         assertEquals("mybook\t" + hex + "\n", bytes(Wire1Commands.listkeys(repo, listArgs)));
     }
 
+    // yona-wiki P3-21/P3-22 — pushkey's hook-aware overload is the only place hg4j can observe "a
+    // bookmark moved from X to Y" (see Wire1Commands#pushkey's javadoc): a pre-hook that returns
+    // false must reject exactly like a genuine compare-and-swap failure (bare "0\n", no bookmark
+    // change), and the bookmark must actually still be gone from listkeys afterward.
+    @Test
+    public void prePushkeyHookRejectionBlocksTheBookmarkMoveAndReturnsFailureResponse(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        File f = new File(tempDir.toFile(), "a.txt");
+        Files.writeString(f.toPath(), "hello");
+        new AddCommand(repo).call();
+        byte[] commit = new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+        String hex = NodeIdUtil.toHex(commit);
+
+        Map<String, String> pushArgs = new LinkedHashMap<>();
+        pushArgs.put("namespace", "bookmarks");
+        pushArgs.put("key", "protected");
+        pushArgs.put("old", "");
+        pushArgs.put("new", hex);
+
+        List<Map<String, Object>> seenContexts = new ArrayList<>();
+        HgHook rejectingHook = context -> {
+            seenContexts.add(context);
+            return false;
+        };
+
+        Wire1Response response = Wire1Commands.pushkey(repo, pushArgs, List.of(rejectingHook), List.of());
+        assertEquals("0\n", bytes(response));
+
+        assertEquals(1, seenContexts.size());
+        Map<String, Object> ctx = seenContexts.get(0);
+        assertEquals("bookmarks", ctx.get("namespace"));
+        assertEquals("protected", ctx.get("key"));
+        assertEquals("", ctx.get("old"));
+        assertEquals(hex, ctx.get("new"));
+        assertSame(repo, ctx.get("repository"));
+
+        Map<String, String> listArgs = new LinkedHashMap<>();
+        listArgs.put("namespace", "bookmarks");
+        assertEquals("", bytes(Wire1Commands.listkeys(repo, listArgs)));
+    }
+
+    // A pre-hook that allows the move must let the bookmark actually move AND fire the post-hook
+    // exactly once, with the same context shape a real caller (yona's branch protection/push
+    // notification hooks) needs to tell "which ref, from where, to where".
+    @Test
+    public void allowedPushkeyMovesTheBookmarkAndFiresThePostHookWithTheMoveDetails(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        File f = new File(tempDir.toFile(), "a.txt");
+        Files.writeString(f.toPath(), "hello");
+        new AddCommand(repo).call();
+        byte[] commit = new CommitCommand(repo).setMessage("v1").setAuthor("dev").call();
+        String hex = NodeIdUtil.toHex(commit);
+
+        Map<String, String> pushArgs = new LinkedHashMap<>();
+        pushArgs.put("namespace", "bookmarks");
+        pushArgs.put("key", "main");
+        pushArgs.put("old", "");
+        pushArgs.put("new", hex);
+
+        List<Boolean> preRan = new ArrayList<>();
+        HgHook allowingPreHook = context -> {
+            preRan.add(true);
+            return true;
+        };
+        List<Map<String, Object>> postContexts = new ArrayList<>();
+        HgHook postHook = context -> {
+            postContexts.add(context);
+            return true;
+        };
+
+        Wire1Response response = Wire1Commands.pushkey(repo, pushArgs, List.of(allowingPreHook), List.of(postHook));
+        assertEquals("1\n", bytes(response));
+        assertEquals(1, preRan.size());
+        assertEquals(1, postContexts.size());
+        assertEquals("main", postContexts.get(0).get("key"));
+        assertEquals(hex, postContexts.get(0).get("new"));
+
+        Map<String, String> listArgs = new LinkedHashMap<>();
+        listArgs.put("namespace", "bookmarks");
+        assertEquals("main\t" + hex + "\n", bytes(Wire1Commands.listkeys(repo, listArgs)));
+    }
+
+    // A rejected/failed applyPushkey (e.g. a real compare-and-swap mismatch on "old") must not run
+    // the post-hook — mirrors JGit's PostReceiveHook only ever seeing successfully applied commands.
+    @Test
+    public void postPushkeyHookDoesNotRunWhenApplyPushkeyItselfFails(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+
+        Map<String, String> pushArgs = new LinkedHashMap<>();
+        pushArgs.put("namespace", "bookmarks");
+        pushArgs.put("key", "main");
+        // "old" deliberately wrong (bookmark doesn't exist yet, so its current value is "") --
+        // this makes Wire2Commands#applyPushkey's own compare-and-swap fail independent of any hook.
+        pushArgs.put("old", "f".repeat(40));
+        pushArgs.put("new", "a".repeat(40));
+
+        List<Map<String, Object>> postContexts = new ArrayList<>();
+        HgHook postHook = context -> {
+            postContexts.add(context);
+            return true;
+        };
+
+        Wire1Response response = Wire1Commands.pushkey(repo, pushArgs, List.of(), List.of(postHook));
+        assertEquals("0\n", bytes(response));
+        assertTrue(postContexts.isEmpty());
+    }
+
     @Test
     public void batchDispatchesEachSubcommandAndJoinsResponsesWithSemicolons(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();

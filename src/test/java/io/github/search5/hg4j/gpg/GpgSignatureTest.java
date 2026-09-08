@@ -6,6 +6,8 @@ import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -14,6 +16,7 @@ import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
+import java.security.spec.ECGenParameterSpec;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -96,6 +99,57 @@ public class GpgSignatureTest {
             KeyPair otherKeyPair = keyGen.generateKeyPair();
             assertFalse(restored.verify(readBack.getUnsignedChangelogText(), otherKeyPair.getPublic()),
                     "signature must NOT verify against an unrelated public key");
+        }
+    }
+
+    // P3-24 -- GpgSignature.sign()/verify() used to hardcode PGPPublicKey.RSA_GENERAL in every
+    // JcaPGPKeyConverter.getPGPPublicKey(...) call, so any non-RSA key (EC, Ed25519, ...) would
+    // either fail to sign/verify at all or be coerced into an incorrectly-typed OpenPGP key.
+    // This exercises a real sign -> verify round trip for RSA, EC (P-256) and Ed25519 through the
+    // sign(byte[], PrivateKey, PublicKey, String) overload, which resolves the correct
+    // PublicKeyAlgorithmTags constant from the actual PublicKey instead of assuming RSA -- with
+    // the same tampered-content / wrong-key negative coverage as the RSA case above.
+    @ParameterizedTest
+    @ValueSource(strings = {"RSA", "EC", "Ed25519"})
+    public void testSignAndVerifyRoundTripAcrossAlgorithms(String algorithm) throws Exception {
+        KeyPair keyPair = generateKeyPairFor(algorithm);
+        byte[] content = ("Commit content signed with " + algorithm).getBytes(StandardCharsets.UTF_8);
+        String fingerprint = "FPR_" + algorithm;
+
+        GpgSignature signature = GpgSignature.sign(content, keyPair.getPrivate(), keyPair.getPublic(), fingerprint);
+        assertNotNull(signature.getSignatureHex());
+        assertEquals(fingerprint, signature.getKeyFingerprint());
+
+        assertTrue(signature.verify(content, keyPair.getPublic()),
+                algorithm + " signature must verify against the correct public key and content.");
+
+        // Negative case 1: tampered content must not verify.
+        byte[] tampered = ("Tampered content signed with " + algorithm).getBytes(StandardCharsets.UTF_8);
+        assertFalse(signature.verify(tampered, keyPair.getPublic()),
+                algorithm + " signature must NOT verify against altered content.");
+
+        // Negative case 2: an unrelated key pair of the same algorithm must not verify.
+        KeyPair otherKeyPair = generateKeyPairFor(algorithm);
+        assertFalse(signature.verify(content, otherKeyPair.getPublic()),
+                algorithm + " signature must NOT verify against an unrelated public key.");
+    }
+
+    private static KeyPair generateKeyPairFor(String algorithm) throws Exception {
+        switch (algorithm) {
+            case "EC": {
+                KeyPairGenerator keyGen = KeyPairGenerator.getInstance("EC");
+                keyGen.initialize(new ECGenParameterSpec("secp256r1"), new SecureRandom());
+                return keyGen.generateKeyPair();
+            }
+            case "Ed25519": {
+                KeyPairGenerator keyGen = KeyPairGenerator.getInstance("Ed25519");
+                return keyGen.generateKeyPair();
+            }
+            default: {
+                KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+                keyGen.initialize(2048, new SecureRandom());
+                return keyGen.generateKeyPair();
+            }
         }
     }
 }

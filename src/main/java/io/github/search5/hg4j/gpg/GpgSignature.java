@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.io.ByteArrayInputStream;
 import java.security.*;
 import java.security.spec.RSAPublicKeySpec;
+import java.security.interfaces.EdECKey;
 import java.security.interfaces.RSAPrivateKey;
 import java.util.Base64;
 import java.math.BigInteger;
@@ -45,8 +46,87 @@ public class GpgSignature {
     }
 
     /**
+     * Resolves the {@link PGPPublicKey} algorithm tag (from {@link org.bouncycastle.bcpg.PublicKeyAlgorithmTags},
+     * exposed as constants on {@link PGPPublicKey}) matching a standard Java {@link PublicKey}, so that
+     * {@link JcaPGPKeyConverter#getPGPPublicKey(int, PublicKey, Date)} can build a correctly-typed OpenPGP
+     * public key regardless of whether the underlying key is RSA, EC (ECDSA) or EdDSA (Ed25519/Ed448).
+     *
+     * <p>JDK Ed25519/Ed448 keys (via {@code KeyPairGenerator.getInstance("Ed25519")} / {@code "Ed448"}, JDK 15+)
+     * report a generic {@code "EdDSA"} algorithm name, so {@link EdECKey#getParams()} is consulted to tell the
+     * two curves apart; BouncyCastle-generated keys that already report {@code "Ed25519"}/{@code "Ed448"}
+     * directly are also recognized.</p>
+     */
+    private static int resolvePgpAlgorithmTag(PublicKey publicKey) throws GeneralSecurityException {
+        String algorithm = publicKey.getAlgorithm();
+        if ("RSA".equalsIgnoreCase(algorithm)) {
+            return PGPPublicKey.RSA_GENERAL;
+        }
+        if ("EC".equalsIgnoreCase(algorithm) || "ECDSA".equalsIgnoreCase(algorithm)) {
+            return PGPPublicKey.ECDSA;
+        }
+        if (publicKey instanceof EdECKey) {
+            String curveName = ((EdECKey) publicKey).getParams().getName();
+            if ("Ed25519".equalsIgnoreCase(curveName)) {
+                return PGPPublicKey.Ed25519;
+            }
+            if ("Ed448".equalsIgnoreCase(curveName)) {
+                return PGPPublicKey.Ed448;
+            }
+        }
+        if ("Ed25519".equalsIgnoreCase(algorithm)) {
+            return PGPPublicKey.Ed25519;
+        }
+        if ("Ed448".equalsIgnoreCase(algorithm)) {
+            return PGPPublicKey.Ed448;
+        }
+        throw new GeneralSecurityException("Unsupported public key algorithm for OpenPGP signing/verification: " + algorithm);
+    }
+
+    /**
+     * Signs the commit content using a standard Java PrivateKey and its matching PublicKey
+     * to generate a true OpenPGP (RFC 4880) ASCII-armored digital SCM signature.
+     *
+     * <p>Unlike {@link #sign(byte[], PrivateKey, String)}, this overload works for any key
+     * algorithm supported by OpenPGP (RSA, EC/ECDSA, Ed25519, Ed448) since the real public key
+     * is supplied directly rather than being reconstructed from the private key alone.</p>
+     */
+    public static GpgSignature sign(byte[] contentToSign, PrivateKey privateKey, PublicKey publicKey, String fingerprint) throws GeneralSecurityException {
+        try {
+            JcaPGPKeyConverter converter = new JcaPGPKeyConverter().setProvider("BC");
+
+            int algorithmTag = resolvePgpAlgorithmTag(publicKey);
+            PGPPublicKey pgpPubKey = converter.getPGPPublicKey(algorithmTag, publicKey, new Date());
+            PGPPrivateKey pgpPrivKey = converter.getPGPPrivateKey(pgpPubKey, privateKey);
+
+            PGPSignatureGenerator sGen = new PGPSignatureGenerator(
+                new JcaPGPContentSignerBuilder(algorithmTag, HashAlgorithmTags.SHA256).setProvider("BC")
+            );
+
+            sGen.init(PGPSignature.BINARY_DOCUMENT, pgpPrivKey);
+            sGen.update(contentToSign);
+            PGPSignature signature = sGen.generate();
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (ArmoredOutputStream armorOut = new ArmoredOutputStream(out)) {
+                signature.encode(armorOut);
+            }
+
+            String armoredText = out.toString("UTF-8");
+            return new GpgSignature(armoredText, fingerprint);
+        } catch (Exception e) {
+            throw new GeneralSecurityException("Failed to generate OpenPGP signature", e);
+        }
+    }
+
+    /**
      * Signs the commit content using a standard Java PrivateKey
      * to generate a true OpenPGP (RFC 4880) ASCII-armored digital SCM signature.
+     *
+     * <p>Kept for backward compatibility: this overload only has the private key to work with,
+     * so it can only support RSA (the public key is reconstructed from the RSA private key's
+     * modulus using the standard F4 exponent). For EC/Ed25519/Ed448 keys, or whenever the actual
+     * public key is available, prefer {@link #sign(byte[], PrivateKey, PublicKey, String)}, which
+     * supports every OpenPGP-compatible algorithm.</p>
      */
     public static GpgSignature sign(byte[] contentToSign, PrivateKey privateKey, String fingerprint) throws GeneralSecurityException {
         try {
@@ -128,7 +208,8 @@ public class GpgSignature {
             PGPSignature signature = sigList.get(0);
             
             JcaPGPKeyConverter converter = new JcaPGPKeyConverter().setProvider("BC");
-            PGPPublicKey pgpPubKey = converter.getPGPPublicKey(PGPPublicKey.RSA_GENERAL, publicKey, new Date());
+            int algorithmTag = resolvePgpAlgorithmTag(publicKey);
+            PGPPublicKey pgpPubKey = converter.getPGPPublicKey(algorithmTag, publicKey, new Date());
             
             signature.init(new JcaPGPContentVerifierBuilderProvider().setProvider("BC"), pgpPubKey);
             signature.update(signedContent);

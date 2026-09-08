@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-06
+updated: 2026-09-08
 status: current
 ---
 
@@ -72,6 +72,52 @@ lstat 인식 자체가 없었음).
 **발견 이력**: 백로그 10번(누락·거부), 14번(CommitCommand 크기), 2026-09-01
 추가 완료 항목(StatusCommand/CommitCommand), 2026-09-03(mtime 전수 조사, 12곳).
 상세: [[symlink-handling]].
+
+### `HgLocalClient.getBundle()` — 보낼 게 없을 때 `new byte[0]`을 그대로 반환
+**증상(심각 — 신규 저장소를 아무도 clone 못 함)**: yona 앱으로 만든, 커밋이 0개인 갓
+`hg init`된 저장소를 real hg 클라이언트로 최초 clone하면 HTTP 경로는 즉시
+`abort: stream ended unexpectedly (got 0 bytes, expected 4)`, SSH 소켓 릴레이(raw
+stream) 경로는 아예 hang(4바이트 길이 헤더를 영원히 기다림). 실제 yona 앱으로
+end-to-end 재현(2026-09-08)해 hg4j 자체 버그임을 확정.
+**근본 원인**: `getBundle(...)`이 (a) `00changelog.i`가 아예 없을 때, (b)
+`changelog.getRevisionCount() == 0`일 때, (c) 증분 pull에서 `startRev >= count`
+(클라이언트가 이미 최신)일 때, 이 세 지점 모두 `ChangegroupParser.writeBundle`/
+`Bundle2Parser.wrapChangegroupInBundle2`(또는 레거시 `"HG10UN"` 접두사)를 전혀
+거치지 않고 바로 `return new byte[0]`. real hg 클라이언트 입장에선 "정상적으로
+봉투에 감싸인 빈 changegroup"과 "스트림이 중간에 잘렸다"를 구분할 방법이 전혀 없는,
+프로토콜상 무효한 응답 — 사실상 (a)/(b)는 같은 케이스(신규 빈 저장소)이고 (c)는
+별도로 발견된 동일 버그의 두 번째 발현("이미 최신 상태인 pull"도 동일하게
+hang/abort — 이전엔 이 시나리오를 테스트한 적이 자체가 없어 미발견 상태였음).
+**수정**: 세 조기 반환을 모두 제거하고 정상 흐름으로 흘려보냄 — 뒤이은
+changelog/manifest/filelog 루프는 전부 `for (int r = startRev; r < count; r++)`
+형태라 `count==0`이든 `startRev>=count`든 그냥 0번 반복하고 끝나 자연스럽게 빈
+`ChangegroupBundle`(3개 필드 모두 빈 리스트)이 만들어진다는 것을 확인. 이렇게 만든
+빈 bundle을 기존과 동일하게 `ChangegroupParser.writeBundle`(3개의 빈 종료 청크만
+있는 올바른 cg1)로 직렬화한 뒤 `Bundle2Parser.wrapChangegroupInBundle2`(bundle2
+요청 시) 또는 `"HG10UN"` 접두사(레거시 요청 시)로 감싼다. `remoteRepo.getRevlog()`는
+idxFile이 존재하지 않아도(일반 v1 저장소 기준) 디스크에 아무것도 안 쓰고
+`revisionCount=0`인 빈 `Revlog`를 안전하게 만들어준다는 것도 `RevlogIndex` 실측으로
+확인(사이드 이펙트 없음 — v2 general/changelog 요구사항이 있는 저장소만 예외적으로
+새 docket을 실제로 씀, 이는 이 버그와 무관한 기존 동작).
+**실측으로 확인/정정한 것**: 사전 조사 문서는 "real hg의 `exchange.getbundlechunks()`가
+보낼 게 없어도 절대 조기 반환하지 않는다"고 추정했는데, 실제 hg 7.2를 `hg serve`로
+띄워 빈 저장소를 clone하며 와이어 바이트를 직접 캡처해보니 **real hg 서버 자신은
+보낼 changeset이 없으면 bundle2 응답에서 CHANGEGROUP 파트 자체를 통째로 생략**하고
+(LISTKEYS/PHASE-HEADS 파트만 보냄) 반환한다 — 그러나 hg4j 서버는애초에 bookmarks/
+phases를 getbundle의 bundle2 파트로 인라인하지 않고 별도의 `listkeys` wire 커맨드로
+서빙하는 다른 설계라서(기존 동작, 이 버그와 무관), hg4j가 CHANGEGROUP 파트를
+"내용은 비었지만 형식은 올바르게" 채워 보내도 real hg 클라이언트가 문제없이 받아들임을
+real-hg-CLI clone/pull 라운드트립으로 직접 검증 완료.
+**부수 확인(버그 아님)**: 이 조사 중 "빈 원격으로의 첫 push도 비슷하게 깨져 있는가"도
+직접 검증 — 이미 정상 동작함(`pushWithHooks`/`applyBundle`은 애초에 `getBundle`을
+전혀 거치지 않는 별개 경로). 유일하게 걸리는 것은 real hg 클라이언트 자신의
+`abort: push creates new remote branches: default` 안전장치(브랜치가 하나도 없는
+원격에 첫 push할 때 `--new-branch` 요구) — hg4j와 무관한 real hg의 표준 동작.
+**회귀 테스트**: `HgHttpWireServerEmptyRepoRealHgInteropTest`(real hg CLI로 빈
+저장소 clone/무변경 pull/빈 저장소로의 첫 push, 3건 모두 수정 전 RED→수정 후 GREEN
+확인) + `HgLocalClientCoverageTest`의 기존 "returns empty bytes" 3건을 "well-formed
+빈 bundle" 검증으로 교체. 발견 이력: 2026-09-08, yona 앱 실사용 중 발견(신규 프로젝트
+최초 clone 100% 재현).
 
 ## 명령별 버그
 

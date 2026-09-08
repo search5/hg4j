@@ -87,23 +87,47 @@ public class HgLocalClientCoverageTest {
 
     // ==========================================================
     // getBundle edge cases: missing/empty changelog
+    //
+    // Bug fix (2026-09-08, see llm-wiki/known-bugs-registry.md's `HgLocalClient.getBundle()`
+    // entry): these three cases used to short-circuit with a bare `new byte[0]`, which a real hg
+    // client cannot tell apart from a truncated/corrupted stream (reproduced live: HTTP aborts
+    // with "stream ended unexpectedly (got 0 bytes, expected 4)", a raw SSH-style stream hangs
+    // forever). The fix lets these fall through to the normal bundle-building path, which
+    // produces a well-formed but empty changegroup (still prefixed with the legacy "HG10UN"
+    // marker here since these calls pass bundleCaps=null, i.e. no bundle2 requested) -- these
+    // tests now assert exactly that shape instead of a bare empty array. See
+    // HgHttpWireServerEmptyRepoRealHgInteropTest for the real-hg-CLI-driven regression coverage
+    // this bug actually needed.
     // ==========================================================
 
     @Test
-    public void getBundleReturnsEmptyBytesWhenChangelogIndexMissing(@TempDir Path tempDir) throws Exception {
+    public void getBundleReturnsWellFormedEmptyBundleWhenChangelogIndexMissing(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.resolve("repo").toFile()).call();
         try (HgLocalClient client = new HgLocalClient(repo)) {
-            assertEquals(0, client.getBundle(null, null, null).length);
+            assertWellFormedEmptyLegacyBundle(client.getBundle(null, null, null));
         }
     }
 
     @Test
-    public void getBundleReturnsEmptyBytesWhenChangelogHasZeroRevisions(@TempDir Path tempDir) throws Exception {
+    public void getBundleReturnsWellFormedEmptyBundleWhenChangelogHasZeroRevisions(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.resolve("repo").toFile()).call();
         Files.write(new File(repo.getStoreDir(), "00changelog.i").toPath(), new byte[0]);
         try (HgLocalClient client = new HgLocalClient(repo)) {
-            assertEquals(0, client.getBundle(null, null, null).length);
+            assertWellFormedEmptyLegacyBundle(client.getBundle(null, null, null));
         }
+    }
+
+    /** Asserts {@code bytes} is a well-formed legacy ("HG10UN"-prefixed, cg1) changegroup with
+     * zero changelog/manifest entries and zero file groups -- see the class comment above this
+     * test group for why this replaced a bare {@code assertEquals(0, bytes.length)}. */
+    private static void assertWellFormedEmptyLegacyBundle(byte[] bytes) throws IOException {
+        assertTrue(bytes.length > 6, "expected at least the \"HG10UN\" prefix plus terminator chunks, got " + bytes.length + " bytes");
+        assertEquals("HG10UN", new String(bytes, 0, 6, StandardCharsets.US_ASCII));
+        ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
+                new ByteArrayInputStream(bytes, 6, bytes.length - 6), "01");
+        assertEquals(0, bundle.changelogEntries.size());
+        assertEquals(0, bundle.manifestEntries.size());
+        assertEquals(0, bundle.fileGroups.size());
     }
 
     // ==========================================================
@@ -142,7 +166,7 @@ public class HgLocalClientCoverageTest {
     }
 
     @Test
-    public void getBundleReturnsEmptyBytesWhenCommonAlreadyIncludesAllHeads(@TempDir Path tempDir) throws Exception {
+    public void getBundleReturnsWellFormedEmptyBundleWhenCommonAlreadyIncludesAllHeads(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         Files.writeString(new File(repoDir, "a.txt").toPath(), "hi");
@@ -151,7 +175,7 @@ public class HgLocalClientCoverageTest {
 
         try (HgLocalClient client = new HgLocalClient(repo)) {
             byte[] bytes = client.getBundle(List.of(NodeIdUtil.toHex(node)), null, null);
-            assertEquals(0, bytes.length);
+            assertWellFormedEmptyLegacyBundle(bytes);
         }
     }
 
@@ -163,7 +187,7 @@ public class HgLocalClientCoverageTest {
             // through BOTH of its parents (and transitively to the shared base), exercising the
             // parent1/parent2 backward-propagation branches in the startRev computation.
             byte[] bytes = client.getBundle(List.of(NodeIdUtil.toHex(m.mergeNode)), null, null);
-            assertEquals(0, bytes.length, "nothing new once the merge tip itself is already common");
+            assertWellFormedEmptyLegacyBundle(bytes);
         }
     }
 

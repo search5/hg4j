@@ -73,6 +73,102 @@ public class DiffCommandCoverageTest {
         assertEquals("a.txt", diffs.get(0).getPath());
     }
 
+    // ---- newRevision's "-1 means empty manifest" vs "not set means default to tip" sentinels
+    // must not collide (2026-09-09 real bug: they used to share the same -1 value, so an
+    // explicit "diff against nothing" request was silently and wrongly answered with "diff
+    // against tip" instead -- caught by yona's HgRepository.getDiff(revA, revB) approximating a
+    // nonexistent revB as -1 and getting a diff against tip instead of an all-DELETE diff).
+
+    @Test
+    public void testExplicitNewRevisionMinusOneMeansEmptyManifestNotTip(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File fa = new File(repoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Line 1\n");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setMessage("Rev 0").call();
+
+        Files.writeString(fa.toPath(), "Line 1 Modified\n");
+        new CommitCommand(repo).setMessage("Rev 1 (tip)").call();
+
+        // Explicitly requesting revision -1 as the new side must diff rev0 against an EMPTY
+        // manifest (every rev0 path shows as DELETE), never silently substitute tip (which would
+        // instead show a's rev0->rev1 MODIFY and nothing else).
+        List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo).setOldRevision(0).setNewRevision(-1).call();
+
+        assertEquals(1, diffs.size());
+        assertEquals("a.txt", diffs.get(0).getPath());
+        assertEquals(DiffCommand.ChangeType.DELETE, diffs.get(0).getChangeType());
+    }
+
+    @Test
+    public void testUnresolvableNewRevisionNodeIdMeansEmptyManifestNotTip(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File fa = new File(repoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Line 1\n");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setMessage("Rev 0").call();
+
+        Files.writeString(fa.toPath(), "Line 1 Modified\n");
+        new CommitCommand(repo).setMessage("Rev 1 (tip)").call();
+
+        // A NodeId that doesn't resolve to any revision (findRevisionByNodeId returns -1) must
+        // be honored as "empty manifest", not silently defaulted to tip either.
+        NodeId unresolvable = new NodeId(new byte[20]);
+        List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo).setOldRevision(0).setNewRevision(unresolvable).call();
+
+        assertEquals(1, diffs.size());
+        assertEquals("a.txt", diffs.get(0).getPath());
+        assertEquals(DiffCommand.ChangeType.DELETE, diffs.get(0).getChangeType());
+    }
+
+    @Test
+    public void testUnsetNewRevisionStillDefaultsToTip(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File fa = new File(repoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Line 1\n");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setMessage("Rev 0").call();
+
+        Files.writeString(fa.toPath(), "Line 1 Modified\n");
+        new CommitCommand(repo).setMessage("Rev 1 (tip)").call();
+
+        // Never calling setNewRevision() at all must still default to tip (rev1) -- the fix must
+        // not turn this into an "empty manifest" case too.
+        List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo).setOldRevision(0).call();
+
+        assertEquals(1, diffs.size());
+        assertEquals("a.txt", diffs.get(0).getPath());
+        assertEquals(DiffCommand.ChangeType.MODIFY, diffs.get(0).getChangeType());
+    }
+
+    @Test
+    public void testSetNewRevisionNodeIdNullResetsToDefaultTip(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+
+        File fa = new File(repoDir, "a.txt");
+        Files.writeString(fa.toPath(), "Line 1\n");
+        new AddCommand(repo).addFile("a.txt").call();
+        new CommitCommand(repo).setMessage("Rev 0").call();
+
+        Files.writeString(fa.toPath(), "Line 1 Modified\n");
+        new CommitCommand(repo).setMessage("Rev 1 (tip)").call();
+
+        // setNewRevision((NodeId) null) is documented as "unset, use default" (symmetric with
+        // setOldRevision((NodeId) null)) -- must default to tip, not to an empty manifest.
+        List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo).setOldRevision(0).setNewRevision((NodeId) null).call();
+
+        assertEquals(1, diffs.size());
+        assertEquals("a.txt", diffs.get(0).getPath());
+        assertEquals(DiffCommand.ChangeType.MODIFY, diffs.get(0).getChangeType());
+    }
+
     // ---- setOldRevision(NodeId) / setNewRevision(NodeId) IOException fallback ----
 
     @Test

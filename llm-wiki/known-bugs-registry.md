@@ -261,6 +261,24 @@ Mercurial 프로젝트로 push 검증 중 발견. 상세: `HgRemoteClientTest.
 testHgRemoteClientEmbeddedUrlCredentials()`(실제 `HttpServer`가 Basic 인증을 강제하는
 통합 테스트 — 올바른 자격증명/무자격증명/틀린 자격증명 3가지 모두 검증).
 
+### `DiffCommand.newRevision` — "값 미지정" sentinel이 "빈 매니페스트" sentinel과 충돌
+**증상**: `oldRevision`은 "값 미지정"(-2)과 "빈 매니페스트를 뜻하는 리비전 없음"(-1)이 서로
+다른 값이라 `setOldRevision(-1)`/`setOldRevision(존재하지 않는 NodeId)`가 정확히 "빈
+매니페스트"로 처리됐지만(`ManifestTreeIterator.loadEntries()`의 "-1" 조기 반환), `newRevision`은
+"값 미지정"(호출자가 `setNewRevision()`을 아예 안 부른 경우, 기본값 tip)도 -1을 썼다 —
+`call()`이 `targetNew == -1`이면 무조건 tip으로 치환해버려서, `setNewRevision(-1)`이나
+`setNewRevision(존재하지 않는 NodeId)`처럼 "새 쪽을 빈 매니페스트로 명시적으로 요청"한 경우도
+조용히 tip과의 diff로 바뀌었다(예외나 로그 없음 — 완전히 조용한 버그).
+**수정**: "값 미지정" 전용 sentinel을 `Integer.MIN_VALUE`(상수 `NOT_SET`)로 분리해 -1과 겹치지
+않게 함(`oldRevision`의 -2/-1 분리 방식과 대칭). `setNewRevision((NodeId) null)`도 새 sentinel을
+쓰도록 함께 수정, `NodeId`가 안 풀리는 `IOException` 폴백은 기존 그대로 -1 유지(빈 매니페스트
+의미 — `oldRevision`의 대칭 메서드와 동일 관례).
+**발견 이력**: 1회, yona-convert 코디네이터 세션(2026-09-09) — yona `HgRepository.getDiff(revA,
+revB)`가 존재하지 않는 revB를 -1로 근사해 호출했다가 엉뚱하게 tip과의 diff가 나오는 걸
+포착. 상세: `DiffCommandCoverageTest`의
+`test{Explicit,Unresolvable}NewRevisionMinusOneMeansEmptyManifestNotTip`/
+`testUnsetNewRevisionStillDefaultsToTip`/`testSetNewRevisionNodeIdNullResetsToDefaultTip`.
+
 ### `GrepCommand`
 fileindex-v1/general-v2 저장소(fncache 없음)에서 조용히 빈 결과 반환.
 `store/data/` 재귀 스캔 폴백 + `NodeIdUtil.decodeStoreDataPath` 신규.

@@ -23,9 +23,23 @@ import java.util.Arrays;
  * Command to compute differences (diff) between two revisions and provide Unified Diff format per file.
  */
 public class DiffCommand {
+    // "Not set" sentinel for newRevision -- deliberately NOT -1. -1 is the established
+    // "no such revision / empty manifest" value shared with oldRevision's own sentinel scheme
+    // (see ManifestTreeIterator.loadEntries()'s "-1" early-return) and with
+    // NodeIdUtil.findRevisionByNodeId()'s "not found" return value. Before this fix, newRevision
+    // used -1 for BOTH "caller never called setNewRevision()" (should default to tip) AND
+    // "setNewRevision(int)/setNewRevision(NodeId) was called with a revision that means empty"
+    // (should diff against an empty manifest) -- call() could not tell the two apart and always
+    // silently substituted tip for the latter, producing a wrong (and wrong in a way that never
+    // throws or logs anything) diff against tip instead of the caller's actual empty-manifest
+    // request. Found 2026-09-09 via yona's HgRepository.getDiff(revA, revB) approximating a
+    // nonexistent revB as revision -1 and getting a diff against tip instead of an all-DELETE
+    // diff against oldRevision.
+    private static final int NOT_SET = Integer.MIN_VALUE;
+
     private final HgRepository repository;
     private int oldRevision = -2; // -2 means not set (defaults to newRevision's parent)
-    private int newRevision = -1; // -1 defaults to tip
+    private int newRevision = NOT_SET; // NOT_SET defaults to tip; -1 means "empty manifest" (see NOT_SET's doc)
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
     public DiffCommand setTreeFilter(HgTreeFilter treeFilter) {
@@ -87,7 +101,7 @@ public class DiffCommand {
 
     public DiffCommand setNewRevision(NodeId newRevisionNode) {
         if (newRevisionNode == null) {
-            this.newRevision = -1;
+            this.newRevision = NOT_SET;
             return this;
         }
         try {
@@ -122,7 +136,7 @@ public class DiffCommand {
         }
 
         int targetNew = newRevision;
-        if (targetNew == -1) {
+        if (targetNew == NOT_SET) {
             targetNew = count - 1;
         }
 

@@ -28,6 +28,7 @@ import com.sun.net.httpserver.HttpExchange;
 import org.eclipse.jetty.server.Server;
 
 import static org.junit.jupiter.api.Assertions.*;
+import io.github.search5.hg4j.errors.HgAuthException;
 import io.github.search5.hg4j.errors.HgCorruptDataException;
 import io.github.search5.hg4j.errors.HgProtocolException;
 import io.github.search5.hg4j.errors.HgTransportException;
@@ -769,6 +770,70 @@ public class HgRemoteClientTest {
             assertTrue(headsCalled[0]);
             assertNotNull(authHeader[0]);
             assertTrue(authHeader[0].startsWith("Basic "));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * Task 2 (yona-convert coordinator, 2026-09) -- real hg's own URL convention embeds
+     * credentials directly in the destination ({@code https://user:pass@host/path}) and uses
+     * them for HTTP Basic auth. HgRemoteClient's constructor never parsed this (only
+     * {@link HgRemoteClient#setCredentials(String, String)}/{@code setCredentialsProvider}
+     * worked), so a caller authenticating this way silently sent no Authorization header at all.
+     * Spins up a real {@link HttpServer} that actually enforces Basic auth (requires the
+     * exact-right credentials, not just "some Authorization header present") to prove: (1) a URL
+     * with the right embedded credentials authenticates and succeeds, (2) a URL with no
+     * credentials at all still fails with {@link HgAuthException} (i.e. auth checking is not a
+     * no-op), and (3) a URL with the WRONG embedded credentials also still fails -- ruling out a
+     * fix that merely stops sending an Authorization header check altogether.
+     */
+    @Test
+    public void testHgRemoteClientEmbeddedUrlCredentials() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        final String expectedAuth = "Basic " + java.util.Base64.getEncoder()
+                .encodeToString("admin:s3cr3t!".getBytes(StandardCharsets.UTF_8));
+        final String[] lastAuthHeader = {null};
+
+        server.createContext("/", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                String authHeader = exchange.getRequestHeaders().getFirst("Authorization");
+                lastAuthHeader[0] = authHeader;
+                if (!expectedAuth.equals(authHeader)) {
+                    exchange.getResponseHeaders().add("WWW-Authenticate", "Basic realm=\"hg4j-test\"");
+                    exchange.sendResponseHeaders(401, -1);
+                    exchange.close();
+                    return;
+                }
+                String response = "remotehead1234567890\n";
+                byte[] respBytes = response.getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, respBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(respBytes);
+                }
+            }
+        });
+
+        server.start();
+        int port = server.getAddress().getPort();
+
+        try {
+            // (1) Right credentials embedded in the URL (password percent-encodes '!') -- must
+            // authenticate and succeed, with no separate setCredentials() call at all.
+            HgRemoteClient authedClient = new HgRemoteClient("http://admin:s3cr3t%21@127.0.0.1:" + port + "/");
+            List<String> heads = authedClient.getHeads();
+            assertEquals(1, heads.size());
+            assertEquals("remotehead1234567890", heads.get(0));
+            assertEquals(expectedAuth, lastAuthHeader[0]);
+
+            // (2) No credentials at all -- must still fail (auth checking is not a no-op).
+            HgRemoteClient anonClient = new HgRemoteClient("http://127.0.0.1:" + port + "/");
+            assertThrows(HgAuthException.class, anonClient::getHeads);
+
+            // (3) Wrong embedded credentials -- must still fail, not silently accepted.
+            HgRemoteClient wrongClient = new HgRemoteClient("http://admin:wrongpass@127.0.0.1:" + port + "/");
+            assertThrows(HgAuthException.class, wrongClient::getHeads);
         } finally {
             server.stop(0);
         }

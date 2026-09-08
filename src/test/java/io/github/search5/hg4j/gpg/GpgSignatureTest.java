@@ -45,46 +45,57 @@ public class GpgSignatureTest {
         assertFalse(corruptedVerified, "Signature verification must fail for altered content.");
     }
 
+    // P3-19 -- real end-to-end round trip through CommitCommand.setGpgSigner()/LogCommand: a real
+    // BouncyCastle-generated (RSA) key signs the commit, the changeset is read back through the
+    // public HgCommit/LogCommand API (not by reaching into changelog internals), and the
+    // signature verifies cryptographically against the exact reconstructed unsigned payload.
+    // This used to assert the OLD/broken design where gpgsig was routed through
+    // changelog.appendRevision's metadata parameter (Revlog.wrapMetadata -- a filelog-only
+    // rename/copy metadata format, not a valid changelog revision shape at all); see
+    // CommitCommandTest.testGpgSignatureIsStoredInChangelogExtraNotMetadata for the
+    // corrected-format assertion and this project's P3-19 design log for the full story.
     @Test
-    public void testCommitWithGpgSignatureInMetadata(@TempDir Path tempDir) throws Exception {
+    public void testCommitWithGpgSignerRoundTripsAndVerifies(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo_gpg").toFile();
-        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
+            KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+            keyGen.initialize(2048, new SecureRandom());
+            KeyPair keyPair = keyGen.generateKeyPair();
+            String fingerprint = "F123456";
 
-        // KeyPair generation
-        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
-        keyGen.initialize(2048);
-        KeyPair keyPair = keyGen.generateKeyPair();
+            File f1 = new File(repoDir, "hello.txt");
+            Files.writeString(f1.toPath(), "Gpg signed commit");
+            new AddCommand(repo).call();
 
-        File f1 = new File(repoDir, "hello.txt");
-        Files.writeString(f1.toPath(), "Gpg signed commit");
-        new AddCommand(repo).call();
+            byte[] commitNode = new CommitCommand(repo)
+                    .setAuthor("Gpg Signer <gpg@example.com>")
+                    .setMessage("Commit Msg")
+                    .setGpgSigner(fingerprint, payload -> GpgSignature.sign(payload, keyPair.getPrivate(), fingerprint).toAsciiArmored())
+                    .call();
+            assertNotNull(commitNode);
 
-        byte[] contentToSign = "Commit Msg".getBytes(StandardCharsets.UTF_8);
-        GpgSignature signature = GpgSignature.sign(contentToSign, keyPair.getPrivate(), "F123456");
+            HgCommit readBack = new LogCommand(repo).call().stream()
+                    .filter(c -> c.getNodeId().toHex().equals(io.github.search5.hg4j.util.NodeIdUtil.toHex(commitNode)))
+                    .findFirst().orElseThrow();
 
-        // 1. Commit with GPG signature attached
-        CommitCommand commitCmd = new CommitCommand(repo)
-                .setAuthor("Gpg Signer <gpg@example.com>")
-                .setMessage("Commit Msg")
-                .setGpgSignature(signature);
+            assertNotNull(readBack.getGpgSignature(), "committed revision must carry a gpgsig extra");
+            assertEquals(fingerprint, readBack.getGpgFingerprint());
+            assertNotNull(readBack.getUnsignedChangelogText());
 
-        byte[] commitNode = commitCmd.call();
-        assertNotNull(commitNode);
+            GpgSignature restored = GpgSignature.fromAsciiArmored(readBack.getGpgSignature(), readBack.getGpgFingerprint());
+            assertTrue(restored.verify(readBack.getUnsignedChangelogText(), keyPair.getPublic()),
+                    "signature must verify against the reconstructed unsigned changelog payload");
 
-        // 2. Read changelog directly and check metadata integration
-        Revlog cl = repo.getRevlog(new File(repo.getStoreDir(), "00changelog.i"), new File(repo.getStoreDir(), "00changelog.d"));
-        int rev = cl.findRevision(commitNode);
-        assertTrue(rev != -1);
+            // Negative case 1: tampered payload must not verify.
+            byte[] tampered = readBack.getUnsignedChangelogText().clone();
+            tampered[0] ^= 0x01;
+            assertFalse(restored.verify(tampered, keyPair.getPublic()),
+                    "signature must NOT verify against a tampered payload");
 
-        // 3. Assert on-disk metadata keys are correctly injected and matched
-        Map<String, String> meta = cl.getRevisionMetadata(rev);
-        assertTrue(meta.containsKey("gpgsig"));
-        assertTrue(meta.containsKey("gpgfingerprint"));
-        assertEquals(signature.toAsciiArmored().replace("\n", "\\n"), meta.get("gpgsig"));
-        assertEquals("F123456", meta.get("gpgfingerprint"));
-
-        // 4. Verify roundtrip reconstruction via fromAsciiArmored and successful verification
-        GpgSignature restored = GpgSignature.fromAsciiArmored(meta.get("gpgsig"), meta.get("gpgfingerprint"));
-        assertTrue(restored.verify(contentToSign, keyPair.getPublic()), "Armored block에서 복원된 서명도 반드시 참이어야 합니다.");
+            // Negative case 2: wrong public key must not verify.
+            KeyPair otherKeyPair = keyGen.generateKeyPair();
+            assertFalse(restored.verify(readBack.getUnsignedChangelogText(), otherKeyPair.getPublic()),
+                    "signature must NOT verify against an unrelated public key");
+        }
     }
 }

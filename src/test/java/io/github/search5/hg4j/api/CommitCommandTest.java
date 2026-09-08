@@ -863,28 +863,48 @@ public class CommitCommandTest {
         }
     }
 
+    // P3-19 -- this test used to assert the OLD/broken design (gpgsig routed through
+    // changelog.appendRevision's metadata parameter, which wraps content in the filelog
+    // rename/copy "\x01\n...\x01\n" block -- not a valid changelog revision format at all, see
+    // CommitCommand.call()'s comment at the appendRevision() call site). Rewritten to assert the
+    // corrected design: gpgsig/gpgfingerprint live in the changelog `extra` dictionary (same
+    // field branch/close already use), and the changelog revision's own raw content is
+    // completely unaffected (still starts with the 40-hex manifest line, never a metadata block).
     @Test
-    public void testGpgSignatureIsStoredInChangelogMetadata(@TempDir Path tempDir) throws Exception {
+    public void testGpgSignatureIsStoredInChangelogExtraNotMetadata(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         try (HgRepository repo = Hg.init().setDirectory(repoDir).call()) {
             File f1 = new File(repoDir, "a.txt");
             Files.writeString(f1.toPath(), "content");
             new AddCommand(repo).call();
 
-            GpgSignature signature = new GpgSignature(
-                    "-----BEGIN PGP SIGNATURE-----\nabc\n-----END PGP SIGNATURE-----", "ABCDEF1234567890");
+            String armoredSignature = "-----BEGIN PGP SIGNATURE-----\nabc\n-----END PGP SIGNATURE-----";
             new CommitCommand(repo)
                     .setMessage("signed commit")
-                    .setGpgSignature(signature)
+                    .setGpgSigner("ABCDEF1234567890", payload -> armoredSignature)
                     .call();
 
             File clIdx = new File(repo.getStoreDir(), "00changelog.i");
             File clDat = new File(repo.getStoreDir(), "00changelog.d");
             Revlog clRevlog = new Revlog(clIdx, clDat);
-            Map<String, String> meta = clRevlog.getRevisionMetadata(0);
 
-            assertEquals(signature.toAsciiArmored().replace("\n", "\\n"), meta.get("gpgsig"));
-            assertEquals("ABCDEF1234567890", meta.get("gpgfingerprint"));
+            // The metadata channel (real hg's filelog-only \x01\n...\x01\n block) must stay
+            // completely empty -- gpgsig never goes through it.
+            Map<String, String> meta = clRevlog.getRevisionMetadata(0);
+            assertTrue(meta.isEmpty(), "changelog revision must carry no filelog-style metadata block");
+
+            // The changelog revision's raw content must still start with a valid 40-hex
+            // manifest line -- exactly what real hg (and LogCommand's own parser) requires.
+            byte[] rawContent = clRevlog.getRevisionContent(0);
+            String rawText = new String(rawContent, StandardCharsets.UTF_8);
+            String firstLine = rawText.substring(0, rawText.indexOf('\n'));
+            assertEquals(40, firstLine.length(), "first line must be the 40-hex manifest node, not a metadata marker");
+            assertFalse(rawText.startsWith("\n"), "changelog content must never start with the filelog metadata marker");
+
+            // gpgsig/gpgfingerprint are readable back from the extra dictionary via LogCommand.
+            HgCommit readBack = new LogCommand(repo).call().get(0);
+            assertEquals(armoredSignature, readBack.getGpgSignature());
+            assertEquals("ABCDEF1234567890", readBack.getGpgFingerprint());
         }
     }
 

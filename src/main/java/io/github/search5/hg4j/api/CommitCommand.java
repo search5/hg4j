@@ -33,7 +33,6 @@ import java.util.HashMap;
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import io.github.search5.hg4j.errors.HgValidationException;
-import io.github.search5.hg4j.gpg.GpgSignature;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.phase.PhaseRoots;
 import io.github.search5.hg4j.submodule.GitSubrepoUtil;
@@ -94,7 +93,11 @@ public class CommitCommand {
 
     private final List<HgHook> preCommitHooks = new ArrayList<>();
     private final List<HgHook> postCommitHooks = new ArrayList<>();
-    private GpgSignature gpgSignature;
+    // P3-19: yona-side commit signature verification, git-`gpgsig`-header-equivalent shape --
+    // see setGpgSigner()'s javadoc and the section 5 changelog-writing code in call() for the
+    // full contract this callback must honor.
+    private GpgSigner gpgSigner;
+    private String gpgFingerprint;
     private boolean closeBranch = false;
     private boolean subrepos = false;
 
@@ -125,8 +128,39 @@ public class CommitCommand {
         return this;
     }
 
-    public CommitCommand setGpgSignature(GpgSignature gpgSignature) {
-        this.gpgSignature = gpgSignature;
+    /**
+     * Callback that produces an ASCII-armored OpenPGP signature over the exact bytes handed to
+     * it (see {@link #setGpgSigner(String, GpgSigner)}). Any exception aborts the commit.
+     */
+    public interface GpgSigner {
+        String sign(byte[] unsignedChangelogText) throws Exception;
+    }
+
+    /**
+     * P3-19 — signs the new commit's changelog revision, embedding the result in its {@code
+     * extra} dictionary as {@code gpgsig} (and, if {@code fingerprint} is non-null/non-empty,
+     * {@code gpgfingerprint}) -- the same field {@code branch}/{@code close} already use, in
+     * exactly the shape of git's {@code gpgsig} commit header (see
+     * {@code GpgSignatureVerifier.kt}'s doc comment and this project's P3-19 design log for why
+     * an embedded-in-{@code extra} field was chosen over real Mercurial's separate {@code
+     * .hgsigs}-file {@code gpg} extension convention).
+     *
+     * <p>{@code signer} is invoked with the exact bytes of the would-be UNSIGNED changelog
+     * revision -- i.e. this same revision's raw text with every field (manifest hash, author,
+     * date, {@code branch}/{@code close}/{@code gpgfingerprint} extras, files, message) it will
+     * actually be stored with, simply built and joined without a {@code gpgsig} entry yet (see
+     * {@link #buildChangelogText}). A verifier reconstructs this same payload later by taking
+     * the stored revision's raw content and removing ONLY the {@code gpgsig} extra entry (see
+     * {@code LogCommand}'s changeset parsing and {@link #stripExtraKey}) -- mirroring exactly
+     * what git's {@code GpgSignatureVerifier.signedDataOf()} does by stripping only the {@code
+     * gpgsig} header line. {@code fingerprint} is purely informational bookkeeping (a verifier
+     * is expected to identify the signing key from the OpenPGP signature packet's own issuer
+     * key ID, exactly as it already does for git -- never from this field) -- pass {@code null}
+     * to omit the {@code gpgfingerprint} extra entirely.
+     */
+    public CommitCommand setGpgSigner(String fingerprint, GpgSigner signer) {
+        this.gpgFingerprint = fingerprint;
+        this.gpgSigner = signer;
         return this;
     }
 
@@ -885,12 +919,8 @@ public class CommitCommand {
             }
 
             // 5. Serialize and write new changelog (commit) revision
-            StringBuilder clSb = new StringBuilder();
-            clSb.append(NodeIdUtil.toHex(manifestNode)).append('\n');
-            clSb.append(author).append('\n');
             long secs = forcedTime != null ? forcedTime : System.currentTimeMillis() / 1000;
             int offsetSeconds = forcedOffset != null ? forcedOffset : -TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
-            clSb.append(secs).append(" ").append(offsetSeconds);
             String branchName = repository.getBranch();
             // 실제 hg(changelog.add)는 branch extra 항목을 default/빈 브랜치일 때는 아예
             // 쓰지 않는다 — 항상 "branch:default"를 남기면 기본 브랜치 커밋의 changelog
@@ -898,7 +928,8 @@ public class CommitCommand {
             // (2026-09-01 실제 hg로 확인: 기본 브랜치 커밋의 3번째 줄은 "초 tz"뿐이고
             // "branch:" 문구가 전혀 없다).
             // 실제 hg(changelog.encodeextra)는 extra 항목이 여럿이면 키 알파벳순으로 정렬해
-            // '\0'로 join한다 -- "branch"가 "close"보다 앞선다.
+            // '\0'로 join한다 -- "branch"가 "close"보다 앞선다. buildChangelogText()가 join
+            // 직전에 다시 정렬하므로 여기서의 삽입 순서 자체는 정확성에 영향을 주지 않는다.
             List<String> extraParts = new ArrayList<>();
             if (branchName != null && !branchName.isEmpty() && !"default".equals(branchName)) {
                 extraParts.add("branch:" + encodeExtraKey(branchName));
@@ -906,29 +937,38 @@ public class CommitCommand {
             if (this.closeBranch) {
                 extraParts.add("close:1");
             }
-            if (!extraParts.isEmpty()) {
-                clSb.append(" ").append(String.join("\0", extraParts));
+            // P3-19: gpgfingerprint(있다면)는 서명 "이전에" extra에 들어간다 -- 서명 대상
+            // 페이로드(unsignedChangelogTextBytes)에도 이미 포함돼 있어야, 검증 측이 저장된
+            // 리비전에서 gpgsig 항목 "만" 제거해 재구성한 바이트가 실제 서명된 바이트와
+            // 정확히 일치한다(gpgsig만 제외 -- 그 외 모든 필드는 그대로, git의
+            // signedDataOf()와 동일한 계약).
+            if (this.gpgSigner != null && this.gpgFingerprint != null && !this.gpgFingerprint.isEmpty()) {
+                extraParts.add("gpgfingerprint:" + encodeExtraKey(this.gpgFingerprint));
             }
-            clSb.append('\n');
+
             Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
-            for (String path : filesModified) {
-                clSb.append(path).append('\n');
+
+            byte[] unsignedChangelogTextBytes = buildChangelogText(manifestNode, author, secs, offsetSeconds, extraParts, filesModified, message);
+            byte[] changelogTextBytes = unsignedChangelogTextBytes;
+            if (this.gpgSigner != null) {
+                String armoredSignature;
+                try {
+                    armoredSignature = this.gpgSigner.sign(unsignedChangelogTextBytes);
+                } catch (Exception e) {
+                    throw new IOException("Failed to GPG-sign commit", e);
+                }
+                if (armoredSignature != null && !armoredSignature.isEmpty()) {
+                    List<String> signedExtraParts = new ArrayList<>(extraParts);
+                    signedExtraParts.add("gpgsig:" + encodeExtraKey(armoredSignature));
+                    changelogTextBytes = buildChangelogText(manifestNode, author, secs, offsetSeconds, signedExtraParts, filesModified, message);
+                }
             }
-            clSb.append('\n'); // empty line separator
-            clSb.append(message);
-            byte[] changelogTextBytes = clSb.toString().getBytes(StandardCharsets.UTF_8);
 
             // See the hasDeclaredParents field doc: an amend commit records its parent(s) as
             // the amended commit's own parent(s) (declaredClNode1/2), not the dirstate's actual
             // (pre-amend) parent -- both are identical for a normal (non-amend) commit.
             byte[] p1CommitNodeHash = declaredClNode1;
             byte[] p2CommitNodeHash = declaredClNode2;
-
-            Map<String, String> clMeta = new HashMap<>();
-            if (this.gpgSignature != null) {
-                clMeta.put("gpgsig", this.gpgSignature.toAsciiArmored().replace("\n", "\\n"));
-                clMeta.put("gpgfingerprint", this.gpgSignature.getKeyFingerprint());
-            }
 
             byte[] sidedataContainer = null;
             if (repository.isSidedataCopies()) {
@@ -938,7 +978,16 @@ public class CommitCommand {
                             Map.of(SD_FILES, sdFiles));
                 }
             }
-            byte[] commitNode = changelog.appendRevision(changelogTextBytes, clMeta, declaredClRev1, declaredClRev2, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
+            // changelog(commit) 리비전은 metadata(clMeta)를 쓰지 않는다 -- 이 오버로드의
+            // metadata 파라미터는 Revlog.wrapMetadata()를 거쳐 "\x01\n key: value \n...\x01\n"
+            // 블록을 콘텐츠 앞에 붙이는데, 이는 실제 Mercurial의 filelog rename/copy 메타데이터
+            // 포맷(hg mv 추적, LFS 포인터 등)이지 changelog 리비전 포맷이 아니다 -- changelog
+            // 리비전의 첫 줄은 반드시 40자 매니페스트 헥스여야 한다(LogCommand의 파서 및 실제
+            // hg 자신의 계약). gpgsig 같은 커밋 단위 메타데이터는 위에서 이미 date 줄의 extra
+            // 딕셔너리(branch/close와 동일한 필드)에 넣었다 -- P3-19에서 발견한 버그 수정,
+            // 이전에는 여기서 실제로 쓰이지 않는 clMeta를 만들어 넘겼었다(아무도
+            // setGpgSignature()를 호출하지 않아 항상 빈 맵이었으므로 실사용 피해는 없었음).
+            byte[] commitNode = changelog.appendRevision(changelogTextBytes, (Map<String, String>) null, declaredClRev1, declaredClRev2, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
 
             // 6. Update and save Dirstate
             dirstate.setParents(new NodeId(commitNode), NodeId.NULL);
@@ -1799,6 +1848,60 @@ public class CommitCommand {
     public static String encodeExtraKey(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\0", "\\0");
+    }
+
+    /**
+     * Builds a changelog (commit) revision's raw text: manifest-hex line, author line, date(+
+     * sorted extra) line, one line per touched file, a blank separator line, then the message --
+     * factored out of {@link #call()} (P3-19) so the exact same fields can be rendered twice: once
+     * excluding {@code gpgsig} (the payload a {@link GpgSigner} signs) and once including it (what
+     * actually gets stored) -- guaranteeing a verifier's "subtract gpgsig" reconstruction of the
+     * stored revision (see {@code LogCommand}, {@link #stripExtraKey}) is byte-identical to what
+     * was actually signed. {@code extraParts} is sorted here (real hg's {@code
+     * changelog.encodeextra} sorts by key) regardless of the caller's insertion order.
+     */
+    private static byte[] buildChangelogText(byte[] manifestNode, String author, long secs, int offsetSeconds,
+                                              List<String> extraParts, List<String> sortedFiles, String message) {
+        StringBuilder clSb = new StringBuilder();
+        clSb.append(NodeIdUtil.toHex(manifestNode)).append('\n');
+        clSb.append(author).append('\n');
+        clSb.append(secs).append(" ").append(offsetSeconds);
+        if (!extraParts.isEmpty()) {
+            List<String> sortedExtra = new ArrayList<>(extraParts);
+            Collections.sort(sortedExtra);
+            clSb.append(" ").append(String.join("\0", sortedExtra));
+        }
+        clSb.append('\n');
+        for (String path : sortedFiles) {
+            clSb.append(path).append('\n');
+        }
+        clSb.append('\n'); // empty line separator
+        clSb.append(message);
+        return clSb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Removes exactly the entries whose (decoded) key equals {@code keyToRemove} from an
+     * already-encoded {@code \0}-joined extra-items string, leaving every other entry's raw
+     * (still-encoded) bytes and relative ordering untouched. Used (P3-19) to reconstruct the
+     * exact "would-be unsigned" changelog bytes a {@code gpgsig} signature was computed over --
+     * mirrors git's {@code GpgSignatureVerifier.signedDataOf()}'s "strip exactly the gpgsig
+     * header, nothing else" contract on the read/verify side.
+     */
+    public static String stripExtraKey(String extraPart, String keyToRemove) {
+        if (extraPart == null || extraPart.isEmpty()) {
+            return extraPart;
+        }
+        String[] items = extraPart.split("\0", -1);
+        List<String> kept = new ArrayList<>();
+        for (String item : items) {
+            int colonIdx = findUnescapedColon(item);
+            if (colonIdx != -1 && keyToRemove.equals(decodeExtraKey(item.substring(0, colonIdx)))) {
+                continue;
+            }
+            kept.add(item);
+        }
+        return String.join("\0", kept);
     }
 
     public static String decodeExtraKey(String s) {

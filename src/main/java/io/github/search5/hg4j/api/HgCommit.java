@@ -16,9 +16,22 @@ public class HgCommit {
     private final List<String> files;
     private final String message;
     private final String branch;
+    // P3-19 — Mercurial commit GPG signature verification, embedded in the changelog `extra`
+    // dictionary (git `gpgsig` commit header equivalent shape; see CommitCommand.setGpgSigner()
+    // and GpgSignatureVerifier.kt). All three are null when this revision has no gpgsig extra.
+    private final String gpgSignature;
+    private final String gpgFingerprint;
+    private final byte[] unsignedChangelogText;
 
-    public HgCommit(int revision, NodeId nodeId, NodeId manifestNodeId, String author, 
+    public HgCommit(int revision, NodeId nodeId, NodeId manifestNodeId, String author,
                     long timestamp, int timezoneOffset, List<String> files, String message, String branch) {
+        this(revision, nodeId, manifestNodeId, author, timestamp, timezoneOffset, files, message, branch,
+                null, null, null);
+    }
+
+    public HgCommit(int revision, NodeId nodeId, NodeId manifestNodeId, String author,
+                    long timestamp, int timezoneOffset, List<String> files, String message, String branch,
+                    String gpgSignature, String gpgFingerprint, byte[] unsignedChangelogText) {
         this.revision = revision;
         this.nodeId = nodeId;
         this.manifestNodeId = manifestNodeId;
@@ -28,6 +41,9 @@ public class HgCommit {
         this.files = files;
         this.message = message;
         this.branch = branch != null ? branch : "default";
+        this.gpgSignature = gpgSignature;
+        this.gpgFingerprint = gpgFingerprint;
+        this.unsignedChangelogText = unsignedChangelogText;
     }
 
     public int getRevision() {
@@ -64,5 +80,30 @@ public class HgCommit {
 
     public String getBranch() {
         return branch;
+    }
+
+    /** ASCII-armored OpenPGP signature (real newlines, already un-escaped), or {@code null} if unsigned. */
+    public String getGpgSignature() {
+        return gpgSignature;
+    }
+
+    /**
+     * Purely informational key-identification bookkeeping stored alongside {@code gpgsig} (see
+     * {@code CommitCommand.setGpgSigner()}) -- a verifier should identify the signing key from
+     * the OpenPGP signature packet's own issuer key ID instead, exactly as it already does for
+     * git. May be {@code null}.
+     */
+    public String getGpgFingerprint() {
+        return gpgFingerprint;
+    }
+
+    /**
+     * The exact bytes a {@code gpgsig} signature was computed over -- this revision's raw
+     * changelog text with only the {@code gpgsig} extra entry removed (every other field,
+     * including {@code gpgfingerprint}, stays byte-identical). {@code null} when {@link
+     * #getGpgSignature()} is {@code null}.
+     */
+    public byte[] getUnsignedChangelogText() {
+        return unsignedChangelogText;
     }
 }

@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-08
+updated: 2026-09-09
 status: current
 ---
 
@@ -233,6 +233,33 @@ general-v2 filelog를 파괴하던 포맷-무관 재작성 버그. 상세: [[cen
 **증상**: `roots`가 빈 리스트일 때 요청 파라미터에서 키 자체를 생략 — 서버가
 `KeyError`(HTTP 500). **수정**: 빈 문자열이라도 항상 전송(`HgSshClient`는 이미
 정확했음). 발견 이력: 백로그 39 wave 5 wire-matrix 그룹.
+
+### `HgRemoteClient(String)` 생성자 — URL 내장 인증정보 미파싱
+**증상**: 실제 hg 자신의 URL 관례(`mercurial/urlutil.py`의 `url` 클래스)는
+`https://user:pass@host/path` 형태로 인증정보를 목적지 URL에 직접 담는 것을 정식으로
+지원하고 HTTP Basic 인증에 그대로 쓴다 — `hg push`/`hg pull` 실사용에서 가장 자연스러운
+인증 방법 중 하나. `HgRemoteClient`(HTTP 전송 계층)는 `setCredentials(user,pass)`/
+`setCredentialsProvider(...)`는 이미 정상 동작했지만, 생성자가 URL 문자열을 그대로
+`baseUrl`에 저장할 뿐 userinfo 부분을 전혀 파싱하지 않아 이 방식으로 인증하려는 호출자는
+Authorization 헤더가 아예 안 실려 401/403을 받았다. `PushCommand`/`FetchCommand`/
+`IncomingCommand`/`OutgoingCommand`가 전부 거치는 단일 접점
+`HgRemoteConnectionFactory.createConnection(url)` → `new HgRemoteClient(url)` 경로라
+사실상 HTTP(S) 목적지로의 모든 명령에 영향. 참고로 `HgSshClient.parseSshUrl()`은
+`ssh://user[:pass]@host[:port]/path`를 이미 처음부터 정확히 파싱하고 있었다 — HTTP
+전송 계층만 이 관례를 놓치고 있었다.
+**수정**: `HgRemoteClient(String url)` 생성자에서 authority 부분의 `user[:pass]@`를
+직접 파싱(엄격한 RFC 3986을 요구하는 `java.net.URI` 대신 손으로 파싱 — 실제 hg
+URL 파싱은 이보다 더 관대해서, 예를 들어 percent-encode 안 된 raw 비밀번호도
+그대로 왕복시킨다)해 `this.username`/`this.password`를 채우고, userinfo가 제거된
+URL을 `baseUrl`로 쓴다. 이후 요청 경로(`executeGet`/`executePost` 등, Authorization
+헤더를 세팅하는 3곳)는 기존 코드 그대로 — `username`/`password` non-null 검사만으로
+자동으로 동작한다. userinfo 값은 `application/x-www-form-urlencoded`용
+`URLDecoder`(`+`를 공백으로 취급 — 틀림) 대신 전용 percent-decoder로 디코딩.
+`HgSshClient`는 손대지 않음(이미 정확했고, 이번 변경과 무관).
+**발견 이력**: 1회, yona-convert 코디네이터 세션(2026-09) — yona 서버에 인증 필요한
+Mercurial 프로젝트로 push 검증 중 발견. 상세: `HgRemoteClientTest.
+testHgRemoteClientEmbeddedUrlCredentials()`(실제 `HttpServer`가 Basic 인증을 강제하는
+통합 테스트 — 올바른 자격증명/무자격증명/틀린 자격증명 3가지 모두 검증).
 
 ### `GrepCommand`
 fileindex-v1/general-v2 저장소(fncache 없음)에서 조용히 빈 결과 반환.

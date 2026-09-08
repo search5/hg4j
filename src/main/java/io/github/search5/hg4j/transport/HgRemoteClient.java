@@ -65,11 +65,92 @@ public class HgRemoteClient implements HgRemoteConnection {
     private HgRemoteClientV2 delegate = null;
 
     public HgRemoteClient(String url) {
-        if (url.endsWith("/")) {
-            this.baseUrl = url.substring(0, url.length() - 1);
+        // Real hg's own URL convention (mercurial/urlutil.py's `url` class) lets credentials be
+        // embedded directly in the destination -- `https://user:pass@host/path` -- and uses them
+        // for HTTP Basic auth exactly the way setCredentials()/executeGet()/executePost() already
+        // do here. HgSshClient.parseSshUrl() already does the ssh:// equivalent (`user[:pass]@host`)
+        // for its transport; this constructor never did the http(s) equivalent, so a caller that
+        // builds a URL this way (the single most natural way to authenticate a push/pull against a
+        // server with no separate credentials API -- and the one real `hg push`/`hg pull` itself
+        // supports) silently got no Authorization header at all and a 401/403 from the remote.
+        // Parsed once, here, at construction: every request path already reads this.username/
+        // this.password (see executeGet/executePost's `if (username != null && password != null)`
+        // Authorization-header blocks), so nothing downstream needs to change, and an explicit
+        // later setCredentials()/setCredentialsProvider() call still simply overwrites whatever was
+        // parsed here.
+        String working = extractEmbeddedCredentials(url);
+        if (working.endsWith("/")) {
+            this.baseUrl = working.substring(0, working.length() - 1);
         } else {
-            this.baseUrl = url;
+            this.baseUrl = working;
         }
+    }
+
+    /**
+     * Strips a {@code user[:pass]@} userinfo component out of {@code url}'s authority (if
+     * present), sets {@link #username}/{@link #password} from it, and returns the
+     * userinfo-stripped URL. A no-op (returns {@code url} unchanged, credentials left
+     * {@code null}) when the URL has no {@code "://"} or no {@code '@'} in its authority
+     * component -- deliberately hand-rolled rather than {@link java.net.URI} because real hg's
+     * own URL parsing (and therefore what a real destination string may legally contain here) is
+     * more lenient than strict RFC 3986 (e.g. it happily round-trips a raw, un-percent-encoded
+     * password containing characters {@code URI} would reject outright).
+     */
+    private String extractEmbeddedCredentials(String url) {
+        int schemeEnd = url.indexOf("://");
+        if (schemeEnd == -1) {
+            return url;
+        }
+        int authorityStart = schemeEnd + 3;
+        int pathStart = url.indexOf('/', authorityStart);
+        String authority = pathStart == -1 ? url.substring(authorityStart) : url.substring(authorityStart, pathStart);
+        String rest = pathStart == -1 ? "" : url.substring(pathStart);
+
+        int atIdx = authority.lastIndexOf('@');
+        if (atIdx == -1) {
+            return url;
+        }
+
+        String userInfo = authority.substring(0, atIdx);
+        String hostPort = authority.substring(atIdx + 1);
+        int colonIdx = userInfo.indexOf(':');
+        String rawUser = colonIdx != -1 ? userInfo.substring(0, colonIdx) : userInfo;
+        String rawPass = colonIdx != -1 ? userInfo.substring(colonIdx + 1) : null;
+
+        this.username = percentDecodeUserInfo(rawUser);
+        this.password = rawPass != null ? percentDecodeUserInfo(rawPass) : null;
+
+        return url.substring(0, schemeEnd + 3) + hostPort + rest;
+    }
+
+    /**
+     * Minimal percent-decoder for a URL userinfo subcomponent. Deliberately NOT
+     * {@link java.net.URLDecoder#decode(String, java.nio.charset.Charset)} -- that decoder is for
+     * {@code application/x-www-form-urlencoded} bodies/query strings and treats a literal
+     * {@code '+'} as a space, which is wrong for a userinfo component (a literal {@code '+'} in a
+     * username/password must stay a {@code '+'}).
+     */
+    private static String percentDecodeUserInfo(String value) {
+        if (value.indexOf('%') == -1) {
+            return value;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream(value.length());
+        int i = 0;
+        while (i < value.length()) {
+            char c = value.charAt(i);
+            if (c == '%' && i + 2 < value.length()) {
+                int hi = Character.digit(value.charAt(i + 1), 16);
+                int lo = Character.digit(value.charAt(i + 2), 16);
+                if (hi >= 0 && lo >= 0) {
+                    out.write((hi << 4) | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.write(c);
+            i++;
+        }
+        return new String(out.toByteArray(), StandardCharsets.UTF_8);
     }
 
     /**

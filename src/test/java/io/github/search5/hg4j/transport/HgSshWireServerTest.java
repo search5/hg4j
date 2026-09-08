@@ -123,6 +123,81 @@ public class HgSshWireServerTest {
         assertEquals(expected, new String(response, StandardCharsets.US_ASCII));
     }
 
+    /** {@code pushkey namespace key old new} -- four fixed args, no star bucket (ARG_SPECS). */
+    private static byte[] pushkeyRequest(String namespace, String key, String oldVal, String newVal) throws Exception {
+        ByteArrayOutputStream req = new ByteArrayOutputStream();
+        req.write("pushkey\n".getBytes(StandardCharsets.US_ASCII));
+        req.write(("namespace " + namespace.length() + "\n" + namespace).getBytes(StandardCharsets.US_ASCII));
+        req.write(("key " + key.length() + "\n" + key).getBytes(StandardCharsets.US_ASCII));
+        req.write(("old " + oldVal.length() + "\n" + oldVal).getBytes(StandardCharsets.US_ASCII));
+        req.write(("new " + newVal.length() + "\n" + newVal).getBytes(StandardCharsets.US_ASCII));
+        return req.toByteArray();
+    }
+
+    @Test
+    public void pushkeyMovesABookmarkOverSsh(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = repoWithOneCommit(tempDir);
+        byte[] commit = repo.getDirstate().getParent1();
+        String hex = NodeIdUtil.toHex(commit);
+
+        byte[] response = run(repo, pushkeyRequest("bookmarks", "mybook", "", hex));
+        String expectedPayload = "1\n";
+        assertEquals(expectedPayload.length() + "\n" + expectedPayload, new String(response, StandardCharsets.US_ASCII));
+    }
+
+    /** yona-wiki P3-21/P3-22 — see HgHttpWireServerTest's identical HTTP-side hook tests; this
+     * pins the same behavior over the SSH wire transport (branch protection/push notifications
+     * must apply the same regardless of which transport the client used). */
+    @Test
+    public void prePushkeyHookRejectionAbortsTheBookmarkMoveOverSsh(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = repoWithOneCommit(tempDir);
+        byte[] commit = repo.getDirstate().getParent1();
+        String hex = NodeIdUtil.toHex(commit);
+
+        HgSshWireServer server = new HgSshWireServer(repo);
+        List<Map<String, Object>> observedContexts = new ArrayList<>();
+        server.registerPrePushkeyHook(ctx -> {
+            observedContexts.add(ctx);
+            return false;
+        });
+        server.registerPostPushkeyHook(ctx -> {
+            throw new AssertionError("post-pushkey hook must not fire when the pre-pushkey hook rejects the move");
+        });
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        server.handleConnection(new ByteArrayInputStream(pushkeyRequest("bookmarks", "mybook", "", hex)), out);
+
+        String expectedPayload = "0\n";
+        assertEquals(expectedPayload.length() + "\n" + expectedPayload, new String(out.toByteArray(), StandardCharsets.US_ASCII));
+        assertEquals(1, observedContexts.size());
+        assertEquals("mybook", observedContexts.get(0).get("key"));
+        assertEquals(hex, observedContexts.get(0).get("new"));
+        assertSame(repo, observedContexts.get(0).get("repository"));
+    }
+
+    @Test
+    public void postPushkeyHookFiresAfterASuccessfulBookmarkMoveOverSsh(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = repoWithOneCommit(tempDir);
+        byte[] commit = repo.getDirstate().getParent1();
+        String hex = NodeIdUtil.toHex(commit);
+
+        HgSshWireServer server = new HgSshWireServer(repo);
+        List<Map<String, Object>> observedContexts = new ArrayList<>();
+        server.registerPostPushkeyHook(ctx -> {
+            observedContexts.add(ctx);
+            return true;
+        });
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        server.handleConnection(new ByteArrayInputStream(pushkeyRequest("bookmarks", "mybook", "", hex)), out);
+
+        String expectedPayload = "1\n";
+        assertEquals(expectedPayload.length() + "\n" + expectedPayload, new String(out.toByteArray(), StandardCharsets.US_ASCII));
+        assertEquals(1, observedContexts.size());
+        assertEquals("mybook", observedContexts.get(0).get("key"));
+        assertEquals(hex, observedContexts.get(0).get("new"));
+    }
+
     /**
      * {@code getbundle *} -- an all-star command: the very first (and only) declared key is "*",
      * so every argument is read as a star-bucket entry. Response is a raw, unframed stream (no

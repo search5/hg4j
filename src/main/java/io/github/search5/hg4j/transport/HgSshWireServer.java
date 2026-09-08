@@ -58,6 +58,9 @@ public class HgSshWireServer {
     private final HgRepository repository;
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
+    // yona-wiki P3-21/P3-22 — see HgHttpWireServer's identical fields / Wire1Commands#pushkey.
+    private final List<HgHook> prePushkeyHooks = new ArrayList<>();
+    private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
     public HgSshWireServer(HgRepository repository) {
         this.repository = repository;
@@ -73,6 +76,19 @@ public class HgSshWireServer {
     /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
     public HgSshWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
+        return this;
+    }
+
+    /** Registers a hook run before an incoming {@code pushkey} (e.g. a bookmark move) is applied —
+     * returning {@code false} aborts it, surfaced to the client as the real hg pushkey failure response. */
+    public HgSshWireServer registerPrePushkeyHook(HgHook hook) {
+        prePushkeyHooks.add(hook);
+        return this;
+    }
+
+    /** Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully. */
+    public HgSshWireServer registerPostPushkeyHook(HgHook hook) {
+        postPushkeyHooks.add(hook);
         return this;
     }
 
@@ -163,6 +179,11 @@ public class HgSshWireServer {
 
         if ("batch".equals(cmd)) {
             return Wire1Commands.batch(repository, args);
+        }
+        // yona-wiki P3-21/P3-22 — see HgHttpWireServer's identical branch for why pushkey is
+        // handled directly rather than via Wire1Commands#dispatch (which has no hook-aware overload).
+        if ("pushkey".equals(cmd)) {
+            return Wire1Commands.pushkey(repository, args, prePushkeyHooks, postPushkeyHooks);
         }
         return Wire1Commands.dispatch(repository, cmd, args);
     }

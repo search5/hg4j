@@ -220,6 +220,15 @@ public class Hg implements AutoCloseable {
         return new BookmarkCommand(this.repository);
     }
 
+    /**
+     * P3-33 -- writes a {@link TreeMergeCommand.TreeMergeResult} directly to the store as a real
+     * 2-parent changeset, without a working directory/dirstate involved. See
+     * {@link MergeCommitCommand}'s own javadoc for the full contract.
+     */
+    public MergeCommitCommand mergeCommit() {
+        return new MergeCommitCommand(this.repository);
+    }
+
     public MergeCommand merge() {
         MergeCommand command = new MergeCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_MERGE)) {

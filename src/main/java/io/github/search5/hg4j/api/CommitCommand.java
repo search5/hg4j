@@ -1790,7 +1790,11 @@ public class CommitCommand {
         return result;
     }
 
-    private static byte[] extractManifestNode(byte[] clContent) {
+    // Package-private (P3-33): reused by MergeCommitCommand to read p1/p2's manifest node out of
+    // their own changelog revision text, exactly as this class already does for a normal commit's
+    // parent(s) -- see MergeCommitCommand's javadoc for why in-core merge-commit construction
+    // reuses this instead of re-deriving the same parsing.
+    static byte[] extractManifestNode(byte[] clContent) {
         if (clContent == null || clContent.length == 0) {
             return new byte[20];
         }
@@ -1860,7 +1864,10 @@ public class CommitCommand {
      * was actually signed. {@code extraParts} is sorted here (real hg's {@code
      * changelog.encodeextra} sorts by key) regardless of the caller's insertion order.
      */
-    private static byte[] buildChangelogText(byte[] manifestNode, String author, long secs, int offsetSeconds,
+    // Package-private (P3-33): reused verbatim by MergeCommitCommand so an in-core merge commit's
+    // changelog text is built with the exact same byte-for-byte format as an ordinary commit's --
+    // see this class's own javadoc above for the full field-layout contract.
+    static byte[] buildChangelogText(byte[] manifestNode, String author, long secs, int offsetSeconds,
                                               List<String> extraParts, List<String> sortedFiles, String message) {
         StringBuilder clSb = new StringBuilder();
         clSb.append(NodeIdUtil.toHex(manifestNode)).append('\n');

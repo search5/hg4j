@@ -53,14 +53,17 @@ public class TreeMergeCommand {
         private final Map<String, byte[]> changedFiles;
         private final Map<String, Integer> changedModes;
         private final Set<String> removedFiles;
+        private final Map<String, Map<String, String>> copiedFiles;
 
         TreeMergeResult(boolean conflicted, List<String> conflicts, Map<String, byte[]> changedFiles,
-                Map<String, Integer> changedModes, Set<String> removedFiles) {
+                Map<String, Integer> changedModes, Set<String> removedFiles,
+                Map<String, Map<String, String>> copiedFiles) {
             this.conflicted = conflicted;
             this.conflicts = conflicts;
             this.changedFiles = changedFiles;
             this.changedModes = changedModes;
             this.removedFiles = removedFiles;
+            this.copiedFiles = copiedFiles;
         }
 
         public boolean isConflicted() {
@@ -95,6 +98,24 @@ public class TreeMergeCommand {
         /** Paths that must be deleted (relative to "ours") to reach the merged result. */
         public Set<String> getRemovedFiles() {
             return removedFiles;
+        }
+
+        /**
+         * P3-33: for a path in {@link #getChangedFiles()} that was cleanly adopted from "theirs"
+         * (added-by-theirs, or ours-unmodified/theirs-modified -- the two cases where the merged
+         * content is exactly one source revision's content, not a synthesized 3-way blend), the
+         * {@code "copy"}/{@code "copyrev"} metadata that source revision's filelog entry already
+         * carried (i.e. it was originally created via {@code hg cp}/{@code hg mv}), so a caller
+         * writing this result as a new changeset (see {@code MergeCommitCommand}) can preserve
+         * {@code hg log --follow} rename history across the merge instead of silently starting a
+         * fresh, provenance-less filelog history for the path. Never populated for a path whose
+         * content came from an actual line-level 3-way merge (real hg does not invent fresh copy
+         * records there either -- only forwards metadata a revision already recorded at its own
+         * commit time). Paths with no copy metadata are simply absent from this map (never mapped
+         * to an empty value).
+         */
+        public Map<String, Map<String, String>> getCopiedFiles() {
+            return copiedFiles;
         }
     }
 
@@ -131,6 +152,7 @@ public class TreeMergeCommand {
         Map<String, byte[]> changedFiles = new LinkedHashMap<>();
         Map<String, Integer> changedModes = new LinkedHashMap<>();
         Set<String> removedFiles = new LinkedHashSet<>();
+        Map<String, Map<String, String>> copiedFiles = new LinkedHashMap<>();
         List<String> conflicts = new ArrayList<>();
         boolean conflicted = false;
 
@@ -148,6 +170,7 @@ public class TreeMergeCommand {
                     // Added by theirs only.
                     changedFiles.put(path, helper.getFileRevisionContent(path, hP2));
                     changedModes.put(path, helper.getModeFromManifestHex(hP2));
+                    recordCopyMetadataIfAny(helper, copiedFiles, path, hP2);
                 }
                 // else: base had it, ours removed it, theirs left it alone -- stays removed, no delta.
             } else if (hP1 != null && hP2 == null) {
@@ -163,6 +186,7 @@ public class TreeMergeCommand {
                     // used to be silently dropped since only content was ever returned).
                     changedFiles.put(path, helper.getFileRevisionContent(path, hP2));
                     changedModes.put(path, helper.getModeFromManifestHex(hP2));
+                    recordCopyMetadataIfAny(helper, copiedFiles, path, hP2);
                 } else if (Objects.equals(hP2, hLca)) {
                     // Theirs unmodified, ours modified -- ours already correct, no delta.
                 } else {
@@ -189,6 +213,19 @@ public class TreeMergeCommand {
             }
         }
 
-        return new TreeMergeResult(conflicted, conflicts, changedFiles, changedModes, removedFiles);
+        return new TreeMergeResult(conflicted, conflicts, changedFiles, changedModes, removedFiles, copiedFiles);
+    }
+
+    /**
+     * Populates {@code copiedFiles.get(path)} with {@code hex}'s own {@code copy}/{@code copyrev}
+     * filelog metadata, if it carries any -- see {@link TreeMergeResult#getCopiedFiles()}'s javadoc
+     * for why only the two clean-adoption call sites above ever call this.
+     */
+    private static void recordCopyMetadataIfAny(MergeCommand helper, Map<String, Map<String, String>> copiedFiles,
+            String path, String hex) throws IOException {
+        Map<String, String> meta = helper.getFileMetadata(path, hex);
+        if (meta != null && meta.containsKey("copy")) {
+            copiedFiles.put(path, meta);
+        }
     }
 }

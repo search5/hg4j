@@ -119,6 +119,31 @@ public class HgSshWireServer {
     }
 
     /**
+     * 백로그 48번: 인가 거부 등 {@link HgRepository}를 아예 만들지 않고 연결을 끊어야 하는
+     * 경우를 위한 진입점. 실제 hg의 SSH 클라이언트({@code mercurial/sshpeer.py}의 {@code
+     * _performhandshake})는 연결하자마자 {@code hello}+{@code between} 두 명령을 응답을
+     * 기다리지 않고 파이프라인으로 먼저 전송하고, {@code between}의 정상 응답({@code "1\n\n"}
+     * 마커)을 볼 때까지는 그 무엇도(즉시 온 에러 라인 포함) 파싱하지 않는다 -- 그 전에 에러
+     * 하나만 쓰고 연결을 끊으면 클라이언트는 between 응답을 영원히 기다리며 멈춘다(hang).
+     * 그래서 저장소가 없어도 hello/between 두 핸드셰이크 명령에는 정상적으로 응답해준 다음,
+     * 그 이후 클라이언트가 실제로 보낼 작업 명령(batch/getbundle 등)에 대한 응답으로 소비될
+     * {@link Wire1Response#oobError(String)}를 내보낸다.
+     */
+    public static void rejectConnection(InputStream in, OutputStream out, String reason) throws IOException {
+        readLine(in); // "hello" -- real hg's SSH client always sends this first.
+        writeResponse(out, Wire1Response.bytes(
+                ("capabilities: " + Wire1Commands.capabilitiesString() + "\n").getBytes(StandardCharsets.UTF_8)));
+
+        readLine(in); // "between"
+        Map<String, String> betweenArgs = readArgs(in, ARG_SPECS.get("between"));
+        writeResponse(out, Wire1Commands.between(betweenArgs));
+
+        // 클라이언트는 위 between 응답의 "1\n\n" 마커를 본 뒤에야 응답을 파싱하기 시작한다 --
+        // 이제 그 다음 실제로 보낼 작업 명령(batch/getbundle 등)에 대한 응답으로 이 에러를 읽는다.
+        writeResponse(out, Wire1Response.oobError(reason));
+    }
+
+    /**
      * {@code unbundle}'s real hg wire shape is distinct from every other command's simple
      * one-request/one-response exchange ({@code mercurial/wireprotoserver.py}'s {@code
      * getpayload()} + {@code sshserver}'s push handling, confirmed against Mercurial 7.2.4 source
@@ -188,7 +213,7 @@ public class HgSshWireServer {
         return Wire1Commands.dispatch(repository, cmd, args);
     }
 
-    private Map<String, String> readArgs(InputStream in, String spec) throws IOException {
+    private static Map<String, String> readArgs(InputStream in, String spec) throws IOException {
         Map<String, String> args = new LinkedHashMap<>();
         String[] keys = spec.isEmpty() ? new String[0] : spec.split(" ");
         for (int i = 0; i < keys.length; i++) {
@@ -224,7 +249,7 @@ public class HgSshWireServer {
         return baos.toByteArray();
     }
 
-    private void writeResponse(OutputStream out, Wire1Response response) throws IOException {
+    private static void writeResponse(OutputStream out, Wire1Response response) throws IOException {
         switch (response.getKind()) {
             case BYTES -> writeLengthPrefixed(out, response.getPayload());
             case STREAM, STREAM_UNCOMPRESSED -> {
@@ -240,7 +265,7 @@ public class HgSshWireServer {
         }
     }
 
-    private void writeLengthPrefixed(OutputStream out, byte[] payload) throws IOException {
+    private static void writeLengthPrefixed(OutputStream out, byte[] payload) throws IOException {
         out.write((payload.length + "\n").getBytes(StandardCharsets.US_ASCII));
         out.write(payload);
         out.flush();

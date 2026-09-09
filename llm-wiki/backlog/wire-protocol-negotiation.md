@@ -1,6 +1,6 @@
 ---
-updated: 2026-09-06
-status: completed
+updated: 2026-09-09
+status: 48번 미해결(SSH PRIVATE 거부 hang) — 나머지는 completed
 ---
 
 # 백로그 2, 3, 22, 24, 25, 46, 47: HTTP/SSH 와이어 프로토콜 협상과 서버 견고성
@@ -507,4 +507,111 @@ lastKnownSize` 조건에 애초에 걸리지 않으므로 기존 보호는 전�
 것. 상세: [[known-bugs-registry]]의 `HgHttpWireServer`/`HgSshWireServer` 항목.
 무관 — 단독 재실행 시 통과, 이 세션 앞부분에서 이미 조사된 기존 타이밍성 플레이키와 동일)
 외 전부 통과.
+
+## 백로그 48: SSH PRIVATE 저장소 거부 시 hang + SSH 전용 회귀 테스트 부재 (✅ 완료, 2026-09-09)
+
+✅ **2026-09-09 재수정 완료**. `HgSshWireServer.rejectConnection(InputStream,
+OutputStream, String)` 정적 메서드를 추가(hello 읽기 → hello 응답 → between 읽기
+→ between 응답 → `Wire1Response.oobError(reason)` 순서로 쓴다; 이를 위해
+`readArgs`/`writeResponse`/`writeLengthPrefixed`를 인스턴스에서 static으로 전환
+— 셋 다 원래 `this`/인스턴스 필드를 쓰지 않는 순수 함수였다). `SshRelayServer.kt`의
+hg 거부 분기(`dispatch()`, hg 명령 전용 — git 분기는 JGit이 자체적으로 처리하므로
+그대로 둠)가 `writeErrorLine(...)` 대신 이 메서드를 호출하도록 배선.
+
+**TDD로 확인한 RED→GREEN**: `HgSshWireServerRealHgInteropTest`에
+`realHgFailsFastRatherThanHangingWhenDeniedOverSsh` 테스트를 추가하고,
+`rejectConnection`을 일부러 원래 버그 형태(hello/between 생략, 에러 한 줄만
+쓰고 종료)로 임시 구현해 RED를 직접 실행 확인한 뒤(2026-09-09), 진짜 구현으로
+되돌려 GREEN 확인. **RED 확인 과정에서 발견한 중요한 사실**: 이 클래스가 쓰는
+임베디드 Apache MINA SSHD 하네스는 실제 프로덕션의 "유닉스 도메인 소켓 릴레이 +
+forced-command 쉘 스크립트" 한 홉이 없어서, hello/between을 생략한 원래 버그
+코드도 이 하네스 안에서는 문자 그대로 무한 hang하지는 않는다(MINA가 커맨드
+종료 시 채널을 곧바로 정리해 클라이언트 쪽 read가 곧 EOF를 보고 real hg 자신의
+일반적인 `"no suitable response from remote hg"`로 빠르게 중단한다) — 실제
+프로덕션에서 관찰된 진짜 hang은 그 추가 릴레이 홉에서만 재현되는 것으로 보이며,
+이는 hg4j/yona 이 두 파일의 수정 범위 밖이다. 그래서 최종 테스트의 결정적
+RED/GREEN 신호는 "타임아웃 여부"가 아니라 **hello/between 핸드셰이크가 실제로
+완료됐는지**(real hg `--debug`가 에코하는 `capabilities: ...` 줄의 존재 여부)로
+잡았다 — 이게 이 백로그가 실제로 보장해야 하는 계약이자, hg4j 레벨에서
+결정론적으로 검증 가능한 유일한 계약이다. `assertTimeoutPreemptively(20s)`는
+향후 문자 그대로 hang하는 회귀가 재발하면 여전히 잡아준다.
+
+또 하나 발견한 사실: hello/between 완주 이후 real hg가 실제로 어떤 명령을 다음
+으로 보내는지는 hg4j의 통제 밖이고(이 서버가 광고하는 capabilities로는 plain
+`hg clone`의 첫 discovery 명령이 `listkeys namespace=bookmarks`로 결정됨,
+2026-09-09 `--debug` 실측), `listkeys`는 lookup/unbundle과 달리 "0/1 접두" 같은
+에러 관례가 없는 tab-분리 포맷 전용이라 우리의 범용 `Wire1Response.oobError()`
+텍스트는 그 자리에서 real hg 쪽 `pushkey.decodekeys`의 `ValueError`로 이어진다
+— hang은 아니고 매번 즉시(수 초 내) 종료되는 크래시이므로 원래 버그(무한 대기)
+보다는 명백한 개선이지만, 클라이언트가 reason 문자열을 사람이 읽기 좋게 보여
+주지는 못한다(향후 개선 여지 — command-aware 에러 포맷은 이번 수정 범위 밖).
+
+**미해결로 남은 부분 → 2026-09-09 후속 세션에서 해소**: 이 절 원문이 지적했던
+"SSH 경로 empty-repo 회귀 테스트 부재"는 `HgSshWireServerRealHgInteropTest`에
+`realHgClonesEmptyRepoFromHg4jServedOverSsh` 테스트를 새로 추가해 메웠다(별도
+클래스가 아니라 기존 SSH interop 테스트 클래스에 10번째 `@Test`로 추가).
+`HgHttpWireServerEmptyRepoRealHgInteropTest`의 첫 번째 시나리오(`Hg.init()`으로
+만든 커밋 0개 저장소 clone)와 동등하게, `hg clone ssh://...`가
+`assertTimeoutPreemptively(20s)` 안에서 hang 없이 성공하고 `hg log`가 빈
+문자열, `hg heads`가 exit 1(빈 출력)임을 검증한다. 프로덕션 코드
+(`HgLocalClient.getBundle()`)는 이미 고쳐져 있었으므로 GREEN이 정상 결과 —
+확신을 위해 `getBundle()`의 count==0 분기를 임시로 옛 `new byte[0]` 버그
+형태로 되돌려 이 신규 테스트가 실제로 RED(실패)가 됨을 먼저 확인한 뒤 원상
+복구했다(`git diff`로 `HgLocalClient.java` 무변경 확인). 최종
+`HgSshWireServerRealHgInteropTest` 전체 재실행: `tests="10" failures="0"
+errors="0"`. 이로써 백로그 48은 SSH 거부 hang 수정 + SSH empty-repo 회귀
+테스트까지 완전히 마무리됐다.
+
+---
+
+<details>
+<summary>원래 미해결 상태 기록(2026-09-09 이전, 참고용으로 보존)</summary>
+
+🔴 **미해결(2026-09-09 기준)**. yona 쪽 실제 컨테이너 SSH 왕복 검증(P3-18 완료 로그,
+2026-09-08) 중 발견한 버그로, 한 번 고쳤으나 이후 로컬 변경분을 `git reset --hard`
++ `git pull`로 되돌리는 과정에서 **커밋되지 않은 채 유실**됐다. 병렬 세션이 같은
+시점에 고쳤던 "빈 저장소 clone hang" 버그(아래 참고)는 독립적으로 재적용되어 현재
+코드베이스에 남아있지만, 이 버그는 그렇지 않다 — 2026-09-09 재확인:
+`HgSshWireServer`에 `rejectConnection`(또는 동등한) 메서드 없음(`grep -n "public
+static\|public void\|private " HgSshWireServer.java` 결과에 없음), `SshRelayServer.kt`의
+hg 거부 분기도 여전히 `writeErrorLine(...)` 한 줄뿐.
+
+**증상**: PRIVATE 프로젝트 비멤버가 `hg clone ssh://...`를 시도하면 서버가 즉시
+에러를 반환해도 **실제 hg 클라이언트가 무한 대기**한다(연결 거부가 아니라 hang).
+
+**근본 원인**: 실제 hg의 SSH peer는 연결하자마자 `hello`+`between` 두 명령을
+**파이프라인으로(응답을 기다리지 않고) 먼저 전송**하고, `between`의 표준 응답
+마커(`"1\n\n"`)를 볼 때까지는 **그 무엇도, 심지어 즉시 온 에러 라인(`ERR ...`)도
+파싱하지 않는다.** 그래서 hello/between 핸드셰이크를 생략하고 바로 OOB 에러만
+쓴 뒤 연결을 닫으면, 클라이언트는 그 에러 바이트를 전혀 소비하지 않은 채
+`between`의 응답을 계속 기다리다가(또는 연결 종료를 다른 방식으로 오인하며)
+멈춘다.
+
+**고쳐야 할 곳(2군데, 크로스 레포)**:
+1. **hg4j**: `HgSshWireServer`에 "hello+between 핸드셰이크를 정상적으로 완료한
+   뒤 OOB 에러로 거절"하는 정적 유틸리티(예: `rejectConnection(InputStream in,
+   OutputStream out, String reason)`)를 다시 추가.
+2. **yona**: `SshRelayServer.kt`의 `hg` 명령 디스패치 중 인가 거부 분기(현재
+   `writeErrorLine(output, authorization.reason ?: "...")`만 호출하는 지점)가
+   위 유틸리티를 호출하도록 배선.
+
+**SSH 전용 회귀 테스트도 없음**: "빈 저장소 clone hang" 버그(`HgLocalClient.
+getBundle()`이 "보낼 것 없음" 케이스에 `byte[0]`을 그대로 반환해 실제 hg
+클라이언트가 0바이트를 "아직 응답 안 옴"과 구분 못 해 영원히 대기하던 문제)는
+이미 고쳐져 현재 코드에 있지만(다른 세션이 early-return 제거 방식으로 재수정,
+`HgLocalClient.getBundle()` 주석 2026-09-08 참고), 이를 검증하는 real-hg interop
+테스트는 `HgHttpWireServerEmptyRepoRealHgInteropTest`(HTTP 경로)만 존재하고
+**SSH 경로 동등 테스트(`HgSshWireServerEmptyRepoRealHgInteropTest` 같은 것)는
+없다** — `grep -n "@Test" HgSshWireServerRealHgInteropTest.java` 8건 중 empty-repo/
+denial 시나리오 없음(2026-09-09 재확인). 위 48번 SSH 거부 버그를 재수정할 때
+같은 클래스(또는 신규 클래스)에 아래 두 테스트를 함께 추가할 것:
+- 실제 hg가 hg4j로 SSH 서빙되는 **빈** 저장소를 clone해도 hang 없이 성공하는지
+  (empty-repo 버그의 SSH 경로 커버리지)
+- 실제 hg가 PRIVATE 저장소를 SSH로 clone 시도하면 hang 없이 빠르게 거부되는지
+  (48번 수정의 회귀 방지 테스트)
+
+관련: [[known-bugs-registry]], yona `docs/parity/tickets/p3-18.md`
+"2026-09-08 컨테이너 end-to-end 검증 완료" 절(원래 발견 경위).
+
+</details>
 

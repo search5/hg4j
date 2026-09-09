@@ -33,34 +33,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixLogDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -78,58 +54,6 @@ public class RequirementMatrixLogDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-log-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-log-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
      * {@link RequirementMatrixDockerRoundTripTest#combos()}. */
@@ -199,7 +123,7 @@ public class RequirementMatrixLogDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void plainLogAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -209,18 +133,18 @@ public class RequirementMatrixLogDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "one");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String hex0 = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String hex0 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.createDirectories(hostRepoDir.resolve("dir"));
             Files.writeString(hostRepoDir.resolve("dir").resolve("b.txt"), "two");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev2", "-m", "c1 nested");
-            String hex1 = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev2", "-m", "c1 nested");
+            String hex1 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
             List<HgCommit> log = new LogCommand(repo).call();
@@ -236,7 +160,7 @@ public class RequirementMatrixLogDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void followPathAcrossRenameBoundaryAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -246,26 +170,26 @@ public class RequirementMatrixLogDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "one");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String hex0 = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String hex0 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "rename", "a.txt", "b.txt");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1-rename");
-            String hex1 = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "rename", "a.txt", "b.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1-rename");
+            String hex1 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("b.txt"), "one\ntwo");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2-modify");
-            String hex2 = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2-modify");
+            String hex2 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("unrelated.txt"), "x");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c3-unrelated");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c3-unrelated");
 
-            String realFollow = dockerHgIn(containerName, repoRelPath, "log", "--follow", "b.txt", "--template", "{node}\n");
+            String realFollow = NativeHgRust.hg(workDir, repoRelPath, "log", "--follow", "b.txt", "--template", "{node}\n");
             List<String> realFollowHexes = List.of(realFollow.split("\n"));
             assertEquals(List.of(hex2, hex1, hex0), realFollowHexes, "sanity, combo " + combo);
 

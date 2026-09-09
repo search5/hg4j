@@ -10,6 +10,14 @@
 # Build:  docker build -t hg-rust-7.2.4 docker/hg-rust-7.2.4
 # Verify: docker run --rm hg-rust-7.2.4 hg debuginstall   # look for "checking Rust extensions (installed)"
 # Use:    docker run --rm -v "$PWD":/repo -w /repo hg-rust-7.2.4 hg <command...>
+#
+# 2026-09-09: the ~50 RequirementMatrix*DockerRoundTripTest classes that were this image's only
+# consumer no longer use it -- a fresh container per test combo measured ~24s of pure Docker
+# start/exec/stop overhead per combo on macOS+Podman (a single 30-combo class took ~12 minutes),
+# versus sub-second native subprocess exec. They now call `build-native.sh`'s output
+# (`NativeHgRust`, `src/test/java/io/github/search5/hg4j/api/NativeHgRust.java`) directly, with no
+# Docker fallback (every test machine is expected to have run that script once). This Dockerfile
+# is kept only as a reference/manual-use build -- not required for the interop suite anymore.
 
 FROM python:3.11-slim-bookworm
 

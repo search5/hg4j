@@ -1,5 +1,8 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.util.NodeIdUtil;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -40,34 +43,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixTagDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -85,65 +64,14 @@ public class RequirementMatrixTagDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-tag-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-tag-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     private static void tagInSubprocess(Path repoDir, String tagName, String nodeHex, boolean local, boolean remove, boolean force) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        runHost(javaBin, "-cp", classpath, RequirementMatrixTagHelperMain.class.getName(),
-                repoDir.toString(), tagName, nodeHex == null ? "" : nodeHex,
-                Boolean.toString(local), Boolean.toString(remove), Boolean.toString(force));
+        HgRepository repo = new HgRepository(repoDir.toFile());
+        TagCommand cmd = new TagCommand(repo).setTagName(tagName).setLocal(local).setRemove(remove).setForce(force);
+        if (nodeHex != null && !nodeHex.isEmpty()) {
+            cmd.setNodeId(NodeIdUtil.fromHex(nodeHex));
+        }
+        cmd.call();
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -215,7 +143,7 @@ public class RequirementMatrixTagDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jTagAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -225,47 +153,47 @@ public class RequirementMatrixTagDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "base\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
-            String rev0Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
+            String rev0Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             tagInSubprocess(hostRepoDir, "v1.0", rev0Hex, false, false, false);
 
-            String tags1 = dockerHgIn(containerName, repoRelPath, "tags");
+            String tags1 = NativeHgRust.hg(workDir, repoRelPath, "tags");
             assertTrue(tags1.contains("v1.0") && tags1.contains(rev0Hex.substring(0, 12)),
                     "real hg tags for combo " + combo + ": " + tags1);
-            String tagCommitMsg = dockerHgIn(containerName, repoRelPath, "log", "-r", "tip", "--template", "{desc}");
+            String tagCommitMsg = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "tip", "--template", "{desc}");
             assertEquals("Added tag v1.0 for changeset " + rev0Hex.substring(0, 12), tagCommitMsg);
 
-            String verify1 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify1 = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertFalse(verify1.toLowerCase().contains("integrity error"),
                     "real hg verify after tag creation must find no integrity errors for combo " + combo + ": " + verify1);
 
             Files.writeString(hostRepoDir.resolve("b.txt"), "two\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
-            String rev1Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            String rev1Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             tagInSubprocess(hostRepoDir, "v1.0", rev1Hex, false, false, true);
-            String tags3 = dockerHgIn(containerName, repoRelPath, "tags");
+            String tags3 = NativeHgRust.hg(workDir, repoRelPath, "tags");
             assertTrue(tags3.contains(rev1Hex.substring(0, 12)),
                     "real hg tags must resolve v1.0 to the new target for combo " + combo + ": " + tags3);
 
-            String verify3 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify3 = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertFalse(verify3.toLowerCase().contains("integrity error"),
                     "real hg verify after retag must find no integrity errors for combo " + combo + ": " + verify3);
 
             tagInSubprocess(hostRepoDir, "v1.0", null, false, true, false);
-            String tags4 = dockerHgIn(containerName, repoRelPath, "tags");
+            String tags4 = NativeHgRust.hg(workDir, repoRelPath, "tags");
             assertFalse(tags4.lines().anyMatch(l -> l.trim().startsWith("v1.0")),
                     "real hg tags must no longer list removed v1.0 for combo " + combo + ": " + tags4);
-            String removeCommitMsg = dockerHgIn(containerName, repoRelPath, "log", "-r", "tip", "--template", "{desc}");
+            String removeCommitMsg = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "tip", "--template", "{desc}");
             assertEquals("Removed tag v1.0", removeCommitMsg);
 
-            String verify4 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify4 = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertFalse(verify4.toLowerCase().contains("integrity error"),
                     "real hg verify after tag removal must find no integrity errors for combo " + combo + ": " + verify4);
         });

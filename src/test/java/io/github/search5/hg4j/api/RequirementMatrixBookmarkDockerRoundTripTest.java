@@ -1,5 +1,7 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lib.HgRepository;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -41,34 +43,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixBookmarkDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -86,66 +64,29 @@ public class RequirementMatrixBookmarkDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-bookmark-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-bookmark-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
-
+    /** EXPERIMENT (2026-09-09): inline instead of subprocess. */
     private static void bookmarkInSubprocess(Path repoDir, String... args) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", classpath,
-                RequirementMatrixBookmarkHelperMain.class.getName(), repoDir.toString()));
-        cmd.addAll(Arrays.asList(args));
-        runHost(cmd.toArray(new String[0]));
+        String op = args[0];
+        HgRepository repo = new HgRepository(repoDir.toFile());
+        BookmarkCommand cmd = new BookmarkCommand(repo);
+        switch (op) {
+            case "create-active":
+                cmd.setBookmarkName(args[1]).call();
+                break;
+            case "create-explicit":
+                cmd.setBookmarkName(args[1]).setRevision(args[2]);
+                if (args.length > 3 && Boolean.parseBoolean(args[3])) {
+                    cmd.setForce(true);
+                }
+                cmd.call();
+                break;
+            case "delete":
+                cmd.setDelete(true).setBookmarkName(args[1]).call();
+                break;
+            default:
+                throw new IllegalArgumentException("Unknown bookmark op: " + op);
+        }
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -217,7 +158,7 @@ public class RequirementMatrixBookmarkDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jBookmarkAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -227,41 +168,41 @@ public class RequirementMatrixBookmarkDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "base\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
-            String rev0Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
+            String rev0Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             bookmarkInSubprocess(hostRepoDir, "create-active", "cur");
-            String bm1 = dockerHgIn(containerName, repoRelPath, "bookmarks");
+            String bm1 = NativeHgRust.hg(workDir, repoRelPath, "bookmarks");
             assertTrue(bm1.contains("* cur"), "cur must be active for combo " + combo + ": " + bm1);
-            assertEquals(rev0Hex, dockerHgIn(containerName, repoRelPath, "log", "-r", "cur", "--template", "{node}"));
+            assertEquals(rev0Hex, NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "cur", "--template", "{node}"));
 
             Files.writeString(hostRepoDir.resolve("b.txt"), "two\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
-            String rev1Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
-            assertEquals(rev1Hex, dockerHgIn(containerName, repoRelPath, "log", "-r", "cur", "--template", "{node}"),
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            String rev1Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            assertEquals(rev1Hex, NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "cur", "--template", "{node}"),
                     "real hg's own commit must auto-advance the hg4j-created active bookmark for combo " + combo);
 
             bookmarkInSubprocess(hostRepoDir, "create-explicit", "stable", rev0Hex);
-            String bm3 = dockerHgIn(containerName, repoRelPath, "bookmarks");
+            String bm3 = NativeHgRust.hg(workDir, repoRelPath, "bookmarks");
             assertFalse(bm3.lines().anyMatch(l -> l.trim().startsWith("* stable")),
                     "an explicitly-targeted new bookmark must not become active for combo " + combo + ": " + bm3);
-            assertEquals(rev0Hex, dockerHgIn(containerName, repoRelPath, "log", "-r", "stable", "--template", "{node}"));
+            assertEquals(rev0Hex, NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "stable", "--template", "{node}"));
 
             bookmarkInSubprocess(hostRepoDir, "create-explicit", "stable", rev1Hex);
-            assertEquals(rev1Hex, dockerHgIn(containerName, repoRelPath, "log", "-r", "stable", "--template", "{node}"),
+            assertEquals(rev1Hex, NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "stable", "--template", "{node}"),
                     "fast-forward bookmark move must succeed for combo " + combo);
 
             bookmarkInSubprocess(hostRepoDir, "delete", "cur");
-            String bm5 = dockerHgIn(containerName, repoRelPath, "bookmarks");
+            String bm5 = NativeHgRust.hg(workDir, repoRelPath, "bookmarks");
             assertFalse(bm5.lines().anyMatch(l -> l.contains("cur")), "real hg bookmarks for combo " + combo + ": " + bm5);
             assertTrue(bm5.lines().anyMatch(l -> l.contains("stable")), "real hg bookmarks for combo " + combo + ": " + bm5);
 
-            String verify = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors for combo " + combo + ": " + verify);
         });

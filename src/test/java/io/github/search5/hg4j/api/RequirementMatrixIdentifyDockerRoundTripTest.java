@@ -41,34 +41,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixIdentifyDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -86,58 +62,6 @@ public class RequirementMatrixIdentifyDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-identify-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-identify-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
      * {@link RequirementMatrixDockerRoundTripTest#combos()} (see {@link
@@ -208,7 +132,7 @@ public class RequirementMatrixIdentifyDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void identifyAndSummaryMatchRealHgAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -218,28 +142,28 @@ public class RequirementMatrixIdentifyDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "a0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String c0Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String c0Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "a1\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
-            dockerHgIn(containerName, repoRelPath, "tag", "-u", "dev", "v1");
-            String c1TagHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            NativeHgRust.hg(workDir, repoRelPath, "tag", "-u", "dev", "v1");
+            String c1TagHex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "branch", "feature");
+            NativeHgRust.hg(workDir, repoRelPath, "branch", "feature");
             Files.writeString(hostRepoDir.resolve("b.txt"), "b0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2");
-            String c2Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
-            dockerHgIn(containerName, repoRelPath, "bookmark", "mark1");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2");
+            String c2Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "bookmark", "mark1");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
 
-            String realId1 = dockerHgIn(containerName, repoRelPath, "identify");
+            String realId1 = NativeHgRust.hg(workDir, repoRelPath, "identify");
             String hg4jId1 = new IdentifyCommand(repo).call();
             assertEquals(realId1, hg4jId1, "combo " + combo);
             assertEquals(c2Hex.substring(0, 12) + " (feature) tip mark1", hg4jId1, "combo " + combo);
@@ -259,48 +183,48 @@ public class RequirementMatrixIdentifyDockerRoundTripTest {
             assertEquals(PhaseRoots.Phase.DRAFT, summary1.currentPhase(), "combo " + combo);
 
             Files.writeString(hostRepoDir.resolve("b.txt"), "b0-modified\n");
-            String realIdDirty = dockerHgIn(containerName, repoRelPath, "identify");
+            String realIdDirty = NativeHgRust.hg(workDir, repoRelPath, "identify");
             String hg4jIdDirty = new IdentifyCommand(repo).call();
             assertEquals(realIdDirty, hg4jIdDirty, "combo " + combo);
             assertEquals(c2Hex.substring(0, 12) + "+ (feature) tip mark1", hg4jIdDirty, "combo " + combo);
             assertEquals(1, new SummaryCommand(repo).call().modified(), "combo " + combo);
-            dockerHgIn(containerName, repoRelPath, "revert", "--no-backup", "-a");
+            NativeHgRust.hg(workDir, repoRelPath, "revert", "--no-backup", "-a");
 
             Files.writeString(hostRepoDir.resolve("n.txt"), "new\n");
-            dockerHgIn(containerName, repoRelPath, "add", "n.txt");
-            String realIdAdded = dockerHgIn(containerName, repoRelPath, "identify");
+            NativeHgRust.hg(workDir, repoRelPath, "add", "n.txt");
+            String realIdAdded = NativeHgRust.hg(workDir, repoRelPath, "identify");
             String hg4jIdAdded = new IdentifyCommand(repo).call();
             assertEquals(realIdAdded, hg4jIdAdded, "combo " + combo);
             assertEquals(1, new SummaryCommand(repo).call().added(), "combo " + combo);
-            dockerHgIn(containerName, repoRelPath, "forget", "n.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "forget", "n.txt");
             Files.delete(hostRepoDir.resolve("n.txt"));
 
             Files.writeString(hostRepoDir.resolve("untracked.txt"), "untracked\n");
-            String realIdUntracked = dockerHgIn(containerName, repoRelPath, "identify");
+            String realIdUntracked = NativeHgRust.hg(workDir, repoRelPath, "identify");
             String hg4jIdUntracked = new IdentifyCommand(repo).call();
             assertEquals(realIdUntracked, hg4jIdUntracked, "combo " + combo);
             assertEquals(c2Hex.substring(0, 12) + " (feature) tip mark1", hg4jIdUntracked, "combo " + combo);
             Files.delete(hostRepoDir.resolve("untracked.txt"));
 
-            String realIdC0 = dockerHgIn(containerName, repoRelPath, "identify", "-r", c0Hex);
+            String realIdC0 = NativeHgRust.hg(workDir, repoRelPath, "identify", "-r", c0Hex);
             String hg4jIdC0 = new IdentifyCommand(repo).setRevision(c0Hex).call();
             assertEquals(realIdC0, hg4jIdC0, "combo " + combo);
             assertEquals(c0Hex.substring(0, 12), hg4jIdC0, "combo " + combo);
 
-            dockerHgIn(containerName, repoRelPath, "update", c1TagHex);
-            dockerHgIn(containerName, repoRelPath, "branch", "other");
+            NativeHgRust.hg(workDir, repoRelPath, "update", c1TagHex);
+            NativeHgRust.hg(workDir, repoRelPath, "branch", "other");
             Files.writeString(hostRepoDir.resolve("o.txt"), "o0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c3");
-            String c3Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
-            dockerHgIn(containerName, repoRelPath, "merge", c2Hex);
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c3");
+            String c3Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "merge", c2Hex);
 
             // See RequirementMatrixIdentifyCoreRoundTripTest for why this is needed: this
             // long-lived HgRepository handle was constructed before c3 was committed externally,
             // and a changelog-v2 docket's own file size does not grow on append.
             repo.refreshIfChangedOnDisk();
 
-            String realIdMerge = dockerHgIn(containerName, repoRelPath, "identify");
+            String realIdMerge = NativeHgRust.hg(workDir, repoRelPath, "identify");
             String hg4jIdMerge = new IdentifyCommand(repo).call();
             assertEquals(realIdMerge, hg4jIdMerge, "combo " + combo);
             assertEquals(c3Hex.substring(0, 12) + "+" + c2Hex.substring(0, 12) + "+ (other) tip mark1",

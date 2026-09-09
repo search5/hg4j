@@ -1,5 +1,9 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.util.NodeIdUtil;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -41,34 +45,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixExportImportDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -86,66 +66,37 @@ public class RequirementMatrixExportImportDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-exportimport-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-exportimport-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs one hg4j-side step ({@code export}/{@code import}) in a dedicated subprocess; returns
      * the printed node hex. */
     private static String hg4jStepInSubprocess(String mode, Path repoDir, Path patchFile) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        return runHost(javaBin, "-cp", classpath, RequirementMatrixExportImportHelperMain.class.getName(),
-                mode, repoDir.toString(), patchFile.toString()).trim();
+        HgRepository repo = new HgRepository(repoDir.toFile());
+
+        if ("export".equals(mode)) {
+            Files.writeString(repoDir.resolve("a.txt"), "hello from hg4j\n");
+            Files.createDirectories(repoDir.resolve("dir"));
+            Files.writeString(repoDir.resolve("dir").resolve("b.txt"), "nested content\n");
+            new AddCommand(repo).call();
+            byte[] commitNode = new CommitCommand(repo)
+                    .setAuthor("hg4j export <export@example.com>")
+                    .setDate(1700000000, 0)
+                    .setMessage("hg4j export commit")
+                    .call();
+            String patch = new ExportCommand(repo).setRevision("0").call();
+            Files.writeString(patchFile, patch);
+            return NodeIdUtil.toHex(commitNode);
+        } else if ("import".equals(mode)) {
+            String patchText = Files.readString(patchFile);
+            new ImportCommand(repo).setPatchText(patchText).call();
+
+            File clIdx = new File(repo.getStoreDir(), "00changelog.i");
+            File clDat = new File(repo.getStoreDir(), "00changelog.d");
+            Revlog cl = repo.getRevlog(clIdx, clDat);
+            byte[] tipNode = cl.getIndexRecord(cl.getRevisionCount() - 1).getNodeId();
+            return NodeIdUtil.toHex(tipNode);
+        } else {
+            throw new IllegalArgumentException("Unknown mode: " + mode);
+        }
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -219,7 +170,7 @@ public class RequirementMatrixExportImportDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void exportImportRoundTripAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             List<String> initArgs = new ArrayList<>(List.of("init", "."));
             for (String c : combo.initConfigArgs()) {
                 initArgs.add("--config");
@@ -235,19 +186,19 @@ public class RequirementMatrixExportImportDockerRoundTripTest {
             Path hostExportDstDir = workDir.resolve(exportDstRel);
             Files.createDirectories(hostExportSrcDir);
             Files.createDirectories(hostExportDstDir);
-            dockerHgIn(containerName, exportSrcRel, initArgs.toArray(new String[0]));
-            dockerHgIn(containerName, exportDstRel, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, exportSrcRel, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, exportDstRel, initArgs.toArray(new String[0]));
 
             Path hostPatch1 = workDir.resolve("hg4j-export.patch");
             String hg4jNodeHex = hg4jStepInSubprocess("export", hostExportSrcDir, hostPatch1);
 
-            dockerHgIn(containerName, exportDstRel, "import", "/repo-root/hg4j-export.patch");
-            String importedHex = dockerHgIn(containerName, exportDstRel, "log", "-r", "tip", "--template", "{node}");
+            NativeHgRust.hg(workDir, exportDstRel, "import", "/repo-root/hg4j-export.patch");
+            String importedHex = NativeHgRust.hg(workDir, exportDstRel, "log", "-r", "tip", "--template", "{node}");
             assertEquals(hg4jNodeHex, importedHex,
                     "real hg import of hg4j's exported patch must reproduce a byte-identical commit node for combo " + combo);
-            assertEquals("hello from hg4j", dockerHgIn(containerName, exportDstRel, "cat", "-r", "tip", "a.txt"));
-            assertEquals("nested content", dockerHgIn(containerName, exportDstRel, "cat", "-r", "tip", "dir/b.txt"));
-            String verifyB = dockerHgIn(containerName, exportDstRel, "verify");
+            assertEquals("hello from hg4j", NativeHgRust.hg(workDir, exportDstRel, "cat", "-r", "tip", "a.txt"));
+            assertEquals("nested content", NativeHgRust.hg(workDir, exportDstRel, "cat", "-r", "tip", "dir/b.txt"));
+            String verifyB = NativeHgRust.hg(workDir, exportDstRel, "verify");
             assertFalse(verifyB.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors after importing hg4j's exported patch for combo " + combo + ": " + verifyB);
 
@@ -259,17 +210,17 @@ public class RequirementMatrixExportImportDockerRoundTripTest {
             Path hostImportDstDir = workDir.resolve(importDstRel);
             Files.createDirectories(hostImportSrcDir);
             Files.createDirectories(hostImportDstDir);
-            dockerHgIn(containerName, importSrcRel, initArgs.toArray(new String[0]));
-            dockerHgIn(containerName, importDstRel, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, importSrcRel, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, importDstRel, initArgs.toArray(new String[0]));
 
             Files.writeString(hostImportSrcDir.resolve("x.txt"), "hello from real hg\n");
-            dockerHgIn(containerName, importSrcRel, "add", "x.txt");
+            NativeHgRust.hg(workDir, importSrcRel, "add", "x.txt");
             Files.createDirectories(hostImportSrcDir.resolve("dir2"));
             Files.writeString(hostImportSrcDir.resolve("dir2").resolve("y.txt"), "nested from real hg\n");
-            dockerHgIn(containerName, importSrcRel, "add", "dir2/y.txt");
-            dockerHgIn(containerName, importSrcRel, "commit", "-u", "realhg", "-m", "real hg export commit for " + combo);
-            String realHgNodeHex = dockerHgIn(containerName, importSrcRel, "log", "-r", "0", "--template", "{node}");
-            String realHgPatch = dockerHgIn(containerName, importSrcRel, "export", "-r", "0");
+            NativeHgRust.hg(workDir, importSrcRel, "add", "dir2/y.txt");
+            NativeHgRust.hg(workDir, importSrcRel, "commit", "-u", "realhg", "-m", "real hg export commit for " + combo);
+            String realHgNodeHex = NativeHgRust.hg(workDir, importSrcRel, "log", "-r", "0", "--template", "{node}");
+            String realHgPatch = NativeHgRust.hg(workDir, importSrcRel, "export", "-r", "0");
 
             Path hostPatch2 = workDir.resolve("realhg-export.patch");
             Files.writeString(hostPatch2, realHgPatch);
@@ -277,9 +228,9 @@ public class RequirementMatrixExportImportDockerRoundTripTest {
             assertEquals(realHgNodeHex, hg4jImportedHex,
                     "hg4j's ImportCommand applying a real-hg-exported patch must reproduce the exact same commit node for combo " + combo);
 
-            assertEquals("hello from real hg", dockerHgIn(containerName, importDstRel, "cat", "-r", "tip", "x.txt"));
-            assertEquals("nested from real hg", dockerHgIn(containerName, importDstRel, "cat", "-r", "tip", "dir2/y.txt"));
-            String verifyD = dockerHgIn(containerName, importDstRel, "verify");
+            assertEquals("hello from real hg", NativeHgRust.hg(workDir, importDstRel, "cat", "-r", "tip", "x.txt"));
+            assertEquals("nested from real hg", NativeHgRust.hg(workDir, importDstRel, "cat", "-r", "tip", "dir2/y.txt"));
+            String verifyD = NativeHgRust.hg(workDir, importDstRel, "verify");
             assertFalse(verifyD.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors after hg4j imported real hg's exported patch for combo " + combo + ": " + verifyD);
         });

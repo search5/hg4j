@@ -1,5 +1,7 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lib.HgRepository;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -41,34 +43,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixForgetDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -86,75 +64,23 @@ public class RequirementMatrixForgetDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-forget-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-forget-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs hg4j's forget on the given paths in a dedicated subprocess. */
     private static void forgetInSubprocess(Path repoDir, String... files) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", classpath, RequirementMatrixForgetHelperMain.class.getName(), repoDir.toString()));
-        cmd.addAll(Arrays.asList(files));
-        runHost(cmd.toArray(new String[0]));
+        HgRepository repo = new HgRepository(repoDir.toFile());
+        for (String f : files) {
+            new ForgetCommand(repo).setFile(f).call();
+        }
     }
 
     /** Runs hg4j's add (re-add) on the given paths in a dedicated subprocess. */
     private static void addInSubprocess(Path repoDir, String... files) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", classpath, RequirementMatrixAddHelperMain.class.getName(), repoDir.toString()));
-        cmd.addAll(Arrays.asList(files));
-        runHost(cmd.toArray(new String[0]));
+        HgRepository repo = new HgRepository(repoDir.toFile());
+        AddCommand cmd = new AddCommand(repo);
+        for (String f : files) {
+            cmd.addFile(f);
+        }
+        cmd.call();
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -226,7 +152,7 @@ public class RequirementMatrixForgetDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jForgetAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -236,18 +162,18 @@ public class RequirementMatrixForgetDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("top.txt"), "top v1\n");
             Files.createDirectories(hostRepoDir.resolve("adir"));
             Files.writeString(hostRepoDir.resolve("adir/nested.txt"), "nested v1\n");
             Files.writeString(hostRepoDir.resolve("base.txt"), "base v1\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
 
             forgetInSubprocess(hostRepoDir, "top.txt", "adir/nested.txt");
 
-            String status = dockerHgIn(containerName, repoRelPath, "status");
+            String status = NativeHgRust.hg(workDir, repoRelPath, "status");
             assertTrue(status.lines().anyMatch(l -> l.equals("R top.txt")),
                     "real hg status must see top.txt as removed (forgotten) for combo " + combo + ": " + status);
             assertTrue(status.lines().anyMatch(l -> l.equals("R adir/nested.txt")),
@@ -259,34 +185,34 @@ public class RequirementMatrixForgetDockerRoundTripTest {
             Files.writeString(hostRepoDir.resolve("adir/nested.txt"), "nested v2 after forget\n");
             addInSubprocess(hostRepoDir, "top.txt", "adir/nested.txt");
 
-            String statusAfterReadd = dockerHgIn(containerName, repoRelPath, "status");
+            String statusAfterReadd = NativeHgRust.hg(workDir, repoRelPath, "status");
             assertTrue(statusAfterReadd.lines().anyMatch(l -> l.equals("M top.txt")),
                     "real hg status must see top.txt as modified after forget+re-add for combo " + combo + ": " + statusAfterReadd);
             assertTrue(statusAfterReadd.lines().anyMatch(l -> l.equals("M adir/nested.txt")),
                     "real hg status must see adir/nested.txt as modified after forget+re-add for combo " + combo + ": " + statusAfterReadd);
 
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1 forget+re-add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1 forget+re-add");
 
-            String verify = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors after forget+re-add+commit for combo " + combo + ": " + verify);
 
-            String manifest = dockerHgIn(containerName, repoRelPath, "manifest", "-r", "tip");
+            String manifest = NativeHgRust.hg(workDir, repoRelPath, "manifest", "-r", "tip");
             assertTrue(manifest.lines().anyMatch(l -> l.equals("top.txt")), "manifest: " + manifest);
             assertTrue(manifest.lines().anyMatch(l -> l.equals("adir/nested.txt")), "manifest: " + manifest);
             assertTrue(manifest.lines().anyMatch(l -> l.equals("base.txt")), "manifest: " + manifest);
 
-            assertEquals("top v2 after forget", dockerHgIn(containerName, repoRelPath, "cat", "-r", "tip", "top.txt"));
-            assertEquals("nested v2 after forget", dockerHgIn(containerName, repoRelPath, "cat", "-r", "tip", "adir/nested.txt"));
+            assertEquals("top v2 after forget", NativeHgRust.hg(workDir, repoRelPath, "cat", "-r", "tip", "top.txt"));
+            assertEquals("nested v2 after forget", NativeHgRust.hg(workDir, repoRelPath, "cat", "-r", "tip", "adir/nested.txt"));
 
-            String followTop = dockerHgIn(containerName, repoRelPath, "log", "--follow", "-r", "tip", "top.txt", "--template", "{rev} ");
+            String followTop = NativeHgRust.hg(workDir, repoRelPath, "log", "--follow", "-r", "tip", "top.txt", "--template", "{rev} ");
             assertTrue(followTop.contains("0"),
                     "log --follow must reach c0 through top.txt across the forget+re-add boundary for combo " + combo + ": " + followTop);
-            String followNested = dockerHgIn(containerName, repoRelPath, "log", "--follow", "-r", "tip", "adir/nested.txt", "--template", "{rev} ");
+            String followNested = NativeHgRust.hg(workDir, repoRelPath, "log", "--follow", "-r", "tip", "adir/nested.txt", "--template", "{rev} ");
             assertTrue(followNested.contains("0"),
                     "log --follow must reach c0 through adir/nested.txt across the forget+re-add boundary for combo " + combo + ": " + followNested);
 
-            String debugIndexTop = dockerHgIn(containerName, repoRelPath, "debugindex", "top.txt");
+            String debugIndexTop = NativeHgRust.hg(workDir, repoRelPath, "debugindex", "top.txt");
             String[] topLines = debugIndexTop.lines().skip(1).toArray(String[]::new);
             assertTrue(topLines.length >= 2, "top.txt filelog must have 2 revisions across forget+re-add: " + debugIndexTop);
             assertFalse(topLines[1].trim().split("\\s+")[3].equals("000000000000"),

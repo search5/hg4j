@@ -44,34 +44,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -87,59 +63,6 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
             throw new AssertionError("host command " + Arrays.toString(cmd) + " failed with exit " + code + ": " + out);
         }
         return out;
-    }
-
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-catfileslocatemanifest-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-cflm-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -220,8 +143,8 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
         }
     }
 
-    private static List<RealManifestLine> realManifest(String container, String repoRelPath, String rev) throws Exception {
-        String out = dockerHgIn(container, repoRelPath, "manifest", "--debug", "-r", rev);
+    private static List<RealManifestLine> realManifest(Path workDir, String repoRelPath, String rev) throws Exception {
+        String out = NativeHgRust.hg(workDir, repoRelPath, "manifest", "--debug", "-r", rev);
         if (out.isEmpty()) {
             return List.of();
         }
@@ -240,7 +163,7 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void catFilesLocateManifestAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -250,29 +173,29 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.createDirectories(hostRepoDir.resolve("dir/sub"));
             Files.writeString(hostRepoDir.resolve("a.txt"), "hello\n");
             Files.writeString(hostRepoDir.resolve("dir/b.txt"), "world\n");
             Files.writeString(hostRepoDir.resolve("dir/sub/c.txt"), "deep\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String c0Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String c0Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "mv", "a.txt", "renamed.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "mv", "a.txt", "renamed.txt");
             Files.writeString(hostRepoDir.resolve("dir/d.txt"), "new\n");
-            dockerHgIn(containerName, repoRelPath, "add", "dir/d.txt");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
-            String c1Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add", "dir/d.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            String c1Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             hostRepoDir.resolve("dir/d.txt").toFile().setExecutable(true);
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2");
-            String c2Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2");
+            String c2Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "rm", "dir/b.txt");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c3");
-            String c3Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "rm", "dir/b.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c3");
+            String c3Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
 
@@ -281,44 +204,44 @@ public class RequirementMatrixCatFilesLocateManifestDockerRoundTripTest {
                     "combo " + combo);
             assertEquals("deep", new String(new CatCommand(repo).setFile("dir/sub/c.txt").setRevision(c0Hex).call(), StandardCharsets.UTF_8).trim(),
                     "combo " + combo + " (nested treemanifest path)");
-            assertEquals(dockerHgIn(containerName, repoRelPath, "cat", "-r", c1Hex, "renamed.txt"),
+            assertEquals(NativeHgRust.hg(workDir, repoRelPath, "cat", "-r", c1Hex, "renamed.txt"),
                     new String(new CatCommand(repo).setFile("renamed.txt").setRevision(c1Hex).call(), StandardCharsets.UTF_8).trim(),
                     "combo " + combo + " (content survives rename)");
 
             // --- FilesCommand ---
-            assertEquals(splitLines(dockerHgIn(containerName, repoRelPath, "files", "-r", c1Hex)),
+            assertEquals(splitLines(NativeHgRust.hg(workDir, repoRelPath, "files", "-r", c1Hex)),
                     new FilesCommand(repo).setRevision(c1Hex).call(), "combo " + combo + " files -r c1");
 
-            assertEquals(splitLines(dockerHgIn(containerName, repoRelPath, "files", "-r", c1Hex, "dir")),
+            assertEquals(splitLines(NativeHgRust.hg(workDir, repoRelPath, "files", "-r", c1Hex, "dir")),
                     new FilesCommand(repo).setRevision(c1Hex).setPattern("dir").call(),
                     "combo " + combo + " files -r c1 dir (pattern filter)");
 
-            assertEquals(splitLines(dockerHgIn(containerName, repoRelPath, "files", "-r", c3Hex)),
+            assertEquals(splitLines(NativeHgRust.hg(workDir, repoRelPath, "files", "-r", c3Hex)),
                     new FilesCommand(repo).setRevision(c3Hex).call(),
                     "combo " + combo + " files -r c3 (after remove)");
 
             // --- LocateCommand ---
-            assertEquals(splitLines(dockerHgIn(containerName, repoRelPath, "locate", "-r", c1Hex, "*.txt")),
+            assertEquals(splitLines(NativeHgRust.hg(workDir, repoRelPath, "locate", "-r", c1Hex, "*.txt")),
                     new LocateCommand(repo).setRevision(c1Hex).setPattern("*.txt").call(),
                     "combo " + combo + " locate -r c1 *.txt");
 
-            assertEquals(splitLines(dockerHgIn(containerName, repoRelPath, "locate", "-r", c1Hex, "dir/*.txt")),
+            assertEquals(splitLines(NativeHgRust.hg(workDir, repoRelPath, "locate", "-r", c1Hex, "dir/*.txt")),
                     new LocateCommand(repo).setRevision(c1Hex).setPattern("dir/*.txt").call(),
                     "combo " + combo + " locate -r c1 dir/*.txt");
 
-            assertEquals(splitLines(dockerHgIn(containerName, repoRelPath, "locate", "*.txt")),
+            assertEquals(splitLines(NativeHgRust.hg(workDir, repoRelPath, "locate", "*.txt")),
                     new LocateCommand(repo).setPattern("*.txt").call(),
                     "combo " + combo + " locate *.txt (working copy, no -r)");
 
             // --- ManifestCommand ---
-            assertManifestMatches(repo, containerName, repoRelPath, c0Hex, combo);
-            assertManifestMatches(repo, containerName, repoRelPath, c2Hex, combo);
-            assertManifestMatches(repo, containerName, repoRelPath, c3Hex, combo);
+            assertManifestMatches(repo, workDir, repoRelPath, c0Hex, combo);
+            assertManifestMatches(repo, workDir, repoRelPath, c2Hex, combo);
+            assertManifestMatches(repo, workDir, repoRelPath, c3Hex, combo);
         });
     }
 
-    private static void assertManifestMatches(HgRepository repo, String container, String repoRelPath, String rev, RequirementCombo combo) throws Exception {
-        List<RealManifestLine> expected = realManifest(container, repoRelPath, rev);
+    private static void assertManifestMatches(HgRepository repo, Path workDir, String repoRelPath, String rev, RequirementCombo combo) throws Exception {
+        List<RealManifestLine> expected = realManifest(workDir, repoRelPath, rev);
         List<ManifestCommand.ManifestEntry> actual = new ManifestCommand(repo).setRevision(rev).call();
         actual.sort(Comparator.comparing(ManifestCommand.ManifestEntry::getPath));
 

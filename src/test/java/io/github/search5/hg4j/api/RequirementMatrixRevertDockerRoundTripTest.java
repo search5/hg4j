@@ -1,5 +1,7 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lib.HgRepository;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -41,34 +43,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixRevertDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -86,67 +64,22 @@ public class RequirementMatrixRevertDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-revert-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-revert-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs hg4j's revert(s) in a dedicated subprocess. */
     private static void revertInSubprocess(Path repoDir, String mode, String... extraArgs) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", classpath,
-                RequirementMatrixRevertHelperMain.class.getName(), repoDir.toString(), mode));
-        cmd.addAll(Arrays.asList(extraArgs));
-        runHost(cmd.toArray(new String[0]));
+        HgRepository repo = new HgRepository(repoDir.toFile());
+
+        if ("mar".equals(mode)) {
+            new RevertCommand(repo).setFile("base.txt").call();
+            new RevertCommand(repo).setFile("new.txt").call();
+            new RevertCommand(repo).setFile("keep.txt").call();
+        } else if ("older".equals(mode)) {
+            String revisionHex = extraArgs[0];
+            new RevertCommand(repo).setFile("a.txt").setRevision(revisionHex).call();
+            new RevertCommand(repo).setFile("later.txt").setRevision(revisionHex).call();
+        } else {
+            throw new IllegalArgumentException("Unknown mode: " + mode);
+        }
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -218,7 +151,7 @@ public class RequirementMatrixRevertDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jRevertsModifiedAddedRemovedAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -228,28 +161,28 @@ public class RequirementMatrixRevertDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "base\n");
             Files.writeString(hostRepoDir.resolve("keep.txt"), "keep\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "modified locally\n");
             Files.writeString(hostRepoDir.resolve("new.txt"), "new content\n");
-            dockerHgIn(containerName, repoRelPath, "add", "new.txt");
-            dockerHgIn(containerName, repoRelPath, "remove", "keep.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "add", "new.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "remove", "keep.txt");
 
             revertInSubprocess(hostRepoDir, "mar");
 
-            assertEquals("base", dockerHgIn(containerName, repoRelPath, "cat", "base.txt"));
-            assertEquals("keep", dockerHgIn(containerName, repoRelPath, "cat", "keep.txt"));
+            assertEquals("base", NativeHgRust.hg(workDir, repoRelPath, "cat", "base.txt"));
+            assertEquals("keep", NativeHgRust.hg(workDir, repoRelPath, "cat", "keep.txt"));
             assertEquals("new content", Files.readString(hostRepoDir.resolve("new.txt")).trim(),
                     "reverting an added-but-uncommitted file must not delete its content for combo " + combo);
             assertEquals("modified locally", Files.readString(hostRepoDir.resolve("base.txt.orig")).trim(),
                     "the .orig backup must hold the pre-revert modified content for combo " + combo);
 
-            String status = dockerHgIn(containerName, repoRelPath, "status");
+            String status = NativeHgRust.hg(workDir, repoRelPath, "status");
             assertEquals("? base.txt.orig\n? new.txt", status,
                     "only the .orig backup and the now-untracked former-added file should remain outstanding for combo "
                             + combo + ": " + status);
@@ -259,7 +192,7 @@ public class RequirementMatrixRevertDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jRevertsToOlderRevisionAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -269,19 +202,19 @@ public class RequirementMatrixRevertDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "v0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String c0Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String c0Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "v1\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
 
             Files.writeString(hostRepoDir.resolve("later.txt"), "added later\n");
-            dockerHgIn(containerName, repoRelPath, "add", "later.txt");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2");
+            NativeHgRust.hg(workDir, repoRelPath, "add", "later.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2");
 
             revertInSubprocess(hostRepoDir, "older", c0Hex);
 
@@ -291,7 +224,7 @@ public class RequirementMatrixRevertDockerRoundTripTest {
             // which is not what this asserts.
             assertEquals("v0", Files.readString(hostRepoDir.resolve("a.txt")).trim());
 
-            String status = dockerHgIn(containerName, repoRelPath, "status");
+            String status = NativeHgRust.hg(workDir, repoRelPath, "status");
             assertEquals("M a.txt\nR later.txt", status,
                     "a.txt must show modified and later.txt must show removed for combo " + combo + ": " + status);
         });

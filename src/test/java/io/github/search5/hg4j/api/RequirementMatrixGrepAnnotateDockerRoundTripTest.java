@@ -42,34 +42,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -85,59 +61,6 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
             throw new AssertionError("host command " + Arrays.toString(cmd) + " failed with exit " + code + ": " + out);
         }
         return out;
-    }
-
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-grepannotate-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-grepann-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -207,8 +130,8 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
 
     /** Same {@code hg --debug debugindex} parsing as {@link
      * RequirementMatrixGrepAnnotateCoreRoundTripTest#realFilelogNodeHexForLinkrev}. */
-    private static String realFilelogNodeHexForLinkrev(String container, String repoRelPath, String file, int linkrev) throws Exception {
-        String out = dockerHgIn(container, repoRelPath, "--debug", "debugindex", file);
+    private static String realFilelogNodeHexForLinkrev(Path workDir, String repoRelPath, String file, int linkrev) throws Exception {
+        String out = NativeHgRust.hg(workDir, repoRelPath, "--debug", "debugindex", file);
         String[] lines = out.split("\n");
         for (int i = 1; i < lines.length; i++) {
             String[] tokens = lines[i].trim().split("\\s+");
@@ -234,7 +157,7 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void grepAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -244,23 +167,23 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("file1.txt"), "apple\nbanana\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "g0");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "g0");
 
             Files.writeString(hostRepoDir.resolve("file1.txt"), "apple\ncherry\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "g1");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "g1");
 
             Files.writeString(hostRepoDir.resolve("file1.txt"), "grape\ncherry\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "g2");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "g2");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
 
-            String file1Link0Hex = realFilelogNodeHexForLinkrev(containerName, repoRelPath, "file1.txt", 0);
-            String file1Link1Hex = realFilelogNodeHexForLinkrev(containerName, repoRelPath, "file1.txt", 1);
-            String file1Link2Hex = realFilelogNodeHexForLinkrev(containerName, repoRelPath, "file1.txt", 2);
+            String file1Link0Hex = realFilelogNodeHexForLinkrev(workDir, repoRelPath, "file1.txt", 0);
+            String file1Link1Hex = realFilelogNodeHexForLinkrev(workDir, repoRelPath, "file1.txt", 1);
+            String file1Link2Hex = realFilelogNodeHexForLinkrev(workDir, repoRelPath, "file1.txt", 2);
 
             List<GrepCommand.GrepResult> appleResults = new GrepCommand(repo).setQuery("apple").call();
             assertEquals(2, appleResults.size(), "combo " + combo + ": apple must match exactly linkrev 0 and 1's line 1");
@@ -281,7 +204,7 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void grepAcrossRenameAndNestedDirsAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir.resolve("content"));
@@ -291,18 +214,18 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("content/orig.txt"), "line1\nline2\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "n0");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "n0");
 
             Files.writeString(hostRepoDir.resolve("content/orig.txt"), "line1\nline2changed\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "n1");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "n1");
 
-            dockerHgIn(containerName, repoRelPath, "mv", "content/orig.txt", "content/renamed.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "mv", "content/orig.txt", "content/renamed.txt");
             Files.writeString(hostRepoDir.resolve("content/renamed.txt"), "line1\nline2changed\nline3\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "n2");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "n2");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
             List<GrepCommand.GrepResult> results = new GrepCommand(repo).setQuery("line2changed").call();
@@ -310,17 +233,17 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
                     + ": line2changed must be found once in each of the two independent filelogs (orig.txt AND renamed.txt)");
 
             GrepCommand.GrepResult origMatch = findResult(results, "content/orig.txt", 2);
-            assertEquals(realFilelogNodeHexForLinkrev(containerName, repoRelPath, "content/orig.txt", 1), origMatch.hexNode, "combo " + combo);
+            assertEquals(realFilelogNodeHexForLinkrev(workDir, repoRelPath, "content/orig.txt", 1), origMatch.hexNode, "combo " + combo);
 
             GrepCommand.GrepResult renamedMatch = findResult(results, "content/renamed.txt", 2);
-            assertEquals(realFilelogNodeHexForLinkrev(containerName, repoRelPath, "content/renamed.txt", 2), renamedMatch.hexNode, "combo " + combo);
+            assertEquals(realFilelogNodeHexForLinkrev(workDir, repoRelPath, "content/renamed.txt", 2), renamedMatch.hexNode, "combo " + combo);
         });
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void annotateAcrossRenameAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir.resolve("content"));
@@ -330,21 +253,21 @@ public class RequirementMatrixGrepAnnotateDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("content/orig.txt"), "line1\nline2\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "a0");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "a0");
 
             Files.writeString(hostRepoDir.resolve("content/orig.txt"), "line1\nline2changed\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "a1");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "a1");
 
-            dockerHgIn(containerName, repoRelPath, "mv", "content/orig.txt", "content/renamed.txt");
+            NativeHgRust.hg(workDir, repoRelPath, "mv", "content/orig.txt", "content/renamed.txt");
             Files.writeString(hostRepoDir.resolve("content/renamed.txt"), "line1\nline2changed\nline3\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "a2");
-            String tipHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "a2");
+            String tipHex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            String realAnnotate = dockerHgIn(containerName, repoRelPath, "annotate", "-r", tipHex, "-n", "content/renamed.txt");
+            String realAnnotate = NativeHgRust.hg(workDir, repoRelPath, "annotate", "-r", tipHex, "-n", "content/renamed.txt");
             List<String> expectedContent = new ArrayList<>();
             List<Integer> expectedRev = new ArrayList<>();
             for (String line : realAnnotate.split("\n")) {

@@ -613,9 +613,17 @@ public class FetchCommand {
             appendToJournal(journalFile, "store/00manifest.d\t" + mfDatLen);
 
             Revlog changelog = repository.getRevlog(clIdx, clDat);
+            // 백로그(P3-27, 2026-09-09): cg1 엔트리의 암묵적 델타 베이스("이 그룹 안에서 바로
+            // 직전에 온 엔트리")는 로컬 revlog가 이미 갖고 있던 리비전 개수와 무관하게, 이번에
+            // 들어오는 changegroup 자체의 순서로만 추적해야 한다(Revlog#appendChangeGroupEntry의
+            // 3-인자 오버로드 주석 참고) — PushCommand의 송신측 prevClContent와 정확히 대칭되는
+            // 수신측 추적.
+            byte[] prevChangelogEntryContent = null;
             for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                 int rev = changelog.getRevisionCount();
-                changelog.appendChangeGroupEntry(entry, rev);
+                changelog.appendChangeGroupEntry(entry, rev, prevChangelogEntryContent);
+                int appendedRev = changelog.findRevision(entry.node);
+                prevChangelogEntryContent = appendedRev != -1 ? changelog.getRawRevisionContent(appendedRev) : null;
                 importedCommits.add(entry.node);
             }
 
@@ -652,12 +660,16 @@ public class FetchCommand {
                         mIdx.getParentFile().mkdirs();
                     }
                     Revlog subManifest = (mIdx == mfIdx) ? repository.getManifestRevlog() : repository.getRevlog(mIdx, mDat);
+                    // 위 changelog 루프와 동일한 이유(P3-27) — 그룹별로 독립적으로 추적해야 한다.
+                    byte[] prevManifestEntryContent = null;
                     for (ChangegroupParser.ChangeGroupEntry entry : mg.entries) {
                         int linkRev = changelog.findRevision(entry.cs);
                         if (linkRev == -1) {
                             throw new HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
                         }
-                        subManifest.appendChangeGroupEntry(entry, linkRev);
+                        subManifest.appendChangeGroupEntry(entry, linkRev, prevManifestEntryContent);
+                        int appendedRev = subManifest.findRevision(entry.node);
+                        prevManifestEntryContent = appendedRev != -1 ? subManifest.getRawRevisionContent(appendedRev) : null;
                     }
                     // Only register the .d fncache entry once the applied entries actually pushed
                     // this dirlog past the inline threshold (backlog #45 cross-check) -- real hg's
@@ -672,12 +684,15 @@ public class FetchCommand {
                 }
             } else {
                 Revlog manifest = repository.getManifestRevlog();
+                byte[] prevManifestEntryContent = null;
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
                         throw new HgCorruptDataException("Missing link commit for manifest: " + NodeIdUtil.toHex(entry.cs));
                     }
-                    manifest.appendChangeGroupEntry(entry, linkRev);
+                    manifest.appendChangeGroupEntry(entry, linkRev, prevManifestEntryContent);
+                    int appendedRev = manifest.findRevision(entry.node);
+                    prevManifestEntryContent = appendedRev != -1 ? manifest.getRawRevisionContent(appendedRev) : null;
                 }
             }
 
@@ -705,12 +720,15 @@ public class FetchCommand {
                 flIdx.getParentFile().mkdirs();
                 Revlog filelog = repository.getRevlog(flIdx, flDat);
 
+                byte[] prevFileEntryContent = null;
                 for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
                     int linkRev = changelog.findRevision(entry.cs);
                     if (linkRev == -1) {
                         throw new HgCorruptDataException("Missing link commit for file revision: " + NodeIdUtil.toHex(entry.cs));
                     }
-                    filelog.appendChangeGroupEntry(entry, linkRev);
+                    filelog.appendChangeGroupEntry(entry, linkRev, prevFileEntryContent);
+                    int appendedRev = filelog.findRevision(entry.node);
+                    prevFileEntryContent = appendedRev != -1 ? filelog.getRawRevisionContent(appendedRev) : null;
                 }
 
                 String rawPath = "data/" + path.replace('\\', '/');

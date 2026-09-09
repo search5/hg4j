@@ -23,6 +23,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.regex.Matcher;
@@ -164,7 +165,7 @@ public class HgSshWireServerRealHgInteropTest {
         // for "no heads to report" on an empty repo, so HgTestUtils.hg()'s exit-code-0 assertion
         // is deliberately bypassed for this one call, exactly as the HTTP equivalent test does.
         Process headsProcess = new ProcessBuilder("hg", "heads").directory(destDir).redirectErrorStream(true).start();
-        String headsOutput = new String(headsProcess.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+        String headsOutput = new String(headsProcess.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
         headsProcess.waitFor();
         assertEquals(1, headsProcess.exitValue(), "real hg's own documented behavior for `hg heads` on an empty repo");
         assertEquals("", headsOutput, "an empty repository has no heads to list");

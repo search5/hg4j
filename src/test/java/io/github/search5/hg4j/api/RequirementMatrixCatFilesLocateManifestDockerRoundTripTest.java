@@ -29,10 +29,8 @@ import java.util.concurrent.TimeUnit;
  * for the full 30-combo design this reuses verbatim) applied to {@link CatCommand}, {@link
  * FilesCommand}, {@link LocateCommand} and {@link ManifestCommand} together -- the Docker-only
  * counterpart of {@link RequirementMatrixCatFilesLocateManifestCoreRoundTripTest}'s native
- * 6-combo scenario (see that class's javadoc for why these four are grouped and why no {@code
- * HelperMain} subprocess is needed here: none of the four commands under test ever write to a
- * repository, so there is no analog of the docker-exec-interleaved hg4j-write corruption
- * documented on {@link RequirementMatrixCommitHelperMain}).
+ * 6-combo scenario (see that class's javadoc for why these four are grouped): none of the four
+ * commands under test ever write to a repository.
  *
  * <p>Each combo gets its own fresh, short-lived container (matching {@link
  * RequirementMatrixMergeDockerRoundTripTest}/{@link RequirementMatrixStripDockerRoundTripTest});

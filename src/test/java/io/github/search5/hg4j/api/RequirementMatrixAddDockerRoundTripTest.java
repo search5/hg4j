@@ -37,9 +37,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container, matching every other write-direction
  * test in this matrix family (see {@link RequirementMatrixDockerRoundTripTest}'s class javadoc
- * for why). hg4j's own {@link AddCommand} call runs in a dedicated {@code java} subprocess
- * ({@link RequirementMatrixAddHelperMain}) for the same docker-exec-interleaving corruption
- * reason documented on {@link RequirementMatrixCommitHelperMain}.
+ * for why). hg4j's own {@link AddCommand} call runs inline in this JVM, alongside the native
+ * rust-hg subprocess calls this class uses for the real hg side.
  */
 @Tag("interop")
 public class RequirementMatrixAddDockerRoundTripTest {

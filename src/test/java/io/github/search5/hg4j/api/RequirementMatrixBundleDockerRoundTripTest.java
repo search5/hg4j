@@ -34,11 +34,8 @@ import java.util.concurrent.TimeUnit;
  * same-combo destination, then hg4j writes a second, incremental bundle FILE applied the same way).
  *
  * <p>Every hg4j write operation (the two add+commit cycles, and the two {@link BundleCommand}
- * calls) runs inside {@link RequirementMatrixBundleHelperMain}, a dedicated subprocess -- required
- * for the same reason {@link RequirementMatrixPushDockerRoundTripTest} needs {@link
- * RequirementMatrixPushHelperMain} (see {@link RequirementMatrixCommitHelperMain}'s javadoc for the
- * full root-cause writeup on hg4j write commands corrupting output when interleaved with heavy
- * {@code docker exec}/{@code docker run} process spawning in the same JVM).
+ * calls) runs inline in this JVM, alongside the native rust-hg subprocess calls this class uses
+ * for the real hg side.
  *
  * <p>Treemanifest combos use {@link BundleCommand.BundleType#NONE_V3} (real {@code hg bundle}
  * cannot use a {@code -v1} type against a treemanifest repository at all -- see {@link

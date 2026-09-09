@@ -32,7 +32,7 @@ import java.util.Map;
  * full matrix of on-disk format combinations against {@link LogCommand}'s own dedicated contract
  * (ordering, per-field content, and {@code --follow} crossing a rename boundary). This is a pure
  * read (changelog + a renamed file's filelog metadata only, never the manifest) so no hg4j write
- * step / {@code HelperMain} subprocess is needed.
+ * step is needed.
  */
 @Tag("interop")
 public class RequirementMatrixLogCoreRoundTripTest {

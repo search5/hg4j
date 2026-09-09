@@ -28,9 +28,8 @@ import java.util.concurrent.TimeUnit;
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest} for
  * the full 30-combo design this reuses verbatim) applied to {@link RevsetCommand} -- the
  * Docker-only counterpart of {@link RequirementMatrixRevsetCoreRoundTripTest}'s native 6-combo
- * scenario (see its javadoc for the full expression list and the {@code heads()} caveat). No hg4j
- * write step / {@code HelperMain} subprocess is needed: {@link RevsetCommand} never mutates the
- * repository.
+ * scenario (see its javadoc for the full expression list and the {@code heads()} caveat).
+ * {@link RevsetCommand} never mutates the repository, so no hg4j write step is needed here.
  */
 @Tag("interop")
 public class RequirementMatrixRevsetDockerRoundTripTest {

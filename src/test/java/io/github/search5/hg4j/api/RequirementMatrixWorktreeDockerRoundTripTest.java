@@ -33,10 +33,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixMergeDockerRoundTripTest}/{@link RequirementMatrixStripDockerRoundTripTest}.
- * {@link WorktreeCommand} never appends a revlog revision on its own (see its class javadoc), so --
- * unlike most other requirement-matrix Docker suites in this package -- there is no revlog-write
- * corruption risk from interleaving hg4j calls with {@code docker exec}/{@code docker run} child
- * processes; {@link RequirementMatrixWorktreeHelperMain} is still used purely for pattern parity.
+ * {@link WorktreeCommand} never appends a revlog revision on its own (see its class javadoc); it
+ * runs inline in this JVM like every other hg4j call in this class.
  */
 @Tag("interop")
 public class RequirementMatrixWorktreeDockerRoundTripTest {

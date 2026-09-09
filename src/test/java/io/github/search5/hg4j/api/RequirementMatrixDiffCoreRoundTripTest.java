@@ -42,8 +42,7 @@ import java.util.ArrayList;
  * ManifestTreeIterator} path DiffCommand uses), and cross-checking that classification against
  * real hg's own {@code hg status --rev A --rev B}. One MODIFY case per combo is also round-tripped
  * through real {@code hg import --no-commit} to confirm the emitted patch text is genuinely
- * apply-compatible, not just structurally plausible. Pure read -- no hg4j write step / {@code
- * HelperMain} subprocess needed.
+ * apply-compatible, not just structurally plausible. Pure read -- no hg4j write step needed.
  */
 @Tag("interop")
 public class RequirementMatrixDiffCoreRoundTripTest {

@@ -36,10 +36,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixMergeDockerRoundTripTest}/{@link RequirementMatrixStripDockerRoundTripTest}.
- * {@link PurgeCommand} never touches store/changelog/manifest data (see its class javadoc), so --
- * unlike most other requirement-matrix Docker suites in this package -- there is no revlog-write
- * corruption risk from interleaving hg4j calls with {@code docker exec}/{@code docker run} child
- * processes; {@link RequirementMatrixPurgeHelperMain} is still used purely for pattern parity.
+ * {@link PurgeCommand} never touches store/changelog/manifest data (see its class javadoc), so it
+ * runs inline in this JVM like every other hg4j call in this class.
  */
 @Tag("interop")
 public class RequirementMatrixPurgeDockerRoundTripTest {

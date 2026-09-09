@@ -34,8 +34,8 @@ import java.util.Map;
  * against real hg's own {@code hg status -A} across every format combination, including a nested
  * treemanifest path.
  *
- * <p>This is a pure read (dirstate + manifest + working directory, never a write) so no hg4j write
- * step / {@code HelperMain} subprocess is needed.
+ * <p>This is a pure read (dirstate + manifest + working directory, never a write) so no hg4j
+ * write step is needed.
  */
 @Tag("interop")
 public class RequirementMatrixStatusCoreRoundTripTest {

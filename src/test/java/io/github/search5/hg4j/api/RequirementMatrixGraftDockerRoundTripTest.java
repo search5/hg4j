@@ -37,9 +37,8 @@ import java.util.concurrent.TimeUnit;
  * {@link RequirementMatrixRebaseDockerRoundTripTest}/{@link RequirementMatrixStripDockerRoundTripTest}
  * -- this is a correctness-critical write path and the parent class's javadoc documents a real,
  * reproducible corruption symptom from reusing one long-lived container across many write cases.
- * hg4j's own graft write runs in a dedicated {@code java} subprocess ({@link
- * RequirementMatrixGraftHelperMain}) rather than inline in this JVM, for the same
- * docker-exec-interleaving corruption reason documented on {@link RequirementMatrixCommitHelperMain}.
+ * hg4j's own graft write runs inline in this JVM, alongside the native rust-hg subprocess calls
+ * this class uses for the real hg side.
  */
 @Tag("interop")
 public class RequirementMatrixGraftDockerRoundTripTest {

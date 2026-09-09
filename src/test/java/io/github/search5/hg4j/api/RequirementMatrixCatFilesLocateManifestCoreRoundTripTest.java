@@ -36,11 +36,7 @@ import java.util.Map;
  * together against one shared repository history (built once per combo by real hg, never written
  * by hg4j) both avoids redundant setup and directly tests that shared code path under nested
  * directories (forcing real treemanifest dirlog traversal, not just root-level entries), renames,
- * removals and the executable bit. Because none of these four commands ever write to a repository,
- * there is no risk of the JVM-internal write corruption documented on {@link
- * RequirementMatrixCommitHelperMain} (that issue is specific to hg4j's own revlog-writing code
- * interleaved with spawned {@code docker exec}/{@code docker run} processes in the same JVM) --
- * consequently this trio has no {@code HelperMain} subprocess counterpart.
+ * removals and the executable bit. None of these four commands ever write to a repository.
  */
 @Tag("interop")
 public class RequirementMatrixCatFilesLocateManifestCoreRoundTripTest {

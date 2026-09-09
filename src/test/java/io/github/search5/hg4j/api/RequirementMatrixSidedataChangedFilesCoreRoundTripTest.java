@@ -38,8 +38,7 @@ import java.util.Map;
  * exercises BOTH ends of the matrix deliberately: {@code cl1}/{@code cl2} combos assert the empty
  * result, and {@code cl2+sidedata} combos (flat and treemanifest, the latter with the copy
  * destination itself living in a nested directory) assert the real copy-tracing data, cross-checked
- * against real {@code hg debugchangedfiles}'s own output. Pure read -- no hg4j write step / {@code
- * HelperMain} subprocess needed.
+ * against real {@code hg debugchangedfiles}'s own output. Pure read -- no hg4j write step needed.
  */
 @Tag("interop")
 public class RequirementMatrixSidedataChangedFilesCoreRoundTripTest {

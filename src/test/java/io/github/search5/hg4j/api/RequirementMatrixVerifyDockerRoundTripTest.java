@@ -35,9 +35,7 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixBackoutDockerRoundTripTest}. {@link VerifyCommand} itself never writes
- * anything, but hg4j's read still runs in a dedicated {@code java} subprocess ({@link
- * RequirementMatrixVerifyHelperMain}) for consistency with every other matrix test in this
- * package -- see that class's javadoc.
+ * anything, and hg4j's read runs inline in this JVM like every other hg4j call in this class.
  */
 @Tag("interop")
 public class RequirementMatrixVerifyDockerRoundTripTest {

@@ -35,10 +35,9 @@ import java.util.concurrent.TimeUnit;
  * create ("without associated fast implementation").
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
- * {@link RequirementMatrixBackoutDockerRoundTripTest}. hg4j's own init+add+commit write runs in a
- * dedicated {@code java} subprocess ({@link RequirementMatrixInitHelperMain}) rather than inline in
- * this JVM, for the same docker-exec-interleaving corruption reason documented on {@link
- * RequirementMatrixCommitHelperMain}.
+ * {@link RequirementMatrixBackoutDockerRoundTripTest}. hg4j's own init+add+commit write runs
+ * inline in this JVM, alongside the native rust-hg subprocess calls this class uses for the real
+ * hg side.
  */
 @Tag("interop")
 public class RequirementMatrixInitDockerRoundTripTest {

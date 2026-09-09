@@ -28,10 +28,8 @@ import java.util.concurrent.TimeUnit;
  * for the full 30-combo design this reuses verbatim) applied to {@link HeadsCommand}/
  * {@link TipCommand}/{@link ParentsCommand} -- the Docker-only counterpart of
  * {@link RequirementMatrixHeadsCoreRoundTripTest}'s native 6-combo scenario (see that class's
- * javadoc for the full scenario writeup and why no {@code HelperMain} subprocess is needed here:
- * all three commands are pure readers, and the repository itself is always built exclusively via
- * real {@code hg} -- {@code docker exec} here -- so hg4j's own zstd-compressing write path, the
- * thing {@code HelperMain} subprocesses exist to isolate, never runs in this JVM at all).
+ * javadoc for the full scenario writeup): all three commands are pure readers, and the repository
+ * itself is always built exclusively via real {@code hg} -- {@code docker exec} here.
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixBackoutDockerRoundTripTest} and friends.

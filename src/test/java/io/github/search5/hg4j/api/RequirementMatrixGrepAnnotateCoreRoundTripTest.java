@@ -30,9 +30,7 @@ import java.util.Map;
  * <p>Grouped into one trio (see {@link RequirementMatrixCatFilesLocateManifestCoreRoundTripTest}
  * for the same rationale applied to a different foursome) because both are read-only,
  * content-across-history commands that share a single built-once repository. Both commands only
- * ever read, so -- exactly as with the Cat/Files/Locate/Manifest trio -- there is no {@code
- * HelperMain} subprocess: the docker-exec-interleaved corruption documented on {@link
- * RequirementMatrixCommitHelperMain} is specific to hg4j's own revlog *writes*.
+ * ever read, exactly like the Cat/Files/Locate/Manifest trio.
  *
  * <p>The shared history has two independent parts, verified live against real {@code hg} 7.2
  * (2026-09-05) before being ported:

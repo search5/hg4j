@@ -30,9 +30,7 @@ import java.util.Map;
  * at v1 -- v2 needs Docker, see {@code RequirementMatrixUpdateDockerRoundTripTest}).
  *
  * <p>{@link UpdateCommand} never appends any revlog revision (only reads them, and writes the
- * working directory + dirstate) -- so unlike most other requirement-matrix suites in this package,
- * no subprocess helper is strictly required for correctness; {@link
- * RequirementMatrixUpdateHelperMain} is used purely for pattern parity.
+ * working directory + dirstate).
  *
  * <p>One comprehensive round-trip scenario, across every combo, verified live against real {@code
  * hg} 7.2 (2026-09-05): two commits exercising every kind of per-file transition {@code hg update}

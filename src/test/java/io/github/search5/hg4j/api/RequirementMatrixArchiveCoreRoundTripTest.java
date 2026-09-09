@@ -37,11 +37,8 @@ import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
  * ArchiveCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
  * at v1 -- v2 needs Docker, see {@code RequirementMatrixArchiveDockerRoundTripTest}).
  *
- * <p>{@link ArchiveCommand} is a pure read/export command (never mutates the repository), so
- * unlike most other requirement-matrix suites in this package, no subprocess helper is needed --
- * the corruption this campaign otherwise routes around ({@code RequirementMatrixCommitHelperMain}'s
- * javadoc) is specific to writing revlogs from a JVM that's also spawning {@code docker exec}
- * children, which never happens here.
+ * <p>{@link ArchiveCommand} is a pure read/export command (never mutates the repository), so no
+ * hg4j write step is needed here.
  *
  * <p>Two scenarios, both across every combo, both verified live against real {@code hg} 7.2
  * (2026-09-05) before being ported (see {@link ArchiveCommand}'s own javadoc for the full

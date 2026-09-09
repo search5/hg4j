@@ -44,11 +44,8 @@ import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixMergeDockerRoundTripTest}/{@link RequirementMatrixStripDockerRoundTripTest}.
- * {@link ArchiveCommand} never mutates the repository (see its class javadoc), so -- unlike most
- * other requirement-matrix Docker suites in this package -- there is no revlog-write corruption
- * risk from interleaving hg4j calls with {@code docker exec}/{@code docker run} child processes;
- * {@link RequirementMatrixArchiveHelperMain} is still used (one subprocess call per combo) purely
- * for pattern parity, not correctness.
+ * {@link ArchiveCommand} never mutates the repository (see its class javadoc); it runs inline in
+ * this JVM like every other hg4j call in this class.
  */
 @Tag("interop")
 public class RequirementMatrixArchiveDockerRoundTripTest {

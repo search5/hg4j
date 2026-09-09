@@ -37,10 +37,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixBackoutDockerRoundTripTest} -- {@link CensorCommand} edits a filelog
- * revlog in place, a correctness-critical write path, so hg4j's own censor(+refusal check) runs in
- * a dedicated {@code java} subprocess ({@link RequirementMatrixCensorHelperMain}) rather than
- * inline in this JVM, for the same docker-exec-interleaving corruption reason documented on
- * {@link RequirementMatrixCommitHelperMain}.
+ * revlog in place, a correctness-critical write path, so hg4j's own censor(+refusal check) runs
+ * inline in this JVM, alongside the native rust-hg subprocess calls this class uses for the real
+ * hg side.
  */
 @Tag("interop")
 public class RequirementMatrixCensorDockerRoundTripTest {

@@ -29,11 +29,7 @@ import java.util.concurrent.TimeUnit;
  * scenario.
  *
  * <p>Unlike every previous Docker-backed command trio (Backout, Merge, Strip, ...), {@link
- * DescribeCommand} never mutates the repository, so there is no hg4j write step and therefore no
- * {@code RequirementMatrixDescribeHelperMain} subprocess: the corruption risk documented on {@link
- * RequirementMatrixCommitHelperMain} (hg4j's own revlog WRITE path interleaved with spawning
- * {@code docker exec}/{@code docker run} child processes in the same JVM) does not apply to a
- * command that only ever reads.
+ * DescribeCommand} never mutates the repository, so there is no hg4j write step here at all.
  */
 @Tag("interop")
 public class RequirementMatrixDescribeDockerRoundTripTest {

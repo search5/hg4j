@@ -34,8 +34,7 @@ import java.util.concurrent.TimeUnit;
  * general-v2} storage extensions combined with {@code cl2+sidedata} -- none of those storage
  * extensions change how changelog-v2 sidedata itself is laid out, but this is the first time they
  * are exercised together with real sidedata content by any test in this suite. No hg4j write step
- * / {@code HelperMain} subprocess is needed: {@link SidedataChangedFilesCommand} never mutates the
- * repository.
+ * is needed here: {@link SidedataChangedFilesCommand} never mutates the repository.
  */
 @Tag("interop")
 public class RequirementMatrixSidedataChangedFilesDockerRoundTripTest {

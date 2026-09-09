@@ -27,10 +27,7 @@ import java.util.Map;
  * WorktreeCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
  * at v1 -- v2 needs Docker, see {@code RequirementMatrixWorktreeDockerRoundTripTest}).
  *
- * <p>{@link WorktreeCommand} never appends a revlog revision on its own (see its class javadoc) --
- * so unlike most other requirement-matrix suites in this package, no subprocess helper is strictly
- * required for correctness; {@link RequirementMatrixWorktreeHelperMain} is used purely for pattern
- * parity.
+ * <p>{@link WorktreeCommand} never appends a revlog revision on its own (see its class javadoc).
  *
  * <p>One scenario, across every combo, verified live against real hg 7.2's own {@code share}
  * extension (2026-09-05, {@code --config extensions.share=}): a two-commit main repository (a root

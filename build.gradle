@@ -67,7 +67,7 @@ publishing {
             pom {
                 name = 'hg4j'
                 description = 'Pure Java implementation of Mercurial (hg) version control system'
-                url = 'https://github.com/hg4j/hg4j'
+                url = 'https://github.com/search5/hg4j'
                 licenses {
                     license {
                         name = 'The Apache License, Version 2.0'
@@ -81,9 +81,9 @@ publishing {
                     }
                 }
                 scm {
-                    connection = 'scm:git:git://github.com/hg4j/hg4j.git'
-                    developerConnection = 'scm:git:ssh://github.com/hg4j/hg4j.git'
-                    url = 'https://github.com/hg4j/hg4j'
+                    connection = 'scm:git:git://github.com/search5/hg4j.git'
+                    developerConnection = 'scm:git:ssh://github.com/search5/hg4j.git'
+                    url = 'https://github.com/search5/hg4j'
                 }
             }
         }
@@ -246,8 +246,8 @@ asciidoctor {
 
 // Gradle Plugin Portal 배포를 위한 플러그인 정의 설정
 gradlePlugin {
-    website = 'https://github.com/hg4j/hg4j'
-    vcsUrl = 'https://github.com/hg4j/hg4j.git'
+    website = 'https://github.com/search5/hg4j'
+    vcsUrl = 'https://github.com/search5/hg4j.git'
     plugins {
         hg4jPlugin {
             id = 'io.github.search5.hg4j'

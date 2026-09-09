@@ -1576,6 +1576,45 @@ public class Revlog {
      * Appends a raw ChangeGroupEntry from remote bundle, preserving the original remote Node ID.
      */
     public synchronized void appendChangeGroupEntry(ChangegroupParser.ChangeGroupEntry entry, int linkRev) throws IOException {
+        appendChangeGroupEntry(entry, linkRev, null, false);
+    }
+
+    /**
+     * Same as {@link #appendChangeGroupEntry(ChangegroupParser.ChangeGroupEntry, int)}, but for a
+     * cg1 entry (whose wire format carries no explicit {@code deltabase} -- the base is implicit:
+     * "whatever was packed immediately before it, in the SAME incoming changegroup", per real
+     * hg's ChangeGroupPacker01/forcedeltaparentprev=True, see the in-method comment below)
+     * resolves that implicit base correctly even when this revlog already holds unrelated
+     * revisions before this changegroup gets applied.
+     *
+     * <p>Backlog (P3-27, 2026-09-09): the plain 2-arg overload approximates "the group's first
+     * entry" as "this revlog's local revision count is still 0", which only happens to be
+     * correct when the LOCAL revlog was completely empty (or purely linear so far) before
+     * applying the incoming group. A receiver that already has its own diverging history --
+     * e.g. a target Mercurial project with two bookmarks/heads, exactly what a PR merge commit
+     * gets pushed into -- decodes the group's first entry against the wrong base (its own
+     * highest-numbered existing revision, unrelated to the entry's real DAG parent), corrupting
+     * the reconstructed content and tripping the SHA-1 node-hash check below with a false
+     * "Security Integrity Error". Reproduced live via a push of ONLY a freshly-created 2-parent
+     * merge commit (both parents already present on the remote as two diverging heads, so the
+     * push's changegroup contains that single new revision) -- hg4j's own {@code
+     * PushCommandTest#packsBothParentsWhenPushingAMergeCommitAndPropagatesRemoteKnownThroughIt}
+     * masked this because it pushes ALL commits from an EMPTY remote in one shot, where rev-1
+     * happens to equal the real p1 throughout (purely linear so far).
+     *
+     * <p>The caller (currently only {@link io.github.search5.hg4j.api.FetchCommand#applyBundle})
+     * must track {@code previousGroupEntryContent} itself across a single group's entries,
+     * mirroring {@code PushCommand}'s own sender-side {@code prevClContent}/{@code
+     * prevMfContent}/per-file {@code prevContent} bookkeeping exactly: {@code null} for the
+     * group's first entry (this method then resolves the base via the entry's own {@code p1},
+     * which must already be locally known -- or all-zero for a root commit), and the
+     * immediately-previously-decoded entry's own content for every entry after that.
+     */
+    public synchronized void appendChangeGroupEntry(ChangegroupParser.ChangeGroupEntry entry, int linkRev, byte[] previousGroupEntryContent) throws IOException {
+        appendChangeGroupEntry(entry, linkRev, previousGroupEntryContent, true);
+    }
+
+    private synchronized void appendChangeGroupEntry(ChangegroupParser.ChangeGroupEntry entry, int linkRev, byte[] previousGroupEntryContent, boolean trackGroupPosition) throws IOException {
         if (findRevision(entry.node) != -1) {
             return;
         }
@@ -1602,15 +1641,27 @@ public class Revlog {
                 byte[] baseContent = getRawRevisionContent(baseRev);
                 content = applyDelta(baseContent, entry.delta);
             }
-        } else {
+        } else if (trackGroupPosition) {
             // cg1(entry.deltabase == null)은 와이어 포맷 자체에 베이스 필드가 없다. 실제
             // Mercurial의 cg1 패커(ChangeGroupPacker01)는 forcedeltaparentprev=True로 항상
-            // "이 그룹 스트림에서 바로 직전에 나온 엔트리"를 베이스로 삼는다 — 해당 엔트리의
-            // 실제 DAG 부모(p1)와는 무관한 순전히 위치 기반 규칙이다(mercurial/changegroup.py
-            // 실측, 2026-09-01). hg4j의 자체 changegroup 생성기(HgLocalClient.getBundle())도
-            // 이 규칙에 맞춰 "직전에 패킹한 엔트리"를 베이스로 델타를 만들도록 맞췄다 — 반드시
-            // rev-1(로컬 revlog에 이번에 순서대로 추가되는 직전 리비전)이어야 하며 parent1로
-            // 바꾸면 다중 head(branch) 저장소에서 실제 hg가 만든 cg1 번들 디코딩이 깨진다.
+            // "이 그룹 스트림에서 바로 직전에 나온 엔트리"를 베이스로 삼는다 — 단, 그룹의
+            // "첫" 엔트리만은 예외로 그 엔트리 자신의 실제 DAG 부모(p1)를 기준으로 삼는다
+            // (PushCommand의 송신측 패킹 규칙과 정확히 대칭, 클래스 주석 참고).
+            if (previousGroupEntryContent != null) {
+                content = applyDelta(previousGroupEntryContent, entry.delta);
+            } else if (entry.p1 == null || NodeIdUtil.isAllZero(entry.p1)) {
+                content = applyDelta(new byte[0], entry.delta);
+            } else {
+                int baseRev = findRevision(entry.p1);
+                if (baseRev == -1) {
+                    throw new HgCorruptDataException("Delta base revision (p1) not found in local index: " + NodeIdUtil.toHex(entry.p1) + " for commit: " + NodeIdUtil.toHex(entry.node));
+                }
+                content = applyDelta(getRawRevisionContent(baseRev), entry.delta);
+            }
+        } else {
+            // 기존(레거시) 2-인자 오버로드 전용 — 그룹 경계를 모르는 호출자를 위한 위치 기반
+            // 근사치를 그대로 유지한다(로컬 revlog가 비어 있거나 순수 선형 히스토리일 때만
+            // 정확하다 — 그 조건을 보장 못 하는 호출자는 위 3-인자 오버로드를 써야 한다).
             if (rev == 0) {
                 content = applyDelta(new byte[0], entry.delta);
             } else {

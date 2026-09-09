@@ -346,6 +346,53 @@ public class PushCommandTest {
         assertEquals(5, new LogCommand(remoteRepo).call().size());
     }
 
+    // Regression test (P3-27, 2026-09-09) -- reproduces a cg1 changegroup-decode corruption bug
+    // that plagued exactly the shape of push a PR merge produces: the remote already has BOTH
+    // merge parents (as two diverging bookmarked heads) BEFORE the local clone, so the pushed
+    // changegroup contains ONLY the new merge commit itself (unlike the sibling test above,
+    // which pushes everything from an empty remote in one shot, where the group's first entry
+    // always happens to land on rev 0). Before the fix in Revlog#appendChangeGroupEntry(entry,
+    // linkRev, previousGroupEntryContent), the receiving side decoded this single-entry group's
+    // implicit cg1 delta base as "whatever revision happens to be last in the LOCAL revlog"
+    // instead of the entry's own p1, corrupting the reconstructed content and tripping a false
+    // "Security Integrity Error" node-hash mismatch.
+    @Test
+    public void pushingOnlyAMergeCommitWhoseBothParentsAlreadyExistOnRemoteDoesNotCorruptTheChangegroup(@TempDir Path tempDir) throws Exception {
+        File remoteDir = tempDir.resolve("remote").toFile();
+        HgRepository remoteRepo = Hg.init().setDirectory(remoteDir).call();
+        Files.writeString(new File(remoteDir, "common.txt").toPath(), "base\n");
+        new AddCommand(remoteRepo).call();
+        byte[] baseNode = new CommitCommand(remoteRepo).setMessage("base").call();
+        new BookmarkCommand(remoteRepo).setBookmarkName("master").setNodeId(baseNode).call();
+        new BookmarkCommand(remoteRepo).setBookmarkName("feature").setNodeId(baseNode).call();
+
+        Files.writeString(new File(remoteDir, "master-only.txt").toPath(), "m\n");
+        new AddCommand(remoteRepo).call();
+        byte[] masterNode = new CommitCommand(remoteRepo).setMessage("master change").call();
+        new BookmarkCommand(remoteRepo).setBookmarkName("master").setNodeId(masterNode).call();
+
+        new UpdateCommand(remoteRepo).setRevision(NodeIdUtil.toHex(baseNode)).setForce(true).call();
+        Files.writeString(new File(remoteDir, "feature-only.txt").toPath(), "f\n");
+        new AddCommand(remoteRepo).call();
+        byte[] featureNode = new CommitCommand(remoteRepo).setMessage("feature change").call();
+        new BookmarkCommand(remoteRepo).setBookmarkName("feature").setNodeId(featureNode).call();
+
+        File localDir = tempDir.resolve("local").toFile();
+        HgRepository localRepo = new CloneCommand().setSource(remoteDir.getAbsolutePath()).setDirectory(localDir).call();
+
+        new UpdateCommand(localRepo).setRevision(NodeIdUtil.toHex(masterNode)).setForce(true).call();
+        MergeCommand.MergeResult mergeResult = new MergeCommand(localRepo).setNodeId(featureNode).call();
+        assertTrue(!mergeResult.isConflicted());
+        byte[] mergeNode = new CommitCommand(localRepo).setAuthor("t <t@example.com>").setMessage("Merge").call();
+
+        String pushResult = new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).call();
+        assertTrue(pushResult.toLowerCase().contains("push"));
+
+        List<HgCommit> remoteLog = new LogCommand(remoteRepo).call();
+        assertEquals(4, remoteLog.size());
+        assertEquals(NodeIdUtil.toHex(mergeNode), remoteLog.get(0).getNodeId().toHex());
+    }
+
     private static final String NULL_EVERYTHING_SCHEME = "pushtest-nulleverything://";
     private static final String WEIRD_HEADS_SCHEME = "pushtest-weirdheads://";
     private static final String THROW_LISTKEYS_SCHEME = "pushtest-throwlistkeys://";

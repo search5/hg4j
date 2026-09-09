@@ -613,6 +613,32 @@ public class MergeCommand {
     }
 
     /**
+     * Copy/rename metadata (the {@code "copy"}/{@code "copyrev"} entries a filelog revision
+     * carries when it was originally committed via {@code hg cp}/{@code hg mv}) for one specific
+     * file revision -- used by {@link TreeMergeCommand} (P3-33) to carry provenance forward when a
+     * path is cleanly adopted from "theirs" without a content-level 3-way merge (a merge that
+     * actually blends both sides' lines never re-derives fresh copy metadata, matching real hg:
+     * {@code mergecopies()} full rename-detection is out of scope here -- only forwarding metadata
+     * a revision already recorded at its own commit time). Returns an empty map (never
+     * {@code null}) when the revision carries no such metadata, mirroring
+     * {@link io.github.search5.hg4j.storage.Revlog#getRevisionMetadata(int)}.
+     */
+    Map<String, String> getFileMetadata(String path, String nodeHex) throws IOException {
+        File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+        if (!flIdx.exists()) {
+            throw new HgCorruptDataException("Filelog index does not exist for: " + path);
+        }
+        Revlog filelog = repository.getRevlog(flIdx, flDat);
+        String cleanHex = nodeHex.length() > 40 ? nodeHex.substring(0, 40) : nodeHex;
+        int rev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(cleanHex));
+        if (rev == -1) {
+            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+        }
+        return filelog.getRevisionMetadata(rev);
+    }
+
+    /**
      * Resolves {@code .hgsubstate} across a two-parent {@code hg merge}, mirroring real hg's
      * {@code subrepoutil.submerge()} (Mercurial 7.2, backlog 32 follow-up "gap B" -- see
      * {@link GitSubrepoUtil#mergeDiverged} for the specific diverged-git-subrepo case, ported

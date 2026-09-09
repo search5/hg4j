@@ -1,5 +1,8 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.util.NodeIdUtil;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -41,34 +44,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixSubrepoDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -86,71 +65,30 @@ public class RequirementMatrixSubrepoDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-subrepo-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-subrepo-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs hg4j's whole add/init/commit/bump/update/commit sequence in a dedicated subprocess;
      * returns the two parent commit hexes (first commit, second commit). */
     private static String[] subrepoRoundTripInSubprocess(Path parentDir, Path subSourceDir, String subV1, String subV2) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        String out = runHost(javaBin, "-cp", classpath, RequirementMatrixSubrepoHelperMain.class.getName(),
-                parentDir.toString(), subSourceDir.toString(), subV1, subV2);
-        String[] lines = out.strip().split("\\R");
-        if (lines.length != 2) {
-            throw new AssertionError("Expected exactly two lines of output from the subrepo helper, got: " + out);
-        }
-        return lines;
+        HgRepository parentRepo = new HgRepository(parentDir.toFile());
+
+        new SubrepoCommand(parentRepo)
+                .setAction("add")
+                .setSubrepoPath("sub")
+                .setSubrepoUrl(subSourceDir.toFile().getAbsolutePath())
+                .setRevision(subV1)
+                .call();
+
+        new SubrepoCommand(parentRepo).setAction("init").call();
+
+        new AddCommand(parentRepo).call();
+        byte[] parentC1 = new CommitCommand(parentRepo).setAuthor("dev").setMessage("add subrepo").call();
+
+        Files.writeString(new File(parentDir.toFile(), ".hgsubstate").toPath(), subV2 + " sub\n", StandardCharsets.UTF_8);
+        new SubrepoCommand(parentRepo).setAction("update").call();
+
+        byte[] parentC2 = new CommitCommand(parentRepo).setAuthor("dev").setMessage("bump sub to v2").call();
+
+        return new String[] {NodeIdUtil.toHex(parentC1), NodeIdUtil.toHex(parentC2)};
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -222,18 +160,18 @@ public class RequirementMatrixSubrepoDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jSubrepoAddInitUpdateAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String subSourceRelPath = "sub-source";
             Path hostSubSourceDir = workDir.resolve(subSourceRelPath);
             Files.createDirectories(hostSubSourceDir);
-            dockerHgIn(containerName, subSourceRelPath, "init", ".");
+            NativeHgRust.hg(workDir, subSourceRelPath, "init", ".");
             Files.writeString(hostSubSourceDir.resolve("hello.txt"), "v1");
-            dockerHgIn(containerName, subSourceRelPath, "add");
-            dockerHgIn(containerName, subSourceRelPath, "commit", "-u", "dev", "-m", "sub v1");
-            String subV1 = dockerHgIn(containerName, subSourceRelPath, "log", "-r", "tip", "--template", "{node}");
+            NativeHgRust.hg(workDir, subSourceRelPath, "add");
+            NativeHgRust.hg(workDir, subSourceRelPath, "commit", "-u", "dev", "-m", "sub v1");
+            String subV1 = NativeHgRust.hg(workDir, subSourceRelPath, "log", "-r", "tip", "--template", "{node}");
             Files.writeString(hostSubSourceDir.resolve("hello.txt"), "v2");
-            dockerHgIn(containerName, subSourceRelPath, "commit", "-u", "dev", "-m", "sub v2");
-            String subV2 = dockerHgIn(containerName, subSourceRelPath, "log", "-r", "tip", "--template", "{node}");
+            NativeHgRust.hg(workDir, subSourceRelPath, "commit", "-u", "dev", "-m", "sub v2");
+            String subV2 = NativeHgRust.hg(workDir, subSourceRelPath, "log", "-r", "tip", "--template", "{node}");
 
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
@@ -243,34 +181,34 @@ public class RequirementMatrixSubrepoDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
             Files.writeString(hostRepoDir.resolve("init.txt"), "init\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
 
             String[] commitHexes = subrepoRoundTripInSubprocess(hostRepoDir, hostSubSourceDir, subV1, subV2);
             String parentC1Hex = commitHexes[0];
             String parentC2Hex = commitHexes[1];
 
-            String verify1 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify1 = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertTrue(verify1.toLowerCase().contains("0 integrity errors") || !verify1.toLowerCase().contains("error"),
                     "real hg verify must find no integrity errors after the first subrepo commit for combo " + combo + ": " + verify1);
-            assertEquals(subV1 + " sub", dockerHgIn(containerName, repoRelPath, "cat", "-r", parentC1Hex, ".hgsubstate"),
+            assertEquals(subV1 + " sub", NativeHgRust.hg(workDir, repoRelPath, "cat", "-r", parentC1Hex, ".hgsubstate"),
                     "real hg must read back .hgsubstate pinned at v1 for combo " + combo);
 
-            assertEquals("", dockerHgIn(containerName, repoRelPath + "/sub", "status"),
+            assertEquals("", NativeHgRust.hg(workDir, repoRelPath + "/sub", "status"),
                     "real hg must see the subrepo working copy as clean after update for combo " + combo);
-            assertEquals(subV2, dockerHgIn(containerName, repoRelPath + "/sub", "log", "-r", ".", "--template", "{node}"),
+            assertEquals(subV2, NativeHgRust.hg(workDir, repoRelPath + "/sub", "log", "-r", ".", "--template", "{node}"),
                     "real hg must see the subrepo checked out at exactly v2 after update for combo " + combo);
 
-            String verify2 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify2 = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertTrue(verify2.toLowerCase().contains("0 integrity errors") || !verify2.toLowerCase().contains("error"),
                     "real hg verify must find no integrity errors after the second subrepo commit for combo " + combo + ": " + verify2);
-            assertEquals(subV2 + " sub", dockerHgIn(containerName, repoRelPath, "cat", "-r", parentC2Hex, ".hgsubstate"),
+            assertEquals(subV2 + " sub", NativeHgRust.hg(workDir, repoRelPath, "cat", "-r", parentC2Hex, ".hgsubstate"),
                     "real hg must read back .hgsubstate pinned at v2 for combo " + combo);
-            assertEquals("", dockerHgIn(containerName, repoRelPath, "status"),
+            assertEquals("", NativeHgRust.hg(workDir, repoRelPath, "status"),
                     "working copy must be clean right after the second subrepo commit for combo " + combo);
-            assertEquals(parentC1Hex, dockerHgIn(containerName, repoRelPath, "log", "-r", parentC2Hex, "--template", "{p1node}"),
+            assertEquals(parentC1Hex, NativeHgRust.hg(workDir, repoRelPath, "log", "-r", parentC2Hex, "--template", "{p1node}"),
                     "the second commit's parent must be the first for combo " + combo);
         });
     }

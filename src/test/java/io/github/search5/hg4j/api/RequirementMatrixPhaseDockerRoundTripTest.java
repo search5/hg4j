@@ -43,34 +43,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixPhaseDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -88,64 +64,9 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-phase-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-phase-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
-
     private static void phaseInSubprocess(Path repoDir, String revision, int targetPhase, boolean force) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        runHost(javaBin, "-cp", classpath, RequirementMatrixPhaseHelperMain.class.getName(),
-                repoDir.toString(), revision, Integer.toString(targetPhase), Boolean.toString(force));
+        HgRepository repo = new HgRepository(repoDir.toFile());
+        new PhaseCommand(repo).setRevision(revision).setPhase(targetPhase).setForce(force).call();
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -214,8 +135,8 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
         return out.stream();
     }
 
-    private static int nativePhaseOf(String container, String repoRelPath, int rev) throws Exception {
-        String out = dockerHgIn(container, repoRelPath, "phase", "-r", String.valueOf(rev));
+    private static int nativePhaseOf(Path workDir, String repoRelPath, int rev) throws Exception {
+        String out = NativeHgRust.hg(workDir, repoRelPath, "phase", "-r", String.valueOf(rev));
         String name = out.substring(out.indexOf(':') + 1).trim();
         return switch (name) {
             case "public" -> 0;
@@ -228,7 +149,7 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jPhaseAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String relA = "repoA";
             String relB = "repoB";
             Path hostRepoA = workDir.resolve(relA);
@@ -241,8 +162,8 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, relA, initArgs.toArray(new String[0]));
-            dockerHgIn(containerName, relB, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, relA, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, relB, initArgs.toArray(new String[0]));
 
             // Three linear commits at a fixed date in both repos, via the real hg CLI only, so
             // the resulting node hashes are byte-identical -- hg4j never touches revlogs here,
@@ -250,15 +171,15 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
             for (int i = 0; i < 3; i++) {
                 Files.writeString(hostRepoA.resolve("f" + i + ".txt"), "content-" + i + "\n");
                 Files.writeString(hostRepoB.resolve("f" + i + ".txt"), "content-" + i + "\n");
-                dockerHgIn(containerName, relA, "add");
-                dockerHgIn(containerName, relB, "add");
-                dockerHgIn(containerName, relA, "commit", "-u", "dev", "-d", "0 0", "-m", "c" + i);
-                dockerHgIn(containerName, relB, "commit", "-u", "dev", "-d", "0 0", "-m", "c" + i);
+                NativeHgRust.hg(workDir, relA, "add");
+                NativeHgRust.hg(workDir, relB, "add");
+                NativeHgRust.hg(workDir, relA, "commit", "-u", "dev", "-d", "0 0", "-m", "c" + i);
+                NativeHgRust.hg(workDir, relB, "commit", "-u", "dev", "-d", "0 0", "-m", "c" + i);
             }
 
             for (int rev = 0; rev < 3; rev++) {
-                String hexA = dockerHgIn(containerName, relA, "log", "-r", String.valueOf(rev), "--template", "{node}");
-                String hexB = dockerHgIn(containerName, relB, "log", "-r", String.valueOf(rev), "--template", "{node}");
+                String hexA = NativeHgRust.hg(workDir, relA, "log", "-r", String.valueOf(rev), "--template", "{node}");
+                String hexB = NativeHgRust.hg(workDir, relB, "log", "-r", String.valueOf(rev), "--template", "{node}");
                 assertEquals(hexB, hexA, "combo " + combo + ": rev " + rev + " hash must match between the two repos");
             }
 
@@ -269,30 +190,30 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
 
             // 1. Advance rev1 to public (no force needed).
             phaseInSubprocess(hostRepoA, "1", 0, false);
-            dockerHgIn(containerName, relB, "phase", "-r", "1", "--public");
+            NativeHgRust.hg(workDir, relB, "phase", "-r", "1", "--public");
             assertArrayEquals(Files.readAllBytes(phaseRootsB.toPath()), Files.readAllBytes(phaseRootsA.toPath()),
                     "combo " + combo + ": phaseroots mismatch after advancing rev1 to public");
             for (int rev = 0; rev < 3; rev++) {
-                assertEquals(nativePhaseOf(containerName, relB, rev),
+                assertEquals(nativePhaseOf(workDir, relB, rev),
                         new PhaseCommand(new HgRepository(hostRepoA.toFile())).setRevision(String.valueOf(rev)).call(),
                         "combo " + combo + ": phase query mismatch for rev " + rev);
             }
 
             // 2. Retract rev2 to secret -- requires force.
             phaseInSubprocess(hostRepoA, "2", 2, true);
-            dockerHgIn(containerName, relB, "phase", "-r", "2", "--secret", "--force");
+            NativeHgRust.hg(workDir, relB, "phase", "-r", "2", "--secret", "--force");
             assertArrayEquals(Files.readAllBytes(phaseRootsB.toPath()), Files.readAllBytes(phaseRootsA.toPath()),
                     "combo " + combo + ": phaseroots mismatch after retracting rev2 to secret with --force");
 
             // 3. Advance rev2 back to draft -- the reverse direction, no force needed.
             phaseInSubprocess(hostRepoA, "2", 1, false);
-            dockerHgIn(containerName, relB, "phase", "-r", "2", "--draft");
+            NativeHgRust.hg(workDir, relB, "phase", "-r", "2", "--draft");
             assertArrayEquals(Files.readAllBytes(phaseRootsB.toPath()), Files.readAllBytes(phaseRootsA.toPath()),
                     "combo " + combo + ": phaseroots mismatch after advancing rev2 back to draft");
 
             // 4. Retract rev0 back to draft -- requires force again (public -> draft).
             phaseInSubprocess(hostRepoA, "0", 1, true);
-            dockerHgIn(containerName, relB, "phase", "-r", "0", "--draft", "--force");
+            NativeHgRust.hg(workDir, relB, "phase", "-r", "0", "--draft", "--force");
             assertArrayEquals(Files.readAllBytes(phaseRootsB.toPath()), Files.readAllBytes(phaseRootsA.toPath()),
                     "combo " + combo + ": phaseroots mismatch after retracting rev0 back to draft with --force");
 
@@ -310,7 +231,7 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
 
             boolean nativeRejected = false;
             try {
-                dockerHgIn(containerName, relB, "phase", "-r", "0", "--secret");
+                NativeHgRust.hg(workDir, relB, "phase", "-r", "0", "--secret");
             } catch (AssertionError expected) {
                 nativeRejected = true;
             }
@@ -319,9 +240,9 @@ public class RequirementMatrixPhaseDockerRoundTripTest {
             assertArrayEquals(beforeA, Files.readAllBytes(phaseRootsA.toPath()), "combo " + combo + ": rejected hg4j move must not touch phaseroots");
             assertArrayEquals(beforeB, Files.readAllBytes(phaseRootsB.toPath()), "combo " + combo + ": rejected real-hg move must not touch phaseroots");
 
-            String verifyA = dockerHgIn(containerName, relA, "verify");
+            String verifyA = NativeHgRust.hg(workDir, relA, "verify");
             assertFalse(verifyA.toLowerCase().contains("integrity error"), "combo " + combo + ": " + verifyA);
-            String verifyB = dockerHgIn(containerName, relB, "verify");
+            String verifyB = NativeHgRust.hg(workDir, relB, "verify");
             assertFalse(verifyB.toLowerCase().contains("integrity error"), "combo " + combo + ": " + verifyB);
         });
     }

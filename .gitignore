@@ -2,6 +2,10 @@
 .gradle/
 build/
 
+# Native Rust-enabled hg build (docker/hg-rust-7.2.4/build-native.sh's output) -- machine-specific,
+# built locally per docker/hg-rust-7.2.4/README.md, never committed.
+/.native/
+
 # IDE configurations
 .serena/
 .sdkmanrc

@@ -1,5 +1,8 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.errors.HgValidationException;
+import io.github.search5.hg4j.lib.HgRepository;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -42,34 +45,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixCensorDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -87,67 +66,14 @@ public class RequirementMatrixCensorDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-censor-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-censor-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
-
     /** Runs a real-hg command inside the container expecting it to fail (nonzero exit), returning
      * its combined output/error text. Fails the test itself (with {@code failureMessage}) if the
      * command unexpectedly succeeds -- structured so that sentinel is never accidentally
      * swallowed by a catch clause meant only for the command's own genuine failure. */
-    private static String expectDockerHgFailure(String container, String repoRelPath, String failureMessage, String... args) throws Exception {
+    private static String expectDockerHgFailure(Path workDir, String repoRelPath, String failureMessage, String... args) throws Exception {
         String out;
         try {
-            out = dockerHgIn(container, repoRelPath, args);
+            out = NativeHgRust.hg(workDir, repoRelPath, args);
         } catch (AssertionError e) {
             return e.getMessage();
         }
@@ -158,10 +84,19 @@ public class RequirementMatrixCensorDockerRoundTripTest {
      * "censor"} (expects success) or {@code "refuse"} (expects the check-heads guard to throw --
      * returns the caught exception's message). */
     private static String censorInSubprocess(Path repoDir, String mode, String path, String nodeHex) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        return runHost(javaBin, "-cp", classpath, RequirementMatrixCensorHelperMain.class.getName(),
-                repoDir.toString(), mode, path, nodeHex).trim();
+        HgRepository repo = new HgRepository(repoDir.toFile());
+
+        if ("refuse".equals(mode)) {
+            try {
+                new CensorCommand(repo).setFile(path).setRevision(nodeHex).call();
+                throw new IllegalStateException("Expected CensorCommand to refuse, but it succeeded");
+            } catch (HgValidationException e) {
+                return e.getMessage();
+            }
+        } else {
+            new CensorCommand(repo).setFile(path).setRevision(nodeHex).call();
+            return "";
+        }
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -233,7 +168,7 @@ public class RequirementMatrixCensorDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jCensorsAnOlderRevisionAndRealHgConfirmsAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -243,13 +178,13 @@ public class RequirementMatrixCensorDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "secret1\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
             Files.writeString(hostRepoDir.resolve("a.txt"), "secret1\nsecret2\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
 
             File flIdx = CommitCommand.getFilelogIndex(hostRepoDir.resolve(".hg/store").toFile(), "a.txt");
             assertTrue(flIdx.exists(), "a.txt's filelog index must exist for combo " + combo);
@@ -259,7 +194,7 @@ public class RequirementMatrixCensorDockerRoundTripTest {
 
             censorInSubprocess(hostRepoDir, "censor", "a.txt", rev0Hex);
 
-            String catEx = expectDockerHgFailure(containerName, repoRelPath,
+            String catEx = expectDockerHgFailure(workDir, repoRelPath,
                     "real hg must refuse to read hg4j-censored content for combo " + combo,
                     "--config", "extensions.censor=", "cat", "-r", "0", "a.txt");
             assertTrue(catEx.contains("censored node"),
@@ -267,14 +202,14 @@ public class RequirementMatrixCensorDockerRoundTripTest {
 
             String verifyOut;
             try {
-                verifyOut = dockerHgIn(containerName, repoRelPath, "verify");
+                verifyOut = NativeHgRust.hg(workDir, repoRelPath, "verify");
             } catch (AssertionError verifyFailed) {
                 verifyOut = verifyFailed.getMessage();
             }
             assertTrue(verifyOut.contains("censored file data"),
                     "real hg verify must recognize hg4j's REVIDX_ISCENSORED flag for combo " + combo + ": " + verifyOut);
 
-            assertEquals("secret1\nsecret2", dockerHgIn(containerName, repoRelPath, "cat", "-r", "1", "a.txt"),
+            assertEquals("secret1\nsecret2", NativeHgRust.hg(workDir, repoRelPath, "cat", "-r", "1", "a.txt"),
                     "the untouched later revision must remain fully readable by real hg for combo " + combo);
         });
     }
@@ -282,7 +217,7 @@ public class RequirementMatrixCensorDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jRefusesToCensorAHeadRevisionMatchingRealHgAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -292,13 +227,13 @@ public class RequirementMatrixCensorDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "secret1\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
 
-            String realCensorOut = expectDockerHgFailure(containerName, repoRelPath,
+            String realCensorOut = expectDockerHgFailure(workDir, repoRelPath,
                     "sanity: real hg's own censor extension must refuse for combo " + combo,
                     "--config", "extensions.censor=", "censor", "-r", "0", "a.txt");
             assertTrue(realCensorOut.toLowerCase().contains("cannot censor"),

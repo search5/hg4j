@@ -39,34 +39,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixHeadsDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -84,58 +60,6 @@ public class RequirementMatrixHeadsDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-heads-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-heads-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     private static List<String> lines(String s) {
         return List.of(s.lines().filter(x -> !x.isBlank()).toArray(String[]::new));
@@ -210,7 +134,7 @@ public class RequirementMatrixHeadsDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void headsTipParentsMatchRealHgAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -220,63 +144,63 @@ public class RequirementMatrixHeadsDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "a0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String c0Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String c0Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "a1\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
-            String c1Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            String c1Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", c0Hex);
-            dockerHgIn(containerName, repoRelPath, "branch", "feature");
+            NativeHgRust.hg(workDir, repoRelPath, "update", c0Hex);
+            NativeHgRust.hg(workDir, repoRelPath, "branch", "feature");
             Files.writeString(hostRepoDir.resolve("b.txt"), "b0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2");
-            String c2Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2");
+            String c2Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("b.txt"), "b1\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c3", "--close-branch");
-            String c3Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c3", "--close-branch");
+            String c3Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", c1Hex);
-            dockerHgIn(containerName, repoRelPath, "branch", "sub");
+            NativeHgRust.hg(workDir, repoRelPath, "update", c1Hex);
+            NativeHgRust.hg(workDir, repoRelPath, "branch", "sub");
             Files.writeString(hostRepoDir.resolve("c.txt"), "c0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c4");
-            String c4Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c4");
+            String c4Hex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
 
-            String realTipHex = dockerHgIn(containerName, repoRelPath, "log", "-r", "tip", "--template", "{node}");
+            String realTipHex = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "tip", "--template", "{node}");
             assertEquals(c4Hex, realTipHex, "combo " + combo);
             byte[] hg4jTip = new TipCommand(repo).call();
             assertEquals(realTipHex, NodeIdUtil.toHex(hg4jTip), "combo " + combo);
             assertEquals(4, new TipCommand(repo).getRevisionNumber(), "combo " + combo);
 
-            List<String> realHeadsPlain = lines(dockerHgIn(containerName, repoRelPath, "heads", "--template", "{node}\n"));
+            List<String> realHeadsPlain = lines(NativeHgRust.hg(workDir, repoRelPath, "heads", "--template", "{node}\n"));
             List<String> hg4jHeadsDefault = new HeadsCommand(repo).call();
             assertEquals(List.of(c4Hex, c1Hex), hg4jHeadsDefault, "combo " + combo);
             assertEquals(realHeadsPlain, hg4jHeadsDefault, "combo " + combo);
 
-            List<String> realHeadsClosed = lines(dockerHgIn(containerName, repoRelPath, "heads", "--closed", "--template", "{node}\n"));
+            List<String> realHeadsClosed = lines(NativeHgRust.hg(workDir, repoRelPath, "heads", "--closed", "--template", "{node}\n"));
             List<String> hg4jHeadsClosed = new HeadsCommand(repo).setIncludeClosed(true).call();
             assertEquals(List.of(c4Hex, c3Hex, c1Hex), hg4jHeadsClosed, "combo " + combo);
             assertEquals(realHeadsClosed, hg4jHeadsClosed, "combo " + combo);
 
-            List<String> realHeadsTopo = lines(dockerHgIn(containerName, repoRelPath, "heads", "--topo", "--template", "{node}\n"));
+            List<String> realHeadsTopo = lines(NativeHgRust.hg(workDir, repoRelPath, "heads", "--topo", "--template", "{node}\n"));
             List<String> hg4jHeadsTopo = new HeadsCommand(repo).setTopo(true).call();
             assertEquals(realHeadsTopo, hg4jHeadsTopo, "combo " + combo);
 
-            List<String> realHeadsSub = lines(dockerHgIn(containerName, repoRelPath, "heads", "sub", "--template", "{node}\n"));
+            List<String> realHeadsSub = lines(NativeHgRust.hg(workDir, repoRelPath, "heads", "sub", "--template", "{node}\n"));
             List<String> hg4jHeadsSub = new HeadsCommand(repo).setBranch("sub").call();
             assertEquals(List.of(c4Hex), hg4jHeadsSub, "combo " + combo);
             assertEquals(realHeadsSub, hg4jHeadsSub, "combo " + combo);
 
-            List<String> realHeadsFeatureClosed = lines(dockerHgIn(containerName, repoRelPath, "heads", "feature", "--closed", "--template", "{node}\n"));
+            List<String> realHeadsFeatureClosed = lines(NativeHgRust.hg(workDir, repoRelPath, "heads", "feature", "--closed", "--template", "{node}\n"));
             List<String> hg4jHeadsFeatureClosed = new HeadsCommand(repo).setBranch("feature").setIncludeClosed(true).call();
             assertEquals(List.of(c3Hex), hg4jHeadsFeatureClosed, "combo " + combo);
             assertEquals(realHeadsFeatureClosed, hg4jHeadsFeatureClosed, "combo " + combo);
@@ -284,11 +208,11 @@ public class RequirementMatrixHeadsDockerRoundTripTest {
             List<String> hg4jHeadsFeatureOpenOnly = new HeadsCommand(repo).setBranch("feature").call();
             assertEquals(List.of(), hg4jHeadsFeatureOpenOnly, "combo " + combo);
 
-            dockerHgIn(containerName, repoRelPath, "update", c4Hex);
+            NativeHgRust.hg(workDir, repoRelPath, "update", c4Hex);
             assertEquals(List.of(c4Hex), new ParentsCommand(repo).call(), "combo " + combo);
 
-            dockerHgIn(containerName, repoRelPath, "merge", c2Hex);
-            List<String> realParents = lines(dockerHgIn(containerName, repoRelPath, "parents", "--template", "{node}\n"));
+            NativeHgRust.hg(workDir, repoRelPath, "merge", c2Hex);
+            List<String> realParents = lines(NativeHgRust.hg(workDir, repoRelPath, "parents", "--template", "{node}\n"));
             List<String> hg4jParents = new ParentsCommand(repo).call();
             assertEquals(List.of(c4Hex, c2Hex), hg4jParents, "combo " + combo);
             assertEquals(realParents, hg4jParents, "combo " + combo);

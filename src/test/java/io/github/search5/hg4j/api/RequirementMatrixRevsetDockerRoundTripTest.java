@@ -35,34 +35,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixRevsetDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -78,59 +54,6 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
             throw new AssertionError("host command " + Arrays.toString(cmd) + " failed with exit " + code + ": " + out);
         }
         return out;
-    }
-
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-revset-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-revset-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -198,8 +121,8 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
         return out.stream();
     }
 
-    private static Set<String> realHexes(String containerName, String repoRelPath, String expr) throws Exception {
-        String out = dockerHgIn(containerName, repoRelPath, "log", "-r", expr, "--template", "{node}\n");
+    private static Set<String> realHexes(Path workDir, String repoRelPath, String expr) throws Exception {
+        String out = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", expr, "--template", "{node}\n");
         Set<String> result = new HashSet<>();
         for (String line : out.split("\n")) {
             if (!line.isBlank()) {
@@ -216,7 +139,7 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void revsetExpressionsAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -226,30 +149,30 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "a");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c0");
-            String hex0 = dockerHgIn(containerName, repoRelPath, "log", "-r", "0", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c0");
+            String hex0 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "0", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "branch", "feature");
+            NativeHgRust.hg(workDir, repoRelPath, "branch", "feature");
             Files.writeString(hostRepoDir.resolve("b.txt"), "b");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Bob <b@x.com>", "-m", "c1");
-            String hex1 = dockerHgIn(containerName, repoRelPath, "log", "-r", "1", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "Bob <b@x.com>", "-m", "c1");
+            String hex1 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "1", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", "0");
-            dockerHgIn(containerName, repoRelPath, "branch", "default");
+            NativeHgRust.hg(workDir, repoRelPath, "update", "0");
+            NativeHgRust.hg(workDir, repoRelPath, "branch", "default");
             Files.writeString(hostRepoDir.resolve("c.txt"), "c");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c2");
-            String hex2 = dockerHgIn(containerName, repoRelPath, "log", "-r", "2", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c2");
+            String hex2 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "2", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve(".hgtags"), hex0 + " v1.0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c3 tag");
-            String hex3 = dockerHgIn(containerName, repoRelPath, "log", "-r", "3", "--template", "{node}");
+            NativeHgRust.hg(workDir, repoRelPath, "add");
+            NativeHgRust.hg(workDir, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c3 tag");
+            String hex3 = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "3", "--template", "{node}");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
 
@@ -274,12 +197,12 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
             );
 
             for (Case c : cases) {
-                Set<String> expected = realHexes(containerName, repoRelPath, c.realHgExpr());
+                Set<String> expected = realHexes(workDir, repoRelPath, c.realHgExpr());
                 Set<String> actual = hg4jHexes(repo, c.hg4jExpr());
                 assertEquals(expected, actual, "revset '" + c.label() + "', combo " + combo);
             }
 
-            assertEquals(Set.of(hex1, hex3), realHexes(containerName, repoRelPath, "heads(all())"), "sanity, combo " + combo);
+            assertEquals(Set.of(hex1, hex3), realHexes(workDir, repoRelPath, "heads(all())"), "sanity, combo " + combo);
         });
     }
 }

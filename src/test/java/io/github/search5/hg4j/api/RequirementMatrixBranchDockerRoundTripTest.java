@@ -44,38 +44,14 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixBranchDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     /** Parses a real {@code hg branches} line, e.g. "feature   3:abcdef012345 (inactive)". */
     private static final Pattern BRANCHES_LINE =
             Pattern.compile("^(\\S+)\\s+(\\d+):([0-9a-f]+)(?:\\s+\\((\\S+)\\))?$");
 
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -93,66 +69,16 @@ public class RequirementMatrixBranchDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-branch-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-branch-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
-
+    /** EXPERIMENT (2026-09-09): inline instead of subprocess. */
     private static void branchCommitInSubprocess(Path repoDir, String branchName, String fileName, String fileContent,
                                                   String author, String message, boolean closeBranch) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        runHost(javaBin, "-cp", classpath, RequirementMatrixBranchHelperMain.class.getName(),
-                repoDir.toString(), branchName == null ? "" : branchName, fileName, fileContent, author, message,
-                Boolean.toString(closeBranch));
+        HgRepository repo = new HgRepository(repoDir.toFile());
+        if (branchName != null && !branchName.isEmpty()) {
+            new BranchCommand(repo).setBranchName(branchName).call();
+        }
+        Files.writeString(new File(repoDir.toFile(), fileName).toPath(), fileContent, StandardCharsets.UTF_8);
+        new AddCommand(repo).call();
+        new CommitCommand(repo).setAuthor(author).setMessage(message).setCloseBranch(closeBranch).call();
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -224,7 +150,7 @@ public class RequirementMatrixBranchDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jBranchAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -234,36 +160,36 @@ public class RequirementMatrixBranchDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
-            dockerHgIn(containerName, repoRelPath, "id"); // sanity: repo usable before hg4j touches it
+            NativeHgRust.hg(workDir, repoRelPath, "id"); // sanity: repo usable before hg4j touches it
 
             // 1. hg4j creates the "default" branch's first commit, then a named branch + commit.
             branchCommitInSubprocess(hostRepoDir, null, "base.txt", "base\n", "dev", "c0 base", false);
             branchCommitInSubprocess(hostRepoDir, "feature", "f1.txt", "feature work\n", "dev", "c1-feature", false);
 
-            String nativeBranchOfTip = dockerHgIn(containerName, repoRelPath, "log", "-r", "tip", "--template", "{branch}");
+            String nativeBranchOfTip = NativeHgRust.hg(workDir, repoRelPath, "log", "-r", "tip", "--template", "{branch}");
             assertEquals("feature", nativeBranchOfTip, "real hg must see the hg4j-committed branch name for combo " + combo);
 
-            String verify1 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify1 = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertFalse(verify1.toLowerCase().contains("integrity error"),
                     "real hg verify after branch commit must find no integrity errors for combo " + combo + ": " + verify1);
 
-            String nativeBranchesOpen = dockerHgIn(containerName, repoRelPath, "branches");
+            String nativeBranchesOpen = NativeHgRust.hg(workDir, repoRelPath, "branches");
             assertBranchesMatch(nativeBranchesOpen, hostRepoDir, combo);
 
             // 2. Close the feature branch via hg4j's CommitCommand.setCloseBranch(true).
             branchCommitInSubprocess(hostRepoDir, null, "f1.txt", "feature work, closing\n", "dev", "close-feature", true);
 
-            String verify2 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify2 = NativeHgRust.hg(workDir, repoRelPath, "verify");
             assertFalse(verify2.toLowerCase().contains("integrity error"),
                     "real hg verify after closing the branch must find no integrity errors for combo " + combo + ": " + verify2);
 
-            String nativeDefaultAfterClose = dockerHgIn(containerName, repoRelPath, "branches");
+            String nativeDefaultAfterClose = NativeHgRust.hg(workDir, repoRelPath, "branches");
             assertFalse(nativeDefaultAfterClose.contains("feature"),
                     "real hg's default 'hg branches' must hide the fully-closed branch for combo " + combo + ": " + nativeDefaultAfterClose);
 
-            String nativeClosed = dockerHgIn(containerName, repoRelPath, "branches", "--closed");
+            String nativeClosed = NativeHgRust.hg(workDir, repoRelPath, "branches", "--closed");
             assertTrue(nativeClosed.contains("(closed)"), "real hg 'hg branches --closed' must mark it closed for combo " + combo + ": " + nativeClosed);
             assertBranchesMatch(nativeClosed, hostRepoDir, combo);
         });

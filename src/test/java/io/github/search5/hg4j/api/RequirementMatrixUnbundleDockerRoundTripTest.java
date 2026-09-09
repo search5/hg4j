@@ -1,5 +1,8 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.util.NodeIdUtil;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -53,34 +56,10 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixUnbundleDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
-
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    static void checkNativeHgRust() {
+        Assumptions.assumeTrue(NativeHgRust.isAvailable(),
+                "Native rust-enabled hg (run docker/hg-rust-7.2.4/build-native.sh) is not built. Skipping the whole class.");
     }
 
     private static String runHost(String... cmd) throws Exception {
@@ -98,82 +77,22 @@ public class RequirementMatrixUnbundleDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
-    }
-
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-unbundle-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-unbundle-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
-        try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
-        } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
-            deleteRecursively(workDir.toFile());
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        File[] children = f.listFiles();
-        if (children != null) {
-            for (File c : children) {
-                deleteRecursively(c);
-            }
-        }
-        f.delete();
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
-
-    private static String dockerHgTolerantIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-        String out;
-        try (InputStream is = p.getInputStream()) {
-            out = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        p.waitFor();
-        return out.trim();
+    private static String dockerHgTolerantIn(Path workDir, String repoRelPath, String... args) throws Exception {
+        return NativeHgRust.hgTolerant(workDir, repoRelPath, args);
     }
 
     /** Runs hg4j's two {@link UnbundleCommand} applications in a dedicated subprocess; returns
      * {@code node1Hex node2Hex}. */
     private static String[] unbundleInSubprocess(Path destRepoDir, Path bundleFile1, Path bundleFile2) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        String classpath = System.getProperty("java.class.path");
-        String out = runHost(javaBin, "-cp", classpath, RequirementMatrixUnbundleHelperMain.class.getName(),
-                destRepoDir.toString(), bundleFile1.toString(), bundleFile2.toString());
-        return out.trim().split("\\s+");
+        HgRepository dest = new HgRepository(destRepoDir.toFile());
+
+        List<byte[]> imported1 = new UnbundleCommand(dest).setBundleFile(bundleFile1.toFile()).call();
+        dest.clearRevlogCache();
+        List<byte[]> imported2 = new UnbundleCommand(dest).setBundleFile(bundleFile2.toFile()).call();
+
+        String node1Hex = imported1.isEmpty() ? "" : NodeIdUtil.toHex(imported1.get(imported1.size() - 1));
+        String node2Hex = imported2.isEmpty() ? "" : NodeIdUtil.toHex(imported2.get(imported2.size() - 1));
+        return new String[] {node1Hex, node2Hex};
     }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
@@ -264,7 +183,7 @@ public class RequirementMatrixUnbundleDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void realHgBundleAppliedByHg4jUnbundleAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        NativeHgRust.withFreshWorkDir("hg4j-native-matrix", (workDir) -> {
             String sourceRelPath = "source";
             String destRelPath = "dest";
             Path hostSourceDir = workDir.resolve(sourceRelPath);
@@ -277,25 +196,25 @@ public class RequirementMatrixUnbundleDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, sourceRelPath, initArgs.toArray(new String[0]));
-            dockerHgIn(containerName, destRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, sourceRelPath, initArgs.toArray(new String[0]));
+            NativeHgRust.hg(workDir, destRelPath, initArgs.toArray(new String[0]));
 
             String bundleType = bundleTypeFor(combo);
 
             // Real hg (inside the container) commits and writes a full bundle.
             Files.writeString(hostSourceDir.resolve("a.txt"), "one");
-            dockerHgIn(containerName, sourceRelPath, "add", "a.txt");
-            dockerHgIn(containerName, sourceRelPath, "commit", "-u", "realhg", "-m", "c0 for " + combo);
-            String node1Hex = dockerHgIn(containerName, sourceRelPath, "log", "-r", "0", "--template", "{node}");
-            dockerHgIn(containerName, sourceRelPath, "bundle", "--all", "--type", bundleType, "/repo-root/bundle1.hg");
+            NativeHgRust.hg(workDir, sourceRelPath, "add", "a.txt");
+            NativeHgRust.hg(workDir, sourceRelPath, "commit", "-u", "realhg", "-m", "c0 for " + combo);
+            String node1Hex = NativeHgRust.hg(workDir, sourceRelPath, "log", "-r", "0", "--template", "{node}");
+            NativeHgRust.hg(workDir, sourceRelPath, "bundle", "--all", "--type", bundleType, "/repo-root/bundle1.hg");
 
             // Real hg writes a second, incremental bundle after a new subdirectory file.
             Files.createDirectories(hostSourceDir.resolve("dir"));
             Files.writeString(hostSourceDir.resolve("dir").resolve("b.txt"), "two");
-            dockerHgIn(containerName, sourceRelPath, "add", "dir/b.txt");
-            dockerHgIn(containerName, sourceRelPath, "commit", "-u", "realhg", "-m", "c1 for " + combo);
-            String node2Hex = dockerHgIn(containerName, sourceRelPath, "log", "-r", "tip", "--template", "{node}");
-            dockerHgIn(containerName, sourceRelPath, "bundle", "--base", node1Hex, "--type", bundleType, "/repo-root/bundle2.hg");
+            NativeHgRust.hg(workDir, sourceRelPath, "add", "dir/b.txt");
+            NativeHgRust.hg(workDir, sourceRelPath, "commit", "-u", "realhg", "-m", "c1 for " + combo);
+            String node2Hex = NativeHgRust.hg(workDir, sourceRelPath, "log", "-r", "tip", "--template", "{node}");
+            NativeHgRust.hg(workDir, sourceRelPath, "bundle", "--base", node1Hex, "--type", bundleType, "/repo-root/bundle2.hg");
 
             // hg4j (host-side subprocess) applies both bundles to the destination.
             Path hostBundle1 = workDir.resolve("bundle1.hg");
@@ -305,19 +224,19 @@ public class RequirementMatrixUnbundleDockerRoundTripTest {
             assertEquals(node2Hex, applied[1], "hg4j must report the second bundle's node for combo " + combo);
 
             // Real hg (back via docker exec) reads back what hg4j just wrote.
-            String destTip1 = dockerHgIn(containerName, destRelPath, "log", "-r", "0", "--template", "{node}");
+            String destTip1 = NativeHgRust.hg(workDir, destRelPath, "log", "-r", "0", "--template", "{node}");
             assertEquals(node1Hex, destTip1, "real hg dest must see the first unbundled commit for combo " + combo);
-            String cat1 = dockerHgIn(containerName, destRelPath, "cat", "-r", "0", "a.txt");
+            String cat1 = NativeHgRust.hg(workDir, destRelPath, "cat", "-r", "0", "a.txt");
             assertEquals("one", cat1);
 
-            String destTip2 = dockerHgIn(containerName, destRelPath, "log", "-r", "tip", "--template", "{node}");
+            String destTip2 = NativeHgRust.hg(workDir, destRelPath, "log", "-r", "tip", "--template", "{node}");
             assertEquals(node2Hex, destTip2, "real hg dest must see the second unbundled commit as tip for combo " + combo);
-            String cat2 = dockerHgIn(containerName, destRelPath, "cat", "-r", "tip", "dir/b.txt");
+            String cat2 = NativeHgRust.hg(workDir, destRelPath, "cat", "-r", "tip", "dir/b.txt");
             assertEquals("two", cat2);
 
-            String verify = dockerHgTolerantIn(containerName, destRelPath, "verify");
+            String verify = dockerHgTolerantIn(workDir, destRelPath, "verify");
             assertVerifyCleanUnlessKnownSidedataLimitation(verify, combo);
-            String log = dockerHgIn(containerName, destRelPath, "log", "--template", "{rev}:{node}\n");
+            String log = NativeHgRust.hg(workDir, destRelPath, "log", "--template", "{rev}:{node}\n");
             assertEquals(2, log.split("\n").length, "destination must have exactly 2 revisions for combo " + combo + ":\n" + log);
         });
     }

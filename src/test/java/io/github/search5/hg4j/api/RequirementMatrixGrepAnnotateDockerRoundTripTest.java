@@ -28,8 +28,7 @@ import java.util.concurrent.TimeUnit;
  * for the full 30-combo design this reuses verbatim) applied to {@link GrepCommand} and {@link
  * AnnotateCommand} together -- the Docker-only counterpart of {@link
  * RequirementMatrixGrepAnnotateCoreRoundTripTest}'s native 6-combo scenarios (see that class's
- * javadoc for the shared-repository rationale and why no {@code HelperMain} subprocess is needed:
- * neither command ever writes to a repository).
+ * javadoc for the shared-repository rationale): neither command ever writes to a repository.
  *
  * <p>This is also where the {@code fileindex-v1}/{@code general-v2} cells matter most: those two
  * storage extensions replace {@code fncache} with their own internal sidecar files and never

@@ -34,11 +34,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Two repositories (same combo, same fixed-date commits so hashes match byte-for-byte) live
  * side by side in the same container's bind-mounted workdir: {@code repoA} is mutated only via
- * {@link PhaseCommand} (through {@link RequirementMatrixPhaseHelperMain}, isolated in its own
- * subprocess for the same docker-exec-interleaving reason as every other write-direction matrix
- * test here), {@code repoB} only via the real {@code hg phase} CLI. {@code phaseroots} is read
- * directly off the host-mounted directory (no extra {@code docker exec} needed) and diffed after
- * every step.
+ * {@link PhaseCommand}, running inline in this JVM, {@code repoB} only via the real
+ * {@code hg phase} CLI. {@code phaseroots} is read directly off the host-mounted directory (no
+ * extra {@code docker exec} needed) and diffed after every step.
  */
 @Tag("interop")
 public class RequirementMatrixPhaseDockerRoundTripTest {

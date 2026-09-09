@@ -37,9 +37,9 @@ import java.util.concurrent.TimeUnit;
  * BranchesCommand}) across every one of the 30 combos, including dirstate v2.
  *
  * <p>Each case gets its own fresh, short-lived container, matching every other write-direction
- * test in this matrix family. hg4j's own {@link BranchCommand}/{@link CommitCommand} calls run in
- * a dedicated {@code java} subprocess ({@link RequirementMatrixBranchHelperMain}) for the same
- * docker-exec-interleaving corruption reason documented on {@link RequirementMatrixCommitHelperMain}.
+ * test in this matrix family. hg4j's own {@link BranchCommand}/{@link CommitCommand} calls run
+ * inline in this JVM, alongside the native rust-hg subprocess calls this class uses for the real
+ * hg side.
  */
 @Tag("interop")
 public class RequirementMatrixBranchDockerRoundTripTest {
@@ -196,10 +196,7 @@ public class RequirementMatrixBranchDockerRoundTripTest {
     }
 
     /** Reads {@link BranchesCommand} in-process against the host-mounted repo directory and
-     * compares its listing (order + closed flag) against an already-fetched real-hg text listing.
-     * BranchesCommand is read-only, so -- unlike the hg4j write-side helper subprocess -- it is
-     * safe to invoke directly from this JVM without risking the docker-exec-interleaving
-     * corruption {@link RequirementMatrixBranchHelperMain} exists to avoid. */
+     * compares its listing (order + closed flag) against an already-fetched real-hg text listing. */
     private static void assertBranchesMatch(String nativeOut, Path repoDir, RequirementCombo combo) throws Exception {
         List<BranchesCommand.BranchHead> hg4jBranches =
                 new BranchesCommand(new HgRepository(repoDir.toFile()))

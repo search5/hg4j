@@ -36,9 +36,8 @@ import java.util.concurrent.TimeUnit;
  * identical bet for {@link AmendCommand}).
  *
  * <p>Each case gets its own fresh, short-lived container, matching every other write-direction
- * test in this matrix family. hg4j's own {@link TagCommand} calls run in a dedicated {@code java}
- * subprocess ({@link RequirementMatrixTagHelperMain}) for the same docker-exec-interleaving
- * corruption reason documented on {@link RequirementMatrixCommitHelperMain}.
+ * test in this matrix family. hg4j's own {@link TagCommand} calls run inline in this JVM,
+ * alongside the native rust-hg subprocess calls this class uses for the real hg side.
  */
 @Tag("interop")
 public class RequirementMatrixTagDockerRoundTripTest {

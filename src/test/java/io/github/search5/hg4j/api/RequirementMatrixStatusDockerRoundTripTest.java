@@ -32,8 +32,7 @@ import java.util.concurrent.TimeUnit;
  * "possibly dirty"/ambiguous-stat sentinel handling {@link StatusCommand} relies on (see its own
  * class javadoc) was discovered and fixed specifically against dirstate-v2 fixtures in an earlier
  * backlog #39 wave, but never previously re-verified via a dedicated {@code Status}-focused matrix
- * trio. No hg4j write step / {@code HelperMain} subprocess is needed: {@link StatusCommand} never
- * mutates the repository.
+ * trio. No hg4j write step is needed here: {@link StatusCommand} never mutates the repository.
  */
 @Tag("interop")
 public class RequirementMatrixStatusDockerRoundTripTest {

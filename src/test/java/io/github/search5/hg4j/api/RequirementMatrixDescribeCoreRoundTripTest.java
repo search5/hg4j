@@ -31,9 +31,8 @@ import java.util.Map;
  * real hg's own tag storage) so every assertion here is a self-consistency check of the documented
  * algorithm (see {@link DescribeCommand#call()}'s javadoc and {@code DescribeCommandTest}) applied
  * to a repository real {@code hg} 7.2 wrote under each of the 6 native combos, rather than a
- * byte-for-byte comparison against a real-hg-computed string. No hg4j write step is needed (and
- * therefore no {@code HelperMain} subprocess): {@link DescribeCommand} never mutates the
- * repository.
+ * byte-for-byte comparison against a real-hg-computed string. No hg4j write step is needed:
+ * {@link DescribeCommand} never mutates the repository.
  */
 @Tag("interop")
 public class RequirementMatrixDescribeCoreRoundTripTest {

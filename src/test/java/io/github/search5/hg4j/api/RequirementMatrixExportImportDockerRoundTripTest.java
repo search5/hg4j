@@ -31,11 +31,9 @@ import java.util.concurrent.TimeUnit;
  * for the full 30-combo design this reuses verbatim) applied to {@link ExportCommand}/{@link
  * ImportCommand} together -- the Docker-only counterpart of {@link
  * RequirementMatrixExportImportCoreRoundTripTest}'s native 6-combo scenario. Both hg4j-side steps
- * (the export direction's commit+export, and the import direction's patch application) run inside
- * {@link RequirementMatrixExportImportHelperMain}, a dedicated subprocess -- required for the same
- * reason {@link RequirementMatrixBundleDockerRoundTripTest} needs {@link
- * RequirementMatrixBundleHelperMain} (see {@link RequirementMatrixCommitHelperMain}'s javadoc for
- * the full root-cause writeup).
+ * (the export direction's commit+export, and the import direction's patch application) run inline
+ * in this JVM, alongside the native rust-hg subprocess calls this class uses for the real hg
+ * side.
  *
  * <p>No {@code cl2+sidedata} tolerance is needed here (see {@link
  * RequirementMatrixExportImportCoreRoundTripTest}'s class javadoc for why: the confirmed real-hg

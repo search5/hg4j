@@ -33,9 +33,8 @@ import java.util.concurrent.TimeUnit;
  * {@link RequirementMatrixTagsCoreRoundTripTest}'s native 6-combo scenario (see that class's
  * javadoc for the full scenario writeup).
  *
- * <p>No {@code HelperMain} subprocess is used, for the same reason as
- * {@link RequirementMatrixHeadsDockerRoundTripTest}: all three commands are pure readers. Each
- * case gets its own fresh, short-lived container, matching that class and
+ * <p>All three commands are pure readers, same as {@link RequirementMatrixHeadsDockerRoundTripTest}.
+ * Each case gets its own fresh, short-lived container, matching that class and
  * {@link RequirementMatrixBackoutDockerRoundTripTest}.
  */
 @Tag("interop")

@@ -86,18 +86,19 @@ import java.util.concurrent.TimeUnit;
  * the "real hg writes first" direction, where the JVM must be able to read back what a
  * root-in-container process would otherwise have left root-owned.
  *
- * <p><b>Write-corruption gotcha (2026-09-04, root-caused via extensive isolated reproduction)</b>:
- * running hg4j's own {@code CommitCommand} (host JVM) interleaved with this class's own repeated
- * {@code docker exec}/{@code docker run} child-process spawning, <em>in the same JVM process</em>,
- * non-deterministically corrupts every commit after the first one written that way -- confirmed
+ * <p><b>Write-corruption gotcha (2026-09-04, root-caused via extensive isolated reproduction,
+ * since resolved)</b>: under the old Docker-container-based harness, running hg4j's own
+ * {@code CommitCommand} (host JVM) interleaved with this class's own repeated {@code docker
+ * exec}/{@code docker run} child-process spawning, <em>in the same JVM process</em>,
+ * non-deterministically corrupted every commit after the first one written that way -- confirmed
  * with fresh containers, fresh host directories, no shared state, immune to retries/delays (ruling
- * out a bind-mount visibility race), and confirmed to vanish completely once the commit runs in a
- * dedicated subprocess instead (see {@link RequirementMatrixCommitHelperMain}). This is a property
- * of THIS test's specific process-spawning pattern, not a data-correctness bug in hg4j itself --
- * every one of dozens of isolated single-JVM reproductions of the exact same commit logic (no
- * concurrent {@code ProcessBuilder} activity) succeeded every time. {@link
- * #hg4jWritesRealHgReadsAcrossDockerCombo} therefore delegates the actual write to
- * {@link RequirementMatrixCommitHelperMain} via a fresh {@code java} subprocess rather than calling
+ * out a bind-mount visibility race), and confirmed to vanish completely once the commit ran in a
+ * dedicated subprocess instead. This was a property of THIS test's specific process-spawning
+ * pattern, not a data-correctness bug in hg4j itself -- every one of dozens of isolated
+ * single-JVM reproductions of the exact same commit logic (no concurrent {@code ProcessBuilder}
+ * activity) succeeded every time. Since the 2026-09-09 switch away from Docker to the much
+ * lighter-weight native rust-hg subprocess (see {@link NativeHgRust}), that interleaving pattern
+ * no longer applies, and {@link #hg4jWritesRealHgReadsAcrossDockerCombo} now calls
  * {@code CommitCommand} inline.
  */
 @Tag("interop")
@@ -163,10 +164,9 @@ public class RequirementMatrixDockerRoundTripTest {
     }
 
     /**
-     * Runs an hg4j {@code add}+{@code commit} in a brand-new JVM subprocess (see
-     * {@link RequirementMatrixCommitHelperMain} for why -- interleaving it with this class's own
-     * {@code docker exec} process spawning inline corrupts the write non-deterministically) and
-     * returns the committed node's hex.
+     * Runs an hg4j {@code add}+{@code commit} inline in this JVM and returns the committed node's
+     * hex. (Named for the now-retired dedicated-subprocess version this replaced -- see this
+     * class's javadoc for the write-corruption history behind that.)
      */
     private static String commitInSubprocess(Path repoDir, String author, String message) throws Exception {
         HgRepository repo = new HgRepository(repoDir.toFile());

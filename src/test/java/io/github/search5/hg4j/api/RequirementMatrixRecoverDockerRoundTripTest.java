@@ -35,9 +35,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixMergeDockerRoundTripTest}/{@link RequirementMatrixStripDockerRoundTripTest}.
- * hg4j's own commit+journal-fabrication+recover write runs in a dedicated {@code java} subprocess
- * ({@link RequirementMatrixRecoverHelperMain}) rather than inline in this JVM, for the same
- * docker-exec-interleaving corruption reason documented on {@link RequirementMatrixCommitHelperMain}.
+ * hg4j's own commit+journal-fabrication+recover write runs inline in this JVM, alongside the
+ * native rust-hg subprocess calls this class uses for the real hg side.
  */
 @Tag("interop")
 public class RequirementMatrixRecoverDockerRoundTripTest {
@@ -64,8 +63,9 @@ public class RequirementMatrixRecoverDockerRoundTripTest {
     }
 
 
-    /** EXPERIMENT (2026-09-09): inline instead of subprocess -- logic copied verbatim from
-     * {@link RequirementMatrixRecoverHelperMain} (crash-journal fabrication helpers included). */
+    /** Runs inline in this JVM -- logic originally copied verbatim from the now-removed
+     * dedicated-subprocess helper this class used before the 2026-09-09 switch to native rust-hg
+     * (crash-journal fabrication helpers included). */
     private record RevlogSnapshot(boolean v2, long idxLen, long datLen, byte[] docketBytes,
                                    long resolvedIdxLen, long resolvedDatLen, boolean hasSda, long resolvedSdaLen) {
     }

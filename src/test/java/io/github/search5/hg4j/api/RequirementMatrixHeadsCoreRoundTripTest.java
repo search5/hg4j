@@ -32,13 +32,9 @@ import java.util.Map;
  * read-only DAG queries over the same changelog, so a single scenario naturally exercises all
  * three at once.
  *
- * <p>No {@code HelperMain} subprocess is used here (unlike {@link RequirementMatrixBackoutHelperMain}
- * and friends): the corruption those exist to route around is specific to hg4j's own
- * zstd-compressing <em>write</em> path ({@code Revlog}/{@code CommitCommand}) running in the same
- * JVM that also spawns {@code docker exec}/{@code docker run} children (see
- * {@link RequirementMatrixCommitHelperMain}'s javadoc for the full root-cause writeup). All three
- * commands here are pure readers -- the repository itself is always built exclusively via the real
- * {@code hg} CLI (native here, {@code docker exec} in the Docker counterpart) -- so that failure
+ * <p>All three commands here are pure readers -- the repository itself is always built exclusively
+ * via the real {@code hg} CLI (native here, {@code docker exec} in the Docker counterpart) -- so
+ * that failure
  * mode does not apply and hg4j's query methods are called directly in this JVM.
  *
  * <p>The scenario builds a DAG deliberately shaped to exercise {@link HeadsCommand}'s documented

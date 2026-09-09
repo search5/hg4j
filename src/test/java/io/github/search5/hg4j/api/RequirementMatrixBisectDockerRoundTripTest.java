@@ -32,10 +32,8 @@ import java.util.concurrent.TimeUnit;
  * shorter, 6-revision history is used here (vs. the native trio's 8) purely to keep the 30-combo
  * Docker run's wall-clock cost down -- the algorithm being exercised is identical.
  *
- * <p>hg4j's own bisect (a real working-copy write: dirstate + file checkout) runs in a dedicated
- * {@code java} subprocess ({@link RequirementMatrixBisectHelperMain}) rather than inline in this
- * JVM, for the same docker-exec-interleaving corruption reason documented on {@link
- * RequirementMatrixCommitHelperMain}.
+ * <p>hg4j's own bisect (a real working-copy write: dirstate + file checkout) runs inline in this
+ * JVM, alongside the native rust-hg subprocess calls this class uses for the real hg side.
  */
 @Tag("interop")
 public class RequirementMatrixBisectDockerRoundTripTest {

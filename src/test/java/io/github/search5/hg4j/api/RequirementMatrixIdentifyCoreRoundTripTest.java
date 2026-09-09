@@ -33,10 +33,8 @@ import java.util.Map;
  * working-copy "snapshot" queries built from the same underlying pieces (parents, branch,
  * bookmarks, tags, phase), so one scenario naturally exercises both.
  *
- * <p>No {@code HelperMain} subprocess is used (see {@link RequirementMatrixHeadsCoreRoundTripTest}'s
- * javadoc for why: both commands are pure readers over a repository built exclusively via the real
- * {@code hg} CLI, so hg4j's own write path -- the only thing those subprocesses exist to
- * isolate -- never runs in this JVM).
+ * <p>Both commands are pure readers over a repository built exclusively via the real {@code hg}
+ * CLI, same as {@link RequirementMatrixHeadsCoreRoundTripTest}.
  *
  * <p>While designing this test against real hg 7.2.2 (2026-09-05), two genuine {@link
  * IdentifyCommand} bugs were found and fixed (see that class's own javadoc for the full writeup):

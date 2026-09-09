@@ -37,14 +37,11 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The destination repository is initialized via real {@code hg} inside the container (so its
  * {@code .hg/requires}/format bookkeeping exactly matches what that combo's real {@code hg} would
- * write) but then written to ENTIRELY by hg4j running as a HOST-side subprocess ({@link
- * RequirementMatrixUnbundleHelperMain}) operating directly on the same bind-mounted directory tree
- * -- no further {@code docker exec} calls touch the destination while hg4j is applying, mirroring
- * {@link RequirementMatrixBundleHelperMain}'s reason for existing (heavy concurrent {@code docker
- * exec}/{@code docker run} process spawning in the same JVM as an hg4j write command corrupts its
- * output -- see {@link RequirementMatrixCommitHelperMain}'s javadoc for the root cause). Every
- * verification of the destination's resulting state after each unbundle is then done by real
- * {@code hg} (back via {@code docker exec}) reading the exact same files hg4j just wrote.
+ * write) but then written to ENTIRELY by hg4j, running inline in this JVM directly against the
+ * same bind-mounted directory tree -- no further {@code docker exec} calls touch the destination
+ * while hg4j is applying. Every verification of the destination's resulting state after each
+ * unbundle is then done by real {@code hg} (back via {@code docker exec}) reading the exact same
+ * files hg4j just wrote.
  *
  * <p>Treemanifest combos use {@code --type none-v3} (real {@code hg bundle} cannot use a {@code
  * -v1} type against a treemanifest repository at all -- see {@link BundleCommand}'s class
@@ -81,7 +78,7 @@ public class RequirementMatrixUnbundleDockerRoundTripTest {
         return NativeHgRust.hgTolerant(workDir, repoRelPath, args);
     }
 
-    /** Runs hg4j's two {@link UnbundleCommand} applications in a dedicated subprocess; returns
+    /** Runs hg4j's two {@link UnbundleCommand} applications inline in this JVM; returns
      * {@code node1Hex node2Hex}. */
     private static String[] unbundleInSubprocess(Path destRepoDir, Path bundleFile1, Path bundleFile2) throws Exception {
         HgRepository dest = new HgRepository(destRepoDir.toFile());

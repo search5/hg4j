@@ -546,6 +546,20 @@ RED/GREEN 신호는 "타임아웃 여부"가 아니라 **hello/between 핸드셰
 보다는 명백한 개선이지만, 클라이언트가 reason 문자열을 사람이 읽기 좋게 보여
 주지는 못한다(향후 개선 여지 — command-aware 에러 포맷은 이번 수정 범위 밖).
 
+**2026-09-09, 사용자와 논의 후 결정: 이 crash 메시지는 의도적으로 고치지 않고
+현재 상태로 둔다.** yona 쪽 `SshRelayServer`의 git 거부 경로(`git-upload-pack`
+등)도 동일한 아키텍처(핸드셰이크 없이 에러 한 줄 쓰고 연결 종료)를 쓰는데,
+git 클라이언트는 예상과 다른 응답을 받으면 즉시 포기하고 닫아버려서
+`fatal: protocol error: bad line length character: ERR ` 같은 지저분한
+메시지로 끝난다 — yona `docs/guide/ssh-system-sshd-setup.md` 트러블슈팅 절이
+이미 이걸 "실제 동작엔 영향 없는 사소한 UX 한계"로 명시적으로 받아들이기로
+결정해뒀다. hg의 이번 listkeys 크래시도 정확히 같은 급(hang은 없음, 메시지만
+안 예쁨)이므로 같은 기준을 적용해 command-aware 에러 포맷(모든 wire 명령별로
+자기 응답 포맷에 맞는 거부 응답을 만드는 것, 또는 SSH stderr 채널을 통한
+transport-레벨 에러 — 후자는 yona의 현재 소켓 릴레이가 stdin/stdout 단일
+스트림이라 별도의 채널 멀티플렉싱 설계가 선행돼야 함)는 백로그에 새로 만들지
+않기로 했다.
+
 **미해결로 남은 부분 → 2026-09-09 후속 세션에서 해소**: 이 절 원문이 지적했던
 "SSH 경로 empty-repo 회귀 테스트 부재"는 `HgSshWireServerRealHgInteropTest`에
 `realHgClonesEmptyRepoFromHg4jServedOverSsh` 테스트를 새로 추가해 메웠다(별도

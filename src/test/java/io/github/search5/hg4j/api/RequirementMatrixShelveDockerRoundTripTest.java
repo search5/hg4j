@@ -33,9 +33,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container, matching every other write-direction
  * test in this matrix family (see {@link RequirementMatrixDockerRoundTripTest}'s class javadoc for
- * why). hg4j's own {@code add}+{@code shelve} run in a dedicated {@code java} subprocess ({@link
- * RequirementMatrixShelveHelperMain}) for the same docker-exec-interleaving corruption reason
- * documented on {@link RequirementMatrixCommitHelperMain}.
+ * why). hg4j's own {@code add}+{@code shelve} run inline in this JVM, alongside the native
+ * rust-hg subprocess calls this class uses for the real hg side.
  *
  * <p>Like the native half, a combo whose changelog is {@code exp-use-changelog-v2} WITHOUT the
  * sidedata-copies feature can hit a confirmed real-hg-ONLY defect (real hg's own {@code hg shelve}

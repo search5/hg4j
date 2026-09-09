@@ -30,10 +30,7 @@ import java.util.Map;
  * v1 -- v2 needs Docker, see {@code RequirementMatrixPurgeDockerRoundTripTest}).
  *
  * <p>{@link PurgeCommand} never touches store/changelog/manifest data at all (only the working
- * directory) -- so unlike most other requirement-matrix suites in this package, no subprocess
- * helper is used; the corruption {@link RequirementMatrixCommitHelperMain} documents only affects
- * revlog writes interleaved with {@code docker exec}/{@code docker run} children, which never
- * happens here.
+ * directory).
  *
  * <p>One comprehensive scenario, across every combo, verified live against real {@code hg} 7.2
  * (2026-09-05) before being ported: a tracked root file and a tracked nested-subdirectory file

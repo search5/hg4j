@@ -35,9 +35,8 @@ import java.util.concurrent.TimeUnit;
  * every dirstate-v2 sub-combo.
  *
  * <p>Each case gets its own fresh, short-lived container, matching every other write-direction
- * test in this matrix family. hg4j's own {@link CopyCommand} call runs in a dedicated {@code
- * java} subprocess ({@link RequirementMatrixCopyHelperMain}) for the same docker-exec-interleaving
- * corruption reason documented on {@link RequirementMatrixCommitHelperMain}.
+ * test in this matrix family. hg4j's own {@link CopyCommand} call runs inline in this JVM,
+ * alongside the native rust-hg subprocess calls this class uses for the real hg side.
  */
 @Tag("interop")
 public class RequirementMatrixCopyDockerRoundTripTest {

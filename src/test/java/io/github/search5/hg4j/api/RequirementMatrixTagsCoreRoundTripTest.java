@@ -40,9 +40,8 @@ import java.util.ArrayList;
  * campaign's mandate to cover every assigned command across the full matrix rather than assume
  * a command is unaffected.
  *
- * <p>No {@code HelperMain} subprocess is used, for the same reason as
- * {@link RequirementMatrixHeadsCoreRoundTripTest}: all three commands are pure readers over a
- * repository built exclusively via the real {@code hg} CLI.
+ * <p>All three commands are pure readers over a repository built exclusively via the real
+ * {@code hg} CLI, same as {@link RequirementMatrixHeadsCoreRoundTripTest}.
  */
 @Tag("interop")
 public class RequirementMatrixTagsCoreRoundTripTest {

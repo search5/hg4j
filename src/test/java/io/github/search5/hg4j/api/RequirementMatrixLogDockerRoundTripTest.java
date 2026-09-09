@@ -25,10 +25,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest} for
  * the full 30-combo design this reuses verbatim) applied to {@link LogCommand} -- the Docker-only
- * counterpart of {@link RequirementMatrixLogCoreRoundTripTest}'s native 6-combo scenarios. No hg4j
- * write step / {@code HelperMain} subprocess is needed: {@link LogCommand} never mutates the
- * repository (see {@link RequirementMatrixDescribeDockerRoundTripTest}'s javadoc for why that
- * matters).
+ * counterpart of {@link RequirementMatrixLogCoreRoundTripTest}'s native 6-combo scenarios.
+ * {@link LogCommand} never mutates the repository, so no hg4j write step is needed here (see
+ * {@link RequirementMatrixDescribeDockerRoundTripTest}'s javadoc for why that matters).
  */
 @Tag("interop")
 public class RequirementMatrixLogDockerRoundTripTest {

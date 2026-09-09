@@ -36,8 +36,8 @@ import java.util.Map;
  * {@code all()}, {@code author()}, {@code branch()}, {@code parents()}, {@code ancestors()}, {@code
  * descendants()}, {@code tag()}, {@code and}/{@code or}/{@code not}) uses identical syntax and
  * semantics in both engines, verified against real hg 7.2 CLI output as sets (revset result
- * ordering is not part of {@link RevsetCommand}'s documented contract). Pure read -- no hg4j write
- * step / {@code HelperMain} subprocess needed.
+ * ordering is not part of {@link RevsetCommand}'s documented contract). Pure read -- no hg4j
+ * write step needed.
  */
 @Tag("interop")
 public class RequirementMatrixRevsetCoreRoundTripTest {

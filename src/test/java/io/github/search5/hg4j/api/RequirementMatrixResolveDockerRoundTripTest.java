@@ -37,10 +37,8 @@ import java.util.concurrent.TimeUnit;
  * -- this exercises a correctness-critical write path ({@code .hg/merge/state2} bookkeeping plus
  * the finalizing commit) and the parent class's javadoc documents a real, reproducible corruption
  * symptom from reusing one long-lived container across many write cases. hg4j's own merge +
- * resolve-lifecycle + commit write runs in a dedicated {@code java} subprocess ({@link
- * RequirementMatrixResolveHelperMain}) rather than inline in this JVM, for the same
- * docker-exec-interleaving corruption reason documented on {@link
- * RequirementMatrixCommitHelperMain}.
+ * resolve-lifecycle + commit write runs inline in this JVM, alongside the native rust-hg
+ * subprocess calls this class uses for the real hg side.
  */
 @Tag("interop")
 public class RequirementMatrixResolveDockerRoundTripTest {

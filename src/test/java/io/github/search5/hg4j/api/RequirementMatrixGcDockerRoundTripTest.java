@@ -36,9 +36,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Each case gets its own fresh, short-lived container (never a class-shared one), matching
  * {@link RequirementMatrixMergeDockerRoundTripTest}/{@link RequirementMatrixStripDockerRoundTripTest}.
- * hg4j's own {@link GcCommand} write runs in a dedicated {@code java} subprocess ({@link
- * RequirementMatrixGcHelperMain}) rather than inline in this JVM, for the same
- * docker-exec-interleaving corruption reason documented on {@link RequirementMatrixCommitHelperMain}.
+ * hg4j's own {@link GcCommand} write runs inline in this JVM, alongside the native rust-hg
+ * subprocess calls this class uses for the real hg side.
  *
  * <p>This is the ONLY one of the three quarters that specifically covers {@code persistent-
  * nodemap}/{@code fileindex-v1}/{@code general-v2} for {@link GcCommand} -- exactly the combos

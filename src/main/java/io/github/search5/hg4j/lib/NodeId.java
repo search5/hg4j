@@ -3,12 +3,26 @@ package io.github.search5.hg4j.lib;
 import java.util.Arrays;
 
 /**
- * Mercurial의 20바이트 노드 식별자(SHA-1 해시)를 표현하는 불변 값 객체(Value Object).
+ * Immutable value object representing Mercurial's 20-byte node identifier (a SHA-1 hash).
+ *
+ * @apiNote A type-safe alternative to passing raw {@code byte[]}/hex-string node IDs around,
+ *     giving {@link #equals}, {@link #hashCode}, and a natural {@link #compareTo} ordering for
+ *     free. Most of hg4j's internals (revlog, dirstate, transport) still pass node IDs as raw
+ *     {@code byte[]} or hex {@code String} for performance and wire-format reasons — see {@link
+ *     io.github.search5.hg4j.util.NodeIdUtil} for the corresponding {@code byte[]}/hex helpers —
+ *     but code that wants to use a node ID as, e.g., a {@code Map} key or a value that
+ *     round-trips through {@code equals()}/{@code hashCode()} should prefer this type.
  */
 public final class NodeId implements Comparable<NodeId> {
+    /** The all-zero node ID Mercurial uses to mean "no such revision" (its {@code nullid}). */
     public static final NodeId NULL = new NodeId(new byte[20]);
     private final byte[] bytes;
 
+    /**
+     * @param bytes the raw 20-byte node ID; copied defensively, so later mutation of the array
+     *              by the caller has no effect on this instance
+     * @throws IllegalArgumentException if {@code bytes} is {@code null} or not exactly 20 bytes
+     */
     public NodeId(byte[] bytes) {
         if (bytes == null || bytes.length != 20) {
             throw new IllegalArgumentException("NodeId must be exactly 20 bytes");
@@ -16,6 +30,13 @@ public final class NodeId implements Comparable<NodeId> {
         this.bytes = Arrays.copyOf(bytes, 20);
     }
 
+    /**
+     * Parses a 40-character hexadecimal node ID string, as found e.g. in {@code hg log}
+     * output or user-supplied revision arguments.
+     *
+     * @throws IllegalArgumentException if {@code hex} is {@code null}, not exactly 40
+     *         characters, or contains a non-hexadecimal character
+     */
     public static NodeId fromHex(String hex) {
         if (hex == null || hex.length() != 40) {
             throw new IllegalArgumentException("Hex string must be exactly 40 characters");
@@ -33,10 +54,12 @@ public final class NodeId implements Comparable<NodeId> {
         return new NodeId(raw);
     }
 
+    /** Returns a defensive copy of the raw 20-byte node ID. */
     public byte[] getBytes() {
         return Arrays.copyOf(bytes, 20);
     }
 
+    /** Renders the node ID as a 40-character lowercase hexadecimal string. */
     public String toHex() {
         StringBuilder sb = new StringBuilder(40);
         for (byte b : bytes) {
@@ -45,6 +68,7 @@ public final class NodeId implements Comparable<NodeId> {
         return sb.toString();
     }
 
+    /** Whether this is the all-zero {@link #NULL} node ID. */
     public boolean isNull() {
         return Arrays.equals(this.bytes, NULL.bytes);
     }

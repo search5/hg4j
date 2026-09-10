@@ -10,6 +10,16 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import java.util.AbstractList;
 import java.util.Iterator;
 
+/**
+ * Convenience facade over {@link ManifestTreeIterator} that provides an {@code Entry}-based,
+ * JGit-{@code TreeWalk}-style API (cursor-based {@link #next()}/{@link #getEntry()}, an eager
+ * {@link #getEntries()} list, and a {@link #lazyEntries()} lazy iterator).
+ *
+ * @apiNote Used by {@link io.github.search5.hg4j.storage.DefaultFileStoreEngine#getManifestAtCommit}
+ *     and directly by {@code StatusCommand}, {@code ShelveCommand}, {@code RebaseCommand}, {@code
+ *     BisectCommand}, and {@code io.github.search5.hg4j.api.Hg} whenever a revision's
+ *     tracked-file listing is needed without dealing with {@link TreeWalk}'s multi-tree API.
+ */
 public class ManifestWalk {
 
     private final ManifestTreeIterator iterator;
@@ -124,8 +134,8 @@ public class ManifestWalk {
     }
 
     /**
-     * JGit TreeWalk 스타일의 lazy streaming 탐색을 제공합니다.
-     * 메모리를 선적재하지 않고, 필요한 요소를 순차적으로 스트리밍합니다 (힙 압박 해결).
+     * Provides JGit-{@code TreeWalk}-style lazy streaming traversal.
+     * Streams entries sequentially as needed rather than preloading them all (avoids heap pressure).
      */
     public Iterator<Entry> lazyEntries() {
         return new Iterator<Entry>() {

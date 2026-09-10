@@ -12,6 +12,9 @@ import io.github.search5.hg4j.revset.HgRevsetEngine;
 /**
  * Revset command for querying repository revision DAGs
  * using functional expressions (e.g., 'all()', 'parents(tip)', etc.).
+ *
+ * @apiNote Typically obtained via {@link Hg#revset()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class RevsetCommand {
     private final HgRepository repository;
@@ -38,10 +41,10 @@ public class RevsetCommand {
             throw new IllegalArgumentException("Expression must be specified for revset query");
         }
 
-        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
-        // changelog-v2 revlog after an external process appended a revision -- see
-        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
-        // common (freshly-opened-per-call) case.
+        // Guards against a long-lived HgRepository handle serving a stale cached changelog-v2
+        // revlog after an external process appended a revision -- see DescribeCommand#call()'s
+        // javadoc for the full explanation. Cheap no-op in the common (freshly-opened-per-call)
+        // case.
         repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

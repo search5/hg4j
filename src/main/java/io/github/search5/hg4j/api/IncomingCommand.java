@@ -17,6 +17,9 @@ import java.io.ByteArrayInputStream;
 /**
  * Incoming command for identifying changesets present in the remote repository
  * but not yet pulled into the local repository.
+ *
+ * @apiNote Typically obtained via {@link Hg#incoming()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class IncomingCommand {
     private final HgRepository repository;
@@ -79,8 +82,7 @@ public class IncomingCommand {
         // the remote supports it (matching real hg's own modern client, and required to avoid a
         // real landmine in real hg's legacy `changegroup` wire command, see
         // FetchCommand#downloadChangegroupBundle's javadoc: calling it with an always-empty roots
-        // list against a non-empty remote used to make IncomingCommand fail against literally any
-        // real hg server that had content, backlog item 39 wave 5).
+        // list against a non-empty remote would fail against any real hg server that had content).
         try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
             List<String> caps = client.getCapabilities();
             List<String> common = FetchCommand.computeLocalLeafHexes(changelog);

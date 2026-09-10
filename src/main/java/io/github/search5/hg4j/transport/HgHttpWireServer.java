@@ -41,9 +41,9 @@ public class HgHttpWireServer extends HttpServlet {
     private final HgRepository repository;
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
-    // yona-wiki P3-21/P3-22 — see Wire1Commands#pushkey(HgRepository, Map, List, List): the
-    // changegroup hooks above never see which ref (bookmark) moved, only raw changeset nodes —
-    // that only happens in the separate `pushkey` wire command, hence a separate hook list.
+    // See Wire1Commands#pushkey(HgRepository, Map, List, List): the changegroup hooks above
+    // never see which ref (bookmark) moved, only raw changeset nodes — that only happens in
+    // the separate `pushkey` wire command, hence a separate hook list.
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
@@ -180,9 +180,9 @@ public class HgHttpWireServer extends HttpServlet {
 
         ByteArrayOutputStream combined = new ByteArrayOutputStream();
         if (!commands.isEmpty()) {
-            // 실제 hg는 응답 스트림 전체에 stream-settings 프레임을 딱 한 번만 보낸다 —
-            // multirequest로 여러 명령을 한 번에 처리할 때도 명령마다 다시 보내지 않는다
-            // (real Mercurial 6.0 서버의 heads+known 배치 clone 요청으로 직접 확인, 2026-09-01).
+            // Real hg sends the stream-settings frame exactly once for the entire response
+            // stream -- it is not resent per command even when a multirequest processes several
+            // commands at once.
             combined.write(Wire2Transport.buildStreamSettingsFrame(commands.get(0).requestId));
         }
         for (Wire2Transport.ParsedCommandRequest cmd : commands) {
@@ -264,10 +264,10 @@ public class HgHttpWireServer extends HttpServlet {
                 // covers both.
                 args.putAll(parseQueryParams(new String(body, StandardCharsets.UTF_8)));
             }
-            // yona-wiki P3-21/P3-22 — pushkey (bookmark moves) is handled directly rather than via
-            // dispatch()/batch() so branch-protection/notification hooks apply the same way
-            // unbundle's hooks do above; real hg clients never batch pushkey with other commands
-            // anyway (it's the actual write, not discovery — see Wire1Commands#batch's doc).
+            // pushkey (bookmark moves) is handled directly rather than via dispatch()/batch()
+            // so branch-protection/notification hooks apply the same way unbundle's hooks do
+            // above; real hg clients never batch pushkey with other commands anyway (it's the
+            // actual write, not discovery — see Wire1Commands#batch's doc).
             wireResponse = "pushkey".equals(cmd)
                     ? Wire1Commands.pushkey(repository, args, prePushkeyHooks, postPushkeyHooks)
                     : dispatch(cmd, args);
@@ -291,9 +291,8 @@ public class HgHttpWireServer extends HttpServlet {
                 // always sent as plain, uncompressed bytes under the same -0.1 content type
                 // (wireprotoserver.py's _callhttp: "elif isinstance(rsp, bytesresponse):
                 // setresponse(HTTP_OK, HGTYPE, bodybytes=rsp.data)" -- no compression call at
-                // all). Confirmed by real-hg-as-client clone aborting with "unexpected response"
-                // on a compressed `heads` response before this fix. `streamreslegacy` (Kind.
-                // STREAM_UNCOMPRESSED -- real hg's bundle2 `unbundle` reply, backlog item 26)
+                // all). `streamreslegacy` (Kind.
+                // STREAM_UNCOMPRESSED -- real hg's bundle2 `unbundle` reply)
                 // gets the exact same uncompressed treatment ("elif isinstance(rsp,
                 // streamreslegacy): setresponse(HTTP_OK, HGTYPE, bodygen=rsp.gen)" -- no
                 // compression call either, unlike the plain `streamres` case just below).

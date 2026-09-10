@@ -30,6 +30,9 @@ import io.github.search5.hg4j.treewalk.HgTreeFilter;
 /**
  * Porcelain command to pull changes from a remote repository.
  * Built with crash-durable transaction protection and full fncache/on-disk layout fidelity.
+ *
+ * @apiNote Typically obtained via {@link Hg#pull()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class PullCommand {
     private static final Logger LOGGER = Logger.getLogger(PullCommand.class.getName());
@@ -69,9 +72,8 @@ public class PullCommand {
     }
 
     public List<byte[]> call() throws IOException, HgLockException {
-        // 실제 hg 스펙(hg help urls): 소스를 안 주면 paths.default를 쓴다 — 가장 흔한
-        // 실사용 형태("그냥 hg pull")인데 2026-09-01 이전에는 여기서 무조건 예외를
-        // 던져서 지원이 안 됐다.
+        // Real hg spec (hg help urls): when no source is given, paths.default is used -- the
+        // most common real-world form ("just hg pull").
         String effectiveSource = sourceUrl;
         if (effectiveSource == null || effectiveSource.isEmpty()) {
             effectiveSource = repository.getConfig().getPath("default");
@@ -90,10 +92,10 @@ public class PullCommand {
 
         // 1. Delegate core metadata network fetching and database store sync to FetchCommand
         FetchCommand fetchCmd = new FetchCommand(repository);
-        // Backlog 30: only forward an explicit override -- if this PullCommand itself was never
-        // given one, leave FetchCommand's own default so it can auto-load the repository's own
-        // narrowspec (see FetchCommand#resolveNarrowTreeFilterIfDefault) instead of us silently
-        // clobbering that with ALL.
+        // Only forward an explicit override -- if this PullCommand itself was never given one,
+        // leave FetchCommand's own default so it can auto-load the repository's own narrowspec
+        // (see FetchCommand#resolveNarrowTreeFilterIfDefault) instead of us silently clobbering
+        // that with ALL.
         if (this.treeFilter != HgTreeFilter.ALL) {
             fetchCmd.setTreeFilter(this.treeFilter);
         }
@@ -114,11 +116,10 @@ public class PullCommand {
             }
         }
 
-        // 3. bookmark 동기화는 위 1단계의 FetchCommand.call() 안에서
-        // BookmarkCommand.mergeFromRemote()로 이미 처리된다(ancestor 기반 fast-forward/
-        // 진짜 divergence 구분 포함). 여기서 다시 하면 이미 병합이 끝난 상태를 대상으로
-        // 안전하지 않은 하드코딩된 "@default" 분기 로직이 중복 실행되는 문제가 있어
-        // 제거함(2026-09-01).
+        // 3. Bookmark sync is already handled by BookmarkCommand.mergeFromRemote() inside
+        // FetchCommand.call() in step 1 above (including ancestor-based fast-forward/genuine
+        // divergence detection); it must not be duplicated here on top of an already-merged
+        // state.
 
         return results;
     }
@@ -130,7 +131,7 @@ public class PullCommand {
     /**
      * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle)}, but forwards a store/
      * working-copy lock wait timeout to {@link FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int)}
-     * instead of failing immediately on contention -- see that method's doc (backlog item 38).
+     * instead of failing immediately on contention -- see that method's doc.
      *
      * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds --
      *                      {@code 0} preserves the original fail-fast behavior.
@@ -143,15 +144,15 @@ public class PullCommand {
      * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int)}, but forwards a
      * post-lock, pre-apply validator to {@link
      * FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}
-     * -- see that method's doc (backlog item 38, push-race re-validation).
+     * -- see that method's doc (push-race re-validation).
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
                                      FetchCommand.PostLockValidator postLockValidator) throws IOException, HgLockException {
         FetchCommand fetchCmd = new FetchCommand(repository);
-        // Backlog 30: only forward an explicit override -- if this PullCommand itself was never
-        // given one, leave FetchCommand's own default so it can auto-load the repository's own
-        // narrowspec (see FetchCommand#resolveNarrowTreeFilterIfDefault) instead of us silently
-        // clobbering that with ALL.
+        // Only forward an explicit override -- if this PullCommand itself was never given one,
+        // leave FetchCommand's own default so it can auto-load the repository's own narrowspec
+        // (see FetchCommand#resolveNarrowTreeFilterIfDefault) instead of us silently clobbering
+        // that with ALL.
         if (this.treeFilter != HgTreeFilter.ALL) {
             fetchCmd.setTreeFilter(this.treeFilter);
         }

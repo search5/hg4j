@@ -25,6 +25,9 @@ import java.util.Set;
 /**
  * Strip command for truncating/removing changesets and their descendants
  * completely from repository revlogs, rolling back history securely.
+ *
+ * @apiNote Typically obtained via {@link Hg#strip()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class StripCommand {
     private final HgRepository repository;
@@ -77,9 +80,8 @@ public class StripCommand {
         // "relpath\tsize" journal entry (as CommitCommand/FetchCommand use for their
         // append-only writes) cannot undo a strip: strip only ever shrinks revlogs, and
         // FileChannel#truncate can never grow a file back up, so restoring via truncate(origSize)
-        // to a size larger than the file's current (already-shrunk) size is a silent no-op --
-        // confirmed by writing this test in StripCommandCoverageTest and observing the
-        // "restored" changelog stay at its truncated size. Physical copy+restore (matching the
+        // to a size larger than the file's current (already-shrunk) size is a silent no-op.
+        // Physical copy+restore (matching the
         // "backup <orig>\t<backup>" journal format HgRepository.checkAndPerformAutoRollback()
         // and RebaseCommand already use) is the only correct way to undo a shrink.
         File backupDir = new File(repository.getStoreDir(), "strip-journal-backup");
@@ -171,9 +173,9 @@ public class StripCommand {
             // rather than being deleted — real hg's strip.py `strip()` calls
             // `repo._bookmarks.applychanges()` with each such bookmark remapped to the
             // first surviving ancestor (all the way to the null node when everything is
-            // stripped). Verified against real hg CLI (2026-09-01): after `hg bookmark -r
-            // <rev>` then `hg strip -r <rev>`, `hg bookmarks` still lists the bookmark,
-            // now at the parent revision; stripping revision 0 leaves it at -1:000000000000.
+            // stripped): after `hg bookmark -r <rev>` then `hg strip -r <rev>`, `hg bookmarks`
+            // still lists the bookmark, now at the parent revision; stripping revision 0 leaves
+            // it at -1:000000000000.
             String rollbackParentHex = NodeIdUtil.toHex(rollbackParent);
             File bookmarksFile = new File(repository.getHgDir(), "bookmarks");
             if (bookmarksFile.exists()) {
@@ -205,8 +207,7 @@ public class StripCommand {
             }
 
             // 4. Clean phase roots whose revisions are stripped
-            // 실제 hg는 phaseroots를 .hg/store/phaseroots에 저장한다(.hg/phaseroots가 아님 —
-            // real hg CLI로 확인, 2026-09-01).
+            // Real hg stores phaseroots in .hg/store/phaseroots (not .hg/phaseroots).
             File phaserootsFile = new File(repository.getStoreDir(), "phaseroots");
             if (phaserootsFile.exists()) {
                 backupBeforeMutate(journalFile, backupDir, backupMapping, touchedFiles, phaserootsFile);
@@ -258,19 +259,18 @@ public class StripCommand {
             repository.clearRevlogCache();
 
             // 5. Successful strip complete -> clear the journal and physical backups.
-            // Real hg's strip does NOT leave `hg rollback` information behind (verified
-            // against real hg CLI, 2026-09-01: `hg rollback` right after a successful
-            // `hg strip` reports "no rollback information available") -- it relies solely
-            // on its `.hg/strip-backup/*.hg` backup bundle for recovery instead, so we don't
-            // register anything with CommitCommand.writeUndoInfo here either.
+            // Real hg's strip does NOT leave `hg rollback` information behind (`hg rollback`
+            // right after a successful `hg strip` reports "no rollback information available")
+            // -- it relies solely on its `.hg/strip-backup/*.hg` backup bundle for recovery
+            // instead, so we don't register anything with CommitCommand.writeUndoInfo here
+            // either.
             //
             // What a successful strip DOES do, and what CommitCommand's own undo info leaves
             // behind from an earlier commit, is invalidate any pending `hg rollback` capability:
-            // verified against real hg CLI (2026-09-01) -- committing twice, then stripping the
-            // tip, leaves no `.hg/store/undo*`/`.hg/undo*` files at all, where before the strip
-            // the second commit's undo info was present. History has moved on underneath it, so
-            // that stale undo info (which could otherwise "roll back" straight past the strip)
-            // must not survive.
+            // committing twice, then stripping the tip, leaves no `.hg/store/undo*`/`.hg/undo*`
+            // files at all, where before the strip the second commit's undo info was present.
+            // History has moved on underneath it, so that stale undo info (which could otherwise
+            // "roll back" straight past the strip) must not survive.
             Files.deleteIfExists(new File(repository.getStoreDir(), "undo").toPath());
             Files.deleteIfExists(new File(repository.getStoreDir(), "undo.backup.files").toPath());
             Files.deleteIfExists(new File(repository.getDirectory(), ".hg/undo.backup.dirstate").toPath());
@@ -345,9 +345,8 @@ public class StripCommand {
     }
 
     // Revlog truncation itself (the exact-offset .d truncate, the inline-vs-non-inline v1
-    // branching, and v2/docket-based end-pointer bookkeeping) now lives on the reusable
-    // Revlog.truncate(int) -- see its javadoc for the full history of what this used to get
-    // wrong (backlog #39, requirement-matrix expansion to StripCommand, 2026-09-05).
+    // branching, and v2/docket-based end-pointer bookkeeping) lives on the reusable
+    // Revlog.truncate(int) -- see its javadoc for details.
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
         Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,

@@ -63,10 +63,9 @@ public class Revlog {
      *     Real hg defines it as "the size of the set ancestors(r), r included" and computes it
      *     recursively as revisions are appended (see real hg's {@code revlog.py}
      *     {@code addrevision}/{@code fast_rank}); {@link Revlog#appendRevisionV2} mirrors that
-     *     exact recursion for CL_V2 records instead of just writing {@code rev} (found to be wrong
-     *     2026-09-05: a lone initial commit's rank must be {@code 1}, not {@code 0}, or every
-     *     subsequent real-hg-computed rank on top silently drifts by one from what real hg itself
-     *     would have computed for the same history).
+     *     exact recursion for CL_V2 records instead of just writing {@code rev} -- a lone initial
+     *     commit's rank must be {@code 1}, not {@code 0}, or every later rank computed on top
+     *     drifts by one from what real hg would compute for the same history.
      */
     public record IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
                              int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId,
@@ -174,27 +173,23 @@ public class Revlog {
         NodeMapFile persistentNodeMap = usePersistentNodeMap ? NodeMapFile.tryLoad(idxFile) : null;
         this.index = new RevlogIndex(idxFile, createAsGeneralV2, createAsChangelogV2, persistentNodeMap, useZstd);
         if (index.isV2()) {
-            // v2는 항상 non-inline이며 실제 데이터 파일은 docket의 UUID로부터 발견된다 —
-            // 생성자로 넘어온 datFile(예: "00changelog.d")은 v2 저장소에는 존재하지 않는다.
+            // v2 is always non-inline, and the actual data file is discovered from the docket's
+            // UUID -- the datFile passed to the constructor (e.g. "00changelog.d") does not
+            // exist in a v2 store.
             this.datFile = index.getResolvedDataFile();
             this.inline = false;
         } else {
             this.datFile = datFile;
-            // Backlog #35 (2026-09-04): real hg's revlogv1 starts every filelog/manifest INLINE by
-            // default and only splits to a separate .d file past 131072 bytes
-            // (mercurial/revlog.py: REVLOG_DEFAULT_FLAGS=FLAG_INLINE_DATA, _maxinline,
-            // _enforceinlinesize; changelog.py opts out with may_inline=False -- hg4j's existing
-            // always-non-inline changelog behavior is already correct and untouched here).
-            // `index.isInline()` only reflects what an EXISTING on-disk index's first record's
-            // format flags actually say -- for a brand-new revlog (idxFile doesn't exist yet) it's
-            // always false, which is why hg4j had been unconditionally writing non-inline
-            // filelogs/manifests. `appendChangeGroupEntry`'s own separate hand-rolled write path
-            // (used by pull/push changegroup application, not local commit) has since been fixed
-            // to branch on `inline` exactly like `appendRevision` already did;
-            // `appendRawRevision`/`appendOptimizedRevision` already branched correctly (fixed
-            // earlier in this session for an unrelated RebaseCommand backup/restore bug). All
-            // three writers are now inline-aware, so it's safe to actually default new
-            // non-changelog v1 revlogs to inline.
+            // Real hg's revlogv1 starts every filelog/manifest INLINE by default and only splits
+            // to a separate .d file past 131072 bytes (mercurial/revlog.py:
+            // REVLOG_DEFAULT_FLAGS=FLAG_INLINE_DATA, _maxinline, _enforceinlinesize; changelog.py
+            // opts out with may_inline=False). `index.isInline()` only reflects what an EXISTING
+            // on-disk index's first record says -- for a brand-new revlog (idxFile doesn't exist
+            // yet) it's always false, so the inline/non-inline choice for a new revlog must be
+            // decided here instead. All three write paths (appendRevision,
+            // appendChangeGroupEntry, appendRawRevision/appendOptimizedRevision) branch on
+            // `inline` consistently, so it's safe to default new non-changelog v1 revlogs to
+            // inline.
             boolean isNewRevlog = !idxFile.exists();
             boolean isChangelog = idxFile.getName().contains("00changelog");
             this.inline = isNewRevlog ? !isChangelog : index.isInline();
@@ -285,15 +280,12 @@ public class Revlog {
      *   is the same size" estimate -- see the {@code StripCommand} history this replaced).
      * </ol>
      *
-     * <p>Found and fixed 2026-09-05 (backlog #39, requirement-matrix expansion to {@code
-     * StripCommand}): the pre-existing {@code StripCommand.truncateRevlog} private helper this
-     * replaces handled ONLY the non-inline-v1 case, silently corrupting every inline-v1 manifest/
-     * filelog it stripped (real hg then aborts outright with "index 00manifest is corrupted" --
-     * this was the actual root cause of {@code StripRealHgInteropTest}'s two long-standing,
-     * previously-undiagnosed pre-existing failures) and every v2/docket-based changelog it
-     * stripped (real hg's {@code verify} then reports "changeset refers to unknown revision",
-     * since the stale docket end-pointers kept advertising revisions whose bytes had just been
-     * cut off the companion files).
+     * <p>Handling all three cases here (rather than the non-inline-v1-only truncation
+     * {@code StripCommand} used to do on its own) matters: truncating an inline-v1 manifest/
+     * filelog with the non-inline logic corrupts it (real hg then aborts with "index 00manifest
+     * is corrupted"), and a v2/docket-based changelog needs its docket end-pointers updated too,
+     * or real hg's {@code verify} reports "changeset refers to unknown revision" for the stale
+     * pointers.
      */
     public synchronized void truncate(int keepCount) throws IOException {
         if (index.isV2()) {
@@ -332,13 +324,9 @@ public class Revlog {
                 // this same file's own constructor treat a later reopen as "existing" (`isNewRevlog
                 // = !idxFile.exists()` is false) instead of "brand new", which reads `index.isInline()`
                 // off the (empty, no records to read flags from) file instead of defaulting to
-                // inline -- found 2026-09-05 via a regression in
-                // ShelveRealHgInteropTest#unshelveAbortRestoresPreUnshelveStateAndKeepsShelfUsable
-                // (manifest truncated-to-zero during unshelve-abort, then immediately reopened for
-                // the very next write) after this method's first version used setLength(0) here.
-                // Deleting instead matches what this repository's OWN filelog-truncate-to-zero path
-                // (StripCommand.call()'s `if (flKeepCount == 0) { flIdx.delete(); ... }`, and the
-                // ShelveCommand truncation this method replaced) already did.
+                // inline. Deleting instead matches what this repository's OWN filelog-truncate-to-zero
+                // path (StripCommand.call()'s `if (flKeepCount == 0) { flIdx.delete(); ... }`) already
+                // did.
                 Files.deleteIfExists(idxFile.toPath());
                 return;
             }
@@ -365,9 +353,7 @@ public class Revlog {
             return;
         }
 
-        // Compute the .d target size (and read getRevisionCount()) BEFORE touching idxFile at all
-        // -- found 2026-09-05 via a regression in
-        // ShelveRealHgInteropTest#unshelveAbortRestoresPreUnshelveStateAndKeepsShelfUsable:
+        // Compute the .d target size (and read getRevisionCount()) BEFORE touching idxFile at all:
         // truncating idxFile FIRST and only THEN calling getRevisionCount()/getIndexRecord() for
         // the .d computation is wrong, because RevlogIndex.checkAndUpdate() notices idxFile's size
         // just changed (its own physical file, bypassed via RandomAccessFile rather than through
@@ -375,8 +361,7 @@ public class Revlog {
         // now-ALREADY-shrunk .i file -- so `keepCount < getRevisionCount()` silently flips from
         // true to false mid-computation and the .d file is left completely untruncated (real hg's
         // `hg verify` then reports "changelog@?: data length off by N bytes", N being exactly the
-        // stripped revision's own compLen). Mirrors why StripCommand's original bug report (see
-        // this method's own class javadoc) insisted on reading offsets from the still-untruncated
+        // stripped revision's own compLen). Offsets must be read from the still-untruncated
         // revlog before mutating anything.
         long targetDatSize = -1;
         if (datFile != null && datFile.exists()) {
@@ -414,8 +399,8 @@ public class Revlog {
     /**
      * {@code flags} bit marking a revision's stored text as an external-storage pointer rather
      * than the real file content (real hg's {@code REVIDX_EXTSTORED}, used by the {@code lfs}
-     * extension). Value confirmed 2026-09-04 against the real hg 7.2 source directly
-     * ({@code mercurial/interfaces/repository.py}: {@code REVISION_FLAG_EXTSTORED = 1 << 13}).
+     * extension; see {@code mercurial/interfaces/repository.py}'s
+     * {@code REVISION_FLAG_EXTSTORED = 1 << 13}).
      */
     public static final int REVIDX_EXTSTORED = 0x2000;
 
@@ -500,18 +485,14 @@ public class Revlog {
             case COMP_MODE_PLAIN:
                 return chunk;
             case COMP_MODE_DEFAULT: {
-                // Backlog #39: COMP_MODE_DEFAULT does NOT mean "zstd" unconditionally here either
-                // -- exactly the same "whatever this repository's actual default engine is" point
+                // COMP_MODE_DEFAULT does NOT mean "zstd" unconditionally here either -- exactly
+                // the same "whatever this repository's actual default engine is" point
                 // appendRevisionV2's javadoc makes for the MAIN data chunk applies equally to
                 // sidedata. A changelog-v2+sidedata repository created WITHOUT the
                 // revlog-compression-zstd requirement (real hg's own format.usezstd=false /
                 // format.revlog-compression=zlib) compresses its sidedata with plain zlib/DEFLATE
-                // instead when compression actually shrinks it -- unconditionally attempting zstd
-                // here threw "Invalid zstd sidedata frame: could not determine content size" on
-                // perfectly valid real-hg-written data, caught 2026-09-05 by
-                // RequirementMatrixSidedataChangedFilesCoreRoundTripTest (whose harness always
-                // forces zlib to keep byte output deterministic, matching every other
-                // RequirementMatrix*RoundTripTest in this suite).
+                // instead when compression actually shrinks it, so unconditionally attempting
+                // zstd here would fail on perfectly valid real-hg-written data.
                 //
                 // A genuine zstd frame's own magic number happens to start with byte 0x28 --
                 // exactly DeltaCodec.decompress's dedicated zstd marker byte -- so sniff that
@@ -569,15 +550,11 @@ public class Revlog {
      * <p>This instance's own cache is refreshed in place via {@link #clearCache()} once the
      * on-disk files are swapped, so it remains usable after this call returns.</p>
      *
-     * <p>2026-09-05 (backlog #39 wave 5): this method used to unconditionally rewrite the classic
-     * (revlogv1, 64-byte-record, {@code .i}/{@code .d}) on-disk layout no matter what the revlog's
-     * actual storage format was. For a general-v2 (docket-based {@code exp-revlogv2.2}) filelog --
-     * confirmed live via `hg-rust-7.2.4`: the classic {@code .i} path there is a tiny docket
-     * "pointer" file (magic {@code 00 00 de ad}), not a real index -- this silently clobbered the
-     * docket with a bare classic index and left the real companion {@code <basename>-<hash>.idx}/
-     * {@code .dat}/{@code .sda} files orphaned, corrupting the filelog so badly that real hg's own
-     * reader (`hg cat`) aborted trying to open a {@code .d} file that never legitimately exists for
-     * this format. {@link #index}{@code .isV2()} now routes to {@link
+     * <p>For a general-v2 (docket-based {@code exp-revlogv2.2}) filelog, the classic {@code .i}
+     * path is a tiny docket "pointer" file (magic {@code 00 00 de ad}), not a real index --
+     * rewriting it with the classic revlogv1 layout would clobber the docket and orphan the real
+     * companion {@code <basename>-<hash>.idx}/{@code .dat}/{@code .sda} files. {@link
+     * #index}{@code .isV2()} therefore routes to {@link
      * #censorRevisionV2(int, int, byte[][], IndexRecord[])} instead, which reuses {@link
      * #truncate(int)} (already correctly docket-aware, see its own javadoc) plus {@link
      * #appendRevisionV2} (already correctly docket-aware and, crucially, takes an explicit {@code
@@ -797,13 +774,13 @@ public class Revlog {
     }
 
     /**
-     * Backlog 42 (LFS/copy-tracing gap): for an LFS-flagged revision ({@link #isExtStored}), real
+     * For an LFS-flagged revision ({@link #isExtStored}), real
      * hg's {@code hgext/lfs/wrapper.py} {@code filelogrenamed} wrapper does NOT look at the
      * ordinary {@code \x01\n...\x01\n} metadata block at all -- because for such a revision the
      * stored content is the LFS pointer text itself, and the pointer's OWN {@code x-hg-<key>}
      * fields (folded in there by real hg's {@code writetostore} instead of a separate metadata
-     * block, confirmed 2026-09-06 against a live {@code hg mv} + LFS commit) carry the copy
-     * metadata. Parses the pointer and returns those {@code x-hg-*} fields (prefix stripped) as
+     * block) carry the copy metadata. Parses the pointer and returns those {@code x-hg-*} fields
+     * (prefix stripped) as
      * if they were the ordinary block, so every existing caller of this method ({@code
      * AnnotateCommand}'s rename-crossing, {@code LogCommand --follow}) transparently keeps
      * working across an LFS-tracked rename with no caller-side change needed.
@@ -924,15 +901,14 @@ public class Revlog {
     private static final long MAXINLINE = 131072L;
 
     /**
-     * Backlog #43 -- real hg's {@code revlog.py} {@code _enforceinlinesize()} equivalent, called
-     * right after a revision has been durably appended to this (v1, inline) revlog, mirroring
-     * real hg's own call site ({@code _writeentry()} calls {@code self._enforceinlinesize(tr)}
-     * immediately after writing each single revision -- confirmed live against real hg 7.2: a
-     * single first revision whose own compressed size alone already exceeds {@code _maxinline}
-     * is written inline and then IMMEDIATELY split, exactly like the multi-revision case below).
+     * Real hg's {@code revlog.py} {@code _enforceinlinesize()} equivalent, called right after a
+     * revision has been durably appended to this (v1, inline) revlog, mirroring real hg's own
+     * call site ({@code _writeentry()} calls {@code self._enforceinlinesize(tr)} immediately
+     * after writing each single revision -- so a single first revision whose own compressed size
+     * alone already exceeds {@code _maxinline} is written inline and then immediately split,
+     * exactly like the multi-revision case below).
      *
-     * <p>Live real-hg 7.2 testing (llm-wiki backlog #43) confirmed the exact trigger condition:
-     * after appending revision {@code rev}, if this revlog is still inline and the cumulative
+     * <p>After appending revision {@code rev}, if this revlog is still inline and the cumulative
      * data size so far ({@code offset(rev) + compLen(rev)} -- real hg's own
      * {@code self.start(tiprev) + self.length(tiprev)}, which for a v1 revlog's "offset" field
      * always means pure compressed-data bytes excluding the 64-byte headers, in EITHER layout)
@@ -966,10 +942,10 @@ public class Revlog {
      * bit cleared.
      *
      * <p>Critically, every other field of every existing record (offset, flags, lengths, baseRev,
-     * linkRev, parents, nodeId) is carried over byte-for-byte unchanged -- live real-hg 7.2
-     * byte-level comparison (backlog #43) confirmed a v1 revlog's "offset" field is always a pure
-     * data-byte count that never includes the interleaved 64-byte headers, in EITHER layout, so
-     * no offset recomputation is needed when converting -- only where the bytes physically live
+     * linkRev, parents, nodeId) is carried over byte-for-byte unchanged -- a v1 revlog's "offset"
+     * field is always a pure data-byte count that never includes the interleaved 64-byte headers,
+     * in EITHER layout, so no offset recomputation is needed when converting -- only where the
+     * bytes physically live
      * changes. This exactly matches real hg's own {@code split_inline}, which re-serializes each
      * existing {@code index.entry_binary(i)} unchanged (only rev 0's packed header bits differ,
      * losing the inline flag).
@@ -1054,7 +1030,7 @@ public class Revlog {
      * index file that (for a filelog/treemanifest revlog under {@code data/}/{@code meta/}) was
      * already registered when the revlog was first created. Without this, real hg's own
      * {@code hg verify} reports {@code warning: revlog 'data/<name>.d' not in fncache!} for every
-     * filelog/manifest hg4j itself transitions to non-inline -- confirmed live (backlog #43).
+     * filelog/manifest hg4j itself transitions to non-inline.
      *
      * <p>Real hg's {@code RE_FNCACHE_FILE = re.compile(r'^(data|meta)/.*\.[id]$')} only tracks
      * files under {@code data/} (filelogs) and {@code meta/} (per-directory treemanifest
@@ -1099,24 +1075,25 @@ public class Revlog {
     }
 
     /**
-     * v2(changelog-v2 또는 일반 revlog-v2) 저장소에 새 리비전을 append한다. 실제 hg CLI로
-     * 생성한 픽스처를 hexdump/struct로 직접 대조해 검증된 레이아웃을 그대로 재현한다 — 두
-     * 포맷 모두 델타 체인 없이 매 리비전을 독립 fulltext로 저장한다(단순화, changelog-v2는
-     * 이미 이렇게 구현돼 있었고 일반 v2도 동일 전략 채택 — RevlogV2ParserTest/
-     * RevlogV2GeneralParserTest, src/test/resources/fixtures/revlogv2-{changelog,general}/
-     * README.md 참고).
+     * Appends a new revision to a v2 (changelog-v2 or general revlog-v2) store. Reproduces the
+     * exact on-disk layout verified by directly comparing a real hg CLI-produced fixture via
+     * hexdump/struct -- both formats store every revision as an independent fulltext with no
+     * delta chain (a simplification; changelog-v2 was already implemented this way, and general
+     * v2 adopts the same strategy -- see RevlogV2ParserTest/RevlogV2GeneralParserTest and
+     * src/test/resources/fixtures/revlogv2-{changelog,general}/README.md).
      *
-     * <p>changelog-v2(매직 0xD34D, {@code INDEX_ENTRY_CL_V2})는 각 리비전을 독립 zstd
-     * 프레임(prefix byte 없음, COMP_MODE_DEFAULT)으로 쓴다. 일반 revlog-v2(매직 0xDEAD,
-     * {@code exp-revlogv2.2}, {@code INDEX_ENTRY_V2}, 매니페스트/파일로그에 쓰임)는 대신
-     * COMP_MODE_PLAIN(압축 없이 원본 그대로)으로 쓴다 — 실제 hg 자신도 압축해도 이득이
-     * 없는 작은 리비전에는 PLAIN을 선택하는 정상 인코딩이고(REVLOGV2GeneralParserTest의
-     * 실제 hg 픽스처가 정확히 이 형태), zstd 프레임 포맷을 새로 검증해야 하는 위험 없이
-     * `mercurial/revlog.py`가 명시적으로 지원하는 {@code compression_mode == COMP_MODE_PLAIN
-     * -> uncomp = data} 경로만 쓰면 항상 유효하다. 두 포맷은 레코드 필드 배치도 다르다 —
-     * CL_V2는 baseRev/linkRev를 저장하지 않고(rev==rev로 합성) node가 오프셋 24, rank
-     * 필드가 있음; 일반 V2는 baseRev/linkRev/parent1/parent2를 전부 명시적으로 저장하고
-     * node가 오프셋 32, rank 필드가 없다(패딩만 19바이트).</p>
+     * <p>changelog-v2 (magic 0xD34D, {@code INDEX_ENTRY_CL_V2}) writes each revision as an
+     * independent zstd frame (no prefix byte, COMP_MODE_DEFAULT). General revlog-v2 (magic
+     * 0xDEAD, {@code exp-revlogv2.2}, {@code INDEX_ENTRY_V2}, used for manifests/filelogs)
+     * instead writes COMP_MODE_PLAIN (the original bytes, uncompressed) -- this is itself a
+     * normal encoding real hg chooses for small revisions where compression wouldn't help
+     * (confirmed: RevlogV2GeneralParserTest's real hg fixture is in exactly this form), and using
+     * only the {@code compression_mode == COMP_MODE_PLAIN -> uncomp = data} path that
+     * `mercurial/revlog.py` explicitly supports is always valid, without the risk of having to
+     * newly verify the zstd frame format. The two formats also differ in record field layout --
+     * CL_V2 does not store baseRev/linkRev (synthesized as rev==rev), and has node at offset 24
+     * plus a rank field; general V2 explicitly stores baseRev/linkRev/parent1/parent2, has node
+     * at offset 32, and has no rank field (just 19 bytes of padding).</p>
      */
     private synchronized byte[] appendRevisionV2(int rev, byte[] processedContent, int parent1, int parent2,
                                                    byte[] nodeId, int linkRev) throws IOException {
@@ -1174,15 +1151,14 @@ public class Revlog {
         // complen==uncomplen, NO marker byte) rather than DeltaCodec.compress's v1-revlog-style
         // 'u'+rawdata fallback (that extra marker byte is invalid here: CL_V2 readers expect
         // either a genuine compressed frame or exactly the raw content, decided purely by the
-        // per-record compression-mode bits, never a payload-level marker). A prior implementation
-        // always hardcoded COMP_MODE_DEFAULT and always ran content through DeltaCodec.compress --
-        // this silently produced 'u'-prefixed garbage for any revision short enough that zstd's
-        // frame overhead didn't pay for itself (real hg's own fixture,
+        // per-record compression-mode bits, never a payload-level marker). Always hardcoding
+        // COMP_MODE_DEFAULT and always running content through DeltaCodec.compress would produce
+        // 'u'-prefixed garbage for any revision short enough that zstd's frame overhead doesn't
+        // pay for itself (real hg's own fixture,
         // src/test/resources/fixtures/sidedata-copytracing/data.idx, confirms two of its three
         // revisions are genuinely stored PLAIN this way: complen==uncomplen, compression byte
-        // 0x00) -- real hg's zstd decompressor then rejected the bogus frame with "Unknown frame
-        // descriptor" (found and fixed 2026-09-03, verified against real hg on a from-scratch-
-        // bootstrapped changelog-v2 repository, see ChangelogV2BootstrapTest).
+        // 0x00) -- real hg's zstd decompressor then rejects that bogus frame with "Unknown frame
+        // descriptor".
         //
         // COMP_MODE_DEFAULT does NOT mean "zstd" unconditionally -- it means "whatever this
         // repository's own default revlog compression engine is", which real hg's reader infers
@@ -1190,13 +1166,10 @@ public class Revlog {
         // codec discriminator bit), not from anything this method writes. A repository created
         // without that requirement (real hg's own `--config format.usezstd=false`/
         // `format.revlog-compression=zlib`, still a fully valid changelog-v2 repository) uses
-        // zlib for COMP_MODE_DEFAULT instead -- unconditionally attempting zstd here produced a
-        // zstd frame real hg's zlib-only reader could never decompress ("revlog decompress error:
-        // Error -3 while decompressing data: incorrect header check"), a real interop bug found
-        // 2026-09-04 by the requirement matrix (see decisions/exhaustive-interop-matrix-plan.md)
-        // while committing on top of a real-hg-bootstrapped, non-zstd changelog-v2 repository --
-        // `this.useZstd` (populated from that exact requirement string, see the constructor) must
-        // gate which codec is attempted, matching real hg's own engine choice byte for byte.
+        // zlib for COMP_MODE_DEFAULT instead -- unconditionally attempting zstd here would produce
+        // a zstd frame real hg's zlib-only reader could never decompress. `this.useZstd`
+        // (populated from that exact requirement string, see the constructor) must gate which
+        // codec is attempted, matching real hg's own engine choice byte for byte.
         boolean changelogUsesCompression = false;
         byte[] dataHunk;
         if (changelogV2) {
@@ -1237,34 +1210,38 @@ public class Revlog {
         recordBuf.putInt(dataHunk.length);
         recordBuf.putInt(processedContent.length);
         if (changelogV2) {
-            // INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x (96바이트, mercurial/revlogutils/constants.py 실측)
+            // INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x (96 bytes, confirmed against
+            // mercurial/revlogutils/constants.py)
             recordBuf.putInt(parent1);
             recordBuf.putInt(parent2);
             recordBuf.put(node20);
-            recordBuf.put(new byte[12]); // 패딩
+            recordBuf.put(new byte[12]); // padding
             recordBuf.putLong(sidedataOffset);
             recordBuf.putInt(sidedataCompLen);
-            // 압축 모드(하위 2비트, main data): 위에서 실제로 zstd를 써서 줄어들었을 때만
-            // COMP_MODE_DEFAULT(1), 아니면 원본 그대로 저장했으므로 COMP_MODE_PLAIN(0) —
-            // 실제 hg 픽스처(sidedata-copytracing/data.idx)로 3개 리비전 다 대조해 확인된
-            // 대로 리비전마다 동적으로 다르다(하드코딩 금지, 2026-09-03에 발견·수정된 버그).
-            // 상위 2비트(2-3)는 sidedata의 압축 모드(COMP_MODE_PLAIN=0을 쓰므로 00 그대로,
-            // 값 변경 불필요) — RevlogIndex의 `(compressionByte >> 2) & 3` 파싱과 대칭.
+            // Compression mode (low 2 bits, main data): COMP_MODE_DEFAULT(1) only when zstd was
+            // actually used above and it shrank the data, otherwise COMP_MODE_PLAIN(0) since the
+            // original bytes were stored as-is -- confirmed against a real hg fixture
+            // (sidedata-copytracing/data.idx) that this varies per revision, so it must not be
+            // hardcoded. The
+            // high 2 bits (2-3) are sidedata's own compression mode (left as 00 since
+            // COMP_MODE_PLAIN=0 is used, no change needed) -- mirrors RevlogIndex's
+            // `(compressionByte >> 2) & 3` parsing.
             recordBuf.put((byte) (changelogUsesCompression ? 1 : 0));
             recordBuf.putInt(computeCl2Rank(parent1, parent2)); // rank (real hg's own recursive formula)
-            recordBuf.put(new byte[23]); // 패딩
+            recordBuf.put(new byte[23]); // padding
         } else {
-            // INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x (96바이트, mercurial/revlogutils/constants.py 실측)
-            recordBuf.putInt(rev); // baseRev (단순화: 델타 체인 없이 항상 자기 자신 = fulltext)
+            // INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x (96 bytes, confirmed against
+            // mercurial/revlogutils/constants.py)
+            recordBuf.putInt(rev); // baseRev (simplification: always itself/fulltext, no delta chain)
             recordBuf.putInt(linkRev);
             recordBuf.putInt(parent1);
             recordBuf.putInt(parent2);
             recordBuf.put(node20);
-            recordBuf.put(new byte[12]); // 패딩
+            recordBuf.put(new byte[12]); // padding
             recordBuf.putLong(sidedataOffset);
             recordBuf.putInt(sidedataCompLen);
-            recordBuf.put((byte) 0); // COMP_MODE_PLAIN (dataHunk == processedContent, 압축 안 함; sidedata도 PLAIN이므로 상위비트 불변)
-            recordBuf.put(new byte[19]); // 패딩 (CL_V2와 달리 rank 필드가 없음)
+            recordBuf.put((byte) 0); // COMP_MODE_PLAIN (dataHunk == processedContent, uncompressed; sidedata is also PLAIN so the high bits stay unchanged)
+            recordBuf.put(new byte[19]); // padding (unlike CL_V2, there is no rank field)
         }
         recordBuf.flip();
 
@@ -1300,12 +1277,9 @@ public class Revlog {
      * would have persisted for the same history). {@code parent1}/{@code parent2} are {@code -1}
      * for "no parent" (nullrev), matching every other parent-index convention in this class.
      *
-     * <p>Found wrong 2026-09-05 (backlog #39 requirement matrix, {@code
-     * RequirementMatrixInitDockerRoundTripTest}'s {@code general-v2} combos): a prior version of
-     * this method just wrote {@code rev} as the rank (rank 0 for the first commit), silently
-     * diverging from real hg's own convention that a root revision's rank is {@code 1} -- every
-     * later rank real hg itself computed on top of such a repository would then be off by one from
-     * what real hg would have computed for equivalent history it had written itself throughout.
+     * <p>Writing {@code rev} directly as the rank (rank 0 for the first commit) would diverge
+     * from real hg's own convention that a root revision's rank is {@code 1} -- every later rank
+     * real hg computes on top of such a repository would then be off by one.
      */
     private int computeCl2Rank(int parent1, int parent2) {
         if (parent1 < 0 && parent2 < 0) {
@@ -1357,9 +1331,8 @@ public class Revlog {
      * which needs this exact metadata-wrapped form as the filelog node hash basis for a renamed
      * file that is ALSO LFS-flagged -- real hg's LFS flag-processor hashes the real bytes as
      * {@code readfromstore} would hand them back to a caller, which re-wraps any {@code x-hg-*}
-     * pointer fields into precisely this block; confirmed 2026-09-06 by reproducing a real hg 7.2
-     * rename+LFS commit and matching {@code SHA1(p1,p2,wrapMetadata(realBytes,copyMeta))} against
-     * the real filenode) can reuse it verbatim rather than re-deriving the format by hand.
+     * pointer fields into precisely this block) can reuse it verbatim rather than re-deriving the
+     * format by hand.
      *
      * @param metadata rename/copy-style key/value pairs to prepend, or {@code null}/empty for none
      * @return {@code content} unchanged when {@code metadata} is null/empty AND {@code content}
@@ -1395,7 +1368,7 @@ public class Revlog {
      * @param extraFlags additional {@code flags} bits (e.g. {@link #REVIDX_EXTSTORED}) to OR into
      *     this revision's index record, on top of whatever this method already computes on its
      *     own (currently nothing -- flags are otherwise always 0 on this path). Used by {@code
-     *     api.CommitCommand}'s LFS pipeline (backlog 31) to flag a revision whose stored {@code
+     *     api.CommitCommand}'s LFS pipeline to flag a revision whose stored {@code
      *     content} is an LFS pointer, not the real file bytes.
      */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
@@ -1409,10 +1382,8 @@ public class Revlog {
      *     escaping) stored {@code content} -- real hg's LFS extension does exactly this: the
      *     filelog node hash for an LFS-flagged revision is computed over the REAL file bytes
      *     (what the flag-processor's {@code readfromstore} hands back to callers), even though
-     *     the bytes actually stored on disk are the pointer text (confirmed 2026-09-04 by
-     *     reproducing a real hg 7.2 LFS commit and computing both hashes directly: {@code
-     *     SHA1(p1,p2,pointerText)} does NOT match the filelog node, {@code SHA1(p1,p2,realBytes)}
-     *     does). Used by {@code api.CommitCommand}'s LFS pipeline (backlog 31).
+     *     the bytes actually stored on disk are the pointer text. Used by {@code
+     *     api.CommitCommand}'s LFS pipeline.
      */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer, int extraFlags,
@@ -1453,9 +1424,9 @@ public class Revlog {
         // by `hg verify` as "duplicate revision"). This matters well beyond a curiosity: any
         // caller that re-adds an existing file's content with no filelog parent of its own (e.g.
         // RebaseCommand cherry-picking a revision that added a file fresh onto a destination that
-        // never had that path -- verified live: without this check, real hg's `hg verify` on such
-        // a rebase's output reports "duplicate revision N (M)" and "<node> not in manifests") would
-        // otherwise corrupt the store on every such call.
+        // never had that path) would otherwise corrupt the store on every such call -- without
+        // this check, real hg's `hg verify` on such output reports "duplicate revision N (M)"
+        // and "<node> not in manifests".
         int existingRev = findRevision(nodeId);
         if (existingRev != -1) {
             return getIndexRecord(existingRev).getNodeId();
@@ -1587,20 +1558,14 @@ public class Revlog {
      * resolves that implicit base correctly even when this revlog already holds unrelated
      * revisions before this changegroup gets applied.
      *
-     * <p>Backlog (P3-27, 2026-09-09): the plain 2-arg overload approximates "the group's first
-     * entry" as "this revlog's local revision count is still 0", which only happens to be
-     * correct when the LOCAL revlog was completely empty (or purely linear so far) before
-     * applying the incoming group. A receiver that already has its own diverging history --
-     * e.g. a target Mercurial project with two bookmarks/heads, exactly what a PR merge commit
-     * gets pushed into -- decodes the group's first entry against the wrong base (its own
-     * highest-numbered existing revision, unrelated to the entry's real DAG parent), corrupting
-     * the reconstructed content and tripping the SHA-1 node-hash check below with a false
-     * "Security Integrity Error". Reproduced live via a push of ONLY a freshly-created 2-parent
-     * merge commit (both parents already present on the remote as two diverging heads, so the
-     * push's changegroup contains that single new revision) -- hg4j's own {@code
-     * PushCommandTest#packsBothParentsWhenPushingAMergeCommitAndPropagatesRemoteKnownThroughIt}
-     * masked this because it pushes ALL commits from an EMPTY remote in one shot, where rev-1
-     * happens to equal the real p1 throughout (purely linear so far).
+     * <p>The plain 2-arg overload approximates "the group's first entry" as "this revlog's
+     * local revision count is still 0", which only happens to be correct when the LOCAL revlog
+     * was completely empty (or purely linear so far) before applying the incoming group. A
+     * receiver that already has its own diverging history -- e.g. a repository with two
+     * bookmarks/heads, exactly what a PR merge commit gets pushed into -- would decode the
+     * group's first entry against the wrong base (its own highest-numbered existing revision,
+     * unrelated to the entry's real DAG parent), corrupting the reconstructed content and
+     * tripping the SHA-1 node-hash check below with a false "Security Integrity Error".
      *
      * <p>The caller (currently only {@link io.github.search5.hg4j.api.FetchCommand#applyBundle})
      * must track {@code previousGroupEntryContent} itself across a single group's entries,
@@ -1625,9 +1590,10 @@ public class Revlog {
 
         byte[] content;
         if (entry.fullText) {
-            // cg4 전용(실제 스펙: mercurial/changegroup.py의 cg4unpacker.deltachunk —
-            // protocol_flags & CG_FLAG_FULL_TEXT가 서 있으면 페이로드는 bdiff 델타가 아니라
-            // 압축 없는 원문 그대로다. deltabase 값과 무관하게 그대로 콘텐츠로 쓴다.
+            // cg4-only (real spec: mercurial/changegroup.py's cg4unpacker.deltachunk -- when
+            // protocol_flags & CG_FLAG_FULL_TEXT is set, the payload is not a bdiff delta but
+            // the uncompressed original text itself. Used as the content directly, regardless
+            // of the deltabase value.
             content = entry.delta;
         } else if (entry.deltabase != null) {
             int baseRev = findRevision(entry.deltabase);
@@ -1642,11 +1608,12 @@ public class Revlog {
                 content = applyDelta(baseContent, entry.delta);
             }
         } else if (trackGroupPosition) {
-            // cg1(entry.deltabase == null)은 와이어 포맷 자체에 베이스 필드가 없다. 실제
-            // Mercurial의 cg1 패커(ChangeGroupPacker01)는 forcedeltaparentprev=True로 항상
-            // "이 그룹 스트림에서 바로 직전에 나온 엔트리"를 베이스로 삼는다 — 단, 그룹의
-            // "첫" 엔트리만은 예외로 그 엔트리 자신의 실제 DAG 부모(p1)를 기준으로 삼는다
-            // (PushCommand의 송신측 패킹 규칙과 정확히 대칭, 클래스 주석 참고).
+            // cg1 (entry.deltabase == null): the wire format itself has no base field. Real
+            // Mercurial's own cg1 packer (ChangeGroupPacker01) always uses
+            // forcedeltaparentprev=True, so the base is always "the entry immediately preceding
+            // this one in the group stream" -- except the group's very first entry, which
+            // instead uses that entry's own actual DAG parent (p1). (Exactly mirrors
+            // PushCommand's sender-side packing rule -- see that class's own comment.)
             if (previousGroupEntryContent != null) {
                 content = applyDelta(previousGroupEntryContent, entry.delta);
             } else if (entry.p1 == null || NodeIdUtil.isAllZero(entry.p1)) {
@@ -1659,9 +1626,10 @@ public class Revlog {
                 content = applyDelta(getRawRevisionContent(baseRev), entry.delta);
             }
         } else {
-            // 기존(레거시) 2-인자 오버로드 전용 — 그룹 경계를 모르는 호출자를 위한 위치 기반
-            // 근사치를 그대로 유지한다(로컬 revlog가 비어 있거나 순수 선형 히스토리일 때만
-            // 정확하다 — 그 조건을 보장 못 하는 호출자는 위 3-인자 오버로드를 써야 한다).
+            // Legacy 2-argument overload only -- keeps the old position-based approximation for
+            // callers that don't know the group boundary (accurate only when the local revlog is
+            // empty or a purely linear history -- a caller that can't guarantee that condition
+            // must use the 3-argument overload above instead).
             if (rev == 0) {
                 content = applyDelta(new byte[0], entry.delta);
             } else {
@@ -1708,18 +1676,15 @@ public class Revlog {
             }
         }
 
-        // 백로그 26번: 이 revlog가 이미 v2 포맷(가장 흔하게는 exp-copies-sidedata-changeset이
-        // 켜진 changelog)이면 아래 v1 전용 수동 바이트 라이팅 경로를 절대 타면 안 된다 --
-        // 인덱스 레코드 크기 자체가 다르다(64바이트 대 96바이트, 필드 배치도 다름). 대신
-        // appendRevisionV2를 그대로 재사용해 로컬 커밋(CommitCommand)이 만드는 것과 완전히
-        // 동일한 온디스크 레이아웃으로 남긴다 -- entry.sidedata(cg5의 CG_FLAG_SIDEDATA로 온
-        // 원시 sidedata 컨테이너 바이트, 없으면 null)가 있으면 그대로 .sda에 반영된다.
-        // entry.sidedata는 이미 SidedataCodec이 쓰는 것과 같은 "이미 직렬화된 외부 컨테이너"
-        // 포맷이라 재인코딩 없이 곧장 넘길 수 있다 -- 이전엔 이 메서드가 index.isV2()를 전혀
-        // 확인하지 않아 v2 revlog에 pull/push로 들어오는 리비전을 전부 v1 레이아웃으로
-        // 깨뜨렸고(사이드 이펙트로, 받은 cg5 sidedata도 통째로 버려졌다), 로컬 커밋에만
-        // 쓰이던 backlog 19의 sidedata 저장 능력이 changegroup 적용 경로에는 전혀 연결돼 있지
-        // 않았다.
+        // If this revlog is already in v2 format (most commonly a changelog with
+        // exp-copies-sidedata-changeset enabled), the v1-only manual byte-writing path below must
+        // never be taken -- the index record size itself differs (64 vs 96 bytes, and the field
+        // layout differs too). Instead, reuse appendRevisionV2 as-is so the result has exactly
+        // the same on-disk layout a local commit (CommitCommand) would produce -- if
+        // entry.sidedata is present (the raw sidedata container bytes carried by cg5's
+        // CG_FLAG_SIDEDATA, or null if absent), it is written to .sda unchanged. entry.sidedata
+        // is already in the same "already-serialized external container" format SidedataCodec
+        // itself writes, so it can be passed straight through without re-encoding.
         if (index.isV2()) {
             appendRevisionV2(rev, content, parent1, parent2, entry.node, linkRev, entry.sidedata);
             clearCache();
@@ -1774,11 +1739,10 @@ public class Revlog {
         byte[] nodeId32 = new byte[32];
         System.arraycopy(entry.node, 0, nodeId32, 0, 20);
 
-        // Mirrors appendRevision()'s inline/non-inline branching exactly (backlog #35) -- this
-        // hand-rolled writer previously always took the non-inline shape (separate datFile,
-        // formatFlags without the inline bit, offset computed from datFile.length()) regardless
-        // of `this.inline`, silently corrupting any inline revlog that received a pull/push
-        // changegroup entry.
+        // Must mirror appendRevision()'s inline/non-inline branching exactly: taking the
+        // non-inline shape (separate datFile, formatFlags without the inline bit, offset
+        // computed from datFile.length()) regardless of `this.inline` would corrupt any inline
+        // revlog that receives a pull/push changegroup entry.
         if (inline) {
             long offsetFlags;
             if (rev == 0) {

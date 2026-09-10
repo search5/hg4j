@@ -9,7 +9,7 @@ package io.github.search5.hg4j.transport.wireprotov1;
  * UNCOMPRESSED over HTTP unlike {@code streamres} — real hg's own {@code _callhttp} explicitly
  * treats only {@code streamres} as compressible, {@code streamreslegacy} gets the same plain
  * {@code bodygen=} treatment as {@code bytesresponse}; used for the bundle2 reply {@code
- * unbundle} sends back once it has itself received a bundle2-framed push, backlog item 26), and
+ * unbundle} sends back once it has itself received a bundle2-framed push), and
  * {@code ooberror} (an out-of-band error).
  *
  * <p>Both the HTTP glue ({@code HgHttpWireServer}) and SSH glue ({@code HgSshWireServer}) consume

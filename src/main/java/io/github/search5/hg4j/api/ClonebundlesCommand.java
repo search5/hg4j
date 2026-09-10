@@ -30,6 +30,9 @@ import java.util.List;
  * fails the entire clone (server operators rely on this: silently falling back would route
  * exactly the load they offloaded straight back at the origin server). This class matches that:
  * any failure propagates as an exception, never a silent fallback.</p>
+ *
+ * @apiNote {@link #downloadAndApply} is called by {@link FetchCommand} (the automatic bypass
+ *     during an initial clone) and exposed directly via {@link Hg#clonebundle}.
  */
 public final class ClonebundlesCommand {
 

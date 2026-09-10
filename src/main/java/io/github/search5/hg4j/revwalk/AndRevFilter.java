@@ -5,7 +5,11 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * 여러 RevFilter들의 AND 논리 조합을 나타내는 필터.
+ * A filter representing the logical AND combination of several {@link RevFilter}s.
+ *
+ * @apiNote Equivalent to chaining {@link RevFilter#and(RevFilter)} calls; provided as a
+ *     convenience for combining a {@link java.util.Collection} or varargs list of filters at
+ *     once, e.g. before passing the result to {@link ChangesetGraph#setRevFilter}.
  */
 public class AndRevFilter implements RevFilter {
     private final List<RevFilter> filters;

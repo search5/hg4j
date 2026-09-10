@@ -24,6 +24,10 @@ import java.util.logging.Logger;
  * disk, like {@code .hg/hgrc}); a profile named via {@code %include <path>} is instead a
  * <em>tracked</em> file, resolved from the manifest of a specific revision — so switching
  * revisions can change which sparse rules apply.
+ *
+ * @apiNote Resolved via {@link #resolveForRevision} and consumed via {@link #toPathFilter()};
+ *     used by {@code io.github.search5.hg4j.api.Hg}'s convenience helpers to restrict working-copy
+ *     operations to the active sparse profile.
  */
 public final class SparseConfig {
     private static final Logger LOGGER = Logger.getLogger(SparseConfig.class.getName());

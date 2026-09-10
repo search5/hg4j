@@ -45,6 +45,9 @@ import java.util.regex.Pattern;
  * precedent in this codebase); {@code [...]} character classes and
  * {@code {a,b}} brace alternation are not translated and are treated as
  * literal characters.
+ *
+ * @apiNote Typically obtained via {@link Hg#locate()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class LocateCommand {
 

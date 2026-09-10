@@ -21,20 +21,21 @@ import java.util.Arrays;
 
 /**
  * Command to compute differences (diff) between two revisions and provide Unified Diff format per file.
+ *
+ * @apiNote Typically obtained via {@link Hg#diff()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class DiffCommand {
     // "Not set" sentinel for newRevision -- deliberately NOT -1. -1 is the established
     // "no such revision / empty manifest" value shared with oldRevision's own sentinel scheme
     // (see ManifestTreeIterator.loadEntries()'s "-1" early-return) and with
-    // NodeIdUtil.findRevisionByNodeId()'s "not found" return value. Before this fix, newRevision
-    // used -1 for BOTH "caller never called setNewRevision()" (should default to tip) AND
-    // "setNewRevision(int)/setNewRevision(NodeId) was called with a revision that means empty"
-    // (should diff against an empty manifest) -- call() could not tell the two apart and always
-    // silently substituted tip for the latter, producing a wrong (and wrong in a way that never
-    // throws or logs anything) diff against tip instead of the caller's actual empty-manifest
-    // request. Found 2026-09-09 via yona's HgRepository.getDiff(revA, revB) approximating a
-    // nonexistent revB as revision -1 and getting a diff against tip instead of an all-DELETE
-    // diff against oldRevision.
+    // NodeIdUtil.findRevisionByNodeId()'s "not found" return value. Using -1 for newRevision
+    // would conflate two distinct meanings: "caller never called setNewRevision()" (should
+    // default to tip) and "setNewRevision(int)/setNewRevision(NodeId) was called with a revision
+    // that means empty" (should diff against an empty manifest) -- call() needs to tell the two
+    // apart rather than silently substituting tip for the latter, which would produce a wrong
+    // (and silently wrong) diff against tip instead of the caller's actual empty-manifest
+    // request.
     private static final int NOT_SET = Integer.MIN_VALUE;
 
     private final HgRepository repository;
@@ -116,8 +117,8 @@ public class DiffCommand {
     }
 
     public List<DiffEntry> call() throws IOException {
-        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
-        // changelog-v2 revlog after an external process appended a revision -- see
+        // Guard against a long-lived HgRepository handle serving a stale cached changelog-v2
+        // revlog after an external process appended a revision -- see
         // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
         // common (freshly-opened-per-call) case.
         repository.refreshIfChangedOnDisk();
@@ -214,22 +215,19 @@ public class DiffCommand {
         String oldText = new String(oldBytes, StandardCharsets.UTF_8);
         String newText = new String(newBytes, StandardCharsets.UTF_8);
 
-        // Backlog #39 (2026-09-05) bug fix: a plain `text.split("\n", -1)` on content that ends
-        // with a trailing newline (the overwhelmingly common case for any normal text file)
-        // produces a SPURIOUS extra empty trailing element -- "hello\n".split("\n", -1) is
-        // ["hello", ""], i.e. TWO "lines", when the file actually has exactly one. This used to
-        // make every such diff hunk claim (and add/remove) one phantom blank line beyond the
-        // file's real content -- confirmed live (2026-09-05): re-importing hg4j's own exported
-        // patch (via real `hg import`, or via this backlog item's rewritten ImportCommand) applied
-        // that phantom "+"/"-" blank line literally, corrupting the reconstructed file's bytes
-        // (an extra trailing "\n") and therefore its filelog/manifest/changeset node hash --
-        // caught by RequirementMatrixExportImportCoreRoundTripTest's byte-identical-node
-        // assertions. {@link #splitLines} strips exactly that phantom element; whether the real
-        // final line lacks ITS OWN trailing newline (a much rarer, unrelated case) is tracked
-        // separately via {@code oldHasTrailingNewline}/{@code newHasTrailingNewline} below and
-        // annotated with the standard `\ No newline at end of file` marker real diff/hg emit for
-        // it -- {@link ImportCommand}'s patch parser (this backlog item's other half) understands
-        // that marker on the way back in.
+        // A plain `text.split("\n", -1)` on content that ends with a trailing newline (the
+        // overwhelmingly common case for any normal text file) produces a SPURIOUS extra empty
+        // trailing element -- "hello\n".split("\n", -1) is ["hello", ""], i.e. TWO "lines", when
+        // the file actually has exactly one. Left unhandled, this would make every such diff hunk
+        // claim (and add/remove) one phantom blank line beyond the file's real content: re-
+        // importing hg4j's own exported patch (via real `hg import`, or via {@link ImportCommand})
+        // would apply that phantom "+"/"-" blank line literally, corrupting the reconstructed
+        // file's bytes (an extra trailing "\n") and therefore its filelog/manifest/changeset node
+        // hash. {@link #splitLines} strips exactly that phantom element; whether the real final
+        // line lacks ITS OWN trailing newline (a much rarer, unrelated case) is tracked separately
+        // via {@code oldHasTrailingNewline}/{@code newHasTrailingNewline} below and annotated with
+        // the standard `\ No newline at end of file` marker real diff/hg emit for it -- {@link
+        // ImportCommand}'s patch parser understands that marker on the way back in.
         String[] oldLines = splitLines(oldText);
         String[] newLines = splitLines(newText);
         boolean oldHasTrailingNewline = oldBytes.length == 0 || oldText.endsWith("\n");
@@ -240,15 +238,14 @@ public class DiffCommand {
 
         // Real hg's default (non-`--git`) unified-diff format marks a pure add/delete with a
         // literal "/dev/null" on the missing side, rather than "a/<path>"/"b/<path>" for a file
-        // that doesn't exist on that side at all -- verified against real `hg export`/`hg diff`
-        // output (2026-09-05, backlog #39): a brand-new file's header is "--- /dev/null" / "+++
-        // b/<path>", and a deleted file's is "--- a/<path>" / "+++ /dev/null". This used to
-        // unconditionally emit "a/<path>"/"b/<path>" on both sides regardless of add/delete,
-        // which real `hg import` still tolerates for a MODIFY but which real `hg import`'s own
-        // patch.py cannot correctly classify as "create a new file"/"delete this file" without
-        // the /dev/null marker (a bare "+++ b/newfile" line with no matching tracked file present
-        // is otherwise ambiguous). ImportCommand's own patch parser (this backlog item's other
-        // half) now depends on exactly this convention too.
+        // that doesn't exist on that side at all: a brand-new file's header is "--- /dev/null" /
+        // "+++ b/<path>", and a deleted file's is "--- a/<path>" / "+++ /dev/null".
+        // Unconditionally emitting "a/<path>"/"b/<path>" on both sides regardless of add/delete
+        // is tolerated by real `hg import` for a MODIFY, but real `hg import`'s own patch.py
+        // cannot correctly classify an add/delete as "create a new file"/"delete this file"
+        // without the /dev/null marker (a bare "+++ b/newfile" line with no matching tracked file
+        // present is otherwise ambiguous). ImportCommand's own patch parser depends on exactly
+        // this convention too.
         String oldSpec = (changeType == ChangeType.ADD) ? "/dev/null" : "a/" + path;
         String newSpec = (changeType == ChangeType.DELETE) ? "/dev/null" : "b/" + path;
 
@@ -258,9 +255,9 @@ public class DiffCommand {
 
         // Real unified diff convention: a hunk side whose FILE IS ABSENT ENTIRELY (add/delete,
         // matching the /dev/null marker above) is reported as starting at line 0 (e.g. "@@ -0,0
-        // +1,N @@" for a pure add), not "line 1" -- verified against real `hg export`'s own output
-        // for a newly added file. This is keyed off changeType, NOT off n/m == 0: a MODIFY between
-        // two revisions that both happen to be an empty (0-line) file still anchors at "1,0" on
+        // +1,N @@" for a pure add), not "line 1". This is keyed off changeType, NOT off
+        // n/m == 0: a MODIFY between two revisions that both happen to be an empty (0-line)
+        // file still anchors at "1,0" on
         // that side (the file exists, it's merely empty) -- only a side with no file at all drops
         // to "0,0".
         String oldHunkSpec = (changeType == ChangeType.ADD) ? "0,0" : "1," + n;

@@ -28,25 +28,24 @@ import java.util.zip.DeflaterOutputStream;
 /**
  * Porcelain command corresponding to {@code hg bundle} -- writes the same changegroup bytes
  * {@link PushCommand} sends over the wire to a local FILE instead, without any network dispatch.
- * Verified against real {@code hg} CLI (v7.2, 2026-09-02 and 2026-09-05) on scratch repos:
+ * Matches real {@code hg} CLI (v7.2) behavior on scratch repos:
  *
  * <ul>
  *   <li>{@code hg bundle out.hg} with no destination and no -a/--base and no
  *       {@code paths.default-push}/{@code paths.default} configured aborts with
  *       "config error: default repository not configured!" -- it never silently defaults to
- *       "bundle everything". Reproduced with {@code hg}, {@code hg -r <rev>}, and plain
+ *       "bundle everything". This holds for {@code hg}, {@code hg -r <rev>}, and plain
  *       {@code hg bundle out.hg}: all three require either an explicit base (or {@code -a}/
  *       {@code --base null}, which {@code hg help bundle} documents as equivalent) or a
  *       resolvable destination. {@link #call()} mirrors only the base/all half of that contract
  *       (see class-level note below on the destination-inference half being out of scope).</li>
  *   <li>{@code hg bundle --all --type none-v1 out.hg} produces a bare "HG10UN" header followed by
  *       the exact same 4-byte-length-prefixed cg1 chunk stream {@link PushCommand} already builds
- *       (confirmed byte-for-byte via {@code xxd}: {@code 4847 3130 554e 0000 00ae ...}), and real
- *       {@code hg unbundle} on a fresh repo reads it back faithfully (round-tripped: 3 changesets
- *       in, 3 changesets, same hashes, out).</li>
+ *       ({@code 4847 3130 554e 0000 00ae ...}), and real
+ *       {@code hg unbundle} on a fresh repo reads it back faithfully.</li>
  *   <li>{@code hg bundle --base <rev> out.hg} excludes {@code <rev>} and all of its ancestors from
- *       the bundle and includes every one of its *descendants* (verified on a branchy repo: with
- *       heads at revs 1 and 2 both descending from rev 0, {@code --base 0} bundled 1 and 2 both --
+ *       the bundle and includes every one of its *descendants* (e.g. on a branchy repo with
+ *       heads at revs 1 and 2 both descending from rev 0, {@code --base 0} bundles 1 and 2 both --
  *       not just the linear tip). {@code hg bundle -r <rev> --base null} includes {@code <rev>}
  *       and precisely its ancestors, correctly excluding an unrelated sibling branch.</li>
  * </ul>
@@ -63,23 +62,16 @@ import java.util.zip.DeflaterOutputStream;
  * {@code forcedeltaparentprev}) from a contiguous push range to an arbitrary ancestor-closure
  * selection.</p>
  *
- * <p><b>Backlog #39 (2026-09-05) treemanifest/sidedata investigation:</b> extending hg4j's
- * requirement matrix to this command (following the exact same real-hg-CLI-verification process
- * that found and fixed {@link PushCommand}'s equivalent bug -- see its own {@code call()} comments
- * on cg-version negotiation) turned up that {@code BundleCommand} had the SAME root bug as
- * pre-fix {@code PushCommand}: it only ever wrote bare cg1 bytes via now-removed hand-rolled
- * {@code writeEntryChunk}/{@code writePathChunk}/{@code writeTerminalChunk} helpers, which
- * structurally cannot carry a treemanifest subdirectory group at all -- so bundling any
- * treemanifest repo silently produced a bundle missing every subdirectory's file changes. Fixed
- * by switching to {@link ChangegroupParser#writeBundle} at a negotiated version and, for cg3,
- * packing every treemanifest dirlog the same way {@link PushCommand} does (see {@link
- * #findTreemanifestDirs} / {@link #packRevlogForSelectedRevs}). Verified via real {@code hg bundle
- * --type none-v3}/{@code hg unbundle}/{@code hg verify} on a treemanifest scratch repo.
+ * <p><b>Treemanifest/sidedata support:</b> {@code BundleCommand} writes changegroup entries via
+ * {@link ChangegroupParser#writeBundle} at a negotiated version and, for cg3,
+ * packs every treemanifest dirlog the same way {@link PushCommand} does (see {@link
+ * #findTreemanifestDirs} / {@link #packRevlogForSelectedRevs}) -- a bare cg1-only writer would
+ * structurally be unable to carry a treemanifest subdirectory group at all, silently producing a
+ * bundle missing every subdirectory's file changes.
  *
  * <p>Sidedata (cg5, {@code format.exp-use-copies-side-data-changeset=yes}) is deliberately NOT
  * negotiated here, unlike {@link PushCommand} (which does carry it over the wire) -- this is a
- * real {@code hg} limitation, not an hg4j gap, confirmed three independent ways against real
- * Mercurial 7.2.2 on 2026-09-05:
+ * real {@code hg} limitation, not an hg4j gap:
  * <ol>
  *   <li>{@code hg bundle}'s own CLI ({@code mercurial/cmd_impls/bundle.py}) hardcodes {@code
  *       if cgversion == b'01': ... elif cgversion in (b'02', b'03', b'04'): ... else: raise
@@ -87,21 +79,21 @@ import java.util.zip.DeflaterOutputStream;
  *       there is no {@code --type} spelling (no {@code v4}/{@code v5} bundlespec exists) that can
  *       ever make real {@code hg bundle} emit a cg5 changegroup, on ANY repo format, regardless of
  *       whether that repo's {@code changegroup.supportedoutgoingversions()} would otherwise allow
- *       it. Reproduced directly: {@code hg bundle --type "none-v2;cg.version=05" out.hg} on a
+ *       it -- {@code hg bundle --type "none-v2;cg.version=05" out.hg} on a
  *       sidedata repo raises exactly that {@code ProgrammingError}.</li>
  *   <li>Even setting that CLI restriction aside, a hand-built real-hg cg5 bundle2 FILE (via the
  *       Python {@code mercurial.changegroup}/{@code bundle2} APIs directly, bypassing the CLI
  *       guard) applied with real {@code hg unbundle} into a matching sidedata destination produces
  *       {@code hg verify} integrity errors ({@code "in manifest but not in changeset"}, {@code
  *       "rev 0 points to unexpected changeset"}).</li>
- *   <li>Critically, this is NOT specific to cg5 or to hand-built bundles: a plain real-hg-CREATED
+ *   <li>This is NOT specific to cg5 or to hand-built bundles: a plain real-hg-CREATED
  *       cg1 {@code none-v1} bundle FILE, applied via real {@code hg unbundle} into a real-hg
  *       {@code exp-use-copies-side-data-changeset=yes} destination, produces the IDENTICAL
  *       integrity errors -- a pure real-hg-to-real-hg control with hg4j nowhere in the loop. The
  *       same format WITHOUT the sidedata flag (plain {@code exp-use-changelog-v2} only) round-trips
  *       through a file-based bundle/unbundle cleanly. Live peer-to-peer exchange (plain {@code hg
  *       push}/{@code hg pull} between two such repos, no bundle FILE involved) is unaffected and
- *       stays clean -- which is exactly why {@link PushCommand} could safely add cg5 support while
+ *       stays clean -- which is exactly why {@link PushCommand} can safely add cg5 support while
  *       this class cannot: {@code hg bundle}/{@code hg unbundle}'s FILE-based path is where real
  *       hg 7.2's {@code exp-copies-sidedata-changeset} implementation itself breaks down, a
  *       pre-existing real-hg limitation for this explicitly experimental ({@code
@@ -110,8 +102,7 @@ import java.util.zip.DeflaterOutputStream;
  * </ol>
  * The requirement-matrix tests for this command therefore still exercise every {@code cl2+sidedata}
  * combo (rather than skipping it) but treat a resulting real-{@code hg verify} integrity error on
- * that specific combo as an expected, control-confirmed real-hg limitation rather than an hg4j
- * regression.
+ * that specific combo as an expected, real-hg limitation rather than a defect in hg4j itself.
  *
  * <p><b>Scope note:</b> unlike real {@code hg bundle}, this command does not fall back to
  * resolving an implicit base by opening a connection to {@code paths.default-push}/{@code
@@ -120,6 +111,9 @@ import java.util.zip.DeflaterOutputStream;
  * and is left as a follow-up. {@link #setBaseRevision(String)} must always be called explicitly;
  * pass {@code "null"} (matching {@code hg}'s own {@code --base null} spelling for "no known
  * ancestor", i.e. bundle everything) when there is no real incremental base.</p>
+ *
+ * @apiNote Typically obtained via {@link Hg#bundle()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class BundleCommand {
 
@@ -151,8 +145,8 @@ public class BundleCommand {
      *       reconstructs the full bzip2 stream by prepending the literal bytes {@code "BZ"} back
      *       onto everything after byte 6 -- i.e. it already assumes exactly this layout.</li>
      *   <li>{@link #NONE_V3}/{@link #GZIP_V3}/{@link #BZIP2_V3} ({@code none-v3}/{@code gzip-v3}/
-     *       {@code bzip2-v3}, backlog #39, 2026-09-05) -- the ONLY {@code --type} family real
-     *       {@code hg bundle} can use on a treemanifest repository at all (verified: {@code hg
+     *       {@code bzip2-v3}) -- the ONLY {@code --type} family real
+     *       {@code hg bundle} can use on a treemanifest repository at all ({@code hg
      *       bundle --all --type none-v1 out.hg} on a treemanifest repo aborts with "repository does
      *       not support bundle version 01", and even the CLI's own DEFAULT type, plain
      *       {@code bzip2} with no {@code -v1}/{@code -v3} suffix, aborts the same way with
@@ -304,7 +298,7 @@ public class BundleCommand {
                 return 0;
             }
 
-            // Backlog #39 (2026-09-05): negotiate a changegroup version from what THIS bundle's
+            // Negotiate a changegroup version from what THIS bundle's
             // repository format needs vs. what the requested BundleType can actually carry,
             // mirroring real hg's own hard split between the "-v1" (cg1-only) and "-v3" (cg3,
             // tree-capable) bundlespec families -- see BundleType's javadoc for the real-hg
@@ -446,9 +440,9 @@ public class BundleCommand {
                 if (treemanifest) {
                     // Enumerate every directory manifest ("dirlog") this treemanifest repository
                     // has ever written and pack whichever of its revisions were selected above --
-                    // the exact bug PushCommand's own backlog #39 fix found and fixed on the
-                    // SENDING side (the RECEIVING side, FetchCommand#applyBundle's
-                    // bundle.manifestGroups handling, already fully supports this).
+                    // this SENDING side must produce the same directory manifest groups the
+                    // RECEIVING side (FetchCommand#applyBundle's
+                    // bundle.manifestGroups handling) already fully supports.
                     List<String> treeDirs = findTreemanifestDirs(repository);
                     Collections.sort(treeDirs);
                     for (String dirPath : treeDirs) {
@@ -496,16 +490,13 @@ public class BundleCommand {
             }
 
             // 2. Serialize the changegroup payload at the negotiated version, reusing the same
-            // shared writer PushCommand/HgLocalClient#getBundle already rely on (backlog #39,
-            // 2026-09-05: BundleCommand used to hand-roll bare cg1 bytes here via now-removed
-            // writeEntryChunk/writePathChunk/writeTerminalChunk helpers, which structurally could
-            // not carry a treemanifest directory group).
+            // shared writer PushCommand/HgLocalClient#getBundle already rely on.
             ByteArrayOutputStream cgOut = new ByteArrayOutputStream();
             ChangegroupParser.writeBundle(cgOut, bundle, version);
             byte[] payloadBytes = cgOut.toByteArray();
 
             // 3. Wrap the payload in the requested container/compression format (see BundleType's
-            // javadoc for exactly how each byte layout was verified against real hg) and write to
+            // javadoc for exactly how each byte layout matches real hg) and write to
             // disk -- this remains the only way BundleCommand differs from PushCommand's
             // changegroup-building logic: no HgRemoteConnection dispatch, just a local file.
             ByteArrayOutputStream fileOut = new ByteArrayOutputStream();
@@ -597,7 +588,7 @@ public class BundleCommand {
     /**
      * Packs every revision of {@code revlog} whose {@code linkRev} is a member of {@code
      * selectedRevs} into changegroup entries -- shared by this command's filelog packing and its
-     * treemanifest dirlog packing (backlog #39, 2026-09-05: the same rule {@link
+     * treemanifest dirlog packing (the same rule {@link
      * PushCommand#packRevlogRange} uses for its own contiguous {@code startRev}-based selection,
      * generalized here to BundleCommand's arbitrary ancestor-closure selection). Each new entry's
      * delta basis is its own real parent's content for the first packed revision, and the

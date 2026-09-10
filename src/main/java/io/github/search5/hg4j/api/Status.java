@@ -5,6 +5,9 @@ import java.util.Set;
 
 /**
  * Represents the status of files in the working directory compared to the repository state.
+ *
+ * @apiNote Returned by {@link StatusCommand#call()} (obtained via {@link Hg#status()}); each set
+ *     contains repository-relative paths, mirroring real hg's own {@code hg status} categories.
  */
 public class Status {
     private final Set<String> added = new LinkedHashSet<>();

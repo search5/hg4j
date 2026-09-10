@@ -28,6 +28,11 @@ import java.security.NoSuchAlgorithmException;
  *
  * <p>The null hex used for "no file" is Mercurial's null node (40 hex zeros), matching
  * {@code repo.nodeconstants.nullhex}.</p>
+ *
+ * @apiNote {@link #read} and {@link #write} are the main entry points, used by {@code
+ *     MergeCommand}/{@code RebaseCommand}/{@code GraftCommand}/{@code BackoutCommand} to persist
+ *     an in-progress conflicted merge, and by {@code ResolveCommand}/{@code CommitCommand} to
+ *     read it back when resolving conflicts or completing a merge commit.
  */
 public final class MergeState {
     private static final char RECORD_LOCAL = 'L';
@@ -67,6 +72,13 @@ public final class MergeState {
     /** Optional merge tool labels (local/other/base), written verbatim if non-empty. */
     public final List<String> labels = new ArrayList<>();
 
+    /**
+     * Records a new unresolved file conflict for {@code path}.
+     *
+     * @apiNote Called by {@code MergeCommand}/{@code RebaseCommand}/{@code GraftCommand}/{@code
+     *     BackoutCommand} for each file their 3-way merge ({@link
+     *     io.github.search5.hg4j.merge.Merge3}) could not resolve automatically.
+     */
     public void addMergedFile(String path, String localKey, String localFile, String ancestorFile,
                                String ancestorNodeHex, String otherFile, String otherNodeHex, String flags) {
         List<String> fields = new ArrayList<>();
@@ -81,10 +93,19 @@ public final class MergeState {
         state.put(path, fields);
     }
 
+    /**
+     * Marks {@code path} as resolved.
+     *
+     * @apiNote Called by {@code ResolveCommand} ({@code hg resolve --mark} or after successfully
+     *     re-running the merge tool) and by the {@code continue}-style methods of {@code
+     *     GraftCommand}/{@code RebaseCommand}/{@code BackoutCommand} once the caller confirms a
+     *     conflict is resolved.
+     */
     public void markResolved(String path) {
         setResolutionState(path, true);
     }
 
+    /** Marks {@code path} as unresolved again ({@code hg resolve --unmark}). */
     public void markUnresolved(String path) {
         setResolutionState(path, false);
     }
@@ -114,6 +135,12 @@ public final class MergeState {
         return state.isEmpty();
     }
 
+    /**
+     * Lists every path still marked unresolved (or path-conflict-unresolved).
+     *
+     * @apiNote Used by {@code ResolveCommand} (e.g. {@code hg resolve --list}) and by {@code
+     *     CommitCommand} to refuse a commit while unresolved conflicts remain.
+     */
     public List<String> unresolvedFiles() {
         List<String> result = new ArrayList<>();
         for (Map.Entry<String, List<String>> e : state.entrySet()) {
@@ -141,6 +168,13 @@ public final class MergeState {
         }
     }
 
+    /**
+     * Reads and decodes {@code .hg/merge/state2}, or returns an inactive (empty) {@code
+     * MergeState} if the file doesn't exist.
+     *
+     * @apiNote The counterpart to {@link #write}; also able to read a {@code state2} file
+     *     written by real hg itself, so hg4j can inspect/resolve a merge real hg started.
+     */
     public static MergeState read(File stateFile) throws IOException {
         MergeState ms = new MergeState();
         if (stateFile == null || !stateFile.exists()) {
@@ -195,13 +229,22 @@ public final class MergeState {
                     }
                 }
             }
-            // 그 외 대문자(필수) 레코드 타입은 실제 hg라면 UnsupportedMergeRecords로 중단하지만,
-            // 여기서는 알려지지 않은 레코드를 조용히 건너뛴다 — 이 클래스가 아직 다루지 않는
-            // 레코드 종류(예: 레거시 머지 드라이버) 때문에 정상 파일 파싱이 막히지 않도록 한다.
+            // Real hg would abort with UnsupportedMergeRecords for any other uppercase
+            // (mandatory) record type, but here unknown records are silently skipped instead --
+            // so that a record kind this class does not yet handle (e.g. a legacy merge driver)
+            // does not block parsing an otherwise normal file.
         }
         return ms;
     }
 
+    /**
+     * Encodes and writes this merge state to {@code .hg/merge/state2}, in a format real hg's own
+     * {@code hg resolve}/{@code hg status} can read back.
+     *
+     * @apiNote {@link #local} and {@link #other} must be set first; called by {@code
+     *     MergeCommand}/{@code RebaseCommand}/{@code GraftCommand}/{@code BackoutCommand}
+     *     whenever their merge leaves any conflict unresolved.
+     */
     public void write(File stateFile) throws IOException {
         if (local == null || other == null) {
             throw new IllegalStateException("MergeState.local and .other must be set before writing");
@@ -259,6 +302,11 @@ public final class MergeState {
         Files.write(stateFile.toPath(), out.toByteArray());
     }
 
+    /**
+     * Deletes the merge state file, marking the merge as fully resolved/completed.
+     *
+     * @apiNote Called once every conflict is resolved and the merge is committed (or aborted).
+     */
     public static void clean(File stateFile) throws IOException {
         Files.deleteIfExists(stateFile.toPath());
     }

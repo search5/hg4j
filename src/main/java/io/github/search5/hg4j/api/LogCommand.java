@@ -20,6 +20,9 @@ import java.util.Set;
 
 /**
  * Traverses changelog revlog and retrieves commit history.
+ *
+ * @apiNote Typically obtained via {@link Hg#log()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class LogCommand {
     private static final Logger LOGGER = Logger.getLogger(LogCommand.class.getName());
@@ -60,13 +63,12 @@ public class LogCommand {
      * feature: the {@code copy}/{@code copyrev} metadata embedded directly in the destination
      * file's own filelog revision 0 (written by {@link CommitCommand} whenever a commit follows
      * an {@code hg copy}/{@code hg rename}, and read back via {@link Revlog#getRevisionMetadata}),
-     * <em>not</em> the changelog-level {@code SD_FILES} sidedata from backlog items 17/19. Real
-     * hg's own {@code copies.usechangesetcentricalgo()} only switches to sidedata-backed copy
-     * tracing when a repository was created with {@code format.use-changelog-v2} and the
-     * {@code exp-copies-sidedata-changeset} requirement -- verified against a live {@code hg}
-     * 7.2-created repository (plain {@code hg init}), whose {@code hg debugformat} reports
-     * {@code copies-sdc: no} and {@code changelog-v2: no}, i.e. the ordinary/default case. Setting
-     * this option implies {@link #setFollowAncestors(boolean)}.
+     * <em>not</em> the changelog-level {@code SD_FILES} sidedata. Real hg's own
+     * {@code copies.usechangesetcentricalgo()} only switches to sidedata-backed copy tracing when
+     * a repository was created with {@code format.use-changelog-v2} and the
+     * {@code exp-copies-sidedata-changeset} requirement -- a plain {@code hg init} repository
+     * reports {@code copies-sdc: no} and {@code changelog-v2: no} in {@code hg debugformat}, i.e.
+     * the ordinary/default case. Setting this option implies {@link #setFollowAncestors(boolean)}.
      */
     public LogCommand setFollowPath(String path) {
         this.followPath = path;
@@ -75,10 +77,10 @@ public class LogCommand {
     }
 
     public List<HgCommit> call() throws IOException {
-        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
-        // changelog-v2 revlog after an external process appended a revision -- see
-        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
-        // common (freshly-opened-per-call) case.
+        // Guard against a long-lived HgRepository handle serving a stale cached changelog-v2
+        // revlog after an external process appended a revision -- see DescribeCommand#call()'s
+        // javadoc for the full explanation. Cheap no-op in the common (freshly-opened-per-call)
+        // case.
         repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
@@ -154,7 +156,7 @@ public class LogCommand {
             long timestamp = 0;
             int tzOffset = 0;
             String branch = "default";
-            // P3-19 -- decoded (real-newline) gpgsig/gpgfingerprint extra values, if present.
+            // Decoded (real-newline) gpgsig/gpgfingerprint extra values, if present.
             String gpgSignature = null;
             String gpgFingerprint = null;
 
@@ -205,7 +207,7 @@ public class LogCommand {
                 }
             }
 
-            // P3-19: reconstruct the exact bytes a gpgsig signature was computed over -- this
+            // Reconstruct the exact bytes a gpgsig signature was computed over -- this
             // revision's own raw text with ONLY the gpgsig extra entry removed (every other
             // field, including gpgfingerprint/branch/close, stays byte-identical) -- mirrors
             // git's GpgSignatureVerifier.signedDataOf()'s "strip exactly the gpgsig header,
@@ -268,7 +270,7 @@ public class LogCommand {
      * <p>Crossing a rename boundary reads the {@code copy} key filelog revision 0 carries in its
      * own metadata header (see {@link Revlog#getRevisionMetadata}) -- the classic, filelog-level
      * mechanism real hg's default (non-changeset-centric) copy tracing itself uses, not the
-     * changelog {@code SD_FILES} sidedata from backlog items 17/19 (see {@link #setFollowPath}).
+     * changelog {@code SD_FILES} sidedata (see {@link #setFollowPath}).
      */
     private Set<Integer> computeFollowPathRevs(Revlog changelog, int startRevNum, String initialPath) throws IOException {
         ChangesetGraph graph = new ChangesetGraph(changelog);

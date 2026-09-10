@@ -9,6 +9,10 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
 /**
  * High-performance parser for Mercurial subrepository configuration files (.hgsub and .hgsubstate).
  * Seamlessly joins submodule definitions with their state revisions.
+ *
+ * @apiNote Used by {@code UpdateCommand}/{@code MergeCommand} to resolve every configured
+ *     subrepo's declared source/type and pinned revision in one pass, producing {@link
+ *     HgSubrepoEntry} instances keyed by subrepo path.
  */
 public final class HgSubrepoParser {
 
@@ -48,7 +52,7 @@ public final class HgSubrepoParser {
                     isGit = true;
                     rawUrl = rawUrl.substring("[git]".length()).trim();
                 } else if (rawUrl.startsWith("[svn]")) {
-                    // Backlog 41: real hg's own .hgsub grammar (see `hg help subrepos`),
+                    // Real hg's own .hgsub grammar (see `hg help subrepos`),
                     // e.g. "path/to/nested = [svn]https://example.com/nested/trunk/path".
                     isSvn = true;
                     rawUrl = rawUrl.substring("[svn]".length()).trim();

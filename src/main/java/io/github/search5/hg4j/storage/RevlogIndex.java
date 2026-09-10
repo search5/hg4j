@@ -39,10 +39,10 @@ public class RevlogIndex {
     private long lastKnownSize = 0;
 
     // v2 Docket Fields.
-    // 실제 hg CLI(Mercurial 7.2)로 생성한 changelog-v2 저장소를 hexdump/python struct로
-    // 직접 대조해 검증된 레이아웃이다 (mercurial/revlogutils/docket.py의 S_HEADER,
-    // mercurial/revlogutils/constants.py의 REVLOGV2/CHANGELOGV2/INDEX_ENTRY_V2/INDEX_ENTRY_CL_V2).
-    // src/test/resources/fixtures/revlogv2-changelog/README.md 참고.
+    // This layout was verified by directly comparing a changelog-v2 store produced by a real hg
+    // CLI (Mercurial 7.2) via hexdump/python struct (mercurial/revlogutils/docket.py's S_HEADER,
+    // mercurial/revlogutils/constants.py's REVLOGV2/CHANGELOGV2/INDEX_ENTRY_V2/INDEX_ENTRY_CL_V2).
+    // See src/test/resources/fixtures/revlogv2-changelog/README.md.
     static final int MAGIC_REVLOGV2 = 0xDEAD;
     static final int MAGIC_CHANGELOGV2 = 0xD34D;
     static final int V2_HEADER_SIZE = 59; // >I (4) + BBBBBB (6) + QQQQQQ (48) + c (1)
@@ -127,8 +127,7 @@ public class RevlogIndex {
      *     decides which codec COMP_MODE_DEFAULT chunks use purely from this docket-level field,
      *     not from the per-record compression-mode bits or from requires directly -- a mismatch
      *     between what {@link Revlog#appendRevisionV2} actually writes and what this field
-     *     declares makes every COMP_MODE_DEFAULT revision unreadable by real hg (found 2026-09-04,
-     *     see {@link Revlog#appendRevisionV2}'s own javadoc for the interop bug this fixes).
+     *     declares makes every COMP_MODE_DEFAULT revision unreadable by real hg.
      */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2, boolean createAsChangelogV2, NodeMapFile persistentNodeMap, boolean useZstd) throws IOException {
         this.idxFile = idxFile;
@@ -136,16 +135,11 @@ public class RevlogIndex {
         if (idxFile.exists()) {
             loadIndex();
         } else if (createAsChangelogV2) {
-            // Precedence fix (2026-09-05): this branch must be checked BEFORE createAsGeneralV2 --
-            // this constructor's own javadoc above already documents "changelog-v2 takes
-            // precedence since it is the more specific format", but the branch order previously
-            // did the opposite (checked createAsGeneralV2 first), silently bootstrapping a
-            // changelog-v2+general-v2 repository's changelog as plain general-v2 (no `rank` field)
-            // instead of CHANGELOGV2. See DefaultFileStoreEngine#getRevlog's javadoc for the full
-            // real-hg crash this caused and how it was found. In practice the two call sites
-            // (DefaultFileStoreEngine) never pass both true simultaneously anymore after that fix,
-            // but this order is kept correct here too as the documented, defense-in-depth contract
-            // of this constructor.
+            // Must be checked BEFORE createAsGeneralV2: changelog-v2 takes precedence since it is
+            // the more specific format -- checking createAsGeneralV2 first would silently
+            // bootstrap a changelog-v2+general-v2 repository's changelog as plain general-v2 (no
+            // `rank` field) instead of CHANGELOGV2. See DefaultFileStoreEngine#getRevlog's javadoc
+            // for why the two flags matter separately.
             initializeNewV2Docket(true, useZstd);
         } else if (createAsGeneralV2) {
             initializeNewV2Docket(false, useZstd);
@@ -201,8 +195,8 @@ public class RevlogIndex {
         // purely from this one docket-level byte -- '(' (0x28, zstd's own frame-magic lead byte)
         // for zstd, 'x' (0x78, zlib's own header byte) for zlib -- matching mercurial/revlogutils/
         // docket.py's default_compression_header and real hg's own on-disk bytes for a
-        // usezstd=false repository (verified 2026-09-04, must stay in sync with which codec
-        // Revlog#appendRevisionV2 actually compresses with).
+        // usezstd=false repository -- must stay in sync with which codec Revlog#appendRevisionV2
+        // actually compresses with.
         this.docketDefaultCompression = (byte) (useZstd ? '(' : 'x');
 
         ByteBuffer header = ByteBuffer.allocate(V2_HEADER_SIZE);
@@ -272,17 +266,17 @@ public class RevlogIndex {
         return docketDefaultCompression;
     }
 
-    /** v2 docket이 가리키는 실제 인덱스(.idx) 파일. v1이면 null. */
+    /** The actual index (.idx) file the v2 docket points to, or {@code null} for v1. */
     public File getResolvedIndexFile() {
         return resolvedIndexFile;
     }
 
-    /** v2 docket이 가리키는 실제 데이터(.dat) 파일. v1이면 null. */
+    /** The actual data (.dat) file the v2 docket points to, or {@code null} for v1. */
     public File getResolvedDataFile() {
         return resolvedDataFile;
     }
 
-    /** v2 docket이 가리키는 실제 sidedata(.sda) 파일. v1이면 null. */
+    /** The actual sidedata (.sda) file the v2 docket points to, or {@code null} for v1. */
     public File getResolvedSidedataFile() {
         return resolvedSidedataFile;
     }
@@ -293,7 +287,7 @@ public class RevlogIndex {
         return new String(b, StandardCharsets.US_ASCII);
     }
 
-    /** S_OLD_UID = '>BL' (uid 크기 1B + 파일 크기 4B) * count, 이어서 실제 uuid 바이트들. */
+    /** S_OLD_UID = '>BL' (1-byte uid size + 4-byte file size) * count, followed by the actual uuid bytes. */
     private static void skipOldUids(ByteBuffer buf, int count) {
         if (count == 0) return;
         int[] sizes = new int[count];
@@ -312,10 +306,10 @@ public class RevlogIndex {
     }
 
     /**
-     * v2 인덱스 레코드(96바이트)에서 20바이트 node id를 추출한다.
-     * CHANGELOGV2(INDEX_ENTRY_CL_V2 = {@code >Qiiii20s12xQiBi23x})는 node가 offset 24,
-     * 일반 REVLOGV2(INDEX_ENTRY_V2 = {@code >Qiiiiii20s12xQiB19x})는 offset 32에 위치한다
-     * (실측: Qiiii=8+4*4=24 vs Qiiiiii=8+4*6=32).
+     * Extracts the 20-byte node id from a v2 index record (96 bytes).
+     * CHANGELOGV2 ({@code INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x}) has node at offset 24,
+     * while general REVLOGV2 ({@code INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x}) has it at offset 32
+     * (confirmed: Qiiii=8+4*4=24 vs Qiiiiii=8+4*6=32).
      */
     private byte[] extractV2NodeId(ByteBuffer buf) {
         int nodeOffset = isChangelogV2 ? 24 : 32;
@@ -337,14 +331,12 @@ public class RevlogIndex {
             // When the disk file does not exist, in-memory addedRecords and nodeMap must be preserved, so return without clearing the cache.
             return;
         }
-        // No time-based throttling here (removed 2026-09-02): idxFile.length() is a single,
-        // sub-microsecond stat() syscall, and PerformanceBenchmarkTest's 1,000-read SLA (2s
-        // budget) has ample headroom for one extra stat per call. A wall-clock throttle window
-        // instead created a real correctness bug -- a long-lived HgRepository/Revlog handle
-        // (e.g. the remote side of two separate PushCommand.call() invocations against the same
-        // bare repo, each going through its own HgRepository instance) could silently keep
-        // returning a stale revision count for up to the throttle window after another instance
-        // wrote to the same store, with no way for the caller to know its read was stale.
+        // No time-based throttling here: idxFile.length() is a single, sub-microsecond stat()
+        // syscall, so checking it on every call is cheap. A wall-clock throttle window would
+        // instead create a real correctness bug -- a long-lived HgRepository/Revlog handle could
+        // silently keep returning a stale revision count for up to the throttle window after
+        // another instance wrote to the same store, with no way for the caller to know its read
+        // was stale.
         long currentSize = idxFile.length();
         if (currentSize != lastKnownSize) {
             // During local write transactions, addedRecords is populated. Reset the cache only
@@ -385,17 +377,14 @@ public class RevlogIndex {
                 // above, we do NOT fall back to clearCache() here even though addedRecords is
                 // non-empty: clearCache() would wipe addedRecords itself, which is exactly the
                 // "commit, then immediately strip/rebase/histedit the same revision with the same
-                // handle" regression this class's hasLocallyAddedRecords()-based protection exists
+                // handle" scenario this class's hasLocallyAddedRecords()-based protection exists
                 // to prevent (see HgRepository#refreshIfChangedOnDisk()'s javadoc). A pure
                 // incremental load only appends new tail entries and never touches existing
                 // nodeMap/fileOffsets/addedRecords entries, so it is safe to run even with pending
-                // local additions -- found live 2026-09-06: a long-lived HgHttpWireServer/
-                // HgSshWireServer HgRepository handle that made exactly one local commit (e.g. at
-                // server startup) would otherwise never again notice further commits appended by
-                // an external `hg` CLI process for the rest of the server's lifetime, since
-                // hasLocallyAddedRecords() stays permanently true once any local write ever
-                // happens (confirmed via HgHttpWireServerRealHgInteropTest#
-                // realHgClonesMultipleBranchesBookmarksAndTagsFromHg4jServedOverHttp).
+                // local additions -- without this, a long-lived HgHttpWireServer/HgSshWireServer
+                // HgRepository handle that made even one local commit would never again notice
+                // further commits appended externally, since hasLocallyAddedRecords() stays
+                // permanently true once any local write ever happens.
                 try {
                     loadIndexIncremental(lastKnownSize);
                 } catch (IOException ignored) {
@@ -422,8 +411,9 @@ public class RevlogIndex {
             this.lastKnownSize = len;
             if (len == 0) return;
 
-            // v2 판별: 4바이트 빅엔디안 version_header의 하위 16비트가 REVLOGV2(0xDEAD)
-            // 또는 CHANGELOGV2(0xD34D)인지 확인 (mercurial/revlogutils/constants.py 실측값).
+            // v2 detection: check whether the low 16 bits of the 4-byte big-endian
+            // version_header are REVLOGV2 (0xDEAD) or CHANGELOGV2 (0xD34D) (values confirmed
+            // against mercurial/revlogutils/constants.py).
             if (len >= 4) {
                 ByteBuffer firstFour = ByteBuffer.allocate(4);
                 channel.position(0);
@@ -440,13 +430,14 @@ public class RevlogIndex {
                     this.isChangelogV2 = (rlVersion == MAGIC_CHANGELOGV2);
                     this.versionHeader = header;
 
-                    // S_HEADER = >I BBBBBB QQQQQQ c (59바이트, 오프셋은 mercurial/revlogutils/docket.py 실측)
+                    // S_HEADER = >I BBBBBB QQQQQQ c (59 bytes; offsets confirmed against
+                    // mercurial/revlogutils/docket.py)
                     ByteBuffer headerBuf = ByteBuffer.allocate(V2_HEADER_SIZE);
                     channel.position(0);
                     channel.read(headerBuf);
                     headerBuf.flip();
 
-                    headerBuf.getInt(); // version_header (이미 읽음)
+                    headerBuf.getInt(); // version_header (already read above)
                     int indexUuidSize = headerBuf.get() & 0xFF;
                     int olderIndexUuidCount = headerBuf.get() & 0xFF;
                     int dataUuidSize = headerBuf.get() & 0xFF;
@@ -461,8 +452,9 @@ public class RevlogIndex {
                     this.docketPendingSidedataEnd = headerBuf.getLong();
                     this.docketDefaultCompression = headerBuf.get();
 
-                    // 헤더 이후: index_uuid, older_index_uuids, data_uuid, older_data_uuids,
-                    // sidedata_uuid, older_sidedata_uuids 순서 (parse_docket_args와 동일 순서).
+                    // After the header, in this order: index_uuid, older_index_uuids, data_uuid,
+                    // older_data_uuids, sidedata_uuid, older_sidedata_uuids (same order as
+                    // parse_docket_args).
                     ByteBuffer tail = ByteBuffer.allocate((int) (len - V2_HEADER_SIZE));
                     channel.position(V2_HEADER_SIZE);
                     channel.read(tail);
@@ -475,7 +467,8 @@ public class RevlogIndex {
                     String sidedataUuid = readAsciiUid(tail, sidedataUuidSize);
                     skipOldUids(tail, olderSidedataUuidCount);
 
-                    // 파일명 규칙: {radix}-{uuid}.idx / .dat / .sda (mercurial/revlogutils/docket.py)
+                    // File naming convention: {radix}-{uuid}.idx / .dat / .sda
+                    // (mercurial/revlogutils/docket.py)
                     this.radix = deriveRadix(idxFile.getName());
                     this.resolvedIndexFile = new File(idxFile.getParentFile(), radix + "-" + indexUuid + ".idx");
                     this.resolvedDataFile = new File(idxFile.getParentFile(), radix + "-" + dataUuid + ".dat");
@@ -486,7 +479,8 @@ public class RevlogIndex {
                                 "Invalid v2 docket: companion index file missing: " + resolvedIndexFile);
                     }
 
-                    // 인덱스 레코드는 실제 companion .idx 파일에서 읽는다 (docket 자체가 아님).
+                    // Index records are read from the actual companion .idx file, not the
+                    // docket itself.
                     try (FileChannel idxChannel = FileChannel.open(resolvedIndexFile.toPath(), StandardOpenOption.READ)) {
                         long idxLen = idxChannel.size();
                         ByteBuffer buf = ByteBuffer.allocate(V2_RECORD_SIZE);
@@ -512,7 +506,7 @@ public class RevlogIndex {
                     return;
                 }
 
-                // v2가 아닌 경우 포지션 원복
+                // Not v2 -- restore the channel position.
                 channel.position(0);
             }
 
@@ -779,12 +773,13 @@ public class RevlogIndex {
     }
 
     /**
-     * INDEX_ENTRY_V2 / INDEX_ENTRY_CL_V2(96바이트)를 디코딩한다. 실제 hg CLI로 생성한
-     * changelog-v2 픽스처로 검증됨 (RevlogV2ParserTest 참고). changelog-v2는 baseRev/linkRev를
-     * 별도로 저장하지 않는다 — 실측 결과 각 리비전은 델타 체인 없이 독립 zstd 프레임으로
-     * 저장되므로(=완전한 fulltext), baseRev=rev로 두면 {@link Revlog#getRawRevisionContent}의
-     * 델타 체인 추적이 즉시 종료되어 올바르게 동작한다. linkRev도 changelog 자기 자신을
-     * 가리키므로 rev와 동일하게 둔다.
+     * Decodes an INDEX_ENTRY_V2 / INDEX_ENTRY_CL_V2 (96-byte) record. Verified against a
+     * changelog-v2 fixture produced by a real hg CLI (see RevlogV2ParserTest). changelog-v2 does
+     * not separately store baseRev/linkRev -- since each revision is confirmed to be stored as
+     * an independent zstd frame with no delta chain (i.e. a complete fulltext), setting
+     * baseRev=rev makes {@link Revlog#getRawRevisionContent}'s delta chain walk terminate
+     * immediately and behave correctly. linkRev is likewise set equal to rev, since it also
+     * refers to the changelog itself.
      */
     private Revlog.IndexRecord decodeV2Record(int rev, ByteBuffer buf) {
         long offsetFlags = buf.getLong();
@@ -851,7 +846,7 @@ public class RevlogIndex {
      * HgRepository#refreshIfChangedOnDisk()}) must not force a reload of an index in this state:
      * doing so silently discards the same "this instance already knows its own local write
      * history" trust that {@code checkAndUpdate()}'s {@code addedRecords.isEmpty()} guard exists
-     * to protect (backlog #39, 2026-09-05).
+     * to protect.
      */
     public synchronized boolean hasLocallyAddedRecords() {
         return !addedRecords.isEmpty();
@@ -945,10 +940,10 @@ public class RevlogIndex {
         hexNodeMap.put(NodeIdUtil.toHex(clippedNode), clippedNode);
         recordCache.put(rev, new SoftReference<>(record));
         
-        // 물리 파일 쓰기는 Revlog.appendRevision()/appendRevisionV2()의 책임이다
-        // (v1과 동일한 계약 — addRecord()는 순수 인메모리 북키핑만 담당).
-        // v2에서 실제 companion 파일 크기가 바뀌었으면 여기서 lastKnownSize를 갱신해
-        // checkAndUpdate()가 불필요하게 재파싱하지 않도록 한다.
+        // Writing the physical file is Revlog.appendRevision()/appendRevisionV2()'s
+        // responsibility (same contract as v1 -- addRecord() only does in-memory bookkeeping).
+        // If the actual companion file size changed for v2, update lastKnownSize here so
+        // checkAndUpdate() doesn't needlessly re-parse.
         File sizeTrackedFile = (isV2 && resolvedIndexFile != null) ? resolvedIndexFile : idxFile;
         if (sizeTrackedFile.exists()) {
             this.lastKnownSize = sizeTrackedFile.length();
@@ -956,25 +951,27 @@ public class RevlogIndex {
     }
 
     /**
-     * v2 docket 헤더의 index_end/data_end(및 pending 쌍) 필드를 갱신한다. {@code
-     * docketSidedataEnd}/{@code docketPendingSidedataEnd}는 그대로 유지한다 — sidedata를
-     * 함께 쓴 append라면 {@link #updateV2DocketSizes(long, long, long)}를 대신 쓸 것.
-     * 헤더의 나머지 필드(uuid, 압축 헤더)는 그대로 유지한다. 물리 companion 파일에 이미
-     * 데이터를 쓴 뒤 {@code Revlog.appendRevisionV2()}에서 호출된다.
+     * Updates the v2 docket header's index_end/data_end (and their pending counterparts)
+     * fields. {@code docketSidedataEnd}/{@code docketPendingSidedataEnd} are left unchanged --
+     * use {@link #updateV2DocketSizes(long, long, long)} instead for an append that also wrote
+     * sidedata. The header's remaining fields (uuids, compression header) are left unchanged.
+     * Called from {@code Revlog.appendRevisionV2()} after data has already been written to the
+     * physical companion file.
      */
     synchronized void updateV2DocketSizes(long newIndexEnd, long newDataEnd) throws IOException {
         updateV2DocketSizes(newIndexEnd, newDataEnd, this.docketSidedataEnd);
     }
 
     /**
-     * {@link #updateV2DocketSizes(long, long)}와 같지만 {@code sidedata_end}(및 pending)도
-     * 함께 갱신한다 — real hg의 {@code hg verify}/{@code hg debugchangedfiles}가 {@code .sda}
-     * 파일의 실제 바이트가 아니라 <b>이 docket 헤더에 기록된 값</b>을 "유효한 sidedata
-     * 길이"로 신뢰하기 때문에(실측: 이 필드를 갱신하지 않고 sidedata를 append만 하면
-     * "expected N bytes from offset M, data size is <stale sidedata_end>"로 거부됨 —
-     * SidedataFilesWriteTest에서 재현·확인), sidedata를 쓸 때마다 반드시 같이 갱신해야
-     * 한다. {@code newSidedataEnd}는 이번 append로 이 revlog 전체 sidedata 파일에 누적된
-     * 총 유효 바이트 수(= 이번 청크의 offset + length)여야 한다.
+     * Same as {@link #updateV2DocketSizes(long, long)} but also updates {@code sidedata_end}
+     * (and its pending counterpart) -- real hg's own {@code hg verify}/{@code
+     * hg debugchangedfiles} trusts <b>the value recorded in this docket header</b>, not the
+     * actual bytes in the {@code .sda} file, as the "valid sidedata length" -- simply appending
+     * sidedata without updating this field gets rejected with "expected N bytes from offset M,
+     * data size is <stale sidedata_end>", so this must always be updated alongside every
+     * sidedata write.
+     * {@code newSidedataEnd} must be the total number of valid bytes accumulated in this
+     * revlog's overall sidedata file after this append (i.e. this chunk's offset + length).
      */
     synchronized void updateV2DocketSizes(long newIndexEnd, long newDataEnd, long newSidedataEnd) throws IOException {
         this.docketIndexEnd = newIndexEnd;
@@ -993,7 +990,7 @@ public class RevlogIndex {
         buf.putLong(docketPendingSidedataEnd);
         buf.flip();
         try (FileChannel ch = FileChannel.open(idxFile.toPath(), StandardOpenOption.WRITE)) {
-            ch.position(10); // index_end 오프셋 (S_HEADER: version_header(4)+6*B(6)=10)
+            ch.position(10); // index_end offset (S_HEADER: version_header(4)+6*B(6)=10)
             ch.write(buf);
             ch.force(false);
         }

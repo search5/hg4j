@@ -26,6 +26,9 @@ import java.util.Map;
  * describing the working copy rather than literally the tip commit. With a revision
  * set (via {@link #setRevision(String)} / {@link #setRevision(NodeId)}), the listing
  * reflects that historical commit's manifest instead.
+ *
+ * @apiNote Typically obtained via {@link Hg#files()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class FilesCommand {
 

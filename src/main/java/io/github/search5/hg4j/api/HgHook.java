@@ -6,6 +6,14 @@ import java.util.Map;
 /**
  * JGit-style Mercurial SCM hook interface.
  * Allows intercepting events before and after SCM transactions within Java applications for validation or post-processing.
+ *
+ * @apiNote Registered against a specific {@link HgHookType} via {@link Hg#registerHook}; {@link
+ *     ProcessHook} is the ready-made implementation for shelling out to an external script.
+ *     {@link Hg}'s per-command factory methods (e.g. {@link Hg#commit()}, {@link Hg#push()})
+ *     wire the matching registered hooks onto the returned command instance, which then invokes
+ *     them itself at its own pre/post points during {@code call()}; {@code HgLocalClient}
+ *     separately accepts a caller-supplied {@code CHANGEGROUP} hook list to run around applying
+ *     an incoming changegroup.
  */
 @FunctionalInterface
 public interface HgHook {

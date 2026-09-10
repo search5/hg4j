@@ -18,7 +18,10 @@ import java.util.Map;
 
 /**
  * Porcelain command for Git-bisect / Hg-bisect style binary search
- * to identify the regression revision in SCM history.
+ * to identify the revision that introduced a bug in SCM history.
+ *
+ * @apiNote Typically obtained via {@link Hg#bisect()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class BisectCommand {
     private final HgRepository repository;
@@ -51,10 +54,10 @@ public class BisectCommand {
             throw new IllegalStateException("Good and Bad revision nodes must be set prior to bisect query");
         }
 
-        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
-        // changelog-v2 revlog after an external process appended a revision -- see
-        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
-        // common (freshly-opened-per-call) case.
+        // Guard against a long-lived HgRepository handle serving a stale cached changelog-v2
+        // revlog after an external process appended a revision -- see DescribeCommand#call()'s
+        // javadoc for the full explanation. Cheap no-op in the common (freshly-opened-per-call)
+        // case.
         repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
@@ -85,14 +88,13 @@ public class BisectCommand {
         //
         // Uses ManifestTreeIterator (the same treemanifest-aware reader ManifestCommand/
         // StatusCommand/DiffCommand already rely on) rather than hand-parsing the root manifest
-        // revlog's raw text directly. The old hand-rolled parse (removed here, backlog #39)
-        // treated EVERY manifest line as a real file: under a treemanifest repository
+        // revlog's raw text directly: under a treemanifest repository
         // (experimental.treemanifest=1) the root manifest's entries for subdirectories are
         // "t"-flagged pointers to a nested `meta/<dir>/00manifest.i` sub-manifest revision, not
-        // file content -- so bisect would try to open a (nonexistent) filelog for the raw
-        // directory name and either throw or silently skip every file that lived inside any
-        // subdirectory, leaving the working copy incompletely (or wrongly) checked out at each
-        // bisect step.
+        // file content, so treating every manifest line as a real file would try to open a
+        // (nonexistent) filelog for the raw directory name and either throw or silently skip
+        // every file that lived inside any subdirectory, leaving the working copy incompletely
+        // (or wrongly) checked out at each bisect step.
         for (ManifestWalk.Entry entry : listManifestEntries(changelog, midNode)) {
             String path = entry.getPath();
             byte[] fileContent = getFileRevisionContent(repository, path, NodeIdUtil.toHex(entry.getNodeId()));
@@ -231,9 +233,8 @@ public class BisectCommand {
      * Lists every real file entry (fully expanded -- no "t"-flagged directory pointers) tracked
      * at {@code commitNode}, using the same treemanifest-aware {@link ManifestWalk} (backed by
      * {@link io.github.search5.hg4j.treewalk.ManifestTreeIterator}) that {@link ManifestCommand}/
-     * {@link StatusCommand}/{@link DiffCommand} already rely on (backlog #39 fix: the previous
-     * hand-rolled root-manifest-only parse silently mishandled/omitted every file living inside a
-     * subdirectory of a treemanifest repository).
+     * {@link StatusCommand}/{@link DiffCommand} already rely on, so files living inside a
+     * subdirectory of a treemanifest repository are not mishandled or omitted.
      */
     private List<ManifestWalk.Entry> listManifestEntries(Revlog changelog, byte[] commitNode) throws IOException {
         if (commitNode == null || NodeIdUtil.isAllZero(commitNode) || changelog.findRevision(commitNode) == -1) {

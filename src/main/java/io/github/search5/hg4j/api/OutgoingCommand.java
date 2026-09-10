@@ -19,6 +19,9 @@ import java.util.Set;
 /**
  * Outgoing command for identifying changesets present in the local repository
  * but not yet pushed to the remote repository.
+ *
+ * @apiNote Typically obtained via {@link Hg#outgoing()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class OutgoingCommand {
     private final HgRepository repository;

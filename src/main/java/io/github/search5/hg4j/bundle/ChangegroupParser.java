@@ -13,21 +13,30 @@ import java.nio.charset.StandardCharsets;
 /**
  * Parser for unpackaging and applying Mercurial changegroup (Bundle) payload
  * to local repositories with robust error boundaries.
+ *
+ * @apiNote Decodes the changegroup versions (cg1-cg5) real hg actually produces, used by every
+ *     exchange path: {@code HgRemoteClientV2}/{@code HgLocalClient} (wire pull/push), {@code
+ *     Bundle2Parser} (bundle2 payload), and porcelain commands {@code PullCommand}, {@code
+ *     FetchCommand}, {@code PushCommand}, {@code BundleCommand}, {@code UnbundleCommand}, {@code
+ *     IncomingCommand}, {@code HisteditCommand}, and {@code ShelveCommand}. {@link
+ *     io.github.search5.hg4j.storage.Revlog#appendChangeGroupEntry} is where a decoded {@link
+ *     ChangeGroupEntry} actually gets written to local storage.
  */
 public class ChangegroupParser {
     private static final Logger LOGGER = Logger.getLogger(ChangegroupParser.class.getName());
 
-    // 실제 스펙(mercurial/utils/storageutil.py, Mercurial 7.2.2 실측): cg4/cg5 델타 헤더의
-    // per-entry protocol_flags 필드에서 쓰는 비트 값.
+    // Real spec (mercurial/utils/storageutil.py, confirmed against Mercurial 7.2.2): bit values
+    // used in the per-entry protocol_flags field of a cg4/cg5 delta header.
     private static final int CG_FLAG_SIDEDATA = 1;
     private static final int CG_FLAG_FULL_TEXT = 2;
 
-    // 실제 스펙(mercurial/revlogutils/constants.py 실측): cg4의 델타 헤더 flags 필드에서
-    // REVIDX_DELTA_INFO_FLAGS로 마스킹해 제거하는 비트들(REVIDX_DELTA_IS_SNAPSHOT=0x400 |
-    // REVIDX_DELTA_HAS_QUALITY=0x200 | REVIDX_DELTA_IS_GOOD=0x100 | REVIDX_DELTA_P1_IS_SMALL=0x80
-    // | REVIDX_DELTA_P2_IS_SMALL=0x40) — sparse-revlog 델타 체인 최적화 힌트일 뿐 revlogv1
-    // 콘텐츠 의미와 무관하고, hg4j의 기존 REVIDX_ISCENSORED(0x8000) 등 flags 비트와도 겹치지
-    // 않는다(0x40~0x400 범위, ISCENSORED 등은 0x800 이상).
+    // Real spec (confirmed against mercurial/revlogutils/constants.py): the bits masked off by
+    // REVIDX_DELTA_INFO_FLAGS from a cg4 delta header's flags field (REVIDX_DELTA_IS_SNAPSHOT=
+    // 0x400 | REVIDX_DELTA_HAS_QUALITY=0x200 | REVIDX_DELTA_IS_GOOD=0x100 |
+    // REVIDX_DELTA_P1_IS_SMALL=0x80 | REVIDX_DELTA_P2_IS_SMALL=0x40) -- these are purely
+    // sparse-revlog delta-chain optimization hints, unrelated to revlogv1 content semantics, and
+    // they don't overlap with hg4j's existing flags bits such as REVIDX_ISCENSORED (0x8000)
+    // either (this range is 0x40-0x400, while ISCENSORED etc. are 0x800 and above).
     private static final int REVIDX_DELTA_INFO_FLAGS_MASK = 0x7C0;
 
     /**
@@ -77,35 +86,41 @@ public class ChangegroupParser {
         public int flags;        // 0 if not cg3/cg4/cg5 (cg4: REVIDX_DELTA_INFO_FLAGS already masked off)
         public byte[] delta;     // bdiff-encoded delta against deltabase, UNLESS fullText is true
 
-        // cg4-only (실제 스펙: mercurial/changegroup.py의 _CHANGEGROUPV4_DELTA_HEADER 실측).
-        // cg5 헤더에는 이 필드들이 없으므로 cg5 파싱/패킹 시엔 관여하지 않는다(기본값 유지).
-        /** {@code protocol_flags & CG_FLAG_FULL_TEXT}: true면 {@link #delta}는 bdiff 델타가
-         * 아니라 압축되지 않은 원문 그대로("raw full text")다 — {@code deltabase}와 무관하게
-         * 콘텐츠를 그대로 사용해야 한다. cg1/cg2/cg3/cg5는 항상 false(이 조합 자체가 없음). */
+        // cg4-only (real spec: confirmed against mercurial/changegroup.py's
+        // _CHANGEGROUPV4_DELTA_HEADER). The cg5 header has no such fields, so these play no role
+        // when parsing/packing cg5 (they keep their default values).
+        /** {@code protocol_flags & CG_FLAG_FULL_TEXT}: when true, {@link #delta} is not a bdiff
+         * delta but the uncompressed original text itself ("raw full text") -- the content must
+         * be used as-is, regardless of {@code deltabase}. Always false for cg1/cg2/cg3/cg5 (this
+         * combination doesn't exist there). */
         public boolean fullText;
-        /** 델타 스냅샷 깊이(sparse-revlog 힌트). {@code Integer.MIN_VALUE}는 "미설정"(패킹 시
-         * 와이어에 -2 "no info" 센티널로 씀), 그 외엔 실제 hg가 보낸 원시 값(-1 이하는 실제
-         * hg 쪽에서도 "정보 없음"으로 취급됨). */
+        /** Delta snapshot depth (a sparse-revlog hint). {@code Integer.MIN_VALUE} means "not
+         * set" (written to the wire as the -2 "no info" sentinel when packing); otherwise it is
+         * the raw value real hg sent (a value of -1 or lower is also treated as "no info" by
+         * real hg itself). */
         public int snapshotLevel = Integer.MIN_VALUE;
-        /** 이 리비전의 복원된 전체 텍스트 크기(바이트). */
+        /** This revision's reconstructed full text size, in bytes. */
         public int rawTextSize;
-        /** {@code WireDeltaCompression} 열거값(0=NO_COMPRESSION). hg4j는 델타 페이로드에 별도
-         * 압축을 얹지 않으므로 파싱 시 값과 무관하게 항상 원시 bdiff/원문으로 취급한다. */
+        /** The {@code WireDeltaCompression} enum value (0=NO_COMPRESSION). hg4j never applies
+         * additional compression on top of the delta payload, so this value is ignored when
+         * parsing -- the payload is always treated as raw bdiff/fulltext. */
         public int encodedCompression;
-        /** 소스 저장소의 델타 베이스(스토리지 최적화 힌트, 20바이트, null이면 all-zero로 취급). */
+        /** The source repository's delta base (a storage-optimization hint, 20 bytes; {@code
+         * null} is treated as all-zero). */
         public byte[] storageDeltaBase;
-        /** 소스 저장소의 스냅샷 레벨 힌트. */
+        /** The source repository's snapshot-level hint. */
         public int storageSnapshotLevel = -1;
 
-        // cg5-only (실제 스펙: _CHANGEGROUPV5_DELTA_HEADER 실측). cg4 파싱/패킹 시엔 관여하지
-        // 않는다.
-        /** 와이어 {@code protocol_flags} 원시값(cg4/cg5 공통 위치는 다르지만 의미는 같음:
-         * bit0=CG_FLAG_SIDEDATA, bit1=CG_FLAG_FULL_TEXT — cg5는 sidedata만 사용). */
+        // cg5-only (real spec: confirmed against _CHANGEGROUPV5_DELTA_HEADER). Plays no role
+        // when parsing/packing cg4.
+        /** The raw wire {@code protocol_flags} value (cg4 and cg5 place it at different offsets
+         * but it means the same thing: bit0=CG_FLAG_SIDEDATA, bit1=CG_FLAG_FULL_TEXT -- cg5 only
+         * ever uses the sidedata bit). */
         public int protocolFlags;
-        /** {@code protocol_flags & CG_FLAG_SIDEDATA}가 설정된 cg5 엔트리에 한해, 델타 청크
-         * 바로 뒤에 오는 별도의 길이-프리픽스 청크로 전달되는 원시 sidedata 바이트.
-         * revlogv2 sidedata 저장소 자체를 hg4j가 아직 쓰지 못하므로(별도 백로그) 여기서는
-         * 손실 없이 보관만 하고 로컬 revlog에는 반영하지 않는다. */
+        /** For a cg5 entry with {@code protocol_flags & CG_FLAG_SIDEDATA} set, the raw sidedata
+         * bytes carried in a separate length-prefixed chunk immediately following the delta
+         * chunk. Since hg4j cannot yet write to the revlogv2 sidedata store itself, this is only
+         * kept here without loss, not applied to the local revlog. */
         public byte[] sidedata;
     }
 
@@ -169,12 +184,13 @@ public class ChangegroupParser {
             ChangeGroupEntry entry = new ChangeGroupEntry();
 
             if ("04".equals(detectedVersion)) {
-                // 실제 스펙(mercurial/changegroup.py의 _CHANGEGROUPV4_DELTA_HEADER, Mercurial
-                // 7.2.2 실측 — 로컬 hg 7.2로 직접 만든 cg4 바이트와 대조 완료): node(20) p1(20)
-                // p2(20) deltabase(20) cs(20) flags(H,2) snapshot_level(b,1,signed)
-                // raw_size(I,4) encoded_comp(B,1) protocol_flags(B,1) storage_delta_base(20)
-                // storage_snapshot_level(b,1,signed) = 130바이트. cg2/cg3와 필드 순서는 같지만
-                // (deltabase가 cs보다 앞) 그 뒤에 6개 필드가 더 붙는다.
+                // Real spec (confirmed against mercurial/changegroup.py's
+                // _CHANGEGROUPV4_DELTA_HEADER, Mercurial 7.2.2 -- cross-checked directly against
+                // cg4 bytes produced by a local hg 7.2): node(20) p1(20) p2(20) deltabase(20)
+                // cs(20) flags(H,2) snapshot_level(b,1,signed) raw_size(I,4) encoded_comp(B,1)
+                // protocol_flags(B,1) storage_delta_base(20) storage_snapshot_level(b,1,signed) =
+                // 130 bytes. Same field order as cg2/cg3 (deltabase comes before cs), with 6
+                // more fields appended after that.
                 entry.node = slice(chunk, 0);
                 entry.p1 = slice(chunk, 20);
                 entry.p2 = slice(chunk, 40);
@@ -188,8 +204,9 @@ public class ChangegroupParser {
                 entry.storageDeltaBase = slice(chunk, 109);
                 entry.storageSnapshotLevel = chunk[129]; // signed byte
 
-                // 실제 스펙: flags &= ~REVIDX_DELTA_INFO_FLAGS — sparse-revlog 델타 체인
-                // 힌트 비트는 revlogv1 콘텐츠 의미와 무관하므로 분리해서 걷어낸다.
+                // Real spec: flags &= ~REVIDX_DELTA_INFO_FLAGS -- the sparse-revlog delta-chain
+                // hint bits are unrelated to revlogv1 content semantics, so they are masked off
+                // separately.
                 entry.flags &= ~REVIDX_DELTA_INFO_FLAGS_MASK;
 
                 entry.fullText = (entry.protocolFlags & CG_FLAG_FULL_TEXT) != 0;
@@ -198,9 +215,9 @@ public class ChangegroupParser {
                 entry.delta = new byte[deltaLen];
                 System.arraycopy(chunk, headerSize, entry.delta, 0, deltaLen);
             } else if ("05".equals(detectedVersion)) {
-                // 실제 스펙(_CHANGEGROUPV5_DELTA_HEADER 실측): protocol_flags(B,1) node(20)
-                // p1(20) p2(20) deltabase(20) cs(20) flags(H,2) = 103바이트. cg2/cg3와 달리
-                // protocol_flags가 맨 앞에 온다.
+                // Real spec (confirmed against _CHANGEGROUPV5_DELTA_HEADER): protocol_flags(B,1)
+                // node(20) p1(20) p2(20) deltabase(20) cs(20) flags(H,2) = 103 bytes. Unlike
+                // cg2/cg3, protocol_flags comes first.
                 entry.protocolFlags = chunk[0] & 0xFF;
                 entry.node = slice(chunk, 1);
                 entry.p1 = slice(chunk, 21);
@@ -213,8 +230,9 @@ public class ChangegroupParser {
                 entry.delta = new byte[deltaLen];
                 System.arraycopy(chunk, headerSize, entry.delta, 0, deltaLen);
 
-                // 실제 스펙(cg5unpacker.deltachunk): CG_FLAG_SIDEDATA 비트가 서 있으면 델타
-                // 청크 바로 뒤에 별도 length-prefixed 청크로 sidedata가 온다.
+                // Real spec (cg5unpacker.deltachunk): when the CG_FLAG_SIDEDATA bit is set,
+                // sidedata follows immediately after the delta chunk as a separate
+                // length-prefixed chunk.
                 if ((entry.protocolFlags & CG_FLAG_SIDEDATA) != 0) {
                     byte[] sd = readChunk(in);
                     entry.sidedata = sd != null ? sd : new byte[0];
@@ -229,16 +247,10 @@ public class ChangegroupParser {
                 System.arraycopy(chunk, 20, entry.p1, 0, 20);
                 System.arraycopy(chunk, 40, entry.p2, 0, 20);
 
-                // 실제 스펙(mercurial/changegroup.py): cg1은 node,p1,p2,cs(4필드,
-                // deltabase 없음 — 델타 베이스는 스트림상 "이전 항목"으로 암묵적으로
-                // 결정된다: forcedeltaparentprev=True), cg2/cg3는 node,p1,p2,
-                // deltabase,cs(5필드 — deltabase가 cs보다 앞에 옴)다. 기존 코드는
-                // cg2/cg3에서도 cs를 60바이트 오프셋에서 읽고 deltabase를 80바이트
-                // 오프셋에서 읽었는데, 이는 두 필드의 순서가 뒤바뀐 것이다. changelog
-                // 그룹에서는 cs(linknode)가 자기 자신의 node와 같은 값이므로, 이 버그는
-                // deltabase가 항상 자기 자신의 node와 같아지는 형태로 나타난다
-                // (2026-09-01 발견·수정 — 실제 hg가 만든 번들의 unbundle 시
-                // "Delta base revision not found" 오류로 발견).
+                // Real spec (mercurial/changegroup.py): cg1 has node,p1,p2,cs (4 fields, no
+                // deltabase -- the delta base is implicitly determined by the stream as "the
+                // previous entry": forcedeltaparentprev=True); cg2/cg3 have node,p1,p2,
+                // deltabase,cs (5 fields -- deltabase comes before cs).
                 if (headerSize >= 100) {
                     entry.deltabase = new byte[20];
                     System.arraycopy(chunk, 60, entry.deltabase, 0, 20);
@@ -329,9 +341,10 @@ public class ChangegroupParser {
         public List<FileGroup> fileGroups;
     }
 
-    /** cg3/cg4/cg5 모두 treemanifest 봉투(루트 매니페스트 그룹 뒤에 선택적 서브디렉터리
-     * 그룹들 + 종료 마커)를 쓴다(실제 스펙: changegroup.py의 {@code manifestsend} — cg1/cg2는
-     * {@code b''}(추가 종료 마커 없음), cg3/cg4/cg5는 {@code closechunk()} 실측). */
+    /** cg3/cg4/cg5 all write a treemanifest envelope (the root manifest group followed by
+     * optional subdirectory groups plus a terminator marker) -- real spec: confirmed against
+     * changegroup.py's {@code manifestsend}, which is {@code b''} (no extra terminator) for
+     * cg1/cg2 and {@code closechunk()} for cg3/cg4/cg5. */
     private static boolean isTreeCapableVersion(String version) {
         return "03".equals(version) || "04".equals(version) || "05".equals(version);
     }
@@ -353,16 +366,14 @@ public class ChangegroupParser {
         String detectedVersion = versionHolder[0];
 
         if (isTreeCapableVersion(detectedVersion)) {
-            // 실제 스펙(changegroup.py의 generatemanifests(): "if tree: yield _fileheader(tree)")
-            // — 루트 매니페스트 그룹(tree == b'')은 경로 청크 없이 델타 그룹이 바로 온다. 이전
-            // 코드는 루프 첫 반복에서 무조건 readChunk()를 "경로 청크"로 해석해 루트 그룹의
-            // 첫 델타 엔트리를 통째로 (엉뚱한) 경로 이름으로 먹어버리고 나머지 엔트리들을
-            // 서브디렉터리로 잘못 분류하는 버그가 있었다 — 실제 hg 7.2로 만든 cg3/cg4/cg5
-            // 번들(플랫 매니페스트, 서브디렉터리 없음)을 직접 바이트 단위로 대조해 발견
-            // (2026-09-03). 루트 그룹을 먼저 무조건 bare로 파싱한 뒤, 있을 수 있는
-            // 서브디렉터리 그룹들(경로 청크 + 델타 그룹 쌍, 실제 hg 7.2.2 기준 cg4는
-            // treemanifest 서브디렉터리 전송을 아예 지원하지 않지만 방어적으로 동일하게
-            // 처리)을 읽고, 전체를 끝맺는 별도의 {@code manifestsend} 종료 청크까지 소비한다.
+            // Real spec (changegroup.py's generatemanifests(): "if tree: yield
+            // _fileheader(tree)") -- the root manifest group (tree == b'') has its delta group
+            // arrive directly, with no path chunk in front of it. The root group is always parsed
+            // bare first, then any subdirectory groups that may follow (path chunk + delta group
+            // pairs -- real hg 7.2.2 doesn't actually support treemanifest subdirectory transfer
+            // for cg4 at all, but this is handled defensively the same way regardless) are read,
+            // and finally the separate {@code manifestsend} terminator chunk that closes out the
+            // whole thing is consumed.
             bundle.manifestGroups = new ArrayList<>();
             ManifestGroup root = new ManifestGroup();
             root.path = "";
@@ -375,11 +386,10 @@ public class ChangegroupParser {
                     break;
                 }
                 ManifestGroup mg = new ManifestGroup();
-                // Backlog #39 (2026-09-05): real hg's own wire format sends a treemanifest
+                // Real hg's own wire format sends a treemanifest
                 // subdirectory's path chunk WITH a trailing slash (mercurial/changegroup.py's
                 // generatemanifests(): `subtree = tree + p + b'/'`, then `_fileheader(tree)`
-                // writes that exact string as the chunk payload -- verified directly against real
-                // hg 7.2.2 source and confirmed via a real `hg bundle --type v3` byte capture).
+                // writes that exact string as the chunk payload).
                 // Every hg4j caller of `ManifestGroup.path` (BundleCommand/PushCommand's own
                 // writers, FetchCommand#applyBundle's reader, HgRemoteClientV2's in-process
                 // wireproto-v2 assembly) uses the NO-trailing-slash convention internally, so this
@@ -408,13 +418,11 @@ public class ChangegroupParser {
     }
 
     // ------------------------------------------------------------------
-    // Packing (all of cg1-cg5). Originally cg4/cg5-only -- HgLocalClient/PushCommand/BundleCommand
-    // used to build cg1 "HG10UN" wire bytes ad hoc by hand instead of calling this. Since backlog
-    // item 26 (2026-09-04), HgLocalClient#getBundle negotiates a version from the requester's
+    // Packing (all of cg1-cg5). HgLocalClient#getBundle negotiates a version from the requester's
     // bundleCaps and calls writeBundle directly for whatever version (01-05) that negotiation
-    // picks, so writeEntry/writeBundle had to grow real cg1/cg2/cg3 header-layout support
-    // alongside the pre-existing cg4/cg5 one (mirroring parseGroup's read side, which already
-    // handled all five). PushCommand/BundleCommand's own outbound paths are unaffected -- they
+    // picks, so writeEntry/writeBundle support real cg1/cg2/cg3 header layouts
+    // alongside cg4/cg5 (mirroring parseGroup's read side, which already
+    // handles all five). PushCommand/BundleCommand's own outbound paths are unaffected -- they
     // still always produce cg1, since no known peer needs anything higher for push/local-bundle
     // purposes.
     // ------------------------------------------------------------------
@@ -572,10 +580,8 @@ public class ChangegroupParser {
      * chunk (real hg emits this even for a flat/non-treemanifest repo, since cg3+'s envelope
      * always supports "possibly more manifest groups"), whereas cg1/cg2 have no such envelope —
      * the single flat manifest group's own end-of-group terminator (written by {@link
-     * #writeGroup}) is immediately followed by the file groups, with no extra marker chunk (a bug
-     * fixed 2026-09-04: this method used to always emit the extra terminator regardless of
-     * version, which would have corrupted a cg1/cg2 stream the moment this method was wired to
-     * versions below cg4).
+     * #writeGroup}) is immediately followed by the file groups, with no extra marker chunk --
+     * emitting the extra terminator unconditionally would corrupt a cg1/cg2 stream.
      */
     public static void writeBundle(OutputStream out, ChangegroupBundle bundle, String version) throws IOException {
         if (!isSupportedWriteVersion(version)) {

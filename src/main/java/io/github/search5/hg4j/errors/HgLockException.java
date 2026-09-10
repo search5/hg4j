@@ -2,8 +2,14 @@ package io.github.search5.hg4j.errors;
 
 /**
  * Exception thrown when repository lock acquisition fails or lock contention occurs.
- * <p>
- * Domain exception layer wrapper corresponding to the existing {@link io.github.search5.hg4j.lib.HgLockException}.
+ *
+ * @apiNote Thrown by {@link io.github.search5.hg4j.lib.HgLock} (acquiring the OS-level file
+ *     lock) and by {@link io.github.search5.hg4j.lib.HgRepository#lockWorkingCopy()} / {@link
+ *     io.github.search5.hg4j.lib.HgRepository#lockStore()} (acquiring {@code .hg/wlock} or
+ *     {@code .hg/store/lock}). Any porcelain command that mutates the working copy or store
+ *     (e.g. {@code CommitCommand}, {@code UpdateCommand}) can surface this when another process
+ *     already holds the lock; callers typically retry after a delay or surface it to the user as
+ *     "repository is locked by another process".
  */
 public class HgLockException extends HgException {
     private static final long serialVersionUID = 1L;

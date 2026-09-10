@@ -50,14 +50,13 @@ public final class Wire1Commands {
         // legacy query string -- HgHttpWireServer#handleV1Command reassembles them. Matches real
         // hg's own default server advertisement (confirmed via a real hg --debug clone capture).
         //
-        // bundle2=...: backlog item 26 -- without this token, a real hg client's own
+        // bundle2=...: without this token, a real hg client's own
         // remote.capable('bundle2') check (mercurial/exchanges/peer.py: exact-match OR any cap
         // starting with "bundle2=") comes back false, which forces the client onto its legacy
         // bundle1-only pull path (exchange.py's _forcebundle1/_pullchangeset): it calls
         // getbundle() with NO bundlecaps argument at all (empty set), so no changegroup version
-        // list is ever sent and hg4j's server can never negotiate anything beyond cg1 -- verified
-        // directly (2026-09-04) by instrumenting Wire1Commands.getbundle and observing a real `hg
-        // clone`'s request args before this fix. Advertising bundle2 here makes the client go
+        // list is ever sent and hg4j's server can never negotiate anything beyond cg1.
+        // Advertising bundle2 here makes the client go
         // through _pullbundle2 instead, which DOES send its own changegroup=01,02,03 (a real hg
         // 7.2 client's own default incoming-version list; cg4/cg5 are never offered by client
         // unless its own repo/config wants them) nested in a bundle2= blob -- see
@@ -67,11 +66,10 @@ public final class Wire1Commands {
         // real hg's server-side getbundle version selection never reads the SERVER's own
         // advertised capability value for the pull direction, only the CLIENT's (see
         // Bundle2Parser#decodeChangegroupVersions's doc).
-        // exp-narrow-1 (backlog item 40): real hg's NARROWCAP token (mercurial/wireprototypes.py),
+        // exp-narrow-1: real hg's NARROWCAP token (mercurial/wireprototypes.py),
         // appended by wireprotov1server._capabilities() whenever the server has the bundled
         // `narrow` extension loaded -- unconditionally, not gated on the specific repo being a
-        // narrow clone itself (confirmed 2026-09-06: `hg --config extensions.narrow=
-        // --config experimental.narrow=True serve` advertises it for every repo it serves).
+        // narrow clone itself.
         // hg4j has no extension system and always understands the narrow getbundle args (see
         // Wire1Commands#getbundle), so it always advertises this, the same reasoning as
         // bundle2=/httpheader= above.
@@ -128,8 +126,7 @@ public final class Wire1Commands {
      * "1\n\n"} — the {@code between} response to that exact pair — to both flush any SSH login
      * banner noise and confirm it's talking to a real hg server before it will parse anything
      * else (including the {@code hello} response that was sent moments earlier!). Not producing
-     * exactly that marker means the client scans forever and hangs — confirmed by reproducing
-     * this exact hang against a real hg 7.2.2 client before this fix.
+     * exactly that marker means the client scans forever and hangs.
      *
      * <p>Real hg's {@code repo.between()} (see {@code localrepo.py}) returns one entry per
      * requested pair; for a pair where both nodes are equal (as the null-null handshake probe
@@ -212,8 +209,8 @@ public final class Wire1Commands {
 
     /**
      * Same as {@link #pushkey(HgRepository, Map)}, but also runs server-side {@link HgHook}
-     * callbacks around applying the incoming pushkey (yona-wiki P3-21/P3-22 — real hg's pushkey
-     * wire command is the ONLY place a bookmark move actually happens, so this is the equivalent
+     * callbacks around applying the incoming pushkey (real hg's pushkey wire command is the
+     * ONLY place a bookmark move actually happens, so this is the equivalent
      * hook point to {@link #unbundle(HgRepository, byte[], Map, List, List)}'s
      * {@code preChangegroupHooks}/{@code postChangegroupHooks} for "which ref moved from where to
      * where", which {@code unbundle}'s own hooks never see — {@code unbundle} only ever sees raw
@@ -294,7 +291,7 @@ public final class Wire1Commands {
      * streams {@code exchange.getbundlechunks()}'s raw generator output directly). Sending the
      * prefix as-is corrupts the stream for a real hg client: it reads the 4 magic bytes as a
      * chunk-length header and aborts with "stream ended unexpectedly, expected &lt;huge
-     * number&gt;" (confirmed against real hg 7.2.2 as the client before this fix). hg4j's own
+     * number&gt;". hg4j's own
      * {@link io.github.search5.hg4j.transport.HgRemoteClient}/{@code FetchCommand} still expect
      * the prefix (their own long-standing self-consistent convention) — this stripping applies
      * only to the real wire-protocol path, not to {@code HgLocalClient}'s own {@code file://} role.
@@ -307,10 +304,10 @@ public final class Wire1Commands {
     }
 
     /**
-     * Backlog item 40: narrow clone wire arguments. Real hg's {@code getbundle} command declares
+     * Narrow clone wire arguments. Real hg's {@code getbundle} command declares
      * no fixed args at all ({@code @wireprotocommand(b'getbundle', b'*')}) -- {@code narrow},
      * {@code includepats} and {@code excludepats} just ride along in the same generic args map as
-     * {@code common}/{@code heads}/{@code bundlecaps} (verified 2026-09-06 against Mercurial 7.2's
+     * {@code common}/{@code heads}/{@code bundlecaps} (per Mercurial 7.2's
      * {@code mercurial/wireprototypes.py}/{@code wireprotov1peer.py}: {@code includepats}/{@code
      * excludepats} are core {@code GETBUNDLE_ARGUMENTS} csv fields; {@code narrow} itself is a
      * boolean the bundled {@code narrow} extension adds to that same dict when loaded -- hg4j has
@@ -368,14 +365,14 @@ public final class Wire1Commands {
                                           List<HgHook> postChangegroupHooks) throws IOException, HgLockException {
         List<String> heads = splitOrEmpty(args.get("heads"));
 
-        // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는
-        // push할 때도 (getbundle과 마찬가지로 remote.capable('bundle2') 하나로 양쪽 방향이 다
-        // 갈리는 real hg 자신의 규칙, mercurial/exchange.py의 _forcebundle1 실측) 더는 맨 cg
-        // 바이트가 아니라 HG20/bundle2 봉투로 body를 보내고, 그 경우 응답도 반드시 bundle2
-        // 봉투([reply:changegroup]/[error:abort] 파트)여야 한다 -- 예전의 평문 "N\n<message>"
-        // 그대로 돌려주면 실제 hg 클라이언트는 그걸 bundle2 스트림으로 파싱하려다
-        // "abort: not a Mercurial bundle"로 즉시 깨진다(실측, 2026-09-04: 이 광고를 추가하자
-        // 기존 push interop 테스트가 바로 이 메시지로 재현됨).
+        // Now that capabilitiesString() advertises bundle2=, a real hg client also
+        // sends its push body as an HG20/bundle2 envelope rather than bare cg bytes (the same
+        // real hg rule as getbundle, where both directions hinge on a single
+        // remote.capable('bundle2') check -- per mercurial/exchange.py's
+        // _forcebundle1), and in that case the response must also be a bundle2 envelope (a
+        // [reply:changegroup]/[error:abort] part) -- returning the old plain "N\n<message>" text
+        // as-is makes a real hg client try to parse it as a bundle2 stream and immediately fail
+        // with "abort: not a Mercurial bundle".
         boolean isBundle2Request = bundleBytes != null && bundleBytes.length >= 4
                 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0';
         int changegroupPartId = -1;
@@ -385,11 +382,11 @@ public final class Wire1Commands {
                         .extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes))
                         .changegroupPartId;
             } catch (Exception noChangegroupPart) {
-                // 실제 hg 스펙(bundle2 파트는 changegroup 하나로 고정돼 있지 않음): 예를 들어
-                // 북마크만 옮기는 push는 changegroup 파트 자체가 없을 수 있다 -- 이 경우 아래
-                // pushWithHooks(bundleBytes...)가 어차피 changegroup 파싱을 다시 시도해 같은
-                // 이유로 "변경 없음"으로 처리되므로, 여기서는 그냥 "회신할 changegroup 파트
-                // 없음"으로만 기록해두고 계속 진행한다.
+                // Real hg spec (a bundle2 payload is not required to always contain a changegroup
+                // part): e.g. a push that only moves a bookmark may have no changegroup part at
+                // all -- in that case pushWithHooks(bundleBytes...) below will try parsing a
+                // changegroup again anyway and treat it as "no changes" for the same reason, so
+                // this just records "no changegroup part to reply with" and continues.
                 changegroupPartId = -1;
             }
         }

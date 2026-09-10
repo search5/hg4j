@@ -30,6 +30,9 @@ import java.util.Map;
  * them via {@link #setAuthor}/{@link #setMessage}/{@link #setCloseBranch} (verified against real
  * hg 7.2.2: {@code hg commit --amend} with no {@code -u}/{@code -m} reuses the original commit's
  * user and message unchanged).
+ *
+ * @apiNote Typically obtained via {@link Hg#amend()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public final class AmendCommand {
     private final HgRepository repository;

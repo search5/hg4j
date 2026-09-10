@@ -5,7 +5,16 @@ import java.util.*;
 import java.util.function.Function;
 
 /**
- * 리비전 로그의 DAG 그래프 탐색 및 LCA(최근공통조상) 후보 연산을 전담하는 클래스.
+ * Class dedicated to DAG graph traversal of a revision log and computing LCA (lowest common
+ * ancestor) candidates.
+ *
+ * @apiNote The shared revision-graph engine behind history/merge-base logic. {@link
+ *     #getAllAncestors} is used by {@code LogCommand} to restrict output to a starting
+ *     revision's own history; {@link #isAncestor} is used by {@code BackoutCommand}, {@code
+ *     MergeCommand}, {@code BookmarkCommand}, and {@code RebaseCommand} for fast-forward/
+ *     ancestry checks; {@link #getLcaCandidates} is used by {@code MergeCommand} to find the
+ *     merge base(s) of two revisions. {@link #lazyAncestors} (with {@link #setSortOrder}) exists
+ *     for streaming, memory-conscious traversal of large histories but has no callers yet.
  */
 public class ChangesetGraph {
 
@@ -35,7 +44,11 @@ public class ChangesetGraph {
     }
 
     /**
-     * 필터 조건에 구애받지 않고 지정한 리비전의 모든 조상 노드를 반환합니다 (내부 DAG 연산용).
+     * Returns every ancestor of the given revision, regardless of any filter condition (for
+     * internal DAG computations).
+     *
+     * @apiNote Used by {@code LogCommand} to compute the full ancestor set of a starting
+     *     revision, so history output can be restricted to it.
      */
     public Set<Integer> getAllAncestors(int startRev) {
         return getAllAncestors(startRev, getRevlogLookup());
@@ -66,8 +79,13 @@ public class ChangesetGraph {
     }
 
     /**
-     * 지정한 리비전부터 조상을 lazy하게 순회하는 Iterator를 반환하며, RevFilter를 반영합니다.
-     * 대형 저장소에서 메모리를 효율적으로 유지하고 JGit RevWalk 스타일의 스트리밍을 제공합니다.
+     * Returns an {@link Iterator} that lazily walks ancestors starting from the given revision,
+     * honoring the configured {@link RevFilter}. Keeps memory usage low on large repositories and
+     * provides JGit-{@code RevWalk}-style streaming.
+     *
+     * @apiNote Has no callers today (see the class-level {@code apiNote}); provided as a
+     *     ready-made streaming alternative to {@link #getAllAncestors}, which materializes the
+     *     entire ancestor set at once.
      */
     public Iterator<Integer> lazyAncestors(int startRev) {
         return lazyAncestors(startRev, getRevlogLookup());
@@ -152,6 +170,16 @@ public class ChangesetGraph {
         result.add(u);
     }
 
+    /**
+     * Checks whether {@code ancestor} is an ancestor of (or equal to) {@code descendant}.
+     * Results are cached per instance.
+     *
+     * @apiNote The workhorse ancestry check used by {@code BackoutCommand} (verifying the target
+     *     is reachable from the current parent), {@code MergeCommand} (detecting a trivial
+     *     fast-forward merge), {@code BookmarkCommand} (deciding whether moving a bookmark is a
+     *     fast-forward), and {@code RebaseCommand} (checking whether a revision is already an
+     *     ancestor of the destination).
+     */
     public boolean isAncestor(int ancestor, int descendant) {
         return isAncestor(ancestor, descendant, getRevlogLookup());
     }
@@ -203,6 +231,14 @@ public class ChangesetGraph {
         return result;
     }
 
+    /**
+     * Computes the LCA (lowest common ancestor / merge base) candidate set of two revisions,
+     * using a flag-propagation graph walk.
+     *
+     * @apiNote Used by {@code MergeCommand} to find the merge base(s) for a 3-way merge; may
+     *     return more than one candidate for a criss-cross merge history, matching real hg's own
+     *     ambiguous-ancestor handling.
+     */
     public Set<Integer> getLcaCandidates(int revA, int revB) {
         return getLcaCandidates(revA, revB, getRevlogLookup());
     }

@@ -24,6 +24,9 @@ import java.util.Set;
 
 /**
  * Commands for bookmark management (listing, creating, or deleting bookmarks).
+ *
+ * @apiNote Typically obtained via {@link Hg#bookmark()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class BookmarkCommand {
     private final HgRepository repository;
@@ -67,11 +70,11 @@ public class BookmarkCommand {
     /**
      * {@code hg bookmark -f}/{@code --force}: allows moving an existing bookmark to a revision
      * that is NOT a descendant of its current target (a backward or divergent move). Without
-     * this, real hg 7.2 aborts with {@code bookmark '<name>' already exists (use -f to force)}
-     * (verified directly against the CLI, 2026-09-05) -- a plain fast-forward move (new target is
-     * a descendant of the current one) is always allowed without {@code -f}, exactly like a brand
-     * new bookmark name. Irrelevant to {@link #setDelete} (removal never requires force) and to
-     * {@link #setActive} (that only touches {@code bookmarks.current}, never a bookmark's target).
+     * this, real hg aborts with {@code bookmark '<name>' already exists (use -f to force)} -- a
+     * plain fast-forward move (new target is a descendant of the current one) is always allowed
+     * without {@code -f}, exactly like a brand new bookmark name. Irrelevant to {@link #setDelete}
+     * (removal never requires force) and to {@link #setActive} (that only touches
+     * {@code bookmarks.current}, never a bookmark's target).
      */
     public BookmarkCommand setForce(boolean force) {
         this.force = force;
@@ -127,10 +130,11 @@ public class BookmarkCommand {
         }
 
         if (bookmarkName != null && !bookmarkName.isEmpty()) {
-            // 실제 hg CLI로 확인(2026-09-01): `hg bookmark NAME`을 -r 없이(즉 현재 작업 사본
-            // 부모를 암묵적으로 대상으로) 실행하면 새 bookmark가 자동으로 active(현재
-            // 체크아웃의 "*" 표시)가 된다. -r로 리비전을 명시하면(설령 그 값이 현재 부모와
-            // 같더라도) active가 되지 않는다 — 판단 기준은 "명시적으로 지정했는가" 자체다.
+            // Running `hg bookmark NAME` with no -r (i.e. implicitly targeting the current
+            // working copy parent) automatically makes the new bookmark active (shown with "*"
+            // at the current checkout). Explicitly specifying a revision with -r never makes it
+            // active (even when that value happens to equal the current parent) -- the deciding
+            // factor is purely "was it explicitly specified".
             boolean explicitTarget = nodeId != null;
             byte[] targetNode = nodeId;
             if (targetNode == null) {
@@ -138,10 +142,10 @@ public class BookmarkCommand {
             }
             String hex = NodeIdUtil.toHex(targetNode).substring(0, 40);
 
-            // real hg 7.2: moving an EXISTING bookmark to a non-descendant revision without -f
-            // aborts instead of silently moving it (verified against the CLI, 2026-09-05) --
-            // exactly the same gate TagCommand already has for retagging (backlog #36). A no-op
-            // "move" to the same target, and any brand-new bookmark name, are both exempt.
+            // Real hg: moving an EXISTING bookmark to a non-descendant revision without -f
+            // aborts instead of silently moving it -- exactly the same gate TagCommand already
+            // has for retagging. A no-op "move" to the same target, and any brand-new bookmark
+            // name, are both exempt.
             String existingHex = bookmarks.get(bookmarkName);
             if (existingHex != null && !existingHex.equalsIgnoreCase(hex) && !force
                     && !isFastForwardMove(existingHex, hex)) {
@@ -160,22 +164,16 @@ public class BookmarkCommand {
     }
 
     /**
-     * pull/fetch 시 원격 bookmark를 로컬과 병합한다 — {@code mercurial/bookmarks.py}의
-     * {@code comparebookmarks()}/{@code validdest()} 로직을 단순화해 재현: 로컬이 없으면
-     * 새로 생성, 값이 같으면 무시, remote가 local의 자손(fast-forward)이면 그냥 전진,
-     * local이 remote의 자손이면 로컬이 더 앞서 있으므로 유지, 어느 쪽도 아니면(진짜
-     * divergence) {@code name@remotePathName} 형태의 분기 bookmark를 생성한다.
+     * Merges remote bookmarks into local ones during a pull/fetch -- a simplified reproduction
+     * of {@code mercurial/bookmarks.py}'s {@code comparebookmarks()}/{@code validdest()} logic:
+     * create it if there's no local bookmark, ignore it if the values already match, simply
+     * advance if the remote is a descendant of local (fast-forward), keep the local value if
+     * local is a descendant of remote (local is already ahead), and otherwise (a genuine
+     * divergence) create a divergent bookmark named {@code name@remotePathName}.
      *
-     * <p>이 메서드가 나오기 전에는 {@code FetchCommand}가 "remote가 가리키는 노드를 로컬이
-     * 갖고 있으면 무조건 덮어쓰기"만 했고, {@code PullCommand}가 별도로(그리고
-     * FetchCommand가 이미 덮어쓴 뒤라 사실상 죽은 코드로) 단순 하드코딩된
-     * {@code name+"@default"} 분기 로직을 갖고 있었다 — 진짜 divergence를 탐지하지 못하고
-     * 로컬의 독자적인 bookmark 이동을 조용히 덮어써버리는 데이터 손실 버그였다
-     * (2026-09-01 발견·수정, Track B-3).</p>
-     *
-     * @param remotePathName divergent bookmark 이름에 붙일 접미사(예: 원격 경로 별칭).
-     *                       모르면 {@code null} — 이 경우 "1"을 사용한다(실제 hg의
-     *                       {@code name@1} 폴백과 동일한 형태).
+     * @param remotePathName suffix to append to a divergent bookmark's name (e.g. a remote path
+     *                       alias). {@code null} if unknown -- in that case "1" is used
+     *                       (matching real hg's own {@code name@1} fallback form).
      */
     public static void mergeFromRemote(HgRepository repository, Map<String, String> remoteBookmarks,
                                         String remotePathName) throws IOException {
@@ -210,24 +208,26 @@ public class BookmarkCommand {
             int localRev = changelog.findRevision(localNode);
 
             if (remoteRev == -1) {
-                // 원격이 가리키는 리비전을 아직 로컬이 갖고 있지 않음 (fetch 실패/부분 실패) — 건드리지 않음.
+                // Local doesn't have the revision the remote points at yet (a failed/partial
+                // fetch) -- leave it untouched.
                 continue;
             }
             if (localRev == -1) {
-                // 로컬 bookmark가 더 이상 존재하지 않는 리비전을 가리킴(strip 등) — 원격 값을 그대로 채택.
-                // 조상 관계를 판정할 기준 리비전 자체가 없으므로 새 force 게이트를 우회한다
-                // (이 분기는 이미 "원격을 그대로 채택"이라는 올바른 판단을 스스로 내린 뒤이다).
+                // The local bookmark points at a revision that no longer exists (e.g. stripped)
+                // -- adopt the remote value as-is. Bypasses the new force gate since there is no
+                // reference revision left to judge an ancestry relationship against (this branch
+                // has already made the correct call of "adopt the remote value" on its own).
                 new BookmarkCommand(repository).setBookmarkName(name).setRevision(remoteHex).setForce(true).call();
                 continue;
             }
 
             if (graph.isAncestor(localRev, remoteRev)) {
-                // fast-forward: 원격이 로컬의 자손 → 그냥 전진.
+                // Fast-forward: remote is a descendant of local -> simply advance.
                 new BookmarkCommand(repository).setBookmarkName(name).setRevision(remoteHex).call();
             } else if (graph.isAncestor(remoteRev, localRev)) {
-                // 로컬이 이미 원격보다 앞서 있음 → 유지.
+                // Local is already ahead of remote -> keep it.
             } else {
-                // 진짜 divergence: 로컬은 그대로 두고 분기 bookmark를 만든다.
+                // Genuine divergence: leave local as-is and create a divergent bookmark.
                 String divergentName = name + "@" + suffix;
                 new BookmarkCommand(repository).setBookmarkName(divergentName).setRevision(remoteHex).call();
             }
@@ -253,9 +253,9 @@ public class BookmarkCommand {
      * also allows moving a bookmark across an obsolescence-successor step (e.g. advancing a
      * bookmark from a commit onto its {@code hg amend}/{@code hg rebase} successor, which is a
      * DAG *sibling*, not a descendant, of the original) -- freely alternating descendant steps and
-     * successor steps, exactly like {@link PushCommand}'s own {@code isInForeground} (verified
-     * against real hg 7.2, 2026-09-05: amending a bookmarked commit and moving the bookmark to the
-     * amendment succeeds locally without {@code -f}). Either hex failing to resolve to a known
+     * successor steps, exactly like {@link PushCommand}'s own {@code isInForeground} (amending a
+     * bookmarked commit and moving the bookmark to the amendment succeeds locally without
+     * {@code -f}). Either hex failing to resolve to a known
      * revision (a dangling/stale bookmark target) is treated as "not reachable", matching real
      * hg's cautious default of requiring {@code -f} whenever this can't be established.
      */
@@ -359,10 +359,10 @@ public class BookmarkCommand {
 
     private void writeBookmarks(File file, Map<String, String> bookmarks) throws IOException {
         if (bookmarks.isEmpty()) {
-            // Real hg (verified against the CLI, 2026-09-05: `hg bookmarks --delete` on the last
-            // remaining bookmark) leaves `.hg/bookmarks` behind as a 0-byte file rather than
-            // deleting it -- it is only ever removed by real hg if it never existed in the first
-            // place. Match that: once the file exists, keep it (now empty) instead of unlinking it.
+            // Real hg (`hg bookmarks --delete` on the last remaining bookmark) leaves
+            // `.hg/bookmarks` behind as a 0-byte file rather than deleting it -- it is only ever
+            // removed by real hg if it never existed in the first place. Match that: once the
+            // file exists, keep it (now empty) instead of unlinking it.
             if (file.exists()) {
                 SafeFileIO.writeStringAtomic(file, "");
             }

@@ -15,40 +15,33 @@ import java.util.stream.Stream;
 /**
  * Purge command (equivalent to git clean, and real hg's own {@code hg purge}/{@code hg clean}
  * extension command) for Mercurial repositories. Deletes all untracked, non-ignored files and
- * (by default) the empty directories left behind, exactly like real hg's own default (verified
- * live against real hg 7.2, 2026-09-05, {@code hg help purge}: "This means that purge will delete
- * the following by default: - Unknown files... - Empty directories..." -- {@code --dirs}/{@code
- * --files} only ever *restrict* which of the two categories get deleted, they don't opt either one
- * in).
+ * (by default) the empty directories left behind, matching real hg's own default ({@code hg help
+ * purge}: "This means that purge will delete the following by default: - Unknown files... - Empty
+ * directories..." -- {@code --dirs}/{@code --files} only ever *restrict* which of the two
+ * categories get deleted, they don't opt either one in).
  *
- * <p>Backlog #39 (requirement-matrix campaign) fixed two real bugs found while extending matrix
- * coverage to this command:
+ * <p>Two points worth calling out explicitly:
  * <ol>
- *   <li><b>Wrong default (behavioral parity bug):</b> {@link #setPurgeDirectories}'s backing field
- *   used to default to {@code false}, meaning a plain {@code new PurgeCommand(repo).call()} left
- *   untracked empty directories behind -- unlike real hg's own default, confirmed above, which
- *   removes them with zero flags needed.</li>
- *   <li><b>Symlink traversal (real data-loss bug, not merely a parity gap):</b> the old
- *   implementation used {@link Files#isDirectory(Path, LinkOption...)} with no {@code
- *   LinkOption.NOFOLLOW_LINKS}, so a working copy containing a symlink to a directory -- even one
- *   entirely outside the repository -- was walked <em>through</em> the symlink, and any "untracked"
- *   file found on the far side of it (which is every file there, since the parent's dirstate never
- *   mentions paths outside the repo) was deleted. Verified live against real hg 7.2: real hg's own
- *   purge treats a directory symlink as a single opaque unknown entry (only the link itself is a
- *   candidate for deletion, never anything reachable through it) -- confirmed both via {@code hg
- *   purge -p} listing just the link's own path, never anything beneath it, and via an actual {@code
- *   hg purge} run that deleted the link but left an external target directory's contents completely
- *   untouched. A separate, smaller instance of the same root cause: {@link Files#exists(Path,
- *   LinkOption...)} with no {@code NOFOLLOW_LINKS} also made a <em>broken</em> (dangling-target)
- *   symlink invisible to the old top-of-method existence guard, so it was silently skipped instead
- *   of deleted -- real hg deletes broken symlinks too (verified live: {@code hg purge} logs
- *   "removing file &lt;broken-link&gt;").</li>
+ *   <li><b>Default directory removal:</b> {@link #setPurgeDirectories}'s backing field defaults to
+ *   {@code true}, so a plain {@code new PurgeCommand(repo).call()} removes untracked empty
+ *   directories, matching real hg's own default with zero flags needed.</li>
+ *   <li><b>Symlink traversal:</b> directory-existence checks use {@link Files#isDirectory(Path,
+ *   LinkOption...)} with {@code LinkOption.NOFOLLOW_LINKS}, so a working copy containing a symlink
+ *   to a directory -- even one entirely outside the repository -- is never walked <em>through</em>
+ *   the symlink; only the link itself is a candidate for deletion, never anything reachable through
+ *   it. This matches real hg's own purge, which treats a directory symlink as a single opaque
+ *   unknown entry. Likewise, {@link Files#exists(Path, LinkOption...)} is called with {@code
+ *   NOFOLLOW_LINKS} so that a <em>broken</em> (dangling-target) symlink is still visible to the
+ *   top-of-method existence guard and gets deleted -- real hg deletes broken symlinks too.</li>
  * </ol>
- * Also now treats a declared subrepo path ({@code .hgsub}, via {@link
+ * Also treats a declared subrepo path ({@code .hgsub}, via {@link
  * HgRepository#loadSubrepoPaths()} -- the same boundary {@link HgRepository#scanWorkingCopy()}
  * already applies) as an opaque boundary, never walked into: a checked-out subrepo's own files are
  * legitimately "untracked" from the parent dirstate's point of view, and purging them would destroy
  * the subrepo's own working copy.
+ *
+ * @apiNote Typically obtained via {@link Hg#purge()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class PurgeCommand {
     private final HgRepository repository;

@@ -16,6 +16,9 @@ import java.util.List;
  * ({@code .hg/merge/state2}, via {@link MergeState}), so a conflict left by {@code
  * MergeCommand} can actually be marked resolved/unresolved here, and the result is visible
  * to real {@code hg resolve --list} (see {@code MergeStateInteropTest}).
+ *
+ * @apiNote Typically obtained via {@link Hg#resolve()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public final class ResolveCommand {
     private final HgRepository repository;

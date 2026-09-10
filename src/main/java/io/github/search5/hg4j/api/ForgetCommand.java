@@ -11,6 +11,9 @@ import io.github.search5.hg4j.errors.HgValidationException;
 /**
  * Porcelain command corresponding to {@code hg forget} — stops tracking a file without touching
  * it on disk (unlike {@link RemoveCommand}, which deletes the working copy file).
+ *
+ * @apiNote Typically obtained via {@link Hg#forget()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class ForgetCommand {
     private final HgRepository repository;
@@ -37,10 +40,11 @@ public class ForgetCommand {
             }
 
             if (entry.getState() == 'a') {
-                // 아직 커밋된 적 없는 파일 — 그냥 추적을 완전히 해제한다.
+                // A file never committed yet -- just stop tracking it entirely.
                 dirstate.removeEntry(file);
             } else {
-                // 이미 커밋된 파일 — 다음 커밋 시 제거로 기록하되 작업 사본은 그대로 둔다.
+                // An already-committed file -- record it as removed at the next commit, while
+                // leaving the working copy untouched.
                 dirstate.addEntry(file, new Dirstate.Entry('r', 0, 0, 0));
             }
             repository.writeDirstate(dirstate);

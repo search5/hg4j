@@ -20,6 +20,9 @@ import java.util.TreeMap;
  * displayed as their own {@code name:subopt = value} lines. That is a separate, larger
  * feature ({@code mercurial/ui.py}'s {@code configsuboptions}/path-suboption handling) and is
  * out of scope here; only the base {@code name = url} aliases are exposed.</p>
+ *
+ * @apiNote Typically obtained via {@link Hg#paths()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class PathsCommand {
     private final HgRepository repository;

@@ -14,6 +14,12 @@ import java.util.LinkedHashMap;
 /**
  * Standard file-system implementation of StoreEngine.
  * Directly interfaces with the physical .hg repository store on disk.
+ *
+ * @apiNote The default {@link StoreEngine} every {@link HgRepository} uses unless {@link
+ *     HgRepository#setStoreEngine} is called; reads/writes revlogs, the dirstate, and manifests
+ *     directly under {@code .hg/}/{@code .hg/store}, honoring the repository's negotiated
+ *     requirements ({@code exp-changelog-v2}, {@code exp-revlogv2.2}, zstd compression,
+ *     persistent nodemap) when deciding how to create a brand-new revlog.
  */
 public class DefaultFileStoreEngine implements StoreEngine {
 
@@ -29,16 +35,14 @@ public class DefaultFileStoreEngine implements StoreEngine {
         // matches real hg's own precedence exactly (mercurial/revlog.py's `_init_opts`: `if
         // 'changelogv2' in opts and revlog_kind == KIND_CHANGELOG: new_header = CHANGELOGV2 ...
         // elif 'revlogv2' in opts: new_header = REVLOGV2` -- changelogv2 is checked first and wins
-        // outright for the changelog, general-v2 never overrides it there). A prior version of
-        // this method computed createAsGeneralV2 first and let it win whenever both requirements
-        // were active, silently bootstrapping the changelog as plain general-v2 (INDEX_ENTRY_V2,
-        // no `rank` field) instead of CHANGELOGV2 (INDEX_ENTRY_CL_V2, has `rank`) -- real hg's own
-        // `fast_rank()` unconditionally returns None for any revlog whose format_version isn't
-        // CHANGELOGV2, so a *second* real-hg commit on top of such an hg4j-created changelog
-        // crashed inside `revlog.py`'s `rank = 1 + self.fast_rank(p1r)` with `TypeError:
-        // unsupported operand type(s) for +: 'int' and 'NoneType'` -- found 2026-09-05 by the
-        // requirement matrix (RequirementMatrixInitDockerRoundTripTest, the `cl2/general-v2` and
-        // `cl2+sidedata/general-v2` combos) doing exactly that as its own acceptance check.
+        // outright for the changelog, general-v2 never overrides it there). Computing
+        // createAsGeneralV2 first and letting it win whenever both requirements are active would
+        // silently bootstrap the changelog as plain general-v2 (INDEX_ENTRY_V2, no `rank` field)
+        // instead of CHANGELOGV2 (INDEX_ENTRY_CL_V2, has `rank`) -- real hg's own `fast_rank()`
+        // unconditionally returns None for any revlog whose format_version isn't CHANGELOGV2, so
+        // a *second* real-hg commit on top of such an hg4j-created changelog would crash inside
+        // `revlog.py`'s `rank = 1 + self.fast_rank(p1r)` with `TypeError: unsupported operand
+        // type(s) for +: 'int' and 'NoneType'`.
         boolean createAsChangelogV2 = repository.isChangelogV2()
                 && "00changelog.i".equals(indexFile.getName()) && !indexFile.exists();
         // A repository-wide exp-revlogv2.2 requirement means EVERY OTHER revlog must be v2,

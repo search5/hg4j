@@ -14,10 +14,16 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
  * Parses Mercurial's obsolescence store (obsstore) binary format.
  * Enables integration with the evolve revision history system.
  *
- * <p>지원 포맷: FM1(version=1) — 실제 hg CLI(7.2, 기본 obsstore 포맷)로 생성한 실제
- * obsstore 파일을 {@code mercurial.obsolete._readmarkers()}로 직접 디코딩해 검증됨
- * (2026-09-01). FM0(version=0, 레거시)은 지원하지 않는다 — 실제 근거:
- * {@code mercurial/obsolete.py}의 {@code formats} 매핑, {@code _fm1fixed = '>IdhHBBB'}.</p>
+ * <p>Supported format: FM1 (version=1) -- verified by decoding a real obsstore file produced by
+ * a real hg CLI (7.2, the default obsstore format) directly with {@code
+ * mercurial.obsolete._readmarkers()}. FM0 (version=0, legacy) is not supported --
+ * per {@code mercurial/obsolete.py}'s {@code formats} mapping, {@code _fm1fixed = '>IdhHBBB'}.</p>
+ *
+ * @apiNote Used by {@code BookmarkCommand} (to check whether a bookmarked node has been
+ *     superseded) and {@code PushCommand} (to exchange obsolescence data with a remote). Writing
+ *     new markers -- done by {@code AmendCommand}, {@code HisteditCommand}, {@code
+ *     StripCommand}, and {@code RebaseCommand} -- is handled separately by {@link
+ *     HgObsMarker#writeMarker}.
  */
 public final class HgObsolescenceParser {
 
@@ -30,7 +36,7 @@ public final class HgObsolescenceParser {
 
     /**
      * Decodes the raw obsstore binary payload into a list of obsolescence markers.
-     * 파일 첫 바이트는 포맷 버전이다 — 데이터 자체에 포함되지 않는다.
+     * The file's first byte is the format version -- it is not part of the record data itself.
      *
      * @param bytes raw binary contents of obsstore
      * @return list of parsed markers
@@ -76,7 +82,7 @@ public final class HgObsolescenceParser {
                 }
 
                 if (numpar != FM1_PARENT_NONE) {
-                    // 부모 정보는 hg4j의 HgObsMarker 모델에서 다루지 않으므로 건너뛴다.
+                    // Parent information is not modeled by hg4j's HgObsMarker, so it is skipped.
                     buffer.position(buffer.position() + nodeSize * numpar);
                 }
 
@@ -95,9 +101,10 @@ public final class HgObsolescenceParser {
                     metadata.put(new String(keyBytes, StandardCharsets.UTF_8), new String(valBytes, StandardCharsets.UTF_8));
                 }
 
-                // totalSize는 이 레코드의 선언된 전체 길이(자기 자신의 4바이트 포함) — 다음
-                // 레코드 시작 지점과 일치하는지 무결성 체크만 하고, 실제 파싱은 필드 단위로 이미
-                // 끝났다.
+                // totalSize is this record's declared overall length (including its own 4
+                // bytes) -- this is only an integrity check that it matches where the next
+                // record actually starts; the real field-by-field parsing is already done by
+                // this point.
                 int consumed = buffer.position() - recordStart;
                 if (consumed != totalSize) {
                     throw new HgCorruptDataException(

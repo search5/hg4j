@@ -7,6 +7,12 @@ import java.util.Arrays;
 /**
  * A robust line-level 3-way merge engine based on Sync Points via LCS Index Mapping.
  * Optimized with Hirschberg's Algorithm for O(N) spatial complexity to protect against OutOfMemory errors.
+ *
+ * @apiNote Used by {@code MergeCommand} and {@code RebaseCommand} to perform the actual 3-way
+ *     content merge of a file's base/local/other versions, and by {@code TreeMergeCommand} for
+ *     tree-level merges. A conflicted result's lines are already formatted with real hg-style
+ *     {@code <<<<<<<}/{@code =======}/{@code >>>>>>>} markers, ready to write to the working
+ *     copy.
  */
 public class Merge3 {
 

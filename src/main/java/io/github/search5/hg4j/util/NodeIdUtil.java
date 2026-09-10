@@ -14,6 +14,17 @@ import java.io.ByteArrayOutputStream;
 
 /**
  * Common utility methods for handling Mercurial NodeIDs and Hexadecimal representations.
+ *
+ * @apiNote Two distinct groups of static helpers live here. (1) Node ID / hex conversion and
+ *     lookup ({@link #toHex}, {@link #fromHex}, {@link #isAllZero}, {@link
+ *     #findRevisionByNodeId}, {@link #resolveRevision}, {@link #computeNodeId}, {@link
+ *     #computeUnbundleHeadsWireValue}) used throughout the transport layer and by most porcelain
+ *     commands that accept a user-supplied revision string. (2) Store path encoding ({@link
+ *     #encodeFname}, {@link #decodeStoreDataPath}) implementing real hg's {@code
+ *     store._pathencode}/{@code _hashencode} scheme, used by {@code CommitCommand}/{@code
+ *     FetchCommand} when writing revlogs and by {@code
+ *     io.github.search5.hg4j.api.GrepCommand} when enumerating tracked files directly from the
+ *     on-disk store.
  */
 public final class NodeIdUtil {
 
@@ -23,6 +34,12 @@ public final class NodeIdUtil {
 
     /**
      * Converts a byte array to its hexadecimal String representation.
+     *
+     * @apiNote The standard way to render a raw node ID for wire protocol messages (used
+     *     throughout {@code HgLocalClient}, {@code HgRemoteClientV2}, {@code Wire1Commands},
+     *     {@code Wire2Commands}) and for merge-state bookkeeping ({@code MergeState}). Returns
+     *     {@code ""} for {@code null} rather than throwing, so callers building log/error
+     *     messages don't need a null check first.
      */
     public static String toHex(byte[] bytes) {
         if (bytes == null) return "";
@@ -35,6 +52,12 @@ public final class NodeIdUtil {
 
     /**
      * Converts a hexadecimal String to its byte array representation.
+     *
+     * @apiNote The counterpart to {@link #toHex}, used to decode node IDs received over the
+     *         wire (e.g. in {@code HgRemoteClientV2}, {@code Wire1Commands}) and revision
+     *         references resolved from a revset ({@code HgRevsetEngine}).
+     * @throws IllegalArgumentException if {@code hex} has an odd length or contains a
+     *         non-hexadecimal character
      */
     public static byte[] fromHex(String hex) {
         if (hex == null || hex.isEmpty()) {
@@ -58,6 +81,12 @@ public final class NodeIdUtil {
 
     /**
      * Checks if a 20-byte array represents a null (all-zero) node ID.
+     *
+     * @apiNote Used to detect the "no parent" / "null revision" sentinel node ID (Mercurial's
+     *         {@code nullid}), e.g. by {@code StatusCommand}, {@code GraftCommand}, {@code
+     *         BackoutCommand}, {@code AnnotateCommand}, and {@code IdentifyCommand} when deciding
+     *         whether a changeset has a given parent at all. Returns {@code true} for {@code
+     *         null}, treating "no array" the same as "all zero".
      */
     public static boolean isAllZero(byte[] bytes) {
         if (bytes == null) return true;
@@ -69,6 +98,13 @@ public final class NodeIdUtil {
 
     /**
      * Searches for a revision index in a Revlog using its 20-byte Node ID.
+     *
+     * @apiNote A null-safe convenience wrapper around {@link Revlog#findRevision}, used by
+     *         {@code DefaultFileStoreEngine} and porcelain commands that navigate history by
+     *         node ID (e.g. {@code LogCommand}, {@code CatCommand}, {@code ManifestCommand},
+     *         {@code GraftCommand}, {@code TreeMergeCommand}).
+     * @return the revision number, or {@code -1} if either argument is {@code null} or the node
+     *         ID is not present in the revlog
      */
     public static int findRevisionByNodeId(Revlog revlog, byte[] nodeId) {
         if (revlog == null || nodeId == null) {
@@ -166,9 +202,9 @@ public final class NodeIdUtil {
                 boolean winres3 = l == 3 && isWinReserved3(n);
                 boolean winres4 = l == 4 && n.charAt(3) >= '1' && n.charAt(3) <= '9' && isWinReserved4Prefix(n);
                 if (winres3 || winres4) {
-                    // 실제 스펙: 3글자든(aux/con/prn/nul) 4글자(com1..9/lpt1..9)든 항상
-                    // 세 번째 문자(인덱스 2)만 이스케이프한다 — 4글자 이름에서 끝의 숫자를
-                    // 이스케이프하는 것이 아니다.
+                    // Real spec: whether the name is 3 characters (aux/con/prn/nul) or 4
+                    // (com1..9/lpt1..9), only the third character (index 2) is ever escaped --
+                    // not the trailing digit of the 4-character form.
                     n = n.substring(0, 2) + String.format("~%02x", (int) n.charAt(2)) + n.substring(3);
                 }
             }
@@ -286,15 +322,14 @@ public final class NodeIdUtil {
      * from a plain recursive directory walk), returns the original logical repository-relative
      * path (e.g. {@code "dir/b.txt"}).
      *
-     * <p>Added 2026-09-05 (backlog #39, requirement-matrix expansion to
-     * Cat/Files/Locate/Grep/Annotate/Manifest) as the counterpart {@link GrepCommand} needs to
-     * enumerate tracked files without {@code fncache} -- verified against a real {@code
-     * hg-rust-7.2.4} {@code format.use-fileindex-v1=yes} repository, whose {@code store/requires}
-     * lists {@code store} but neither {@code fncache} nor {@code dotencode}: it has no {@code
-     * fncache} file at all (its own {@code fileindex}/{@code fileindex-list}/{@code
-     * fileindex-tree} sidecar files serve the same "which paths exist" purpose internally, in a
-     * format this library does not otherwise need to parse), so the on-disk {@code data/} tree
-     * itself -- walked directly -- is the only available enumeration source.
+     * <p>The counterpart {@link io.github.search5.hg4j.api.GrepCommand} needs to enumerate
+     * tracked files without {@code fncache}: a {@code format.use-fileindex-v1=yes} repository's
+     * {@code store/requires} lists {@code store} but neither {@code fncache} nor {@code
+     * dotencode}, and has no {@code fncache} file at all (its own {@code fileindex}/{@code
+     * fileindex-list}/{@code fileindex-tree} sidecar files serve the same "which paths exist"
+     * purpose internally, in a format this library does not otherwise need to parse), so the
+     * on-disk {@code data/} tree itself -- walked directly -- is the only available enumeration
+     * source.
      *
      * <p>Every character {@link #encodeFnameBytes} or {@link #auxEncode} can introduce
      * ({@code __}, {@code _<lowercase>}, {@code ~xx}) is unambiguous and reversible in a single
@@ -357,6 +392,18 @@ public final class NodeIdUtil {
         return out.toByteArray();
     }
 
+    /**
+     * Orders strings by their raw UTF-8 byte sequence rather than by Java's UTF-16 {@code char}
+     * order, matching real hg's path sort order (Python compares the encoded {@code bytes}
+     * paths).
+     *
+     * @apiNote Used wherever hg4j needs to sort file paths or other strings in exactly the order
+     *     real hg would, e.g. for stable diff/status output and manifest-tree comparisons —
+     *     see the usages in {@code TreeMergeCommand}, {@code BackoutCommand}, {@code
+     *     StatusCommand}, {@code LocateCommand}, {@code ChangingFiles}, and {@code
+     *     MergeCommitCommand}. Plain Java {@link String#compareTo} diverges from this for
+     *     non-ASCII paths because it compares UTF-16 code units, not UTF-8 bytes.
+     */
     public static final Comparator<String> UTF8_STRING_COMPARATOR = (s1, s2) -> {
         byte[] b1 = s1.getBytes(StandardCharsets.UTF_8);
         byte[] b2 = s2.getBytes(StandardCharsets.UTF_8);
@@ -371,6 +418,23 @@ public final class NodeIdUtil {
         return b1.length - b2.length;
     };
 
+    /**
+     * Resolves a user-supplied revision reference — empty/{@code null}/{@code "tip"}, a decimal
+     * revision number, or a (possibly abbreviated) hex node ID prefix — against a changelog,
+     * returning the matching full node ID.
+     *
+     * @apiNote The shared revision-argument resolver behind most porcelain commands that accept
+     *     a {@code -r}/revision string (e.g. {@code CatCommand}, {@code LogCommand}, {@code
+     *     ManifestCommand}, {@code GraftCommand}) and the wire protocol command handlers ({@code
+     *     Wire1Commands}, {@code Wire2Commands}) resolving a client-supplied revision.
+     * @param changelog the repository's changelog revlog to resolve against
+     * @param revStr the user-supplied reference; empty, {@code null}, or {@code "tip"} means the
+     *     latest revision
+     * @return the resolved 20-byte node ID, or {@code null} if {@code revStr} means "tip" but the
+     *     changelog is empty, or no hex-prefix match was found
+     * @throws IOException if {@code revStr} is an ambiguous hex prefix matching more than one
+     *     revision
+     */
     public static byte[] resolveRevision(Revlog changelog, String revStr) throws IOException {
         if (revStr == null || revStr.isEmpty() || "tip".equalsIgnoreCase(revStr)) {
             int count = changelog.getRevisionCount();
@@ -394,6 +458,21 @@ public final class NodeIdUtil {
         return matches.get(0);
     }
 
+    /**
+     * Computes a Mercurial node ID: {@code sha1(min(p1, p2) + max(p1, p2) + content)}, where
+     * {@code p1}/{@code p2} are lexicographically sorted (padded to 20 zero bytes when absent)
+     * before hashing, matching real hg's {@code revlog.hash()}.
+     *
+     * @apiNote Used by {@code HisteditCommand} and {@code VerifyCommand} to recompute a
+     *     changeset/manifest/file revision's node ID from its content and parents — e.g. to
+     *     verify stored data matches its expected hash, or to predict the node ID a rewritten
+     *     revision will get before it is actually written.
+     * @param content the revision's raw (fulltext) content
+     * @param p1 first parent's 20-byte node ID, or {@code null} for no first parent
+     * @param p2 second parent's 20-byte node ID, or {@code null} for no second parent
+     * @return the resulting 32-byte array whose first 20 bytes are the SHA-1 node ID (the
+     *     remaining 12 bytes are zero-padded, matching the storage layout elsewhere in hg4j)
+     */
     public static byte[] computeNodeId(byte[] content, byte[] p1, byte[] p2) {
         byte[] p1Node = new byte[20];
         if (p1 != null) {
@@ -440,8 +519,7 @@ public final class NodeIdUtil {
 
     /**
      * Real hg's {@code unbundlehash} wire-encoding optimization for {@code unbundle}'s {@code
-     * heads} argument ({@code mercurial/wireprotov1peer.py}'s {@code unbundle()}, confirmed
-     * against Mercurial 7.2.4 source and verified end-to-end against a real hg server, 2026-09-03):
+     * heads} argument ({@code mercurial/wireprotov1peer.py}'s {@code unbundle()}):
      * <pre>
      * if heads != [b'force'] and self.capable(b'unbundlehash'):
      *     heads = [b'hashed', sha1(b''.join(sorted(heads))).digest()]
@@ -465,17 +543,15 @@ public final class NodeIdUtil {
             return heads == null ? List.of() : heads;
         }
         if (heads.size() == 1 && "force".equals(heads.get(0))) {
-            // Backlog item 38 (found while wiring up a --force push's own wire value, which
-            // previously never actually reached this branch against a real server): real hg's
-            // OWN wireprotov1peer.py `unbundle()` runs the literal `[b'force']` sentinel through
-            // `wireprototypes.encodelist()` exactly like a genuine head list -- `encodelist` is a
-            // blind `hex()` over every element, with NO special-casing for `b'force'` -- so the
-            // wire value real hg actually sends is `hex(b'force')` ("666f726365"), not the bare
-            // ASCII word. Confirmed live (2026-09-04): sending the literal word "force" to a real
-            // hg 7.2 server breaks its `wireprototypes.decodelist()` (`bin("force")` -- 'o'/'r' are
-            // not hex digits -- raises inside the server, surfacing to hg4j's client as a garbled/
-            // empty framed response). The receiving side (Wire1Commands/HgLocalClient) must
-            // recognize this SAME hex-encoded form -- see FORCE_SENTINEL_HEX there.
+            // Real hg's own wireprotov1peer.py `unbundle()` runs the literal `[b'force']`
+            // sentinel through `wireprototypes.encodelist()` exactly like a genuine head list --
+            // `encodelist` is a blind `hex()` over every element, with NO special-casing for
+            // `b'force'` -- so the wire value real hg actually sends is `hex(b'force')`
+            // ("666f726365"), not the bare ASCII word. Sending the literal word "force" to a real
+            // hg server instead breaks its `wireprototypes.decodelist()` (`bin("force")` -- 'o'/'r'
+            // are not hex digits -- raises inside the server, surfacing to hg4j's client as a
+            // garbled/empty framed response). The receiving side (Wire1Commands/HgLocalClient)
+            // must recognize this SAME hex-encoded form -- see FORCE_SENTINEL_HEX there.
             return List.of(toHex("force".getBytes(StandardCharsets.US_ASCII)));
         }
         if (!serverSupportsUnbundleHash) {

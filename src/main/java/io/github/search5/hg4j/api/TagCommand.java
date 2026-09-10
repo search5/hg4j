@@ -19,14 +19,17 @@ import java.util.HashMap;
 /**
  * Commands for tag management (listing tags or creating tags).
  *
- * <p>{@link #setLocal} and {@link #setRemove} (added 2026-09-04, verified directly against real hg
- * 7.2.2's own {@code hg tag --local}/{@code hg tag --remove}): a local tag is written to
- * {@code .hg/localtags} instead of {@code .hgtags} and is never committed (real hg's own
+ * <p>{@link #setLocal} and {@link #setRemove} mirror real hg's own {@code hg tag --local}/
+ * {@code hg tag --remove}: a local tag is written to {@code .hg/localtags} instead of
+ * {@code .hgtags} and is never committed (real hg's own
  * {@code tagsmod.tag()} skips the commit entirely when {@code local} is set, regardless of any
  * {@code --message}/commit-editor option -- there is nothing to commit, since
  * {@code .hg/localtags} is untracked). Removing a tag appends a nullid ({@code "0"} x 40) line for
  * that name to the same file it was defined in (real hg's own {@code rev_ = b'null'}), which
  * {@link TagsCommand} already recognizes as "deleted" and omits from its listing.</p>
+ *
+ * @apiNote Typically obtained via {@link Hg#tag()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class TagCommand {
     private final HgRepository repository;
@@ -79,9 +82,9 @@ public class TagCommand {
 
     /**
      * {@code hg tag -f}/{@code --force}: allows moving a tag name that already resolves to a
-     * non-null revision. Without this, real hg 7.2.2 aborts with {@code tag '<name>' already
-     * exists (use -f to force)} (verified directly against the CLI, 2026-09-04) rather than
-     * silently overwriting -- {@link #call} now reproduces that gate for both global and
+     * non-null revision. Without this, real hg aborts with {@code tag '<name>' already exists
+     * (use -f to force)} rather than silently overwriting -- {@link #call} reproduces that gate
+     * for both global and
      * {@link #setLocal local} tags. Irrelevant when {@link #setRemove} is set: real hg lets an
      * existing tag be removed unconditionally, force or not.
      */
@@ -118,11 +121,10 @@ public class TagCommand {
                 hex = NodeIdUtil.toHex(nodeId).substring(0, 40);
             }
 
-            // real hg 7.2.2: `hg tag <existing-name>` without -f aborts instead of silently
-            // moving the tag (verified against the CLI, 2026-09-04) -- and the check spans the
-            // MERGED local+global namespace, not just the file being written to: a local tag
-            // colliding with an existing global name (or vice versa) is rejected the same way
-            // (also verified against the CLI). Removal is exempt -- an existing tag can always
+            // Real hg: `hg tag <existing-name>` without -f aborts instead of silently moving the
+            // tag -- and the check spans the MERGED local+global namespace, not just the file
+            // being written to: a local tag colliding with an existing global name (or vice
+            // versa) is rejected the same way. Removal is exempt -- an existing tag can always
             // be removed regardless of `force`.
             if (!remove && !force) {
                 Map<String, byte[]> existingGlobal = TagsCommand.readTagFile(tagsFile);
@@ -162,8 +164,7 @@ public class TagCommand {
                 new AddCommand(repository).call();
 
                 // Commit the tag. Real hg's own tag commit message uses the short (12-hex-digit)
-                // node form (mercurial.node.short()), verified directly against hg 7.2.2
-                // (2026-09-04) -- not the full 40-digit hex.
+                // node form (mercurial.node.short()) -- not the full 40-digit hex.
                 if (commit) {
                     String message = remove
                             ? "Removed tag " + tagName

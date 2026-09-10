@@ -10,6 +10,11 @@ import io.github.search5.hg4j.errors.HgValidationException;
 
 /**
  * High-performance serializer to output binary dirstate-v2 format compliant with Mercurial.
+ *
+ * @apiNote Used by {@link Dirstate#write(java.io.File)} to produce the {@code
+ *     .hg/dirstate.<uid>} data file contents when {@link Dirstate#isV2()} is set. Builds the
+ *     full directory tree from the flat entry map before serializing, since the on-disk format
+ *     is a radix tree, not a flat list.
  */
 public class DirstateV2Serializer {
 
@@ -45,6 +50,10 @@ public class DirstateV2Serializer {
         }
     }
 
+    /**
+     * Convenience overload that wraps a bare entry map in a fresh {@link Dirstate} (with no
+     * parents/copies) before serializing.
+     */
     public static byte[] serialize(Map<String, Dirstate.Entry> entries) throws IOException {
         Dirstate d = new Dirstate();
         for (Map.Entry<String, Dirstate.Entry> entry : entries.entrySet()) {
@@ -90,9 +99,8 @@ public class DirstateV2Serializer {
         // bytes of the basename, matching Rust's `&[u8]`/`HgPath` ordering. Every level (root list
         // and every directory's children list) MUST be sorted this way, or binary search on the
         // real-hg side silently lands on the wrong index and treats an out-of-order sibling as
-        // absent -- this was verified byte-for-byte (2026-09-04) against a real hg-written
-        // dirstate-v2 file: an out-of-order 2-root-file case parses fine via hg4j's own DFS-stack
-        // reader (order-agnostic) but makes real hg's `hg status`/`hg verify` silently drop the
+        // absent -- an out-of-order case parses fine via hg4j's own DFS-stack reader
+        // (order-agnostic) but makes real hg's `hg status`/`hg verify` silently drop the
         // earlier-inserted file ("in manifest1, but not marked as tracked in p1").
         Comparator<TreeNode> byBasenameBytes = Comparator.comparing(
                 n -> n.name, DirstateV2Serializer::compareUtf8Bytes);
@@ -206,12 +214,12 @@ public class DirstateV2Serializer {
                 // exists -- an ambiguous entry (Dirstate.Entry#isStatAmbiguous(), most commonly a
                 // same-second racy write, encoded here as size=-1 and/or time=AMBIGUOUS_TIME)
                 // must round-trip back out with those bits OMITTED, not with a fabricated
-                // concrete 0. Setting them unconditionally previously turned "ambiguous, needs a
-                // real content comparison" into a definite (and wrong) "this file is 0 bytes as
-                // of epoch" claim the instant ANY hg4j write command did a read-modify-write of a
+                // concrete 0. Setting them unconditionally would turn "ambiguous, needs a real
+                // content comparison" into a definite (and wrong) "this file is 0 bytes as of
+                // epoch" claim the instant ANY hg4j write command did a read-modify-write of a
                 // dirstate-v2 file that happened to contain such an entry for an ENTIRELY
-                // different, untouched path -- confirmed live: real hg's own `hg status`/`hg
-                // commit` afterward reported that untouched file as spuriously modified.
+                // different, untouched path -- real hg's own `hg status`/`hg commit` afterward
+                // would then report that untouched file as spuriously modified.
                 if (size >= 0) {
                     flagsVal |= DirstateV2Node.HAS_MODE_AND_SIZE;
                     // Real hg only derives the exec/symlink bits from `mode` INSIDE the "has a

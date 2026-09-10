@@ -15,6 +15,10 @@ import java.nio.file.StandardCopyOption;
 /**
  * Porcelain command to rollback the last successful transaction.
  * Conforms to the undo.* layout specifications to restore store files, dirstate, and bookmarks.
+ *
+ * @apiNote Invoked via {@link Hg#rollback()} rather than constructed directly; consumes the
+ *     {@code undo.*} files {@link CommitCommand}/{@link FetchCommand} leave behind after a
+ *     successful commit or pull.
  */
 public class RollbackCommand {
 
@@ -71,11 +75,10 @@ public class RollbackCommand {
                     // companion .idx/.dat/.sda files, which real hg always expects to physically
                     // exist (even 0 bytes) as long as the docket references them. See
                     // HgRepository#checkAndPerformAutoRollback's matching branch and
-                    // CommitCommand#recordRevlogRollbackState's javadoc for the full story (found
-                    // live 2026-09-05: a fresh v2 revlog's sidedata companion is legitimately 0
-                    // bytes, and this undo file's generic size-0-means-delete entries below made
-                    // rollback delete it outright, leaving real hg unable to even open the repo
-                    // afterward).
+                    // CommitCommand#recordRevlogRollbackState's javadoc: a fresh v2 revlog's
+                    // sidedata companion is legitimately 0 bytes, so this undo file's generic
+                    // size-0-means-delete entries below must not delete it outright, or real hg
+                    // would be unable to even open the repo afterward.
                     String content = line.substring("trunc ".length()).trim();
                     int truncTabIdx = content.lastIndexOf('\t');
                     if (truncTabIdx != -1) {
@@ -116,15 +119,14 @@ public class RollbackCommand {
             if (undoDirstate.exists()) {
                 byte[] backupBytes = Files.readAllBytes(undoDirstate.toPath());
                 SafeFileIO.writeAtomic(dirstateFile, backupBytes);
-                // dirstate-v2's own companion data file (backlog #39, found live 2026-09-05):
-                // the docket bytes just restored may reference a "<uid>" whose
-                // ".hg/dirstate.<uid>" data file Dirstate.write()'s own "W-LEAK" cleanup already
-                // deleted (it removes the *previous* uid's data file the instant the commit being
-                // rolled back durably wrote its own new docket) -- restore it from
-                // CommitCommand#writeUndoInfo's durable backup if it is indeed missing, exactly
-                // mirroring HgRepository#checkAndPerformAutoRollback's matching "dirstate" branch.
-                // Without this, real hg's own dirstate-v2 reader aborts with "dirstate read race
-                // happened 5 times in a row" (verified live against hg-rust-7.2.4).
+                // dirstate-v2's own companion data file: the docket bytes just restored may
+                // reference a "<uid>" whose ".hg/dirstate.<uid>" data file Dirstate.write()'s own
+                // "W-LEAK" cleanup already deleted (it removes the *previous* uid's data file the
+                // instant the commit being rolled back durably wrote its own new docket) --
+                // restore it from CommitCommand#writeUndoInfo's durable backup if it is indeed
+                // missing, exactly mirroring HgRepository#checkAndPerformAutoRollback's matching
+                // "dirstate" branch. Without this, real hg's own dirstate-v2 reader aborts with
+                // "dirstate read race happened 5 times in a row".
                 String uid = readDirstateV2Uid(dirstateFile);
                 if (uid != null) {
                     File dataFile = new File(repository.getDirectory(), ".hg/dirstate." + uid);

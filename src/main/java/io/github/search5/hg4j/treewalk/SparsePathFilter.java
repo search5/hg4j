@@ -6,6 +6,10 @@ import java.util.regex.Pattern;
 
 /**
  * High-performance Glob-matching path filter for Monorepo Sparse Checkout.
+ *
+ * @apiNote Used directly by {@code LocateCommand}/{@code FilesCommand} for their own glob-pattern
+ *     path matching, and internally by {@link SparseConfig#toPathFilter()} to build the
+ *     include/exclude matchers for an active sparse profile.
  */
 public class SparsePathFilter implements PathFilter {
     private final List<Pattern> patterns = new ArrayList<>();

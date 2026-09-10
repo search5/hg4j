@@ -16,6 +16,12 @@ import java.nio.ByteOrder;
  * An earlier version of this class used entirely different (fictional, never-verified) offsets
  * and flag bits that happened to round-trip against hg4j's own reader/writer but could not read
  * or be read by real hg.</p>
+ *
+ * @apiNote A mutable, zero-copy view over one 44-byte node record inside the raw dirstate-v2
+ *     data buffer -- {@link io.github.search5.hg4j.dirstate.DirstateV2Parser} constructs
+ *     instances to read an existing on-disk dirstate, and {@link
+ *     io.github.search5.hg4j.dirstate.DirstateV2Serializer} constructs them to write a new one.
+ *     Callers should go through those two classes rather than using this class directly.
  */
 public class DirstateV2Node {
     public static final int NODE_SIZE = 44;
@@ -138,16 +144,15 @@ public class DirstateV2Node {
         boolean isSymlink = (mode & 0120000) == 0120000;
         if (isSymlink) {
             flags |= MODE_IS_SYMLINK;
-            // Backlog #39 fix, verified directly against real hg 7.2.4's Rust dirstate-v2 source
-            // (rust/hg-core/src/dirstate/entry.rs, mode_changed(): `dirstate_exec_bit =
-            // self.mode() & EXEC_BIT_MASK(0o100)` compared against `fs_exec_bit = fresh lstat mode
-            // & 0o100`). A real OS symlink's lstat mode ALWAYS reports the full rwxrwxrwx
-            // permission bits (there is no such thing as a "non-executable" symlink at the
-            // filesystem level) -- so `fs_exec_bit` is unconditionally true for every symlink, and
-            // MODE_EXEC_PERM must be set alongside MODE_IS_SYMLINK (never mutually exclusive) for
-            // synthesize_unix_mode()'s reconstructed "dirstate_exec_bit" to agree, or real hg's own
-            // `hg status` reports every untouched symlink as modified. Confirmed live (2026-09-05)
-            // against a real Rust-hg-written dirstate-v2 repository.
+            // Real hg's Rust dirstate-v2 source (rust/hg-core/src/dirstate/entry.rs,
+            // mode_changed(): `dirstate_exec_bit = self.mode() & EXEC_BIT_MASK(0o100)` compared
+            // against `fs_exec_bit = fresh lstat mode & 0o100`) means a real OS symlink's lstat
+            // mode ALWAYS reports the full rwxrwxrwx permission bits (there is no such thing as a
+            // "non-executable" symlink at the filesystem level) -- so `fs_exec_bit` is
+            // unconditionally true for every symlink, and MODE_EXEC_PERM must be set alongside
+            // MODE_IS_SYMLINK (never mutually exclusive) for synthesize_unix_mode()'s
+            // reconstructed "dirstate_exec_bit" to agree, or real hg's own `hg status` reports
+            // every untouched symlink as modified.
             flags |= MODE_EXEC_PERM;
         } else if ((mode & 0111) != 0) {
             flags |= MODE_EXEC_PERM;

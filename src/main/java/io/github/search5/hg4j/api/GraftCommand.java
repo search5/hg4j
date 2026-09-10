@@ -37,34 +37,33 @@ import java.nio.file.Path;
  * Graft command (equivalent to git cherry-pick) for Mercurial repositories.
  * Copies the changes of a source revision and commits them on top of the current parent.
  *
- * <p>Since 2026-09-05 this performs a real 3-way merge (via {@link
- * RebaseCommand#attemptThreeWayMerge}, the same hardened engine {@link RebaseCommand}'s own
- * cherry-pick path uses since 2026-09-04) whenever the destination and the graft source have both
- * changed the same file differently since their common ancestor -- verified live against real
- * {@code hg graft} 7.2, which performs the exact same kind of 3-way merge here rather than
- * blindly taking the source's content (this class's own pre-2026-09-05 behavior, a real data-loss
- * bug: grafting a source revision onto a destination that had independently diverged on the same
- * path silently discarded the destination's content instead of merging it or flagging a
- * conflict). A genuine conflict writes standard {@code <<<<<<< dest ... ======= ...
- * >>>>>>> source} markers into the working file and leaves the file's conflict bookkeeping in
- * {@code .hg/merge/state2} (the same real-hg-compatible format {@link MergeCommand} and {@link
- * RebaseCommand} already write), and pauses the graft in a resumable state: call {@link
- * #continueGraft()} after resolving (and re-staging the resolved content on disk, same as {@code
- * hg resolve --mark}) to finish the commit, or {@link #abort()} to discard the in-progress graft
- * and return the working copy/dirstate to exactly their pre-graft state. Like {@link
- * RebaseCommand}, this is a purely hg4j-private pause/continue/abort protocol -- mid-flight
- * interop with real hg's own {@code hg graft --continue}/{@code --abort} bookkeeping is not a
- * goal, only the end state (conflict markers via {@code .hg/merge/state2}) needs to round-trip
- * through real hg.
+ * <p>This performs a real 3-way merge (via {@link RebaseCommand#attemptThreeWayMerge}, the same
+ * hardened engine {@link RebaseCommand}'s own cherry-pick path uses) whenever the destination and
+ * the graft source have both changed the same file differently since their common ancestor,
+ * matching real {@code hg graft}, which performs the exact same kind of 3-way merge here rather
+ * than blindly taking the source's content -- grafting a source revision onto a destination that
+ * had independently diverged on the same path must never silently discard the destination's
+ * content instead of merging it or flagging a conflict. A genuine conflict writes standard
+ * {@code <<<<<<< dest ... ======= ... >>>>>>> source} markers into the working file and leaves
+ * the file's conflict bookkeeping in {@code .hg/merge/state2} (the same real-hg-compatible format
+ * {@link MergeCommand} and {@link RebaseCommand} already write), and pauses the graft in a
+ * resumable state: call {@link #continueGraft()} after resolving (and re-staging the resolved
+ * content on disk, same as {@code hg resolve --mark}) to finish the commit, or {@link #abort()}
+ * to discard the in-progress graft and return the working copy/dirstate to exactly their
+ * pre-graft state. Like {@link RebaseCommand}, this is a purely hg4j-private pause/continue/abort
+ * protocol -- mid-flight interop with real hg's own {@code hg graft --continue}/{@code --abort}
+ * bookkeeping is not a goal, only the end state (conflict markers via {@code .hg/merge/state2})
+ * needs to round-trip through real hg.
  *
- * <p>Also since 2026-09-05: this class no longer writes an obsolescence marker linking the graft
- * source to the new grafted commit. Verified live against real {@code hg graft} 7.2: a plain
- * {@code hg graft REV} does NOT create any obsmarker at all -- the source revision stays fully
- * visible in a plain {@code hg log} right alongside the new grafted duplicate (graft is a copy
- * operation, not a rewrite). Writing one anyway (this class's own pre-2026-09-05 behavior) made
- * the source spuriously disappear from a plain {@code hg log} once read back by real hg -- a real
- * bug, verified by manually reproducing the exact marker real hg 7.2 itself refused to write and
- * observing it hide the precursor.
+ * <p>This class does not write an obsolescence marker linking the graft source to the new
+ * grafted commit, matching real {@code hg graft}: a plain {@code hg graft REV} does NOT create
+ * any obsmarker at all -- the source revision stays fully visible in a plain {@code hg log}
+ * right alongside the new grafted duplicate (graft is a copy operation, not a rewrite). Writing
+ * one anyway would make the source spuriously disappear from a plain {@code hg log} once read
+ * back by real hg.
+ *
+ * @apiNote Typically obtained via {@link Hg#graft()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class GraftCommand {
     private static final Logger LOGGER = Logger.getLogger(GraftCommand.class.getName());
@@ -109,10 +108,10 @@ public class GraftCommand {
         if (origClLines.length > 1) {
             meta.author = origClLines[1].trim();
         }
-        // Real hg (mercurial/cmdutil.py graft logic, verified against `hg graft` v7.2) copies
-        // the source changeset's exact date onto the grafted commit unless --currentdate/--date
-        // is given; parse "secs offset[ extra]" from the 3rd changelog line (date line) so we can
-        // pass it through to CommitCommand instead of letting it default to "now".
+        // Real hg (mercurial/cmdutil.py graft logic) copies the source changeset's exact date
+        // onto the grafted commit unless --currentdate/--date is given; parse "secs offset[
+        // extra]" from the 3rd changelog line (date line) so we can pass it through to
+        // CommitCommand instead of letting it default to "now".
         if (origClLines.length > 2) {
             String[] dateParts = origClLines[2].trim().split(" ");
             if (dateParts.length >= 2) {
@@ -142,8 +141,8 @@ public class GraftCommand {
         }
         // Real hg only appends "(grafted from CHANGESETHASH)" to the description when --log is
         // passed (`hg help graft`); a plain `hg graft REV` leaves the description byte-for-byte
-        // equal to the source's message (verified with `hg log -r tip` against real hg v7.2).
-        // This command doesn't implement --log, so the description is always left untouched.
+        // equal to the source's message. This command doesn't implement --log, so the
+        // description is always left untouched.
         meta.message = msgBuilder.toString();
         return meta;
     }
@@ -233,8 +232,8 @@ public class GraftCommand {
                 if (hLocalDest != null && !Objects.equals(hLocalDest, hAnc)) {
                     // Genuine divergence: the destination changed (or independently added) this
                     // path differently than the graft source did, since their common ancestor --
-                    // attempt a real 3-way merge instead of blindly overwriting dest's content
-                    // (verified against real `hg graft` 7.2 -- see this class's own javadoc).
+                    // attempt a real 3-way merge instead of blindly overwriting dest's content,
+                    // matching real `hg graft` (see this class's own javadoc).
                     byte[] ancestorLinkNode = parent1Node != null ? parent1Node : new byte[20];
                     RebaseCommand.ThreeWayMergeOutcome mergeOutcome = RebaseCommand.attemptThreeWayMerge(
                             repository, mergeHelper, path, hAnc, hLocalDest, hexAndFlag,
@@ -251,13 +250,12 @@ public class GraftCommand {
                 // behavior exactly).
                 String fileHex = hexAndFlag.substring(0, 40);
                 // Manifest entries are "<40-hex-nodeid><flag>": flag is "x" (executable),
-                // "l" (symlink) or empty (verified against `hg manifest --debug`, e.g.
-                // "<hash> 755 * script.sh" / "<hash> 644 @ link.txt"). CommitCommand.getRevisionContent
-                // only needs the node hex, but real `hg graft` (verified against `hg graft` v7.2:
-                // grafting an executable script or a symlink onto a branch that never had it
-                // restores the exact mode/symlink-ness in the working copy) also restores this
-                // flag onto the copied working-copy file -- previously dropped here, which meant a
-                // grafted executable script or symlink silently lost its mode/symlink-ness.
+                // "l" (symlink) or empty (per `hg manifest --debug`, e.g. "<hash> 755 * script.sh"
+                // / "<hash> 644 @ link.txt"). CommitCommand.getRevisionContent only needs the node
+                // hex, but real `hg graft` also restores this flag onto the copied working-copy
+                // file -- grafting an executable script or a symlink onto a branch that never had
+                // it must restore the exact mode/symlink-ness in the working copy, or the grafted
+                // file would silently lose its mode/symlink-ness.
                 String flag = hexAndFlag.length() > 40 ? hexAndFlag.substring(40) : "";
                 boolean symlink = flag.contains("l");
                 boolean executable = flag.contains("x");
@@ -377,25 +375,21 @@ public class GraftCommand {
      * CommitCommand} is called with {@code setSkipLockAndJournal(true)} (this class owns the
      * transaction instead, matching {@link RebaseCommand}/{@link HisteditCommand}), wraps it in
      * its own crash-safety journal/backup so a real crash mid-commit can be rolled back on the
-     * next repository open via {@link HgRepository#checkAndPerformAutoRollback()} -- {@code
-     * GraftCommand} previously had no such protection at all (unlike every sibling
-     * history-rewriting command), a real gap this pass closes alongside the 3-way-merge fix.
+     * next repository open via {@link HgRepository#checkAndPerformAutoRollback()}.
      *
-     * <p>v2/docket-aware since backlog #39 follow-up (2026-09-06): {@code 00changelog.i}/
-     * {@code 00manifest.i}/a filelog's {@code .i} are each, for a changelog-v2/general-v2
-     * repository ({@link RevlogIndex#isV2()}), a small FIXED-size docket header that never
-     * changes byte length on append -- only its CONTENT (the {@code index_end}/{@code data_end}/
-     * {@code sidedata_end} pointers) changes, and the actual growing payload lives in the
-     * docket's resolved companion {@code .idx}/{@code .dat}/{@code .sda} files ({@link
-     * RevlogIndex#getResolvedIndexFile()} etc). Recording only {@code idxFile}'s byte length (this
-     * class's own pre-fix behavior, mirroring the exact bug {@code CommitCommand}/{@code
-     * RollbackCommand}/{@code RecoverCommand} had before their own backlog #39 fix -- see {@code
-     * CommitCommand#recordRevlogRollbackState}'s javadoc for the full history) made both this
-     * method's own in-process failure recovery AND the on-disk crash-recovery journal a complete
-     * no-op for a failed/crashed graft onto a changelog-v2/general-v2 repository: the docket's
-     * pointers (and the resolved companion files they point past) stayed at their post-partial-
-     * write values, silently corrupting the repository instead of rolling it back. Fixed by
-     * mirroring {@code CommitCommand}'s pattern exactly: a full-content docket backup (restored
+     * <p>This is v2/docket-aware: {@code 00changelog.i}/{@code 00manifest.i}/a filelog's
+     * {@code .i} are each, for a changelog-v2/general-v2 repository ({@link
+     * RevlogIndex#isV2()}), a small FIXED-size docket header that never changes byte length on
+     * append -- only its CONTENT (the {@code index_end}/{@code data_end}/{@code sidedata_end}
+     * pointers) changes, and the actual growing payload lives in the docket's resolved companion
+     * {@code .idx}/{@code .dat}/{@code .sda} files ({@link RevlogIndex#getResolvedIndexFile()}
+     * etc). Recording only {@code idxFile}'s byte length would make both this method's own
+     * in-process failure recovery AND the on-disk crash-recovery journal a complete no-op for a
+     * failed/crashed graft onto a changelog-v2/general-v2 repository: the docket's pointers (and
+     * the resolved companion files they point past) would stay at their post-partial-write
+     * values, silently corrupting the repository instead of rolling it back. This mirrors
+     * {@code CommitCommand}'s pattern exactly (see {@code
+     * CommitCommand#recordRevlogRollbackState}'s javadoc): a full-content docket backup (restored
      * via {@link SafeFileIO#writeAtomic} in-process, and via a {@code journal.docket.<uuid>.bck}
      * sibling file plus the journal's existing generic {@code "backup <orig>\t<backup>"} line for
      * crash recovery), and a truncate-only (never delete-on-zero) restore for the resolved

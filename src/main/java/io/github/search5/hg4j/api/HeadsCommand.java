@@ -20,14 +20,16 @@ import java.util.Set;
  * whose own tip has since been merged into or built upon by a different branch, leaving it without
  * a same-branch child but with a cross-branch one). This mirrors real hg's
  * {@code mercurial/commands.py heads()}: {@code for branch in repo.branchmap(): heads +=
- * bm.branchheads(branch, closed=...)}, verified directly against hg 7.2.2 (2026-09-04). Passing
- * {@link #setTopo}{@code (true)} switches to real hg's {@code hg heads --topo}: pure repo-wide
- * topological leaves (revisions with no children anywhere in the repository), ignoring branch
- * mechanics entirely -- this was this class's unconditional behavior before 2026-09-04 and remains
- * available as an explicit opt-in. {@link #setBranch} covers the narrower, explicitly-filtered
+ * bm.branchheads(branch, closed=...)}. Passing {@link #setTopo}{@code (true)} switches to real
+ * hg's {@code hg heads --topo}: pure repo-wide topological leaves (revisions with no children
+ * anywhere in the repository), ignoring branch mechanics entirely. {@link #setBranch} covers the
+ * narrower, explicitly-filtered
  * {@code hg heads <branch>} form, which real hg defines identically whether or not {@code --topo}
  * is layered on top of a branch filter: it returns exactly that branch's own topological heads
  * (per-branch, not repo-wide), open ones only unless {@link #setIncludeClosed} is set.</p>
+ *
+ * @apiNote Typically obtained via {@link Hg#heads()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class HeadsCommand {
     private final HgRepository repository;
@@ -110,10 +112,8 @@ public class HeadsCommand {
 
     /**
      * Real hg's {@code hg heads --topo}: pure repo-wide topological leaves, listed highest
-     * revision first -- verified against hg 7.2.2 (2026-09-05): {@code --topo} uses the exact same
-     * revision-descending order as every other {@code hg heads} form, not changelog order. (Prior
-     * to that fix, this iterated ascending and returned leaves in the wrong order whenever more
-     * than one existed.)
+     * revision first -- {@code --topo} uses the exact same revision-descending order as every
+     * other {@code hg heads} form, not changelog order.
      */
     private List<String> topoHeads(Revlog changelog, int count) throws IOException {
         // Parent tracking: any revision that is a parent of another revision is not a head
@@ -170,7 +170,7 @@ public class HeadsCommand {
 
         boolean[] hasBranchChild = branchChildFlags(changelog, count, branchOfRev);
 
-        // Real hg lists heads highest-revision first (verified against hg 7.2.2, 2026-09-04).
+        // Real hg lists heads highest-revision first.
         List<String> result = new ArrayList<>();
         for (int i = count - 1; i >= 0; i--) {
             if (hasBranchChild[i] || !branch.equals(branchOfRev[i])) {

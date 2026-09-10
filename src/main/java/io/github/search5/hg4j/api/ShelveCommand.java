@@ -38,19 +38,22 @@ import java.io.ByteArrayOutputStream;
  * Porcelain command to shelve and unshelve local working copy changes.
  * Supports saving modified, added, and removed files and restoring them with full dirstate fidelity.
  *
- * <p>Since 2026-09-04, {@link #performUnshelve} follows real hg's own {@code _dounshelve()}
+ * <p>{@link #performUnshelve} follows real hg's own {@code _dounshelve()}
  * algorithm (mercurial/shelve.py) instead of a simple diff-replay: the shelved changegroup is
  * first restored as a real (throwaway) commit on top of the parent it was originally shelved
  * from, that commit is rebased -- via {@link RebaseCommand}, reusing its 3-way-merge conflict
  * detection rather than reimplementing one here -- onto whatever the working directory's parent
  * actually is now (a no-op when nothing has landed there since the shelve), and the result is
  * finally "uncommitted" back onto the working copy as pending changes while every trace of the
- * throwaway commit(s) is erased (verified against real hg CLI, 2026-09-04: they are NOT left
+ * throwaway commit(s) is erased: they are NOT left
  * behind even as hidden/obsolete revisions -- real hg builds them inside a transaction it then
  * aborts, which is why this class strips them outright rather than leaving an evolution marker
  * the way {@link RebaseCommand} normally would for a user-visible rebase). A conflict during that
  * rebase step pauses exactly like a real {@code hg rebase} would; see {@link #unshelveContinue()}
  * and {@link #unshelveAbort()}.
+ *
+ * @apiNote Typically obtained via {@link Hg#shelve()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class ShelveCommand {
 
@@ -350,9 +353,9 @@ public class ShelveCommand {
             // under hg4j's own performUnshelve() (which mirrored that same non-standard
             // convention): real hg's own unbundle/unshelve machinery would instead prepend the
             // "delta" onto the true p1 content rather than replace it, corrupting every modified
-            // (as opposed to newly-added) shelved file. Confirmed against real hg CLI
-            // (2026-09-03): a `.hg` shelve bundle built the old way could not be applied by real
-            // `hg unshelve` at all. Mirrors real hg's own `writebundle()`/`makechangegroup()`.
+            // (as opposed to newly-added) shelved file: a `.hg` shelve bundle built that way could
+            // not be applied by real `hg unshelve` at all. Mirrors real hg's own
+            // `writebundle()`/`makechangegroup()`.
             int p1CommitRev = cl.findRevision(p1);
             byte[] p1CommitContent = (p1CommitRev != -1) ? cl.getRevisionContent(p1CommitRev) : new byte[0];
 
@@ -430,9 +433,8 @@ public class ShelveCommand {
             // Serialize the raw (cg1-style) changegroup bytes, then wrap them in a minimal
             // uncompressed HG20/bundle2 envelope (Bundle2Parser.wrapChangegroupInBundle2) so the
             // resulting `.hg` file is byte-for-byte a real Mercurial bundle real hg's own
-            // `exchange.readbundle()`/`bundle2.getunbundler()` can load (verified against real hg
-            // CLI 7.2.2, 2026-09-03) -- a bare, header-less dump of the raw entries (as this method
-            // wrote before) is not recognized as a bundle at all by real hg. Real hg itself only
+            // `exchange.readbundle()`/`bundle2.getunbundler()` can load -- a bare, header-less
+            // dump of the raw entries is not recognized as a bundle at all by real hg. Real hg itself only
             // omits the HG20 envelope (using a bare "HG10BZ"-prefixed bundle1 stream instead) for
             // repositories whose changegroup.safeversion() is "01"; hg4j does not model that legacy
             // format distinction, so it always uses the HG20 envelope with cg version "01" here,
@@ -467,8 +469,8 @@ public class ShelveCommand {
             Files.write(hgBundleFile.toPath(), wrappedBundle);
 
             // Real hg's own shelve also writes a minimal "<name>.shelve" info file (a single
-            // `node=<hex>` line, via `scmutil.simplekeyvaluefile`) alongside the `.hg` bundle --
-            // verified against a real hg 7.2.2 `hg shelve` (2026-09-03). hg4j's own unshelve does
+            // `node=<hex>` line, via `scmutil.simplekeyvaluefile`) alongside the `.hg` bundle.
+            // hg4j's own unshelve does
             // not need this file when its own richer `<name>.state` file is present (see
             // performUnshelve()), but writing it unconditionally lets a real hg CLI recognize and
             // process this shelve too (`hg unshelve`/`hg shelve --list` both read it), and lets
@@ -512,16 +514,18 @@ public class ShelveCommand {
             throw new HgRepositoryNotFoundException("Shelve file not found: " + name);
         }
 
-        // 실제 hg가 만든 shelve interop (백로그 23): `.hg` 번들은 이제 항상 HG20/bundle2
-        // 봉투(우리 자신이 썼든, 실제 hg가 BZ2 압축까지 얹어 썼든 -- Bundle2Parser는 둘 다
-        // 지원)이므로, 먼저 그 봉투를 벗겨 원시 changegroup 바이트 + 실제 cg 버전 파라미터를
-        // 얻은 뒤에야 ChangegroupParser로 파싱한다. 버전을 명시하지 않고 자동 감지에 맡기면
-        // 안 된다 -- 실제 hg 7.2가 기본으로 만드는 shelve 번들은 cg02/03(현대 리포용
-        // changegroup.safeversion() 결과)이라, "01"로 잘못 감지되면 헤더 크기가 달라 p1/p2
-        // 필드를 완전히 엉뚱한 오프셋에서 읽게 된다(2026-09-03 발견 -- real hg shelve를
-        // hg4j로 unshelve하면 p1이 항상 null-node로 읽혀 즉시 파라미터 불일치로 실패했다).
-        // hg4j가 예전에 쓰던 봉투 없는 원시 포맷과의 하위 호환을 위해 "HG20" 매직이 없으면
-        // 원시 cg1 파싱으로 폴백한다.
+        // Interop with a shelve real hg produced: a `.hg` bundle is now always an
+        // HG20/bundle2 envelope (whether hg4j itself wrote it, or real hg wrote it with BZ2
+        // compression on top -- Bundle2Parser supports both), so that envelope must be unwrapped
+        // first to get the raw changegroup bytes plus the actual cg version parameter, before
+        // parsing with ChangegroupParser. The version must not be left to auto-detection --
+        // real hg 7.2's default shelve bundles are cg02/03 (the result of
+        // changegroup.safeversion() for a modern repo), and if misdetected as "01" the header
+        // size differs, so the p1/p2 fields end up read from completely wrong offsets (a
+        // shelve bundle misread this way has its p1 come back as the null-node,
+        // immediately failing with a parameter mismatch). Falls back to parsing raw cg1 when the
+        // "HG20" magic is absent, for backward compatibility with hg4j's own previous
+        // envelope-less raw format.
         ChangegroupParser.ChangegroupBundle bundle;
         byte[] bundleFileBytes = Files.readAllBytes(hgBundleFile.toPath());
         if (bundleFileBytes.length >= 4 && bundleFileBytes[0] == 'H' && bundleFileBytes[1] == 'G'
@@ -538,10 +542,10 @@ public class ShelveCommand {
         // of its still-draft ancestors not otherwise known) -- for the common case of shelving
         // straight after a plain local (draft-phase) commit, that outgoing set is the shelved
         // commit AND its parent, i.e. TWO changelog/manifest entries (and, for any file the
-        // parent commit itself touched, two filelog entries for that path too). Confirmed against
-        // real hg CLI (2026-09-03): `bundle.changelogEntries.get(0)` is that PARENT commit, not the
-        // shelved one -- picking it unconditionally silently reconstructed the wrong manifest/file
-        // content. The shelved commit's own node is always resolvable via the `.shelve` info file
+        // parent commit itself touched, two filelog entries for that path too). In real hg's
+        // bundles, `bundle.changelogEntries.get(0)` is that PARENT commit, not the
+        // shelved one -- picking it unconditionally would silently reconstruct the wrong
+        // manifest/file content. The shelved commit's own node is always resolvable via the `.shelve` info file
         // (real hg's `{'node': hex(node)}`, which performShelve() now also writes); hg4j's own
         // bundles only ever contain a single entry, so this resolves to it either way.
         byte[] shelveTargetNode = resolveShelveTargetNode(shelveInfoFile, bundle);
@@ -708,12 +712,12 @@ public class ShelveCommand {
                 // how performShelve() now encodes the delta (see its comment for why "always
                 // apply against empty" was wrong for real-hg-produced/consumed bundles). This is
                 // deliberately deltabase, NOT p1: a cg02+ entry's declared p1 (the true changelog
-                // parentage) and its delta's actual reference point can differ -- confirmed against
-                // a real `hg shelve` bundle (2026-09-03), whose single-file-modification entry had
+                // parentage) and its delta's actual reference point can differ -- a real
+                // `hg shelve` bundle's single-file-modification entry can have
                 // deltabase = null (a full-text "snapshot" delta, i.e. start=0/end=0 covering
-                // nothing) even though p1 correctly pointed at the file's real previous revision;
-                // applying that delta against the (non-empty) p1 content instead of empty produced
-                // a corrupted result with the old content spuriously appended at the end.
+                // nothing) even though p1 correctly points at the file's real previous revision;
+                // applying that delta against the (non-empty) p1 content instead of empty would
+                // produce a corrupted result with the old content spuriously appended at the end.
                 byte[] baseContent = resolveBaseFileContent(path, deltaBaseNode(flEntry));
                 byte[] content = Revlog.applyDelta(baseContent, flEntry.delta);
 
@@ -938,8 +942,8 @@ public class ShelveCommand {
             }
         }
 
-        // Erase every trace of the throwaway restore/rebase commit(s) -- verified against real hg
-        // CLI (2026-09-04): after `hg unshelve` completes, the temp commit(s) it built internally
+        // Erase every trace of the throwaway restore/rebase commit(s): after real hg's own
+        // `hg unshelve` completes, the temp commit(s) it built internally
         // are gone entirely, not left behind even as hidden/obsolete revisions (real hg builds
         // them inside a single transaction it then aborts -- mercurial/shelve.py
         // _finishunshelve -> _aborttransaction -- which physically erases them; this truncation-
@@ -988,9 +992,9 @@ public class ShelveCommand {
             // genuinely re-typed by a user at this instant, so its on-disk mtime otherwise happens
             // to exactly match what's recorded here -- indistinguishable from "unmodified" by a
             // naive size+mtime dirstate check alone. Real hg writes this same sentinel after its
-            // own internal working-copy rewrites for exactly this reason (confirmed live: a real
-            // `hg shelve`'s own revert-to-parent step does the same, see StatusCommand's matching
-            // AMBIGUOUS_TIME handling). Using a real mtime here instead worked only by the
+            // own internal working-copy rewrites for exactly this reason: a real
+            // `hg shelve`'s own revert-to-parent step does the same (see StatusCommand's matching
+            // AMBIGUOUS_TIME handling). Using a real mtime here instead would work only by the
             // coincidence of running fast enough to land inside whatever racy-write window the
             // READING tool (real hg's own `hg status`, or hg4j's StatusCommand) happens to apply --
             // genuinely flaky, and more likely to be missed the more work this method does before
@@ -1351,16 +1355,12 @@ public class ShelveCommand {
         Revlog manifest = repository.getManifestRevlog();
 
         // Truncation itself (inline-vs-non-inline v1 branching, plus v2/docket-based end-pointer
-        // bookkeeping) is delegated to the shared Revlog.truncate(int) -- see its javadoc for the
-        // full history of what a hand-rolled version of this used to get wrong. This method
-        // previously had its own near-duplicate of that logic which, like StripCommand's
-        // (backlog #39, requirement-matrix expansion, 2026-09-05), handled ONLY the non-inline-v1
-        // case: for a changelog-v2 repository it truncated the v2 DOCKET header file (```
-        // 00changelog.i```) to a flat `startRev * 64` bytes -- nowhere near the docket's real
-        // ~83-byte header shape -- corrupting it so badly that the very next open threw
-        // BufferUnderflowException reading the docket's UID fields. Confirmed reproducible via
-        // the "cl2"/"cl2+sidedata" requirement-matrix combos in
-        // RequirementMatrixShelveCoreRoundTripTest.
+        // bookkeeping) is delegated to the shared Revlog.truncate(int) -- see its javadoc for
+        // details. A hand-rolled version of this logic that only handled the non-inline-v1
+        // case would corrupt a changelog-v2 repository: truncating the v2 DOCKET header file
+        // (`00changelog.i`) to a flat `startRev * 64` bytes is nowhere near the docket's real
+        // ~83-byte header shape, and the very next open would throw
+        // BufferUnderflowException reading the docket's UID fields.
         changelog.truncate(startRev);
 
         // We also truncate manifest starting from the linkRev mapping to startRev

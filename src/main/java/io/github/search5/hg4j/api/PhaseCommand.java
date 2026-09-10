@@ -18,13 +18,11 @@ import java.util.ArrayDeque;
  * changeset revisions in Mercurial repositories, synchronized against {@code
  * .hg/store/phaseroots}.
  *
- * <p>Wave 4 (2026-09-05) rewrite: the previous implementation stored one explicit phaseroots
- * line <em>per touched node</em>, which diverges from real hg's own "minimal roots" file format
- * -- verified directly against real hg 7.2.4's {@code mercurial/phases.py} ({@code phasecache
- * .advanceboundary}/{@code _retractboundary}) and its CLI ({@code hg phase}) behavior. Real hg
- * records only the topologically-minimal <em>boundary</em> revisions per non-public phase (a
+ * <p>Phaseroots storage matches real hg's own "minimal roots" file format ({@code
+ * mercurial/phases.py}'s {@code phasecache.advanceboundary}/{@code _retractboundary}): only the
+ * topologically-minimal <em>boundary</em> revisions per non-public phase are recorded (a
  * revision's effective phase is the maximum phase of any ancestor-or-self boundary root, default
- * public), and:
+ * public), rather than one explicit line per touched node, and:
  *
  * <ul>
  *   <li>moving a revision towards a <em>lower</em> phase number (more public) is unconditional
@@ -44,6 +42,9 @@ import java.util.ArrayDeque;
  * <p>The file's line order also matches real hg exactly: phase groups in ascending phase-number
  * order (draft, then secret), each group's nodes in ascending revision-number order (real hg's
  * {@code _write()} iterates {@code sorted(roots)} over revision numbers, not node hex).
+ *
+ * @apiNote Typically obtained via {@link Hg#phase()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class PhaseCommand {
     private final HgRepository repository;

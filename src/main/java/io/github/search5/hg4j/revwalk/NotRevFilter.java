@@ -3,7 +3,10 @@ package io.github.search5.hg4j.revwalk;
 import io.github.search5.hg4j.storage.Revlog;
 
 /**
- * 특정 RevFilter의 부정(NOT) 논리 조합을 나타내는 필터.
+ * A filter representing the logical negation (NOT) of another {@link RevFilter}.
+ *
+ * @apiNote Equivalent to {@link RevFilter#negate()}; provided for symmetry with {@link
+ *     AndRevFilter}/{@link OrRevFilter} as an explicit, named type.
  */
 public class NotRevFilter implements RevFilter {
     private final RevFilter filter;

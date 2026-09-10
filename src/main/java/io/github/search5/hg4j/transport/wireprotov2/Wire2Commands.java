@@ -233,9 +233,9 @@ public final class Wire2Commands {
         // A non-empty `tree` selects a treemanifest subdirectory's own submanifest revlog
         // (`meta/<tree>/00manifest.i`) instead of the root `00manifest.i` -- matches real hg's
         // wireprotov2server.py manifestdata command (client side already needs this, see
-        // HgRemoteClientV2.getBundle()'s recursive tree fetch, backlog item 20). hg4j's own
-        // repositories are always flat (backlog item 8), so this path only activates for a
-        // genuine treemanifest repository being served.
+        // HgRemoteClientV2.getBundle()'s recursive tree fetch). hg4j's own repositories are
+        // always flat, so this path only activates for a genuine treemanifest repository being
+        // served.
         Revlog manifest;
         if (tree == null || tree.isEmpty()) {
             manifest = repo.getManifestRevlog();

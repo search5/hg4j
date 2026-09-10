@@ -10,6 +10,18 @@ import java.util.NoSuchElementException;
 import java.util.AbstractList;
 import java.util.Iterator;
 
+/**
+ * Convenience facade over {@link WorkingDirTreeIterator} that provides an {@code Entry}-based
+ * API exposing each path's on-disk {@link java.io.File}, dirstate state, size, and mtime
+ * together in one object.
+ *
+ * @apiNote Merges tracked (dirstate) and untracked (a plain directory scan via {@link
+ *     io.github.search5.hg4j.lib.HgRepository#scanWorkingCopy()}) paths into a single sorted
+ *     walk, so a caller sees every relevant working-copy path in one pass regardless of whether
+ *     it is already tracked. Used directly by {@code io.github.search5.hg4j.api.Hg}'s
+ *     convenience helpers; most porcelain commands instead use {@link WorkingDirTreeIterator}
+ *     directly as one side of a {@link TreeWalk}.
+ */
 public class WorkingDirWalk {
 
     private final WorkingDirTreeIterator iterator;
@@ -134,8 +146,8 @@ public class WorkingDirWalk {
     }
 
     /**
-     * JGit TreeWalk 스타일의 lazy streaming 탐색을 제공합니다.
-     * 메모리를 선적재하지 않고, 필요한 요소를 순차적으로 스트리밍합니다 (힙 압박 해결).
+     * Provides JGit-{@code TreeWalk}-style lazy streaming traversal.
+     * Streams entries sequentially as needed rather than preloading them all (avoids heap pressure).
      */
     public Iterator<Entry> lazyEntries() {
         return new Iterator<Entry>() {

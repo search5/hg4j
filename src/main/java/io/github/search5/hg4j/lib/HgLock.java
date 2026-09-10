@@ -17,6 +17,15 @@ import java.util.Map;
  * Implements a production-grade lock mechanism perfectly compatible with Mercurial native wlock and lock.
  * It uses atomic symbolic link creation on POSIX systems (and falls back to CREATE_NEW file on Windows/other systems)
  * to guarantee 100% mutual exclusion with native Mercurial and JVM-wide tracking.
+ *
+ * @apiNote Not usually constructed directly — {@link HgRepository#lockWorkingCopy()} and {@link
+ *     HgRepository#lockStore()} create instances for {@code .hg/wlock} and {@code
+ *     .hg/store/lock} respectively, and nearly every mutating porcelain command (e.g. {@code
+ *     CommitCommand}, {@code UpdateCommand}, {@code MergeCommand}, {@code PushCommand}) acquires
+ *     one of these in a try-with-resources block for the duration of the operation. Since a
+ *     failed acquisition throws {@link io.github.search5.hg4j.errors.HgLockException}, always
+ *     use try-with-resources ({@link #close()} releases the lock) rather than a manual
+ *     acquire/release pair.
  */
 public class HgLock implements AutoCloseable {
 
@@ -201,12 +210,11 @@ public class HgLock implements AutoCloseable {
                     msg += " (Currently held by another thread in this process)";
                 }
                 if (timeoutMs > 0) {
-                    // Matches the SHAPE of real hg's own message once it has actually waited
+                    // Matches the shape of real hg's own message once it has actually waited
                     // (mercurial/scmutil.py's callcatch(): "abort: %s: timed out waiting for
-                    // lock held by %r" -- confirmed live against real hg 7.2, 2026-09-04, backlog
-                    // item 38) -- callers that opted into waiting (timeoutMs > 0, e.g. the push/
-                    // unbundle apply path) get this distinguished from the immediate/fail-fast
-                    // (timeoutMs == 0) case every other caller still uses.
+                    // lock held by %r") -- callers that opted into waiting (timeoutMs > 0, e.g.
+                    // the push/unbundle apply path) get this distinguished from the
+                    // immediate/fail-fast (timeoutMs == 0) case every other caller still uses.
                     msg += " -- timed out waiting for lock after " + timeoutMs + "ms";
                 }
                 throw new HgLockException(lockFile.getName(), msg);

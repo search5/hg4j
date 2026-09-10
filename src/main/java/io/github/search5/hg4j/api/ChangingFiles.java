@@ -217,8 +217,7 @@ public final class ChangingFiles {
      * separately from an ordinary content change -- callers pass empty sets for those two today.
      * A file that is genuinely new, removed, or content-modified (and not new) is still encoded
      * correctly via {@code added}/{@code removed}/{@code touched}, and copy-tracing (the
-     * headline use case for this sidedata key, per {@code mercurial-spec-compliance-requirement.md}
-     * backlog item 19) is fully supported regardless.
+     * headline use case for this sidedata key) is fully supported regardless.
      *
      * @param added newly-added paths this revision.
      * @param removed paths removed this revision.

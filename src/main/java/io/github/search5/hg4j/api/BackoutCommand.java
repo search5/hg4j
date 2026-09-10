@@ -31,9 +31,9 @@ import java.util.TreeSet;
  * --parent} to disambiguate, which this command does not yet expose), and only the default
  * (non-{@code --merge}) mode: the result always has one parent, maintaining a linear history.
  *
- * <p>Ported and verified live against real {@code hg} 7.2 (2026-09-05, backlog #39 wave 4; see
- * {@code mercurial/commands.py}'s {@code _dobackout} and {@code mercurial/merge.py}'s {@code
- * back_out}). Two cases exist, both requiring a clean working copy (matching real hg's own {@code
+ * <p>Ported from real {@code hg}'s {@code mercurial/commands.py}'s {@code _dobackout} and
+ * {@code mercurial/merge.py}'s {@code back_out}. Two cases exist, both requiring a clean working
+ * copy (matching real hg's own {@code
  * scmutil.bail_if_changed}) and that {@code REV} be an ancestor of the working copy's parent
  * (real hg: "cannot backout change that is not an ancestor"):
  * <ul>
@@ -60,6 +60,9 @@ import java.util.TreeSet;
  * to retry unresolved file merges" without creating any changeset). The working copy's dirstate
  * parent is left unchanged (single-parent) in both cases; unlike a real two-parent {@code hg
  * merge}, a paused conflicted backout is not itself a merge from dirstate's point of view.
+ *
+ * @apiNote Typically obtained via {@link Hg#backout()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class BackoutCommand {
     private final HgRepository repository;
@@ -293,10 +296,10 @@ public class BackoutCommand {
         // itself (from history), not genuinely re-typed by a user at this instant, so a same-size
         // backout to different content executed fast enough to land in the same wall-clock second
         // as the file's own previous recorded state is otherwise indistinguishable from
-        // "unmodified" by a naive size+mtime dirstate check alone -- the exact same race
-        // confirmed live and fixed in RevertCommand (2026-09-05, backlog #39 wave 4; see its
-        // javadoc and ShelveCommand's matching fix). A freshly-added ('a') entry carries no such
-        // risk since StatusCommand never content-compares 'a' entries against a parent manifest.
+        // "unmodified" by a naive size+mtime dirstate check alone -- the same race handled in
+        // RevertCommand (see its javadoc and ShelveCommand's matching handling). A freshly-added
+        // ('a') entry carries no such risk since StatusCommand never content-compares 'a' entries
+        // against a parent manifest.
         long time = state == 'n' ? 0xFFFFFFFFL : SafeFileIO.lastModifiedSeconds(new File(repository.getDirectory(), path));
         dirstate.addEntry(path, new Dirstate.Entry(state, mode, content.length, time));
     }

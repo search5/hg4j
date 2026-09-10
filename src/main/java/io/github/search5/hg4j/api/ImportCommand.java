@@ -22,15 +22,15 @@ import java.util.Set;
  * # Node ID}/{@code # Parent} headers and simply committing on top of whatever is currently
  * checked out.
  *
- * <p><b>Backlog #39 (2026-09-05) rewrite:</b> this command used to hand-roll the entire
- * manifest/changelog serialization itself (building a flat {@code path\0hex\n} manifest text
- * directly and computing the new changeset's node hash by hand), which structurally could never
- * work correctly against a treemanifest repository (a treemanifest manifest is a tree of
- * per-directory revlogs under {@code store/meta/}, not one flat {@code 00manifest.i} entry) and
- * skipped every other format-specific behavior {@link CommitCommand} already gets right (sidedata
- * copy-tracing, branch/close-branch {@code extra} encoding, bookmark advancement, phase
- * assignment, undo/rollback bookkeeping, LFS). Fixed by reducing this command to exactly what
- * real {@code hg import} conceptually does: apply the patch to the working directory and dirstate
+ * <p><b>Deliberately delegates commit creation rather than hand-rolling it:</b> this command does
+ * not build manifest/changelog serialization itself (e.g. a flat {@code path\0hex\n} manifest text
+ * with a hand-computed node hash), since that would structurally never work correctly against a
+ * treemanifest repository (a treemanifest manifest is a tree of per-directory revlogs under
+ * {@code store/meta/}, not one flat {@code 00manifest.i} entry) and would skip every other
+ * format-specific behavior {@link CommitCommand} already gets right (sidedata copy-tracing,
+ * branch/close-branch {@code extra} encoding, bookmark advancement, phase assignment,
+ * undo/rollback bookkeeping, LFS). Instead this command is reduced to exactly what real
+ * {@code hg import} conceptually does: apply the patch to the working directory and dirstate
  * (via the same {@link AddCommand}/{@link RemoveCommand} machinery a manual {@code hg add}/{@code
  * hg rm} would use), then delegate the actual commit to {@link CommitCommand} -- which already
  * handles every repository format this matrix covers.
@@ -40,10 +40,13 @@ import java.util.Set;
  * either side may be the literal {@code /dev/null} to mark a pure add ({@code --- /dev/null})
  * or delete ({@code +++ /dev/null}), followed by one or more {@code @@ ... @@} hunks. Hunk
  * application matches each hunk's context/removed lines by CONTENT (not by trusting the {@code
- * @@ -a,b +c,d @@} line numbers), the same forgiving strategy the previous implementation used --
- * sufficient for the plain text adds/modifies/deletes this matrix's round trips exercise; binary
+ * @@ -a,b +c,d @@} line numbers) -- a forgiving strategy that is sufficient for plain text
+ * adds/modifies/deletes; binary
  * diffs and {@code --git}-only constructs (mode changes, renames) are out of scope, matching real
  * {@code hg export}'s own default (non-{@code --git}) output, which cannot represent them either.
+ *
+ * @apiNote Typically obtained via {@link Hg#importPatch()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class ImportCommand {
     private final HgRepository repository;
@@ -140,7 +143,7 @@ public class ImportCommand {
                 .setMessage(message);
         // A missing/unparseable "# Date" header falls back to the current time at UTC (offset 0)
         // -- NOT CommitCommand's own no-setDate-called default (current time, LOCAL offset) --
-        // matching this command's pre-existing (pre-backlog-#39) fallback behavior exactly.
+        // matching this command's fallback behavior exactly.
         long fallbackSecs = System.currentTimeMillis() / 1000;
         int fallbackOffset = 0;
         if (dateVal != null) {
@@ -178,7 +181,7 @@ public class ImportCommand {
         String currentFile = null;
         boolean currentIsDelete = false;
         List<String> currentLines = new ArrayList<>();
-        // Backlog #39 (2026-09-05): whether the file's current tail (as of the last hunk applied)
+        // Whether the file's current tail (as of the last hunk applied)
         // lacks a trailing newline -- real diff/hg's `\ No newline at end of file` marker, which
         // {@link DiffCommand#generateUnifiedDiff} now also emits. Re-evaluated (not OR'd) after
         // every hunk: only the hunk that actually touches the true end of file can carry this

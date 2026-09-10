@@ -21,6 +21,12 @@ import io.github.search5.hg4j.bundle.Bundle2Parser;
  * pure Java SSH Client communicating with remote Mercurial repositories
  * using the Mercurial SSH Wire Protocol over ssh:// connection.
  * Seamlessly compliant with JGit-style pure Java architecture.
+ *
+ * @apiNote Handles ssh:// URLs from {@link HgRemoteConnectionFactory}; used by networked
+ *     porcelain commands the same way {@link HgRemoteClient} is for HTTP(S). Delegates the
+ *     actual SSH transport to a pluggable {@link SshSessionFactory} (defaulting to {@link
+ *     JschSessionFactory}), so the underlying SSH library can be swapped without touching wire
+ *     protocol logic.
  */
 public class HgSshClient implements HgRemoteConnection {
 
@@ -324,7 +330,7 @@ public class HgSshClient implements HgRemoteConnection {
 
     /**
      * Real hg's actual v1 SSH bootstrap ({@code mercurial/sshpeer.py}'s {@code
-     * _performhandshake()}, confirmed directly against Mercurial 7.2.4 source, 2026-09-03): the
+     * _performhandshake()}): the
      * client sends {@code "hello\n"} + {@code "between\n"} + a {@code "pairs <len>\n"} header and
      * the 81-byte null-range value ({@code "0"*40 + "-" + "0"*40}) in a single write, then reads
      * the two <em>framed</em> responses that follow in order — {@code hello}'s (containing the
@@ -434,7 +440,7 @@ public class HgSshClient implements HgRemoteConnection {
     }
 
     /**
-     * SSH counterpart of {@link HgRemoteClient#getBranchHeads()} -- backlog 33
+     * SSH counterpart of {@link HgRemoteClient#getBranchHeads()}
      * (mercurial-spec-compliance-requirement.md): without this, {@code PushCommand}'s
      * checkheads safety net silently degrades to a topological-only check whenever the
      * remote is SSH (the {@link HgRemoteConnection#getBranchHeads()} default returns
@@ -490,7 +496,7 @@ public class HgSshClient implements HgRemoteConnection {
 
     /**
      * SSH counterpart of {@link HgRemoteClient#supportsClonebundles()}/{@link
-     * HgRemoteClient#fetchClonebundlesManifest()} -- backlog item 39 wave 5 (wire-matrix track):
+     * HgRemoteClient#fetchClonebundlesManifest()}:
      * real hg's own client attempts the clonebundles bypass over any transport ({@code
      * remote.capable(b'clonebundles')} in {@code mercurial/exchange.py} is transport-agnostic), so
      * an SSH-served repository with the {@code clonebundles} extension enabled must be able to
@@ -612,15 +618,13 @@ public class HgSshClient implements HgRemoteConnection {
             }
         }
 
-        // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS): bundlecaps는 "scsv" 타입 — 최상위
-        // 토큰 구분자가 콤마다(스페이스 아님, HgRemoteClient에서 실측한 것과 동일한 문제).
-        // 그리고 changegroup 버전 목록은 평평한 "changegroup=..." 토큰이 아니라
-        // "bundle2=<blob>" 토큰 안에 중첩돼야만 urlutil.b2_caps_from_bundle_caps()가 읽는다
-        // (Bundle2Parser#buildChangegroupBundleCaps 주석 참고, HTTP 경로에서 실측·수정
-        // 확인됨(2026-09-03)). SSH 쪽 wire framing 자체도 이번에 실측·수정 완료 — 이제
-        // sendCommand()가 real hg의 length-prefixed 인자 전송을 그대로 구현하므로, 이
-        // bundlecaps 문자열이 실제로 서버에 도달함이 hg-rust-7.2.4 상대 라이브 interop
-        // 테스트로 검증됨(HgSshClientRealHgInteropTest).
+        // Real spec (wireprototypes.GETBUNDLE_ARGUMENTS): bundlecaps is of type "scsv" -- its
+        // top-level tokens are comma-separated (not space-separated, the same issue confirmed in
+        // HgRemoteClient). Also, the changegroup version list is only read by
+        // urlutil.b2_caps_from_bundle_caps() when nested inside a "bundle2=<blob>" token, not as
+        // a flat "changegroup=..." token (see Bundle2Parser#buildChangegroupBundleCaps's own
+        // comment). sendCommand() implements real hg's length-prefixed argument transmission,
+        // so this bundlecaps string reaches the server correctly here too.
         if (bundleCaps != null && !bundleCaps.isEmpty()) {
             extra.put("bundlecaps", String.join(",", bundleCaps));
         } else {
@@ -636,7 +640,7 @@ public class HgSshClient implements HgRemoteConnection {
     /**
      * Real hg's {@code unbundlehash} wire-encoding optimization for {@code unbundle}'s
      * {@code heads} argument ({@code mercurial/wireprotov1peer.py}'s {@code unbundle()},
-     * confirmed against Mercurial 7.2.4 source 2026-09-03):
+     * per Mercurial 7.2.4 source):
      * <pre>
      * if heads != [b'force'] and self.capable(b'unbundlehash'):
      *     heads = [b'hashed', sha1(b''.join(sorted(heads))).digest()]
@@ -772,11 +776,7 @@ public class HgSshClient implements HgRemoteConnection {
         // stopped at the FIRST zero-length chunk it saw, which is only the end of the CHANGELOG
         // group, not the end of the response -- it would then try to read the manifest/file data
         // that followed as if it were the start of the NEXT command's response, blocking forever
-        // waiting for bytes a real (or hg4j's own) server had already sent and moved past. Fixed
-        // 2026-09-03 after this deadlocked HgSshClientTransportTest's getbundle/changegroup tests
-        // against a real HgSshWireServer for the first time (see also HgSshWireServerRealHgInteropTest,
-        // which had only ever exercised the read-only clone path, never getbundle over a live SSH
-        // channel with actual repository content).
+        // waiting for bytes a real (or hg4j's own) server had already sent and moved past.
         //
         // getbundle's response may ALSO be a bundle2-wrapped stream (starts with the "HG20"
         // magic, chosen whenever the client's bundlecaps request it and the server supports it --

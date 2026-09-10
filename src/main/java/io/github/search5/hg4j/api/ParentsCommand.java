@@ -10,6 +10,9 @@ import java.util.List;
 /**
  * Porcelain command corresponding to {@code hg parents} — the working directory's parent
  * revision(s) (one, or two during an unresolved merge).
+ *
+ * @apiNote Typically obtained via {@link Hg#parents()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class ParentsCommand {
     private final HgRepository repository;

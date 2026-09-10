@@ -3,7 +3,11 @@ package io.github.search5.hg4j.revwalk;
 import io.github.search5.hg4j.storage.Revlog;
 
 /**
- * 반환할 리비전의 최대 개수를 제약하는 필터.
+ * A filter that limits the number of revisions returned.
+ *
+ * @apiNote Stateful — each instance counts how many revisions it has included so far and stops
+ *     including more once {@code maxCount} is reached, so a single instance must not be shared
+ *     across concurrent or repeated walks without calling {@link #reset()} first.
  */
 public class MaxCountRevFilter implements RevFilter {
     private final int maxCount;
@@ -25,9 +29,7 @@ public class MaxCountRevFilter implements RevFilter {
         return false;
     }
 
-    /**
-     * 필터 상태를 리셋합니다.
-     */
+    /** Resets the filter's internal counter back to zero. */
     public void reset() {
         this.count = 0;
     }

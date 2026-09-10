@@ -21,9 +21,7 @@ import java.io.ByteArrayInputStream;
 
 /**
  * Shell-out helper replicating the pieces of a {@code [svn]}-prefixed {@code .hgsub} subrepo's
- * lifecycle that hg4j needs from real hg's {@code mercurial/subrepo.py} {@code svnsubrepo} class
- * (read live against Mercurial 7.2's installed {@code /usr/lib/python3/dist-packages/mercurial/
- * subrepo.py} plus a real local {@code svn}/{@code svnadmin} 1.14 CLI, backlog item 41):
+ * lifecycle that hg4j needs from real hg's {@code mercurial/subrepo.py} {@code svnsubrepo} class:
  * querying its working-copy status ({@code svn status --xml}, real hg's {@code _wcchanged()}),
  * its checked-out/last-committed revisions ({@code svn info --xml}, real hg's {@code _wcrevs()}),
  * resolving the revision to record in {@code .hgsubstate} ({@code basestate()}), checking out a
@@ -33,13 +31,12 @@ import java.io.ByteArrayInputStream;
  *
  * <p>Unlike {@link GitSubrepoUtil}'s split between "clone if missing" + "checkout", real hg's
  * {@code svnsubrepo.get()} unconditionally re-runs {@code svn checkout --force <url>@<rev>}
- * whether or not {@code .svn} already exists at the target path -- verified live: this is cheap
- * and idempotent against a local/already-current working copy (svn only touches what changed),
+ * whether or not {@code .svn} already exists at the target path -- this is cheap and
+ * idempotent against a local/already-current working copy (svn only touches what changed),
  * and is exactly what real hg itself does every single time, with no "already there" fast path
- * of its own. This class deliberately does not add one either, to stay byte-for-byte faithful to
- * what was observed.
+ * of its own; this class deliberately does not add one either.
  *
- * <p>Also verified live and load-bearing: real hg forces {@code LC_MESSAGES=C} (preserving
+ * <p>Also load-bearing: real hg forces {@code LC_MESSAGES=C} (preserving
  * {@code LC_ALL} for everything else) when shelling out to {@code svn}, because it parses
  * English-language substrings out of {@code svn commit}'s plain-text output (e.g. {@code
  * "Committed revision 5."}) -- without it, a non-English locale (this sandbox's default is
@@ -248,7 +245,7 @@ public final class SvnSubrepoUtil {
      * files; otherwise runs {@code svn commit -m <text>}, parses the new revision out of its
      * {@code "Committed revision N."} output, {@code svn update}s the working copy to it (real
      * hg does this explicitly -- a plain {@code commit} does not itself advance the local
-     * checkout's revision, verified live), and returns that new revision.
+     * checkout's revision), and returns that new revision.
      */
     public static String commit(File dir, String message, String url) throws IOException {
         WcStatus wc = wcChanged(dir);
@@ -278,7 +275,7 @@ public final class SvnSubrepoUtil {
     /**
      * Mirrors real hg's {@code svnsubrepo.merge()} for the deterministic (non-interactive
      * default) case where a svn subrepo's pinned revision diverged between the two {@code hg
-     * merge} parents -- read live from Mercurial 7.2's {@code subrepo.py} (backlog 41):
+     * merge} parents:
      * {@code merge()} only ever acts when the two prompt-choice branches it can take are hit,
      * and both route through {@code _updateprompt()}'s {@code ui.promptchoice(msg, 0)}, whose
      * non-interactive default is choice index 0 ("Local"). Since real hg's own {@code merge()}

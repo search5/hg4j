@@ -37,6 +37,9 @@ import java.util.logging.Logger;
 
 /**
  * Performs a 3-way merge of a target revision into the working copy.
+ *
+ * @apiNote Typically obtained via {@link Hg#merge()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class MergeCommand {
     private static final Logger LOGGER = Logger.getLogger(MergeCommand.class.getName());
@@ -383,9 +386,8 @@ public class MergeCommand {
                 if (".hgsubstate".equals(path)) {
                     // Real hg never runs its generic line-based file merge on .hgsubstate --
                     // it is always resolved semantically, per subrepo, via subrepoutil.submerge()
-                    // (backlog 32 follow-up "gap B"; see mergeSubrepoState()'s javadoc). Doing a
-                    // plain text 3-way merge on it instead (as this method used to, since
-                    // .hgsubstate is tracked like any other file) would write literal
+                    // (see mergeSubrepoState()'s javadoc). A plain text 3-way merge on it instead
+                    // (treating .hgsubstate like any other tracked file) would write literal
                     // "<<<<<<<"/"======="/">>>>>>>" conflict markers into it whenever both
                     // parents pinned a subrepo to a different revision -- real hg never does
                     // that to this file.
@@ -444,9 +446,9 @@ public class MergeCommand {
                             conflicted = true;
                             conflicts.add(path);
 
-                            // 실제 hg(mergestate.add)와 동일하게 충돌 파일의 병합 전 로컬
-                            // 내용을 .hg/merge/<localkey>에 백업해 둔다 — hg resolve가 이
-                            // 파일을 이용해 :local/:other/:merge3 등으로 재시도할 수 있다.
+                            // Same as real hg (mergestate.add): back up the pre-merge local
+                            // content of a conflicted file to .hg/merge/<localkey> -- hg resolve
+                            // can use this file to retry with :local/:other/:merge3 etc.
                             String localKey = MergeState.getLocalKey(path);
                             File localBackup = new File(repository.getHgDir(), "merge/" + localKey);
                             localBackup.getParentFile().mkdirs();
@@ -470,9 +472,10 @@ public class MergeCommand {
             dirstate.setParents(p1CommitNode, new NodeId(p2CommitNode));
             repository.writeDirstate(dirstate);
 
-            // 실제 hg처럼 충돌이 있으면 .hg/merge/state2를 남겨 이후 세션/hg resolve가
-            // 미해결 파일을 이어서 처리할 수 있게 하고, 충돌 없이 끝났으면 이전에 남아있을
-            // 수 있는 병합 상태를 정리한다.
+            // Like real hg, leave .hg/merge/state2 behind when there is a conflict so a later
+            // session/hg resolve can continue handling the unresolved files; when it finishes
+            // with no conflicts, clean up any merge state that may have been left over from
+            // before.
             if (conflicted) {
                 mergeState.write(mergeStateFile);
             } else {
@@ -514,9 +517,9 @@ public class MergeCommand {
     }
 
     /**
-     * Aborts an in-progress merge, mirroring real hg's {@code hg merge --abort} (verified
-     * live against real hg 7.2, 2026-09-04): discards every working-copy change introduced
-     * by the unfinished merge -- including files that exist only because they were added by
+     * Aborts an in-progress merge, mirroring real hg's {@code hg merge --abort}: discards
+     * every working-copy change introduced by the unfinished merge -- including files that
+     * exist only because they were added by
      * the other parent -- and restores the working copy to exactly p1's committed state,
      * resets dirstate back to a single parent, and clears {@code .hg/merge/state2}.
      *
@@ -615,7 +618,7 @@ public class MergeCommand {
     /**
      * Copy/rename metadata (the {@code "copy"}/{@code "copyrev"} entries a filelog revision
      * carries when it was originally committed via {@code hg cp}/{@code hg mv}) for one specific
-     * file revision -- used by {@link TreeMergeCommand} (P3-33) to carry provenance forward when a
+     * file revision -- used by {@link TreeMergeCommand} to carry provenance forward when a
      * path is cleanly adopted from "theirs" without a content-level 3-way merge (a merge that
      * actually blends both sides' lines never re-derives fresh copy metadata, matching real hg:
      * {@code mergecopies()} full rename-detection is out of scope here -- only forwarding metadata
@@ -640,9 +643,8 @@ public class MergeCommand {
 
     /**
      * Resolves {@code .hgsubstate} across a two-parent {@code hg merge}, mirroring real hg's
-     * {@code subrepoutil.submerge()} (Mercurial 7.2, backlog 32 follow-up "gap B" -- see
-     * {@link GitSubrepoUtil#mergeDiverged} for the specific diverged-git-subrepo case, ported
-     * and verified live against real hg CLI + a real git subrepo, 2026-09-04).
+     * {@code subrepoutil.submerge()} (Mercurial 7.2 -- see {@link GitSubrepoUtil#mergeDiverged}
+     * for the specific diverged-git-subrepo case).
      *
      * <p>For each subrepo path declared across the ancestor/local({@code P1})/remote({@code P2})
      * {@code .hgsubstate} snapshots, classifies its pinned revision the same way real hg's
@@ -664,11 +666,10 @@ public class MergeCommand {
      *       hg's own {@code gitsubrepo.merge()}/{@code hgsubrepo.merge()}) -- the recorded
      *       {@code .hgsubstate} pin itself is deliberately left at the LOCAL value in both cases
      *       (matching real hg's own {@code sm[s] = l}), to be re-derived from each subrepo's
-     *       actual post-merge state at the next {@code hg commit}: the already-implemented
-     *       backlog 32 gap #3 dirty()/commit() machinery for git, and a plain recursive
-     *       {@code hg commit} of the (now single-parent-committed, since
-     *       {@link #mergeDivergedHgSubrepo} itself already ran a full nested merge+left it for
-     *       the user to commit, exactly like real hg) subrepo for hg-typed ones.</li>
+     *       actual post-merge state at the next {@code hg commit}: the dirty()/commit() machinery
+     *       for git, and a plain recursive {@code hg commit} of the (now single-parent-committed,
+     *       since {@link #mergeDivergedHgSubrepo} itself already ran a full nested merge and left
+     *       it for the user to commit, exactly like real hg) subrepo for hg-typed ones.</li>
      * </ul>
      */
     private void mergeSubrepoState(String hLca, String hP1, String hP2, Dirstate dirstate) throws IOException {
@@ -728,8 +729,8 @@ public class MergeCommand {
                         LOGGER.log(Level.WARNING, "Failed to merge diverged git subrepo \"" + path + "\": " + e.getMessage(), e);
                     }
                 } else if (meta != null && meta.isSvn()) {
-                    // Backlog 41: real hg's svnsubrepo.merge() default (non-interactive) choice
-                    // is a pure no-op here -- see SvnSubrepoUtil.mergeDiverged's javadoc.
+                    // Real hg's svnsubrepo.merge() default (non-interactive) choice is a pure
+                    // no-op here -- see SvnSubrepoUtil.mergeDiverged's javadoc.
                     SvnSubrepoUtil.mergeDiverged(subDir, r, l);
                 } else {
                     mergeDivergedHgSubrepo(subDir, l, r, meta != null ? meta.getSourceUrl() : null, path);
@@ -751,10 +752,9 @@ public class MergeCommand {
     }
 
     /**
-     * Mirrors real hg's {@code hgsubrepo.merge()} (Mercurial 7.2, read live from
-     * {@code mercurial/subrepo.py}, backlog 32 follow-up "gap B" hg-typed counterpart) for the
-     * deterministic case where a nested hg-typed subrepo's pinned revision diverged between the
-     * two {@code hg merge} parents. Real hg's algorithm, ported directly:
+     * Mirrors real hg's {@code hgsubrepo.merge()} (Mercurial 7.2, {@code mercurial/subrepo.py})
+     * for the deterministic case where a nested hg-typed subrepo's pinned revision diverged
+     * between the two {@code hg merge} parents. Real hg's algorithm, ported directly:
      * <pre>
      * self._get(state)                       # pull the remote pin if not local yet
      * cur = self._repo['.']                  # subrepo's own currently checked-out rev
@@ -776,7 +776,7 @@ public class MergeCommand {
      * update, or the recursive merge left pending-uncommitted exactly like a top-level
      * {@code hg merge} would) is picked up the next time the parent is committed, via the
      * existing hg-subrepo branch of {@link CommitCommand#applySubrepoStateBeforeCommit}
-     * (dirty-detection + recursive {@code --subrepos} commit, backlog 23/32).
+     * (dirty-detection + recursive {@code --subrepos} commit).
      */
     private void mergeDivergedHgSubrepo(File subDir, String localHex, String remoteHex, String sourceUrl, String path) {
         if (!new File(subDir, ".hg").exists()) {

@@ -23,6 +23,11 @@ import java.util.TreeSet;
 /**
  * High-performance query evaluator for Mercurial revision sets (Revsets).
  * Evaluates composite expressions like "draft()", "author(tester)", "parents(rev)" and AND/OR combinations.
+ *
+ * @apiNote Used by {@code RevsetCommand} (the direct {@code hg log -r <revset>}-style query
+ *     facade) and {@code TagsCommand} (filtering tags by revset). Not currently threaded through
+ *     {@code LogCommand}'s own revision-selection logic, which uses {@link
+ *     io.github.search5.hg4j.revwalk.ChangesetGraph} directly instead.
  */
 public final class HgRevsetEngine {
     private final HgRepository repository;

@@ -3,9 +3,16 @@ package io.github.search5.hg4j.errors;
 import java.util.List;
 
 /**
- * Exception thrown when unresolved conflicts occur during a merge3 operation (e.g. a real 3-way
- * merge attempted by {@link io.github.search5.hg4j.api.MergeCommand} or, since 2026-09-04, by
- * {@link io.github.search5.hg4j.api.RebaseCommand}'s cherry-pick path).
+ * Exception thrown when unresolved conflicts occur during a merge3 operation.
+ *
+ * @apiNote Thrown by {@link io.github.search5.hg4j.api.GraftCommand}, {@link
+ *     io.github.search5.hg4j.api.BackoutCommand}, and {@link io.github.search5.hg4j.api.RebaseCommand}
+ *     when their internal cherry-pick/replay merge leaves one or more files unresolved; {@link
+ *     io.github.search5.hg4j.api.ShelveCommand}'s unshelve path also declares and catches it
+ *     internally to convert an unshelve conflict into paused state. None of these commands
+ *     commit when this is thrown — callers should resolve the reported paths (see {@link
+ *     #getConflictPaths()}) with {@code ResolveCommand} and then call the command's
+ *     {@code continue}-style method, or abort.
  */
 public class HgMergeConflictException extends HgException {
     private static final long serialVersionUID = 1L;

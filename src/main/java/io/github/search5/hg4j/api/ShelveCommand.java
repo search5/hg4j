@@ -61,10 +61,22 @@ public class ShelveCommand {
     private String name = "default";
     private boolean unshelve = false;
 
+    /**
+     * Creates an instance bound to the given repository.
+     *
+     * @param repository repository whose working copy changes will be shelved or unshelved
+     */
     public ShelveCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the name identifying the shelve to create or restore.
+     *
+     * @param name shelve name; a {@code null} or empty value leaves the current name
+     *     (default {@code "default"}) unchanged
+     * @return this command, for chaining
+     */
     public ShelveCommand setName(String name) {
         if (name != null && !name.isEmpty()) {
             this.name = name;
@@ -72,11 +84,29 @@ public class ShelveCommand {
         return this;
     }
 
+    /**
+     * Selects whether this call restores a previously created shelve instead of creating one.
+     *
+     * @param unshelve {@code true} to unshelve the named shelve, {@code false} to shelve
+     * @return this command, for chaining
+     */
     public ShelveCommand setUnshelve(boolean unshelve) {
         this.unshelve = unshelve;
         return this;
     }
 
+    /**
+     * Executes the shelve or unshelve operation, as selected by {@link #setUnshelve(boolean)}.
+     * Shelving saves the working copy's modified/added/removed files under {@link #setName(String)}
+     * and reverts the working copy to the parent commit; unshelving restores them via {@link
+     * #performUnshelve}, pausing on a rebase conflict exactly like real {@code hg rebase} (see
+     * {@link #unshelveContinue()} and {@link #unshelveAbort()}).
+     *
+     * @throws IOException if reading or writing shelve/working-copy state fails
+     * @throws HgLockException if the working copy or store lock cannot be acquired
+     * @throws HgMergeConflictException if unshelving hits a rebase conflict that leaves the
+     *     operation paused pending {@link #unshelveContinue()} or {@link #unshelveAbort()}
+     */
     public void call() throws IOException, HgLockException, HgMergeConflictException {
         File shelvedDir = new File(repository.getHgDir(), "shelved");
         shelvedDir.mkdirs();
@@ -826,6 +856,7 @@ public class ShelveCommand {
      * @throws HgMergeConflictException if resolving still leaves a further conflict (not expected
      *                                   for unshelve's single-revision rebase, but handled the same
      *                                   way {@link RebaseCommand} itself would)
+     * @throws HgLockException if the working copy or store lock cannot be acquired
      */
     public void unshelveContinue() throws IOException, HgLockException, HgMergeConflictException {
         File unshelveStateFile = unshelveStateFile();
@@ -859,6 +890,7 @@ public class ShelveCommand {
      * attempt can still use it.
      *
      * @throws HgValidationException if no unshelve is in progress
+     * @throws HgLockException if the working copy or store lock cannot be acquired
      */
     public void unshelveAbort() throws IOException, HgLockException {
         File unshelveStateFile = unshelveStateFile();

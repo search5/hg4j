@@ -32,11 +32,21 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 public class Bundle2Parser {
     private static final Logger LOGGER = Logger.getLogger(Bundle2Parser.class.getName());
 
+    /** Creates a parser instance. All parsing/writing entry points are static; this class holds no state. */
+    public Bundle2Parser() {
+    }
+
     /**
      * Structure representing the result of bundle2 extraction.
      */
     public static class ExtractedBundle2 {
+        /** Creates an empty result to be filled in by the extraction methods. */
+        public ExtractedBundle2() {
+        }
+
+        /** The extracted changegroup payload bytes, in bundle1/changegroup-compatible form. */
         public byte[] changegroupBytes;
+        /** The changegroup version ({@code "01"}/{@code "02"}/{@code "03"}/{@code "04"}/{@code "05"}) the {@code CHANGEGROUP} part declared. */
         public String cgVersion = "01"; // Default to cg1 if not specified
         /** The wire part id (real hg's {@code partid}, a small sequential integer the SENDER
          * assigned) of the {@code CHANGEGROUP} part this was extracted from -- needed by a
@@ -71,6 +81,11 @@ public class Bundle2Parser {
 
     /**
      * Detailed bundle2 extraction that retrieves both the changegroup bytes and its version parameter.
+     *
+     * @param in the raw input stream of the bundle2 data
+     * @return the extracted changegroup payload plus its version, part id, and any {@code
+     *     check:heads} node list found alongside it
+     * @throws IOException if parsing fails or invalid bundle2 format is encountered
      */
     public static ExtractedBundle2 extractChangegroupDetailed(InputStream in) throws IOException {
         DataInputStream dis = new DataInputStream(in);
@@ -263,6 +278,9 @@ public class Bundle2Parser {
      *         Callers still need to append any further tokens (e.g. {@code "compression=..."})
      *         themselves, joined with a further comma — the overall {@code bundlecaps} wire value
      *         is comma-separated at the top level, NOT space-separated.
+     *
+     * @param changegroupVersionsCsv comma-separated changegroup versions the caller accepts, e.g.
+     *     {@code "01,02,03"}
      */
     public static String buildChangegroupBundleCaps(String changegroupVersionsCsv) {
         return "HG20," + buildBundle2CapsToken(changegroupVersionsCsv);
@@ -274,6 +292,10 @@ public class Bundle2Parser {
      * bundleCaps} as a {@code List<String>} of separate tokens and wants to add the bare {@code
      * "HG20"} token as its own list element (matching real hg's own client's exact 2-token shape)
      * rather than pre-joined into one string.
+     *
+     * @param changegroupVersionsCsv comma-separated changegroup versions the caller accepts, e.g.
+     *     {@code "01,02,03"}
+     * @return the single {@code "bundle2=<percent-encoded blob>"} token
      */
     public static String buildBundle2CapsToken(String changegroupVersionsCsv) {
         String blob = "HG20\nchangegroup=" + changegroupVersionsCsv;
@@ -302,6 +324,7 @@ public class Bundle2Parser {
      * defaults {@code version} to {@code "01"} in that case) — this method returns an empty list
      * for both, letting the caller apply that same default.
      *
+     * @param bundleCaps top-level {@code bundlecaps} tokens as advertised by the client
      * @return the requested version tokens (e.g. {@code ["01","02","03"]}) in the order they were
      *         listed, or an empty list if no {@code changegroup=} entry was found anywhere
      */
@@ -346,6 +369,10 @@ public class Bundle2Parser {
      * (independent of which changegroup version ends up chosen: with no such token, real hg
      * hardcodes cg1 and never wraps the response in bundle2, regardless of any {@code
      * changegroup=} list a caller might have also sent).
+     *
+     * @param bundleCaps top-level {@code bundlecaps} tokens as advertised by the client
+     * @return {@code true} if any token starts with {@code "HG2"}, i.e. bundle2 wrapping was
+     *     requested
      */
     public static boolean requestsBundle2(List<String> bundleCaps) {
         if (bundleCaps == null) {
@@ -423,6 +450,12 @@ public class Bundle2Parser {
      * advisoryCount(1B) (keyLen,valLen) pairs... key bytes... value bytes...] + payload
      * chunkSize(int32, payload length WITHOUT a self-inclusive +4 — unlike the inner changegroup
      * chunk framing) + payload bytes + terminal chunk(int32 0) + final partHeaderSize(int32 0).
+     *
+     * @param changegroupBytes raw changegroup payload bytes to wrap
+     * @param version changegroup version to declare in the {@code CHANGEGROUP} part's
+     *     {@code version} param, e.g. {@code "04"}
+     * @return the complete, uncompressed HG20/bundle2 envelope bytes
+     * @throws IOException if writing to the internal byte buffer fails
      */
     public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version) throws IOException {
         return wrapChangegroupInBundle2(changegroupBytes, version, null);
@@ -442,6 +475,14 @@ public class Bundle2Parser {
      * this is the write-side counterpart of). {@code compression} is {@code null}/empty for no
      * stream compression (matching {@code none-v3}), {@code "GZ"}, or {@code "BZ"}
      * (case-insensitive).
+     *
+     * @param changegroupBytes raw changegroup payload bytes to wrap
+     * @param version changegroup version to declare in the {@code CHANGEGROUP} part's
+     *     {@code version} param, e.g. {@code "04"}
+     * @param compression stream-level compression to apply: {@code null}/empty for none, or
+     *     {@code "GZ"}/{@code "BZ"} (case-insensitive)
+     * @return the complete bundle2 envelope bytes, compressed as requested
+     * @throws IOException if writing to the internal byte buffer or compressor fails
      */
     public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version, String compression) throws IOException {
         byte[] partName = "CHANGEGROUP".getBytes(StandardCharsets.US_ASCII);
@@ -519,6 +560,12 @@ public class Bundle2Parser {
      * return} (an integer; real hg's own client reads this into {@code pushop.cgresult} --
      * {@code 0} means "nothing added" and makes {@code hg push} exit with "nothing to push",
      * any nonzero value means "something landed" and is otherwise not interpreted numerically).
+     *
+     * @param inReplyToPartId wire part id of the client's own {@code changegroup} request part
+     * @param returnValue result code to report back: {@code 0} for "nothing added", nonzero for
+     *     "something landed"
+     * @return the complete, uncompressed HG20/bundle2 reply envelope bytes
+     * @throws IOException if writing to the internal byte buffer fails
      */
     public static byte[] buildChangegroupReplyBundle2(int inReplyToPartId, int returnValue) throws IOException {
         byte[] key1 = "in-reply-to".getBytes(StandardCharsets.US_ASCII);
@@ -532,6 +579,9 @@ public class Bundle2Parser {
      * Builds a minimal, uncompressed HG20/bundle2 stream with NO parts at all -- a trivially
      * valid empty reply, used when an incoming bundle2 push carried no {@code changegroup} part
      * to reply to at all (e.g. a bookmark-only push with no new changesets).
+     *
+     * @return the complete, part-less HG20/bundle2 stream bytes
+     * @throws IOException if writing to the internal byte buffer fails
      */
     public static byte[] buildEmptyBundle2Reply() throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -550,6 +600,11 @@ public class Bundle2Parser {
      * part type and raises {@code AbortFromPart(message)}, which {@code exchange._pushbundle2}
      * reports as {@code "remote: <message>"} -- the bundle2-era equivalent of this server's
      * legacy {@code "0\n<message>"} plain-text error response.
+     *
+     * @param message abort message to report to the client
+     * @return the complete, uncompressed HG20/bundle2 stream bytes carrying the {@code
+     *     error:abort} part
+     * @throws IOException if writing to the internal byte buffer fails
      */
     public static byte[] buildErrorAbortBundle2(String message) throws IOException {
         byte[] key = "message".getBytes(StandardCharsets.US_ASCII);

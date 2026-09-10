@@ -27,12 +27,40 @@ import java.util.Map;
 public class SummaryCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a command bound to the given repository.
+     *
+     * @param repository the repository to summarize
+     */
     public SummaryCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * One working-copy parent, as reported in a {@link SummaryInfo}.
+     *
+     * @param revision    the parent's local revision number in the changelog, or {@code -1} if
+     *                    it could not be resolved
+     * @param node        the parent's full hex changeset id
+     * @param description the parent changeset's commit message, or an empty string if it could
+     *                    not be read
+     */
     public record ParentInfo(int revision, String node, String description) {}
 
+    /**
+     * Structured result of {@link #call()}, mirroring the information printed by real
+     * {@code hg summary}.
+     *
+     * @param parents         the working copy's parent changeset(s)
+     * @param branch          the current named branch
+     * @param activeBookmark  the active bookmark name, or {@code null} if none is active
+     * @param modified        count of modified files in the working copy status
+     * @param added           count of added files in the working copy status
+     * @param removed         count of removed files in the working copy status
+     * @param unknown         count of untracked files in the working copy status
+     * @param mergeInProgress whether the working copy has more than one parent (an unresolved merge)
+     * @param currentPhase    the phase of the first parent changeset
+     */
     public record SummaryInfo(
             List<ParentInfo> parents,
             String branch,
@@ -44,6 +72,13 @@ public class SummaryCommand {
             boolean mergeInProgress,
             PhaseRoots.Phase currentPhase) {}
 
+    /**
+     * Gathers the working copy's parent(s), branch, active bookmark, status counts, and phase
+     * into a single {@link SummaryInfo}.
+     *
+     * @return the assembled summary of the working copy
+     * @throws IOException if reading repository state fails
+     */
     public SummaryInfo call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

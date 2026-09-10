@@ -46,6 +46,10 @@ import java.nio.charset.StandardCharsets;
  *     rather than constructed directly.
  */
 public class InitCommand {
+    /** Creates an init command with no options set; typically obtained via {@link Hg#init()} instead. */
+    public InitCommand() {
+    }
+
     private File directory;
     private boolean dirstateV2 = false;
     private boolean useZstd = false;
@@ -56,22 +60,46 @@ public class InitCommand {
     private boolean fileIndexV1 = false;
     private boolean generalV2 = false;
 
+    /**
+     * Sets the target directory for the new repository (created, along with its {@code .hg}
+     * subdirectory, if it doesn't already exist).
+     *
+     * @param directory the repository working directory to create
+     * @return this command, for chaining
+     */
     public InitCommand setDirectory(File directory) {
         this.directory = directory;
         return this;
     }
 
+    /**
+     * {@code format.usestore=...} companion knob -- selects the dirstate-v2 (docket + tree)
+     * on-disk format for {@code .hg/dirstate} instead of the legacy v1 flat format.
+     *
+     * @param dirstateV2 {@code true} to add the {@code dirstate-v2} requirement
+     * @return this command, for chaining
+     */
     public InitCommand setDirstateV2(boolean dirstateV2) {
         this.dirstateV2 = dirstateV2;
         return this;
     }
 
+    /** {@code format.revlog-compression=zstd} -- new revlog data is compressed with zstd instead of zlib.
+     *
+     * @param useZstd {@code true} to add the {@code revlog-compression-zstd} requirement
+     * @return this command, for chaining
+     */
     public InitCommand setUseZstd(boolean useZstd) {
         this.useZstd = useZstd;
         return this;
     }
 
-    /** {@code format.exp-use-changelog-v2=...} -- changelog uses the docket-based revlog v2 format. */
+    /**
+     * {@code format.exp-use-changelog-v2=...} -- changelog uses the docket-based revlog v2 format.
+     *
+     * @param changelogV2 {@code true} to add the {@code exp-changelog-v2} requirement
+     * @return this command, for chaining
+     */
     public InitCommand setChangelogV2(boolean changelogV2) {
         this.changelogV2 = changelogV2;
         return this;
@@ -80,19 +108,32 @@ public class InitCommand {
     /**
      * {@code format.exp-use-copies-side-data-changeset=yes} -- commits carry a {@code SD_FILES}
      * sidedata record. Implies {@link #setChangelogV2}, matching real hg.
+     *
+     * @param sidedataCopies {@code true} to add the {@code exp-copies-sidedata-changeset} requirement
+     * @return this command, for chaining
      */
     public InitCommand setSidedataCopies(boolean sidedataCopies) {
         this.sidedataCopies = sidedataCopies;
         return this;
     }
 
-    /** {@code experimental.treemanifest=1} -- manifests split recursively per-directory. */
+    /**
+     * {@code experimental.treemanifest=1} -- manifests split recursively per-directory.
+     *
+     * @param treemanifest {@code true} to add the {@code treemanifest} requirement
+     * @return this command, for chaining
+     */
     public InitCommand setTreemanifest(boolean treemanifest) {
         this.treemanifest = treemanifest;
         return this;
     }
 
-    /** {@code format.use-persistent-nodemap=true} -- maintain a {@code <radix>.n} nodemap trie. */
+    /**
+     * {@code format.use-persistent-nodemap=true} -- maintain a {@code <radix>.n} nodemap trie.
+     *
+     * @param persistentNodemap {@code true} to add the {@code persistent-nodemap} requirement
+     * @return this command, for chaining
+     */
     public InitCommand setPersistentNodemap(boolean persistentNodemap) {
         this.persistentNodemap = persistentNodemap;
         return this;
@@ -101,6 +142,9 @@ public class InitCommand {
     /**
      * {@code format.use-fileindex-v1=yes} -- store uses a radix-trie file index instead of
      * fncache. Implies {@link #setPersistentNodemap}, matching real hg.
+     *
+     * @param fileIndexV1 {@code true} to add the {@code fileindex-v1} requirement
+     * @return this command, for chaining
      */
     public InitCommand setFileIndexV1(boolean fileIndexV1) {
         this.fileIndexV1 = fileIndexV1;
@@ -111,12 +155,29 @@ public class InitCommand {
      * {@code experimental.revlogv2=enable-unstable-format-and-corrupt-my-data} -- manifests/
      * filelogs use the general revlog v2 format ({@code exp-revlogv2.2}). Implies both
      * {@link #setFileIndexV1} and {@link #setPersistentNodemap}, matching real hg.
+     *
+     * @param generalV2 {@code true} to add the {@code exp-revlogv2.2} requirement
+     * @return this command, for chaining
      */
     public InitCommand setGeneralV2(boolean generalV2) {
         this.generalV2 = generalV2;
         return this;
     }
 
+    /**
+     * Creates the repository: the {@code .hg} and {@code .hg/store} directories, the
+     * {@code .hg/requires} file (computed from the options set on this command, applying real
+     * hg's mutual-implication and mutual-exclusion rules between requirement tokens), and the
+     * legacy-client compatibility dummy {@code .hg/00changelog.i}.
+     *
+     * @return the newly initialized repository
+     * @throws IOException if the target directory/{@code .hg} layout cannot be created or the
+     *         {@code requires}/compatibility-guard files cannot be written
+     * @throws IllegalStateException if no target directory was set via {@link #setDirectory}
+     * @throws HgValidationException if {@link #setTreemanifest} and {@link #setFileIndexV1} (or
+     *         {@link #setGeneralV2}, which implies it) were both enabled, since real hg treats
+     *         that combination as invalid
+     */
     public HgRepository call() throws IOException {
         if (directory == null) {
             throw new IllegalStateException("Repository directory must be specified.");

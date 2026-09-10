@@ -62,6 +62,8 @@ public class HgLock implements AutoCloseable {
 
     /**
      * Creates a dummy, no-op lock that does nothing on close.
+     *
+     * @return a lock instance that acquires and releases nothing
      */
     public static HgLock noOp() {
         return new NoOpLock();
@@ -78,6 +80,9 @@ public class HgLock implements AutoCloseable {
 
     /**
      * Acquires a lock immediately (fail-fast, timeout = 0).
+     *
+     * @param lockFile lock file to create (e.g. {@code .hg/wlock} or {@code .hg/store/lock})
+     * @throws HgLockException if the lock is already held and cannot be acquired immediately
      */
     public HgLock(File lockFile) throws HgLockException {
         this(lockFile, 0, false);
@@ -85,6 +90,11 @@ public class HgLock implements AutoCloseable {
 
     /**
      * Acquires a lock on the specified file, waiting up to timeoutMs if it is already locked.
+     *
+     * @param lockFile lock file to create
+     * @param timeoutMs maximum time in milliseconds to wait for an already-held lock, or 0 to
+     *     fail immediately
+     * @throws HgLockException if the lock cannot be acquired within {@code timeoutMs}
      */
     public HgLock(File lockFile, int timeoutMs) throws HgLockException {
         this(lockFile, timeoutMs, false);
@@ -92,6 +102,13 @@ public class HgLock implements AutoCloseable {
 
     /**
      * Acquires a lock on the specified file, waiting up to timeoutMs with reentrancy option.
+     *
+     * @param lockFile lock file to create
+     * @param timeoutMs maximum time in milliseconds to wait for an already-held lock, or 0 to
+     *     fail immediately
+     * @param allowReentrant whether the same thread may re-acquire this lock (by path) without
+     *     blocking on itself
+     * @throws HgLockException if the lock cannot be acquired within {@code timeoutMs}
      */
     public HgLock(File lockFile, int timeoutMs, boolean allowReentrant) throws HgLockException {
         if (lockFile == null) {
@@ -276,6 +293,8 @@ public class HgLock implements AutoCloseable {
     /**
      * Forcefully releases the lock on both JVM and file system levels,
      * ignoring any thread ownership and reentrancy states.
+     *
+     * @throws IOException if the lock file exists but cannot be deleted
      */
     public void forceUnlock() throws IOException {
         if (lockFile == null) {

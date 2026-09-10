@@ -119,10 +119,21 @@ public class RebaseCommand {
         List<byte[]> remaining = new ArrayList<>();
     }
 
+    /**
+     * Creates an instance bound to the given repository.
+     *
+     * @param repository repository whose revisions will be rebased
+     */
     public RebaseCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Registers a hook to run before the rebase begins.
+     *
+     * @param hook hook to invoke before rebasing; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public RebaseCommand registerPreRebaseHook(HgHook hook) {
         if (hook != null) {
             preRebaseHooks.add(hook);
@@ -130,6 +141,12 @@ public class RebaseCommand {
         return this;
     }
 
+    /**
+     * Registers a hook to run after the rebase completes.
+     *
+     * @param hook hook to invoke after rebasing; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public RebaseCommand registerPostRebaseHook(HgHook hook) {
         if (hook != null) {
             postRebaseHooks.add(hook);
@@ -137,16 +154,41 @@ public class RebaseCommand {
         return this;
     }
 
+    /**
+     * Sets the node ID of the earliest revision to rebase (its descendants up to the current
+     * branch tip are carried along).
+     *
+     * @param sourceNode node ID of the source revision
+     * @return this command, for chaining
+     */
     public RebaseCommand setSource(byte[] sourceNode) {
         this.sourceNode = sourceNode;
         return this;
     }
 
+    /**
+     * Sets the node ID of the destination revision the source (and its descendants) are rebased
+     * onto.
+     *
+     * @param targetNode node ID of the target revision
+     * @return this command, for chaining
+     */
     public RebaseCommand setTarget(byte[] targetNode) {
         this.targetNode = targetNode;
         return this;
     }
 
+    /**
+     * Executes the rebase, cherry-picking the source revision and its descendants onto the
+     * target revision in turn. A conflict during any cherry-pick pauses the rebase in a
+     * resumable state -- see {@link #continueRebase()} and {@link #abort()}.
+     *
+     * @return the final rebased tip node, once every queued revision has been committed
+     * @throws IOException if history traversal or file write fails
+     * @throws HgLockException if the working copy or store lock cannot be acquired
+     * @throws HgMergeConflictException if a cherry-picked revision conflicts with the current
+     *     base and could not be resolved automatically
+     */
     public byte[] call() throws IOException, HgLockException, HgMergeConflictException {
         repository.clearRevlogCache();
         if (sourceNode == null || targetNode == null) {
@@ -227,6 +269,7 @@ public class RebaseCommand {
      * @return the final rebased tip node, once every queued revision has been committed
      * @throws HgValidationException     if no rebase is in progress, or unresolved files remain
      * @throws HgMergeConflictException  if a later queued revision itself conflicts
+     * @throws HgLockException if the working copy or store lock cannot be acquired
      */
     public byte[] continueRebase() throws IOException, HgLockException, HgMergeConflictException {
         repository.clearRevlogCache();
@@ -305,6 +348,10 @@ public class RebaseCommand {
      * is discarded (the changelog/manifest/filelogs are restored byte-for-byte to their
      * pre-rebase content), and the working copy plus dirstate are restored to exactly whatever
      * was checked out before {@link #call()} started.
+     *
+     * @throws IOException if restoring the changelog, manifest, filelogs, or working copy fails,
+     *     or (as {@link HgValidationException}) if no rebase is in progress
+     * @throws HgLockException if the working copy or store lock cannot be acquired
      */
     public void abort() throws IOException, HgLockException {
         repository.clearRevlogCache();

@@ -34,6 +34,11 @@ public class WorkingDirTreeIterator implements TreeIterator {
         }
     }
 
+    /**
+     * Creates an iterator over the given repository's working directory and dirstate.
+     *
+     * @param repository repository whose working copy and dirstate are traversed
+     */
     public WorkingDirTreeIterator(HgRepository repository) {
         this.repository = repository;
     }

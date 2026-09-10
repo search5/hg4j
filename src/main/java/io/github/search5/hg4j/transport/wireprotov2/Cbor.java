@@ -16,8 +16,8 @@ import java.util.Map;
  * every string — map keys included — as a CBOR <em>byte string</em> (major type 2), never as a
  * CBOR text string (major type 3): Mercurial's internal strings are all Python {@code bytes}, and
  * {@code mercurial/utils/cborutil.py}'s {@code streamencodebytestring} is what backs its string
- * encoding. Verified directly against a real Mercurial 6.0 server's capabilities response
- * (decoded with Python's {@code cbor2}): every key, e.g. {@code b'apibase'}, is major-type-2.
+ * encoding. In a real Mercurial capabilities response, every key, e.g. {@code b'apibase'}, is
+ * major-type-2.
  * Jackson's {@code CBORGenerator.writeFieldName} only ever emits major-type-3 field names, so it
  * cannot produce (or transparently consume as lookups) this shape — hence this standalone
  * implementation.</p>
@@ -42,6 +42,15 @@ public final class Cbor {
     private Cbor() {
     }
 
+    /**
+     * Encodes a single value as CBOR, following the encoding rules documented on this class
+     * (strings as byte strings, maps/lists recursively encoded, etc.).
+     *
+     * @param value the value to encode ({@code null}, {@code Boolean}, {@code byte[]},
+     *              {@code String}, {@code Number}, {@code Map}, or {@code List})
+     * @return the CBOR-encoded bytes of {@code value}
+     * @throws IllegalArgumentException if {@code value} is of an unsupported type
+     */
     public static byte[] encode(Object value) {
         try {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -52,6 +61,13 @@ public final class Cbor {
         }
     }
 
+    /**
+     * Encodes each value in {@code values} independently and concatenates the resulting CBOR
+     * byte sequences, matching how real hg streams multiple top-level CBOR items back to back.
+     *
+     * @param values the values to encode, in order
+     * @return the concatenation of each value's individual CBOR encoding
+     */
     public static byte[] encodeAll(List<Object> values) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (Object v : values) {
@@ -61,6 +77,14 @@ public final class Cbor {
         return out.toByteArray();
     }
 
+    /**
+     * Decodes a byte buffer containing zero or more concatenated, definite-length CBOR items
+     * (the shape real hg's {@code cborutil.streamencode} produces).
+     *
+     * @param data the raw bytes containing one or more back-to-back CBOR-encoded values
+     * @return the decoded values, in the order they appeared in {@code data}
+     * @throws IllegalArgumentException if {@code data} contains an unsupported or malformed CBOR item
+     */
     public static List<Object> decodeAll(byte[] data) {
         List<Object> result = new ArrayList<>();
         Reader r = new Reader(data);
@@ -70,6 +94,12 @@ public final class Cbor {
         return result;
     }
 
+    /**
+     * Casts a decoded CBOR value to a string-keyed map, treating anything else as empty.
+     *
+     * @param o a value previously produced by {@link #decodeAll(byte[])}
+     * @return {@code o} cast to {@code Map<String, Object>} if it is a map, otherwise an empty map
+     */
     @SuppressWarnings("unchecked")
     public static Map<String, Object> asMap(Object o) {
         if (o instanceof Map) {
@@ -78,6 +108,12 @@ public final class Cbor {
         return Map.of();
     }
 
+    /**
+     * Casts a decoded CBOR value to a list, treating anything else as empty.
+     *
+     * @param o a value previously produced by {@link #decodeAll(byte[])}
+     * @return {@code o} cast to {@code List<Object>} if it is a list, otherwise an empty list
+     */
     @SuppressWarnings("unchecked")
     public static List<Object> asList(Object o) {
         if (o instanceof List) {
@@ -86,10 +122,24 @@ public final class Cbor {
         return List.of();
     }
 
+    /**
+     * Casts a decoded CBOR value to a byte array.
+     *
+     * @param o a value previously produced by {@link #decodeAll(byte[])}
+     * @return {@code o} cast to {@code byte[]} if it is a byte array, otherwise {@code null}
+     */
     public static byte[] asBytes(Object o) {
         return o instanceof byte[] ? (byte[]) o : null;
     }
 
+    /**
+     * Converts a decoded CBOR value to a string, decoding a raw byte string as UTF-8 (matching
+     * real hg's convention of encoding strings as CBOR byte strings) and falling back to
+     * {@link String#valueOf} for any other non-null type.
+     *
+     * @param o a value previously produced by {@link #decodeAll(byte[])}
+     * @return the string representation of {@code o}, or {@code null} if {@code o} is {@code null}
+     */
     public static String asString(Object o) {
         if (o instanceof String) {
             return (String) o;
@@ -100,10 +150,26 @@ public final class Cbor {
         return o == null ? null : String.valueOf(o);
     }
 
+    /**
+     * Casts a decoded CBOR value to a {@code long}, falling back to a default when it is not a
+     * number.
+     *
+     * @param o a value previously produced by {@link #decodeAll(byte[])}
+     * @param defaultValue the value to return if {@code o} is not a {@link Number}
+     * @return {@code o}'s long value if it is a {@link Number}, otherwise {@code defaultValue}
+     */
     public static long asLong(Object o, long defaultValue) {
         return o instanceof Number ? ((Number) o).longValue() : defaultValue;
     }
 
+    /**
+     * Casts a decoded CBOR value to a {@code boolean}, falling back to a default when it is not
+     * a boolean.
+     *
+     * @param o a value previously produced by {@link #decodeAll(byte[])}
+     * @param defaultValue the value to return if {@code o} is not a {@link Boolean}
+     * @return {@code o}'s boolean value if it is a {@link Boolean}, otherwise {@code defaultValue}
+     */
     public static boolean asBoolean(Object o, boolean defaultValue) {
         return o instanceof Boolean ? (Boolean) o : defaultValue;
     }

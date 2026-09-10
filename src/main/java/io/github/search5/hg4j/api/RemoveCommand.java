@@ -28,15 +28,33 @@ public class RemoveCommand {
     private String file;
     private boolean force = false;
 
+    /**
+     * Creates a remove command bound to the given repository.
+     *
+     * @param repository repository whose working copy and dirstate will be modified
+     */
     public RemoveCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the repository-relative path of the file to remove.
+     *
+     * @param file repository-relative path of the tracked file to remove
+     * @return this command, for chaining
+     */
     public RemoveCommand setFile(String file) {
         this.file = file;
         return this;
     }
 
+    /**
+     * Sets whether to remove the file even if it has uncommitted changes.
+     *
+     * @param force {@code true} to skip the dirty-file safety check, {@code false} (the
+     *     default) to reject removing a modified or newly-added file
+     * @return this command, for chaining
+     */
     public RemoveCommand setForce(boolean force) {
         this.force = force;
         return this;
@@ -46,6 +64,17 @@ public class RemoveCommand {
         Files.write(journal.toPath(), (entry + "\n").getBytes(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
     }
 
+    /**
+     * Executes the command: deletes the configured file from the working directory (unless it
+     * was never committed) and records the removal in the dirstate.
+     *
+     * @return {@code true} if the file was removed
+     * @throws IOException if the dirstate or working copy file cannot be read, written, or deleted
+     * @throws HgLockException if the working copy or store lock cannot be acquired
+     * @throws IllegalStateException if no file was configured via {@link #setFile}
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the file is not tracked, or
+     *     has uncommitted changes and {@link #setForce} was not enabled
+     */
     public boolean call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");

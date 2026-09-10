@@ -23,26 +23,50 @@ public interface StoreEngine {
     
     /**
      * Resolves and returns a Revlog instance.
+     *
+     * @param repository repository the revlog belongs to
+     * @param indexFile revlog index ({@code .i}) file
+     * @param dataFile revlog data ({@code .d}) file
+     * @return the resolved revlog
+     * @throws IOException if the revlog cannot be read
      */
     Revlog getRevlog(HgRepository repository, File indexFile, File dataFile) throws IOException;
 
     /**
      * Resolves the manifest map at a given commit nodeId.
+     *
+     * @param repository repository the commit belongs to
+     * @param commitNodeId node ID of the commit whose manifest is resolved
+     * @return map of tracked file path to filelog node ID hex string, as recorded in that
+     *     commit's manifest
+     * @throws IOException if the changelog or manifest cannot be read
      */
     Map<String, String> getManifestAtCommit(HgRepository repository, byte[] commitNodeId) throws IOException;
 
     /**
      * Reads the dirstate from the repository storage.
+     *
+     * @param repository repository whose dirstate is read
+     * @return the current dirstate
+     * @throws IOException if the dirstate cannot be read
      */
     Dirstate getDirstate(HgRepository repository) throws IOException;
 
     /**
      * Writes the specified dirstate back to the repository storage.
+     *
+     * @param repository repository whose dirstate is written
+     * @param dirstate dirstate to persist
+     * @throws IOException if the dirstate cannot be written
      */
     void writeDirstate(HgRepository repository, Dirstate dirstate) throws IOException;
 
     /**
      * Resolves the manifest Revlog instance.
+     *
+     * @param repository repository whose manifest revlog is resolved
+     * @return the manifest revlog
+     * @throws IOException if the manifest revlog cannot be read
      */
     Revlog getManifestRevlog(HgRepository repository) throws IOException;
 }

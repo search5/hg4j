@@ -17,13 +17,21 @@ import java.io.IOException;
 public class TipCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a tip command bound to the given repository.
+     *
+     * @param repository the repository to query the tip of
+     */
     public TipCommand(HgRepository repository) {
         this.repository = repository;
     }
 
     /**
+     * Resolves the tip revision's node ID.
+     *
      * @return the node id (20 bytes) of the tip revision, or {@code null} if the repository has no
      *         revisions yet.
+     * @throws IOException if changelog IO fails
      */
     public byte[] call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
@@ -39,7 +47,12 @@ public class TipCommand {
         return changelog.getIndexRecord(count - 1).getNodeId();
     }
 
-    /** @return the revision number of tip, or -1 if the repository is empty. */
+    /**
+     * Resolves the tip revision's revision number.
+     *
+     * @return the revision number of tip, or -1 if the repository is empty.
+     * @throws IOException if changelog IO fails
+     */
     public int getRevisionNumber() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

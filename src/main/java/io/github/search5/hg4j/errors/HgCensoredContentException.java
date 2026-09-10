@@ -16,14 +16,26 @@ import java.io.IOException;
 public class HgCensoredContentException extends IOException {
     private static final long serialVersionUID = 1L;
 
+    /** The tombstone message substituted for the censored content, if any was set. */
     private final byte[] tombstone;
 
+    /**
+     * Creates the exception for a censored revision.
+     *
+     * @param path the repository-relative path of the censored file
+     * @param rev the revision number at which the censored content was read
+     * @param tombstone the tombstone message substituted for the censored content, if any was set
+     */
     public HgCensoredContentException(String path, int rev, byte[] tombstone) {
         super("censored node: " + path + "@" + rev);
         this.tombstone = tombstone;
     }
 
-    /** The tombstone message substituted for the censored content, if any was set. */
+    /**
+     * Returns the tombstone message substituted for the censored content, if any was set.
+     *
+     * @return the tombstone bytes, or {@code null} if none was recorded
+     */
     public byte[] getTombstone() {
         return tombstone;
     }

@@ -28,15 +28,34 @@ public class UnbundleCommand {
     private final HgRepository repository;
     private File bundleFile;
 
+    /**
+     * Creates the command against the given repository.
+     *
+     * @param repository repository the bundle's changesets are applied to
+     */
     public UnbundleCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the local bundle file to unbundle.
+     *
+     * @param bundleFile bundle file to read; must exist
+     * @return this command, for chaining
+     */
     public UnbundleCommand setBundleFile(File bundleFile) {
         this.bundleFile = bundleFile;
         return this;
     }
 
+    /**
+     * Decodes the bundle container (HG10UN/HG10GZ/HG10BZ or bundle2/HG20) and applies its
+     * changegroup to the repository via {@link FetchCommand#applyBundle}.
+     *
+     * @return the raw node ids of the changesets added by the bundle, in changegroup order
+     * @throws IOException if the bundle file cannot be read or its container cannot be decoded
+     * @throws HgLockException if the repository lock cannot be acquired while applying the changegroup
+     */
     public List<byte[]> call() throws IOException, HgLockException {
         if (bundleFile == null || !bundleFile.exists()) {
             throw new IllegalStateException("Bundle file must exist: " + bundleFile);

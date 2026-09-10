@@ -38,27 +38,42 @@ import java.util.zip.DeflaterOutputStream;
  */
 public class HgHttpWireServer extends HttpServlet {
 
+    /** The repository this server exposes over the wire protocols. */
     private final HgRepository repository;
+    /** Hooks run before an incoming {@code unbundle} (push) is applied. */
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
+    /** Hooks run after an incoming {@code unbundle} (push) has been applied. */
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
     // See Wire1Commands#pushkey(HgRepository, Map, List, List): the changegroup hooks above
     // never see which ref (bookmark) moved, only raw changeset nodes — that only happens in
     // the separate `pushkey` wire command, hence a separate hook list.
+    /** Hooks run before an incoming {@code pushkey} is applied. */
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
+    /** Hooks run after an incoming {@code pushkey} has been applied successfully. */
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
+    /**
+     * Creates a wire server exposing {@code repository} over both protocol v1 and v2 HTTP
+     * transports.
+     *
+     * @param repository the repository to serve
+     */
     public HgHttpWireServer(HgRepository repository) {
         this.repository = repository;
     }
 
     /** Registers a hook run before an incoming {@code unbundle} (push) is applied — returning
-     * {@code false} aborts it before anything is written, real hg's {@code pretxnchangegroup}. */
+     * {@code false} aborts it before anything is written, real hg's {@code pretxnchangegroup}.
+     * @param hook the hook to add to the pre-changegroup chain
+     * @return this server, for chaining further {@code registerXxxHook} calls */
     public HgHttpWireServer registerPreChangegroupHook(HgHook hook) {
         preChangegroupHooks.add(hook);
         return this;
     }
 
-    /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
+    /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}.
+     * @param hook the hook to add to the post-changegroup chain
+     * @return this server, for chaining further {@code registerXxxHook} calls */
     public HgHttpWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
         return this;
@@ -66,13 +81,17 @@ public class HgHttpWireServer extends HttpServlet {
 
     /** Registers a hook run before an incoming {@code pushkey} (e.g. a bookmark move — the actual
      * "branch update" wire event, see {@link Wire1Commands#pushkey}) is applied — returning
-     * {@code false} aborts it, surfaced to the client as the real hg pushkey failure response. */
+     * {@code false} aborts it, surfaced to the client as the real hg pushkey failure response.
+     * @param hook the hook to add to the pre-pushkey chain
+     * @return this server, for chaining further {@code registerXxxHook} calls */
     public HgHttpWireServer registerPrePushkeyHook(HgHook hook) {
         prePushkeyHooks.add(hook);
         return this;
     }
 
-    /** Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully. */
+    /** Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully.
+     * @param hook the hook to add to the post-pushkey chain
+     * @return this server, for chaining further {@code registerXxxHook} calls */
     public HgHttpWireServer registerPostPushkeyHook(HgHook hook) {
         postPushkeyHooks.add(hook);
         return this;
@@ -140,8 +159,8 @@ public class HgHttpWireServer extends HttpServlet {
      * Real hg's capability-discovery handshake response, sent from the root URL
      * ({@code /?cmd=capabilities}) when the request carries {@code X-HgUpgrade-1}/
      * {@code X-HgProto-1} headers (checked by the caller) — {@code {apibase, apis:
-     * {<namespace>: {commands, framingmediatypes}}, v1capabilities}}, verified against a real
-     * Mercurial 6.0 server (the last release with a working wireprotocol v2 implementation).
+     * {<namespace>: {commands, framingmediatypes}}, v1capabilities}}, matching
+     * Mercurial 6.0's wireprotocol v2 implementation (the last release with a working one).
      *
      * @param v1CapabilitiesLine the same string the v1 {@code capabilities} command would return,
      *                           embedded verbatim as {@code v1capabilities}
@@ -165,8 +184,8 @@ public class HgHttpWireServer extends HttpServlet {
      * {@code POST /api/<namespace>/<ro|rw>/<command>}: reads the frame-based
      * {@code application/mercurial-exp-framing-0006} command-request body, dispatches to
      * {@link io.github.search5.hg4j.transport.wireprotov2.Wire2Commands}, and writes back a
-     * framed {@code {status: ok, ...}} (or {@code error}) response — the real wire shape,
-     * verified against a live Mercurial 6.0 server.
+     * framed {@code {status: ok, ...}} (or {@code error}) response — matching Mercurial 6.0's
+     * real wire shape.
      *
      * @param permission the {@code ro}/{@code rw} URL segment; the caller is responsible for
      *                   authenticating/authorizing it (real hg maps {@code ro}→pull, {@code rw}→push)

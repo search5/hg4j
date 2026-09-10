@@ -21,6 +21,11 @@ import java.util.Map;
 public class DescribeCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a describe command bound to the given repository.
+     *
+     * @param repository the repository to describe the current changeset of
+     */
     public DescribeCommand(HgRepository repository) {
         this.repository = repository;
     }

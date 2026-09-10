@@ -35,6 +35,11 @@ import java.security.NoSuchAlgorithmException;
  *     read it back when resolving conflicts or completing a merge commit.
  */
 public final class MergeState {
+
+    /** Creates an empty, inactive merge state (no local/other node, no tracked files). */
+    public MergeState() {
+    }
+
     private static final char RECORD_LOCAL = 'L';
     private static final char RECORD_OTHER = 'O';
     private static final char RECORD_LABELS = 'l';
@@ -44,11 +49,16 @@ public final class MergeState {
     private static final char RECORD_PATH_CONFLICT = 'P';
     private static final char RECORD_OVERRIDE = 't';
 
+    /** State-field value for an unresolved normal (or change/delete) file conflict. */
     public static final String UNRESOLVED = "u";
+    /** State-field value for a resolved normal (or change/delete) file conflict. */
     public static final String RESOLVED = "r";
+    /** State-field value for an unresolved path (rename) conflict. */
     public static final String UNRESOLVED_PATH = "pu";
+    /** State-field value for a resolved path (rename) conflict. */
     public static final String RESOLVED_PATH = "pr";
 
+    /** Hex encoding of Mercurial's null node, used as the "no file" placeholder. */
     public static final String NULL_HEX = "0000000000000000000000000000000000000000";
 
     /** Local parent's changeset node (dirstate p1 at merge start). */
@@ -78,6 +88,15 @@ public final class MergeState {
      * @apiNote Called by {@code MergeCommand}/{@code RebaseCommand}/{@code GraftCommand}/{@code
      *     BackoutCommand} for each file their 3-way merge ({@link
      *     io.github.search5.hg4j.merge.Merge3}) could not resolve automatically.
+     *
+     * @param path repository-relative path of the conflicted file
+     * @param localKey hashed local-content backup key, as produced by {@link #getLocalKey}
+     * @param localFile working-copy path of the local (p1) side's content
+     * @param ancestorFile working-copy or backup path of the common ancestor's content
+     * @param ancestorNodeHex hex filelog node id of the common ancestor's content
+     * @param otherFile working-copy or backup path of the other (p2) side's content
+     * @param otherNodeHex hex filelog node id of the other (p2) side's content
+     * @param flags executable/symlink flag string as stored in the manifest, or {@code null}
      */
     public void addMergedFile(String path, String localKey, String localFile, String ancestorFile,
                                String ancestorNodeHex, String otherFile, String otherNodeHex, String flags) {
@@ -100,12 +119,18 @@ public final class MergeState {
      *     re-running the merge tool) and by the {@code continue}-style methods of {@code
      *     GraftCommand}/{@code RebaseCommand}/{@code BackoutCommand} once the caller confirms a
      *     conflict is resolved.
+     *
+     * @param path repository-relative path to mark resolved; a no-op if not tracked
      */
     public void markResolved(String path) {
         setResolutionState(path, true);
     }
 
-    /** Marks {@code path} as unresolved again ({@code hg resolve --unmark}). */
+    /**
+     * Marks {@code path} as unresolved again ({@code hg resolve --unmark}).
+     *
+     * @param path repository-relative path to mark unresolved; a no-op if not tracked
+     */
     public void markUnresolved(String path) {
         setResolutionState(path, false);
     }
@@ -121,16 +146,30 @@ public final class MergeState {
         state.put(path, updated);
     }
 
-    /** Whether {@code path} is tracked as part of this merge at all (resolved or not). */
+    /**
+     * Whether {@code path} is tracked as part of this merge at all (resolved or not).
+     *
+     * @param path repository-relative path to check
+     * @return {@code true} if {@code path} has a recorded merge state entry
+     */
     public boolean hasFile(String path) {
         return state.containsKey(path);
     }
 
-    /** Whether this represents an actual in-progress merge (a {@code state2} file existed). */
+    /**
+     * Whether this represents an actual in-progress merge (a {@code state2} file existed).
+     *
+     * @return {@code true} if both {@link #local} and {@link #other} are set
+     */
     public boolean isActive() {
         return local != null && other != null;
     }
 
+    /**
+     * Whether no file conflicts are tracked by this merge state.
+     *
+     * @return {@code true} if {@link #state} has no entries
+     */
     public boolean isEmpty() {
         return state.isEmpty();
     }
@@ -140,6 +179,8 @@ public final class MergeState {
      *
      * @apiNote Used by {@code ResolveCommand} (e.g. {@code hg resolve --list}) and by {@code
      *     CommitCommand} to refuse a commit while unresolved conflicts remain.
+     *
+     * @return repository-relative paths of every file/path conflict still marked unresolved
      */
     public List<String> unresolvedFiles() {
         List<String> result = new ArrayList<>();
@@ -155,6 +196,9 @@ public final class MergeState {
     /**
      * Hashes a working-copy file path the same way real hg does for its {@code .hg/merge/<key>}
      * pre-merge local-content backup files.
+     *
+     * @param path repository-relative file path to hash
+     * @return the hex SHA-1 digest of {@code path}'s UTF-8 bytes
      */
     public static String getLocalKey(String path) {
         return NodeIdUtil.toHex(sha1(path.getBytes(StandardCharsets.UTF_8)));
@@ -174,6 +218,10 @@ public final class MergeState {
      *
      * @apiNote The counterpart to {@link #write}; also able to read a {@code state2} file
      *     written by real hg itself, so hg4j can inspect/resolve a merge real hg started.
+     *
+     * @param stateFile path to the {@code .hg/merge/state2} file; may be {@code null} or non-existent
+     * @return the decoded merge state, or an inactive/empty one if the file is absent
+     * @throws IOException if the file exists but cannot be read
      */
     public static MergeState read(File stateFile) throws IOException {
         MergeState ms = new MergeState();
@@ -244,6 +292,9 @@ public final class MergeState {
      * @apiNote {@link #local} and {@link #other} must be set first; called by {@code
      *     MergeCommand}/{@code RebaseCommand}/{@code GraftCommand}/{@code BackoutCommand}
      *     whenever their merge leaves any conflict unresolved.
+     *
+     * @param stateFile path to write {@code .hg/merge/state2} to; its parent directory is created if needed
+     * @throws IOException if the file cannot be written
      */
     public void write(File stateFile) throws IOException {
         if (local == null || other == null) {
@@ -306,6 +357,9 @@ public final class MergeState {
      * Deletes the merge state file, marking the merge as fully resolved/completed.
      *
      * @apiNote Called once every conflict is resolved and the merge is committed (or aborted).
+     *
+     * @param stateFile path to the {@code .hg/merge/state2} file to delete
+     * @throws IOException if the file exists but cannot be deleted
      */
     public static void clean(File stateFile) throws IOException {
         Files.deleteIfExists(stateFile.toPath());

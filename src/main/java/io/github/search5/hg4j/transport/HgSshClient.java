@@ -42,12 +42,25 @@ public class HgSshClient implements HgRemoteConnection {
 
     private static SshSessionFactory sshSessionFactory = new JschSessionFactory();
 
+    /**
+     * Installs the {@link SshSessionFactory} used by all subsequently created {@link
+     * HgSshClient} instances to open SSH sessions. A {@code null} argument is ignored, leaving
+     * the current factory in place.
+     *
+     * @param factory the SSH session factory to install, or {@code null} to leave the current
+     *     factory unchanged
+     */
     public static void setSshSessionFactory(SshSessionFactory factory) {
         if (factory != null) {
             sshSessionFactory = factory;
         }
     }
 
+    /**
+     * Returns the {@link SshSessionFactory} currently used to open SSH sessions.
+     *
+     * @return the current SSH session factory (defaults to a {@link JschSessionFactory})
+     */
     public static SshSessionFactory getSshSessionFactory() {
         return sshSessionFactory;
     }
@@ -59,6 +72,12 @@ public class HgSshClient implements HgRemoteConnection {
     private boolean connected = false;
     private int protocolVersion = 1;
 
+    /**
+     * Creates a new SSH client for the given {@code ssh://} repository URL. The URL is parsed
+     * immediately to extract the username, host, port, and repository path.
+     *
+     * @param sshUrl the {@code ssh://[user@]host[:port]/path} repository URL
+     */
     public HgSshClient(String sshUrl) {
         this.sshUrl = sshUrl;
         parseSshUrl(sshUrl);
@@ -108,10 +127,21 @@ public class HgSshClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Sets the password to use for SSH password authentication.
+     *
+     * @param password the SSH password
+     */
     public void setPassword(String password) {
         this.password = password;
     }
 
+    /**
+     * Sets the private key to use for SSH public-key authentication.
+     *
+     * @param privateKeyPath the file path of the private key
+     * @param passphrase the passphrase protecting the private key, or {@code null} if unencrypted
+     */
     public void setPrivateKey(String privateKeyPath, String passphrase) {
         this.privateKeyPath = privateKeyPath;
         this.passphrase = passphrase;
@@ -398,6 +428,12 @@ public class HgSshClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Returns the wire protocol version negotiated with the remote server.
+     *
+     * @return {@code 1} for the legacy SSH wire protocol, or {@code 2} if the remote accepted the
+     *     upgrade to wire protocol v2
+     */
     public int getProtocolVersion() {
         return protocolVersion;
     }
@@ -925,13 +961,11 @@ public class HgSshClient implements HgRemoteConnection {
     /**
      * Reads the data body that follows an already-read, already-written cg1 chunk length field
      * ({@code inclusiveLen}), writing it to {@code out}. Real hg's chunk-length convention
-     * (confirmed against {@code HgLocalClient}'s own writer, which this must stay byte-compatible
+     * (matches {@code HgLocalClient}'s own writer, which this must stay byte-compatible
      * with): the 4-byte length is INCLUSIVE of itself, i.e. {@code len = 4 + dataLength}, not just
-     * the data length that follows. Reading {@code len} more bytes here (as an earlier version of
-     * this class did) over-reads by 4 bytes into the next chunk's own length header every time,
-     * which is what actually caused the deadlock this rewrite fixes: the misread "length" of the
-     * next chunk is essentially random garbage, and the read then blocks forever trying to read
-     * however many bytes that garbage value claims.
+     * the data length that follows. Reading {@code len} more bytes here instead would over-read
+     * by 4 bytes into the next chunk's own length header, causing the following read to block on
+     * a garbage length value.
      */
     private void readChunkDataInto(ByteArrayOutputStream out, int inclusiveLen) throws IOException {
         int dataLen = inclusiveLen - 4;

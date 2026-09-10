@@ -39,9 +39,9 @@ import java.io.ByteArrayInputStream;
  * <p>Also load-bearing: real hg forces {@code LC_MESSAGES=C} (preserving
  * {@code LC_ALL} for everything else) when shelling out to {@code svn}, because it parses
  * English-language substrings out of {@code svn commit}'s plain-text output (e.g. {@code
- * "Committed revision 5."}) -- without it, a non-English locale (this sandbox's default is
- * Korean) produces a translated message the regex never matches, silently breaking {@link
- * #commit}. {@code --non-interactive} is likewise only passed for {@code update}/{@code
+ * "Committed revision 5."}) -- without it, a non-English locale produces a translated message
+ * the regex never matches, silently breaking {@link #commit}. {@code --non-interactive} is
+ * likewise only passed for {@code update}/{@code
  * checkout}/{@code commit}, exactly mirroring real hg's own {@code _svncommand()}.
  */
 public final class SvnSubrepoUtil {
@@ -52,7 +52,11 @@ public final class SvnSubrepoUtil {
     }
 
     /** Whether {@code dir} is (or contains) a local svn working copy, mirroring real hg's
-     * {@code svnsubrepo._svnmissing()} check (inverted). */
+     * {@code svnsubrepo._svnmissing()} check (inverted).
+     *
+     * @param dir the directory to check for a {@code .svn} subdirectory
+     * @return {@code true} if {@code dir} has a {@code .svn} subdirectory
+     */
     public static boolean isSvnCheckout(File dir) {
         return new File(dir, ".svn").exists();
     }
@@ -65,6 +69,10 @@ public final class SvnSubrepoUtil {
      * <entry revision="...">} attribute) -- these differ whenever the working copy is stale
      * relative to its own last change (e.g. right after a fresh {@code svn commit}, before the
      * follow-up {@code svn update}).
+     *
+     * @param dir the svn working copy to query
+     * @return a two-element array {@code {lastCommittedRev, checkedOutRev}}
+     * @throws IOException if the underlying {@code svn info} invocation fails
      */
     public static String[] wcRevs(File dir) throws IOException {
         String xml = run(dir, "info", "--xml");
@@ -92,8 +100,11 @@ public final class SvnSubrepoUtil {
     /** Outcome of {@code svn status --xml}, mirroring real hg's {@code svnsubrepo._wcchanged()}
      * return tuple {@code (changes, extchanges, missing)}. */
     public static final class WcStatus {
+        /** Whether any tracked entry (or an external containing one) has local changes. */
         public final boolean changed;
+        /** Whether any of the changed entries lies under an svn {@code external}. */
         public final boolean externalChanged;
+        /** Whether any entry was reported as {@code missing} from the working copy. */
         public final boolean missing;
 
         WcStatus(boolean changed, boolean externalChanged, boolean missing) {
@@ -109,6 +120,10 @@ public final class SvnSubrepoUtil {
      * {@code external} (or empty), or whose {@code props} isn't {@code none}/{@code normal} (or
      * empty), counts as a change; a change nested under a path reported as {@code external}
      * additionally sets {@code externalChanged}; any {@code missing} entry sets {@code missing}.
+     *
+     * @param dir the svn working copy to query
+     * @return the parsed working-copy status
+     * @throws IOException if the underlying {@code svn status} invocation fails
      */
     public static WcStatus wcChanged(File dir) throws IOException {
         String xml = run(dir, "status", "--xml");
@@ -161,6 +176,15 @@ public final class SvnSubrepoUtil {
      * set (in which case a clean working copy is never dirty regardless of which revision it
      * happens to be pinned at) or {@code pinnedRev} matches either of {@link #wcRevs}'s two
      * revisions.
+     *
+     * @param dir the svn working copy (or its would-be location, if not yet checked out)
+     * @param pinnedRev the revision recorded in {@code .hgsubstate} for this subrepo, or
+     *     {@code null}/empty if none has been recorded yet
+     * @param ignoreUpdate if {@code true}, a working copy with no local changes is never
+     *     considered dirty regardless of which revision it is pinned at
+     * @return {@code true} if the subrepo has local changes (or an unrecorded pinned revision)
+     *     relative to {@code pinnedRev}
+     * @throws IOException if the underlying {@code svn status}/{@code svn info} invocation fails
      */
     public static boolean isDirty(File dir, String pinnedRev, boolean ignoreUpdate) throws IOException {
         if (!isSvnCheckout(dir)) {
@@ -185,6 +209,11 @@ public final class SvnSubrepoUtil {
      * back to the working copy's own checked-out revision if the source URL doesn't resolve
      * (via {@code svn list}) at that last-committed revision (e.g. the path didn't exist there
      * yet under this URL).
+     *
+     * @param dir the svn working copy
+     * @param url the source URL the subrepo is checked out from
+     * @return the revision to record in {@code .hgsubstate}
+     * @throws IOException if the underlying {@code svn info} invocation fails
      */
     public static String basestate(File dir, String url) throws IOException {
         String[] revs = wcRevs(dir);
@@ -206,6 +235,13 @@ public final class SvnSubrepoUtil {
      * svnsubrepo.get()}. Works identically whether {@code targetDir} is a fresh (non-existent or
      * empty) directory or an already-checked-out working copy at a different revision (verified
      * live: svn switches the existing checkout in place rather than re-fetching everything).
+     *
+     * @param parentDir the directory {@code targetDir} lives under, created if it does not
+     *     already exist
+     * @param url the source URL to check out
+     * @param revision the pinned revision to check out at
+     * @param targetDir the working copy directory to check out into
+     * @throws IOException if the underlying {@code svn checkout} invocation fails
      */
     public static void get(File parentDir, String url, String revision, File targetDir) throws IOException {
         parentDir.mkdirs();
@@ -217,21 +253,38 @@ public final class SvnSubrepoUtil {
      * {@code svn checkout <url> <targetDir>} with no {@code @revision} suffix (defaults to
      * HEAD) -- used when a {@code [svn]} subrepo is declared in {@code .hgsub} but has never yet
      * been recorded in {@code .hgsubstate} (no pinned revision exists yet to check out).
+     *
+     * @param parentDir the directory {@code targetDir} lives under, created if it does not
+     *     already exist
+     * @param url the source URL to check out
+     * @param targetDir the working copy directory to check out into
+     * @throws IOException if the underlying {@code svn checkout} invocation fails
      */
     public static void checkoutHead(File parentDir, String url, File targetDir) throws IOException {
         parentDir.mkdirs();
         run(parentDir, "checkout", "--non-interactive", "--force", url, targetDir.getAbsolutePath());
     }
 
-    /** {@code svn update -r <revision>} -- real hg's post-commit working-copy resync in {@code
-     * svnsubrepo.commit()}. */
+    /**
+     * {@code svn update -r <revision>} -- real hg's post-commit working-copy resync in {@code
+     * svnsubrepo.commit()}.
+     *
+     * @param dir the svn working copy to update
+     * @param revision the revision to update to
+     * @throws IOException if the underlying {@code svn update} invocation fails
+     */
     public static void update(File dir, String revision) throws IOException {
         run(dir, "update", "--non-interactive", "-r", revision);
     }
 
-    /** {@code svn revert --recursive .} -- real hg's {@code svnsubrepo.get(overwrite=True)}
+    /**
+     * {@code svn revert --recursive .} -- real hg's {@code svnsubrepo.get(overwrite=True)}
      * pre-step, exposed for symmetry with {@link GitSubrepoUtil} even though hg4j's own
-     * checkout callers do not currently request the overwrite variant. */
+     * checkout callers do not currently request the overwrite variant.
+     *
+     * @param dir the svn working copy to revert
+     * @throws IOException if the underlying {@code svn revert} invocation fails
+     */
     public static void revert(File dir) throws IOException {
         run(dir, "revert", "--recursive", ".");
     }
@@ -246,6 +299,14 @@ public final class SvnSubrepoUtil {
      * {@code "Committed revision N."} output, {@code svn update}s the working copy to it (real
      * hg does this explicitly -- a plain {@code commit} does not itself advance the local
      * checkout's revision), and returns that new revision.
+     *
+     * @param dir the svn working copy to commit
+     * @param message the commit message; {@code null} is treated as empty
+     * @param url the source URL, used to resolve {@link #basestate} when there is nothing to commit
+     * @return the new revision after committing, or the unchanged {@link #basestate} if there
+     *     were no local changes
+     * @throws IOException if the working copy has externals-only or missing-only changes, or if
+     *     the underlying {@code svn commit}/{@code svn update} invocation fails
      */
     public static String commit(File dir, String message, String url) throws IOException {
         WcStatus wc = wcChanged(dir);
@@ -287,6 +348,10 @@ public final class SvnSubrepoUtil {
      * subrepoutil.submerge()}'s {@code sm[s] = l}). This method exists (mirroring {@link
      * GitSubrepoUtil#mergeDiverged}'s call site symmetry in {@code MergeCommand}) purely to
      * document that fact at the dispatch site -- it intentionally performs no svn operation.
+     *
+     * @param svnDir the svn working copy at the merge dispatch site
+     * @param remoteRev the pinned revision from the remote merge parent
+     * @param localRev the pinned revision from the local merge parent
      */
     public static void mergeDiverged(File svnDir, String remoteRev, String localRev) {
         // Intentionally a no-op -- see the class/method javadoc above.
@@ -315,8 +380,8 @@ public final class SvnSubrepoUtil {
         Map<String, String> env = pb.environment();
         // Real hg's own _svncommand() forces LC_MESSAGES=C (English) while preserving LC_ALL for
         // everything else, because it parses English substrings out of svn's plain-text output
-        // (e.g. "Committed revision N."). Verified live: this sandbox's default locale is
-        // Korean, and without this the regex in commit() never matches.
+        // (e.g. "Committed revision N."). Without this, the regex in commit() would fail to
+        // match under a non-English locale.
         String lcAll = env.get("LC_ALL");
         if (lcAll != null) {
             env.put("LANG", lcAll);

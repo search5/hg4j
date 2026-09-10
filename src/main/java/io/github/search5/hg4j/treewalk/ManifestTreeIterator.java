@@ -27,6 +27,10 @@ public class ManifestTreeIterator implements TreeIterator {
     private final List<Entry> entries = new ArrayList<>();
     private int index = -1;
 
+    /**
+     * One parsed line of a manifest revlog revision: a path, its content node id, and its
+     * executable/symlink/subdirectory flags.
+     */
     public static class Entry {
         final String path;
         final byte[] nodeId;
@@ -37,9 +41,8 @@ public class ManifestTreeIterator implements TreeIterator {
          * not actual file content but a node ID pointing at a revision of that directory's own
          * submanifest revlog at {@code meta/<path>/00manifest.i} (matches real hg's own {@code
          * mercurial/manifest.py} {@code treemanifest.parse()}: the same encoding it uses when
-         * {@code fl == b't'} to register a lazy subtree by appending {@code '/'} to the path --
-         * confirmed directly against Docker Mercurial 6.0; see {@code
-         * src/test/resources/fixtures/treemanifest/README.md} for details). When {@link
+         * {@code fl == b't'} to register a lazy subtree by appending {@code '/'} to the path).
+         * When {@link
          * #loadEntries()} encounters such an entry it recursively expands it, so it never
          * survives into the final {@link #entries} list -- it only ever appears in the result of
          * the pure parsing function {@link #parseManifestContent(byte[])}.
@@ -58,6 +61,12 @@ public class ManifestTreeIterator implements TreeIterator {
             this.treeDir = treeDir;
         }
 
+        /**
+         * Returns whether this entry is a treemanifest subdirectory pointer rather than a file.
+         *
+         * @return {@code true} if this entry's {@link #getNodeId()} points at a subdirectory's own
+         *     submanifest revision rather than file content
+         */
         public boolean isTreeDir() {
             return treeDir;
         }
@@ -66,24 +75,45 @@ public class ManifestTreeIterator implements TreeIterator {
          * bare directory name with no trailing slash when {@link #isTreeDir()}, e.g. treemanifest
          * write support in {@code api.CommitCommand} walks a parent's tree via {@link
          * #parseManifestContent} to recover per-directory node hashes for correct parent1/parent2
-         * linkage on the new revisions it writes). */
+         * linkage on the new revisions it writes).
+         *
+         * @return the entry's path
+         */
         public String getPath() {
             return path;
         }
 
         /** This entry's node hash — a file content revision, or (when {@link #isTreeDir()}) the
-         * node of that subdirectory's own {@code meta/<dir>/00manifest.i} revision. */
+         * node of that subdirectory's own {@code meta/<dir>/00manifest.i} revision.
+         *
+         * @return the entry's node id
+         */
         public byte[] getNodeId() {
             return nodeId;
         }
     }
 
+    /**
+     * Creates a new iterator over the manifest for the given changelog revision.
+     *
+     * @param repository the repository to read the manifest from
+     * @param revision the revision to list, in any of the forms {@link
+     *     io.github.search5.hg4j.util.NodeIdUtil#resolveRevision} accepts (revision number, hex
+     *     node id/prefix, or {@code "tip"})
+     */
     public ManifestTreeIterator(HgRepository repository, String revision) {
         this.repository = repository;
         this.revision = revision;
         this.directManifestNode = null;
     }
 
+    /**
+     * Creates a new iterator over a specific manifest revision, bypassing changelog revision
+     * resolution.
+     *
+     * @param repository the repository to read the manifest from
+     * @param manifestNode the manifest revlog node id to list directly
+     */
     public ManifestTreeIterator(HgRepository repository, byte[] manifestNode) {
         this.repository = repository;
         this.revision = null;
@@ -97,6 +127,15 @@ public class ManifestTreeIterator implements TreeIterator {
         loadEntries();
     }
 
+    /**
+     * Parses one directory level's raw manifest revlog text into its entries, without recursing
+     * into any treemanifest subdirectory pointers it may contain (see {@link Entry#isTreeDir()}).
+     * Each line has the format {@code path\0nodehex[flag]}, where {@code flag} is empty, {@code x}
+     * (executable), {@code l} (symlink), or {@code t} (treemanifest subdirectory).
+     *
+     * @param mfContent the raw (decompressed) manifest revlog revision text
+     * @return the parsed entries, in the order they appear in {@code mfContent}
+     */
     public static List<Entry> parseManifestContent(byte[] mfContent) {
         List<Entry> result = new ArrayList<>();
         int start = 0;
@@ -316,6 +355,12 @@ public class ManifestTreeIterator implements TreeIterator {
         return false;
     }
 
+    /**
+     * Returns whether the current entry is a symlink.
+     *
+     * @return {@code true} if the current entry is a symlink, {@code false} if it is a regular
+     *     file or the iterator has no current entry
+     */
     public boolean isSymlink() {
         if (index >= 0 && index < entries.size()) {
             return entries.get(index).symlink;

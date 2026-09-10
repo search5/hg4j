@@ -18,8 +18,16 @@ import io.github.search5.hg4j.treewalk.PathFilter;
  */
 public abstract class HgTreeFilter implements PathFilter {
 
+    /** Creates a filter instance. */
+    protected HgTreeFilter() {
+    }
+
     /**
      * Creates a bridge filter that wraps a generic PathFilter.
+     *
+     * @param pathFilter filter to adapt; {@code null} yields {@link #ALL}
+     * @return {@code pathFilter} itself if already an {@code HgTreeFilter}, {@link #ALL} if
+     *         {@code null}, otherwise a new filter delegating to {@code pathFilter}
      */
     public static HgTreeFilter fromPathFilter(final PathFilter pathFilter) {
         if (pathFilter == null) {
@@ -57,6 +65,12 @@ public abstract class HgTreeFilter implements PathFilter {
     /**
      * Creates a filter that matches only paths matching specific prefix rules.
      * Useful for sparse checkout or narrow clone scenarios.
+     *
+     * @param includePrefixes path prefixes to accept; a {@code null} or empty collection accepts
+     *                        every path not excluded
+     * @param excludePrefixes path prefixes to reject, checked before includes; {@code null} means none
+     * @return a filter rejecting any path starting with an exclude prefix, then accepting any
+     *         path starting with an include prefix (or every remaining path if no includes are given)
      */
     public static HgTreeFilter createPathPrefixFilter(Collection<String> includePrefixes, Collection<String> excludePrefixes) {
         final Set<String> includes = includePrefixes != null ? new HashSet<>(includePrefixes) : Set.of();
@@ -98,7 +112,9 @@ public abstract class HgTreeFilter implements PathFilter {
      * path with any trailing {@code "/"} stripped.
      */
     public static final class NarrowPattern {
+        /** Pattern kind, either {@code "path"} or {@code "rootfilesin"}. */
         public final String kind;
+        /** POSIX-style path the pattern applies to, with any trailing {@code "/"} stripped. */
         public final String path;
 
         private NarrowPattern(String kind, String path) {
@@ -106,7 +122,11 @@ public abstract class HgTreeFilter implements PathFilter {
             this.path = path;
         }
 
-        /** Renders back to the {@code "kind:path"} textual form stored in narrowspec files. */
+        /**
+         * Renders back to the {@code "kind:path"} textual form stored in narrowspec files.
+         *
+         * @return the {@code "kind:path"} textual form of this pattern
+         */
         public String toSpecString() {
             return kind + ":" + path;
         }
@@ -125,6 +145,8 @@ public abstract class HgTreeFilter implements PathFilter {
      * such as {@code glob:}/{@code re:}, embedded {@code "."}/{@code ".."} components, empty
      * path components, or leading/trailing whitespace).
      *
+     * @param pattern the raw, user-supplied narrow pattern to normalize
+     * @return the normalized {@code kind}/{@code path} pair
      * @throws IllegalArgumentException if the pattern is not a legal narrowspec pattern
      */
     public static NarrowPattern normalizeNarrowPattern(String pattern) {
@@ -201,8 +223,8 @@ public abstract class HgTreeFilter implements PathFilter {
 
     /**
      * Builds a matcher that reproduces real hg's {@code mercurial/narrowspec.py} matching
-     * semantics exactly (verified against hg 7.2's {@code narrow} extension), rather than the
-     * simplified/generic prefix semantics of {@link #createPathPrefixFilter}:
+     * semantics exactly, rather than the simplified/generic prefix semantics of
+     * {@link #createPathPrefixFilter}:
      * <ul>
      *   <li>Patterns must already be normalized (see {@link #normalizeNarrowPattern}) -- only the
      *       {@code path:} and {@code rootfilesin:} kinds are honored.</li>
@@ -218,6 +240,12 @@ public abstract class HgTreeFilter implements PathFilter {
      *       (This differs deliberately from {@link #createPathPrefixFilter}'s generic
      *       "no includes means accept everything" default, which exists for non-narrow callers.)</li>
      * </ul>
+     *
+     * @param includes normalized {@code path:}/{@code rootfilesin:} patterns to include;
+     *                 {@code null} means none
+     * @param excludes normalized {@code path:}/{@code rootfilesin:} patterns to exclude, checked
+     *                 before includes; {@code null} means none
+     * @return a filter reproducing real hg's narrowspec matching semantics for the given patterns
      */
     public static HgTreeFilter createNarrowSpecFilter(Collection<NarrowPattern> includes, Collection<NarrowPattern> excludes) {
         final List<NarrowPattern> inc = includes != null ? new ArrayList<>(includes) : List.of();
@@ -245,12 +273,20 @@ public abstract class HgTreeFilter implements PathFilter {
             this.excludes = excludes;
         }
 
-        /** The narrowspec's include patterns, exactly as normalized at narrow-clone time. */
+        /**
+         * Returns the narrowspec's include patterns, exactly as normalized at narrow-clone time.
+         *
+         * @return the include patterns
+         */
         public List<NarrowPattern> getIncludes() {
             return includes;
         }
 
-        /** The narrowspec's exclude patterns, exactly as normalized at narrow-clone time. */
+        /**
+         * Returns the narrowspec's exclude patterns, exactly as normalized at narrow-clone time.
+         *
+         * @return the exclude patterns
+         */
         public List<NarrowPattern> getExcludes() {
             return excludes;
         }
@@ -304,6 +340,11 @@ public abstract class HgTreeFilter implements PathFilter {
      * {@code exp-narrow-1} capability), so that a subsequent {@code pull} -- not just the initial
      * {@code NarrowCloneCommand} clone -- also gets a genuinely filelog-filtered changegroup from
      * the server instead of a full one filtered locally after the fact.
+     *
+     * @param repository repository whose {@code .hg/store/narrowspec} is read
+     * @return the reconstructed narrowspec filter, or {@link #ALL} if the repository has no
+     *         stored narrowspec
+     * @throws IOException if the narrowspec file exists but cannot be read
      */
     public static HgTreeFilter loadFromRepository(HgRepository repository) throws IOException {
         File narrowSpecFile = new File(repository.getStoreDir(), "narrowspec");

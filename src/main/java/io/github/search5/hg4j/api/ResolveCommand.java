@@ -27,6 +27,12 @@ public final class ResolveCommand {
     private boolean markUnresolved = false;
     private boolean list = false;
 
+    /**
+     * Creates an instance bound to the given repository.
+     *
+     * @param repository repository whose merge conflict state will be inspected or updated
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public ResolveCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -34,21 +40,46 @@ public final class ResolveCommand {
         this.repository = repository;
     }
 
+    /**
+     * Restricts a resolution update to a single file.
+     *
+     * @param path path of the file to mark, relative to the repository root
+     * @return this command, for chaining
+     */
     public ResolveCommand setFile(String path) {
         this.fileToMark = path;
         return this;
     }
 
+    /**
+     * Requests marking the file set via {@link #setFile(String)} as resolved.
+     *
+     * @param resolved whether to mark the file resolved
+     * @return this command, for chaining
+     */
     public ResolveCommand markResolved(boolean resolved) {
         this.markResolved = resolved;
         return this;
     }
 
+    /**
+     * Requests marking the file set via {@link #setFile(String)} as unresolved.
+     *
+     * @param unresolved whether to mark the file unresolved
+     * @return this command, for chaining
+     */
     public ResolveCommand markUnresolved(boolean unresolved) {
         this.markUnresolved = unresolved;
         return this;
     }
 
+    /**
+     * Requests that {@link #call()} return the full resolution status of every file in the
+     * current merge, even after an update to a single file.
+     *
+     * @param list whether to return the full list instead of just the updated file
+     * @return this command, for chaining
+     */
     public ResolveCommand list(boolean list) {
         this.list = list;
         return this;

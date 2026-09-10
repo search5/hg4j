@@ -53,6 +53,12 @@ public class HgLocalClient implements HgRemoteConnection {
     private final File repoDir;
     private final HgRepository remoteRepo;
 
+    /**
+     * Opens the local repository at the given path.
+     *
+     * @param path a {@code file://} URL or bare filesystem path to the remote repository's directory
+     * @throws IOException if the repository at that location cannot be opened
+     */
     public HgLocalClient(String path) throws IOException {
         String cleanPath = path.startsWith("file://") ? path.substring(7) : path;
         this.repoDir = new File(cleanPath);
@@ -64,6 +70,8 @@ public class HgLocalClient implements HgRemoteConnection {
      * wire protocol dispatch ({@code transport.wireprotov1.Wire1Commands}), which already has a
      * live {@link HgRepository} for the request and reuses this class's bundle-building logic
      * (getbundle/changegroup/listkeys/pushkey) rather than duplicating it.
+     *
+     * @param repository already-open repository to serve as the remote endpoint
      */
     public HgLocalClient(HgRepository repository) {
         this.repoDir = repository.getDirectory();
@@ -276,7 +284,7 @@ public class HgLocalClient implements HgRemoteConnection {
         // zero times and finish, correctly producing an empty bundle.)
 
         // Negotiates the changegroup version the client actually requested from
-        // bundleCaps (real spec, confirmed against mercurial/exchange.py): if the client sent no
+        // bundleCaps (real spec, matches mercurial/exchange.py): if the client sent no
         // token starting with "HG2" at all (bundle2 not requested -- e.g. bundleCaps==null, or a
         // pure legacy call like changegroupsubset), the version is unconditionally "01" and the
         // response goes out as the bare cg1 chunk with no HG20 envelope. If bundle2 was
@@ -315,7 +323,7 @@ public class HgLocalClient implements HgRemoteConnection {
 
         // 1a. Pack Changelogs
         // cg1 encodes each entry's delta against "whichever entry was packed immediately before
-        // it in this group stream", not its "actual DAG parent (p1)" (confirmed against
+        // it in this group stream", not its "actual DAG parent (p1)" (matches
         // mercurial/changegroup.py's ChangeGroupPacker01, forcedeltaparentprev=True).
         // Building the delta against p1 in a multi-head repository disagrees with
         // both real hg's and hg4j's own unbundle logic, corrupting the content.
@@ -474,7 +482,7 @@ public class HgLocalClient implements HgRemoteConnection {
         byte[] cgBytes = cgOut.toByteArray();
 
         if (usebundle2) {
-            // Real hg spec (confirmed against exchange.getbundlechunks()'s usebundle2 branch in
+            // Real hg spec (matches exchange.getbundlechunks()'s usebundle2 branch in
             // mercurial/exchange.py): if the client requested bundle2, the response is always
             // wrapped in an HG20 envelope, even if the version ends up being "01".
             return Bundle2Parser.wrapChangegroupInBundle2(cgBytes, version);
@@ -501,9 +509,17 @@ public class HgLocalClient implements HgRemoteConnection {
     /** Result of {@link #pushWithHooks}, reported back so wireprotocol server glue can tell an
      * empty/rejected push apart from a genuine import when firing hooks or building the pushres line. */
     public static class PushResult {
+        /** Wire-protocol push status line (e.g. {@code "no changes found"} or an ok/pushres value). */
         public final String status;
+        /** Hex node ids of the changesets actually imported by the push; empty if none were. */
         public final List<String> importedNodeHexes;
 
+        /**
+         * Creates a result pairing the wire-protocol status with the imported node ids.
+         *
+         * @param status wire-protocol push status line
+         * @param importedNodeHexes hex node ids of the changesets actually imported
+         */
         public PushResult(String status, List<String> importedNodeHexes) {
             this.status = status;
             this.importedNodeHexes = importedNodeHexes;
@@ -517,6 +533,17 @@ public class HgLocalClient implements HgRemoteConnection {
      * changegroup} (notification-only, sees the actually-imported node hexes) hooks. A pre-hook
      * returning {@code false} aborts before {@link io.github.search5.hg4j.api.PullCommand#applyBundle}
      * runs, so nothing lands.
+     *
+     * @param bundleBytes the raw pushed bundle (bundle1 changegroup, or an HG20/bundle2 envelope)
+     * @param heads the pushing client's expected remote heads, used for the {@code check:heads}
+     *              concurrent-push race check when the bundle itself carries no bundle2 {@code
+     *              check:heads} part
+     * @param preHooks hooks run, in order, before the changegroup is applied; any hook returning
+     *                 {@code false} aborts the push with nothing written
+     * @param postHooks hooks run, in order, after the changegroup has been applied
+     * @return the push status together with the hex node ids of any changesets actually imported
+     * @throws IOException if the bundle cannot be decoded or applying it fails
+     * @throws HgLockException if the store/working-copy locks cannot be acquired
      */
     public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,
                                      List<HgHook> preHooks,

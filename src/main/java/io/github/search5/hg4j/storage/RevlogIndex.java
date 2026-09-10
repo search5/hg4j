@@ -79,11 +79,21 @@ public class RevlogIndex {
     private NodeMapFile persistentNodeMap;
     private boolean nodeMapDeferred = false;
 
+    /**
+     * Opens (or, if it does not exist, initializes an empty v1) revlog index at the given file,
+     * with no persistent node-map acceleration.
+     *
+     * @param idxFile revlog index ({@code .i}) file
+     * @throws IOException if the index file exists but cannot be read, or is corrupt
+     */
     public RevlogIndex(File idxFile) throws IOException {
         this(idxFile, false, null);
     }
 
     /**
+     * Opens (or bootstraps) a revlog index, optionally as a brand-new general revlog-v2 docket.
+     *
+     * @param idxFile revlog index ({@code .i}) file
      * @param createAsGeneralV2 if {@code idxFile} does not exist yet AND this is {@code true},
      *     initializes a brand-new empty general revlog-v2 ({@code exp-revlogv2.2}, magic
      *     {@code REVLOGV2}/0xDEAD) docket instead of leaving this index in its default empty-v1
@@ -92,20 +102,47 @@ public class RevlogIndex {
      *     {@code exp-revlogv2.2} still needs every *brand-new* revlog (e.g. the filelog for a
      *     file that has never been committed before) to start out as v2 too, not silently fall
      *     back to v1 just because there was nothing on disk yet to detect the format from.
+     * @throws IOException if the index file exists but cannot be read, or is corrupt
      */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2) throws IOException {
         this(idxFile, createAsGeneralV2, null);
     }
 
+    /**
+     * Opens (or, if it does not exist, initializes an empty v1) revlog index at the given file,
+     * accelerated by a persistent node-map trie.
+     *
+     * @param idxFile revlog index ({@code .i}) file
+     * @param persistentNodeMap persistent node-map (see {@link NodeMapFile}) used to accelerate
+     *     {@link #findRevision}, or {@code null} to always fall back to the in-memory scan
+     * @throws IOException if the index file exists but cannot be read, or is corrupt
+     */
     public RevlogIndex(File idxFile, NodeMapFile persistentNodeMap) throws IOException {
         this(idxFile, false, persistentNodeMap);
     }
 
+    /**
+     * Opens (or bootstraps) a revlog index, optionally as a brand-new general revlog-v2 docket,
+     * accelerated by a persistent node-map trie.
+     *
+     * @param idxFile revlog index ({@code .i}) file
+     * @param createAsGeneralV2 whether to bootstrap a brand-new general revlog-v2 docket if
+     *     {@code idxFile} does not exist yet (see {@link #RevlogIndex(File, boolean)})
+     * @param persistentNodeMap persistent node-map used to accelerate {@link #findRevision}, or
+     *     {@code null} to always fall back to the in-memory scan
+     * @throws IOException if the index file exists but cannot be read, or is corrupt
+     */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2, NodeMapFile persistentNodeMap) throws IOException {
         this(idxFile, createAsGeneralV2, false, persistentNodeMap);
     }
 
     /**
+     * Opens (or bootstraps) a revlog index, optionally as a brand-new general- or
+     * changelog-flavored revlog-v2 docket, accelerated by a persistent node-map trie.
+     *
+     * @param idxFile revlog index ({@code .i}) file
+     * @param createAsGeneralV2 whether to bootstrap a brand-new general revlog-v2 docket if
+     *     {@code idxFile} does not exist yet (see {@link #RevlogIndex(File, boolean)})
      * @param createAsChangelogV2 when {@code true} and {@code idxFile} does not exist yet,
      *     bootstrap a brand-new {@code exp-changelog-v2} docket (CHANGELOGV2 magic, {@code
      *     isChangelogV2()} true) instead of a general {@code exp-revlogv2.2} one -- ignored if
@@ -113,12 +150,25 @@ public class RevlogIndex {
      *     precedence since it is the more specific format). Used by {@code
      *     DefaultFileStoreEngine} to originate {@code 00changelog.i} for a repository whose
      *     requires declare {@code exp-changelog-v2} but has never been committed to yet.
+     * @param persistentNodeMap persistent node-map used to accelerate {@link #findRevision}, or
+     *     {@code null} to always fall back to the in-memory scan
+     * @throws IOException if the index file exists but cannot be read, or is corrupt
      */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2, boolean createAsChangelogV2, NodeMapFile persistentNodeMap) throws IOException {
         this(idxFile, createAsGeneralV2, createAsChangelogV2, persistentNodeMap, true);
     }
 
     /**
+     * Opens (or bootstraps) a revlog index, with full control over the new-docket compression
+     * codec declaration.
+     *
+     * @param idxFile revlog index ({@code .i}) file
+     * @param createAsGeneralV2 whether to bootstrap a brand-new general revlog-v2 docket if
+     *     {@code idxFile} does not exist yet (see {@link #RevlogIndex(File, boolean)})
+     * @param createAsChangelogV2 whether to bootstrap a brand-new changelog-v2 docket instead of
+     *     a general one (see {@link #RevlogIndex(File, boolean, boolean, NodeMapFile)})
+     * @param persistentNodeMap persistent node-map used to accelerate {@link #findRevision}, or
+     *     {@code null} to always fall back to the in-memory scan
      * @param useZstd which codec a brand-new v2 docket's {@code default_compression_header} byte
      *     should declare ({@code '('} for zstd, {@code 'x'} for zlib) -- only meaningful when this
      *     constructor actually bootstraps a new docket ({@code createAsGeneralV2}/{@code
@@ -128,6 +178,7 @@ public class RevlogIndex {
      *     not from the per-record compression-mode bits or from requires directly -- a mismatch
      *     between what {@link Revlog#appendRevisionV2} actually writes and what this field
      *     declares makes every COMP_MODE_DEFAULT revision unreadable by real hg.
+     * @throws IOException if the index file exists but cannot be read, or is corrupt
      */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2, boolean createAsChangelogV2, NodeMapFile persistentNodeMap, boolean useZstd) throws IOException {
         this.idxFile = idxFile;
@@ -238,45 +289,93 @@ public class RevlogIndex {
         return sb.toString();
     }
 
+    /**
+     * Returns whether this revlog is stored in the revlog-v2 docket format (general or
+     * changelog-flavored).
+     *
+     * @return {@code true} if this is a v2 revlog, {@code false} for v1
+     */
     public boolean isV2() {
         return isV2;
     }
 
+    /**
+     * Returns whether this revlog is the changelog-v2-flavored docket format.
+     *
+     * @return {@code true} if this is a changelog-v2 revlog
+     */
     public boolean isChangelogV2() {
         return isChangelogV2;
     }
 
+    /**
+     * Returns the raw version header word read from (or written to) this revlog's index.
+     *
+     * @return the version header value
+     */
     public int getVersionHeader() {
         return versionHeader;
     }
 
+    /**
+     * Returns the docket's recorded end-of-index-file byte offset.
+     *
+     * @return docket index-end offset, meaningful only for a v2 revlog
+     */
     public long getDocketIndexEnd() {
         return docketIndexEnd;
     }
 
+    /**
+     * Returns the docket's recorded end-of-data-file byte offset.
+     *
+     * @return docket data-end offset, meaningful only for a v2 revlog
+     */
     public long getDocketDataEnd() {
         return docketDataEnd;
     }
 
+    /**
+     * Returns the docket's recorded end-of-sidedata-file byte offset.
+     *
+     * @return docket sidedata-end offset, meaningful only for a v2 revlog
+     */
     public long getDocketSidedataEnd() {
         return docketSidedataEnd;
     }
 
+    /**
+     * Returns the docket's default compression codec header byte.
+     *
+     * @return {@code '('} for zstd, {@code 'x'} for zlib, meaningful only for a v2 revlog
+     */
     public byte getDocketCompression() {
         return docketDefaultCompression;
     }
 
-    /** The actual index (.idx) file the v2 docket points to, or {@code null} for v1. */
+    /**
+     * The actual index (.idx) file the v2 docket points to, or {@code null} for v1.
+     *
+     * @return the resolved index file, or {@code null} for a v1 revlog
+     */
     public File getResolvedIndexFile() {
         return resolvedIndexFile;
     }
 
-    /** The actual data (.dat) file the v2 docket points to, or {@code null} for v1. */
+    /**
+     * The actual data (.dat) file the v2 docket points to, or {@code null} for v1.
+     *
+     * @return the resolved data file, or {@code null} for a v1 revlog
+     */
     public File getResolvedDataFile() {
         return resolvedDataFile;
     }
 
-    /** The actual sidedata (.sda) file the v2 docket points to, or {@code null} for v1. */
+    /**
+     * The actual sidedata (.sda) file the v2 docket points to, or {@code null} for v1.
+     *
+     * @return the resolved sidedata file, or {@code null} for a v1 revlog
+     */
     public File getResolvedSidedataFile() {
         return resolvedSidedataFile;
     }
@@ -430,7 +529,7 @@ public class RevlogIndex {
                     this.isChangelogV2 = (rlVersion == MAGIC_CHANGELOGV2);
                     this.versionHeader = header;
 
-                    // S_HEADER = >I BBBBBB QQQQQQ c (59 bytes; offsets confirmed against
+                    // S_HEADER = >I BBBBBB QQQQQQ c (59 bytes; offsets match
                     // mercurial/revlogutils/docket.py)
                     ByteBuffer headerBuf = ByteBuffer.allocate(V2_HEADER_SIZE);
                     channel.position(0);
@@ -694,6 +793,8 @@ public class RevlogIndex {
 
     /**
      * Invalidates the cache to synchronize the in-memory cache state with physical disk changes (e.g., Rebase/GC).
+     *
+     * @throws IOException if the index file exists but reloading it fails
      */
     public synchronized void clearCache() throws IOException {
         nodeMap.clear();
@@ -707,11 +808,26 @@ public class RevlogIndex {
         }
     }
 
+    /**
+     * Returns the number of revisions in this revlog, refreshing first if the underlying file has
+     * grown since it was last read.
+     *
+     * @return the current revision count
+     */
     public synchronized int getRevisionCount() {
         checkAndUpdate();
         return revisionCount;
     }
 
+    /**
+     * Returns the index record for a given revision, loading it lazily from disk (via the cached
+     * {@link #fileOffsets} entry) if not already cached in memory.
+     *
+     * @param rev revision number
+     * @return the revision's index record
+     * @throws IndexOutOfBoundsException if {@code rev} is negative or beyond the current
+     *     revision count
+     */
     public synchronized Revlog.IndexRecord getIndexRecord(int rev) {
         checkAndUpdate();
         int maxCount = getRevisionCount();
@@ -773,9 +889,8 @@ public class RevlogIndex {
     }
 
     /**
-     * Decodes an INDEX_ENTRY_V2 / INDEX_ENTRY_CL_V2 (96-byte) record. Verified against a
-     * changelog-v2 fixture produced by a real hg CLI (see RevlogV2ParserTest). changelog-v2 does
-     * not separately store baseRev/linkRev -- since each revision is confirmed to be stored as
+     * Decodes an INDEX_ENTRY_V2 / INDEX_ENTRY_CL_V2 (96-byte) record. changelog-v2 does
+     * not separately store baseRev/linkRev -- since each revision is stored as
      * an independent zstd frame with no delta chain (i.e. a complete fulltext), setting
      * baseRev=rev makes {@link Revlog#getRawRevisionContent}'s delta chain walk terminate
      * immediately and behave correctly. linkRev is likewise set equal to rev, since it also
@@ -830,6 +945,14 @@ public class RevlogIndex {
                 sidedataOffset, sidedataCompLen, sidedataCompressionMode, rank);
     }
 
+    /**
+     * Returns the physical byte offset of a revision's record within its backing file.
+     *
+     * @param rev revision number
+     * @return the physical file offset of {@code rev}'s record
+     * @throws IndexOutOfBoundsException if {@code rev} is negative or beyond the current
+     *     revision count
+     */
     public synchronized long getFileOffset(int rev) {
         checkAndUpdate();
         int maxCount = getRevisionCount();
@@ -847,11 +970,23 @@ public class RevlogIndex {
      * doing so silently discards the same "this instance already knows its own local write
      * history" trust that {@code checkAndUpdate()}'s {@code addedRecords.isEmpty()} guard exists
      * to protect.
+     *
+     * @return {@code true} if any revision has been added via {@link #addRecord} but not yet
+     *     absorbed by a reload
      */
     public synchronized boolean hasLocallyAddedRecords() {
         return !addedRecords.isEmpty();
     }
 
+    /**
+     * Finds the revision number for a given node ID, preferring the persistent node-map trie
+     * (verified against the candidate's actual stored node) when available and not yet
+     * materialized, and otherwise scanning the in-memory node map.
+     *
+     * @param nodeId node ID to look up (only its first 20 bytes are compared)
+     * @return the matching revision number, or {@code -1} if not found or {@code nodeId} is
+     *     {@code null}
+     */
     public synchronized int findRevision(byte[] nodeId) {
         checkAndUpdate();
         if (nodeId == null) return -1;
@@ -881,6 +1016,12 @@ public class RevlogIndex {
         return -1;
     }
 
+    /**
+     * Returns whether this revlog's data is stored inline within the index file itself, rather
+     * than in a separate {@code .d} data file.
+     *
+     * @return {@code true} if the revlog is inline
+     */
     public boolean isInline() {
         return inline;
     }
@@ -890,12 +1031,18 @@ public class RevlogIndex {
      * materialized its in-memory {@code nodeMap}/{@code hexNodeMap} (i.e. only
      * {@link #findRevision} has been used so far, answered straight from the {@code .n} trie).
      * Exposed for tests; not meaningful application state.
+     *
+     * @return {@code true} if the in-memory node maps have not yet been materialized
      */
     public synchronized boolean isNodeMapDeferred() {
         return nodeMapDeferred;
     }
 
-    /** The attached persistent nodemap trie reader, or {@code null} if none was provided/usable. */
+    /**
+     * The attached persistent nodemap trie reader, or {@code null} if none was provided/usable.
+     *
+     * @return the current persistent node-map, or {@code null}
+     */
     public NodeMapFile getPersistentNodeMap() {
         return persistentNodeMap;
     }
@@ -905,11 +1052,20 @@ public class RevlogIndex {
      * NodeMapFile#persist} has written a fresh/updated {@code .n}+{@code .nd} pair to disk for
      * this revlog, so subsequent {@link #findRevision} calls within this same process benefit
      * from the just-written trie instead of the (now stale) one loaded at construction time.
+     *
+     * @param persistentNodeMap the new persistent node-map to use, or {@code null} to disable
+     *     trie-accelerated lookups
      */
     public synchronized void setPersistentNodeMap(NodeMapFile persistentNodeMap) {
         this.persistentNodeMap = persistentNodeMap;
     }
 
+    /**
+     * Registers a newly-appended in-memory revision record before it has been absorbed by a
+     * reload from disk (see {@link #checkAndUpdate()}).
+     *
+     * @param record the new revision's index record
+     */
     public synchronized void addRecord(Revlog.IndexRecord record) {
         checkAndUpdate();
         int rev = record.getRevision();
@@ -999,6 +1155,10 @@ public class RevlogIndex {
     /**
      * Resolves a prefix hex string to a collection of matching 20-byte node IDs.
      * Extremely fast using an in-memory TreeMap lookup (O(log N)).
+     *
+     * @param prefix hex node ID prefix to resolve, case-insensitive; {@code null} or empty
+     *     returns no matches
+     * @return every 20-byte node ID whose hex form starts with {@code prefix}
      */
     public synchronized List<byte[]> findByHexPrefix(String prefix) {
         checkAndUpdate();

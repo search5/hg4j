@@ -46,6 +46,11 @@ public class IdentifyCommand {
     private final HgRepository repository;
     private String revision;
 
+    /**
+     * Creates an identify command bound to the given repository.
+     *
+     * @param repository the repository to identify
+     */
     public IdentifyCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -54,6 +59,10 @@ public class IdentifyCommand {
      * Real hg's {@code hg identify -r REV}: identify a fixed revision (hex prefix, decimal
      * revision number, or {@code "tip"}) instead of the working directory's own parent(s). No
      * dirty marker is ever appended for a fixed revision.
+     *
+     * @param revision the revision to identify (hex prefix, decimal revision number, or
+     *                 {@code "tip"}), or {@code null} to identify the working directory's own parent(s)
+     * @return this command, for chaining
      */
     public IdentifyCommand setRevision(String revision) {
         this.revision = revision;
@@ -61,6 +70,8 @@ public class IdentifyCommand {
     }
 
     /**
+     * Resolves the identity summary line.
+     *
      * @return SCM identity summary string, matching real hg's default {@code hg identify} output
      *         (see class javadoc for the exact format rules).
      * @throws IOException if dirstate or changelog parsing fails

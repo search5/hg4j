@@ -36,6 +36,12 @@ public class HgRevisionNotFoundException extends IOException {
         super("Revision not found for revision number: " + revNumber);
     }
 
+    /**
+     * Creates an instance with a custom message and an underlying cause.
+     *
+     * @param message detail message describing the lookup failure
+     * @param cause the underlying exception that caused the revision lookup to fail
+     */
     public HgRevisionNotFoundException(String message, Throwable cause) {
         super(message, cause);
     }

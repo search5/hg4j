@@ -25,7 +25,7 @@ import io.github.search5.hg4j.util.SafeFileIO;
 import java.util.Arrays;
 
 /**
- * Server-side implementations of real hg's wireprotocol v2 commands, verified against
+ * Server-side implementations of real hg's wireprotocol v2 commands, matching
  * {@code mercurial/wireprotov2server.py} in Mercurial 6.0 (the last release with a working v2
  * server — the protocol was removed entirely starting with 6.1). Each method returns the list
  * of response objects a real handler would {@code yield}; {@link Wire2Transport#buildCommandResponseFrames}
@@ -54,11 +54,17 @@ public final class Wire2Commands {
     private Wire2Commands() {
     }
 
+    /** API namespace token this server advertises for wire protocol v2 discovery. */
     public static final String NAMESPACE = "exp-http-v2-0003";
 
     // ==================== capabilities descriptor ====================
 
-    /** Shape matches real hg's {@code httpv2apidescriptor}/{@code _capabilitiesv2}. */
+    /**
+     * Shape matches real hg's {@code httpv2apidescriptor}/{@code _capabilitiesv2}.
+     *
+     * @return the CBOR-serializable descriptor listing every supported command, its arguments,
+     *         and required permissions, plus the supported framing media types
+     */
     public static Map<String, Object> namespaceDescriptor() {
         Map<String, Object> commands = new LinkedHashMap<>();
         commands.put("capabilities", commandInfo(Map.of(), List.of("pull")));
@@ -108,10 +114,22 @@ public final class Wire2Commands {
 
     // ==================== simple commands ====================
 
+    /**
+     * Implements the {@code capabilities} wire command.
+     *
+     * @return a single-element response list wrapping {@link #namespaceDescriptor()}
+     */
     public static List<Object> capabilities() {
         return List.of(namespaceDescriptor());
     }
 
+    /**
+     * Implements the {@code heads} wire command: lists changelog revisions with no children.
+     *
+     * @param repo repository to read the changelog from
+     * @return a single-element response list wrapping the head node ids
+     * @throws IOException if the changelog cannot be read
+     */
     public static List<Object> heads(HgRepository repo) throws IOException {
         Revlog changelog = changelog(repo);
         int count = changelog.getRevisionCount();
@@ -133,6 +151,16 @@ public final class Wire2Commands {
         return List.of(heads);
     }
 
+    /**
+     * Implements the {@code known} wire command: reports which of the given nodes are present in
+     * the local changelog.
+     *
+     * @param repo repository whose changelog is checked
+     * @param args CBOR command arguments; {@code "nodes"} is the list of node ids to check
+     * @return a single-element response list wrapping an ASCII {@code '0'}/{@code '1'} bitmap,
+     *         one character per input node, in order
+     * @throws IOException if the changelog cannot be read
+     */
     public static List<Object> known(HgRepository repo, Map<String, Object> args) throws IOException {
         Revlog changelog = changelog(repo);
         List<Object> nodes = Cbor.asList(args.get("nodes"));
@@ -145,6 +173,16 @@ public final class Wire2Commands {
         return List.of(sb.toString().getBytes(StandardCharsets.US_ASCII));
     }
 
+    /**
+     * Implements the {@code listkeys} wire command.
+     *
+     * @param repo repository the namespace is read from
+     * @param args CBOR command arguments; {@code "namespace"} names the key namespace
+     *             (e.g. {@code "bookmarks"} or {@code "phases"})
+     * @return a single-element response list wrapping the namespace's key/value map, as returned
+     *         by {@link #readListKeys}
+     * @throws IOException if the underlying namespace storage cannot be read
+     */
     public static List<Object> listkeys(HgRepository repo, Map<String, Object> args) throws IOException {
         String namespace = Cbor.asString(args.get("namespace"));
         Map<String, String> keys = readListKeys(repo, namespace);
@@ -152,6 +190,15 @@ public final class Wire2Commands {
         return List.of(result);
     }
 
+    /**
+     * Implements the {@code lookup} wire command: resolves a revision identifier to a node id.
+     *
+     * @param repo repository whose changelog the key is resolved against
+     * @param args CBOR command arguments; {@code "key"} is the revision identifier to resolve
+     * @return a single-element response list wrapping the resolved 20-byte node id
+     * @throws IOException if the changelog cannot be read
+     * @throws HgProtocolException if {@code key} does not resolve to a known revision
+     */
     public static List<Object> lookup(HgRepository repo, Map<String, Object> args) throws IOException {
         String key = Cbor.asString(args.get("key"));
         Revlog changelog = changelog(repo);
@@ -162,6 +209,17 @@ public final class Wire2Commands {
         return List.of(Arrays.copyOf(node, 20));
     }
 
+    /**
+     * Implements the {@code pushkey} wire command: conditionally updates one key/value pair in a
+     * push-key namespace.
+     *
+     * @param repo repository the key is updated in
+     * @param args CBOR command arguments: {@code "namespace"}, {@code "key"}, the expected
+     *             {@code "old"} value, and the {@code "new"} value to set
+     * @return a single-element response list wrapping whether the update was applied, as
+     *         returned by {@link #applyPushkey}
+     * @throws IOException if the underlying namespace storage cannot be read or written
+     */
     public static List<Object> pushkey(HgRepository repo, Map<String, Object> args) throws IOException {
         String namespace = Cbor.asString(args.get("namespace"));
         String key = Cbor.asString(args.get("key"));
@@ -171,6 +229,16 @@ public final class Wire2Commands {
         return List.of(ok);
     }
 
+    /**
+     * Implements the {@code branchmap} wire command: maps each named branch to its head nodes.
+     * Since this codebase's simplified branch model tracks only the working copy's current
+     * branch name, this returns a single-entry map for that branch (defaulting to {@code
+     * "default"}) pointing at every repository head.
+     *
+     * @param repo repository the branch and heads are read from
+     * @return a single-element response list wrapping the branch-name-to-heads map
+     * @throws IOException if the changelog cannot be read
+     */
     public static List<Object> branchmap(HgRepository repo) throws IOException {
         Map<String, Object> result = new LinkedHashMap<>();
         String branch = repo.getBranch();
@@ -187,6 +255,19 @@ public final class Wire2Commands {
 
     // ==================== changesetdata / manifestdata / filesdata ====================
 
+    /**
+     * Implements the {@code changesetdata} wire command: streams changelog revision data for the
+     * requested revisions. As noted in this class's documentation, always sends full revision
+     * text rather than a delta.
+     *
+     * @param repo repository the changesets are read from
+     * @param args CBOR command arguments: {@code "revisions"} names the requested revision range(s),
+     *             {@code "fields"} selects which optional fields (e.g. {@code "revision"},
+     *             {@code "bookmarks"}) to include per record
+     * @return the response records: a header with the total item count, followed by one record
+     *         per resolved revision
+     * @throws IOException if the changelog cannot be read
+     */
     public static List<Object> changesetdata(HgRepository repo, Map<String, Object> args) throws IOException {
         Revlog changelog = changelog(repo);
         List<byte[]> outgoing = resolveRevisions(changelog, Cbor.asList(args.get("revisions")));
@@ -228,6 +309,22 @@ public final class Wire2Commands {
         return result;
     }
 
+    /**
+     * Implements the {@code manifestdata} wire command: streams manifest revision data for the
+     * requested nodes, from either the root manifest revlog or (for a treemanifest repository) a
+     * subdirectory's own submanifest revlog named by {@code tree}.
+     *
+     * @param repo repository the manifest(s) are read from
+     * @param args CBOR command arguments: {@code "tree"} (empty for the root manifest, or a
+     *             subdirectory path for a treemanifest submanifest), {@code "nodes"} (requested
+     *             manifest node ids), {@code "fields"} (optional fields to include per record,
+     *             e.g. {@code "revision"}, {@code "parents"})
+     * @return the response records: a header with the total item count, followed by one record
+     *         per requested node
+     * @throws IOException if the manifest revlog cannot be read
+     * @throws HgProtocolException if {@code tree} names a subdirectory with no submanifest, or a
+     *                             requested node is not present in the resolved manifest revlog
+     */
     public static List<Object> manifestdata(HgRepository repo, Map<String, Object> args) throws IOException {
         String tree = Cbor.asString(args.get("tree"));
         // A non-empty `tree` selects a treemanifest subdirectory's own submanifest revlog
@@ -277,6 +374,19 @@ public final class Wire2Commands {
         return result;
     }
 
+    /**
+     * Implements the {@code filesdata} wire command: streams filelog revision data for every file
+     * touched by the requested changeset revisions. As noted in this class's documentation, the
+     * {@code pathfilter} argument is accepted but not applied -- all touched paths are always
+     * returned.
+     *
+     * @param repo repository the file revisions are read from
+     * @param args CBOR command arguments: {@code "revisions"} names the requested changeset
+     *             revision range(s), {@code "fields"} selects which optional fields to include
+     *             per record
+     * @return the response records covering every path touched by the resolved revisions
+     * @throws IOException if the changelog, manifest, or filelogs cannot be read
+     */
     public static List<Object> filesdata(HgRepository repo, Map<String, Object> args) throws IOException {
         Revlog changelog = changelog(repo);
         List<byte[]> outgoing = resolveRevisions(changelog, Cbor.asList(args.get("revisions")));
@@ -484,6 +594,17 @@ public final class Wire2Commands {
         return result;
     }
 
+    /**
+     * Reads the key/value pairs of a push-key namespace, backing both {@link #listkeys} and
+     * {@link #applyPushkey}. Supports the {@code "bookmarks"} namespace (parsed from {@code
+     * .hg/bookmarks}) and the {@code "phases"} namespace (non-public revisions, keyed by hex node
+     * id); any other namespace returns an empty map.
+     *
+     * @param repo repository the namespace is read from
+     * @param namespace push-key namespace name (e.g. {@code "bookmarks"} or {@code "phases"})
+     * @return the namespace's key/value pairs, or an empty map for an unrecognized namespace
+     * @throws IOException if the underlying bookmarks file or changelog cannot be read
+     */
     public static Map<String, String> readListKeys(HgRepository repo, String namespace) throws IOException {
         Map<String, String> map = new LinkedHashMap<>();
         if ("bookmarks".equals(namespace)) {
@@ -512,6 +633,20 @@ public final class Wire2Commands {
         return map;
     }
 
+    /**
+     * Applies a compare-and-swap update to one key in the {@code "bookmarks"} push-key namespace
+     * (the only namespace this server accepts pushkey writes for), rewriting {@code
+     * .hg/bookmarks} on success.
+     *
+     * @param repo repository the bookmark is updated in
+     * @param namespace push-key namespace; only {@code "bookmarks"} is accepted
+     * @param key bookmark name to update
+     * @param oldVal expected current hex node value (empty/{@code null} means "must not exist")
+     * @param newVal new hex node value to set (empty/{@code null} deletes the bookmark)
+     * @return {@code true} if the namespace was {@code "bookmarks"} and the current value matched
+     *         {@code oldVal}, so the update was applied
+     * @throws IOException if {@code .hg/bookmarks} cannot be read or written
+     */
     public static boolean applyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal) throws IOException {
         if (!"bookmarks".equals(namespace)) {
             return false;
@@ -541,6 +676,13 @@ public final class Wire2Commands {
         return true;
     }
 
+    /**
+     * Opens the repository's changelog revlog.
+     *
+     * @param repo repository to open the changelog of
+     * @return the changelog revlog handle
+     * @throws IOException if the changelog index/data files cannot be opened
+     */
     public static Revlog changelog(HgRepository repo) throws IOException {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");

@@ -49,10 +49,23 @@ public class UpdateCommand {
     private final List<HgHook> preUpdateHooks = new ArrayList<>();
     private final List<HgHook> postUpdateHooks = new ArrayList<>();
 
+    /**
+     * Creates the command against the given repository.
+     *
+     * @param repository repository whose working copy is updated
+     */
     public UpdateCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Registers a hook run before the update starts, with a context containing the
+     * repository, target revision, and force flag; the update aborts if the hook returns
+     * {@code false}.
+     *
+     * @param hook hook to run before the update proceeds; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public UpdateCommand registerPreUpdateHook(HgHook hook) {
         if (hook != null) {
             preUpdateHooks.add(hook);
@@ -60,6 +73,13 @@ public class UpdateCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run after the update completes, with a context containing the
+     * resolved target node and the repository. Hook failures are logged and otherwise ignored.
+     *
+     * @param hook hook to run after the update completes; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public UpdateCommand registerPostUpdateHook(HgHook hook) {
         if (hook != null) {
             postUpdateHooks.add(hook);
@@ -67,6 +87,13 @@ public class UpdateCommand {
         return this;
     }
 
+    /**
+     * Restricts the update to paths accepted by the given filter, matching the scope of a
+     * narrow clone. A {@code null} filter is ignored.
+     *
+     * @param treeFilter filter applied to each path during the tree walk; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public UpdateCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -74,16 +101,37 @@ public class UpdateCommand {
         return this;
     }
 
+    /**
+     * Sets the revision to update the working copy to.
+     *
+     * @param targetRevision revision identifier accepted by {@link
+     *                        io.github.search5.hg4j.util.NodeIdUtil#resolveRevision}, or a named branch head
+     * @return this command, for chaining
+     */
     public UpdateCommand setRevision(String targetRevision) {
         this.targetRevision = targetRevision;
         return this;
     }
 
+    /**
+     * Sets whether to proceed even if the working directory has uncommitted changes.
+     *
+     * @param force {@code true} to skip the uncommitted-changes check
+     * @return this command, for chaining
+     */
     public UpdateCommand setForce(boolean force) {
         this.force = force;
         return this;
     }
 
+    /**
+     * Resolves the target revision and checks out its manifest into the working directory,
+     * updating the dirstate, active branch, active bookmark, and subrepositories to match.
+     *
+     * @return the raw node id of the revision the working copy was updated to
+     * @throws IOException if reading revlogs/manifests or writing working-copy files fails
+     * @throws HgLockException if the working copy or store lock cannot be acquired
+     */
     public byte[] call() throws IOException, HgLockException {
         // When the caller hasn't explicitly narrowed this update (still the default
         // HgTreeFilter.ALL), pick up whatever narrowspec the repository itself was narrow cloned

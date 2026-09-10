@@ -23,6 +23,18 @@ public final class HgObsMarker {
     private final int flags;
     private final Map<String, String> metadata;
 
+    /**
+     * Creates an obsolescence marker.
+     *
+     * @param predecessor the obsoleted revision's node ID, exactly 20 bytes
+     * @param successors the successor revisions' node IDs (empty for a pruned revision with no
+     *                   successor); {@code null} is treated as an empty list
+     * @param flags the marker's flags bitfield (real hg's {@code obsolete} flags, e.g. bit 0 for a
+     *              user-requested prune)
+     * @param metadata the marker's metadata key/value pairs (e.g. {@code "operation"}, {@code "user"});
+     *                 {@code null} is treated as an empty map
+     * @throws IllegalArgumentException if {@code predecessor} is {@code null} or not exactly 20 bytes
+     */
     public HgObsMarker(byte[] predecessor, List<byte[]> successors, int flags, Map<String, String> metadata) {
         if (predecessor == null || predecessor.length != 20) {
             throw new IllegalArgumentException("Predecessor node must be exactly 20 bytes");
@@ -33,18 +45,38 @@ public final class HgObsMarker {
         this.metadata = metadata != null ? metadata : Map.of();
     }
 
+    /**
+     * Returns the obsoleted revision's node ID.
+     *
+     * @return a defensive copy of the predecessor's 20-byte node ID
+     */
     public byte[] getPredecessor() {
         return predecessor.clone();
     }
 
+    /**
+     * Returns the successor revisions' node IDs.
+     *
+     * @return defensive copies of the successors' node IDs (empty if this marker records a prune)
+     */
     public List<byte[]> getSuccessors() {
         return successors.stream().map(byte[]::clone).toList();
     }
 
+    /**
+     * Returns the marker's flags bitfield.
+     *
+     * @return the marker's flags bitfield
+     */
     public int getFlags() {
         return flags;
     }
 
+    /**
+     * Returns the marker's metadata key/value pairs.
+     *
+     * @return an immutable copy of the marker's metadata key/value pairs
+     */
     public Map<String, String> getMetadata() {
         return Map.copyOf(metadata);
     }
@@ -95,6 +127,15 @@ public final class HgObsMarker {
      *     no successor), and {@code RebaseCommand} (marking each original revision obsolete in
      *     favor of its rebased copy). {@code BookmarkCommand}/{@code PushCommand} read markers
      *     back via {@link HgObsolescenceParser#parse}.
+     *
+     * @param storeDir the repository's {@code .hg/store} directory (the marker is appended to
+     *                 {@code storeDir/obsstore})
+     * @param predecessor the obsoleted revision's node ID, exactly 20 bytes
+     * @param successors the successor revisions' node IDs, or {@code null}/empty for a pruned
+     *                   revision with no successor
+     * @param operation the value to record in the marker's {@code operation} metadata field, or
+     *                  {@code null} to default to {@code "amend"}
+     * @throws IOException if the {@code obsstore}/{@code hgrc} files cannot be read or written
      */
     public static void writeMarker(File storeDir, byte[] predecessor, List<byte[]> successors, String operation) throws IOException {
         File obsstoreFile = new File(storeDir, "obsstore");

@@ -23,6 +23,9 @@ import java.util.LinkedHashMap;
  */
 public class DefaultFileStoreEngine implements StoreEngine {
 
+    /** Creates a store engine with no per-instance state. */
+    public DefaultFileStoreEngine() {}
+
     @Override
     public Revlog getRevlog(HgRepository repository, File indexFile, File dataFile) throws IOException {
         // exp-changelog-v2 is narrower: it only ever applies to the changelog itself (real hg's

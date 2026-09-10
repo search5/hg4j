@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
  * control whose names match a given pattern.
  * <p>
  * {@code hg locate} is a distinct, older command from {@code hg files} with its
- * own quirks, verified against real {@code hg} (v7.2) and
+ * own quirks, matching real {@code hg} and
  * {@code mercurial/commands.py}'s {@code locate} function:
  * <ul>
  *     <li>With no revision set, it searches the <b>working copy</b> via the
@@ -55,20 +55,48 @@ public class LocateCommand {
     private String pattern;
     private String revision;
 
+    /**
+     * Creates an instance bound to the given repository.
+     *
+     * @param repository repository whose tracked/manifest paths will be searched
+     */
     public LocateCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the relglob pattern used to filter candidate paths.
+     *
+     * @param pattern glob pattern (only {@code *}, {@code **}, and {@code ?} are supported); a
+     *     {@code null} or empty pattern matches every candidate path
+     * @return this command, for chaining
+     */
     public LocateCommand setPattern(String pattern) {
         this.pattern = pattern;
         return this;
     }
 
+    /**
+     * Sets the revision whose manifest is searched instead of the working copy.
+     *
+     * @param revision revision identifier resolvable by {@link
+     *     io.github.search5.hg4j.util.NodeIdUtil#resolveRevision}; a {@code null} or empty value
+     *     searches the working copy's dirstate instead
+     * @return this command, for chaining
+     */
     public LocateCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Executes the search, matching candidate paths against the configured pattern.
+     *
+     * @return matching paths, sorted lexicographically
+     * @throws IOException if the changelog or manifest cannot be read; specifically {@link
+     *     HgRevisionNotFoundException} when {@link #setRevision(String)} names an unresolvable
+     *     revision
+     */
     public List<String> call() throws IOException {
         repository.clearRevlogCache();
 

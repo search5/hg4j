@@ -22,10 +22,21 @@ package io.github.search5.hg4j.errors;
 public class HgPushRacedException extends HgValidationException {
     private static final long serialVersionUID = 1L;
 
+    /**
+     * Creates an exception with the given detail message.
+     *
+     * @param message a description of the head-change race that was detected
+     */
     public HgPushRacedException(String message) {
         super(message);
     }
 
+    /**
+     * Creates an exception with the given detail message and underlying cause.
+     *
+     * @param message a description of the head-change race that was detected
+     * @param cause the underlying exception that surfaced the race, if any
+     */
     public HgPushRacedException(String message, Throwable cause) {
         super(message, cause);
     }

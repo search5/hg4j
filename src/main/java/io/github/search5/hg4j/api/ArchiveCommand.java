@@ -64,15 +64,34 @@ public class ArchiveCommand {
     private String type;
     private String prefix;
 
+    /**
+     * Creates an archive command bound to the given repository.
+     *
+     * @param repository the repository whose revision is archived
+     */
     public ArchiveCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision to archive.
+     *
+     * @param revision a revision reference resolvable by {@link NodeIdUtil#resolveRevision}
+     *     (revision number, hex node prefix, or {@code "tip"}); defaults to {@code "tip"}
+     * @return this command, for chaining
+     */
     public ArchiveCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Sets the destination path the archive is written to -- a directory for {@code files} output,
+     * or the archive file itself for every other type.
+     *
+     * @param destination the destination file or directory
+     * @return this command, for chaining
+     */
     public ArchiveCommand setDestination(File destination) {
         this.destination = destination;
         return this;
@@ -81,7 +100,11 @@ public class ArchiveCommand {
     /** Archive type: {@code files} (directory, default when the destination name matches nothing
      * else), {@code zip}, {@code uzip} (uncompressed zip), {@code tar}, {@code tgz}, or {@code
      * tbz2}. When unset, the type is auto-detected from {@code destination}'s extension, mirroring
-     * real hg's own {@code archival.guesskind()}. */
+     * real hg's own {@code archival.guesskind()}.
+     *
+     * @param type the archive type name, or {@code null} to auto-detect from the destination
+     * @return this command, for chaining
+     */
     public ArchiveCommand setType(String type) {
         this.type = type;
         return this;
@@ -89,7 +112,11 @@ public class ArchiveCommand {
 
     /** Directory prefix applied to every member of a zip/tar-family archive (ignored for {@code
      * files} output, which real hg itself rejects a prefix for). {@code null} (default) computes
-     * real hg's own default: the destination's basename with its type-specific suffix stripped. */
+     * real hg's own default: the destination's basename with its type-specific suffix stripped.
+     *
+     * @param prefix the directory prefix to apply, or {@code null} to use real hg's own default
+     * @return this command, for chaining
+     */
     public ArchiveCommand setPrefix(String prefix) {
         this.prefix = prefix;
         return this;

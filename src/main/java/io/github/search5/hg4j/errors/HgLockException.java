@@ -14,9 +14,12 @@ package io.github.search5.hg4j.errors;
 public class HgLockException extends HgException {
     private static final long serialVersionUID = 1L;
 
+    /** Name of the lock that failed to acquire (e.g., "store.lock", "wlock"). */
     private final String lockName;
 
     /**
+     * Creates a lock exception with no underlying cause.
+     *
      * @param lockName Name of the lock that failed to acquire (e.g., "store.lock", "wlock")
      * @param message  Description of the failure cause
      */
@@ -26,6 +29,8 @@ public class HgLockException extends HgException {
     }
 
     /**
+     * Creates a lock exception wrapping an underlying cause.
+     *
      * @param lockName Name of the lock that failed to acquire
      * @param message  Description of the failure cause
      * @param cause    The causing exception
@@ -35,7 +40,11 @@ public class HgLockException extends HgException {
         this.lockName = lockName;
     }
 
-    /** Returns the name of the lock. */
+    /**
+     * Returns the name of the lock.
+     *
+     * @return the name of the lock that failed to acquire
+     */
     public String getLockName() {
         return lockName;
     }

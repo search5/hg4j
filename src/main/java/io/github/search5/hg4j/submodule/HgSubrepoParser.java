@@ -16,6 +16,9 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
  */
 public final class HgSubrepoParser {
 
+    private HgSubrepoParser() {
+    }
+
     /**
      * Parses the combined contents of .hgsub and .hgsubstate into a map of subrepo entries.
      *

@@ -33,10 +33,22 @@ public class StripCommand {
     private final HgRepository repository;
     private String revision;
 
+    /**
+     * Creates a strip command bound to the given repository.
+     *
+     * @param repository repository whose history will be truncated
+     */
     public StripCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision (and its descendants) to strip from the repository.
+     *
+     * @param revision revision identifier (hash, revision number, or other resolvable form)
+     *     marking the oldest changeset to remove
+     * @return this command, for chaining
+     */
     public StripCommand setRevision(String revision) {
         this.revision = revision;
         return this;
@@ -47,6 +59,7 @@ public class StripCommand {
      * at target revision offset and resetting working copy parents.
      *
      * @throws IOException if truncation or workspace restoration fails
+     * @throws HgLockException if the store or working copy lock cannot be acquired
      */
     public void call() throws IOException, HgLockException {
         if (revision == null || revision.isEmpty()) {

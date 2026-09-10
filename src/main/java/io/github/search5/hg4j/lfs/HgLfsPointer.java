@@ -39,11 +39,23 @@ public final class HgLfsPointer {
     private final long size;
     private final Map<String, String> extra;
 
+    /**
+     * Creates a pointer with no extra fields.
+     *
+     * @param version the LFS spec version URL (e.g. {@code "https://git-lfs.github.com/spec/v1"})
+     * @param oid the object's SHA-256 hex digest (without the {@code "sha256:"} prefix)
+     * @param size the object's size in bytes
+     */
     public HgLfsPointer(String version, String oid, long size) {
         this(version, oid, size, Map.of());
     }
 
     /**
+     * Creates a pointer, optionally carrying extra fields.
+     *
+     * @param version the LFS spec version URL (e.g. {@code "https://git-lfs.github.com/spec/v1"})
+     * @param oid the object's SHA-256 hex digest (without the {@code "sha256:"} prefix)
+     * @param size the object's size in bytes
      * @param extra additional {@code <key> <value>} pointer fields beyond {@code version}/
      *     {@code oid}/{@code size} (e.g. {@code x-hg-copy}, {@code x-hg-copyrev},
      *     {@code x-is-binary}) -- may be {@code null}, treated the same as an empty map.
@@ -58,20 +70,35 @@ public final class HgLfsPointer {
         this.extra = extra == null || extra.isEmpty() ? Map.of() : Map.copyOf(extra);
     }
 
+    /** Returns the LFS spec version URL.
+     *
+     * @return the LFS spec version URL
+     */
     public String getVersion() {
         return version;
     }
 
+    /** Returns the object's SHA-256 hex digest (without the {@code "sha256:"} prefix).
+     *
+     * @return the object's SHA-256 hex digest
+     */
     public String getOid() {
         return oid;
     }
 
+    /** Returns the object's size in bytes.
+     *
+     * @return the object's size in bytes
+     */
     public long getSize() {
         return size;
     }
 
     /** Extra pointer fields beyond {@code version}/{@code oid}/{@code size}, keyed exactly as
-     * they appear in the serialized pointer text (e.g. {@code "x-hg-copy"}). Never {@code null}. */
+     * they appear in the serialized pointer text (e.g. {@code "x-hg-copy"}). Never {@code null}.
+     *
+     * @return the extra pointer fields, never {@code null}
+     */
     public Map<String, String> getExtra() {
         return extra;
     }
@@ -84,6 +111,8 @@ public final class HgLfsPointer {
      * key is literally {@code (key != "version", key)}, so {@code oid}/{@code size} are NOT
      * grouped ahead of extra keys, they just happen to alphabetically sort before an
      * {@code x-hg-*}/{@code x-is-binary} key. Each line is {@code "<key> <value>\n"}.
+     *
+     * @return the serialized pointer file text, UTF-8 encoded
      */
     public byte[] serialize() {
         Map<String, String> rest = new TreeMap<>(extra);
@@ -98,7 +127,11 @@ public final class HgLfsPointer {
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Lowercase hex SHA-256 of {@code data} -- the LFS {@code oid} (git-lfs only supports sha256). */
+    /** Lowercase hex SHA-256 of {@code data} -- the LFS {@code oid} (git-lfs only supports sha256).
+     *
+     * @param data the bytes to digest
+     * @return the lowercase hex SHA-256 digest of {@code data}
+     */
     public static String sha256Hex(byte[] data) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(data);

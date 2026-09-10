@@ -27,6 +27,11 @@ import java.util.stream.Stream;
 public final class VerifyCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a verify command bound to the given repository.
+     *
+     * @param repository the repository whose store contents will be verified
+     */
     public VerifyCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");

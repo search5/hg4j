@@ -21,7 +21,11 @@ public class TextProgressMonitor implements ProgressMonitor {
     private int completed = 0;
     private boolean cancelled = false;
 
-    /** @param writer destination for the printed progress lines */
+    /**
+     * Creates a monitor that writes progress lines to the given writer.
+     *
+     * @param writer destination for the printed progress lines
+     */
     public TextProgressMonitor(Writer writer) {
         this.out = new PrintWriter(writer);
     }

@@ -46,7 +46,11 @@ public final class ClonebundlesCommand {
      * anything committed since the bundle was generated (this is just the existing
      * {@link FetchCommand}/{@link PullCommand}, no new code needed for that part).
      *
+     * @param repository the repository to apply the downloaded bundle to
+     * @param url the plain HTTP(S) URL to download the bundle from
      * @return the commits imported from the bundle (same as {@link UnbundleCommand#call()})
+     * @throws IOException if the download fails, or applying the bundle fails
+     * @throws HgLockException if the store/working-copy lock cannot be acquired while applying the bundle
      */
     public static List<byte[]> downloadAndApply(HgRepository repository, String url) throws IOException, HgLockException {
         File tempFile = File.createTempFile("hg4j-clonebundle-", ".hg");

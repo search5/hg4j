@@ -24,10 +24,22 @@ public class RollbackCommand {
 
     private final HgRepository repository;
 
+    /**
+     * Creates a rollback command bound to the given repository.
+     *
+     * @param repository the repository to roll back the last transaction of
+     */
     public RollbackCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Undoes the last successful transaction (commit or pull), restoring store files, dirstate,
+     * and bookmarks from the {@code undo.*} backup files it left behind.
+     *
+     * @throws IOException if a store/dirstate/bookmarks file cannot be read, truncated, or restored
+     * @throws IllegalStateException if no rollback information is available (no {@code .hg/store/undo} file)
+     */
     public void call() throws IOException {
         File undoFile = new File(repository.getStoreDir(), "undo");
         File undoBackupFiles = new File(repository.getStoreDir(), "undo.backup.files");

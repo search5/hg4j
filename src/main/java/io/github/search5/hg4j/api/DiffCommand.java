@@ -43,6 +43,13 @@ public class DiffCommand {
     private int newRevision = NOT_SET; // NOT_SET defaults to tip; -1 means "empty manifest" (see NOT_SET's doc)
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
+    /**
+     * Restricts the diff to paths accepted by the given filter.
+     *
+     * @param treeFilter the filter applied to each candidate path; {@code null} is ignored and
+     *     leaves the current filter (which defaults to {@link HgTreeFilter#ALL}) unchanged
+     * @return this command, for chaining
+     */
     public DiffCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -50,35 +57,87 @@ public class DiffCommand {
         return this;
     }
 
+    /** The kind of change a {@link DiffEntry} represents for one path. */
     public enum ChangeType {
-        ADD, MODIFY, DELETE
+        /** The path exists in the new revision but not the old one. */
+        ADD,
+        /** The path exists in both revisions with different content. */
+        MODIFY,
+        /** The path exists in the old revision but not the new one. */
+        DELETE
     }
 
+    /** A single per-path diff result produced by {@link #call()}. */
     public static class DiffEntry {
         private final String path;
         private final ChangeType changeType;
         private final String diffContent;
 
+        /**
+         * Creates a diff entry for one path.
+         *
+         * @param path the repository-relative path the diff applies to
+         * @param changeType the kind of change between the old and new revision
+         * @param diffContent the unified-diff text for this path
+         */
         public DiffEntry(String path, ChangeType changeType, String diffContent) {
             this.path = path;
             this.changeType = changeType;
             this.diffContent = diffContent;
         }
 
+        /**
+         * Returns the repository-relative path this entry describes.
+         *
+         * @return the path this diff entry applies to
+         */
         public String getPath() { return path; }
+
+        /**
+         * Returns the kind of change this entry represents.
+         *
+         * @return the add/modify/delete classification for this entry's path
+         */
         public ChangeType getChangeType() { return changeType; }
+
+        /**
+         * Returns the unified-diff text for this path.
+         *
+         * @return the unified-diff content for this entry's path
+         */
         public String getDiffContent() { return diffContent; }
     }
 
+    /**
+     * Creates a diff command bound to the given repository.
+     *
+     * @param repository the repository whose revisions are compared
+     */
     public DiffCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the earlier revision to diff from, by revision number.
+     *
+     * @param oldRevision the changelog revision number to use as the diff's old side; if never
+     *     set, {@link #call()} defaults to the new revision's first parent
+     * @return this command, for chaining
+     */
     public DiffCommand setOldRevision(int oldRevision) {
         this.oldRevision = oldRevision;
         return this;
     }
 
+    /**
+     * Sets the earlier revision to diff from, by node id.
+     *
+     * @param oldRevisionNode the node id to resolve to a revision number and use as the diff's
+     *     old side; {@code null} resets to the default (the new revision's first parent), and a
+     *     node that fails to resolve (including because the changelog could not be read) is
+     *     treated as revision {@code -1}
+     * @return this command, for chaining
+     */
     public DiffCommand setOldRevision(NodeId oldRevisionNode) {
         if (oldRevisionNode == null) {
             this.oldRevision = -2;
@@ -95,11 +154,26 @@ public class DiffCommand {
         return this;
     }
 
+    /**
+     * Sets the later revision to diff to, by revision number.
+     *
+     * @param newRevision the changelog revision number to use as the diff's new side; if never
+     *     set, {@link #call()} defaults to the tip revision
+     * @return this command, for chaining
+     */
     public DiffCommand setNewRevision(int newRevision) {
         this.newRevision = newRevision;
         return this;
     }
 
+    /**
+     * Sets the later revision to diff to, by node id.
+     *
+     * @param newRevisionNode the node id to resolve to a revision number and use as the diff's
+     *     new side; {@code null} resets to the default (tip), and a node that fails to resolve
+     *     (including because the changelog could not be read) is treated as revision {@code -1}
+     * @return this command, for chaining
+     */
     public DiffCommand setNewRevision(NodeId newRevisionNode) {
         if (newRevisionNode == null) {
             this.newRevision = NOT_SET;
@@ -116,6 +190,14 @@ public class DiffCommand {
         return this;
     }
 
+    /**
+     * Runs the diff between the configured old and new revisions and returns one {@link DiffEntry}
+     * per changed path.
+     *
+     * @return the list of per-path diffs between the old and new revision, in tree-walk order; an
+     *     empty list if the repository has no changelog or no revisions
+     * @throws IOException if the changelog, manifest, or file content cannot be read
+     */
     public List<DiffEntry> call() throws IOException {
         // Guard against a long-lived HgRepository handle serving a stale cached changelog-v2
         // revlog after an external process appended a revision -- see

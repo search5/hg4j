@@ -24,8 +24,7 @@ import java.nio.file.StandardOpenOption;
  * --follow`) on the destination follows through to the source.
  * <p>
  * This is the sibling of {@link RenameCommand} ({@code hg rename}/{@code hg mv}), which
- * additionally deletes the source and marks it removed. Real {@code hg copy} semantics were
- * verified against the live {@code hg} CLI (v7.2) on scratch repositories:
+ * additionally deletes the source and marks it removed. Matches real {@code hg copy} semantics:
  * <ul>
  *   <li>The source file is left in place, on disk and in the dirstate, completely unchanged.</li>
  *   <li>The destination is added to the dirstate as a new file (state {@code 'a'}) and the
@@ -37,7 +36,7 @@ import java.nio.file.StandardOpenOption;
  *       managed").</li>
  *   <li>Copy-of-a-copy chains resolve to the immediate source's own recorded copy source, but
  *       ONLY while that immediate source is itself still an uncommitted addition (dirstate
- *       state {@code 'a'}). Verified live: {@code a -> commit -> copy a b -> copy b c} records
+ *       state {@code 'a'}). For example, {@code a -> commit -> copy a b -> copy b c} records
  *       c's source as {@code b} (the chain "resets" once a step is committed), while
  *       {@code a -> commit -> copy a b (uncommitted) -> copy b c (uncommitted)} records c's
  *       source as {@code a} (the original, since b was never committed in between). This
@@ -61,6 +60,11 @@ public final class CopyCommand {
     private String destinationPath;
     private boolean force;
 
+    /**
+     * Creates a new instance bound to the given repository.
+     *
+     * @param repository the repository to copy a file within
+     */
     public CopyCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -68,11 +72,23 @@ public final class CopyCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the repository-relative path of the file to copy.
+     *
+     * @param sourcePath the source file's repository-relative path
+     * @return this command, for chaining
+     */
     public CopyCommand setSource(String sourcePath) {
         this.sourcePath = sourcePath;
         return this;
     }
 
+    /**
+     * Sets the repository-relative path the file should be copied to.
+     *
+     * @param destinationPath the destination file's repository-relative path
+     * @return this command, for chaining
+     */
     public CopyCommand setDestination(String destinationPath) {
         this.destinationPath = destinationPath;
         return this;
@@ -82,6 +98,9 @@ public final class CopyCommand {
      * When {@code true}, an existing file at the destination path is overwritten, mirroring
      * {@code hg copy --force}. Defaults to {@code false}, matching {@code hg copy}'s default
      * refusal to clobber an existing file.
+     *
+     * @param force whether to overwrite an existing destination file
+     * @return this command, for chaining
      */
     public CopyCommand setForce(boolean force) {
         this.force = force;
@@ -94,6 +113,7 @@ public final class CopyCommand {
      * @throws IOException if the physical file copy or dirstate write fails, or if the source
      *                      is missing/untracked, or the destination already exists without
      *                      {@link #setForce(boolean)}
+     * @throws HgLockException if the working copy lock cannot be acquired
      */
     public void call() throws IOException, HgLockException {
         if (sourcePath == null || destinationPath == null) {

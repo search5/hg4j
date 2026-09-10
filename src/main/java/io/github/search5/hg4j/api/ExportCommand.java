@@ -19,10 +19,21 @@ public class ExportCommand {
     private final HgRepository repository;
     private String revision;
 
+    /**
+     * Creates an export command bound to the given repository.
+     *
+     * @param repository the repository the changeset to export is read from
+     */
     public ExportCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the changeset to export.
+     *
+     * @param revision the revision identifier (node id, prefix, or numeric revision) of the changeset to export
+     * @return this command, for chaining
+     */
     public ExportCommand setRevision(String revision) {
         this.revision = revision;
         return this;

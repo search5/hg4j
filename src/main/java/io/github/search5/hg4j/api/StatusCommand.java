@@ -40,10 +40,22 @@ public class StatusCommand {
     // paired size=-1 half must be guarded, or an entry can look permanently "modified" on its
     // own.
 
+    /**
+     * Creates an instance bound to the given repository.
+     *
+     * @param repository repository whose working directory status will be computed
+     */
     public StatusCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Restricts the paths considered to those accepted by the given filter.
+     *
+     * @param treeFilter filter applied to candidate paths; a {@code null} value leaves the
+     *     current filter (default {@link HgTreeFilter#ALL}) unchanged
+     * @return this command, for chaining
+     */
     public StatusCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -51,6 +63,13 @@ public class StatusCommand {
         return this;
     }
 
+    /**
+     * Computes the working directory status relative to the dirstate and, when a tree filter is
+     * set, to the checked-out parent commit's manifest.
+     *
+     * @return the computed status, bucketed into added/removed/modified/clean/untracked paths
+     * @throws IOException if the dirstate, changelog, or working-copy files cannot be read
+     */
     public Status call() throws IOException {
         // Guard against a long-lived HgRepository handle serving a stale cached changelog-v2
         // revlog after an external process appended a revision -- see DescribeCommand#call()'s

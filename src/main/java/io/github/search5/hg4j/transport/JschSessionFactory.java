@@ -7,6 +7,10 @@ import java.io.File;
  * Default SshSessionFactory implementation that returns an abstracted SshSession using the JSch library.
  */
 public class JschSessionFactory implements SshSessionFactory {
+    /** Creates a JSch-backed session factory. */
+    public JschSessionFactory() {
+    }
+
     @Override
     public SshSession createSession(String host, int port, String username, String password, String privateKeyPath, String passphrase) throws Exception {
         JSch jsch = new JSch();

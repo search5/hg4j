@@ -47,10 +47,21 @@ public class PurgeCommand {
     private final HgRepository repository;
     private boolean purgeDirectories = true;
 
+    /**
+     * Creates a command bound to the given repository, with directory purging enabled by default.
+     *
+     * @param repository the repository whose working copy is purged
+     */
     public PurgeCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Controls whether empty untracked directories are deleted in addition to untracked files.
+     *
+     * @param purgeDirectories {@code true} to also delete empty untracked directories
+     * @return this command, for chaining
+     */
     public PurgeCommand setPurgeDirectories(boolean purgeDirectories) {
         this.purgeDirectories = purgeDirectories;
         return this;

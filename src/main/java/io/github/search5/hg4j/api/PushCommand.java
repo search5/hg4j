@@ -58,7 +58,9 @@ public class PushCommand {
      * (real hg: {@code pushop.force}, skips {@code discovery.checkheads()} entirely). Does NOT
      * imply {@link #setAllowNewBranch} in real hg, but in practice a force push also always
      * succeeds against the new-branch check below since {@code force} short-circuits the whole
-     * checkheads pass, matching real hg exactly. */
+     * checkheads pass, matching real hg exactly.
+     * @param force {@code true} to bypass the new-remote-head safety check
+     * @return this command, for chaining further setter calls */
     public PushCommand setForce(boolean force) {
         this.force = force;
         return this;
@@ -66,12 +68,21 @@ public class PushCommand {
 
     /** {@code hg push --new-branch}: permits pushing changesets on a named branch the remote
      * doesn't have yet (real hg: {@code pushop.newbranch}). Without it, such a push aborts with
-     * "push creates new remote branches: ..." -- matches real hg's {@code discovery.checkheads()}. */
+     * "push creates new remote branches: ..." -- matches real hg's {@code discovery.checkheads()}.
+     * @param allowNewBranch {@code true} to permit pushing a branch the remote doesn't have yet
+     * @return this command, for chaining further setter calls */
     public PushCommand setAllowNewBranch(boolean allowNewBranch) {
         this.allowNewBranch = allowNewBranch;
         return this;
     }
 
+    /**
+     * Registers a hook run before the push is sent to the remote — returning {@code false}
+     * aborts the push before anything is transferred.
+     *
+     * @param hook the hook to add to the pre-push chain
+     * @return this command, for chaining further {@code registerXxxHook} calls
+     */
     public PushCommand registerPrePushHook(HgHook hook) {
         if (hook != null) {
             prePushHooks.add(hook);
@@ -79,6 +90,12 @@ public class PushCommand {
         return this;
     }
 
+    /**
+     * Registers a notification-only hook run after the push has completed successfully.
+     *
+     * @param hook the hook to add to the post-push chain
+     * @return this command, for chaining further {@code registerXxxHook} calls
+     */
     public PushCommand registerPostPushHook(HgHook hook) {
         if (hook != null) {
             postPushHooks.add(hook);
@@ -86,15 +103,39 @@ public class PushCommand {
         return this;
     }
 
+    /**
+     * Creates a push command against the given local repository.
+     *
+     * @param repository the local repository whose commits will be pushed
+     */
     public PushCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the remote destination to push to, either a URL or a name resolved against the
+     * repository's configured paths.
+     *
+     * @param destinationUrl the destination URL or configured path name; if {@code null} or
+     *     empty, {@code call()} falls back to the {@code default-push}/{@code default} configured
+     *     path
+     * @return this command, for chaining further setter calls
+     */
     public PushCommand setDestination(String destinationUrl) {
         this.destinationUrl = destinationUrl;
         return this;
     }
 
+    /**
+     * Executes the push: resolves the destination, runs any registered pre-push hooks,
+     * determines the outgoing changesets, and transfers them to the remote as a changegroup
+     * bundle.
+     *
+     * @return a human-readable summary of the push result
+     * @throws IOException if communication with the remote fails or repository storage cannot
+     *     be read
+     * @throws HgLockException if the local store lock cannot be acquired
+     */
     public String call() throws IOException, HgLockException {
         // Real hg spec (hg help urls): when no destination is given, prefer paths.default-push,
         // falling back to paths.default when that's absent, so plain "hg push" with no argument

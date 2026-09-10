@@ -21,12 +21,22 @@ import java.util.Map;
 public class AddremoveCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates an addremove command bound to the given repository.
+     *
+     * @param repository the repository whose working copy is scanned
+     */
     public AddremoveCommand(HgRepository repository) {
         this.repository = repository;
     }
 
     /**
+     * Scans the working copy, adds every untracked file, and marks every tracked file that is
+     * missing on disk as removed.
+     *
      * @return status-style lines, e.g. {@code "A path/to/new.txt"} / {@code "R path/to/gone.txt"}
+     * @throws IOException if the working copy or dirstate cannot be read, or a file cannot be added
+     * @throws HgLockException if the repository's working-copy lock cannot be acquired
      */
     public List<String> call() throws IOException, HgLockException {
         List<String> affected = new ArrayList<>();

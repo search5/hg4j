@@ -36,20 +36,44 @@ public class BookmarkCommand {
     private boolean active = false;
     private boolean force = false;
 
+    /**
+     * Creates an instance bound to the given repository.
+     *
+     * @param repository repository whose bookmarks will be listed or modified
+     */
     public BookmarkCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the bookmark name to create, move, delete, or activate.
+     *
+     * @param bookmarkName name of the bookmark
+     * @return this command, for chaining
+     */
     public BookmarkCommand setBookmarkName(String bookmarkName) {
         this.bookmarkName = bookmarkName;
         return this;
     }
 
+    /**
+     * Sets the target revision directly by node ID, instead of via {@link #setRevision(String)}.
+     *
+     * @param nodeId node ID the bookmark should point to
+     * @return this command, for chaining
+     */
     public BookmarkCommand setNodeId(byte[] nodeId) {
         this.nodeId = nodeId;
         return this;
     }
 
+    /**
+     * Sets the target revision by its hex node ID string.
+     *
+     * @param revision hex node ID the bookmark should point to; a {@code null} or empty value
+     *     leaves the current target unchanged
+     * @return this command, for chaining
+     */
     public BookmarkCommand setRevision(String revision) {
         if (revision != null && !revision.isEmpty()) {
             this.nodeId = NodeIdUtil.fromHex(revision);
@@ -57,11 +81,25 @@ public class BookmarkCommand {
         return this;
     }
 
+    /**
+     * Selects whether {@link #call()} deletes the named bookmark instead of creating/moving it.
+     *
+     * @param delete {@code true} to delete {@link #setBookmarkName(String)}'s bookmark
+     * @return this command, for chaining
+     */
     public BookmarkCommand setDelete(boolean delete) {
         this.delete = delete;
         return this;
     }
 
+    /**
+     * Selects whether {@link #call()} activates the named bookmark (or, with no name set,
+     * deactivates whichever bookmark is currently active) instead of creating/moving it.
+     *
+     * @param active {@code true} to update {@code bookmarks.current} rather than the bookmark's
+     *     target
+     * @return this command, for chaining
+     */
     public BookmarkCommand setActive(boolean active) {
         this.active = active;
         return this;
@@ -75,12 +113,24 @@ public class BookmarkCommand {
      * without {@code -f}, exactly like a brand new bookmark name. Irrelevant to {@link #setDelete}
      * (removal never requires force) and to {@link #setActive} (that only touches
      * {@code bookmarks.current}, never a bookmark's target).
+     *
+     * @param force whether to allow a non-fast-forward bookmark move
+     * @return this command, for chaining
      */
     public BookmarkCommand setForce(boolean force) {
         this.force = force;
         return this;
     }
 
+    /**
+     * Executes the configured bookmark operation: delete, activate/deactivate, or create/move,
+     * depending on which of {@link #setDelete(boolean)}, {@link #setActive(boolean)}, and {@link
+     * #setBookmarkName(String)} were set; with none of those, simply lists the current bookmarks.
+     *
+     * @return the resulting bookmark name-to-hex-node-ID map
+     * @throws IOException if reading or writing {@code .hg/bookmarks}/{@code
+     *     .hg/bookmarks.current} fails
+     */
     public Map<String, String> call() throws IOException {
         File bkFile = new File(repository.getHgDir(), "bookmarks");
         File curBkFile = new File(repository.getHgDir(), "bookmarks.current");
@@ -171,9 +221,16 @@ public class BookmarkCommand {
      * local is a descendant of remote (local is already ahead), and otherwise (a genuine
      * divergence) create a divergent bookmark named {@code name@remotePathName}.
      *
+     * Called by {@link FetchCommand} after fetching a changegroup to reconcile the remote's
+     * bookmarks into the local repository.
+     *
+     * @param repository local repository whose bookmarks are updated
+     * @param remoteBookmarks remote bookmark name-to-hex-node-ID map; a {@code null} or empty
+     *                        map is a no-op
      * @param remotePathName suffix to append to a divergent bookmark's name (e.g. a remote path
      *                       alias). {@code null} if unknown -- in that case "1" is used
      *                       (matching real hg's own {@code name@1} fallback form).
+     * @throws IOException if reading or writing local bookmarks or the changelog fails
      */
     public static void mergeFromRemote(HgRepository repository, Map<String, String> remoteBookmarks,
                                         String remotePathName) throws IOException {
@@ -234,6 +291,11 @@ public class BookmarkCommand {
         }
     }
 
+    /**
+     * Returns the name of the currently active bookmark.
+     *
+     * @return the active bookmark name, or {@code null} if none is active or it cannot be read
+     */
     public String getActiveBookmark() {
         File curBkFile = new File(repository.getHgDir(), "bookmarks.current");
         if (curBkFile.exists()) {

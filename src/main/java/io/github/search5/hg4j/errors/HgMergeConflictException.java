@@ -17,10 +17,14 @@ import java.util.List;
 public class HgMergeConflictException extends HgException {
     private static final long serialVersionUID = 1L;
 
+    /** File path where the conflict occurred (the first one, if there were several). */
     private final String conflictPath;
+    /** Every file path left unresolved by the operation that raised this exception. */
     private final List<String> conflictPaths;
 
     /**
+     * Creates a new exception for a single conflicting file.
+     *
      * @param conflictPath File path where the conflict occurred
      * @param message      Description of the conflict
      */
@@ -30,6 +34,13 @@ public class HgMergeConflictException extends HgException {
         this.conflictPaths = List.of(conflictPath);
     }
 
+    /**
+     * Creates a new exception for a single conflicting file, wrapping an underlying cause.
+     *
+     * @param conflictPath File path where the conflict occurred
+     * @param message      Description of the conflict
+     * @param cause        the underlying exception that caused the conflict to be raised
+     */
     public HgMergeConflictException(String conflictPath, String message, Throwable cause) {
         super("Merge conflict in '" + conflictPath + "': " + message, cause);
         this.conflictPath = conflictPath;
@@ -37,6 +48,8 @@ public class HgMergeConflictException extends HgException {
     }
 
     /**
+     * Creates a new exception for one or more conflicting files.
+     *
      * @param conflictPaths One or more file paths where conflicts occurred (e.g. every file left
      *                      unresolved by a single paused {@code hg rebase} revision)
      * @param message       Description of the conflict
@@ -47,12 +60,20 @@ public class HgMergeConflictException extends HgException {
         this.conflictPath = conflictPaths.isEmpty() ? null : conflictPaths.get(0);
     }
 
-    /** Returns the file path where the conflict occurred (the first one, if there were several). */
+    /**
+     * Returns the file path where the conflict occurred (the first one, if there were several).
+     *
+     * @return the conflicting file path, or {@code null} if this exception was created with an empty path list
+     */
     public String getConflictPath() {
         return conflictPath;
     }
 
-    /** Returns every file path left unresolved by the operation that raised this exception. */
+    /**
+     * Returns every file path left unresolved by the operation that raised this exception.
+     *
+     * @return an immutable list of the conflicting file paths
+     */
     public List<String> getConflictPaths() {
         return conflictPaths;
     }

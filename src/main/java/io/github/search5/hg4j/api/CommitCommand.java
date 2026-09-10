@@ -136,6 +136,15 @@ public class CommitCommand {
      * it (see {@link #setGpgSigner(String, GpgSigner)}). Any exception aborts the commit.
      */
     public interface GpgSigner {
+        /**
+         * Produces an ASCII-armored OpenPGP signature over the supplied unsigned changelog bytes.
+         *
+         * @param unsignedChangelogText the exact bytes of the would-be unsigned changelog revision;
+         *     see {@link #setGpgSigner(String, GpgSigner)} for the full payload contract
+         * @return the ASCII-armored OpenPGP signature to embed as the commit's {@code gpgsig}
+         *     extra, or {@code null}/empty to skip signing
+         * @throws Exception if signing fails; any exception aborts the commit
+         */
         String sign(byte[] unsignedChangelogText) throws Exception;
     }
 
@@ -159,6 +168,12 @@ public class CommitCommand {
      * is expected to identify the signing key from the OpenPGP signature packet's own issuer
      * key ID, exactly as it already does for git -- never from this field) -- pass {@code null}
      * to omit the {@code gpgfingerprint} extra entirely.
+     *
+     * @param fingerprint informational key-fingerprint bookkeeping stored in the {@code
+     *     gpgfingerprint} extra, or {@code null} to omit that extra entirely
+     * @param signer callback invoked with the unsigned changelog bytes to produce the {@code
+     *     gpgsig} signature; {@code null} disables signing
+     * @return this command, for chaining
      */
     public CommitCommand setGpgSigner(String fingerprint, GpgSigner signer) {
         this.gpgFingerprint = fingerprint;
@@ -166,7 +181,12 @@ public class CommitCommand {
         return this;
     }
 
-    /** {@code hg commit --close-branch}: marks the new commit as closing the named branch head it becomes. */
+    /**
+     * {@code hg commit --close-branch}: marks the new commit as closing the named branch head it becomes.
+     *
+     * @param closeBranch whether to close the branch head
+     * @return this command, for chaining
+     */
     public CommitCommand setCloseBranch(boolean closeBranch) {
         this.closeBranch = closeBranch;
         return this;
@@ -177,12 +197,22 @@ public class CommitCommand {
      * in {@code .hgsub} has uncommitted local changes -- committing the subrepo first, then
      * recording its new tip in {@code .hgsubstate}. Without this, real hg (and this command)
      * aborts the parent commit instead ({@code uncommitted changes in subrepository "..."}).
+     *
+     * @param subrepos whether to allow and perform a recursive subrepo commit
+     * @return this command, for chaining
      */
     public CommitCommand setSubrepos(boolean subrepos) {
         this.subrepos = subrepos;
         return this;
     }
 
+    /**
+     * Registers a hook invoked before the commit is performed; if any registered pre-commit hook
+     * returns {@code false}, the commit transaction is rejected.
+     *
+     * @param hook the hook to run before committing, ignored if {@code null}
+     * @return this command, for chaining
+     */
     public CommitCommand registerPreCommitHook(HgHook hook) {
         if (hook != null) {
             preCommitHooks.add(hook);
@@ -190,6 +220,12 @@ public class CommitCommand {
         return this;
     }
 
+    /**
+     * Registers a hook invoked after the commit has been performed successfully.
+     *
+     * @param hook the hook to run after committing, ignored if {@code null}
+     * @return this command, for chaining
+     */
     public CommitCommand registerPostCommitHook(HgHook hook) {
         if (hook != null) {
             postCommitHooks.add(hook);
@@ -197,15 +233,35 @@ public class CommitCommand {
         return this;
     }
 
+    /**
+     * Skips acquiring the working-copy/store locks and writing the crash-recovery journal for
+     * this commit -- intended for callers (such as an enclosing command that already holds these
+     * locks) that manage locking and rollback themselves.
+     *
+     * @param skip whether to skip locking and journaling
+     * @return this command, for chaining
+     */
     public CommitCommand setSkipLockAndJournal(boolean skip) {
         this.skipLockAndJournal = skip;
         return this;
     }
 
+    /**
+     * Creates a commit command for the given repository.
+     *
+     * @param repository the repository to commit into
+     */
     public CommitCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the commit author, in {@code Name <email>} form. Ignored if {@code null} or empty, in
+     * which case the default placeholder author is used.
+     *
+     * @param author the commit author string
+     * @return this command, for chaining
+     */
     public CommitCommand setAuthor(String author) {
         if (author != null && !author.isEmpty()) {
             this.author = author;
@@ -213,17 +269,39 @@ public class CommitCommand {
         return this;
     }
 
+    /**
+     * Forces the commit date instead of using the current time.
+     *
+     * @param secs the commit time, in epoch seconds
+     * @param offsetSeconds the timezone offset (from UTC) in seconds, as stored in the changelog
+     * @return this command, for chaining
+     */
     public CommitCommand setDate(long secs, int offsetSeconds) {
         this.forcedTime = secs;
         this.forcedOffset = offsetSeconds;
         return this;
     }
 
+    /**
+     * Sets the commit message.
+     *
+     * @param message the commit message; required to be non-null/non-empty before {@link #call()}
+     * @return this command, for chaining
+     */
     public CommitCommand setMessage(String message) {
         this.message = message;
         return this;
     }
 
+    /**
+     * Performs the commit: computes what changed in the working directory relative to the
+     * dirstate's parent(s), writes new filelog/manifest/changelog revisions, updates the
+     * dirstate, and runs any registered pre/post-commit hooks.
+     *
+     * @return the node ID (raw 20-byte SHA-1) of the newly created changeset
+     * @throws IOException if reading working-copy files or writing store/journal data fails
+     * @throws HgLockException if the working-copy or store lock cannot be acquired
+     */
     public byte[] call() throws IOException, HgLockException {
         if (message == null || message.isEmpty()) {
             throw new IllegalStateException("Commit message must be specified.");
@@ -1809,6 +1887,15 @@ public class CommitCommand {
         return mfNode != null ? mfNode : new byte[20];
     }
 
+    /**
+     * Resolves a tracked file's logical repository path to its filelog index ({@code .i}) file
+     * inside the store, applying the same fncache-style path encoding real hg uses for
+     * {@code data/<path>.i}.
+     *
+     * @param storeDir the repository's store directory ({@code .hg/store})
+     * @param relPath the file's repository-relative logical path
+     * @return the resolved {@code .i} file for {@code relPath} (may not yet exist on disk)
+     */
     public static File getFilelogIndex(File storeDir, String relPath) {
         String encoded = NodeIdUtil.encodeFname(relPath + ".i");
         return new File(storeDir, encoded);
@@ -1818,6 +1905,10 @@ public class CommitCommand {
      * Locates the key/value separator inside one already-decoded {@code "key:value"} extra
      * item. Real hg (mercurial/changelog.py {@code decodeextra}) never escapes {@code :} —
      * it splits on the first literal colon ({@code str.split(b':', 1)}) — so this is just that.
+     *
+     * @param s a decoded {@code "key:value"} extra item, or {@code null}
+     * @return the index of the first {@code :} in {@code s}, or {@code -1} if {@code s} is
+     *     {@code null} or contains none
      */
     public static int findUnescapedColon(String s) {
         return s == null ? -1 : s.indexOf(':');
@@ -1828,6 +1919,10 @@ public class CommitCommand {
      * are escaped. A literal {@code :} is deliberately left untouched (real hg splits
      * {@code "key:value"} on the first colon only, so an embedded colon in the value never
      * needs escaping — escaping it here would produce bytes real hg does not write).
+     *
+     * @param s the raw extra key or value to escape, or {@code null}
+     * @return {@code s} with {@code \}, newline, CR and NUL escaped, or {@code ""} if {@code s}
+     *     is {@code null}
      */
     public static String encodeExtraKey(String s) {
         if (s == null) return "";
@@ -1874,6 +1969,11 @@ public class CommitCommand {
      * "would-be unsigned" changelog bytes a {@code gpgsig} signature was computed over --
      * mirrors git's {@code GpgSignatureVerifier.signedDataOf()}'s "strip exactly the gpgsig
      * header, nothing else" contract on the read/verify side.
+     *
+     * @param extraPart the full {@code \0}-joined, still-encoded extra-items string
+     * @param keyToRemove the decoded key whose entries (there should be at most one) are dropped
+     * @return {@code extraPart} with every entry whose decoded key equals {@code keyToRemove}
+     *     removed, or {@code extraPart} itself if it is {@code null} or empty
      */
     public static String stripExtraKey(String extraPart, String keyToRemove) {
         if (extraPart == null || extraPart.isEmpty()) {
@@ -1891,6 +1991,13 @@ public class CommitCommand {
         return String.join("\0", kept);
     }
 
+    /**
+     * Reverses {@link #encodeExtraKey}: unescapes {@code \\}, {@code \0}, {@code \n} and
+     * {@code \r} sequences back to their raw characters.
+     *
+     * @param s an encoded extra key or value, or {@code null}
+     * @return the decoded (unescaped) string, or {@code ""} if {@code s} is {@code null}
+     */
     public static String decodeExtraKey(String s) {
         if (s == null) return "";
         StringBuilder sb = new StringBuilder();
@@ -1925,12 +2032,24 @@ public class CommitCommand {
      * {@code branch:<name>} extra field. Real hg never writes that field for the default
      * branch ([[decisions/mercurial-spec-compliance-requirement]] -- the "Changelog format" row),
      * so its absence means {@code "default"}.
+     *
+     * @param changelog the repository's changelog revlog
+     * @param rev the changelog revision index to inspect
+     * @return the named branch the revision was committed on, or {@code "default"} if none is recorded
+     * @throws IOException if the revision's content cannot be read
      */
     public static String getBranchOfRevision(Revlog changelog, int rev) throws IOException {
         return parseExtra(changelog, rev).getOrDefault("branch", "default");
     }
 
-    /** Whether a changelog revision closes its named branch head ({@code hg commit --close-branch}'s {@code close:1} extra). */
+    /**
+     * Whether a changelog revision closes its named branch head ({@code hg commit --close-branch}'s {@code close:1} extra).
+     *
+     * @param changelog the repository's changelog revlog
+     * @param rev the changelog revision index to inspect
+     * @return {@code true} if the revision's extras carry {@code close:1}
+     * @throws IOException if the revision's content cannot be read
+     */
     public static boolean isRevisionClosingBranch(Revlog changelog, int rev) throws IOException {
         return "1".equals(parseExtra(changelog, rev).get("close"));
     }
@@ -2067,11 +2186,32 @@ public class CommitCommand {
         f.delete();
     }
 
+    /**
+     * Writes the {@code undo}/{@code undo.backup.*} files {@link RollbackCommand} (and real hg's
+     * own {@code hg rollback}) reads to undo this commit -- shorthand for the full overload with
+     * no docket backups, no truncate-only entries, and no dirstate-v2 data backup.
+     *
+     * @param repository the repository this commit was made in
+     * @param fileSizes pre-commit sizes of every store file this commit touched, keyed by the
+     *     file itself
+     * @param dirstateBackup the pre-commit raw bytes of {@code .hg/dirstate}, or {@code null} if
+     *     it did not exist before the commit
+     * @throws IOException if any undo file cannot be written
+     */
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup) throws IOException {
         writeUndoInfo(repository, fileSizes, dirstateBackup, Collections.emptyMap());
     }
 
     /**
+     * Writes the {@code undo}/{@code undo.backup.*} files {@link RollbackCommand} (and real hg's
+     * own {@code hg rollback}) reads to undo this commit -- shorthand for the full overload with
+     * no truncate-only entries and no dirstate-v2 data backup.
+     *
+     * @param repository the repository this commit was made in
+     * @param fileSizes pre-commit sizes of every store file this commit touched, keyed by the
+     *     file itself
+     * @param dirstateBackup the pre-commit raw bytes of {@code .hg/dirstate}, or {@code null} if
+     *     it did not exist before the commit
      * @param docketBackups full-byte-content backups of any v2/docket revlog "index" file
      *     (00changelog.i/00manifest.i/a filelog's own {@code .i}) touched by this commit --
      *     see {@link #recordRevlogRollbackState}'s javadoc for why these need a full-content
@@ -2080,6 +2220,7 @@ public class CommitCommand {
      *     {@code backup <relPath>\t<backupRelPath>} line in the {@code undo} file itself --
      *     {@link RollbackCommand} already understands this convention (mirrors the journal's own
      *     {@code "backup "} line format, {@link HgRepository#checkAndPerformAutoRollback()}).
+     * @throws IOException if any undo file cannot be written
      */
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup,
                                       Map<File, byte[]> docketBackups) throws IOException {
@@ -2087,6 +2228,17 @@ public class CommitCommand {
     }
 
     /**
+     * Writes the {@code undo}/{@code undo.backup.*} files {@link RollbackCommand} (and real hg's
+     * own {@code hg rollback}) reads to undo this commit -- shorthand for the full overload with
+     * no dirstate-v2 data backup.
+     *
+     * @param repository the repository this commit was made in
+     * @param fileSizes pre-commit sizes of every store file this commit touched, keyed by the
+     *     file itself
+     * @param dirstateBackup the pre-commit raw bytes of {@code .hg/dirstate}, or {@code null} if
+     *     it did not exist before the commit
+     * @param docketBackups full-byte-content backups of any v2/docket revlog "index" file touched
+     *     by this commit; see the four-argument overload's javadoc
      * @param truncateOnlyEntries the subset of {@code fileSizes}'s keys that must be restored
      *     with truncate-only ("{@code trunc }" line) semantics rather than the plain line's
      *     delete-on-zero-size shortcut -- a v2 revlog's resolved companion {@code .idx}/{@code
@@ -2094,6 +2246,7 @@ public class CommitCommand {
      *     bytes) as long as the docket references them. See {@link
      *     HgRepository#checkAndPerformAutoRollback()}'s matching branch and {@link
      *     #recordRevlogRollbackState}'s javadoc for the full story.
+     * @throws IOException if any undo file cannot be written
      */
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup,
                                       Map<File, byte[]> docketBackups, Set<File> truncateOnlyEntries) throws IOException {
@@ -2101,6 +2254,18 @@ public class CommitCommand {
     }
 
     /**
+     * Writes the {@code undo}/{@code undo.backup.*} files {@link RollbackCommand} (and real hg's
+     * own {@code hg rollback}) reads to undo this commit.
+     *
+     * @param repository the repository this commit was made in
+     * @param fileSizes pre-commit sizes of every store file this commit touched, keyed by the
+     *     file itself
+     * @param dirstateBackup the pre-commit raw bytes of {@code .hg/dirstate}, or {@code null} if
+     *     it did not exist before the commit
+     * @param docketBackups full-byte-content backups of any v2/docket revlog "index" file touched
+     *     by this commit; see the four-argument overload's javadoc
+     * @param truncateOnlyEntries the subset of {@code fileSizes}'s keys that must be restored
+     *     with truncate-only semantics; see the five-argument overload's javadoc
      * @param dirstateV2DataBackup the pre-commit bytes of the dirstate-v2 companion data file
      *     ({@code .hg/dirstate.<uid>}) the pre-commit {@code dirstateBackup} docket references, or
      *     {@code null} if not applicable (v1 dirstate, or the data file could not be read) -- see
@@ -2113,6 +2278,7 @@ public class CommitCommand {
      *     happened 5 times in a row". The crash-journal path ({@link
      *     HgRepository#checkAndPerformAutoRollback()}'s matching "dirstate" branch) needs the
      *     same handling for the same reason.
+     * @throws IOException if any undo file cannot be written
      */
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup,
                                       Map<File, byte[]> docketBackups, Set<File> truncateOnlyEntries,

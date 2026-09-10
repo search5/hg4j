@@ -57,6 +57,29 @@ public class Revlog {
     };
 
     /**
+     * One revision's parsed 64-byte (or general-v2/changelog-v2 wider) index record: the physical
+     * location and length of its data, its delta base and link/parent revisions, its node id, and
+     * (v2 only) its sidedata location and rank.
+     *
+     * @param revision the revision number (0-based)
+     * @param offset byte offset of this revision's data within the {@code .d} file (or, for an
+     *     inline revlog, within the {@code .i} file itself)
+     * @param flags per-revision flag bits (e.g. censored, external storage)
+     * @param compLen on-disk (possibly compressed) length of this revision's data
+     * @param uncompLen length of this revision's fully reconstructed (delta-applied,
+     *     decompressed) content
+     * @param baseRev the revision this one deltas against, or itself (or its own revision number)
+     *     for a full-text snapshot
+     * @param linkRev the changelog revision that introduced this revision
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param nodeId this revision's 20-byte SHA-1 node id
+     * @param sidedataOffset byte offset of this revision's sidedata chunk in the resolved
+     *     {@code .sda} file (v2 only)
+     * @param sidedataCompLen on-disk (possibly compressed) length of this revision's sidedata
+     *     chunk; {@code 0} means no sidedata
+     * @param sidedataCompressionMode sidedata compression mode: {@code 0}=PLAIN, {@code 1}=DEFAULT
+     *     (zstd), {@code 2}=INLINE
      * @param rank the changelog-v2-only {@code rank} field ({@code mercurial/revlogutils/
      *     constants.py}'s {@code RANK_UNKNOWN = -1} sentinel when not applicable/not persisted --
      *     every non-CHANGELOGV2 record uses this default via the compatibility constructor below).
@@ -71,6 +94,7 @@ public class Revlog {
                              int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId,
                              long sidedataOffset, int sidedataCompLen, int sidedataCompressionMode,
                              int rank) {
+        /** Defensively truncates an over-long {@code nodeId} to the canonical 20 bytes. */
         public IndexRecord {
             if (nodeId != null && nodeId.length > 20) {
                 nodeId = Arrays.copyOf(nodeId, 20);
@@ -84,6 +108,23 @@ public class Revlog {
          * {@code sidedataOffset=0}, {@code sidedataCompLen=0} (meaning "no sidedata" — see
          * {@link Revlog#getSidedata(int)}), {@code sidedataCompressionMode=COMP_MODE_PLAIN}, and
          * {@code rank=-1} (real hg's own {@code RANK_UNKNOWN} sentinel).
+         *
+         * @param revision the revision number (0-based)
+         * @param offset byte offset of this revision's data within the {@code .d} file (or,
+         *     for an inline revlog, within the {@code .i} file itself)
+         * @param flags per-revision flag bits
+         * @param compLen on-disk (possibly compressed) length of this revision's data
+         * @param uncompLen length of this revision's fully reconstructed content
+         * @param baseRev the revision this one deltas against, or itself for a full-text snapshot
+         * @param linkRev the changelog revision that introduced this revision
+         * @param parent1 first parent's revision number, or {@code -1} if none
+         * @param parent2 second parent's revision number, or {@code -1} if none
+         * @param nodeId this revision's 20-byte SHA-1 node id
+         * @param sidedataOffset byte offset of this revision's sidedata chunk (v2 only)
+         * @param sidedataCompLen on-disk length of this revision's sidedata chunk; {@code 0}
+         *     means no sidedata
+         * @param sidedataCompressionMode sidedata compression mode: {@code 0}=PLAIN,
+         *     {@code 1}=DEFAULT (zstd), {@code 2}=INLINE
          */
         public IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
                            int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId,
@@ -97,6 +138,18 @@ public class Revlog {
          * sidedata to report (v1 has no sidedata at all). Equivalent to the full constructor
          * with {@code sidedataOffset=0}, {@code sidedataCompLen=0} (meaning "no sidedata" — see
          * {@link Revlog#getSidedata(int)}), {@code sidedataCompressionMode=COMP_MODE_PLAIN}.
+         *
+         * @param revision the revision number (0-based)
+         * @param offset byte offset of this revision's data within the {@code .d} file (or,
+         *     for an inline revlog, within the {@code .i} file itself)
+         * @param flags per-revision flag bits
+         * @param compLen on-disk (possibly compressed) length of this revision's data
+         * @param uncompLen length of this revision's fully reconstructed content
+         * @param baseRev the revision this one deltas against, or itself for a full-text snapshot
+         * @param linkRev the changelog revision that introduced this revision
+         * @param parent1 first parent's revision number, or {@code -1} if none
+         * @param parent2 second parent's revision number, or {@code -1} if none
+         * @param nodeId this revision's 20-byte SHA-1 node id
          */
         public IndexRecord(int revision, long offset, int flags, int compLen, int uncompLen,
                            int baseRev, int linkRev, int parent1, int parent2, byte[] nodeId) {
@@ -104,50 +157,126 @@ public class Revlog {
                     nodeId, 0L, 0, 0, -1);
         }
 
+        /**
+         * Returns the revision number.
+         * @return the revision number (0-based)
+         */
         public int getRevision() { return revision; }
+        /**
+         * Returns the byte offset of this revision's data.
+         * @return the byte offset within the {@code .d} (or inline {@code .i}) file
+         */
         public long getOffset() { return offset; }
+        /**
+         * Returns this revision's flag bits.
+         * @return the per-revision flag bits
+         */
         public int getFlags() { return flags; }
+        /**
+         * Returns the on-disk length of this revision's data.
+         * @return the (possibly compressed) on-disk length
+         */
         public int getCompLen() { return compLen; }
+        /**
+         * Returns the length of this revision's fully reconstructed content.
+         * @return the decompressed, delta-applied content length
+         */
         public int getUncompLen() { return uncompLen; }
+        /**
+         * Returns the revision this one deltas against.
+         * @return the base revision number, or this revision's own number for a full-text snapshot
+         */
         public int getBaseRev() { return baseRev; }
+        /**
+         * Returns the changelog revision that introduced this revision.
+         * @return the link revision number
+         */
         public int getLinkRev() { return linkRev; }
+        /**
+         * Returns this revision's first parent.
+         * @return the first parent's revision number, or {@code -1} if none
+         */
         public int getParent1() { return parent1; }
+        /**
+         * Returns this revision's second parent.
+         * @return the second parent's revision number, or {@code -1} if none
+         */
         public int getParent2() { return parent2; }
+        /**
+         * Returns this revision's node id.
+         * @return the 20-byte SHA-1 node id
+         */
         public byte[] getNodeId() { return nodeId; }
-        /** Byte offset of this revision's sidedata chunk in the resolved {@code .sda} file (v2 only). */
+        /**
+         * Byte offset of this revision's sidedata chunk in the resolved {@code .sda} file (v2 only).
+         * @return the sidedata byte offset
+         */
         public long getSidedataOffset() { return sidedataOffset; }
-        /** On-disk (possibly compressed) length of this revision's sidedata chunk; 0 = no sidedata. */
+        /**
+         * On-disk (possibly compressed) length of this revision's sidedata chunk; 0 = no sidedata.
+         * @return the on-disk sidedata chunk length
+         */
         public int getSidedataCompLen() { return sidedataCompLen; }
         /**
          * Sidedata compression mode: {@code 0}=PLAIN (stored as-is), {@code 1}=DEFAULT
          * (revlog's default compression, zstd — self-describing frame, no length prefix needed),
          * {@code 2}=INLINE (legacy per-chunk marker-byte convention). See
          * {@code mercurial/revlogutils/constants.py} {@code COMP_MODE_*}.
+         * @return the sidedata compression mode
          */
         public int getSidedataCompressionMode() { return sidedataCompressionMode; }
-        /** See the class-level {@code @param rank} javadoc above. */
+        /**
+         * See the class-level {@code @param rank} javadoc above.
+         * @return the changelog-v2 rank, or {@code -1} ({@code RANK_UNKNOWN}) if not applicable
+         */
         public int getRank() { return rank; }
     }
 
+    /**
+     * Opens (or prepares to create) a plain, non-zstd, v1 revlog.
+     *
+     * @param idxFile the revlog's {@code .i} index file
+     * @param datFile the revlog's {@code .d} data file (used only for a non-inline v1 revlog)
+     * @throws IOException if the index or data file cannot be read
+     */
     public Revlog(File idxFile, File datFile) throws IOException {
         this(idxFile, datFile, false);
     }
 
+    /**
+     * Opens (or prepares to create) a v1 revlog, optionally zstd-compressed.
+     *
+     * @param idxFile the revlog's {@code .i} index file
+     * @param datFile the revlog's {@code .d} data file (used only for a non-inline revlog)
+     * @param useZstd whether new revisions should be compressed with zstd rather than zlib
+     * @throws IOException if the index or data file cannot be read
+     */
     public Revlog(File idxFile, File datFile, boolean useZstd) throws IOException {
         this(idxFile, datFile, useZstd, false, false);
     }
 
     /**
+     * Opens (or prepares to create) a revlog, optionally as a general v2 revlog.
+     *
+     * @param idxFile the revlog's {@code .i} index file
+     * @param datFile the revlog's {@code .d} data file (used only for a non-inline v1 revlog)
+     * @param useZstd whether new revisions should be compressed with zstd rather than zlib
      * @param createAsGeneralV2 see {@link RevlogIndex#RevlogIndex(File, boolean)} -- pass
      *     {@code true} when the owning repository requires {@code exp-revlogv2.2} and
      *     {@code idxFile} may not exist yet, so a brand-new revlog starts out as v2 instead of
      *     silently defaulting to v1.
+     * @throws IOException if the index or data file cannot be read
      */
     public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2) throws IOException {
         this(idxFile, datFile, useZstd, createAsGeneralV2, false);
     }
 
     /**
+     * Opens (or prepares to create) a revlog, optionally with a persistent node map.
+     *
+     * @param idxFile the revlog's {@code .i} index file
+     * @param datFile the revlog's {@code .d} data file (used only for a non-inline v1 revlog)
+     * @param useZstd whether new revisions should be compressed with zstd rather than zlib
      * @param createAsGeneralV2 see {@link RevlogIndex#RevlogIndex(File, boolean)}.
      * @param usePersistentNodeMap when true and this revlog's store has the
      *     {@code persistent-nodemap} requirement, attempts to load the {@code <radix>.n} trie
@@ -155,17 +284,31 @@ public class Revlog {
      *     ({@link RevlogIndex#findRevision}). Never fails the constructor -- a missing, stale, or
      *     malformed {@code .n} file is silently ignored and this behaves exactly as if the flag
      *     were {@code false} (see {@link NodeMapFile#tryLoad}).
+     * @throws IOException if the index or data file cannot be read
      */
     public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2, boolean usePersistentNodeMap) throws IOException {
         this(idxFile, datFile, useZstd, createAsGeneralV2, false, usePersistentNodeMap);
     }
 
     /**
+     * Opens (or prepares to create) a revlog with full control over its v2 flavor and node-map
+     * usage. This is the designated constructor every other {@code Revlog} constructor delegates
+     * to.
+     *
+     * @param idxFile the revlog's {@code .i} index file
+     * @param datFile the revlog's {@code .d} data file (used only for a non-inline v1 revlog; a
+     *     v2 revlog's actual data file is instead discovered from its docket)
+     * @param useZstd whether new revisions should be compressed with zstd rather than zlib
+     * @param createAsGeneralV2 see {@link RevlogIndex#RevlogIndex(File, boolean)}.
      * @param createAsChangelogV2 see {@link RevlogIndex#RevlogIndex(File, boolean, boolean,
      *     NodeMapFile)} -- pass {@code true} instead of (never together with) {@code
      *     createAsGeneralV2} when {@code idxFile} may not exist yet and this repository's
      *     requires declare {@code exp-changelog-v2} specifically (the changelog, not a general
      *     {@code exp-revlogv2.2} manifest/filelog).
+     * @param usePersistentNodeMap when true and this revlog's store has the
+     *     {@code persistent-nodemap} requirement, attempts to load the persistent node-map trie
+     *     next to {@code idxFile}
+     * @throws IOException if the index or data file cannot be read
      */
     public Revlog(File idxFile, File datFile, boolean useZstd, boolean createAsGeneralV2, boolean createAsChangelogV2, boolean usePersistentNodeMap) throws IOException {
         this.idxFile = idxFile;
@@ -197,6 +340,11 @@ public class Revlog {
         this.useZstd = useZstd;
     }
 
+    /**
+     * Returns the underlying parsed index for this revlog.
+     *
+     * @return the revlog's {@link RevlogIndex}
+     */
     public synchronized RevlogIndex getIndex() {
         return index;
     }
@@ -223,10 +371,21 @@ public class Revlog {
         index.setPersistentNodeMap(updated);
     }
 
+    /**
+     * Returns the number of revisions currently stored in this revlog.
+     *
+     * @return the revision count
+     */
     public synchronized int getRevisionCount() {
         return index.getRevisionCount();
     }
 
+    /**
+     * Returns the parsed index record for one revision.
+     *
+     * @param rev the revision number (0-based)
+     * @return the parsed {@link IndexRecord} for that revision
+     */
     public synchronized IndexRecord getIndexRecord(int rev) {
         return index.getIndexRecord(rev);
     }
@@ -240,6 +399,8 @@ public class Revlog {
      * inline revlog, consecutive revisions' data is interleaved with their 64-byte headers
      * directly in the {@code .i} file, so a plain {@code revCount * 64} byte offset (correct
      * only for the non-inline layout) would silently discard every revision's payload bytes.
+     *
+     * @return {@code true} if revision data is stored inline in the {@code .i} file
      */
     public synchronized boolean isInline() {
         return inline;
@@ -249,6 +410,9 @@ public class Revlog {
      * Physical byte offset of revision {@code rev}'s 64-byte index record within the {@code .i}
      * file. For a non-inline revlog this is simply {@code rev * 64}; for an inline revlog it
      * additionally accounts for every preceding revision's interleaved payload bytes.
+     *
+     * @param rev the revision number (0-based)
+     * @return the byte offset of that revision's index record within the {@code .i} file
      */
     public synchronized long getFileOffset(int rev) {
         return index.getFileOffset(rev);
@@ -286,6 +450,10 @@ public class Revlog {
      * is corrupted"), and a v2/docket-based changelog needs its docket end-pointers updated too,
      * or real hg's {@code verify} reports "changeset refers to unknown revision" for the stale
      * pointers.
+     *
+     * @param keepCount the number of revisions to keep; every revision from this index onward is
+     *     discarded
+     * @throws IOException if the index, data, or docket files cannot be read or truncated
      */
     public synchronized void truncate(int keepCount) throws IOException {
         if (index.isV2()) {
@@ -404,10 +572,23 @@ public class Revlog {
      */
     public static final int REVIDX_EXTSTORED = 0x2000;
 
+    /**
+     * Returns whether a revision is marked censored.
+     *
+     * @param rev the revision number (0-based)
+     * @return {@code true} if {@link #REVIDX_ISCENSORED} is set on that revision's flags
+     */
     public synchronized boolean isCensored(int rev) {
         return (getIndexRecord(rev).getFlags() & REVIDX_ISCENSORED) != 0;
     }
 
+    /**
+     * Returns whether a revision's stored text is an external-storage pointer rather than actual
+     * file content.
+     *
+     * @param rev the revision number (0-based)
+     * @return {@code true} if {@link #REVIDX_EXTSTORED} is set on that revision's flags
+     */
     public synchronized boolean isExtStored(int rev) {
         return (getIndexRecord(rev).getFlags() & REVIDX_EXTSTORED) != 0;
     }
@@ -437,8 +618,11 @@ public class Revlog {
      * outer sidedata container (see {@link SidedataCodec}) mapping small integer keys to raw
      * byte payloads.
      *
+     * @param rev the revision number (0-based)
      * @return an empty map if this revision has no sidedata (v1 revlog, or a v2 revision that
      *         simply never got any written — sidedataCompLen == 0)
+     * @throws IOException if the sidedata file is missing when the index record claims a
+     *     non-empty sidedata chunk, or cannot be read/decompressed/decoded
      */
     public synchronized Map<Integer, byte[]> getSidedata(int rev) throws IOException {
         IndexRecord rec = getIndexRecord(rev);
@@ -561,6 +745,10 @@ public class Revlog {
      * nodeId} rather than hashing content -- exactly what preserving node identity across a
      * content-changing censor requires) to rebuild the revlog revision-by-revision in its native
      * v2 layout instead.
+     *
+     * @param censorRev the revision number whose payload should be replaced with a tombstone
+     * @param tombstoneRawContent the raw content to store in place of {@code censorRev}'s payload
+     * @throws IOException if the revlog files cannot be read or rewritten
      */
     public synchronized void censorRevision(int censorRev, byte[] tombstoneRawContent) throws IOException {
         int count = index.getRevisionCount();
@@ -676,6 +864,17 @@ public class Revlog {
         clearCache();
     }
 
+    /**
+     * Reconstructs a revision's raw stored content, resolving the delta chain back to its base
+     * full-text and applying every delta in order. Unlike {@link #getRevisionContent(int)}, this
+     * does not strip the leading {@code \x01\n...\x01\n} metadata block or reject a censored
+     * revision -- it returns exactly what is stored on disk.
+     *
+     * @param rev the revision number (0-based), or {@code -1} for the null revision
+     * @return the reconstructed raw content, or an empty array for revision {@code -1}
+     * @throws IOException if the revlog files cannot be read, or the delta chain is corrupt
+     *     (cyclic, or its base revision's data cannot be located)
+     */
     public synchronized byte[] getRawRevisionContent(int rev) throws IOException {
         if (rev == -1) {
             return new byte[0];
@@ -724,6 +923,17 @@ public class Revlog {
         }
     }
 
+    /**
+     * Returns a revision's logical file content, with the leading {@code \x01\n...\x01\n}
+     * metadata block (if any) stripped and the result cached for subsequent calls.
+     *
+     * @param rev the revision number (0-based), or {@code -1} for the null revision
+     * @return the revision's content, with any metadata block removed
+     * @throws IOException if the revlog files cannot be read
+     * @throws HgCensoredContentException if the revision is marked censored (see
+     *     {@link #isCensored(int)}) -- use {@link #getRawRevisionContent(int)} to read the raw
+     *     tombstone bytes instead
+     */
     public synchronized byte[] getRevisionContent(int rev) throws IOException {
         if (rev == -1) {
             return new byte[0];
@@ -784,6 +994,11 @@ public class Revlog {
      * if they were the ordinary block, so every existing caller of this method ({@code
      * AnnotateCommand}'s rename-crossing, {@code LogCommand --follow}) transparently keeps
      * working across an LFS-tracked rename with no caller-side change needed.
+     *
+     * @param rev the revision number (0-based)
+     * @return the parsed metadata fields (e.g. {@code copy}/{@code copyrev} for a rename/copy
+     *     source), or an empty map if the revision carries no metadata block
+     * @throws IOException if the revlog files cannot be read
      */
     public synchronized Map<String, String> getRevisionMetadata(int rev) throws IOException {
         if (isExtStored(rev)) {
@@ -874,6 +1089,10 @@ public class Revlog {
     /**
      * Creates a simple raw delta between baseText and newText using prefix-suffix matching.
      * Preserved for verification comparisons. Delegates to {@link DeltaEngine}.
+     *
+     * @param baseText the base (old) revision content
+     * @param newText the new revision content
+     * @return the encoded delta from {@code baseText} to {@code newText}
      */
     public static byte[] createSimpleDelta(byte[] baseText, byte[] newText) {
         return DeltaEngine.createSimpleDelta(baseText, newText);
@@ -882,12 +1101,29 @@ public class Revlog {
     /**
      * Creates a highly optimized multi-hunk delta using LCS Line Diff.
      * Delegates to {@link DeltaEngine}.
+     *
+     * @param baseText the base (old) revision content
+     * @param newText the new revision content
+     * @return the encoded delta from {@code baseText} to {@code newText}
      */
     public static byte[] createDelta(byte[] baseText, byte[] newText) {
         return DeltaEngine.createDelta(baseText, newText);
     }
 
-
+    /**
+     * Appends a new revision with no metadata block, as an ordinary (non-LFS/copy-tracing)
+     * revision. Equivalent to calling {@link #appendRevision(byte[], Map, int, int, byte[],
+     * byte[], int)} with a {@code null} metadata map.
+     *
+     * @param content the revision's raw content
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param p1Node first parent's node id
+     * @param p2Node second parent's node id
+     * @param linkRev the changelog revision this revision is linked to
+     * @return the newly appended revision's node id
+     * @throws IOException if the revlog files cannot be read or written
+     */
     public synchronized byte[] appendRevision(byte[] content, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         return appendRevision(content, null, parent1, parent2, p1Node, p2Node, linkRev);
@@ -1210,7 +1446,7 @@ public class Revlog {
         recordBuf.putInt(dataHunk.length);
         recordBuf.putInt(processedContent.length);
         if (changelogV2) {
-            // INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x (96 bytes, confirmed against
+            // INDEX_ENTRY_CL_V2 = >Qiiii20s12xQiBi23x (96 bytes, matches
             // mercurial/revlogutils/constants.py)
             recordBuf.putInt(parent1);
             recordBuf.putInt(parent2);
@@ -1220,8 +1456,7 @@ public class Revlog {
             recordBuf.putInt(sidedataCompLen);
             // Compression mode (low 2 bits, main data): COMP_MODE_DEFAULT(1) only when zstd was
             // actually used above and it shrank the data, otherwise COMP_MODE_PLAIN(0) since the
-            // original bytes were stored as-is -- confirmed against a real hg fixture
-            // (sidedata-copytracing/data.idx) that this varies per revision, so it must not be
+            // original bytes were stored as-is -- this varies per revision, so it must not be
             // hardcoded. The
             // high 2 bits (2-3) are sidedata's own compression mode (left as 00 since
             // COMP_MODE_PLAIN=0 is used, no change needed) -- mirrors RevlogIndex's
@@ -1230,7 +1465,7 @@ public class Revlog {
             recordBuf.putInt(computeCl2Rank(parent1, parent2)); // rank (real hg's own recursive formula)
             recordBuf.put(new byte[23]); // padding
         } else {
-            // INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x (96 bytes, confirmed against
+            // INDEX_ENTRY_V2 = >Qiiiiii20s12xQiB19x (96 bytes, matches
             // mercurial/revlogutils/constants.py)
             recordBuf.putInt(rev); // baseRev (simplification: always itself/fulltext, no delta chain)
             recordBuf.putInt(linkRev);
@@ -1306,17 +1541,45 @@ public class Revlog {
         return rank < 0 ? 0 : rank;
     }
 
+    /**
+     * Appends a new revision, wrapping {@code content} with a rename/copy metadata block when
+     * {@code metadata} is non-empty. Equivalent to calling {@link #appendRevision(byte[], Map,
+     * int, int, byte[], byte[], int, byte[])} with a {@code null} sidedata container.
+     *
+     * @param content the revision's raw content, before any metadata wrapping
+     * @param metadata rename/copy-style key/value pairs to prepend, or {@code null}/empty for none
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param p1Node first parent's node id
+     * @param p2Node second parent's node id
+     * @param linkRev the changelog revision this revision is linked to
+     * @return the newly appended revision's node id
+     * @throws IOException if the revlog files cannot be read or written
+     */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         return appendRevision(content, metadata, parent1, parent2, p1Node, p2Node, linkRev, null);
     }
 
     /**
+     * Appends a new revision, optionally attaching sidedata. Equivalent to calling {@link
+     * #appendRevision(byte[], Map, int, int, byte[], byte[], int, byte[], int)} with
+     * {@code extraFlags=0}.
+     *
+     * @param content the revision's raw content, before any metadata wrapping
+     * @param metadata rename/copy-style key/value pairs to prepend, or {@code null}/empty for none
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param p1Node first parent's node id
+     * @param p2Node second parent's node id
+     * @param linkRev the changelog revision this revision is linked to
      * @param sidedataContainer already-serialized {@link SidedataCodec} bytes to attach to this
      *     revision (only meaningful for a v2 revlog -- silently ignored otherwise, matching real
      *     hg where sidedata is a revlog-v2-only feature), or {@code null} for none. Used by {@code
      *     api.CommitCommand} to write {@code SD_FILES} copy-tracing sidedata on the changelog
      *     revision when the repository has {@code exp-copies-sidedata-changeset}.
+     * @return the newly appended revision's node id
+     * @throws IOException if the revlog files cannot be read or written
      */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer) throws IOException {
@@ -1334,6 +1597,7 @@ public class Revlog {
      * pointer fields into precisely this block) can reuse it verbatim rather than re-deriving the
      * format by hand.
      *
+     * @param content the revision's raw content, before any metadata wrapping
      * @param metadata rename/copy-style key/value pairs to prepend, or {@code null}/empty for none
      * @return {@code content} unchanged when {@code metadata} is null/empty AND {@code content}
      *     doesn't itself start with the {@code "\x01\n"} marker (in which case an empty
@@ -1365,11 +1629,26 @@ public class Revlog {
     }
 
     /**
+     * Appends a new revision, optionally OR-ing extra flag bits into its index record. Equivalent
+     * to calling {@link #appendRevision(byte[], Map, int, int, byte[], byte[], int, byte[], int,
+     * byte[])} with a {@code null} hash-basis override.
+     *
+     * @param content the revision's raw content, before any metadata wrapping
+     * @param metadata rename/copy-style key/value pairs to prepend, or {@code null}/empty for none
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param p1Node first parent's node id
+     * @param p2Node second parent's node id
+     * @param linkRev the changelog revision this revision is linked to
+     * @param sidedataContainer already-serialized {@link SidedataCodec} bytes to attach to this
+     *     revision, or {@code null} for none
      * @param extraFlags additional {@code flags} bits (e.g. {@link #REVIDX_EXTSTORED}) to OR into
      *     this revision's index record, on top of whatever this method already computes on its
      *     own (currently nothing -- flags are otherwise always 0 on this path). Used by {@code
      *     api.CommitCommand}'s LFS pipeline to flag a revision whose stored {@code
      *     content} is an LFS pointer, not the real file bytes.
+     * @return the newly appended revision's node id
+     * @throws IOException if the revlog files cannot be read or written
      */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer, int extraFlags) throws IOException {
@@ -1377,6 +1656,20 @@ public class Revlog {
     }
 
     /**
+     * Appends a new revision to this revlog, computing its delta/full-text storage, node id, and
+     * index record, and durably writing them (plus any sidedata) to the underlying files. This is
+     * the designated implementation every other {@code appendRevision} overload delegates to.
+     *
+     * @param content the revision's raw content, before any metadata wrapping
+     * @param metadata rename/copy-style key/value pairs to prepend, or {@code null}/empty for none
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param p1Node first parent's node id
+     * @param p2Node second parent's node id
+     * @param linkRev the changelog revision this revision is linked to
+     * @param sidedataContainer already-serialized {@link SidedataCodec} bytes to attach to this
+     *     revision, or {@code null} for none
+     * @param extraFlags additional {@code flags} bits to OR into this revision's index record
      * @param hashBasisOverride when non-null, the revlog node id is computed as
      *     {@code SHA1(p1Node, p2Node, hashBasisOverride)} instead of over the (post-metadata-
      *     escaping) stored {@code content} -- real hg's LFS extension does exactly this: the
@@ -1384,6 +1677,8 @@ public class Revlog {
      *     (what the flag-processor's {@code readfromstore} hands back to callers), even though
      *     the bytes actually stored on disk are the pointer text. Used by {@code
      *     api.CommitCommand}'s LFS pipeline.
+     * @return the newly appended revision's node id
+     * @throws IOException if the revlog files cannot be read or written
      */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev, byte[] sidedataContainer, int extraFlags,
@@ -1545,6 +1840,11 @@ public class Revlog {
 
     /**
      * Appends a raw ChangeGroupEntry from remote bundle, preserving the original remote Node ID.
+     *
+     * @param entry the parsed changegroup entry to append
+     * @param linkRev the changelog revision this revision is linked to
+     * @throws IOException if the revlog files cannot be read or written, or the reconstructed
+     *     content's computed node id does not match {@code entry}'s declared node id
      */
     public synchronized void appendChangeGroupEntry(ChangegroupParser.ChangeGroupEntry entry, int linkRev) throws IOException {
         appendChangeGroupEntry(entry, linkRev, null, false);
@@ -1574,6 +1874,13 @@ public class Revlog {
      * group's first entry (this method then resolves the base via the entry's own {@code p1},
      * which must already be locally known -- or all-zero for a root commit), and the
      * immediately-previously-decoded entry's own content for every entry after that.
+     *
+     * @param entry the parsed changegroup entry to append
+     * @param linkRev the changelog revision this revision is linked to
+     * @param previousGroupEntryContent the immediately-previously-decoded entry's content, or
+     *     {@code null} for the group's first entry
+     * @throws IOException if the revlog files cannot be read or written, or the reconstructed
+     *     content's computed node id does not match {@code entry}'s declared node id
      */
     public synchronized void appendChangeGroupEntry(ChangegroupParser.ChangeGroupEntry entry, int linkRev, byte[] previousGroupEntryContent) throws IOException {
         appendChangeGroupEntry(entry, linkRev, previousGroupEntryContent, true);
@@ -1815,6 +2122,9 @@ public class Revlog {
      * don't carry an explicit per-entry flags field (cg1/cg2 — only cg3 does), exactly the way
      * real hg's own {@code revlog.py} peeks at incoming delta/fulltext content
      * ({@code _peek_iscensored}) to reconstruct the flag when it isn't explicitly transmitted.
+     *
+     * @param content the as-stored revision text to inspect
+     * @return {@code true} if {@code content} carries a censor tombstone metadata block
      */
     static boolean isCensoredText(byte[] content) {
         if (content == null || content.length < 2 || content[0] != '' || content[1] != '\n') {
@@ -1840,16 +2150,32 @@ public class Revlog {
         return false;
     }
 
+    /**
+     * Looks up a revision by its node id.
+     *
+     * @param nodeId the node id to look up
+     * @return the revision number, or {@code -1} if not found
+     */
     public synchronized int findRevision(byte[] nodeId) {
         return index.findRevision(nodeId);
     }
 
-    /** See {@link RevlogIndex#hasLocallyAddedRecords()}. */
+    /**
+     * See {@link RevlogIndex#hasLocallyAddedRecords()}.
+     * @return {@code true} if this revlog has revisions added since it was loaded
+     */
     public synchronized boolean hasLocallyAddedRecords() {
         return index.hasLocallyAddedRecords();
     }
 
-    /** Delegates to {@link DeltaEngine}. */
+    /**
+     * Delegates to {@link DeltaEngine}.
+     *
+     * @param baseText the base (old) revision content the delta was computed against
+     * @param delta the encoded delta to apply
+     * @return the reconstructed content
+     * @throws IOException if the delta is malformed
+     */
     public static byte[] applyDelta(byte[] baseText, byte[] delta) throws IOException {
         return DeltaEngine.applyDelta(baseText, delta);
     }
@@ -1863,6 +2189,24 @@ public class Revlog {
         return a.length - b.length;
     }
 
+    /**
+     * Appends a revision verbatim as a full-text entry, using a caller-supplied node id instead
+     * of hashing the content. Unlike {@link #appendRevision}, this neither wraps {@code
+     * rawToWrite} in a metadata block nor verifies its node id against the content -- the caller
+     * is trusted to supply both correctly. Used by {@code RebaseCommand} to restore
+     * filelog/manifest/changelog revisions from a backup, where the original node id must be
+     * preserved exactly rather than recomputed.
+     *
+     * @param rawToWrite the exact bytes to store as this revision's content
+     * @param node the node id to record for this revision (not derived from {@code rawToWrite})
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param p1Node first parent's node id
+     * @param p2Node second parent's node id
+     * @param linkRev the changelog revision this revision is linked to
+     * @return {@code node}, unchanged
+     * @throws IOException if the revlog files cannot be read or written
+     */
     public synchronized byte[] appendRawRevision(byte[] rawToWrite, byte[] node, int parent1, int parent2,
                                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         int rev = index.getRevisionCount();
@@ -1956,6 +2300,21 @@ public class Revlog {
         return node;
     }
 
+    /**
+     * Appends an already-processed revision (a caller-supplied node id, no metadata wrapping),
+     * choosing between a delta or full-text encoding for compact storage. Used by {@code
+     * GcCommand} when repacking a revlog into a fresh, defragmented copy.
+     *
+     * @param processedContent the revision's content, already wrapped/escaped as needed
+     * @param nodeId the node id to record for this revision (not derived from {@code
+     *     processedContent})
+     * @param parent1 first parent's revision number, or {@code -1} if none
+     * @param parent2 second parent's revision number, or {@code -1} if none
+     * @param p1Node first parent's node id
+     * @param p2Node second parent's node id
+     * @param linkRev the changelog revision this revision is linked to
+     * @throws IOException if the revlog files cannot be read or written
+     */
     public synchronized void appendOptimizedRevision(byte[] processedContent, byte[] nodeId, int parent1, int parent2,
                                                      byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         int rev = index.getRevisionCount();

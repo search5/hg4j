@@ -14,10 +14,20 @@ import java.util.List;
 public class OrRevFilter implements RevFilter {
     private final List<RevFilter> filters;
 
+    /**
+     * Creates an OR combination of the given filters.
+     *
+     * @param filters filters to combine; a revision is included if any one of them includes it
+     */
     public OrRevFilter(Collection<RevFilter> filters) {
         this.filters = List.copyOf(filters);
     }
 
+    /**
+     * Creates an OR combination of the given filters.
+     *
+     * @param filters filters to combine; a revision is included if any one of them includes it
+     */
     public OrRevFilter(RevFilter... filters) {
         this.filters = List.of(filters);
     }

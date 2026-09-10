@@ -14,10 +14,20 @@ import java.util.List;
 public class AndRevFilter implements RevFilter {
     private final List<RevFilter> filters;
 
+    /**
+     * Creates a filter that ANDs together the given filters.
+     *
+     * @param filters the filters to combine; a revision must satisfy every one of them
+     */
     public AndRevFilter(Collection<RevFilter> filters) {
         this.filters = List.copyOf(filters);
     }
 
+    /**
+     * Creates a filter that ANDs together the given filters.
+     *
+     * @param filters the filters to combine; a revision must satisfy every one of them
+     */
     public AndRevFilter(RevFilter... filters) {
         this.filters = List.of(filters);
     }

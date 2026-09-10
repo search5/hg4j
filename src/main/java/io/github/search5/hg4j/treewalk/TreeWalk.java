@@ -25,21 +25,54 @@ public class TreeWalk {
     private PathFilter filter = null;
     private boolean recursive = true;
 
+    /** Creates an empty tree walk; add trees to compare via {@link #addTree}. */
+    public TreeWalk() {
+    }
+
+    /**
+     * Adds a tree to be walked alongside any trees already added, resetting it to its initial
+     * position first. Trees are indexed in the order they are added -- that index is what
+     * {@link #isTracked}/{@link #getNodeId}/{@link #getState} and friends take as {@code treeIndex}.
+     *
+     * @param iterator the tree to add to this walk
+     * @throws IOException if resetting the iterator fails
+     */
     public void addTree(TreeIterator iterator) throws IOException {
         iterator.reset();
         trees.add(iterator);
     }
 
+    /**
+     * Restricts the walk to paths accepted by {@code filter}.
+     *
+     * @param filter the path filter to apply, or {@code null} to walk every path
+     * @return this walk, for chaining
+     */
     public TreeWalk setFilter(PathFilter filter) {
         this.filter = filter;
         return this;
     }
 
+    /**
+     * Sets whether the walk descends into subdirectories (the default) or stops at
+     * the last directory accepted by the current {@link #setFilter filter}.
+     *
+     * @param recursive {@code false} to only report entries directly inside the filter's base directory
+     * @return this walk, for chaining
+     */
     public TreeWalk setRecursive(boolean recursive) {
         this.recursive = recursive;
         return this;
     }
 
+    /**
+     * Advances the walk to the next path (in merged, sorted order across every added tree) that
+     * passes the current filter/recursive settings.
+     *
+     * @return {@code true} if a next path was found and is now current, {@code false} once every
+     *     tree is exhausted
+     * @throws IOException if advancing any underlying tree iterator fails
+     */
     public boolean next() throws IOException {
         while (true) {
             if (first) {
@@ -107,10 +140,21 @@ public class TreeWalk {
         }
     }
 
+    /**
+     * The current path, shared across every added tree at this step of the walk.
+     *
+     * @return the current path, or {@code null} before the first {@link #next()} call or after it returns {@code false}
+     */
     public String getPath() {
         return currentPath;
     }
 
+    /**
+     * Whether the tree at {@code treeIndex} tracks the current path.
+     *
+     * @param treeIndex the index (in add order) of the tree to query
+     * @return {@code true} if that tree's current entry is exactly the current path
+     */
     public boolean isTracked(int treeIndex) {
         if (treeIndex < 0 || treeIndex >= trees.size()) {
             return false;
@@ -119,6 +163,12 @@ public class TreeWalk {
         return currentPath != null && currentPath.equals(tree.getEntryPath());
     }
 
+    /**
+     * The node ID the tree at {@code treeIndex} records for the current path.
+     *
+     * @param treeIndex the index (in add order) of the tree to query
+     * @return the raw node ID bytes, or {@code null} if that tree does not track the current path
+     */
     public byte[] getNodeId(int treeIndex) {
         if (isTracked(treeIndex)) {
             return trees.get(treeIndex).getEntryNodeId();
@@ -126,6 +176,12 @@ public class TreeWalk {
         return null;
     }
 
+    /**
+     * Whether the tree at {@code treeIndex} records the current path as executable.
+     *
+     * @param treeIndex the index (in add order) of the tree to query
+     * @return {@code true} if that tree tracks the current path and flags it executable
+     */
     public boolean isExecutable(int treeIndex) {
         if (isTracked(treeIndex)) {
             return trees.get(treeIndex).isExecutable();
@@ -133,6 +189,14 @@ public class TreeWalk {
         return false;
     }
 
+    /**
+     * Whether the tree at {@code treeIndex} records the current path as a symlink. Only
+     * {@link ManifestTreeIterator}-backed trees can report this; any other tree type reports
+     * {@code false}.
+     *
+     * @param treeIndex the index (in add order) of the tree to query
+     * @return {@code true} if that tree tracks the current path and flags it as a symlink
+     */
     public boolean isSymlink(int treeIndex) {
         if (isTracked(treeIndex)) {
             TreeIterator tree = trees.get(treeIndex);
@@ -143,6 +207,13 @@ public class TreeWalk {
         return false;
     }
 
+    /**
+     * The dirstate-style state character the tree at {@code treeIndex} records for the current path.
+     *
+     * @param treeIndex the index (in add order) of the tree to query
+     * @return the entry's state character (e.g. {@code 'n'}/{@code 'a'}/{@code 'r'}/{@code 'm'}),
+     *     or {@code '?'} if that tree does not track the current path
+     */
     public char getState(int treeIndex) {
         if (isTracked(treeIndex)) {
             return trees.get(treeIndex).getEntryState();
@@ -150,6 +221,11 @@ public class TreeWalk {
         return '?';
     }
 
+    /**
+     * Resets the walk (and every added tree) back to its initial, pre-first-{@link #next()} state.
+     *
+     * @throws IOException if resetting any underlying tree iterator fails
+     */
     public void reset() throws IOException {
         currentPath = null;
         first = true;

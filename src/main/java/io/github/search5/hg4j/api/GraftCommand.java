@@ -71,15 +71,33 @@ public class GraftCommand {
     private String sourceRevision;
     private final List<HgHook> postGraftHooks = new ArrayList<>();
 
+    /**
+     * Creates an instance bound to the given repository.
+     *
+     * @param repository repository the graft source is read from and the grafted commit is
+     *     written to
+     */
     public GraftCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision whose changes are copied onto the current parent.
+     *
+     * @param sourceRevision revision identifier of the graft source
+     * @return this command, for chaining
+     */
     public GraftCommand setSource(String sourceRevision) {
         this.sourceRevision = sourceRevision;
         return this;
     }
 
+    /**
+     * Registers a hook to run after the graft commit is created.
+     *
+     * @param hook hook to invoke after grafting; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public GraftCommand registerPostGraftHook(HgHook hook) {
         if (hook != null) {
             postGraftHooks.add(hook);
@@ -156,6 +174,7 @@ public class GraftCommand {
      * @throws HgMergeConflictException if the destination and the source diverged on the same
      *         file and a real 3-way merge could not resolve it cleanly -- see this class's own
      *         javadoc for the {@link #continueGraft()}/{@link #abort()} resumption protocol
+     * @throws HgLockException if the working copy or store lock cannot be acquired
      */
     public String call() throws IOException, HgLockException, HgMergeConflictException {
         if (sourceRevision == null || sourceRevision.isEmpty()) {
@@ -308,6 +327,8 @@ public class GraftCommand {
      *
      * @return hex node ID of the newly grafted commit
      * @throws HgValidationException if no graft is in progress, or unresolved files remain
+     * @throws IOException if history traversal or file write fails
+     * @throws HgLockException if the working copy or store lock cannot be acquired
      */
     public String continueGraft() throws IOException, HgLockException {
         repository.clearRevlogCache();
@@ -351,6 +372,10 @@ public class GraftCommand {
      * (nothing was ever appended to the changelog/manifest/filelogs for a paused graft -- that
      * only happens once {@link #call()}/{@link #continueGraft()} actually commits) and restores
      * the working copy/dirstate to exactly what was checked out before {@link #call()} started.
+     *
+     * @throws IOException if restoring the working copy or dirstate fails, or (as {@link
+     *     HgValidationException}) if no graft is in progress
+     * @throws HgLockException if the working copy or store lock cannot be acquired
      */
     public void abort() throws IOException, HgLockException {
         repository.clearRevlogCache();

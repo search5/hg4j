@@ -27,9 +27,8 @@ import java.util.Map;
  * the amended commit REPLACES the amended-away commit as a sibling on the SAME parent(s)
  * ({@code base = old.p1()}), rather than becoming its child, and defaults its author/message/
  * close-branch state to the amended-away commit's own values when the caller doesn't override
- * them via {@link #setAuthor}/{@link #setMessage}/{@link #setCloseBranch} (verified against real
- * hg 7.2.2: {@code hg commit --amend} with no {@code -u}/{@code -m} reuses the original commit's
- * user and message unchanged).
+ * them via {@link #setAuthor}/{@link #setMessage}/{@link #setCloseBranch}: real {@code hg commit
+ * --amend} with no {@code -u}/{@code -m} reuses the original commit's user and message unchanged.
  *
  * @apiNote Typically obtained via {@link Hg#amend()} on an open {@link Hg}
  *     instance rather than constructed directly.
@@ -40,6 +39,12 @@ public final class AmendCommand {
     private String message;
     private Boolean closeBranch;
 
+    /**
+     * Creates an amend command bound to the given repository.
+     *
+     * @param repository the repository whose tip commit will be amended
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public AmendCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -47,11 +52,25 @@ public final class AmendCommand {
         this.repository = repository;
     }
 
+    /**
+     * Overrides the author of the amended commit. When not called, the amended-away commit's own
+     * author is reused.
+     *
+     * @param author the {@code user} value to record on the amended commit
+     * @return this command, for chaining
+     */
     public AmendCommand setAuthor(String author) {
         this.author = author;
         return this;
     }
 
+    /**
+     * Overrides the commit message of the amended commit. When not called, the amended-away
+     * commit's own message is reused.
+     *
+     * @param message the commit message to record on the amended commit
+     * @return this command, for chaining
+     */
     public AmendCommand setMessage(String message) {
         this.message = message;
         return this;
@@ -59,7 +78,11 @@ public final class AmendCommand {
 
     /** {@code hg commit --amend --close-branch}: overrides whether the amended commit closes its
      * named branch. When not called, the amended-away commit's own close state is preserved
-     * (real hg: {@code extra.update(old.extra())}). */
+     * (real hg: {@code extra.update(old.extra())}).
+     *
+     * @param closeBranch whether the amended commit should close its named branch
+     * @return this command, for chaining
+     */
     public AmendCommand setCloseBranch(boolean closeBranch) {
         this.closeBranch = closeBranch;
         return this;
@@ -70,6 +93,7 @@ public final class AmendCommand {
      *
      * @return NodeId byte array of the new amended commit
      * @throws IOException if commit or obsstore serialization fails
+     * @throws HgLockException if the store lock cannot be acquired for the new commit
      */
     public byte[] call() throws IOException, HgLockException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");

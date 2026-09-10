@@ -32,13 +32,21 @@ import java.util.UUID;
  */
 public class Dirstate {
 
+    /** Creates an empty dirstate with null parents, no entries, and no pending copies. */
+    public Dirstate() {
+    }
+
     private NodeId parent1 = NodeId.NULL;
     private NodeId parent2 = NodeId.NULL;
     private final Map<String, Entry> entries = new LinkedHashMap<>();
     private final Map<String, String> copyMap = new LinkedHashMap<>();
     private boolean isV2 = false;
 
-    /** Pending (uncommitted) copy records: destination path → source path. */
+    /**
+     * Pending (uncommitted) copy records: destination path → source path.
+     *
+     * @return the mutable map of pending copy destination-to-source records
+     */
     public Map<String, String> getCopyMap() {
         return copyMap;
     }
@@ -46,12 +54,19 @@ public class Dirstate {
     /**
      * Records that {@code dest} was copied from {@code src}, for a pending {@code hg copy} not
      * yet committed.
+     *
+     * @param dest the copy destination path
+     * @param src the copy source path
      */
     public void addCopy(String dest, String src) {
         copyMap.put(dest, src);
     }
 
-    /** Whether this dirstate should be read/written in the v2 (docket + tree) on-disk format. */
+    /**
+     * Whether this dirstate should be read/written in the v2 (docket + tree) on-disk format.
+     *
+     * @return {@code true} if this dirstate uses the v2 on-disk format, {@code false} for v1
+     */
     public boolean isV2() {
         return isV2;
     }
@@ -62,11 +77,23 @@ public class Dirstate {
      * @apiNote Set by {@link io.github.search5.hg4j.lib.HgRepository#writeDirstate} from the
      *     repository's {@code dirstate-v2} requirement before every write, so callers mutating a
      *     {@code Dirstate} directly normally don't need to call this themselves.
+     *
+     * @param v2 {@code true} to write in the v2 (docket + tree) format, {@code false} for v1
      */
     public void setV2(boolean v2) {
         this.isV2 = v2;
     }
 
+    /**
+     * A single tracked file's dirstate record.
+     *
+     * @param state the dirstate status letter ({@code 'n'} normal, {@code 'a'} added, {@code 'r'}
+     *              removed, {@code 'm'} merged)
+     * @param mode the recorded POSIX file mode bits
+     * @param size the recorded file size, or a negative sentinel when the size is unknown/unset
+     * @param time the recorded mtime, as an unsigned 32-bit value, or {@link #AMBIGUOUS_TIME} when unset
+     * @param nanos the recorded mtime's sub-second nanosecond component (v2 only; always 0 for v1)
+     */
     public record Entry(char state, int mode, int size, long time, int nanos) {
         /**
          * Real Mercurial's 32-bit "-1" sentinel for an entry's mtime (0xFFFFFFFF), written
@@ -77,6 +104,12 @@ public class Dirstate {
          */
         public static final long AMBIGUOUS_TIME = 0xFFFFFFFFL;
 
+        /**
+         * Validates the mtime range before constructing the record.
+         *
+         * @throws IllegalArgumentException if {@code time} is negative or exceeds the unsigned
+         *         32-bit range that dirstate-v1 can represent
+         */
         public Entry {
             // Mercurial dirstate-v1 stores mtime as unsigned 32-bit integer.
             // Valid range: 0 to 4294967295 (year 2106). Values beyond this will be truncated on serialization.
@@ -87,26 +120,59 @@ public class Dirstate {
             }
         }
 
+        /**
+         * Creates an entry with no sub-second mtime component (the v1 on-disk format has none).
+         *
+         * @param state the dirstate status letter
+         * @param mode the recorded POSIX file mode bits
+         * @param size the recorded file size, or a negative sentinel when unknown/unset
+         * @param time the recorded mtime, as an unsigned 32-bit value, or {@link #AMBIGUOUS_TIME} when unset
+         */
         public Entry(char state, int mode, int size, long time) {
             this(state, mode, size, time, 0);
         }
 
+        /**
+         * Returns the dirstate status letter.
+         *
+         * @return the dirstate status letter
+         */
         public char getState() {
             return state;
         }
 
+        /**
+         * Returns the recorded POSIX file mode bits.
+         *
+         * @return the recorded POSIX file mode bits
+         */
         public int getMode() {
             return mode;
         }
 
+        /**
+         * Returns the recorded file size.
+         *
+         * @return the recorded file size, or a negative sentinel when unknown/unset
+         */
         public int getSize() {
             return size;
         }
 
+        /**
+         * Returns the recorded mtime.
+         *
+         * @return the recorded mtime, as an unsigned 32-bit value, or {@link #AMBIGUOUS_TIME} when unset
+         */
         public long getTime() {
             return time;
         }
 
+        /**
+         * Returns the recorded mtime's sub-second nanosecond component.
+         *
+         * @return the sub-second nanosecond component (v2 only; always 0 for v1)
+         */
         public int getNanos() {
             return nanos;
         }
@@ -121,24 +187,47 @@ public class Dirstate {
          * that trusts a dirstate entry's cached size/mtime WITHOUT checking this first will
          * wrongly treat such an entry as unconditionally "modified" the instant its real on-disk
          * size differs from -1 (which is always, for any non-empty-sentinel file).
+         *
+         * @return {@code true} if this entry's cached size/mtime cannot be trusted and a
+         *         content-level comparison is required
          */
         public boolean isStatAmbiguous() {
             return size < 0 || time == AMBIGUOUS_TIME;
         }
     }
 
+    /**
+     * Returns the working copy's first parent revision, as raw node ID bytes.
+     *
+     * @return the first parent revision, as raw 20-byte node ID bytes
+     */
     public byte[] getParent1() {
         return parent1.getBytes();
     }
 
+    /**
+     * Returns the working copy's second parent revision, as raw node ID bytes.
+     *
+     * @return the second parent revision, as raw 20-byte node ID bytes ({@link NodeId#NULL} bytes if unmerged)
+     */
     public byte[] getParent2() {
         return parent2.getBytes();
     }
 
+    /**
+     * Returns the working copy's first parent revision.
+     *
+     * @return the first parent revision
+     */
     public NodeId getParent1Node() {
         return parent1;
     }
 
+    /**
+     * Returns the working copy's second parent revision.
+     *
+     * @return the second parent revision ({@link NodeId#NULL} if unmerged)
+     */
     public NodeId getParent2Node() {
         return parent2;
     }
@@ -149,6 +238,10 @@ public class Dirstate {
      * @apiNote Called after a commit, update, or merge to record the new working-copy parent(s);
      *     {@link io.github.search5.hg4j.lib.HgRepository#rebuildDirstateFromManifest} also calls
      *     this when reconstructing a lost dirstate from the changelog.
+     *
+     * @param p1 the new first parent revision
+     * @param p2 the new second parent revision ({@link NodeId#NULL} when there is no merge parent)
+     * @throws IllegalArgumentException if either parent is {@code null}
      */
     public void setParents(NodeId p1, NodeId p2) {
         if (p1 == null || p2 == null) {
@@ -158,10 +251,21 @@ public class Dirstate {
         this.parent2 = p2;
     }
 
+    /**
+     * Sets the working copy's parent revisions from raw node ID bytes.
+     *
+     * @param p1 the new first parent revision, as raw node ID bytes
+     * @param p2 the new second parent revision, as raw node ID bytes
+     */
     public void setParents(byte[] p1, byte[] p2) {
         setParents(new NodeId(p1), new NodeId(p2));
     }
 
+    /**
+     * Returns the mutable map of tracked entries, keyed by repository-relative path.
+     *
+     * @return the mutable map of tracked entries, keyed by repository-relative path
+     */
     public Map<String, Entry> getEntries() {
         return entries;
     }
@@ -172,6 +276,9 @@ public class Dirstate {
      * @apiNote The primary mutation used by {@code AddCommand} (new 'a' entries), {@code
      *     CommitCommand} (transitioning entries to 'n' with fresh stat info), and {@code
      *     UpdateCommand}/{@code MergeCommand} (rewriting entries to match the new working copy).
+     *
+     * @param path the repository-relative path to track
+     * @param entry the dirstate record to store for {@code path}
      */
     public void addEntry(String path, Entry entry) {
         entries.put(path, entry);
@@ -183,6 +290,8 @@ public class Dirstate {
      * @apiNote Used by {@code ForgetCommand} and by commands cleaning up an entry that should no
      *         longer appear in the dirstate at all (e.g. after a purge of an added-then-untracked
      *         file).
+     *
+     * @param path the repository-relative path to stop tracking
      */
     public void removeEntry(String path) {
         entries.remove(path);
@@ -193,6 +302,9 @@ public class Dirstate {
      *
      * @apiNote Called by {@link #read(File)} after ruling out the v2 docket magic; most callers
      *     should use {@link #read(File)} instead, which auto-detects the format.
+     *
+     * @param bytes the raw v1 dirstate file content
+     * @throws IOException if {@code bytes} is {@code null} or is not a well-formed v1 dirstate
      */
     public void read(byte[] bytes) throws IOException {
         if (bytes == null) {
@@ -249,6 +361,10 @@ public class Dirstate {
      *     io.github.search5.hg4j.lib.HgRepository#getDirstate()} (via the default {@link
      *     io.github.search5.hg4j.storage.StoreEngine}); a v2 docket's tree is parsed by {@link
      *     DirstateV2Parser}.
+     *
+     * @param file the {@code .hg/dirstate} file to read
+     * @throws IOException if {@code file} does not exist, cannot be read, or is not a well-formed
+     *         v1/v2 dirstate (including a missing or mismatched v2 data file)
      */
     public void read(File file) throws IOException {
         if (file == null || !file.exists()) {
@@ -326,6 +442,8 @@ public class Dirstate {
      *
      * @apiNote Called by {@link #write(File)} for a v1 write; {@link DirstateV2Serializer}
      *     handles the v2 case instead.
+     *
+     * @return the raw v1 dirstate file bytes (parents followed by one fixed-header entry record per tracked path)
      */
     public byte[] serialize() {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -368,6 +486,10 @@ public class Dirstate {
      *     replaces the {@code .hg/dirstate} docket, and finally deletes the previous uid's data
      *     file (the "W-LEAK" cleanup) — this ordering ensures a concurrent reader never observes
      *     a docket pointing at a missing data file.
+     *
+     * @param file the {@code .hg/dirstate} file to write (docket file, for a v2 write)
+     * @throws IOException if the write fails
+     * @throws IllegalArgumentException if {@code file} is {@code null}
      */
     public void write(File file) throws IOException {
         if (file == null) {

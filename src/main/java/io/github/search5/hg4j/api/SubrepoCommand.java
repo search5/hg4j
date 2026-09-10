@@ -25,25 +25,58 @@ public class SubrepoCommand {
     private String subrepoUrl;
     private String revision;
 
+    /**
+     * Creates a subrepo command bound to the given repository.
+     *
+     * @param repository parent repository whose {@code .hgsub}/{@code .hgsubstate} files will be
+     *     read or updated
+     */
     public SubrepoCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the operation to perform.
+     *
+     * @param action one of {@code "add"} (register a new subrepo entry), {@code "init"}, or
+     *     {@code "update"} (both check out configured subrepos to their pinned revision)
+     * @return this command, for chaining
+     */
     public SubrepoCommand setAction(String action) {
         this.action = action;
         return this;
     }
 
+    /**
+     * Sets the repository-relative path of the subrepo, used by the {@code "add"} action.
+     *
+     * @param subrepoPath repository-relative path at which the subrepo will be checked out
+     * @return this command, for chaining
+     */
     public SubrepoCommand setSubrepoPath(String subrepoPath) {
         this.subrepoPath = subrepoPath;
         return this;
     }
 
+    /**
+     * Sets the source URL of the subrepo, used by the {@code "add"} action.
+     *
+     * @param subrepoUrl URL (optionally {@code [git]}/{@code [svn]}-prefixed) the subrepo is
+     *     cloned/checked out from
+     * @return this command, for chaining
+     */
     public SubrepoCommand setSubrepoUrl(String subrepoUrl) {
         this.subrepoUrl = subrepoUrl;
         return this;
     }
 
+    /**
+     * Sets the revision to pin the subrepo to, used by the {@code "add"} action.
+     *
+     * @param revision revision identifier recorded in {@code .hgsubstate} for the new entry; if
+     *     never set, {@code "add"} records the null revision
+     * @return this command, for chaining
+     */
     public SubrepoCommand setRevision(String revision) {
         this.revision = revision;
         return this;
@@ -53,6 +86,8 @@ public class SubrepoCommand {
      * Executes the requested subrepo operation (graft/update/init).
      *
      * @throws IOException if subrepo parsing or network cloning fails
+     * @throws HgLockException if a subrepo update requires a lock on the subrepo that cannot be
+     *     acquired
      */
     public void call() throws IOException, HgLockException {
         if (action == null) {

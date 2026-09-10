@@ -11,6 +11,13 @@ import java.util.Map;
  * Pluggable Storage Engine Interface for hg4j.
  * Decouples the physical revlog filesystem access from porcelain repository commands,
  * paving the way for SQLite, RocksDB, or virtualized hosting storage.
+ *
+ * @apiNote {@link HgRepository} delegates every store read/write to its current {@code
+ *     StoreEngine} (see {@link Repository}, {@link HgRepository#getRevlog}, {@link
+ *     HgRepository#getDirstate()}), defaulting to {@link DefaultFileStoreEngine} — plain
+ *     filesystem access under {@code .hg/}. Swap in a custom implementation via {@link
+ *     HgRepository#setStoreEngine} to back a repository with a different storage medium
+ *     without changing any porcelain command.
  */
 public interface StoreEngine {
     

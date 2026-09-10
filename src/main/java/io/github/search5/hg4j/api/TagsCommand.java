@@ -14,8 +14,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * {@code hg tags}-equivalent: lists every tag known to the repository, verified directly against
- * real hg 7.2.2 on scratch repos (2026-09-02):
+ * {@code hg tags}-equivalent: lists every tag known to the repository, matching real hg's own
+ * behavior:
  *
  * <ul>
  *   <li>Global tags come from {@code .hgtags} (tracked, working-copy content -- this mirrors the
@@ -42,6 +42,9 @@ import java.util.Map;
  *       for tags sharing a revision, reverse alphabetical order by name (e.g. "zeta" is listed
  *       before "alpha" when both tag the same revision).</li>
  * </ul>
+ *
+ * @apiNote Typically obtained via {@link Hg#tags()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class TagsCommand {
     private final HgRepository repository;

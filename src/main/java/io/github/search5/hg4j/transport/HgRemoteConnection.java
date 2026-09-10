@@ -38,16 +38,13 @@ public interface HgRemoteConnection extends Closeable {
     /**
      * Same as {@link #getBundle(List, List, List)}, but additionally negotiates real hg's narrow
      * clone wire arguments ({@code narrow}, {@code includepats}, {@code excludepats} -- part of
-     * core {@code wireprototypes.GETBUNDLE_ARGUMENTS}, verified 2026-09-06 by reading Mercurial
-     * 7.2's {@code mercurial/wireprototypes.py}/{@code exchange.py} directly) when {@code
+     * core {@code wireprototypes.GETBUNDLE_ARGUMENTS}, per Mercurial 7.2's {@code
+     * mercurial/wireprototypes.py}/{@code exchange.py}) when {@code
      * narrowScope} is non-{@code null} and the remote advertised {@link #supportsNarrow()}.
      *
-     * <p>This is what makes narrow clone/pull actually reduce wire transfer size (backlog item
-     * 40): a remote that understands these arguments (real hg with the bundled {@code narrow}
-     * extension enabled -- confirmed 2026-09-06 via a real {@code hg --debug clone --narrow}
-     * capture: the {@code getbundle} response's bundle2 changegroup part shrank from a 5.46MB
-     * full-repo payload to a 29KB narrow one, containing only in-scope filelogs, for the same
-     * repository and heads) actually omits out-of-narrowspec filelog data from the response,
+     * <p>This is what makes narrow clone/pull actually reduce wire transfer size: a remote that
+     * understands these arguments (real hg with the bundled {@code narrow} extension enabled)
+     * actually omits out-of-narrowspec filelog data from the response,
      * rather than hg4j always fetching everything and discarding out-of-scope content locally
      * after the fact.
      *
@@ -136,13 +133,10 @@ public interface HgRemoteConnection extends Closeable {
      * Whether the remote advertised the {@code "clonebundles"} v1 capability token (available
      * only after {@link #getCapabilities()} has been called at least once). Real hg's own client
      * checks this generically via {@code remote.capable(b'clonebundles')} regardless of transport
-     * ({@code mercurial/exchange.py}'s {@code trypullbundlefromurl}) -- confirmed 2026-09-05 by
-     * reading that source directly -- so the bypass is not an HTTP-only feature in real hg, and
-     * this interface-level default (overridden by {@link HgRemoteClient} and {@link HgSshClient},
-     * the two transports that actually support it) keeps hg4j's client from artificially
-     * restricting the bypass to HTTP the way an earlier version of {@link
-     * io.github.search5.hg4j.api.FetchCommand} did (an {@code instanceof HgRemoteClient} check
-     * instead of this capability, backlog item 39 wave 5 wire-matrix track).
+     * ({@code mercurial/exchange.py}'s {@code trypullbundlefromurl}) -- so the bypass is not an
+     * HTTP-only feature in real hg, and this interface-level default (overridden by {@link
+     * HgRemoteClient} and {@link HgSshClient}, the two transports that actually support it)
+     * keeps hg4j's client from artificially restricting the bypass to HTTP-only transports.
      */
     default boolean supportsClonebundles() {
         return false;
@@ -150,7 +144,7 @@ public interface HgRemoteConnection extends Closeable {
 
     /**
      * Whether the remote advertised real hg's narrow clone wire capability -- {@code
-     * "exp-narrow-1"} (verified 2026-09-06 against Mercurial 7.2's {@code
+     * "exp-narrow-1"} (per Mercurial 7.2's {@code
      * mercurial/wireprototypes.py}: {@code NARROWCAP = b'exp-narrow-1'}, appended to the
      * server's {@code capabilities} response whenever the {@code narrow} extension is loaded on
      * the server, unconditionally -- not gated on the specific repository being a narrow clone

@@ -16,6 +16,15 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Provides production-grade safe and atomic file I/O operations.
+ *
+ * @apiNote The write-side helpers ({@link #writeAtomic}, {@link #writeStringAtomic}, {@link
+ *     #writeLinesAtomic}) are used across the store/dirstate layer ({@code FileIndex}, {@code
+ *     RevlogIndex}, {@code Dirstate}) and nearly every mutating porcelain command to persist
+ *     repository metadata (dirstate, revlog index, phase roots, config, bookmarks) without ever
+ *     leaving a half-written file on disk if the process is killed mid-write. {@link
+ *     #lastModifiedSeconds} is used by any command that compares a working-directory file's
+ *     mtime against the dirstate to decide whether the file changed (e.g. {@code StatusCommand},
+ *     {@code AddCommand}, {@code CommitCommand}).
  */
 public final class SafeFileIO {
 
@@ -31,29 +40,38 @@ public final class SafeFileIO {
      * bookkeeping this is a real, timing-dependent bug — not just wrong for a dangling symlink —
      * since it makes an untouched symlink look "changed" (or "unchanged" by coincidence)
      * whenever its target's mtime happens to floor to a different whole second than what was
-     * last recorded, confirmed by reproducing it in isolated test runs (2026-09-03). Every
-     * porcelain command that records a file's mtime into the dirstate must use this instead of
-     * {@code File#lastModified()}.
+     * last recorded. Every porcelain command that records a file's mtime into the dirstate must
+     * use this instead of {@code File#lastModified()}.
      */
     public static long lastModifiedSeconds(File file) throws IOException {
         return Files.getLastModifiedTime(file.toPath(), LinkOption.NOFOLLOW_LINKS).to(TimeUnit.SECONDS);
     }
 
     /**
-     * Writes raw bytes atomically by writing to a temporary file in the same directory,
-     * and then renaming it via ATOMIC_MOVE.
-     */
-    /**
-     * Writes raw bytes atomically by writing to a temporary file in the same directory,
-     * and then renaming it via ATOMIC_MOVE.
-     * Falls back to defensive .lock file-level exclusive locking by default for ultimate safety (L-4).
+     * Writes raw bytes atomically by writing to a temporary file in the same directory, then
+     * renaming it via {@code ATOMIC_MOVE}. Also acquires a defensive {@code .lock} file-level
+     * exclusive OS lock around the write for extra safety.
+     *
+     * @apiNote The default, safe entry point most callers should use; see {@link
+     *     #writeAtomic(File, byte[], boolean)} for the lock-bypass variant used when the caller
+     *     already holds the repository's own {@code wlock}/{@code store/lock}.
      */
     public static void writeAtomic(File file, byte[] data) throws IOException {
         writeAtomic(file, data, false); // Default safe fallback (Defense-in-depth)
     }
 
     /**
-     * Writes raw bytes atomically with optional lock bypass when the upper transaction lock (wlock/lock) is guaranteed.
+     * Writes raw bytes atomically with an optional exclusive-lock bypass.
+     *
+     * @apiNote Set {@code bypassLock} only when the caller has already acquired the repository's
+     *     own transaction lock ({@code wlock} or {@code store/lock}, see {@link
+     *     io.github.search5.hg4j.lib.HgRepository#lockWorkingCopy()}/{@link
+     *     io.github.search5.hg4j.lib.HgRepository#lockStore()}) — that guarantee is what makes
+     *     the extra per-file OS lock redundant. Store/dirstate internals ({@code FileIndex},
+     *     {@code RevlogIndex}, {@code Dirstate}) which always run under such a lock use {@code
+     *     true}; most porcelain commands go through {@link #writeAtomic(File, byte[])} instead.
+     * @param bypassLock skip the defensive {@code .lock} file when the caller already holds the
+     *     repository's own lock
      */
     public static void writeAtomic(File file, byte[] data, boolean bypassLock) throws IOException {
         if (file == null) {
@@ -118,13 +136,22 @@ public final class SafeFileIO {
 
     /**
      * Writes a String atomically using UTF-8 encoding.
+     *
+     * @apiNote Used to persist small text-format repository metadata files — e.g. {@code
+     *     HgRcConfig}'s {@code .hg/hgrc}, {@code PhaseRoots}' phase file, bookmark files ({@code
+     *     BookmarkCommand}), and the sparse/narrow config written by {@code NarrowCloneCommand}.
      */
     public static void writeStringAtomic(File file, String content) throws IOException {
         writeAtomic(file, content.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
-     * Writes a list of lines atomically.
+     * Writes a list of lines atomically, one per line, terminated with {@code '\n'}.
+     *
+     * @apiNote Used for newline-delimited store files such as the ones {@code InitCommand}
+     *     writes on repository creation, {@code StripCommand}'s backup bundle manifest, {@code
+     *     PhaseCommand}'s phase roots, and {@code NarrowCloneCommand}/{@code FetchCommand}'s
+     *     narrowspec files.
      */
     public static void writeLinesAtomic(File file, List<String> lines) throws IOException {
         StringBuilder sb = new StringBuilder();

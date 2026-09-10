@@ -39,6 +39,14 @@ import io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern;
 /**
  * Pure Java transport that provides a connection to a Mercurial repository on the local filesystem.
  * Directly parses and merges the remote repository without invoking a native hg subprocess.
+ *
+ * @apiNote Handles {@code file://} URLs (and bare local paths) from {@link
+ *     HgRemoteConnectionFactory#createConnection}; used by {@code PullCommand}/{@code
+ *     FetchCommand}/{@code PushCommand}/{@code BundleCommand}/{@code BranchesCommand} whenever
+ *     the remote is a directory on the same filesystem rather than a networked server. Also
+ *     serves as the local-clone server-side push apply path, implementing the same {@code
+ *     check:heads} concurrent-push race detection ({@link
+ *     io.github.search5.hg4j.errors.HgPushRacedException}) a real networked server would.
  */
 public class HgLocalClient implements HgRemoteConnection {
 
@@ -167,8 +175,8 @@ public class HgLocalClient implements HgRemoteConnection {
     /**
      * Same as {@link #getBundle(List, List, List)}, but when {@code narrowScope} is non-{@code
      * null}, omits filelog data for any path outside the given include/exclude narrowspec --
-     * exactly what real hg's own non-ellipses narrow clone server does (verified 2026-09-06
-     * against Mercurial 7.2's {@code mercurial/changegroup.py} {@code cgpacker.generatefiles()}:
+     * exactly what real hg's own non-ellipses narrow clone server does (per Mercurial 7.2's
+     * {@code mercurial/changegroup.py} {@code cgpacker.generatefiles()}:
      * {@code changedfiles = [f for f in changedfiles if self._matcher(f) and not
      * self._oldmatcher(f)]}), and unlike this class's flat-manifest storage, does <em>not</em>
      * filter changelog or manifest revlog content at all -- those two are always sent in full,
@@ -176,8 +184,8 @@ public class HgLocalClient implements HgRemoteConnection {
      * is one indivisible blob listing every tracked path; only the treemanifest per-directory
      * storage real hg optionally uses can prune individual subtrees via {@code matcher.visitdir()},
      * and hg4j doesn't implement treemanifest). This is what makes narrow clone/pull actually
-     * reduce wire transfer size (backlog item 40) instead of only filtering post-hoc, client-side,
-     * after downloading everything.
+     * reduce wire transfer size, instead of only filtering post-hoc, client-side, after
+     * downloading everything.
      */
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
                              HgRemoteConnection.NarrowScope narrowScope) throws IOException {
@@ -198,27 +206,28 @@ public class HgLocalClient implements HgRemoteConnection {
         File mfIdx = new File(remoteRepo.getStoreDir(), "00manifest.i");
         File mfDat = new File(remoteRepo.getStoreDir(), "00manifest.d");
 
-        // 버그 수정(2026-09-08, llm-wiki/known-bugs-registry.md의 `HgLocalClient.getBundle()`
-        // 항목 참고): 여기서(그리고 아래 "startRev >= count"에서도) 예전엔 `new byte[0]`을
-        // 그대로 반환했다 -- 실제 hg 클라이언트에게는 "정상적으로 봉투에 감싸인, 아무 내용도
-        // 없는 changegroup/bundle2 응답"과 "스트림이 잘렸다"를 구분할 방법이 전혀 없는
-        // 무효한 응답이다(HTTP 경로: "stream ended unexpectedly (got 0 bytes, expected 4)"로
-        // 즉시 abort, SSH raw-stream 경로: 4바이트 길이 헤더를 영원히 기다리며 hang). 커밋이
-        // 0개인 갓 `hg init`된 저장소(yona로 새 Mercurial 프로젝트를 만들면 항상 이 상태)를
-        // 최초로 clone하는 시나리오가 정확히 이 경로를 타서 100% 재현됐다. 실제 hg 자신의
-        // `exchange.getbundlechunks()`(mercurial/exchange.py)는 보낼 게 하나도 없어도 절대
-        // 조기 반환하지 않고 항상 같은 청크 생성 경로를 타 "그룹이 비어 있음을 뜻하는 종료
-        // 청크만 있는" 올바른 changegroup을 만든다 -- 아래로 그냥 흘려보내면(다음의 changelog/
-        // manifest/filelog 루프들은 count==0이면 그냥 0번 반복하고 끝난다는 것을 확인했다)
-        // `ChangegroupParser.writeBundle`이 그 "종료 청크만 있는" 올바른 빈 changegroup을
-        // 만들고, 이어서 (bundle2 요청 시) `Bundle2Parser.wrapChangegroupInBundle2`이 이를
-        // 정상적인 HG20 봉투로 감싸거나 (레거시 요청 시) "HG10UN" 접두사가 그대로 붙는다 --
-        // 클라이언트 입장에서는 "커밋이 없는 원격"과 "커밋은 있지만 이미 다 common이라
-        // 새로 보낼 게 없는 원격"이 완전히 동일한, 유효한 빈 changegroup으로 보인다(실제
-        // hg도 이 둘을 구분하지 않는다). `remoteRepo.getRevlog()`는 idxFile이 아예 없어도
-        // (일반 v1 저장소 기준) 디스크에 아무것도 안 쓰고 revisionCount=0인 빈 Revlog를
-        // 안전하게 만들어준다는 것도 `RevlogIndex`(idxFile.exists()가 false면 v1 분기는
-        // 아무 side effect 없이 기본 빈 상태로 남는다) 실측으로 확인했다.
+        // Must not return `new byte[0]` here (and also below at "startRev >= count") -- a real
+        // hg client has no way to distinguish "a properly bundle-wrapped, genuinely empty
+        // changegroup/bundle2 response" from "the stream got truncated" (HTTP path: aborts
+        // immediately with "stream ended unexpectedly (got 0 bytes, expected 4)"; SSH raw-stream
+        // path: hangs forever waiting for the 4-byte length header) -- this matters most when
+        // cloning a freshly `hg init`ed repository with zero commits. Real hg's own
+        // `exchange.getbundlechunks()` (mercurial/exchange.py) never returns early even when
+        // there is nothing to send at all -- it always goes through the same chunk-generation
+        // path, producing a valid changegroup that consists of nothing but the terminator chunk
+        // that means "this group is empty". Simply letting execution continue below (the
+        // following changelog/manifest/filelog loops just iterate zero times and finish cleanly
+        // when count==0) lets `ChangegroupParser.writeBundle` produce that same valid,
+        // terminator-only empty changegroup, which `Bundle2Parser.wrapChangegroupInBundle2`
+        // then wraps in a proper HG20 envelope (for a bundle2 request), or which keeps its plain
+        // "HG10UN" prefix as-is (for a legacy request) -- from the client's point of view, "a
+        // remote with no commits" and "a remote that has commits but they're all already common,
+        // so there's nothing new to send" look like exactly the same, valid, empty changegroup
+        // (real hg itself doesn't distinguish the two either). `remoteRepo.getRevlog()` also
+        // safely produces an empty Revlog with revisionCount=0, writing nothing to disk, even
+        // when idxFile doesn't exist at all (for a plain v1 store; see `RevlogIndex`, whose v1
+        // branch leaves everything at its default empty state with no side effects when the
+        // file is absent).
         Revlog changelog = remoteRepo.getRevlog(clIdx, clDat);
         int count = changelog.getRevisionCount();
 
@@ -259,21 +268,24 @@ public class HgLocalClient implements HgRemoteConnection {
             startRev = firstNewRev;
         }
 
-        // (더 이상 여기서 startRev >= count일 때 `new byte[0]`을 조기 반환하지 않는다 -- 바로
-        // 위의 count==0 케이스와 같은 이유. 클라이언트가 이미 최신 상태라 새로 보낼 리비전이
-        // 없는 일반적인 "no-op pull"도 이 분기를 타는데, 아래 changelog/manifest/filelog
-        // 루프들은 전부 `for (int r = startRev; r < count; r++)` 형태라 startRev>=count면 그냥
-        // 0번 반복하고 끝나 정상적으로 빈 bundle이 만들어진다.)
+        // (This no longer returns `new byte[0]` early when startRev >= count here -- same
+        // reason as the count==0 case just above. The common "no-op pull" case, where the
+        // client is already up to date and there is nothing new to send, also goes through this
+        // branch; the changelog/manifest/filelog loops below are all shaped as
+        // `for (int r = startRev; r < count; r++)`, so when startRev>=count they simply iterate
+        // zero times and finish, correctly producing an empty bundle.)
 
-        // 백로그 26번: bundleCaps에서 실제로 클라이언트가 요청한 changegroup 버전을 협상한다
-        // (실제 스펙, mercurial/exchange.py 실측): 클라이언트가 "HG2"로 시작하는 토큰을 하나도
-        // 보내지 않았으면(bundle2 미요청 -- 예: bundleCaps==null, 또는 changegroupsubset 같은
-        // 순수 legacy 호출) 버전은 무조건 "01"이고 응답도 HG20 봉투 없이 맨 cg1 청크 그대로
-        // 나간다. bundle2를 요청했으면 클라이언트가 자신의 bundle2= 블롭 안에 실어 보낸
-        // changegroup=01,02,... 목록과 hg4j가 실제로 패킹할 수 있는 버전 집합의 교집합 중
-        // 최댓값을 고르고(교집합이 비었거나 목록 자체가 없으면 실제 hg와 동일하게 "01"로
-        // 기본값 유지), 응답은 항상 HG20 봉투로 감싼다(버전이 결국 "01"이 되더라도) --
-        // Bundle2Parser#decodeChangegroupVersions/#requestsBundle2의 문서 참고.
+        // Negotiates the changegroup version the client actually requested from
+        // bundleCaps (real spec, confirmed against mercurial/exchange.py): if the client sent no
+        // token starting with "HG2" at all (bundle2 not requested -- e.g. bundleCaps==null, or a
+        // pure legacy call like changegroupsubset), the version is unconditionally "01" and the
+        // response goes out as the bare cg1 chunk with no HG20 envelope. If bundle2 was
+        // requested, this picks the maximum of the intersection between the
+        // changegroup=01,02,... list the client sent inside its own bundle2= blob and the set of
+        // versions hg4j can actually pack (falling back to "01", matching real hg, when the
+        // intersection is empty or the list itself is absent), and the response is always
+        // wrapped in an HG20 envelope (even if the version ends up being "01") -- see
+        // Bundle2Parser#decodeChangegroupVersions/#requestsBundle2's own documentation.
         boolean usebundle2 = Bundle2Parser.requestsBundle2(bundleCaps);
         String version = "01";
         if (usebundle2) {
@@ -289,10 +301,10 @@ public class HgLocalClient implements HgRemoteConnection {
                 version = best;
             }
         }
-        // cg5(sidedata를 나를 수 있는 유일한 버전)일 때만, 그리고 이 저장소 자체가 changelog
-        // sidedata를 실제로 쓰고 있을 때만(exp-copies-sidedata-changeset) changelog 엔트리에
-        // SD_FILES sidedata를 실어 보낸다 -- 백로그 19가 로컬 커밋에 이미 쓰고 있는 것을
-        // getbundle 응답 경로에서도 손실 없이 그대로 전달(round-trip)하기 위함.
+        // Only sends SD_FILES sidedata with changelog entries when the version is cg5 (the only
+        // version that can carry sidedata at all) AND this repository itself actually uses
+        // changelog sidedata (exp-copies-sidedata-changeset) -- so that what is already written
+        // for local commits round-trips through the getbundle response path too, without loss.
         boolean packChangelogSidedata = "05".equals(version) && remoteRepo.isSidedataCopies();
 
         // Build bundle
@@ -302,19 +314,21 @@ public class HgLocalClient implements HgRemoteConnection {
         bundle.fileGroups = new ArrayList<>();
 
         // 1a. Pack Changelogs
-        // cg1은 각 엔트리의 델타를 "실제 DAG 부모(p1)"가 아니라 "이 그룹 스트림에서 바로
-        // 직전에 패킹된 엔트리"를 기준으로 인코딩한다(mercurial/changegroup.py의
-        // ChangeGroupPacker01, forcedeltaparentprev=True 실측, 2026-09-01). 다중 head
-        // 저장소에서 p1 기준으로 델타를 만들면 실제 hg 및 hg4j 자신의 unbundle 로직과도
-        // 어긋나 콘텐츠가 깨진다.
-        // incremental pull(startRev > 0)이면 첫 신규 엔트리의 베이스는 양쪽이 이미 공유하는
-        // 마지막 공통 리비전(startRev-1)의 콘텐츠여야 한다 — 빈 바이트로 리셋하면 수신측의
-        // rev-1 기준 복원과 어긋난다.
+        // cg1 encodes each entry's delta against "whichever entry was packed immediately before
+        // it in this group stream", not its "actual DAG parent (p1)" (confirmed against
+        // mercurial/changegroup.py's ChangeGroupPacker01, forcedeltaparentprev=True).
+        // Building the delta against p1 in a multi-head repository disagrees with
+        // both real hg's and hg4j's own unbundle logic, corrupting the content.
+        // For an incremental pull (startRev > 0), the first new entry's base must be the
+        // content of the last revision both sides already share in common (startRev-1) --
+        // resetting to empty bytes would disagree with the receiving side's rev-1-based
+        // reconstruction.
         byte[] prevClContent = (startRev > 0) ? changelog.getRevisionContent(startRev - 1) : new byte[0];
-        // cg2 이상만 실제로 읽는 명시적 deltabase 필드 -- "이 그룹 스트림에서 바로 직전에
-        // 패킹된 엔트리"의 node를 그대로 선언한다(위 delta 계산과 동일한 베이스를 명시적으로
-        // 밝히는 것뿐, cg1의 암묵적 규칙과 결과적으로 같은 콘텐츠). 첫 엔트리(startRev==0)는
-        // all-zero(널 리비전) 베이스.
+        // The explicit deltabase field, only actually read by cg2 and above -- simply declares
+        // the node of "whichever entry was packed immediately before it in this group stream"
+        // (just making explicit the same base the delta computation above already uses, with
+        // the same resulting content as cg1's implicit rule). The first entry (startRev==0)
+        // uses the all-zero (null revision) base.
         byte[] prevClNode = (startRev > 0) ? changelog.getIndexRecord(startRev - 1).getNodeId() : new byte[20];
         for (int r = startRev; r < count; r++) {
             Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
@@ -342,11 +356,13 @@ public class HgLocalClient implements HgRemoteConnection {
         // 1b. Pack Manifests
         Revlog manifest = remoteRepo.getRevlog(mfIdx, mfDat);
         Set<String> affectedFiles = new HashSet<>();
-        // incremental pull이면 마지막 공통 changelog 리비전(startRev-1)이 가리키는 manifest
-        // 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다(changelog와 동일한 이유).
+        // For an incremental pull, the base of the first new entry is the manifest content the
+        // last shared changelog revision (startRev-1) points at (same reasoning as changelog
+        // above).
         byte[] prevMfContent = new byte[0];
-        // cg2 이상의 명시적 deltabase(위 changelog의 prevClNode와 같은 이유) -- 마지막으로
-        // 실제 번들에 추가된 manifest 엔트리의 node. 첫 엔트리는 all-zero(널 리비전) 베이스.
+        // The explicit deltabase for cg2 and above (same reasoning as changelog's prevClNode
+        // above) -- the node of the last manifest entry actually added to the bundle. The first
+        // entry uses the all-zero (null revision) base.
         byte[] deltaBaseMfNode = new byte[20];
         if (startRev > 0) {
             byte[] prevClRaw = changelog.getRevisionContent(startRev - 1);
@@ -394,7 +410,7 @@ public class HgLocalClient implements HgRemoteConnection {
         // 1c. Pack Filelogs
         for (String path : affectedFiles) {
             if (narrowFilter != null && !narrowFilter.accept(path)) {
-                // Backlog 40: this is the actual bandwidth-saving step -- real hg's own
+                // This is the actual bandwidth-saving step -- real hg's own
                 // cgpacker.generatefiles() prunes exactly this way (see this method's javadoc).
                 // Manifests/changelog above stay unfiltered on purpose.
                 continue;
@@ -406,16 +422,16 @@ public class HgLocalClient implements HgRemoteConnection {
             Revlog fl = remoteRepo.getRevlog(flIdx, flDat);
             List<ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
 
-            // incremental pull이면 이미 공유된 마지막 filelog 리비전(linkRev < startRev 중 가장
-            // 최근 것)의 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다.
+            // For an incremental pull, the base of the first new entry is the content of the
+            // last already-shared filelog revision (the most recent one with linkRev < startRev).
             // Raw (as-stored) content throughout, not getRevisionContent(): a filelog revision
             // can be censored (Revlog.REVIDX_ISCENSORED), and bundling must transfer its
             // tombstone bytes as-is rather than throwing HgCensoredContentException -- real hg's
             // own changegroup packer likewise always uses rawdata()/`_chunk()`, never the decoded
             // text.
             byte[] prevFlContent = new byte[0];
-            // cg2 이상의 명시적 deltabase(changelog/manifest와 동일한 이유). 첫 엔트리는
-            // all-zero(널 리비전) 베이스.
+            // The explicit deltabase for cg2 and above (same reasoning as changelog/manifest).
+            // The first entry uses the all-zero (null revision) base.
             byte[] deltaBaseFlNode = new byte[20];
             for (int i = fl.getRevisionCount() - 1; i >= 0; i--) {
                 if (fl.getIndexRecord(i).getLinkRev() < startRev) {
@@ -451,24 +467,24 @@ public class HgLocalClient implements HgRemoteConnection {
             }
         }
 
-        // Serialize to binary bytes at the negotiated version (백로그 26번: 예전엔 cg1
-        // "HG10UN"으로 항상 고정 -- 이제 ChangegroupParser.writeBundle을 통해 실제로 협상된
-        // 버전(01~05)으로 패킹한다).
+        // Serialize to binary bytes at the negotiated version (01-05, not hardcoded cg1) via
+        // ChangegroupParser.writeBundle.
         ByteArrayOutputStream cgOut = new ByteArrayOutputStream();
         ChangegroupParser.writeBundle(cgOut, bundle, version);
         byte[] cgBytes = cgOut.toByteArray();
 
         if (usebundle2) {
-            // 실제 hg 스펙(exchange.getbundlechunks의 usebundle2 분기, mercurial/exchange.py
-            // 실측): 클라이언트가 bundle2를 요청했으면 버전이 결국 "01"이 되더라도 응답은
-            // 항상 HG20 봉투로 감싼다.
+            // Real hg spec (confirmed against exchange.getbundlechunks()'s usebundle2 branch in
+            // mercurial/exchange.py): if the client requested bundle2, the response is always
+            // wrapped in an HG20 envelope, even if the version ends up being "01".
             return Bundle2Parser.wrapChangegroupInBundle2(cgBytes, version);
         }
 
-        // legacy(비-bundle2) 요청 -- hg4j 자체 "HG10UN" 파일 관례(file:// 역할, HgRemoteClient
-        // 등 기존 호출자들이 계속 기대하는 프리픽스; 실제 와이어로 나갈 땐
-        // Wire1Commands#stripHg10Prefix가 벗겨낸다)를 그대로 유지한다. 이 경로는 version이
-        // 언제나 "01"이므로(위 협상 로직 참고) cg1 그대로다.
+        // Legacy (non-bundle2) request -- keeps hg4j's own "HG10UN" file convention (the prefix
+        // existing callers such as file:// itself and HgRemoteClient still expect;
+        // Wire1Commands#stripHg10Prefix strips it before it actually goes out on the wire).
+        // This path always has version "01" (see the negotiation logic above), so it's plain
+        // cg1.
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (DataOutputStream dos = new DataOutputStream(baos)) {
             dos.write("HG10UN".getBytes(StandardCharsets.US_ASCII));
@@ -515,21 +531,19 @@ public class HgLocalClient implements HgRemoteConnection {
 
         byte[] changegroupBytes = bundleBytes;
         String cgVersion = "01";
-        // Backlog item 38 ("PushRaced"-equivalent): if the incoming bundle2 envelope carries a
+        // If the incoming bundle2 envelope carries a
         // `check:heads` part, it's the authoritative source for what the pushing client computed
         // its push against -- captured here (bundle2-only) and used to build the post-lock race
         // validator below, alongside the plain wire `heads` arg for non-bundle2 pushes.
         Bundle2Parser.ExtractedBundle2 extracted = null;
         if (bundleBytes.length >= 4 && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0') {
-            // 백로그 26번: Wire1Commands.capabilitiesString()이 이제 bundle2=를 광고하므로
-            // (getbundle 버전 협상을 가능케 하려고) 실제 hg 클라이언트의 push도 더는 맨 cg1
-            // 바이트가 아니라 HG20/bundle2 봉투(mercurial/exchange.py의 _pushbundle2)로 body를
-            // 감싸 보낸다 -- exchange._forcebundle1이 remote.capable('bundle2')를 그대로
-            // 따르기 때문(실측, 2026-09-04: 이 광고를 추가하기 전엔 realHgPushesToHg4jServedOverHttp
-            // 등 기존 push interop 테스트가 이미 통과했다는 것 자체가 "그때는 항상 HG10만
-            // 왔다"는 증거였는데, 광고를 추가하자 즉시 "0\n... not a Mercurial bundle" 실패로
-            // 재현·확인됨). Bundle2Parser는 이미 이 봉투를 파싱하는 유틸(원래는 getbundle
-            // 응답을 읽는 클라이언트 쪽 용도)을 갖고 있어 그대로 재사용한다.
+            // Now that Wire1Commands.capabilitiesString() advertises bundle2=
+            // (to make getbundle version negotiation possible), a real hg client's push no
+            // longer sends bare cg1 bytes either -- it wraps the body in an HG20/bundle2
+            // envelope (mercurial/exchange.py's _pushbundle2), because exchange._forcebundle1
+            // simply follows remote.capable('bundle2'). Bundle2Parser already has a utility
+            // for parsing this envelope (originally meant for the client side reading a
+            // getbundle response), reused here as-is.
             extracted = Bundle2Parser.extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes));
             changegroupBytes = extracted.changegroupBytes;
             cgVersion = extracted.cgVersion;
@@ -563,23 +577,17 @@ public class HgLocalClient implements HgRemoteConnection {
             }
 
             // Apply bundle natively to remoteRepo using transactional API of PullCommand.
-            // Backlog item 38: this is the SERVER direction of a concurrent push (Wire1Commands's
+            // This is the SERVER direction of a concurrent push (Wire1Commands's
             // unbundle -- HTTP and SSH both -- and the file:// local-peer role reach this exact
             // same code path). Real hg's own server-side unbundle apply (mercurial/exchange.py's
             // unbundle(): `with repo.lock(), repo.transaction(...)`) waits for the target repo's
             // store lock (repo.lock() default wait=True, timeout from ui.timeout -- 600s default)
-            // rather than failing on the very first contended attempt; confirmed live against
-            // real hg 7.2 (2026-09-04): with the remote's store lock artificially held and
-            // ui.timeout=2 configured on the server, a real `hg push` over HTTP waited ~2s before
-            // the request failed (surfaced to the real-hg client as "abort: HTTP Error 500", since
-            // real hg's own wireprotov1server.unbundle() does not specially catch
-            // error.LockHeld/LockUnavailable -- it's an unhandled exception that the WSGI/CGI
-            // layer turns into a 500). hg4j's own equivalent (this pullApi.applyBundle call) used
-            // to lock with timeoutMs=0 (immediate fail-fast) unconditionally -- passing the
-            // repository's own resolvePushLockTimeoutMs() (mirrors ui.timeout) here makes it wait
-            // like real hg's does, while every OTHER lockStore()/lockWorkingCopy() caller
-            // (commit, update, rebase, ...) is intentionally left untouched -- see
-            // HgRepository#lockStore(int)'s doc.
+            // rather than failing on the very first contended attempt. hg4j's own equivalent
+            // (this pullApi.applyBundle call) used to lock with timeoutMs=0 (immediate fail-fast)
+            // unconditionally -- passing the repository's own resolvePushLockTimeoutMs() (mirrors
+            // ui.timeout) here makes it wait like real hg's does, while every OTHER
+            // lockStore()/lockWorkingCopy() caller (commit, update, rebase, ...) is intentionally
+            // left untouched -- see HgRepository#lockStore(int)'s doc.
             PullCommand pullApi = new PullCommand(remoteRepo);
             int lockTimeoutMs = remoteRepo.resolvePushLockTimeoutMs();
             FetchCommand.PostLockValidator raceCheck = buildPushRaceValidator(
@@ -628,7 +636,7 @@ public class HgLocalClient implements HgRemoteConnection {
     private static final String FORCE_SENTINEL_HEX = NodeIdUtil.toHex("force".getBytes(StandardCharsets.US_ASCII));
 
     /**
-     * Backlog item 38 ("PushRaced"-equivalent server-side race re-check): builds the validator
+     * Builds the server-side push-race-re-check validator
      * {@link FetchCommand#applyBundle(io.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}
      * runs immediately after the store/working-copy locks are acquired, to reject a push whose
      * target heads changed underneath it since the client computed the push -- exactly what real
@@ -669,12 +677,9 @@ public class HgLocalClient implements HgRemoteConnection {
         // Defensive sanitization: PushCommand itself already treats a null entry or the all-zero
         // "no real head" sentinel node as "not a real head" when computing its OWN local
         // validRemoteHeads (see PushCommand#call()) -- but the RAW, unfiltered head list is what
-        // actually goes out over the wire as this heads= argument (a separate, pre-existing
-        // quirk, unrelated to backlog 38, that PushCommandTest deliberately exercises via a
-        // HgRemoteConnection test double). Since this argument was previously never consumed
-        // server-side, that quirk was harmless; now that it feeds the race check, the same
-        // filtering is applied here so a stray null/sentinel entry can't either NPE or be
-        // compared against a real head hex.
+        // actually goes out over the wire as this heads= argument. Now that this argument feeds
+        // the race check, the same filtering is applied here so a stray null/sentinel entry can't
+        // either NPE or be compared against a real head hex.
         List<String> sanitized = sanitizeWireHeads(wireHeads);
         if (sanitized.isEmpty()) {
             return null;

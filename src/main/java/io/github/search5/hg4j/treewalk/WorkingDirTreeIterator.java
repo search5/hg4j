@@ -9,6 +9,12 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 
 /**
  * TreeIterator implementation that traverses the physical working copy and dirstate information.
+ *
+ * @apiNote Used as one side of a {@link TreeWalk} by {@code StatusCommand}, {@code
+ *     CommitCommand}, and {@code GraftCommand} to compare the working directory against a
+ *     manifest. Merges physically-present files ({@link
+ *     io.github.search5.hg4j.lib.HgRepository#scanWorkingCopy()}) with dirstate-tracked paths, so
+ *     an untracked file still appears (with state {@code '?'}).
  */
 public class WorkingDirTreeIterator implements TreeIterator {
 

@@ -78,18 +78,23 @@ public final class HgObsMarker {
     }
 
     /**
-     * obsstore(FM1, version=1) 포맷으로 마커 하나를 append한다.
+     * Appends a single marker in obsstore (FM1, version=1) format.
      *
-     * <p>실제 hg CLI(`--config experimental.evolution.createmarkers=true`)로 amend를 수행해
-     * 얻은 실제 obsstore 바이트를 {@code mercurial.obsolete._readmarkers()}로 직접 디코딩해
-     * 검증된 레이아웃이다(2026-09-01). 이전 구현은 파일 버전 바이트가 아예 없고 필드 순서도
-     * 완전히 달라서, 실제 hg가 이 파일을 읽으면 즉시 깨진 것으로 인식했다.</p>
+     * <p>This layout was verified by decoding real obsstore bytes -- obtained by running an
+     * amend via the real hg CLI (`--config experimental.evolution.createmarkers=true`) --
+     * directly with {@code mercurial.obsolete._readmarkers()}.</p>
      *
-     * <p>고정 헤더(19바이트, {@code mercurial/obsolete.py}의 {@code _fm1fixed = '>IdhHBBB'}):
+     * <p>Fixed header (19 bytes, {@code mercurial/obsolete.py}'s {@code _fm1fixed = '>IdhHBBB'}):
      * totalsize(I,4) + date_secs(d,8) + tz_minutes(h,2) + flags(H,2) + numsuc(B,1) +
-     * numpar(B,1) + nummeta(B,1). 이어서 predecessor(20B) + successors(20B*numsuc) +
-     * (parents는 numpar=3="기록 안 함"으로 항상 생략) + metapair 길이표(2B*nummeta) +
-     * 메타데이터 원본 바이트.</p>
+     * numpar(B,1) + nummeta(B,1). Followed by predecessor(20B) + successors(20B*numsuc) +
+     * (parents are always omitted, since numpar=3 means "not recorded") + the metapair length
+     * table (2B*nummeta) + the raw metadata bytes.</p>
+     *
+     * @apiNote Called by {@code AmendCommand} (marking the pre-amend revision obsolete),
+     *     {@code HisteditCommand}/{@code StripCommand} (marking pruned revisions obsolete, with
+     *     no successor), and {@code RebaseCommand} (marking each original revision obsolete in
+     *     favor of its rebased copy). {@code BookmarkCommand}/{@code PushCommand} read markers
+     *     back via {@link HgObsolescenceParser#parse}.
      */
     public static void writeMarker(File storeDir, byte[] predecessor, List<byte[]> successors, String operation) throws IOException {
         File obsstoreFile = new File(storeDir, "obsstore");
@@ -99,15 +104,15 @@ public final class HgObsMarker {
 
         List<byte[]> succList = successors != null ? successors : List.of();
         int numsuc = succList.size();
-        final int NUMPAR_NONE = 3; // _fm1parentnone: 부모 정보를 기록하지 않음
-        final int NODE_SIZE = 20;  // sha1 (usingsha256 플래그 미사용)
+        final int NUMPAR_NONE = 3; // _fm1parentnone: parent information is not recorded
+        final int NODE_SIZE = 20;  // sha1 (usingsha256 flag not used)
 
         LinkedHashMap<String, String> meta = new LinkedHashMap<>();
         meta.put("operation", operation != null ? operation : "amend");
         meta.put("user", "hg4j");
 
         int fixedSize = 19; // I(4)+d(8)+h(2)+H(2)+B(1)+B(1)+B(1)
-        int nodesSection = NODE_SIZE * (1 + numsuc); // predecessor + successors만, parents는 생략
+        int nodesSection = NODE_SIZE * (1 + numsuc); // predecessor + successors only, parents omitted
         int metaPairsSection = 2 * meta.size();
         int metaBytesLen = 0;
         for (Map.Entry<String, String> e : meta.entrySet()) {
@@ -119,8 +124,8 @@ public final class HgObsMarker {
         ByteBuffer buf = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(totalSize);
         buf.putDouble(System.currentTimeMillis() / 1000.0);
-        buf.putShort((short) 0); // tz(분 단위) — 단순화를 위해 UTC로 기록
-        buf.putShort((short) 0); // flags — sha256 미사용
+        buf.putShort((short) 0); // tz (minutes) -- recorded as UTC for simplicity
+        buf.putShort((short) 0); // flags -- sha256 not used
         buf.put((byte) numsuc);
         buf.put((byte) NUMPAR_NONE);
         buf.put((byte) meta.size());
@@ -154,8 +159,8 @@ public final class HgObsMarker {
      * check ({@code obsolete.isenabled()} / {@code obsolete._getoptionvalue()} in {@code
      * mercurial/obsolete.py}, reading {@code experimental.evolution.createmarkers} or the broader
      * {@code experimental.evolution}) -- NOT by anything recorded in {@code .hg/requires} or in the
-     * obsstore file itself. Confirmed directly against real hg 7.2.2 (2026-09-03): {@code hg
-     * debugobsolete <node>} with no special config aborts outright ("creating obsolete markers is
+     * obsstore file itself: {@code hg debugobsolete <node>} with no special config aborts
+     * outright ("creating obsolete markers is
      * not enabled on this repo"), and even forcing the write via {@code --config
      * experimental.evolution.createmarkers=true} still leaves a repo that a subsequent plain {@code
      * hg verify} (without that same config) reports as broken: {@code "obsolete" feature not

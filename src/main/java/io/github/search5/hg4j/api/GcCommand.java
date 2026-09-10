@@ -15,6 +15,9 @@ import java.util.Set;
 /**
  * Compaction / Garbage Collection command for optimizing Mercurial revlog storage.
  * Performs database health verify, defragmentation check, and fncache rebuild on standard repositories.
+ *
+ * @apiNote Typically obtained via {@link Hg#gc()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class GcCommand {
     private final HgRepository repository;
@@ -74,14 +77,10 @@ public class GcCommand {
         }
 
         // Recursively find and compress meta and data store logs. Unlike the two root revlogs
-        // above, real hg DOES track every one of these individually in fncache -- verified live
-        // against real hg 7.2 (2026-09-05): a fresh repository's own fncache never lists
-        // "00changelog.i"/"00manifest.i" themselves, only "data/<path>.i"/"meta/<dir>/00manifest.i"
-        // entries. The previous version of this method incorrectly folded the two root paths into
-        // the same set used to rebuild fncache, writing entries real hg's own fncache never
-        // contains -- found live 2026-09-05 (backlog #39 requirement-matrix expansion to
-        // GcCommand), even in the plain default combo (not something limited to any exotic
-        // storage-extension).
+        // above, real hg tracks every one of these individually in fncache: a fresh repository's
+        // own fncache never lists "00changelog.i"/"00manifest.i" themselves, only
+        // "data/<path>.i"/"meta/<dir>/00manifest.i" entries, so the two root paths must not be
+        // folded into the set used to rebuild fncache.
         Set<String> fncachePaths = new LinkedHashSet<>();
         File dataDir = new File(storeDir, "data");
         if (dataDir.exists() && dataDir.isDirectory()) {
@@ -92,14 +91,11 @@ public class GcCommand {
             scanForIndexFiles(metaDir, fncachePaths);
         }
 
-        // Non-inline (split) revlogs get BOTH their ".i" and ".d" path listed in fncache -- unlike
-        // the root-revlog exclusion above, this is NOT limited to any particular combo: verified
-        // live against plain native hg 7.2 (2026-09-05) with an ordinary >128KB file, whose own
-        // fncache lists both "data/big.txt.i" AND "data/big.txt.d". The previous version of this
-        // set only ever contained ".i" paths (from scanForIndexFiles, which only looks for ".i"
-        // files), so GC's rebuilt fncache was silently missing every split revlog's ".d" entry --
-        // caught live via real hg's own "warning: revlog '...' not in fncache!" on `hg verify`
-        // after GC ran against a repository containing exactly such a file.
+        // Non-inline (split) revlogs get BOTH their ".i" and ".d" path listed in fncache: an
+        // ordinary >128KB file's own fncache lists both "data/big.txt.i" AND "data/big.txt.d",
+        // so the ".i"-only paths collected by scanForIndexFiles are not sufficient on their own --
+        // omitting the ".d" entry here would make GC's rebuilt fncache trigger real hg's own
+        // "warning: revlog '...' not in fncache!" on `hg verify`.
         List<String> dPaths = new ArrayList<>();
         for (String relPath : fncachePaths) {
             File idxFile = new File(storeDir, relPath);
@@ -117,10 +113,9 @@ public class GcCommand {
         // 3. Rebuild fncache with atomic file IO -- but only for repositories that actually use
         // one. `fileindex-v1` (and `general-v2`, which always implies it) requirements drop
         // fncache/dotencode entirely in favor of the fileindex/fileindex-tree.*/fileindex-meta.*/
-        // fileindex-list.* files -- verified live against hg-rust-7.2.4 (2026-09-05): such a
-        // repository's `.hg/store/requires` never lists `fncache`, and its store never contains an
-        // actual fncache file. Writing one anyway (the previous, unconditional behavior) would
-        // create a file real hg does not expect for that combo.
+        // fileindex-list.* files: such a repository's `.hg/store/requires` never lists `fncache`,
+        // and its store never contains an actual fncache file, so writing one unconditionally
+        // would create a file real hg does not expect for that combo.
         File fncacheFile = new File(storeDir, "fncache");
         if (!repository.isFileIndexV1() && !fncachePaths.isEmpty()) {
             SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
@@ -142,18 +137,17 @@ public class GcCommand {
      *         this to report an honest "N store revlogs" count rather than counting revlogs that
      *         were merely found.
      *
-     * <p><b>v2/docket-based revlogs are never rewritten</b> (found live 2026-09-05, backlog #39
-     * requirement-matrix expansion to {@code GcCommand}): {@code changelog-v2}/{@code
+     * <p><b>v2/docket-based revlogs are never rewritten</b>: {@code changelog-v2}/{@code
      * general-v2} ({@link io.github.search5.hg4j.storage.RevlogIndex#isV2()}) store their actual
      * revisions in UUID-named companion {@code .idx}/{@code .dat}/{@code .sda} files resolved via
      * a small docket header, not in a classic {@code idxFile}/{@code datFile} pair -- {@link
      * Revlog#appendOptimizedRevision} only ever writes classic 64-byte index records and has no
      * v2/docket awareness at all. Running it against a v2 revlog would silently replace that
-     * revlog's docket header with an incompatible classic-v1 one (real hg's own reader then
-     * either aborts outright or {@code hg verify} reports integrity errors -- verified live
-     * against hg-rust-7.2.4). Since real hg itself has no maintenance/compaction operation for
-     * these experimental formats to mirror, and getting this wrong is destructive, the only safe
-     * behavior is to leave a v2 revlog's on-disk bytes completely untouched.
+     * revlog's docket header with an incompatible classic-v1 one, and real hg's own reader then
+     * either aborts outright or {@code hg verify} reports integrity errors. Since real hg itself
+     * has no maintenance/compaction operation for these experimental formats to mirror, and
+     * getting this wrong is destructive, the only safe behavior is to leave a v2 revlog's on-disk
+     * bytes completely untouched.
      */
     private boolean compressRevlog(File idxFile, File datFile) throws IOException {
         if (!idxFile.exists()) return false;
@@ -181,16 +175,15 @@ public class GcCommand {
 
             if (!original.isInline()) {
                 // Force the freshly-recreated tmp revlog to start out non-inline too -- Revlog's
-                // own "a brand-new non-changelog revlog defaults to inline" policy (backlog #35)
-                // is meant for a revlog that has genuinely never been written to yet, not for
-                // recreating one that has already legitimately outgrown the inline threshold and
-                // split into a separate .d file. Getting this wrong here would silently re-inline
-                // a split filelog/manifest, embedding all its data back into the .i file while
-                // leaving its real .d file orphaned on disk with stale content (found live
-                // 2026-09-05 with a >128KB filelog -- Revlog's own constructor reads
-                // `index.isInline()` off an EXISTING (even zero-length) idxFile instead of
+                // own "a brand-new non-changelog revlog defaults to inline" policy is meant for a
+                // revlog that has genuinely never been written to yet, not for recreating one
+                // that has already legitimately outgrown the inline threshold and split into a
+                // separate .d file. Getting this wrong here would silently re-inline a split
+                // filelog/manifest, embedding all its data back into the .i file while leaving
+                // its real .d file orphaned on disk with stale content: Revlog's own constructor
+                // reads `index.isInline()` off an EXISTING (even zero-length) idxFile instead of
                 // defaulting to inline, so pre-touching tmpIdx as an empty file is enough to
-                // route it there).
+                // route it there.
                 tmpIdx.createNewFile();
             }
             Revlog compressed = new Revlog(tmpIdx, tmpDat);

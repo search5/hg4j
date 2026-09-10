@@ -231,10 +231,10 @@ public abstract class HgTreeFilter implements PathFilter {
      * {@code include}/{@code exclude} {@link NarrowPattern} lists around (not just the compiled
      * predicate) so wire-protocol callers -- {@link io.github.search5.hg4j.api.FetchCommand},
      * specifically -- can recover the original narrowspec patterns and forward them to a real hg
-     * server's {@code getbundle} {@code includepats}/{@code excludepats} wire arguments (backlog
-     * item 40: genuine wire-protocol-level narrow clone, negotiating actual server-side filelog
+     * server's {@code getbundle} {@code includepats}/{@code excludepats} wire arguments, enabling
+     * genuine wire-protocol-level narrow clone: negotiating actual server-side filelog
      * filtering instead of always fetching the full changegroup and discarding out-of-scope
-     * content locally after the fact).
+     * content locally after the fact.
      */
     public static final class NarrowSpecFilter extends HgTreeFilter {
         private final List<NarrowPattern> includes;
@@ -286,7 +286,7 @@ public abstract class HgTreeFilter implements PathFilter {
     }
 
     /**
-     * Backlog 30 (narrow clone wire-level re-integration): rebuilds the same matcher
+     * Rebuilds the same matcher
      * {@link #createNarrowSpecFilter} built at narrow-clone time, from the narrowspec real hg
      * itself stores on disk ({@code .hg/store/narrowspec}, written by {@code NarrowCloneCommand}
      * -- see its {@code formatNarrowSpec}, whose {@code "[include]"}/{@code "[exclude]"} format
@@ -298,7 +298,7 @@ public abstract class HgTreeFilter implements PathFilter {
      * the same filter by hand every time. Returns {@link #ALL} when the repository has no stored
      * narrowspec (not a narrow clone), so callers can apply this result unconditionally.
      *
-     * <p>Backlog item 40: the returned filter now also doubles as the source of the
+     * <p>The returned filter also doubles as the source of the
      * {@code includepats}/{@code excludepats} wire arguments {@link
      * io.github.search5.hg4j.api.FetchCommand} negotiates with a narrow-capable remote (real hg's
      * {@code exp-narrow-1} capability), so that a subsequent {@code pull} -- not just the initial

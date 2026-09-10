@@ -4,7 +4,14 @@ import java.io.PrintWriter;
 import java.io.Writer;
 
 /**
- * 텍스트 스트림(Writer)으로 진행 상황을 인쇄 보고하는 기본 모니터 구현체.
+ * A {@link ProgressMonitor} that prints progress as plain text lines to a {@link Writer}.
+ *
+ * @apiNote A ready-made monitor for callers (e.g. a CLI wrapper around {@code CloneCommand}/
+ *     {@code FetchCommand}/{@code PullCommand}) that just want human-readable progress output,
+ *     without implementing {@link ProgressMonitor} themselves. Wrap {@code new
+ *     OutputStreamWriter(System.out)} to print to the console. Call {@link #cancel()} from
+ *     another thread (e.g. in response to a signal) to make {@link #isCancelled()} start
+ *     returning {@code true}.
  */
 public class TextProgressMonitor implements ProgressMonitor {
 
@@ -14,6 +21,7 @@ public class TextProgressMonitor implements ProgressMonitor {
     private int completed = 0;
     private boolean cancelled = false;
 
+    /** @param writer destination for the printed progress lines */
     public TextProgressMonitor(Writer writer) {
         this.out = new PrintWriter(writer);
     }
@@ -55,6 +63,7 @@ public class TextProgressMonitor implements ProgressMonitor {
         return cancelled;
     }
 
+    /** Requests cancellation; a subsequent {@link #isCancelled()} call returns {@code true}. */
     public synchronized void cancel() {
         this.cancelled = true;
     }

@@ -5,6 +5,9 @@ import java.io.IOException;
 
 /**
  * Commands for branch management (viewing or switching branches).
+ *
+ * @apiNote Typically obtained via {@link Hg#branch()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class BranchCommand {
     private final HgRepository repository;

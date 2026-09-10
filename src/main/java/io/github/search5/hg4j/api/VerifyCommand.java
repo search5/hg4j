@@ -20,6 +20,9 @@ import java.util.stream.Stream;
 /**
  * Porcelain command to verify the integrity of the Mercurial repository.
  * Emulates 'hg verify' by checking node id hash consistency in changelog, manifest, and all filelogs.
+ *
+ * @apiNote Typically obtained via {@link Hg#verify()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public final class VerifyCommand {
     private final HgRepository repository;
@@ -41,16 +44,15 @@ public final class VerifyCommand {
         try {
             // 1. Verify Changelog
             //
-            // 2026-09-01: a freshly-`hg init`'d repository (or one cloned but not yet pulled)
-            // legitimately has no 00changelog.i at all until the first commit -- confirmed
-            // against real `hg verify` (v7.2), which reports "checked 0 changesets" and exits 0
-            // on such a repository, never an error. Treating the absence of the file as an
-            // integrity error was a false positive; it is now simply an empty changelog (0
-            // revisions), matching real hg. This does mean that the separate, much rarer case of
-            // someone deleting 00changelog.i from a repository that *did* have history is no
-            // longer flagged here -- but this simplified verifier has never cross-checked
-            // changelog/manifest/filelog linkage (unlike real hg's verify), so it could not have
-            // reliably reported *what* was lost in that scenario anyway.
+            // A freshly-`hg init`'d repository (or one cloned but not yet pulled) legitimately
+            // has no 00changelog.i at all until the first commit, matching real `hg verify`,
+            // which reports "checked 0 changesets" and exits 0 on such a repository, never an
+            // error -- the absence of the file is simply an empty changelog (0 revisions), not an
+            // integrity error. This does mean that the separate, much rarer case of someone
+            // deleting 00changelog.i from a repository that *did* have history is not flagged
+            // here -- but this simplified verifier has never cross-checked changelog/manifest/
+            // filelog linkage (unlike real hg's verify), so it could not have reliably reported
+            // *what* was lost in that scenario anyway.
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
             int clCount = 0;
@@ -62,12 +64,11 @@ public final class VerifyCommand {
 
             // 2. Verify Manifest
             //
-            // 2026-09-01: real `hg verify` treats a missing 00manifest.i as an integrity error
-            // ("0: empty or missing manifest", exit 1) whenever the changelog already has
-            // revisions -- confirmed by deleting 00manifest.i from a real one-commit repository
-            // and re-running real hg. Previously this method silently skipped the manifest check
-            // whenever the file was absent, which was only correct for the (clCount == 0)
-            // never-committed case; it is now reported as an error for the non-empty case too.
+            // Real `hg verify` treats a missing 00manifest.i as an integrity error ("0: empty or
+            // missing manifest", exit 1) whenever the changelog already has revisions. Silently
+            // skipping the manifest check whenever the file is absent is only correct for the
+            // (clCount == 0) never-committed case; it must be reported as an error for the
+            // non-empty case too.
             File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
             File mfDat = new File(repository.getStoreDir(), "00manifest.d");
             if (mfIdx.exists()) {
@@ -77,14 +78,14 @@ public final class VerifyCommand {
                 errors.add("manifest index not found but changelog has " + clCount + " revision(s)");
             }
 
-            // 2026-09-05 (backlog #39 wave 5): treemanifest (`experimental.treemanifest=1`) splits
-            // the manifest into a root `00manifest.i` plus one submanifest revlog per subdirectory
-            // under `meta/<dir>/00manifest.i` (real hg's `manifestrevlog.dirlog()`, confirmed via
-            // `hg-rust-7.2.4`: e.g. `meta/sub/00manifest.i`, `meta/sub/deep/00manifest.i`). Before
-            // this fix, VerifyCommand never looked under `meta/` at all, so a corrupted submanifest
-            // revlog in a treemanifest repository would silently report zero errors -- a genuine
-            // false negative. Every submanifest found is verified exactly like the root manifest,
-            // labeled by its own store-relative path so the error names the actual broken file.
+            // treemanifest (`experimental.treemanifest=1`) splits the manifest into a root
+            // `00manifest.i` plus one submanifest revlog per subdirectory under
+            // `meta/<dir>/00manifest.i` (real hg's `manifestrevlog.dirlog()`, e.g.
+            // `meta/sub/00manifest.i`, `meta/sub/deep/00manifest.i`). Not looking under `meta/` at
+            // all would let a corrupted submanifest revlog in a treemanifest repository silently
+            // report zero errors -- a false negative. Every submanifest found is verified exactly
+            // like the root manifest, labeled by its own store-relative path so the error names
+            // the actual broken file.
             File metaDir = new File(repository.getStoreDir(), "meta");
             if (metaDir.isDirectory()) {
                 for (String rel : findFilesByName(metaDir.toPath(), "00manifest.i")) {
@@ -94,21 +95,20 @@ public final class VerifyCommand {
 
             // 3. Verify all filelogs.
             //
-            // 2026-09-01 이전에는 이 클래스의 Javadoc이 "changelog, manifest, and all
-            // filelogs"를 검사한다고 주장했지만 실제로는 filelog를 전혀 안 봐서, 파일
-            // 콘텐츠가 손상돼도 "정상"으로 보고하는 거짓 양성 위험이 있었다.
+            // This class's Javadoc says it checks "changelog, manifest, and all filelogs", so
+            // skipping filelogs entirely would risk a false positive that reports "OK" even when
+            // file content is corrupted.
             //
-            // 2026-09-05 (backlog #39 wave 5): discovery used to read ONLY `fncache` -- but real
-            // hg's `fileindex-v1`/`general-v2` storage extensions (confirmed via
-            // `hg-rust-7.2.4`: `format.use-fileindex-v1=yes` / `experimental.revlogv2=...`) do NOT
-            // write an `fncache` file at all (they track files via `fileindex`/`fileindex-list.*`/
-            // `fileindex-tree.*` instead), so the whole filelog check used to be silently skipped
-            // for every repository using either extension -- a false negative masking real
-            // corruption. Discovery now unions fncache's own entries (kept so a dangling fncache
-            // entry -- listed but missing on disk -- is still reported exactly as before) with a
-            // direct walk of the `data/` directory tree for every `*.i` file, which is present on
-            // disk regardless of which discovery mechanism (fncache vs fileindex) the store format
-            // layers on top.
+            // Discovery must not rely on `fncache` alone: real hg's `fileindex-v1`/`general-v2`
+            // storage extensions (`format.use-fileindex-v1=yes` / `experimental.revlogv2=...`) do
+            // NOT write an `fncache` file at all (they track files via
+            // `fileindex`/`fileindex-list.*`/`fileindex-tree.*` instead), so relying on it alone
+            // would silently skip the whole filelog check for every repository using either
+            // extension -- a false negative masking real corruption. Discovery therefore unions
+            // fncache's own entries (kept so a dangling fncache entry -- listed but missing on
+            // disk -- is still reported) with a direct walk of the `data/` directory tree for
+            // every `*.i` file, which is present on disk regardless of which discovery mechanism
+            // (fncache vs fileindex) the store format layers on top.
             Set<String> filelogPaths = new TreeSet<>();
             File fncacheFile = new File(repository.getStoreDir(), "fncache");
             if (fncacheFile.exists()) {
@@ -182,10 +182,9 @@ public final class VerifyCommand {
         }
     }
 
-    /** Verifies every revision of {@code revlog}, using the pre-2026-09-05 message wording
+    /** Verifies every revision of {@code revlog}, using the legacy message wording
      * ({@code "<label> integrity mismatch at revision <r> ..."} / {@code "failed to read <label>
-     * revision <r>: ..."}) for the changelog and root manifest, which existing tests assert on
-     * verbatim. */
+     * revision <r>: ..."}) for the changelog and root manifest, which callers rely on verbatim. */
     private void verifyRevlogLegacyLabel(Revlog revlog, String label, List<String> errors) {
         for (int r = 0; r < revlog.getRevisionCount(); r++) {
             verifyRevision(revlog, r, errors,

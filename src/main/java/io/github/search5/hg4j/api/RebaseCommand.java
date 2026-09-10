@@ -40,26 +40,29 @@ import java.nio.channels.FileChannel;
  * Porcelain command to rebase revisions on top of another base revision.
  *
  * <p>Performs linear revision cherry-picking with clean manifest integration and dirstate
- * updating. Since 2026-09-04 this is <b>evolution-only</b>: a cherry-picked original revision is
- * never physically stripped from the changelog/manifest/filelogs -- it stays fully readable
- * forever, and only an obsolescence marker (predecessor -&gt; successor, via {@link HgObsMarker})
- * records that it has been superseded. This matches real hg's own two mutually-exclusive rebase
- * strategies (plain strip with no marker, or evolution's marker with no strip -- never both,
- * unlike this class's pre-2026-09-04 behavior) and specifically fixes {@code hg log --hidden}
- * reporting "unknown revision" for a rebased-away commit instead of showing it as hidden.
+ * updating. This is <b>evolution-only</b>: a cherry-picked original revision is never physically
+ * stripped from the changelog/manifest/filelogs -- it stays fully readable forever, and only an
+ * obsolescence marker (predecessor -&gt; successor, via {@link HgObsMarker}) records that it has
+ * been superseded. This matches real hg's own two mutually-exclusive rebase strategies (plain
+ * strip with no marker, or evolution's marker with no strip -- never both) so that
+ * {@code hg log --hidden} shows a rebased-away commit as hidden rather than reporting "unknown
+ * revision" for it.
  *
- * <p>The cherry-pick path also now performs a real 3-way merge (via {@link Merge3}, the same
- * engine {@link MergeCommand} uses) whenever the destination and the revision being cherry-picked
- * have both changed the same file differently since the revision's own parent. A genuine conflict
+ * <p>The cherry-pick path also performs a real 3-way merge (via {@link Merge3}, the same engine
+ * {@link MergeCommand} uses) whenever the destination and the revision being cherry-picked have
+ * both changed the same file differently since the revision's own parent. A genuine conflict
  * writes standard {@code <<<<<<< dest ... ======= ... >>>>>>> source} markers into the working
- * file (byte-for-byte matching real hg's default {@code internal:merge} tool, verified live
- * against real hg 7.2) and leaves the file's conflict bookkeeping in {@code .hg/merge/state2} --
+ * file (byte-for-byte matching real hg's default {@code internal:merge} tool) and leaves the
+ * file's conflict bookkeeping in {@code .hg/merge/state2} --
  * the exact same real-hg-compatible format {@link MergeCommand} already writes, so real
  * {@code hg resolve --list} can see it -- and pauses the whole rebase in a resumable state: call
  * {@link #continueRebase()} after resolving (and re-staging the resolved content on disk) to
  * finish that revision's commit and proceed to the next queued one, or {@link #abort()} to
  * discard the entire in-progress rebase and return the repository/working copy to exactly its
  * pre-rebase state.
+ *
+ * @apiNote Typically obtained via {@link Hg#rebase()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class RebaseCommand {
     private static final Logger LOGGER = Logger.getLogger(RebaseCommand.class.getName());
@@ -298,10 +301,10 @@ public class RebaseCommand {
 
     /**
      * Aborts an in-progress (paused-on-conflict) rebase, mirroring real hg's
-     * {@code hg rebase --abort} (verified live against real hg 7.2, 2026-09-04): every cherry-pick
-     * already committed during this rebase attempt is discarded (the changelog/manifest/filelogs
-     * are restored byte-for-byte to their pre-rebase content), and the working copy plus dirstate
-     * are restored to exactly whatever was checked out before {@link #call()} started.
+     * {@code hg rebase --abort}: every cherry-pick already committed during this rebase attempt
+     * is discarded (the changelog/manifest/filelogs are restored byte-for-byte to their
+     * pre-rebase content), and the working copy plus dirstate are restored to exactly whatever
+     * was checked out before {@link #call()} started.
      */
     public void abort() throws IOException, HgLockException {
         repository.clearRevlogCache();
@@ -413,11 +416,10 @@ public class RebaseCommand {
 
         if (parent2Rev != -1) {
             // The original revision is itself a merge commit. Rebasing it here means flattening it
-            // into a single-parent commit onto currentBase -- a simplification predating this
-            // 2026-09-04 change that this pass intentionally preserves as-is (a real recursive
-            // re-merge of both original parents is out of scope for this change): its own final,
-            // fully-resolved manifest is authoritative for every path it differs from currentBase
-            // on, with no 3-way merge/conflict detection attempted.
+            // into a single-parent commit onto currentBase -- a real recursive re-merge of both
+            // original parents is out of scope, so its own final, fully-resolved manifest is
+            // authoritative for every path it differs from currentBase on, with no 3-way
+            // merge/conflict detection attempted.
             Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
             allPaths.addAll(localManifest.keySet());
             allPaths.addAll(otherManifest.keySet());
@@ -537,10 +539,10 @@ public class RebaseCommand {
      * their common ancestor {@code ancestorHex}. Shared by {@link RebaseCommand} and {@link
      * GraftCommand} -- both hit the exact same "dest and the incoming revision both touched this
      * path since their common point of reference" decision, and this is the hardened, real-hg-
-     * verified (2026-09-04, see this class's own javadoc) implementation of it; {@code
-     * GraftCommand} must reuse it rather than re-implement its own, weaker version (which -- before
-     * this fix -- silently discarded the destination's own diverged content instead of merging or
-     * flagging a conflict, verified live as a real data-loss bug against real {@code hg graft} 7.2).
+     * matching implementation of it; {@code GraftCommand} must reuse it rather than re-implement
+     * its own, weaker version that would silently discard the destination's own diverged content
+     * instead of merging or flagging a conflict -- a data-loss bug relative to real
+     * {@code hg graft}.
      *
      * <p>Writes the merged (or, if genuinely conflicted, conflict-marker-laden -- byte-for-byte
      * matching real hg's default {@code internal:merge} tool) content to the working copy and
@@ -697,7 +699,7 @@ public class RebaseCommand {
                 Files.createSymbolicLink(f.toPath(), Path.of(target));
             } catch (Exception e) {
                 // Fallback for OS/filesystem limits (e.g. target exceeding PATH_MAX) or missing
-                // privilege -- verified against real hg 7.2, which does the same.
+                // privilege, matching real hg's own behavior.
                 Files.write(f.toPath(), content);
             }
         } else {

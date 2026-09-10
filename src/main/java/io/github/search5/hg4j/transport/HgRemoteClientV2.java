@@ -489,13 +489,12 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
                 // `manifestGroups` envelope instead of the flat `manifestEntries` list, matching
                 // real hg's own on-the-wire representation for treemanifest changegroups
                 // (mercurial/changegroup.py generatemanifests()). hg4j's own repositories are
-                // always flat (see backlog item 8), so this path only ever activates when pulling
-                // from a genuine third-party treemanifest server -- there is no seeding from a
-                // pull's common root for these per-directory delta chains (unlike the root
-                // changelog/manifest/files paths above): a subdirectory being incrementally
-                // extended still gets a full from-empty delta chain for its own history, which is
-                // correct (not wrong bytes) but not maximally efficient. Documented, not fixed --
-                // see backlog item 20 in mercurial-spec-compliance-requirement.md.
+                // always flat, so this path only ever activates when pulling from a genuine
+                // third-party treemanifest server -- there is no seeding from a pull's common root
+                // for these per-directory delta chains (unlike the root changelog/manifest/files
+                // paths above): a subdirectory being incrementally extended still gets a full
+                // from-empty delta chain for its own history, which is correct (not wrong bytes)
+                // but not maximally efficient.
                 hasTreeManifest = true;
                 bundle.manifestGroups = new ArrayList<>();
                 ChangegroupParser.ManifestGroup rootGroup = new ChangegroupParser.ManifestGroup();

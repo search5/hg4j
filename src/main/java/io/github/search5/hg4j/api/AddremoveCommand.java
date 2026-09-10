@@ -14,6 +14,9 @@ import java.util.Map;
 /**
  * Porcelain command corresponding to {@code hg addremove} — adds all untracked files and marks
  * all missing tracked files as removed, in one pass.
+ *
+ * @apiNote Typically obtained via {@link Hg#addremove()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class AddremoveCommand {
     private final HgRepository repository;
@@ -40,14 +43,14 @@ public class AddremoveCommand {
             affected.add("A " + path);
         }
 
-        // 위에서 add한 파일들이 반영된 최신 dirstate를 다시 읽어야 한다.
+        // Must re-read the dirstate to reflect the files added above.
         dirstate = repository.getDirstate();
         Map<String, Dirstate.Entry> entriesSnapshot = new LinkedHashMap<>(dirstate.getEntries());
         for (Map.Entry<String, Dirstate.Entry> e : entriesSnapshot.entrySet()) {
             String path = e.getKey();
             char state = e.getValue().getState();
             if (state == 'r') {
-                continue; // 이미 제거 표시됨
+                continue; // Already marked as removed
             }
             File diskFile = new File(repository.getDirectory(), path);
             if (!diskFile.exists()) {

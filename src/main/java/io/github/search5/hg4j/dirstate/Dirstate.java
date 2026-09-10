@@ -19,6 +19,16 @@ import java.util.UUID;
 
 /**
  * Parses and writes the Mercurial binary .hg/dirstate file.
+ *
+ * @apiNote The in-memory working-copy tracking state — obtained via {@link
+ *     io.github.search5.hg4j.lib.HgRepository#getDirstate()} and persisted via {@link
+ *     io.github.search5.hg4j.lib.HgRepository#writeDirstate}, both of which delegate to {@link
+ *     #read(File)}/{@link #write(File)} here. Nearly every mutating porcelain command (e.g.
+ *     {@code AddCommand}, {@code RemoveCommand}, {@code CommitCommand}, {@code UpdateCommand})
+ *     reads the current dirstate, mutates it via {@link #addEntry}/{@link #removeEntry}/{@link
+ *     #setParents}, and writes it back. Transparently reads/writes both the legacy v1 flat format
+ *     and the v2 (docket + tree) format depending on {@link #isV2()} / the file's own magic
+ *     bytes — most callers do not need to care which format is in use.
  */
 public class Dirstate {
 
@@ -28,18 +38,31 @@ public class Dirstate {
     private final Map<String, String> copyMap = new LinkedHashMap<>();
     private boolean isV2 = false;
 
+    /** Pending (uncommitted) copy records: destination path → source path. */
     public Map<String, String> getCopyMap() {
         return copyMap;
     }
 
+    /**
+     * Records that {@code dest} was copied from {@code src}, for a pending {@code hg copy} not
+     * yet committed.
+     */
     public void addCopy(String dest, String src) {
         copyMap.put(dest, src);
     }
 
+    /** Whether this dirstate should be read/written in the v2 (docket + tree) on-disk format. */
     public boolean isV2() {
         return isV2;
     }
 
+    /**
+     * Selects which on-disk format {@link #write(File)} uses.
+     *
+     * @apiNote Set by {@link io.github.search5.hg4j.lib.HgRepository#writeDirstate} from the
+     *     repository's {@code dirstate-v2} requirement before every write, so callers mutating a
+     *     {@code Dirstate} directly normally don't need to call this themselves.
+     */
     public void setV2(boolean v2) {
         this.isV2 = v2;
     }
@@ -92,13 +115,12 @@ public class Dirstate {
          * Whether this entry's cached stat info (size/mtime) cannot be trusted at face value and
          * a genuine content-level comparison is required instead. Real hg ties this to BOTH a
          * negative size (its own "unset"/needs-lookup size sentinel, e.g. minted for a brand new
-         * {@code hg add} or a same-second racy commit -- verified live: `hg commit` immediately
-         * after `hg add` on the same wall-clock second produces a 'n' entry with mode=0, size=-1,
-         * mtime=-1 all together) AND/OR the {@link #AMBIGUOUS_TIME} mtime sentinel alone. Every
-         * dirty-check that trusts a dirstate entry's cached size/mtime WITHOUT checking this first
-         * will wrongly treat such an entry as unconditionally "modified" the instant its real
-         * on-disk size differs from -1 (which is always, for any non-empty-sentinel file) --
-         * confirmed live against real hg 7.2's own dirstate output for exactly this scenario.
+         * {@code hg add} or a same-second racy commit: `hg commit` immediately after `hg add` on
+         * the same wall-clock second produces a 'n' entry with mode=0, size=-1, mtime=-1 all
+         * together) AND/OR the {@link #AMBIGUOUS_TIME} mtime sentinel alone. Every dirty-check
+         * that trusts a dirstate entry's cached size/mtime WITHOUT checking this first will
+         * wrongly treat such an entry as unconditionally "modified" the instant its real on-disk
+         * size differs from -1 (which is always, for any non-empty-sentinel file).
          */
         public boolean isStatAmbiguous() {
             return size < 0 || time == AMBIGUOUS_TIME;
@@ -121,6 +143,13 @@ public class Dirstate {
         return parent2;
     }
 
+    /**
+     * Sets the working copy's parent revisions (the dirstate's own {@code p1}/{@code p2}).
+     *
+     * @apiNote Called after a commit, update, or merge to record the new working-copy parent(s);
+     *     {@link io.github.search5.hg4j.lib.HgRepository#rebuildDirstateFromManifest} also calls
+     *     this when reconstructing a lost dirstate from the changelog.
+     */
     public void setParents(NodeId p1, NodeId p2) {
         if (p1 == null || p2 == null) {
             throw new IllegalArgumentException("Parents cannot be null");
@@ -137,14 +166,34 @@ public class Dirstate {
         return entries;
     }
 
+    /**
+     * Adds or replaces the tracking entry for {@code path}.
+     *
+     * @apiNote The primary mutation used by {@code AddCommand} (new 'a' entries), {@code
+     *     CommitCommand} (transitioning entries to 'n' with fresh stat info), and {@code
+     *     UpdateCommand}/{@code MergeCommand} (rewriting entries to match the new working copy).
+     */
     public void addEntry(String path, Entry entry) {
         entries.put(path, entry);
     }
 
+    /**
+     * Stops tracking {@code path} entirely (as opposed to marking it removed with state 'r').
+     *
+     * @apiNote Used by {@code ForgetCommand} and by commands cleaning up an entry that should no
+     *         longer appear in the dirstate at all (e.g. after a purge of an added-then-untracked
+     *         file).
+     */
     public void removeEntry(String path) {
         entries.remove(path);
     }
 
+    /**
+     * Parses a v1 (flat) dirstate from raw bytes.
+     *
+     * @apiNote Called by {@link #read(File)} after ruling out the v2 docket magic; most callers
+     *     should use {@link #read(File)} instead, which auto-detects the format.
+     */
     public void read(byte[] bytes) throws IOException {
         if (bytes == null) {
             throw new HgCorruptDataException("Invalid dirstate file: content cannot be null");
@@ -192,6 +241,15 @@ public class Dirstate {
         }
     }
 
+    /**
+     * Reads a dirstate from disk, auto-detecting v1 vs. v2 by checking for the v2 docket's
+     * {@code "dirstate-v2\n"} magic bytes.
+     *
+     * @apiNote The main entry point used by {@link
+     *     io.github.search5.hg4j.lib.HgRepository#getDirstate()} (via the default {@link
+     *     io.github.search5.hg4j.storage.StoreEngine}); a v2 docket's tree is parsed by {@link
+     *     DirstateV2Parser}.
+     */
     public void read(File file) throws IOException {
         if (file == null || !file.exists()) {
             throw new IOException("Dirstate file does not exist");
@@ -248,16 +306,11 @@ public class Dirstate {
                 this.parent2 = new NodeId(p2);
                 this.entries.clear();
                 this.entries.putAll(parsed.getEntries());
-                // BUG (backlog #39 wave 4, 2026-09-05): this used to only copy over the parsed
-                // entries, silently dropping the parsed copyMap entirely -- confirmed live: a
-                // dirstate-v2 repo that records a pending (uncommitted) `hg copy`'s copy-source
-                // metadata, then gets its dirstate re-read (e.g. by a SECOND hg4j write command
-                // running before the first copy is committed, such as a second `hg copy` from the
-                // same source), lost the first copy's copyMap record entirely on that re-read --
-                // the destination stayed correctly tracked as an added file, but its copy-source
-                // linkage vanished, so the eventual commit recorded no copy metadata for it at
-                // all (`hg log --template {file_copies}` silently missing that destination,
-                // `hg log --follow` unable to trace back through the copy).
+                // The parsed copyMap must also be copied over, not just the entries -- otherwise
+                // a dirstate-v2 repo with a pending (uncommitted) `hg copy`'s copy-source
+                // metadata would lose that copyMap record on a later re-read: the destination
+                // would stay correctly tracked as an added file, but its copy-source linkage
+                // would vanish, so the eventual commit records no copy metadata for it at all.
                 this.copyMap.clear();
                 this.copyMap.putAll(parsed.getCopyMap());
                 return;
@@ -268,6 +321,12 @@ public class Dirstate {
         read(bytes);
     }
 
+    /**
+     * Serializes this dirstate to the v1 (flat) on-disk byte format.
+     *
+     * @apiNote Called by {@link #write(File)} for a v1 write; {@link DirstateV2Serializer}
+     *     handles the v2 case instead.
+     */
     public byte[] serialize() {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
@@ -300,6 +359,16 @@ public class Dirstate {
         return out.toByteArray();
     }
 
+    /**
+     * Writes this dirstate to disk, atomically, in the format selected by {@link #isV2()}.
+     *
+     * @apiNote The main entry point used by {@link
+     *     io.github.search5.hg4j.lib.HgRepository#writeDirstate}. A v2 write generates a fresh
+     *     random uid, writes the new {@code .hg/dirstate.<uid>} data file, then atomically
+     *     replaces the {@code .hg/dirstate} docket, and finally deletes the previous uid's data
+     *     file (the "W-LEAK" cleanup) — this ordering ensures a concurrent reader never observes
+     *     a docket pointing at a missing data file.
+     */
     public void write(File file) throws IOException {
         if (file == null) {
             throw new IllegalArgumentException("Target file cannot be null");

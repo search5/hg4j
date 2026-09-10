@@ -27,6 +27,9 @@ import java.util.ArrayList;
  * base resolution and per-file {@link Merge3} logic as a pure computation, so a caller (e.g. a PR
  * merge-preview, or a server-side merge that commits its result directly without ever checking out
  * a working copy) can get a merge result without mutating any repository state.
+ *
+ * @apiNote Typically obtained via {@link Hg#treeMerge()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class TreeMergeCommand {
     private final HgRepository repository;
@@ -84,12 +87,10 @@ public class TreeMergeCommand {
          * The POSIX-style mode every {@link #getChangedFiles()} path should be applied with
          * ({@code 0644} regular, {@code 0755} executable, {@code 0120000} symlink -- the same
          * convention {@link TreeCommand.TreeEntry#getMode()} and {@link ArchiveCommand} use).
-         * Backlog #39 fix: this used to not exist at all, so a caller applying {@link
-         * #getChangedFiles()} verbatim would silently lose an executable-bit or symlink-vs-regular
-         * change introduced by "theirs" (or picked during a conflict) whenever the underlying
-         * bytes came out identical to what the flag alone changed -- always consult this map
-         * rather than re-deriving a mode from stat'd disk state, since there is no disk state
-         * here at all.
+         * A caller applying {@link #getChangedFiles()} verbatim must consult this map rather than
+         * re-deriving a mode from stat'd disk state -- there is no disk state here -- since an
+         * executable-bit or symlink-vs-regular change introduced by "theirs" (or picked during a
+         * conflict) can leave the underlying bytes identical to what only the mode flag changed.
          */
         public Map<String, Integer> getChangedModes() {
             return changedModes;
@@ -101,7 +102,7 @@ public class TreeMergeCommand {
         }
 
         /**
-         * P3-33: for a path in {@link #getChangedFiles()} that was cleanly adopted from "theirs"
+         * For a path in {@link #getChangedFiles()} that was cleanly adopted from "theirs"
          * (added-by-theirs, or ours-unmodified/theirs-modified -- the two cases where the merged
          * content is exactly one source revision's content, not a synthesized 3-way blend), the
          * {@code "copy"}/{@code "copyrev"} metadata that source revision's filelog entry already
@@ -181,9 +182,9 @@ public class TreeMergeCommand {
                 // else: added by ours only -- already correct, no delta.
             } else {
                 if (Objects.equals(hP1, hLca)) {
-                    // Ours unmodified, theirs modified -- take theirs (content AND mode/flag --
-                    // backlog #39 fix: a flag-only change, e.g. chmod +x with identical bytes,
-                    // used to be silently dropped since only content was ever returned).
+                    // Ours unmodified, theirs modified -- take theirs (content AND mode/flag,
+                    // since a flag-only change, e.g. chmod +x with identical bytes, would
+                    // otherwise be silently dropped if only content were returned).
                     changedFiles.put(path, helper.getFileRevisionContent(path, hP2));
                     changedModes.put(path, helper.getModeFromManifestHex(hP2));
                     recordCopyMetadataIfAny(helper, copiedFiles, path, hP2);

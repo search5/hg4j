@@ -20,6 +20,9 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
  * produced by {@code hg bundle}, or received over the wire) to the current repository. Supports
  * the same HG10UN/HG10GZ/HG10BZ and HG20(bundle2) container formats that {@link FetchCommand}
  * already decodes when pulling over the network.
+ *
+ * @apiNote Typically obtained via {@link Hg#unbundle()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class UnbundleCommand {
     private final HgRepository repository;

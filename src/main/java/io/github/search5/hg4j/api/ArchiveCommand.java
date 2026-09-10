@@ -37,24 +37,25 @@ import java.util.zip.ZipEntry;
  * compressed tar) -- {@code txz} (lzma) is deliberately not implemented (would need a new {@code
  * org.tukaani:xz} dependency hg4j doesn't otherwise need; documented, honest scope cut).
  *
- * <p>Backlog #39 (requirement-matrix campaign) rewrite -- verified live against real hg 7.2
- * (2026-09-05) three real structural bugs this previously lacked entirely:
+ * <p>Matches three structural details of real hg's own {@code archival.archive()} that are easy
+ * to miss:
  * <ol>
  *   <li>Real hg always writes a {@code .hg_archival.txt} metadata member (repo root hex / archived
- *   node hex / branch name / latest global tag info) into every archive -- hg4j produced none.</li>
+ *   node hex / branch name / latest global tag info) into every archive.</li>
  *   <li>Real hg prefixes every member of a zip/tar-family archive with a directory prefix (default:
  *   the destination's own basename with its type-specific suffix stripped, e.g. {@code out.tar.gz}
- *   {@literal ->} {@code out/}) -- hg4j wrote bare paths with no prefix at all. (Directory ({@code
- *   files}) output never gets a prefix -- real hg's own {@code archival.archive()} explicitly
- *   rejects one for that kind -- the destination directory itself already plays that role.)</li>
+ *   {@literal ->} {@code out/}). Directory ({@code files}) output never gets a prefix -- real hg's
+ *   own {@code archival.archive()} explicitly rejects one for that kind -- the destination
+ *   directory itself already plays that role.</li>
  *   <li>Real hg preserves the executable bit and materializes real symlinks (manifest flags
- *   {@code x}/{@code l}) in every output kind -- hg4j silently wrote symlink targets as regular
- *   file content with no executable bit anywhere.</li>
+ *   {@code x}/{@code l}) in every output kind.</li>
  * </ol>
- * Also switched from a hand-rolled, flat-manifest-only parser to {@link
- * HgRepository#getManifestAtCommit(byte[])} (already treemanifest-aware, shared with {@link
- * TreeCommand}/{@link ManifestCommand}) -- the old parser only ever read the root manifest revlog,
- * so a treemanifest repository's nested directories were silently dropped from every archive.
+ * Manifest reads go through {@link HgRepository#getManifestAtCommit(byte[])} (treemanifest-aware,
+ * shared with {@link TreeCommand}/{@link ManifestCommand}) rather than a flat root-manifest-only
+ * parse, so a treemanifest repository's nested directories are included in every archive.
+ *
+ * @apiNote Typically obtained via {@link Hg#archive()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class ArchiveCommand {
     private final HgRepository repository;
@@ -80,7 +81,7 @@ public class ArchiveCommand {
     /** Archive type: {@code files} (directory, default when the destination name matches nothing
      * else), {@code zip}, {@code uzip} (uncompressed zip), {@code tar}, {@code tgz}, or {@code
      * tbz2}. When unset, the type is auto-detected from {@code destination}'s extension, mirroring
-     * real hg's own {@code archival.guesskind()} (verified live, 2026-09-05). */
+     * real hg's own {@code archival.guesskind()}. */
     public ArchiveCommand setType(String type) {
         this.type = type;
         return this;
@@ -380,8 +381,8 @@ public class ArchiveCommand {
      * which only diverges from a plain first-parent walk across a merge whose two sides carry
      * different tags) to find the nearest globally-tagged ancestor, exactly mirroring real hg
      * {@code archival.py}/{@code templatekw.py}'s {@code latesttag}/{@code latesttagdistance}
-     * keywords (verified live against real hg 7.2, 2026-09-05): if the target revision itself
-     * carries one or more global tags, those are returned with distance 0 (the archival template
+     * keywords: if the target revision itself carries one or more global tags, those are
+     * returned with distance 0 (the archival template
      * then renders {@code tag: <name>} lines instead of the {@code latesttag}/distance block); if
      * none is ever found, {@code ["null"]} is returned with the distance from the virtual "-1"
      * (pre-root) revision -- i.e. the target's own 1-based depth along the first-parent chain.

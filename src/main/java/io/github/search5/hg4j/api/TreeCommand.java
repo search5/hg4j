@@ -14,6 +14,9 @@ import java.util.Map;
 
 /**
  * Command to list the entire file structure (directory tree) at a specific revision.
+ *
+ * @apiNote Typically obtained via {@link Hg#tree()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class TreeCommand {
     private final HgRepository repository;

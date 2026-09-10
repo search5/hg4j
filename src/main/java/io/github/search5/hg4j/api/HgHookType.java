@@ -2,6 +2,9 @@ package io.github.search5.hg4j.api;
 
 /**
  * Enum defining the types of Mercurial SCM hooks.
+ *
+ * @apiNote Used as the key when registering a hook via {@link Hg#registerHook}; see {@link
+ *     HgHook} for how a registered hook actually gets invoked.
  */
 public enum HgHookType {
     /**

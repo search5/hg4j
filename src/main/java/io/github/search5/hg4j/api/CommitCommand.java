@@ -54,6 +54,9 @@ import java.util.TreeSet;
 /**
  * Commits tracked changes to the repository history.
  * Built with robust rollback transaction logic, manifest flags tracking, and large file safety.
+ *
+ * @apiNote Typically obtained via {@link Hg#commit()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class CommitCommand {
     private static final Logger LOGGER = Logger.getLogger(CommitCommand.class.getName());
@@ -65,20 +68,20 @@ public class CommitCommand {
     private Integer forcedOffset = null;
     private boolean skipLockAndJournal = false;
 
-    // Per-call() transient rollback/journal bookkeeping (backlog #39 requirement-matrix fix,
-    // 2026-09-05) -- instance fields (rather than locals threaded through every helper) purely so
-    // recursive treemanifest dirlog helpers (writeTreeManifestDir/collectDirNodesRecursive) can
-    // reach them without widening their own signatures. call() re-initializes both fresh on every
-    // invocation, so this is safe despite not being re-entrant (this command object is a one-shot
-    // builder, exactly like every other transient field here).
+    // Per-call() transient rollback/journal bookkeeping -- instance fields (rather than locals
+    // threaded through every helper) purely so recursive treemanifest dirlog helpers
+    // (writeTreeManifestDir/collectDirNodesRecursive) can reach them without widening their own
+    // signatures. call() re-initializes both fresh on every invocation, so this is safe despite
+    // not being re-entrant (this command object is a one-shot builder, exactly like every other
+    // transient field here).
     private Map<File, Long> fileSizes;
     // v2/docket-based (changelog-v2, general-v2) revlogs whose changelog/manifest/filelog "index"
     // file (00changelog.i / 00manifest.i / data-*.i) is a small fixed-size docket header+UUIDs --
     // it does NOT grow with each revision (only its own CONTENT/index_end-data_end pointers
     // change), so a plain byte-length record (which fileSizes uses for everything else) is a
     // complete no-op for restoring it. These need a full-content backup+restore instead; see
-    // recordRevlogRollbackState's javadoc for the full story (found live 2026-09-05: rollback of
-    // a changelog-v2/general-v2 commit was silently a no-op before this fix).
+    // recordRevlogRollbackState's javadoc for why rollback of a changelog-v2/general-v2 commit
+    // needs this to not be a no-op.
     private Map<File, byte[]> docketBackups;
     // The subset of fileSizes's keys that are a v2/docket revlog's resolved companion .idx/.dat/
     // .sda files (as opposed to a classic revlog's own .i/.d, or dirstate/fncache backups): these
@@ -87,15 +90,15 @@ public class CommitCommand {
     // companion files to physically exist (even 0 bytes) for as long as its docket references
     // them -- a freshly-bootstrapped v2 revlog's sidedata companion is legitimately 0 bytes from
     // the moment it is created, so deleting it on rollback (what the plain line's size-0 case
-    // does) leaves real hg unable to even open the repository afterward (found live 2026-09-05).
+    // does) leaves real hg unable to even open the repository afterward.
     private Set<File> truncateOnlyEntries;
     private File journalFile;
 
     private final List<HgHook> preCommitHooks = new ArrayList<>();
     private final List<HgHook> postCommitHooks = new ArrayList<>();
-    // P3-19: yona-side commit signature verification, git-`gpgsig`-header-equivalent shape --
-    // see setGpgSigner()'s javadoc and the section 5 changelog-writing code in call() for the
-    // full contract this callback must honor.
+    // Commit signature verification, git-`gpgsig`-header-equivalent shape -- see
+    // setGpgSigner()'s javadoc and the section 5 changelog-writing code in call() for the full
+    // contract this callback must honor.
     private GpgSigner gpgSigner;
     private String gpgFingerprint;
     private boolean closeBranch = false;
@@ -137,13 +140,12 @@ public class CommitCommand {
     }
 
     /**
-     * P3-19 — signs the new commit's changelog revision, embedding the result in its {@code
-     * extra} dictionary as {@code gpgsig} (and, if {@code fingerprint} is non-null/non-empty,
-     * {@code gpgfingerprint}) -- the same field {@code branch}/{@code close} already use, in
-     * exactly the shape of git's {@code gpgsig} commit header (see
-     * {@code GpgSignatureVerifier.kt}'s doc comment and this project's P3-19 design log for why
-     * an embedded-in-{@code extra} field was chosen over real Mercurial's separate {@code
-     * .hgsigs}-file {@code gpg} extension convention).
+     * Signs the new commit's changelog revision, embedding the result in its {@code extra}
+     * dictionary as {@code gpgsig} (and, if {@code fingerprint} is non-null/non-empty, {@code
+     * gpgfingerprint}) -- the same field {@code branch}/{@code close} already use, in exactly the
+     * shape of git's {@code gpgsig} commit header (chosen over real Mercurial's separate {@code
+     * .hgsigs}-file {@code gpg} extension convention; see {@code GpgSignatureVerifier.kt}'s doc
+     * comment).
      *
      * <p>{@code signer} is invoked with the exact bytes of the would-be UNSIGNED changelog
      * revision -- i.e. this same revision's raw text with every field (manifest hash, author,
@@ -278,25 +280,23 @@ public class CommitCommand {
                     File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
                     Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     appendToJournal(journalFile, "dirstate");
-                    // dirstate-v2's own companion data file (backlog #39, found live 2026-09-05):
-                    // Dirstate.write()'s "W-LEAK" cleanup deletes the *previous* uid's
-                    // ".hg/dirstate.<uid>" data file the instant a NEW docket is durably written --
-                    // so if this transaction crashes anywhere after that write, a later
-                    // HgRepository#checkAndPerformAutoRollback() (a genuinely separate process --
-                    // unlike the in-process dirstateV2DataBackup byte[] below, which only survives
-                    // within THIS same call() invocation's own catch block) would restore
-                    // dirstate.backup's docket bytes pointing at a data file that no longer
-                    // exists. Real hg's own dirstate-v2 reader then treats the missing/mismatched
-                    // companion as an unrecoverable "dirstate read race" and aborts outright
-                    // (verified live against hg-rust-7.2.4). Persisting the OLD data file's bytes
-                    // to disk here (consumed by checkAndPerformAutoRollback's matching restore)
-                    // is what actually survives a crash.
+                    // dirstate-v2's own companion data file: Dirstate.write()'s "W-LEAK" cleanup
+                    // deletes the *previous* uid's ".hg/dirstate.<uid>" data file the instant a
+                    // NEW docket is durably written -- so if this transaction crashes anywhere
+                    // after that write, a later HgRepository#checkAndPerformAutoRollback() (a
+                    // genuinely separate process -- unlike the in-process dirstateV2DataBackup
+                    // byte[] below, which only survives within THIS same call() invocation's own
+                    // catch block) would restore dirstate.backup's docket bytes pointing at a
+                    // data file that no longer exists. Real hg's own dirstate-v2 reader then
+                    // treats the missing/mismatched companion as an unrecoverable "dirstate read
+                    // race" and aborts outright. Persisting the OLD data file's bytes to disk here
+                    // (consumed by checkAndPerformAutoRollback's matching restore) is what
+                    // actually survives a crash.
                     // Deliberately NOT named "dirstate.*" -- CommitCommandCoverageTest's own
                     // dirstate-v2-data-file-count assertions (and any real hg tooling that might
                     // do the same) glob hgDir for "dirstate." prefixed files to enumerate the
-                    // *actual* dirstate-v2 data files; naming this "dirstate.backup.data" made it
-                    // collide with that glob (found live 2026-09-05 running the full regression
-                    // suite after adding this file).
+                    // *actual* dirstate-v2 data files; naming this "dirstate.backup.data" avoids
+                    // colliding with that glob.
                     File dirstateV2DataBackupFile = new File(repository.getDirectory(), ".hg/dirstateV2.backup.data");
                     if (dirstateV2DataBackup != null) {
                         SafeFileIO.writeAtomic(dirstateV2DataBackupFile, dirstateV2DataBackup);
@@ -311,8 +311,8 @@ public class CommitCommand {
                 }
             }
 
-            // Initialize Transaction File Sizes Rollback Backup -- v2/docket-aware (backlog #39,
-            // see recordRevlogRollbackState's javadoc for why a plain byte-length record is not
+            // Initialize Transaction File Sizes Rollback Backup -- v2/docket-aware (see
+            // recordRevlogRollbackState's javadoc for why a plain byte-length record is not
             // enough for changelog-v2/general-v2 repositories).
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
@@ -388,8 +388,8 @@ public class CommitCommand {
             List<String> filesModified = new ArrayList<>();
             Set<String> fncachePaths = new LinkedHashSet<>();
 
-            // SD_FILES sidedata bookkeeping (backlog item 19) -- only actually encoded/attached
-            // below when repository.isSidedataCopies() is true; harmless to always populate.
+            // SD_FILES sidedata bookkeeping -- only actually encoded/attached below when
+            // repository.isSidedataCopies() is true; harmless to always populate.
             Set<String> sdAdded = new LinkedHashSet<>();
             Set<String> sdRemoved = new LinkedHashSet<>();
             Set<String> sdTouched = new LinkedHashSet<>();
@@ -413,13 +413,13 @@ public class CommitCommand {
             // Check for unresolved merge conflicts. Real hg (mercurial/commands.py's `commit`,
             // via `mergestatemod.mergestate.read(repo)` + `ms.unresolvedcount()`) aborts based
             // purely on the merge state's own resolved/unresolved flags -- never by re-scanning
-            // working-copy file content for literal conflict markers, which this used to do.
-            // That textual scan was both a false negative (a resolved file that legitimately
-            // still contains "<<<<<<<"/"======="/">>>>>>>" text, e.g. it IS a diff/patch file,
-            // would wrongly re-block the commit forever) and a false positive relative to real
-            // hg (a conflict resolved via `hg resolve --tool internal:local`/`:other` -- which
-            // never writes markers at all -- would be silently allowed through by this scan even
-            // while real hg's mergestate still correctly flags it unresolved).
+            // working-copy file content for literal conflict markers. A textual scan would be
+            // both a false negative (a resolved file that legitimately still contains
+            // "<<<<<<<"/"======="/">>>>>>>" text, e.g. it IS a diff/patch file, would wrongly
+            // re-block the commit forever) and a false positive relative to real hg (a conflict
+            // resolved via `hg resolve --tool internal:local`/`:other` -- which never writes
+            // markers at all -- would be silently allowed through by such a scan even while real
+            // hg's mergestate still correctly flags it unresolved).
             MergeState activeMergeState = MergeState.read(new File(repository.getHgDir(), "merge/state2"));
             if (activeMergeState.isActive() && !activeMergeState.unresolvedFiles().isEmpty()) {
                 throw new HgValidationException("unresolved merge conflicts (see 'hg help resolve')");
@@ -445,16 +445,15 @@ public class CommitCommand {
                     } else if (workingState == 'a' || workingState == 'm' || workingState == 'n') {
                         File diskFile = new File(repository.getDirectory(), path);
                         // A symlink is valid to commit even when its target is missing (dangling)
-                        // or not a plain file — real hg tracks it regardless (verified live).
+                        // or not a plain file — real hg tracks it regardless.
                         // exists()/isFile() alone follow the link and would reject it.
                         boolean physicallyMissing = !Files.isSymbolicLink(diskFile.toPath())
                                 && (!diskFile.exists() || !diskFile.isFile());
 
-                        // Backlog 32 gap #2 (verified live against Mercurial 7.2): unlike every
-                        // OTHER tracked-but-missing file (which makes `hg commit` abort with
-                        // "nothing changed (N missing files)"), real hg specially tolerates
-                        // `.hgsub` (the subrepo spec file) being deleted from the working
-                        // directory WITHOUT an explicit `hg remove` -- `hg commit` neither
+                        // Unlike every OTHER tracked-but-missing file (which makes `hg commit`
+                        // abort with "nothing changed (N missing files)"), real hg specially
+                        // tolerates `.hgsub` (the subrepo spec file) being deleted from the
+                        // working directory WITHOUT an explicit `hg remove` -- `hg commit` neither
                         // aborts nor mints a new `.hgsub` revision, it silently carries the
                         // previous manifest entry forward unchanged (`hg cat -r tip .hgsub`
                         // afterwards still returns the OLD content; `hg log --follow -- .hgsub`
@@ -464,7 +463,7 @@ public class CommitCommand {
                         // match "no subrepos currently declared" (an explicit `hg remove .hgsub`
                         // instead goes through the ordinary workingState == 'r' branch above,
                         // and applySubrepoStateBeforeCommit() additionally drops .hgsubstate
-                        // from tracking entirely in that case, also verified live).
+                        // from tracking entirely in that case).
                         if (physicallyMissing && workingState == 'n' && ".hgsub".equals(path)) {
                             String carryHexP1 = manifestP1.get(path);
                             String carryHexP2 = parent2Rev != -1 ? manifestP2.get(path) : null;
@@ -503,21 +502,16 @@ public class CommitCommand {
                                 // hit when a file was committed within the same wall-clock second
                                 // as the dirstate write) can never be trusted via a raw size/mtime
                                 // comparison: its sentinel size (-1) never equals a real on-disk
-                                // size, which previously made this branch treat EVERY such entry
-                                // as unconditionally "changed" (skipping the content-level check
-                                // below entirely) even when byte-identical to the parent --
-                                // confirmed live against a real hg-authored dirstate produced by
-                                // an add+commit that landed in the same second.
+                                // size, so such an entry must fall through to the content-level
+                                // check below rather than being treated as unconditionally
+                                // "changed".
                                 boolean statAmbiguous = dEntry.isStatAmbiguous();
-                                // Backlog #39: a pure `chmod +x`/`chmod -x` on an otherwise
-                                // untouched tracked file changes neither its size nor its mtime
-                                // (chmod updates ctime, not mtime, on POSIX) -- verified live
-                                // against real hg 7.2 (`hg status` reports "M" for exactly this,
-                                // with zero content change). The size/mtime-only comparison below
-                                // was completely blind to this, so a real executable-bit flip was
-                                // silently NEVER committed at all (found via a `TreeMergeCommand`
-                                // matrix test exercising a flag-only change across two commits --
-                                // the second commit's manifest simply never recorded the flip).
+                                // A pure `chmod +x`/`chmod -x` on an otherwise untouched tracked
+                                // file changes neither its size nor its mtime (chmod updates
+                                // ctime, not mtime, on POSIX) -- real hg still reports "M" for
+                                // exactly this, with zero content change, so the executable bit
+                                // must be compared explicitly rather than relying on size/mtime
+                                // alone to catch it.
                                 boolean diskExecutable = !diskIsSymlink && diskFile.canExecute();
                                 boolean dirstateExecutable = !statAmbiguous && (dEntry.getMode() & 0111) != 0;
                                 boolean execBitChanged = !statAmbiguous && diskExecutable != dirstateExecutable;
@@ -534,18 +528,14 @@ public class CommitCommand {
                                     // RebaseCommand cherry-picking a fast-forwarded file whose
                                     // filelog most recently gained a revision from the
                                     // ORIGINAL/source side, not the destination side this commit's
-                                    // parent chain actually descends from) -- the old
-                                    // "positionally last revision" heuristic silently kept the
-                                    // PARENT's stale manifest entry instead of the just-written new
-                                    // content whenever that mismatch occurred, confirmed live via
-                                    // ShelveRealHgInteropTest's
-                                    // unshelveRebasesOntoAnUnrelatedInterveningCommit (2026-09-04):
-                                    // unshelve's rebase step fast-forwards a.txt's shelved content
-                                    // onto a dest commit that never touched it, but a.txt's filelog
-                                    // had ALREADY gained a newer (throwaway restore commit's)
-                                    // revision in between, so "last in filelog" silently pointed at
-                                    // the wrong content and the fast-forward was dropped entirely.
-                                    // For a merge commit, "unchanged" legitimately means "matches
+                                    // parent chain actually descends from) -- a "positionally last
+                                    // revision" heuristic would silently keep the PARENT's stale
+                                    // manifest entry instead of the just-written new content
+                                    // whenever that mismatch occurs (e.g. `hg unshelve`'s rebase
+                                    // step fast-forwarding a file's shelved content onto a dest
+                                    // commit that never touched it, while that file's filelog has
+                                    // already gained a newer revision from an unrelated commit in
+                                    // between). For a merge commit, "unchanged" legitimately means "matches
                                     // EITHER parent" (the byte-level disambiguation a few lines
                                     // below picks whichever one it actually is) -- comparing only
                                     // against P1 would wrongly flag a file that only matches P2
@@ -598,15 +588,12 @@ public class CommitCommand {
                             // this, such a path silently vanishes from the new commit's manifest
                             // entirely (the "!changed" branch below only knows how to reuse an
                             // *existing* parent manifest entry; when neither parent has one, it
-                            // has no else-case and just drops the path). Real caller that hits
+                            // has no else-case and just drops the path). A real caller that hits
                             // this: RebaseCommand.cherryPickBackup marks every file it writes as
                             // 'n' with disk-matching size/mtime (correct fast path for files
                             // genuinely carried over unchanged from the target), including
                             // brand-new files added by the very revision being cherry-picked when
-                            // the rebase target never had that path -- caught live against a
-                            // real-hg-created repo by RebaseRealHgInteropTest (hg4j-only round
-                            // trips never exercised this because they never asserted on the
-                            // rebased commit's manifest/file content, only on changelog linkage).
+                            // the rebase target never had that path.
                             if (!changed) {
                                 boolean presentInP1 = manifestP1.containsKey(path);
                                 boolean presentInP2 = parent2Rev != -1 && manifestP2.containsKey(path);
@@ -670,7 +657,7 @@ public class CommitCommand {
                                 copyMeta.put("copy", originalPath);
                                 copyMeta.put("copyrev", hexSource);
 
-                                // SD_FILES copy-tracing (backlog item 19): classify by which
+                                // SD_FILES copy-tracing: classify by which
                                 // parent's manifest actually contains the copy source -- mirrors
                                 // the sourceEntry lookup just above (P1 first, matching real hg's
                                 // own preference for p1 when a source exists in both).
@@ -687,18 +674,17 @@ public class CommitCommand {
                                 sdTouched.add(path);
                             }
 
-                            // LFS pipeline (backlog 31, extended by backlog 42): if this file is
-                            // larger than the configured [lfs] threshold, store an LFS pointer in
-                            // the filelog (flagged REVIDX_EXTSTORED) instead of the real bytes,
-                            // and stash the real bytes in the local LFS blob store -- matches real
-                            // hg's hgext/lfs `filelogaddrevision` wrapper (verified 2026-09-04
-                            // against hgext/lfs/wrapper.py's writetostore/filelogaddrevision).
+                            // LFS pipeline: if this file is larger than the configured [lfs]
+                            // threshold, store an LFS pointer in the filelog (flagged
+                            // REVIDX_EXTSTORED) instead of the real bytes, and stash the real
+                            // bytes in the local LFS blob store -- matches real hg's hgext/lfs
+                            // `filelogaddrevision` wrapper (hgext/lfs/wrapper.py's
+                            // writetostore/filelogaddrevision).
                             //
-                            // Backlog 42 folded in real hg's rename+LFS handling (verified
-                            // 2026-09-06 against a live `hg mv` + LFS commit): when this file also
-                            // carries copy/rename metadata, that metadata is NOT wrapped as the
-                            // usual separate \x01\n...\x01\n filelog block -- it is instead folded
-                            // into the LFS pointer's own text as x-hg-<key> fields (writetostore's
+                            // Real hg's rename+LFS handling: when this file also carries
+                            // copy/rename metadata, that metadata is NOT wrapped as the usual
+                            // separate \x01\n...\x01\n filelog block -- it is instead folded into
+                            // the LFS pointer's own text as x-hg-<key> fields (writetostore's
                             // behavior), and the filelog node hash is computed over the metadata-
                             // wrapped REAL bytes (what readfromstore hands back to a caller), not
                             // the pointer text and not the bare real bytes alone.
@@ -706,13 +692,13 @@ public class CommitCommand {
                             byte[] lfsHashBasis = null;
                             int extraRevFlags = 0;
                             Map<String, String> filelogMetadata = copyMeta;
-                            // Backlog 42 bug fix: real hg's own lfs.threshold check is Python's
-                            // `if threshold:` (hgext/lfs/__init__.py) -- 0 is falsy in Python, so
-                            // an explicit `lfs.threshold = 0` behaves EXACTLY like leaving it
-                            // unset (no threshold-based LFS triggering at all), not "every
-                            // non-empty file is LFS" as `>= 0` used to implement here (confirmed
-                            // 2026-09-06 by reading hgext/lfs/__init__.py's _trackedmatcher
-                            // directly: `threshold = ui.configbytes(...); if threshold: ...`).
+                            // Real hg's own lfs.threshold check is Python's `if threshold:`
+                            // (hgext/lfs/__init__.py) -- 0 is falsy in Python, so an explicit
+                            // `lfs.threshold = 0` behaves EXACTLY like leaving it unset (no
+                            // threshold-based LFS triggering at all), not "every non-empty file is
+                            // LFS" as a plain `>= 0` comparison would imply (see
+                            // hgext/lfs/__init__.py's _trackedmatcher: `threshold =
+                            // ui.configbytes(...); if threshold: ...`).
                             long lfsThreshold = HgLfsManager.parseThresholdBytes(
                                     repository.getConfig().get("lfs", "threshold"));
                             if (lfsThreshold > 0 && fileContent.length > lfsThreshold) {
@@ -721,8 +707,8 @@ public class CommitCommand {
                                 if (!isBinaryContent(fileContent)) {
                                     // Real hg only adds x-is-binary (value "0") when the real
                                     // content is NOT binary -- absence of the key is real hg's
-                                    // implicit "assume binary" default for LFS content (verified
-                                    // 2026-09-06 against hgext/lfs/wrapper.py's writetostore).
+                                    // implicit "assume binary" default for LFS content (see
+                                    // hgext/lfs/wrapper.py's writetostore).
                                     extra.put("x-is-binary", "0");
                                 }
                                 if (copyMeta != null) {
@@ -735,10 +721,10 @@ public class CommitCommand {
                                 new HgLfsManager(repository.getHgDir(), repository.getConfig())
                                         .cacheObject(pointer, fileContent);
                                 contentToStore = pointer.serialize();
-                                // See Revlog#wrapMetadata's javadoc for the real-hg verification
-                                // this hash-basis formula is based on -- when copyMeta is null
-                                // this is exactly fileContent unchanged, matching the pre-backlog-42
-                                // plain-LFS behavior byte for byte.
+                                // See Revlog#wrapMetadata's javadoc for the real-hg basis of this
+                                // hash-basis formula -- when copyMeta is null this is exactly
+                                // fileContent unchanged, matching plain-LFS behavior byte for
+                                // byte.
                                 lfsHashBasis = Revlog.wrapMetadata(fileContent, copyMeta);
                                 extraRevFlags = Revlog.REVIDX_EXTSTORED;
                                 // The copy/rename metadata is now embedded in the pointer's own
@@ -748,8 +734,7 @@ public class CommitCommand {
                                 // Real hg's lfs extension only fully activates its
                                 // checkhash-bypass flag processor for a repo once "lfs" is in
                                 // .hg/requires (hgext/lfs/__init__.py's commit.lfs hook adds it
-                                // lazily on the first commit containing an LFS-flagged file,
-                                // confirmed 2026-09-04 by reading that source directly) --
+                                // lazily on the first commit containing an LFS-flagged file) --
                                 // without this, a real hg CLI reading an hg4j-written LFS
                                 // commit fails with "abort: integrity check failed" because it
                                 // tries to validate the node hash against the real (huge) blob
@@ -763,10 +748,10 @@ public class CommitCommand {
                                 }
                             }
 
-                            // Backlog #39: a pure executable-bit flip (content byte-identical to
-                            // what a parent already has recorded) must NOT mint a brand new
-                            // filelog revision -- real hg 7.2 CLI, verified live, reuses the
-                            // EXISTING filelog node hex unchanged and only changes the MANIFEST
+                            // A pure executable-bit flip (content byte-identical to what a parent
+                            // already has recorded) must NOT mint a brand new filelog revision --
+                            // real hg's CLI reuses the EXISTING filelog node hex unchanged and
+                            // only changes the MANIFEST
                             // line's flag suffix (e.g. "<hex> 755 * run.sh" after "<hex> 644
                             // run.sh", same <hex> both times). Blindly calling appendRevision()
                             // here for that case would try to append a revision whose computed
@@ -811,12 +796,12 @@ public class CommitCommand {
                             // Register only .i file paths in fncache (raw logical path as per native Mercurial specs)
                             fncachePaths.add("data/" + path + ".i");
                             if (!filelog.isInline()) {
-                                // Backlog #43: a filelog that just grew past real hg's 131072-byte
-                                // inline threshold (Revlog.enforceInlineSize(), called from inside
+                                // A filelog that just grew past real hg's 131072-byte inline
+                                // threshold (Revlog.enforceInlineSize(), called from inside
                                 // appendRevision() above) splits into a separate .d file -- real
                                 // hg's own fncache tracks BOTH the .i and .d path for any
                                 // non-inline data/meta revlog (RE_FNCACHE_FILE in store.py matches
-                                // "(data|meta)/....[id]$"), confirmed live against real hg 7.2.
+                                // "(data|meta)/....[id]$").
                                 // Without this, real hg's own `hg verify` on a repository into
                                 // which hg4j just committed such a file reports
                                 // "warning: revlog 'data/<path>.d' not in fncache!" (GcCommand's
@@ -911,9 +896,9 @@ public class CommitCommand {
             }
 
             // Write fncache back atomically -- deliberately after the manifest write above (not
-            // right after the per-file loop) because backlog #45's fix makes writeTreeManifestDir
-            // append meta/<dir>/00manifest.i/.d entries into this same fncachePaths set as it
-            // writes each touched treemanifest dirlog.
+            // right after the per-file loop) because writeTreeManifestDir appends
+            // meta/<dir>/00manifest.i/.d entries into this same fncachePaths set as it writes each
+            // touched treemanifest dirlog.
             if (!fncachePaths.isEmpty()) {
                 SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
             }
@@ -922,14 +907,15 @@ public class CommitCommand {
             long secs = forcedTime != null ? forcedTime : System.currentTimeMillis() / 1000;
             int offsetSeconds = forcedOffset != null ? forcedOffset : -TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
             String branchName = repository.getBranch();
-            // 실제 hg(changelog.add)는 branch extra 항목을 default/빈 브랜치일 때는 아예
-            // 쓰지 않는다 — 항상 "branch:default"를 남기면 기본 브랜치 커밋의 changelog
-            // 원문 바이트가 실제 hg와 달라져 동일 내용이라도 노드 해시가 어긋난다
-            // (2026-09-01 실제 hg로 확인: 기본 브랜치 커밋의 3번째 줄은 "초 tz"뿐이고
-            // "branch:" 문구가 전혀 없다).
-            // 실제 hg(changelog.encodeextra)는 extra 항목이 여럿이면 키 알파벳순으로 정렬해
-            // '\0'로 join한다 -- "branch"가 "close"보다 앞선다. buildChangelogText()가 join
-            // 직전에 다시 정렬하므로 여기서의 삽입 순서 자체는 정확성에 영향을 주지 않는다.
+            // Real hg (changelog.add) never writes the branch extra entry at all for the
+            // default/empty branch -- always leaving "branch:default" makes the default-branch
+            // commit's raw changelog bytes differ from real hg's, misaligning the node hash even
+            // for identical content (real hg's default-branch commit has just "seconds tz" as its
+            // third line, with no "branch:" text at all).
+            // Real hg (changelog.encodeextra) sorts multiple extra entries alphabetically by key
+            // before joining them with '\0' -- "branch" sorts before "close". buildChangelogText()
+            // sorts again right before joining, so the insertion order here has no effect on
+            // correctness.
             List<String> extraParts = new ArrayList<>();
             if (branchName != null && !branchName.isEmpty() && !"default".equals(branchName)) {
                 extraParts.add("branch:" + encodeExtraKey(branchName));
@@ -937,11 +923,12 @@ public class CommitCommand {
             if (this.closeBranch) {
                 extraParts.add("close:1");
             }
-            // P3-19: gpgfingerprint(있다면)는 서명 "이전에" extra에 들어간다 -- 서명 대상
-            // 페이로드(unsignedChangelogTextBytes)에도 이미 포함돼 있어야, 검증 측이 저장된
-            // 리비전에서 gpgsig 항목 "만" 제거해 재구성한 바이트가 실제 서명된 바이트와
-            // 정확히 일치한다(gpgsig만 제외 -- 그 외 모든 필드는 그대로, git의
-            // signedDataOf()와 동일한 계약).
+            // gpgfingerprint (if present) goes into extra BEFORE signing -- it must
+            // already be included in the payload being signed (unsignedChangelogTextBytes) too,
+            // so that the bytes a verifier reconstructs by removing ONLY the gpgsig entry from
+            // the stored revision exactly match the bytes that were actually signed (excluding
+            // only gpgsig -- every other field stays, the same contract as git's
+            // signedDataOf()).
             if (this.gpgSigner != null && this.gpgFingerprint != null && !this.gpgFingerprint.isEmpty()) {
                 extraParts.add("gpgfingerprint:" + encodeExtraKey(this.gpgFingerprint));
             }
@@ -978,15 +965,14 @@ public class CommitCommand {
                             Map.of(SD_FILES, sdFiles));
                 }
             }
-            // changelog(commit) 리비전은 metadata(clMeta)를 쓰지 않는다 -- 이 오버로드의
-            // metadata 파라미터는 Revlog.wrapMetadata()를 거쳐 "\x01\n key: value \n...\x01\n"
-            // 블록을 콘텐츠 앞에 붙이는데, 이는 실제 Mercurial의 filelog rename/copy 메타데이터
-            // 포맷(hg mv 추적, LFS 포인터 등)이지 changelog 리비전 포맷이 아니다 -- changelog
-            // 리비전의 첫 줄은 반드시 40자 매니페스트 헥스여야 한다(LogCommand의 파서 및 실제
-            // hg 자신의 계약). gpgsig 같은 커밋 단위 메타데이터는 위에서 이미 date 줄의 extra
-            // 딕셔너리(branch/close와 동일한 필드)에 넣었다 -- P3-19에서 발견한 버그 수정,
-            // 이전에는 여기서 실제로 쓰이지 않는 clMeta를 만들어 넘겼었다(아무도
-            // setGpgSignature()를 호출하지 않아 항상 빈 맵이었으므로 실사용 피해는 없었음).
+            // A changelog (commit) revision never uses metadata (clMeta) -- this overload's
+            // metadata parameter goes through Revlog.wrapMetadata(), which prepends a
+            // "\x01\n key: value \n...\x01\n" block to the content; that is real Mercurial's
+            // filelog rename/copy metadata format (hg mv tracking, LFS pointers, etc.), not the
+            // changelog revision format -- a changelog revision's first line must always be the
+            // 40-character manifest hex (per LogCommand's parser and real hg's own contract).
+            // Commit-level metadata such as gpgsig is placed above, in the date line's extra
+            // dictionary (the same field branch/close use) -- not via this clMeta parameter.
             byte[] commitNode = changelog.appendRevision(changelogTextBytes, (Map<String, String>) null, declaredClRev1, declaredClRev2, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
 
             // 6. Update and save Dirstate
@@ -994,10 +980,10 @@ public class CommitCommand {
 
             // Real hg fully removes .hg/merge/ once an active merge state is finalized by a
             // successful commit (mercurial/mergestate.py's `mergestate.reset()`, called
-            // unconditionally by `localrepo.commit()` whenever `ms.active()` -- verified live
-            // against real hg 7.2, 2026-09-05: right after `hg commit` following a two-parent
-            // merge OR a single-parent `hg backout` conflict resolution, `.hg/merge` itself is
-            // gone, not just its `state2` file). Gating this on `parent2Rev != -1` (a real
+            // unconditionally by `localrepo.commit()` whenever `ms.active()` -- right after `hg
+            // commit` following a two-parent merge OR a single-parent `hg backout` conflict
+            // resolution, `.hg/merge` itself is gone, not just its `state2` file). Gating this on
+            // `parent2Rev != -1` (a real
             // two-parent commit) misses the single-parent case entirely -- {@link BackoutCommand}
             // writes the exact same `.hg/merge/state2` bookkeeping for its own conflicting
             // (older-ancestor) backout path even though its result commit keeps a single parent
@@ -1032,9 +1018,9 @@ public class CommitCommand {
                     long time = SafeFileIO.lastModifiedSeconds(diskFile);
                     dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
                     // Real hg clears the dirstate's pending copy record for a path once it is
-                    // committed (verified live: `hg debugstate` shows "copy: a -> b" for an
-                    // uncommitted `hg copy a b`, but that line is gone immediately after `hg
-                    // commit` -- the copy info now lives in the filelog/changeset metadata
+                    // committed (`hg debugstate` shows "copy: a -> b" for an uncommitted `hg copy
+                    // a b`, but that line is gone immediately after `hg commit` -- the copy info
+                    // now lives in the filelog/changeset metadata
                     // written above, not in the dirstate). Without this, hg4j would leave a
                     // stale pending-copy record in the physical dirstate file after commit,
                     // which real hg would still (incorrectly) report via `hg status -C` /
@@ -1050,9 +1036,9 @@ public class CommitCommand {
             // phaseroots root when the new commit's phase is not already implied by its
             // parent(s) -- a plain child of an existing draft/secret commit inherits that phase
             // via ancestry and needs no explicit entry of its own. Recording one unconditionally
-            // (as this used to) appended one line per commit forever, so a repository with N
-            // linear commits diverged from real hg's phaseroots (a single root at the earliest
-            // draft commit) by having N-1 redundant lines -- verified against real hg 7.2.4.
+            // would append one line per commit forever, so a repository with N linear commits
+            // would diverge from real hg's phaseroots (a single root at the earliest draft
+            // commit) by having N-1 redundant lines.
             try {
                 PhaseRoots phaseRoots = repository.getPhaseRoots();
                 int p1Phase = phaseRoots.getPhase(new NodeId(p1CommitNodeHash), changelog).getValue();
@@ -1091,20 +1077,20 @@ public class CommitCommand {
                 }
             }
 
-            // 활성 북마크가 존재하면 해당 북마크를 새로운 커밋 노드로 전진시킨다.
-            // force(true): 보통의 "하나 위에 커밋"은 항상 순수 fast-forward라 이 값이
-            // 필요없지만(옛 활성 위치가 새 커밋의 parent1 그 자체), AmendCommand처럼 CommitCommand를
-            // 내부적으로 재사용하는 리라이트 계열 호출은 새 커밋이 옛 활성 위치의 "형제"(같은
-            // parent를 공유)일 뿐 자손이 아닌 경우가 있다 — 이때 이 시점엔 아직 obsstore에
-            // predecessor->successor 마커조차 기록되지 않은 상태다(마커는 성공한 커밋의 노드
-            //해시가 있어야 쓸 수 있어 항상 커밋 다음에 쓰임, 예: AmendCommand#call). real hg
-            // 자신도 이런 내부 rewrite에 의한 bookmark 이동은 사용자용 `hg bookmark -r`의
-            // validdest 게이트를 거치지 않고 무조건 이동시킨다(`scmutil.cleanupnodes`) — 그
-            // 게이트는 사용자가 직접 입력하는 대화형 이동에만 해당하므로, 여기서도 동일하게
-            // 우회한다(2026-09-05, 백로그 #39 wave 3에서 BookmarkCommand에 force 게이트를
-            // 추가하며 함께 발견·수정 — 안 그러면 amend 직후 활성 bookmark 전진이
-            // HgValidationException으로 깨짐, `PushRealHgInteropTest#testPushOfBookmarkAdvancedAcrossAmendSucceedsWithoutForce`
-            // 로 재현).
+            // If an active bookmark exists, advance it to the new commit node.
+            // force(true): a normal "commit on top" is always a pure fast-forward, so this
+            // wouldn't be needed (the old active position is literally the new commit's parent1)
+            // -- but rewrite-style calls that reuse CommitCommand internally, such as
+            // AmendCommand, can have the new commit be a "sibling" of the old active position
+            // (sharing the same parent) rather than its descendant. At this point, no
+            // predecessor->successor marker has even been recorded in the obsstore yet either
+            // (a marker needs the successful commit's node hash to exist, so it is always
+            // written after the commit, e.g. in AmendCommand#call). Real hg itself also
+            // unconditionally moves a bookmark for this kind of internal rewrite
+            // (`scmutil.cleanupnodes`), without going through the user-facing `hg bookmark -r`'s
+            // validdest gate -- that gate only applies to an interactive move the user typed
+            // themselves, so the same bypass is applied here: without it, advancing the active
+            // bookmark right after an amend fails with an HgValidationException.
             BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
             String active = bookmarkCmd.getActiveBookmark();
             if (active != null) {
@@ -1128,9 +1114,9 @@ public class CommitCommand {
                 throw t;
             }
             // N-1: Transaction Rollback Session
-            // Restore v2/docket full-content backups first (backlog #39, see
-            // recordRevlogRollbackState's javadoc) -- these docket files never change size, so
-            // they are absent from the byte-length-truncate loop below entirely.
+            // Restore v2/docket full-content backups first (see recordRevlogRollbackState's
+            // javadoc) -- these docket files never change size, so they are absent from the
+            // byte-length-truncate loop below entirely.
             for (Map.Entry<File, byte[]> docketEntry : docketBackups.entrySet()) {
                 try {
                     SafeFileIO.writeAtomic(docketEntry.getKey(), docketEntry.getValue());
@@ -1272,8 +1258,8 @@ public class CommitCommand {
      * Real hg's {@code hg commit} automatically manages {@code .hgsubstate} whenever {@code
      * .hgsub} is present in the working directory -- the user never runs a separate "record
      * subrepo state" step, and {@code .hgsubstate} does not need to be {@code hg add}ed by hand
-     * (verified live against Mercurial 7.2's {@code subrepoutil.precommit}/{@code
-     * hgsubrepo.dirty}/{@code hgsubrepo.basestate}): for every path declared in {@code .hgsub}
+     * (matches Mercurial's {@code subrepoutil.precommit}/{@code hgsubrepo.dirty}/{@code
+     * hgsubrepo.basestate}): for every path declared in {@code .hgsub}
      * (processed in sorted order, matching {@code subrepoutil.writestate}'s {@code sorted(state)}),
      * if the subrepo has uncommitted local changes, the parent commit aborts with {@code
      * uncommitted changes in subrepository "&lt;path&gt;"} unless {@link #subrepos} (real hg's
@@ -1281,36 +1267,33 @@ public class CommitCommand {
      * otherwise the subrepo's current checked-out revision (dirty or not) becomes its recorded
      * state.
      *
-     * <p><b>Matches real hg exactly</b> (backlog 23/24, decided 2026-09-04): when a declared
-     * hg subrepo path is not checked out locally as an hg4j repository, real Mercurial 7.2
-     * silently auto-vivifies an *empty* repository there and resets its recorded {@code
-     * .hgsubstate} entry to the null revision ({@code 0000000000000000000000000000000000000000})
-     * -- verified live, this actually discards any previously-recorded (real, non-null) revision
-     * for that path. hg4j replicates this verbatim: a path that is not checked out locally has
+     * <p><b>Matches real hg exactly</b>: when a declared hg subrepo path is not checked out
+     * locally as an hg4j repository, real Mercurial silently auto-vivifies an *empty* repository
+     * there and resets its recorded {@code .hgsubstate} entry to the null revision ({@code
+     * 0000000000000000000000000000000000000000}), discarding any previously-recorded (real,
+     * non-null) revision for that path. hg4j replicates this verbatim: a path that is not checked
+     * out locally has
      * its {@code .hgsubstate} entry reset to the null revision here, even when a real, non-null
      * revision was previously recorded for it. Callers that want a non-null revision recorded
      * for a subrepo must check it out locally (e.g. via {@code CloneCommand}/{@code
      * UpdateCommand}) *before* committing, exactly as real hg requires.
      *
-     * <p><b>Git subrepos</b> ({@code [git]} prefix, backlog 32 gap #3 -- verified live against
-     * Mercurial 7.2 + git, with {@code [subrepos] git:allowed = true}, using an actual git
-     * subrepo checkout): real hg's {@code gitsubrepo.basestate()} records {@code git rev-parse
-     * HEAD} (a git commit sha, not an hg node hash -- confirmed by reading {@code
-     * mercurial/subrepo.py}'s {@code gitsubrepo} class directly) in exactly the same {@code
-     * "<hash> <path>"} {@code .hgsubstate} line format hg subrepos use. Dirtiness is git's own
-     * {@code git diff-index --quiet HEAD} (tracked-file changes only, untracked files ignored)
-     * and gates the same {@code uncommitted changes in subrepository "&lt;path&gt;" (use
-     * --subrepos for recursive commit)} abort (verified byte-for-byte identical message text to
-     * the hg-subrepo case), with {@code -S}/{@link #subrepos} running {@code git commit -a -m
-     * &lt;message&gt; [--author &lt;author&gt;]} and recording the resulting new HEAD sha. A git
-     * subrepo path that is declared in {@code .hgsub} but NOT checked out locally (no {@code
-     * .git} under it) is a HARD abort of the whole parent commit -- verified live: real hg does
-     * NOT fall back to a null revision the way it does for a missing hg subrepo, it aborts with
-     * {@code No such file or directory: '&lt;abspath&gt;'} instead.
+     * <p><b>Git subrepos</b> ({@code [git]} prefix, requiring {@code [subrepos] git:allowed =
+     * true}): real hg's {@code gitsubrepo.basestate()} records {@code git rev-parse HEAD} (a git
+     * commit sha, not an hg node hash -- see {@code mercurial/subrepo.py}'s {@code gitsubrepo}
+     * class) in exactly the same {@code "<hash> <path>"} {@code .hgsubstate} line format hg
+     * subrepos use. Dirtiness is git's own {@code git diff-index --quiet HEAD} (tracked-file
+     * changes only, untracked files ignored) and gates the same {@code uncommitted changes in
+     * subrepository "&lt;path&gt;" (use --subrepos for recursive commit)} abort as the hg-subrepo
+     * case, with {@code -S}/{@link #subrepos} running {@code git commit -a -m &lt;message&gt;
+     * [--author &lt;author&gt;]} and recording the resulting new HEAD sha. A git subrepo path
+     * that is declared in {@code .hgsub} but NOT checked out locally (no {@code .git} under it)
+     * is a HARD abort of the whole parent commit -- real hg does NOT fall back to a null revision
+     * the way it does for a missing hg subrepo, it aborts with {@code No such file or directory:
+     * '&lt;abspath&gt;'} instead.
      *
-     * <p><b>{@code .hgsub} removal</b> (backlog 32 gap #2 -- both branches verified live against
-     * Mercurial 7.2): real hg reacts differently depending on HOW {@code .hgsub} disappears from
-     * the working copy, per {@code subrepoutil.precommit()}:
+     * <p><b>{@code .hgsub} removal</b>: real hg reacts differently depending on HOW {@code
+     * .hgsub} disappears from the working copy, per {@code subrepoutil.precommit()}:
      * <ul>
      * <li>An explicit {@code hg remove .hgsub} (dirstate state {@code 'r'}) also drops {@code
      * .hgsubstate} from tracking entirely in the SAME commit, even though the user never ran
@@ -1412,8 +1395,8 @@ public class CommitCommand {
             // Real hg's hgsubrepo.dirty() bottoms out in workingctx.dirty(), whose very first
             // check is `merge and self.p2()`: a subrepo working copy with a PENDING MERGE (a
             // second dirstate parent set, e.g. left there by a diverged-subrepo recursive merge
-            // -- see MergeCommand#mergeDivergedHgSubrepo, backlog 32 follow-up "gap B") is always
-            // dirty, unconditionally, even when every individual file happens to already match
+            // -- see MergeCommand#mergeDivergedHgSubrepo) is always dirty, unconditionally, even
+            // when every individual file happens to already match
             // disk (StatusCommand only diffs dirstate entries against disk content/mtime, not
             // against parent1's manifest, so a merge-introduced file recorded as clean-normal
             // 'n' would otherwise be invisible to the added/modified/removed check below).
@@ -1479,10 +1462,9 @@ public class CommitCommand {
     }
 
     /**
-     * Resolves the {@code .hgsubstate} entry to record for a git subrepo (backlog 32 gap #3),
-     * mirroring real hg's {@code gitsubrepo.basestate()}/{@code dirty()}/{@code commit()} -- see
-     * the class-level note on {@link #applySubrepoStateBeforeCommit()} for what was actually
-     * verified live.
+     * Resolves the {@code .hgsubstate} entry to record for a git subrepo, mirroring real hg's
+     * {@code gitsubrepo.basestate()}/{@code dirty()}/{@code commit()} -- see the class-level note
+     * on {@link #applySubrepoStateBeforeCommit()}.
      *
      * @return the git commit sha to record, or {@code null} if there is nothing to record
      */
@@ -1490,8 +1472,8 @@ public class CommitCommand {
         if (!GitSubrepoUtil.isGitCheckout(subDir)) {
             // Real hg has no null-revision fallback for a git subrepo the way it does for an hg
             // subrepo -- a declared git subrepo that isn't checked out locally aborts the WHOLE
-            // parent commit (verified live: Mercurial 7.2 fails with exactly this message
-            // before even attempting to fetch/clone it during `hg commit`).
+            // parent commit (Mercurial fails with exactly this message before even attempting to
+            // fetch/clone it during `hg commit`).
             throw new HgValidationException("No such file or directory: '" + subDir.getAbsolutePath() + "'");
         }
 
@@ -1524,10 +1506,9 @@ public class CommitCommand {
     }
 
     /**
-     * Resolves the {@code .hgsubstate} entry to record for a svn subrepo (backlog 41), mirroring
-     * real hg's {@code svnsubrepo.dirty(ignoreupdate=True)}/{@code basestate()}/{@code commit()}
-     * (read live from Mercurial 7.2's installed {@code subrepo.py}, reproduced with a real local
-     * svn repository).
+     * Resolves the {@code .hgsubstate} entry to record for a svn subrepo, mirroring real hg's
+     * {@code svnsubrepo.dirty(ignoreupdate=True)}/{@code basestate()}/{@code commit()} (see
+     * Mercurial's {@code subrepo.py}).
      *
      * <p>Real hg's own {@code subrepoutil.precommit()} calls {@code dirtyreason(ignoreupdate=
      * True)} then, if clean, {@code basestate()} unconditionally -- for a svn subrepo that was
@@ -1535,9 +1516,9 @@ public class CommitCommand {
      * and no previously-recorded {@code .hgsubstate} revision, so {@code dirty()}'s {@code
      * _svnmissing()} branch returns {@code false}), that unconditional {@code basestate()} call
      * itself then fails (real {@code svn info} on a non-working-copy path aborts with {@code
-     * "'<path>' is not a working copy"}), aborting the WHOLE parent commit -- verified live
-     * against Mercurial 7.2 + svn 1.14, exactly like the git-typed sibling branch above
-     * ({@link #computeGitSubrepoState}) which has no null-revision fallback either.
+     * "'<path>' is not a working copy"}), aborting the WHOLE parent commit -- exactly like the
+     * git-typed sibling branch above ({@link #computeGitSubrepoState}) which has no null-revision
+     * fallback either.
      *
      * @return the svn revision to record, or {@code null} if there is nothing to record
      */
@@ -1613,9 +1594,9 @@ public class CommitCommand {
         return filelog.getRevisionContent(rev);
     }
     /**
-     * Real hg's own binary-content test for LFS pointer purposes (confirmed 2026-09-06 against
-     * {@code mercurial/utils/stringutil.py}'s {@code binary()}): content is "binary" if and only
-     * if it contains at least one NUL byte anywhere -- nothing more elaborate.
+     * Real hg's own binary-content test for LFS pointer purposes ({@code
+     * mercurial/utils/stringutil.py}'s {@code binary()}): content is "binary" if and only if it
+     * contains at least one NUL byte anywhere -- nothing more elaborate.
      */
     private static boolean isBinaryContent(byte[] data) {
         for (byte b : data) {
@@ -1703,9 +1684,9 @@ public class CommitCommand {
      * every directory on the path from the root to any changed file, exactly matching root-level
      * flat-manifest behavior, which already always writes a fresh revision every commit
      * regardless of whether content changed). The result is fully spec-valid (every node hash is
-     * still a correct hash of its own real parents+content, verified byte-for-byte readable by
-     * real hg in {@code TreemanifestWriteRealFixtureTest}) — just less storage-deduplicated than
-     * real hg's own output for a commit that only touches one leaf directory in a deep tree.
+     * still a correct hash of its own real parents+content, readable byte-for-byte by real hg) —
+     * just less storage-deduplicated than real hg's own output for a commit that only touches one
+     * leaf directory in a deep tree.
      *
      * @param dir "" for the root (written to {@code manifestRevlog}/{@code 00manifest.i}), or a
      *            repo-root-relative bare directory path (written to {@code
@@ -1759,39 +1740,38 @@ public class CommitCommand {
         } else {
             File subIdx = new File(repository.getStoreDir(), "meta/" + dir + "/00manifest.i");
             File subDat = new File(repository.getStoreDir(), "meta/" + dir + "/00manifest.d");
-            // Snapshot this directory manifest's pre-write state too -- found live 2026-09-05
-            // (backlog #39 requirement-matrix expansion to RollbackCommand): treemanifest dirlogs
-            // (meta/<dir>/00manifest.i) were never recorded at all, so rolling back a treemanifest
-            // commit left every touched directory manifest's newly-appended revision in place
-            // (harmless orphan data since the root manifest still points at the old revision, but
-            // real hg's own transaction mechanism DOES reclaim these -- matching that here too).
+            // Snapshot this directory manifest's pre-write state too: treemanifest dirlogs
+            // (meta/<dir>/00manifest.i) must be recorded for rollback the same as any other
+            // revlog this commit touches, or rolling back a treemanifest commit would leave every
+            // touched directory manifest's newly-appended revision in place (harmless orphan data
+            // since the root manifest still points at the old revision, but real hg's own
+            // transaction mechanism DOES reclaim these -- matching that here too).
             recordRevlogRollbackState(subIdx, subDat);
             Files.createDirectories(subIdx.getParentFile().toPath());
             dirRevlog = repository.getRevlog(subIdx, subDat);
             p1 = p1DirNodes.getOrDefault(dir, new byte[20]);
             p2 = p2DirNodes.getOrDefault(dir, new byte[20]);
-            // Backlog #45: real hg's fncache tracks meta/<dir>/00manifest.i for every treemanifest
-            // dirlog it ever writes (RE_FNCACHE_FILE matches "data|meta" identically) -- confirmed
-            // live against real hg 7.2 (experimental.treemanifest=1): a fresh treemanifest repo's
-            // fncache lists "meta/<dir>/00manifest.i" per touched subdirectory. Before this fix
-            // CommitCommand never added these at all, so real hg's own `hg verify` on a repository
-            // hg4j committed into reports "warning: 'meta/<dir>/00manifest.i' not in fncache!".
+            // Real hg's fncache tracks meta/<dir>/00manifest.i for every treemanifest dirlog it
+            // ever writes (RE_FNCACHE_FILE matches "data|meta" identically): a fresh treemanifest
+            // repo's fncache lists "meta/<dir>/00manifest.i" per touched subdirectory. Without
+            // this, real hg's own `hg verify` on a repository hg4j committed into reports
+            // "warning: 'meta/<dir>/00manifest.i' not in fncache!".
             fncachePaths.add("meta/" + dir + "/00manifest.i");
         }
         int p1Rev = isNullNode(p1) ? -1 : NodeIdUtil.findRevisionByNodeId(dirRevlog, p1);
         int p2Rev = isNullNode(p2) ? -1 : NodeIdUtil.findRevisionByNodeId(dirRevlog, p2);
         byte[] result = dirRevlog.appendRevision(content, p1Rev, p2Rev, p1, p2, linkRev);
         // Real hg only lists the paired ".d" once the dirlog actually grows past the inline
-        // threshold (confirmed live: small treemanifest dirlogs list only the ".i" entry) --
-        // mirrors the isInline() guard already used for filelog fncache entries above.
+        // threshold -- small treemanifest dirlogs list only the ".i" entry, mirroring the
+        // isInline() guard already used for filelog fncache entries above.
         if (!dir.isEmpty() && !dirRevlog.isInline()) {
             fncachePaths.add("meta/" + dir + "/00manifest.d");
         }
         return result;
     }
 
-    // Package-private (P3-33): reused by MergeCommitCommand to read p1/p2's manifest node out of
-    // their own changelog revision text, exactly as this class already does for a normal commit's
+    // Package-private: reused by MergeCommitCommand to read p1/p2's manifest node out of their
+    // own changelog revision text, exactly as this class already does for a normal commit's
     // parent(s) -- see MergeCommitCommand's javadoc for why in-core merge-commit construction
     // reuses this instead of re-deriving the same parsing.
     static byte[] extractManifestNode(byte[] clContent) {
@@ -1857,14 +1837,14 @@ public class CommitCommand {
     /**
      * Builds a changelog (commit) revision's raw text: manifest-hex line, author line, date(+
      * sorted extra) line, one line per touched file, a blank separator line, then the message --
-     * factored out of {@link #call()} (P3-19) so the exact same fields can be rendered twice: once
+     * factored out of {@link #call()} so the exact same fields can be rendered twice: once
      * excluding {@code gpgsig} (the payload a {@link GpgSigner} signs) and once including it (what
      * actually gets stored) -- guaranteeing a verifier's "subtract gpgsig" reconstruction of the
      * stored revision (see {@code LogCommand}, {@link #stripExtraKey}) is byte-identical to what
      * was actually signed. {@code extraParts} is sorted here (real hg's {@code
      * changelog.encodeextra} sorts by key) regardless of the caller's insertion order.
      */
-    // Package-private (P3-33): reused verbatim by MergeCommitCommand so an in-core merge commit's
+    // Package-private: reused verbatim by MergeCommitCommand so an in-core merge commit's
     // changelog text is built with the exact same byte-for-byte format as an ordinary commit's --
     // see this class's own javadoc above for the full field-layout contract.
     static byte[] buildChangelogText(byte[] manifestNode, String author, long secs, int offsetSeconds,
@@ -1890,8 +1870,8 @@ public class CommitCommand {
     /**
      * Removes exactly the entries whose (decoded) key equals {@code keyToRemove} from an
      * already-encoded {@code \0}-joined extra-items string, leaving every other entry's raw
-     * (still-encoded) bytes and relative ordering untouched. Used (P3-19) to reconstruct the
-     * exact "would-be unsigned" changelog bytes a {@code gpgsig} signature was computed over --
+     * (still-encoded) bytes and relative ordering untouched. Used to reconstruct the exact
+     * "would-be unsigned" changelog bytes a {@code gpgsig} signature was computed over --
      * mirrors git's {@code GpgSignatureVerifier.signedDataOf()}'s "strip exactly the gpgsig
      * header, nothing else" contract on the read/verify side.
      */
@@ -1943,7 +1923,7 @@ public class CommitCommand {
     /**
      * Returns the named branch a changelog revision was committed on, decoded from its
      * {@code branch:<name>} extra field. Real hg never writes that field for the default
-     * branch ([[decisions/mercurial-spec-compliance-requirement]] — "Changelog 포맷" row),
+     * branch ([[decisions/mercurial-spec-compliance-requirement]] -- the "Changelog format" row),
      * so its absence means {@code "default"}.
      */
     public static String getBranchOfRevision(Revlog changelog, int rev) throws IOException {
@@ -1987,9 +1967,7 @@ public class CommitCommand {
      * Records enough state to undo a write to {@code idxFile}/{@code datFile} later (both into
      * {@link #fileSizes}/{@link #docketBackups}, and, when this commit is transactional, as
      * "{@code journal}" lines {@link RecoverCommand}/{@link HgRepository#checkAndPerformAutoRollback()}
-     * know how to replay) -- handles both physical revlog layouts uniformly (backlog #39
-     * requirement-matrix expansion to {@code RollbackCommand}/{@code RecoverCommand}, found live
-     * 2026-09-05):
+     * know how to replay) -- handles both physical revlog layouts uniformly:
      * <ul>
      *   <li><b>classic</b> (single {@code .i}[+{@code .d}] pair): a plain byte-length of
      *   {@code idxFile} (and {@code datFile}, if it exists) is enough -- {@link
@@ -2001,10 +1979,8 @@ public class CommitCommand {
      *   {@link RevlogIndex#isV2()}): {@code idxFile} itself is a small FIXED-size docket header
      *   plus 3 UUIDs (~83 bytes) that never grows -- every commit only changes its own CONTENT
      *   (the {@code index_end}/{@code data_end}/{@code sidedata_end} pointers), so a byte-length
-     *   record is a complete no-op for restoring it (this made rollback of a changelog-v2/
-     *   general-v2 commit silently do nothing at all before this fix -- caught live by the
-     *   requirement-matrix expansion to {@code RollbackCommand}, not by any prior test, since
-     *   nothing previously exercised rollback on anything but the default v1 combo). The actual
+     *   record is a complete no-op for restoring it: rollback of a changelog-v2/general-v2 commit
+     *   needs full-content backup+restore instead, or it would silently do nothing at all. The actual
      *   growing files are the docket's resolved companion {@code .idx}/{@code .dat}/{@code .sda}
      *   files ({@link RevlogIndex#getResolvedIndexFile()} etc.) -- safe to byte-length-truncate
      *   like any classic file, since v2 appends are strictly sequential too. The docket file
@@ -2134,10 +2110,9 @@ public class CommitCommand {
      *     docket is written, so restoring just {@code dirstateBackup}'s docket bytes without this
      *     would leave a rolled-back repository's dirstate pointing at a data file that no longer
      *     exists -- real hg's own dirstate-v2 reader then aborts with "dirstate read race
-     *     happened 5 times in a row" (found live 2026-09-05, backlog #39 requirement-matrix
-     *     expansion to {@code RollbackCommand}/{@code RecoverCommand} -- the exact same root cause
-     *     independently found and fixed for the crash-journal path, see {@link
-     *     HgRepository#checkAndPerformAutoRollback()}'s matching "dirstate" branch).
+     *     happened 5 times in a row". The crash-journal path ({@link
+     *     HgRepository#checkAndPerformAutoRollback()}'s matching "dirstate" branch) needs the
+     *     same handling for the same reason.
      */
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup,
                                       Map<File, byte[]> docketBackups, Set<File> truncateOnlyEntries,

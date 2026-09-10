@@ -26,12 +26,14 @@ import java.util.Set;
  * behaves): once the trace walks back to a file's own filelog revision 0, it reads that
  * revision's {@code copy}/{@code copyrev} metadata (see {@link Revlog#getRevisionMetadata}) --
  * the same filelog-level mechanism real hg's default (non-changeset-centric) copy tracing uses
- * (verified against real {@code hg} 7.2's {@code copies.usechangesetcentricalgo()}, which only
- * switches to the changelog {@code SD_FILES} sidedata from backlog items 17/19 for repositories
- * explicitly created with {@code format.use-changelog-v2} plus the
+ * ({@code copies.usechangesetcentricalgo()} only switches to the changelog {@code SD_FILES}
+ * sidedata for repositories explicitly created with {@code format.use-changelog-v2} plus the
  * {@code exp-copies-sidedata-changeset} requirement -- not the ordinary/default case) -- and, if
  * present, recurses into the copy source at that exact revision to obtain the pre-rename
  * baseline before diffing this file's own history forward on top of it.
+ *
+ * @apiNote Typically obtained via {@link Hg#annotate()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public final class AnnotateCommand {
     private final HgRepository repository;
@@ -155,19 +157,14 @@ public final class AnnotateCommand {
 
     /**
      * Splits file content into lines the way real hg's own line-oriented diff/annotate machinery
-     * does ({@code mercurial/mdiff.py}'s {@code splitnewlines}) -- found and fixed 2026-09-05
-     * (backlog #39, requirement-matrix expansion to Cat/Files/Locate/Grep/Annotate/Manifest):
-     * plain {@code text.split("\n", -1)} (the old behavior) manufactures one spurious trailing
-     * empty "line" for any content ending in a newline -- i.e. virtually every real text file --
-     * since Java's split with a negative limit keeps the empty string produced after the final
-     * delimiter. Real hg never counts that trailing terminator as its own line: a 2-line file
-     * ending in {@code "\n"} annotates as exactly 2 lines, not 3. Dropping the trailing empty
-     * element only when the content actually ends with {@code "\n"} (leaving genuine embedded or
-     * multiple trailing blank lines untouched, and leaving a final line with no terminating
-     * newline exactly as-is) reproduces that. This bug was long-standing and was previously baked
-     * into this codebase's own unit test expectations (see {@code HgAnnotateTest}/{@code
-     * AnnotateCommandCoverageTest}, updated alongside this fix) -- the same class of off-by-one
-     * already found and fixed once before in {@code DiffCommand} for the same underlying reason.
+     * does ({@code mercurial/mdiff.py}'s {@code splitnewlines}): plain {@code text.split("\n", -1)}
+     * manufactures one spurious trailing empty "line" for any content ending in a newline -- i.e.
+     * virtually every real text file -- since Java's split with a negative limit keeps the empty
+     * string produced after the final delimiter. Real hg never counts that trailing terminator as
+     * its own line: a 2-line file ending in {@code "\n"} annotates as exactly 2 lines, not 3.
+     * Dropping the trailing empty element only when the content actually ends with {@code "\n"}
+     * (leaving genuine embedded or multiple trailing blank lines untouched, and leaving a final
+     * line with no terminating newline exactly as-is) reproduces that.
      */
     private static String[] splitLines(String text) {
         if (text.isEmpty()) {
@@ -192,13 +189,13 @@ public final class AnnotateCommand {
      *                       cannot produce this, but a corrupt one could).
      */
     /**
-     * Backlog 42: {@code filelog}'s revision {@code rev} may be LFS-flagged ({@code
-     * REVIDX_EXTSTORED}), in which case its raw filelog content is the LFS pointer text, not the
-     * real file bytes -- resolve it the same way {@code UpdateCommand}'s checkout path does
-     * (shared via {@link HgLfsManager#resolveContent}) so annotate diffs/attributes the REAL
-     * content instead of the pointer's own text lines. Verified live 2026-09-06: a real hg 7.2
-     * {@code hg annotate} on an LFS-tracked, renamed file correctly attributes each real content
-     * line to the commit that introduced it (pre- and post-rename) -- hg4j must match.
+     * {@code filelog}'s revision {@code rev} may be LFS-flagged ({@code REVIDX_EXTSTORED}), in
+     * which case its raw filelog content is the LFS pointer text, not the real file bytes --
+     * resolve it the same way {@code UpdateCommand}'s checkout path does (shared via
+     * {@link HgLfsManager#resolveContent}) so annotate diffs/attributes the REAL content instead
+     * of the pointer's own text lines. Matches real hg's {@code hg annotate} on an LFS-tracked,
+     * renamed file: each real content line is attributed to the commit that introduced it
+     * (pre- and post-rename).
      */
     private byte[] resolveContent(Revlog filelog, int rev, String path) throws IOException {
         return HgLfsManager.resolveContent(repository, filelog.getRevisionContent(rev), filelog.isExtStored(rev), path);
@@ -220,20 +217,15 @@ public final class AnnotateCommand {
             int[] prevSources;
             int startRev;
 
-            // Found and fixed 2026-09-05 (backlog #39, requirement-matrix expansion to
-            // Cat/Files/Locate/Grep/Annotate/Manifest): when a copy/rename boundary is crossed,
-            // the crossed content is the PRE-rename baseline, not this revision's own final
-            // content -- filelog revision 0 must still be diffed against it like any other
-            // revision (the loop below), starting at r=0, not skipped by treating the crossed
-            // baseline as already-final. The old code set `baseLines = crossed.lines` directly
-            // and started the loop at r=1, silently skipping revision 0's own diff whenever a
-            // rename and a content edit landed in the very same commit (an extremely common real
-            // workflow, `hg mv old new; edit new; hg commit`) -- any line changed or added in
-            // that same commit was lost or misattributed to the pre-rename revision instead.
-            // This was invisible to every prior test because they only exercised a bare rename
-            // (no simultaneous edit), where the skipped diff happens to be a no-op. When there is
-            // no crossing, revision 0 legitimately has no prior state to diff against (it IS the
-            // file's own origin), so it is still seeded directly and the loop still starts at r=1.
+            // When a copy/rename boundary is crossed, the crossed content is the PRE-rename
+            // baseline, not this revision's own final content -- filelog revision 0 must still be
+            // diffed against it like any other revision (the loop below), starting at r=0, rather
+            // than being skipped by treating the crossed baseline as already-final. Otherwise a
+            // rename and a content edit landing in the same commit (`hg mv old new; edit new; hg
+            // commit`) would lose or misattribute any line changed or added in that commit. When
+            // there is no crossing, revision 0 legitimately has no prior state to diff against (it
+            // IS the file's own origin), so it is still seeded directly and the loop still starts
+            // at r=1.
             TraceResult crossed = tryCrossRenameBoundary(filelog, visitingPaths);
             if (crossed != null) {
                 prevLines = crossed.lines;

@@ -42,6 +42,9 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 /**
  * Pure network sync command to fetch changesets from a remote repository.
  * Updates local revlog store, bookmarks and phases atomically, but does not modify the working copy dirstate.
+ *
+ * @apiNote Typically obtained via {@link Hg#fetch()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class FetchCommand {
     private static final Logger LOGGER = Logger.getLogger(FetchCommand.class.getName());
@@ -81,7 +84,7 @@ public class FetchCommand {
     }
 
     /**
-     * Backlog 30: when the caller hasn't explicitly narrowed this fetch (still the default
+     * When the caller hasn't explicitly narrowed this fetch (still the default
      * {@link HgTreeFilter#ALL}), pick up whatever narrowspec the repository itself was narrow
      * cloned with -- so a narrow clone's scope keeps being honored on every later {@code pull},
      * not just at the initial {@code NarrowCloneCommand} call site.
@@ -93,7 +96,7 @@ public class FetchCommand {
     }
 
     /**
-     * Backlog item 40: recovers the narrowspec patterns behind {@code treeFilter} -- when it's
+     * Recovers the narrowspec patterns behind {@code treeFilter} -- when it's
      * actually a {@link HgTreeFilter.NarrowSpecFilter} (built by {@link
      * io.github.search5.hg4j.api.NarrowCloneCommand} or {@link #resolveNarrowTreeFilterIfDefault}
      * from the repository's stored narrowspec) and the remote advertised {@link
@@ -101,8 +104,8 @@ public class FetchCommand {
      * remote to do the filtering itself instead of hg4j fetching the full changegroup and
      * discarding out-of-scope filelogs locally afterward.
      *
-     * <p>Returns {@code null} (meaning: request the plain, unfiltered changegroup, exactly like
-     * before this backlog item) for any other {@code treeFilter} -- e.g. a plain {@link
+     * <p>Returns {@code null} (meaning: request the plain, unfiltered changegroup) for any other
+     * {@code treeFilter} -- e.g. a plain {@link
      * HgTreeFilter#createPathPrefixFilter} some other caller supplied, which has no narrowspec
      * patterns to forward -- or when the remote doesn't understand the narrow wire arguments.
      * This is a pure bandwidth optimization: {@link #applyBundle} still applies {@code
@@ -157,10 +160,9 @@ public class FetchCommand {
             // `mercurial/exchange.py` works the same for an HTTP or SSH peer) -- previously this
             // was gated on `client instanceof HgRemoteClient` (HTTP only), which meant hg4j never
             // even attempted the bypass over SSH even when the SSH server advertised the
-            // capability (backlog item 39 wave 5, wire-matrix track: a real hg4j-vs-real-hg
-            // production bug, fixed by moving `supportsClonebundles()`/
+            // capability (moving `supportsClonebundles()`/
             // `fetchClonebundlesManifest()` onto the shared `HgRemoteConnection` interface and
-            // implementing them in `HgSshClient` too). A download or apply failure here is NOT
+            // implementing them in `HgSshClient` too fixes this). A download or apply failure here is NOT
             // caught -- real hg deliberately never falls back to a normal pull on clonebundle
             // failure (see the plan doc for why), so the exception propagates and fails the whole
             // fetch.
@@ -187,9 +189,9 @@ public class FetchCommand {
                 }
             }
             if (upToDate && !remoteHeads.isEmpty() && count > 0) {
-                // 새 changeset이 없어도 bookmark/phase는 원격에서 이미 변경됐을 수 있으므로
-                // 반드시 동기화한다 — 예전에는 여기서 그냥 리턴해버려서 "새 커밋 없이
-                // bookmark만 이동한 pull"이 조용히 무시됐다(2026-09-01 발견·수정).
+                // Even with no new changesets, bookmarks/phases may have already changed on the
+                // remote, so they must still be synced -- a pull that only moves a bookmark, with
+                // no new commits, still needs this.
                 syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
                 monitor.end();
                 return mergeClonebundleResults(clonebundleImported, new ArrayList<>());
@@ -265,9 +267,8 @@ public class FetchCommand {
      * The local changelog's own "leaf" revisions (those that are nobody's parent) as hex node
      * IDs -- real hg's own cheapest possible approximation of "what the local side already has"
      * to offer the remote as a common-ancestor hint, used both here and by {@link
-     * IncomingCommand#call()} (backlog item 39 wave 5, wire-matrix track: extracted so both
-     * commands share exactly one implementation instead of {@code IncomingCommand} reimplementing
-     * it slightly differently).
+     * IncomingCommand#call()}; extracted so both commands share exactly one implementation
+     * instead of {@code IncomingCommand} reimplementing it slightly differently.
      */
     static List<String> computeLocalLeafHexes(Revlog localChangelog) {
         List<String> leaves = new ArrayList<>();
@@ -307,26 +308,23 @@ public class FetchCommand {
     }
 
     /**
-     * Shared by {@link #call()} and {@link IncomingCommand#call()} (backlog item 39 wave 5,
-     * wire-matrix track): negotiates {@code getbundle} vs. the legacy {@code changegroup} wire
-     * command, downloads the bundle, and unwraps it down to a raw changegroup payload + its
-     * format version.
+     * Shared by {@link #call()} and {@link IncomingCommand#call()}: negotiates {@code getbundle}
+     * vs. the legacy {@code changegroup} wire command, downloads the bundle, and unwraps it down
+     * to a raw changegroup payload + its format version.
      *
      * <p>Preferring {@code getbundle} whenever the remote advertises it (exactly like real hg's
      * own modern client always does) isn't just an optimization here -- it avoids a real
-     * landmine in real hg's own <em>legacy</em> {@code changegroup} wire command handler
-     * (confirmed independently of hg4j entirely, 2026-09-05, via plain {@code curl} against an
-     * unmodified {@code hg serve}): {@code discovery.outgoing()} in {@code mercurial/
+     * landmine in real hg's own <em>legacy</em> {@code changegroup} wire command handler:
+     * {@code discovery.outgoing()} in {@code mercurial/
      * discovery.py} throws an uncaught {@code ParseError} ("too many revspec arguments
      * specified") server-side -- an HTTP 500, not a clean protocol error -- whenever the {@code
      * changegroup} command's {@code roots} argument is an empty list against a non-empty
      * repository, because it calls {@code repo.revs('::%ln', missingroots, ancestorsof)} with
      * <em>two</em> positional substitution values for a revset expression that only has
-     * <em>one</em> {@code %ln} placeholder. {@code IncomingCommand} used to always call {@code
-     * getChangegroup(Collections.emptyList())} directly regardless of getbundle support, which
-     * hit this on every single real-hg server that had any content at all -- i.e.
-     * {@code IncomingCommand} was completely broken against any real, non-empty remote before
-     * this fix.
+     * <em>one</em> {@code %ln} placeholder. Calling {@code
+     * getChangegroup(Collections.emptyList())} directly regardless of getbundle support hits this
+     * on every real-hg server that has any content at all, so {@code IncomingCommand} must always
+     * prefer {@code getbundle} when it's available.
      *
      * @return {@code null} if there is nothing to fetch (an empty response)
      */
@@ -337,7 +335,7 @@ public class FetchCommand {
 
     /**
      * Same as the 4-argument overload, but additionally negotiates real hg's narrow clone wire
-     * arguments (backlog item 40) when {@code narrowScope} is non-{@code null} -- see {@link
+     * arguments when {@code narrowScope} is non-{@code null} -- see {@link
      * HgRemoteConnection#getBundle(List, List, List, HgRemoteConnection.NarrowScope)}'s doc for
      * the real-hg-verified wire shape and measured bandwidth savings. {@code null} preserves the
      * old always-full-changegroup behavior (used by {@link IncomingCommand}, which never narrows).
@@ -352,19 +350,21 @@ public class FetchCommand {
             List<String> bundleCaps = new ArrayList<>();
             boolean supportsBundle2 = caps.contains("bundle2") || caps.stream().anyMatch(c -> c.startsWith("bundle2"));
             if (supportsBundle2) {
-                // 실제 스펙(mercurial/exchange.py): 원격은 changegroup 버전 목록과 자신의
-                // supportedoutgoingversions()의 교집합 중 max()를 그대로 골라 응답한다
-                // (별도 우선순위 없이 단순 숫자 최댓값) — hg4j의 ChangegroupParser가 cg4/cg5
-                // 델타 헤더까지 파싱할 수 있게 된 뒤로는(2026-09-03) 04/05까지 광고해야
-                // 최신 hg(예: experimental.changegroup4/5=yes 켠 저장소)와 최적 포맷으로
-                // 주고받는다. 기본 설정 저장소는 여전히 cg4/cg5를 광고하지 않으므로
-                // 대부분은 그대로 cg3로 협상된다(실사용 회귀 없음).
+                // Real spec (mercurial/exchange.py): the remote simply picks the max() of the
+                // intersection between the changegroup version list and its own
+                // supportedoutgoingversions() (a plain numeric maximum, no other priority) --
+                // since hg4j's ChangegroupParser can also parse cg4/cg5 delta headers,
+                // advertising up through 04/05 is needed to exchange data with a
+                // modern hg (e.g. a repository with experimental.changegroup4/5=yes enabled) in
+                // the optimal format. A default-configured repository still doesn't advertise
+                // cg4/cg5, so most negotiations still end up at cg3.
                 //
-                // 실측(2026-09-03, Bundle2Parser#buildChangegroupBundleCaps 주석 참고): 이
-                // changegroup 버전 목록은 평평한 "changegroup=..." 토큰이 아니라
-                // "bundle2=<blob>" 토큰 안에 중첩돼야만 실제 hg가 인식한다 — 예전의 평평한
-                // 토큰 방식으로는 bundle2 자체는 (bare "HG20" 토큰 덕에) 켜져도 버전
-                // 교집합이 항상 비어 사실상 구식 bundle1(cg1)로 계속 폴백되고 있었다.
+                // See Bundle2Parser#buildChangegroupBundleCaps's own comment: real hg only
+                // recognizes this changegroup version list when it is nested inside a
+                // "bundle2=<blob>" token, not as a flat "changegroup=..." token -- with a flat
+                // token, bundle2 itself would be enabled (thanks to the bare "HG20" token) but the
+                // version intersection would always be empty, silently falling back to the old
+                // bundle1 (cg1) format.
                 bundleCaps.add("HG20");
                 bundleCaps.add(Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05"));
                 bundleCaps.add("compression=GZ,BZ,ZS");
@@ -463,21 +463,21 @@ public class FetchCommand {
     }
 
     /**
-     * bookmark/phase 원격 동기화. 새 changeset이 있든 없든(예: bookmark만 이동하고 새
-     * 커밋은 없는 pull) 항상 호출돼야 한다 — 예전에는 "새로 받아올 changegroup이 없음"
-     * 조기 리턴 경로들이 이 동기화 자체를 건너뛰어서, 커밋 없이 bookmark만 이동한
-     * 원격을 pull해도 로컬에 전혀 반영이 안 되는 버그가 있었다(2026-09-01 발견·수정,
-     * Track B-3).
+     * Syncs bookmarks/phases with the remote. Must always be called whether or not there are
+     * new changesets -- an early-return path for "no changegroup to fetch" that skipped this
+     * sync would mean pulling a remote that only moved a bookmark (with no new commit) never
+     * gets reflected locally at all.
      *
-     * @param newCommits 이번 fetch로 새로 받아온 커밋(phase를 draft로 표시하는 데 사용).
-     *                   새 커밋이 없으면 빈 리스트.
+     * @param newCommits commits newly fetched by this fetch (used to mark their phase as
+     *                   draft). An empty list if there are no new commits.
      */
     private void syncBookmarksAndPhases(HgRemoteConnection client, Revlog localChangelog, List<byte[]> newCommits) {
         try {
-            // Bookmarks Sync — ancestor(fast-forward) 인지 진짜 divergence인지 구분하는
-            // 공용 병합 로직(BookmarkCommand.mergeFromRemote)에 위임한다. 예전에는 여기서
-            // "원격이 가리키는 노드를 로컬이 갖고 있으면 무조건 덮어쓰기"만 해서 로컬의
-            // 독자적인 bookmark 이동을 조용히 잃어버릴 수 있었다(2026-09-01 수정).
+            // Bookmarks Sync -- delegates to the shared merge logic
+            // (BookmarkCommand.mergeFromRemote) that distinguishes an ancestor (fast-forward)
+            // relationship from genuine divergence, rather than unconditionally overwriting
+            // whenever local already has the node the remote points at, which could silently lose
+            // a local bookmark's own independent movement.
             Map<String, String> remoteBookmarks = client.listKeys("bookmarks");
             BookmarkCommand.mergeFromRemote(repository, remoteBookmarks, null);
 
@@ -525,7 +525,7 @@ public class FetchCommand {
     /**
      * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle)}, but acquires the store/
      * working-copy locks with a caller-supplied wait timeout instead of failing immediately on
-     * contention -- used by the push/unbundle apply path (backlog item 38, both the server
+     * contention -- used by the push/unbundle apply path (both the server
      * direction, {@code HgLocalClient#pushWithHooks}, and the local-peer/{@code file://} direction
      * it shares) so a genuinely concurrent push waits like real hg's own {@code repo.lock()}
      * ({@code wait=True} default) instead of aborting on the very first contended attempt.
@@ -540,7 +540,7 @@ public class FetchCommand {
     /**
      * Runs once the store/working-copy locks are actually held, before ANY part of the incoming
      * bundle is applied -- the exact point real hg's own {@code exchange.unbundle()} re-validates
-     * a push against a race (backlog item 38: {@code mercurial/bundle2_part_handlers.py}'s {@code
+     * a push against a race ({@code mercurial/bundle2_part_handlers.py}'s {@code
      * check:heads}/{@code check:updated-heads} part handlers, run while processing the bundle2
      * envelope inside the just-acquired transaction/lock). Throwing here aborts the apply with
      * nothing yet written (no journal entries exist at this point), so the locks release cleanly
@@ -613,11 +613,12 @@ public class FetchCommand {
             appendToJournal(journalFile, "store/00manifest.d\t" + mfDatLen);
 
             Revlog changelog = repository.getRevlog(clIdx, clDat);
-            // 백로그(P3-27, 2026-09-09): cg1 엔트리의 암묵적 델타 베이스("이 그룹 안에서 바로
-            // 직전에 온 엔트리")는 로컬 revlog가 이미 갖고 있던 리비전 개수와 무관하게, 이번에
-            // 들어오는 changegroup 자체의 순서로만 추적해야 한다(Revlog#appendChangeGroupEntry의
-            // 3-인자 오버로드 주석 참고) — PushCommand의 송신측 prevClContent와 정확히 대칭되는
-            // 수신측 추적.
+            // A cg1 entry's implicit delta base ("whichever entry
+            // came immediately before it in this group") must be tracked purely by the order of
+            // the incoming changegroup itself, independent of how many revisions the local
+            // revlog already had (see Revlog#appendChangeGroupEntry's 3-argument overload
+            // comment) -- the receiving-side tracking that exactly mirrors PushCommand's
+            // sending-side prevClContent.
             byte[] prevChangelogEntryContent = null;
             for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                 int rev = changelog.getRevisionCount();
@@ -660,7 +661,8 @@ public class FetchCommand {
                         mIdx.getParentFile().mkdirs();
                     }
                     Revlog subManifest = (mIdx == mfIdx) ? repository.getManifestRevlog() : repository.getRevlog(mIdx, mDat);
-                    // 위 changelog 루프와 동일한 이유(P3-27) — 그룹별로 독립적으로 추적해야 한다.
+                    // Same reason as the changelog loop above -- must be tracked
+                    // independently per group.
                     byte[] prevManifestEntryContent = null;
                     for (ChangegroupParser.ChangeGroupEntry entry : mg.entries) {
                         int linkRev = changelog.findRevision(entry.cs);
@@ -672,9 +674,9 @@ public class FetchCommand {
                         prevManifestEntryContent = appendedRev != -1 ? subManifest.getRawRevisionContent(appendedRev) : null;
                     }
                     // Only register the .d fncache entry once the applied entries actually pushed
-                    // this dirlog past the inline threshold (backlog #45 cross-check) -- real hg's
+                    // this dirlog past the inline threshold -- real hg's
                     // fncache never lists a .d path for a directory manifest that stayed inline (no
-                    // such file exists on disk), confirmed live: a real-hg treemanifest repo whose
+                    // such file exists on disk): a real-hg treemanifest repo whose
                     // submanifests are all small lists only "meta/<dir>/00manifest.i" in fncache,
                     // never a paired ".d". Mirrors the isInline() guard already used for filelogs
                     // below.
@@ -734,13 +736,13 @@ public class FetchCommand {
                 String rawPath = "data/" + path.replace('\\', '/');
                 fncachePaths.add(rawPath + ".i");
                 if (!filelog.isInline()) {
-                    // Backlog #43: applying this changegroup may have pushed a previously-inline
+                    // Applying this changegroup may have pushed a previously-inline
                     // filelog past real hg's 131072-byte inline threshold
                     // (Revlog.enforceInlineSize(), called from inside appendChangeGroupEntry()
                     // above), splitting it into a separate .d file -- real hg's own fncache tracks
-                    // BOTH the .i and .d path for any non-inline data/meta revlog, confirmed live
-                    // against real hg 7.2 (see the identical fix in CommitCommand for the local
-                    // commit path, and GcCommand's own fncache rebuild for the same convention).
+                    // BOTH the .i and .d path for any non-inline data/meta revlog (see the same
+                    // handling in CommitCommand for the local commit path, and GcCommand's own
+                    // fncache rebuild for the same convention).
                     fncachePaths.add(rawPath + ".d");
                 }
             }
@@ -755,9 +757,9 @@ public class FetchCommand {
                 Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
             } catch (Exception ignored) {}
 
-            // hg rollback으로 이번 pull을 되돌릴 수 있도록 undo 정보를 남긴다. 예전에는
-            // CommitCommand만 undo 정보를 썼기 때문에 pull 직후에는 rollback이 아예 동작하지
-            // 않았다(가장 흔한 실사용 시나리오인데도) — 2026-09-01 수정, Track B-4.
+            // Leaves undo information so this pull can be reverted with hg rollback -- rollback
+            // must work right after a pull, not only after a local commit, since pull is one of
+            // the most common real-world scenarios for it.
             if (!fileSizes.isEmpty()) {
                 try {
                     CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup);

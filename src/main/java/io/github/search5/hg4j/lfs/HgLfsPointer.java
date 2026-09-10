@@ -18,8 +18,8 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
  * size 123456
  * </pre>
  *
- * <p>Beyond the three required fields, real hg's {@code gitlfspointer} (confirmed 2026-09-06
- * against {@code hgext/lfs/pointer.py}) is really just a dict: it freely carries extra
+ * <p>Beyond the three required fields, real hg's {@code gitlfspointer} (see {@code
+ * hgext/lfs/pointer.py}) is really just a dict: it freely carries extra
  * {@code <key> <value>} lines. hg4j preserves those as {@link #getExtra()} -- most importantly
  * the {@code x-hg-copy}/{@code x-hg-copyrev} keys real hg's {@code hgext/lfs/wrapper.py}
  * ({@code writetostore}/{@code readfromstore}) uses to fold a file's rename/copy metadata INTO
@@ -27,6 +27,11 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
  * a renamed file also happens to be LFS-tracked, and {@code x-is-binary} (present with value
  * {@code "0"} only when the real content is NOT binary, i.e. contains no NUL byte -- absence of
  * the key is real hg's implicit "assume binary" default for LFS content).
+ *
+ * @apiNote {@link #parse} is used by {@code io.github.search5.hg4j.storage.Revlog} to recognize
+ *     an LFS-tracked file's revlog content as a pointer rather than real data, {@link #serialize}
+ *     is used by {@code CommitCommand} when writing a new LFS-tracked revision, and {@link
+ *     HgLfsManager} uses both together with the actual blob storage.
  */
 public final class HgLfsPointer {
     private final String version;
@@ -73,7 +78,7 @@ public final class HgLfsPointer {
 
     /**
      * Serializes back to the exact text real hg's {@code gitlfspointer.serialize()} writes
-     * (confirmed 2026-09-04/2026-09-06 against {@code hgext/lfs/pointer.py}): {@code version}
+     * (see {@code hgext/lfs/pointer.py}): {@code version}
      * always first, then every other field (including {@code oid}/{@code size} and any
      * {@link #getExtra()} entries) sorted alphabetically together by key -- real hg's own sort
      * key is literally {@code (key != "version", key)}, so {@code oid}/{@code size} are NOT

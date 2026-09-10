@@ -13,6 +13,13 @@ import java.util.function.Function;
 
 /**
  * Class responsible for managing and parsing Mercurial Phase metadata (.hg/store/phaseroots).
+ *
+ * @apiNote Obtained via {@link io.github.search5.hg4j.lib.HgRepository#getPhaseRoots()}. {@code
+ *     PhaseCommand}/{@code SummaryCommand} query phases for display, {@code CommitCommand} sets
+ *     a new commit's phase, and {@code PushCommand}/{@code FetchCommand}/{@code
+ *     HgLocalClient}/{@code Wire2Commands} synchronize phases across push/pull, matching real
+ *     hg's phase-boundary interop. Only non-{@link Phase#PUBLIC} nodes are ever written to disk
+ *     — a node's absence from the file means public, exactly like real hg.
  */
 public class PhaseRoots {
 

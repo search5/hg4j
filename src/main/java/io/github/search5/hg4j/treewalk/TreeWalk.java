@@ -5,6 +5,18 @@ import java.util.ArrayList;
 import java.util.List;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
+/**
+ * Simultaneously walks multiple {@link TreeIterator}s (e.g. two manifests, or a manifest and the
+ * working directory) in merged, sorted path order — modeled after JGit's own {@code TreeWalk}.
+ *
+ * @apiNote The shared multi-tree comparison engine behind {@code StatusCommand}, {@code
+ *     DiffCommand}, {@code CommitCommand}, {@code UpdateCommand}, {@code MergeCommand}, and
+ *     {@code MergeCommitCommand}. Add each tree to compare with {@link #addTree}, then call
+ *     {@link #next()} in a loop; at each step, use {@link #isTracked}/{@link #getNodeId}/{@link
+ *     #getState} (indexed by the order trees were added) to inspect each tree's state at the
+ *     current path — a tree not tracking the current path simply reports "not tracked" rather
+ *     than throwing.
+ */
 public class TreeWalk {
 
     private final List<TreeIterator> trees = new ArrayList<>();

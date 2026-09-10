@@ -51,6 +51,9 @@ import java.nio.file.StandardOpenOption;
  *       {@code os.lstat}/{@code os.readlink} semantics used elsewhere in this codebase (see
  *       {@link AddCommand}).</li>
  * </ul>
+ *
+ * @apiNote Typically obtained via {@link Hg#copy()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public final class CopyCommand {
     private final HgRepository repository;

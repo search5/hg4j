@@ -10,6 +10,9 @@ import java.io.IOException;
  * Porcelain command corresponding to {@code hg tip} — the changelog's highest-numbered revision
  * (regardless of branch/head; note this differs from "the most recently created" revision when
  * history has been rewritten, matching real hg semantics: tip is by revision number, not by wall clock).
+ *
+ * @apiNote Typically obtained via {@link Hg#tip()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class TipCommand {
     private final HgRepository repository;

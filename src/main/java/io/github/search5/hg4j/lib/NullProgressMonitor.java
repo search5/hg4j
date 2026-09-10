@@ -1,9 +1,14 @@
 package io.github.search5.hg4j.lib;
 
 /**
- * 아무런 진행률 보고도 하지 않는 기본 No-Op 구현체.
+ * No-op {@link ProgressMonitor} that reports no progress and is never cancelled.
+ *
+ * @apiNote The default passed by networked commands ({@code CloneCommand}, {@code
+ *     FetchCommand}, {@code PullCommand}) when the caller doesn't supply its own {@link
+ *     ProgressMonitor}; use {@link #INSTANCE} rather than constructing a new one.
  */
 public class NullProgressMonitor implements ProgressMonitor {
+    /** The single shared instance — this class has no state, so one instance suffices. */
     public static final NullProgressMonitor INSTANCE = new NullProgressMonitor();
 
     private NullProgressMonitor() {}

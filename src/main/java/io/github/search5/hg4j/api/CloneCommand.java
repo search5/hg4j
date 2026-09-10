@@ -24,6 +24,9 @@ import java.nio.file.Path;
 /**
  * Porcelain command to clone a remote Mercurial repository into a local directory.
  * Built with full revision update/checkout and dirstate reconstruction capabilities.
+ *
+ * @apiNote Typically obtained via the static factory method {@link Hg#cloneRepository()}
+ *     rather than constructed directly.
  */
 public class CloneCommand {
 
@@ -82,13 +85,13 @@ public class CloneCommand {
         monitor.update(1);
 
         // 4. Recursively clone/checkout any subrepos declared in the just-checked-out .hgsub
-        // (backlog 32 gap #1 -- verified live against Mercurial 7.2: `hg clone` on a parent repo
-        // whose tip declares subrepos automatically recurses into each one, checking it out to
-        // the revision pinned in .hgsubstate, without any extra flag). Reuses the same recursive
-        // checkout logic UpdateCommand's own post-update step uses (see
-        // UpdateCommand.recursiveSubrepoCheckout), including its git-subrepo support (gap #3)
-        // and its "skip the pull when the pinned revision is already present locally" behavior
-        // (gap #4) -- here the subrepo is never present locally yet, so this always clones.
+        // (matching real hg: `hg clone` on a parent repo whose tip declares subrepos automatically
+        // recurses into each one, checking it out to the revision pinned in .hgsubstate, without
+        // any extra flag). Reuses the same recursive checkout logic UpdateCommand's own
+        // post-update step uses (see UpdateCommand.recursiveSubrepoCheckout), including its
+        // git-subrepo support and its "skip the pull when the pinned revision is already present
+        // locally" behavior -- here the subrepo is never present locally yet, so this always
+        // clones.
         UpdateCommand.recursiveSubrepoCheckout(repo);
 
         monitor.end();

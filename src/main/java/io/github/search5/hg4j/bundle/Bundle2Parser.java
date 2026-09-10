@@ -21,6 +21,13 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 /**
  * Lightweight, production-grade parser for decoding the Mercurial bundle2 (HG20) container format.
  * Dynamically resolves stream-level compression (zlib deflate) and extracts the inner CHANGEGROUP payload.
+ *
+ * @apiNote The shared bundle2 layer under nearly every transport/exchange path -- {@code
+ *     HgRemoteClient}/{@code HgRemoteClientV2}/{@code HgSshClient}/{@code HgLocalClient}/{@code
+ *     Wire1Commands} (push/pull/unbundle wire handling), and the porcelain {@code
+ *     BundleCommand}/{@code UnbundleCommand}/{@code FetchCommand}/{@code PushCommand}/{@code
+ *     ShelveCommand} (which uses bundle2 as its shelved-changes container format). Extracts the
+ *     inner CHANGEGROUP payload for {@link ChangegroupParser} to decode.
  */
 public class Bundle2Parser {
     private static final Logger LOGGER = Logger.getLogger(Bundle2Parser.class.getName());
@@ -33,11 +40,11 @@ public class Bundle2Parser {
         public String cgVersion = "01"; // Default to cg1 if not specified
         /** The wire part id (real hg's {@code partid}, a small sequential integer the SENDER
          * assigned) of the {@code CHANGEGROUP} part this was extracted from -- needed by a
-         * server building a bundle2 reply (backlog item 26) to stamp the reply's {@code
+         * server building a bundle2 reply to stamp the reply's {@code
          * reply:changegroup} part with the matching {@code in-reply-to} param real hg's own
          * {@code op.records.getreplies(cgpart.id)} keys off of. {@code -1} if not captured. */
         public int changegroupPartId = -1;
-        /** Backlog item 38 ("PushRaced"-equivalent server-side race re-check): the raw 20-byte
+        /** The raw 20-byte
          * head node ids from the incoming push's {@code check:heads} part, one per element -- real
          * hg's client ({@code exchange.py}'s {@code _pushb2ctxcheckheads}) embeds this whenever
          * the push isn't {@code --force} and has something to push, so the SERVER (this bundle2
@@ -76,10 +83,8 @@ public class Bundle2Parser {
             throw new HgCorruptDataException("Unsupported bundle magic: " + magicStr + ". Expected HG20.");
         }
 
-        // 2. Stream Level Parameters Size — 실제 스펙(mercurial/bundle2.py의
-        // _fstreamparamsize = '>i')은 4바이트 부호 있는 정수다. 2바이트로 읽으면 실제
-        // hg가 만든 번들(예: 기본 bzip2 압축이 적용된 `hg bundle` 출력)의 스트림 파라미터를
-        // 잘못 파싱해 EOFException으로 깨진다(2026-09-01 발견·수정).
+        // 2. Stream Level Parameters Size -- the real spec (mercurial/bundle2.py's
+        // _fstreamparamsize = '>i') is a 4-byte signed integer.
         int paramsSize = dis.readInt();
         String compression = null;
         if (paramsSize > 0) {
@@ -148,7 +153,7 @@ public class Bundle2Parser {
             if (isChangegroup) {
                 changegroupPartId = partId;
             }
-            // Backlog item 38: real hg's own part type name, verbatim -- see
+            // Real hg's own part type name, verbatim -- see
             // mercurial/bundle2_part_handlers.py's `@parthandler(b'check:heads')`.
             boolean isCheckHeads = "check:heads".equalsIgnoreCase(partName);
             if (isCheckHeads) {
@@ -156,11 +161,9 @@ public class Bundle2Parser {
             }
             int paramCount = mandatoryCount + advisoryCount;
 
-            // 실제 스펙(mercurial/bundle2.py): 파라미터는 "먼저 (keylen,vallen) 쌍
-            // paramCount개를 전부 읽고, 그 다음에 실제 key/value 바이트들을 순서대로
-            // 읽는" 구조다 — key/value를 매 파라미터마다 번갈아 읽는 구조가 아니다
-            // (2026-09-01 발견·수정 — 이전 코드는 파라미터가 하나라도 있으면 실제 hg가
-            // 만든 번들에서 ArrayIndexOutOfBoundsException으로 깨졌다).
+            // Real spec (mercurial/bundle2.py): parameters are structured as "first read all
+            // paramCount (keylen,vallen) pairs, then read the actual key/value bytes in order" --
+            // not a structure that alternates key/value per parameter.
             int[] keyLens = new int[paramCount];
             int[] valLens = new int[paramCount];
             for (int i = 0; i < paramCount; i++) {
@@ -233,8 +236,7 @@ public class Bundle2Parser {
      * {@code changegroupVersionsCsv} (e.g. {@code "01,02,03,04,05"}) — rather than always silently
      * falling back to legacy bundle1/cg1 no matter what versions are listed.
      *
-     * <p><b>Real hg spec, verified against Mercurial 7.2.2 (2026-09-03) by directly capturing a
-     * real {@code hg clone} HTTP request through a logging proxy</b>: the wire protocol's {@code
+     * <p><b>Real hg spec, captured from a real {@code hg clone} HTTP request</b>: the wire protocol's {@code
      * bundlecaps} argument is typed {@code scsv} ({@code wireprototypes.GETBUNDLE_ARGUMENTS}) —
      * the server splits its value on top-level commas into a set of tokens. {@code
      * exchange.bundle2requested()} only checks whether any token starts with {@code "HG2"}, but
@@ -249,13 +251,11 @@ public class Bundle2Parser {
      * for HTTP that second pass is already handled by {@code HgRemoteClient}'s existing {@code
      * URLEncoder.encode()} call, so callers must NOT double-encode here).
      *
-     * <p>A flat top-level {@code "changegroup=01,02,03"} token (what hg4j used prior to
-     * 2026-09-03) is invisible to {@code b2_caps_from_bundle_caps()} — {@code
-     * getbundlechunks()} then finds {@code usebundle2=True} (from the bare {@code "HG20"} token)
-     * but an empty {@code b2caps}, and in practice real hg's {@code hg serve} was observed to fall
-     * all the way back to a legacy, unversioned bundle1 changegroup stream instead — meaning no
-     * hg4j client has ever actually been able to negotiate cg2/cg3 (let alone cg4/cg5) with a real
-     * hg HTTP server before this fix, regardless of what version list was advertised.
+     * <p>A flat top-level {@code "changegroup=01,02,03"} token is invisible to {@code
+     * b2_caps_from_bundle_caps()} — {@code getbundlechunks()} then finds {@code usebundle2=True}
+     * (from the bare {@code "HG20"} token) but an empty {@code b2caps}, and real hg's {@code hg
+     * serve} falls all the way back to a legacy, unversioned bundle1 changegroup stream instead,
+     * regardless of what version list was advertised.
      *
      * @return a comma-joined pair of top-level bundlecaps tokens: {@code "HG20"} (satisfies {@code
      *         bundle2requested()}) and {@code "bundle2=<percent-encoded blob>"} (carries the
@@ -272,8 +272,8 @@ public class Bundle2Parser {
      * Like {@link #buildChangegroupBundleCaps} but returns only the {@code "bundle2=<blob>"}
      * token by itself — for a caller (e.g. {@code FetchCommand}) that builds its {@code
      * bundleCaps} as a {@code List<String>} of separate tokens and wants to add the bare {@code
-     * "HG20"} token as its own list element (matching real hg's own client's exact 2-token shape,
-     * captured 2026-09-03) rather than pre-joined into one string.
+     * "HG20"} token as its own list element (matching real hg's own client's exact 2-token shape)
+     * rather than pre-joined into one string.
      */
     public static String buildBundle2CapsToken(String changegroupVersionsCsv) {
         String blob = "HG20\nchangegroup=" + changegroupVersionsCsv;
@@ -283,12 +283,11 @@ public class Bundle2Parser {
     /**
      * Server-side mirror of {@link #buildBundle2CapsToken}/real hg's {@code
      * urlutil.b2_caps_from_bundle_caps()} + {@code decode_b2_caps()} — decodes the changegroup
-     * version list a CLIENT advertised in its own {@code bundlecaps} request argument (backlog
-     * item 26: {@code HgLocalClient#getBundle} needs this to actually negotiate a changegroup
-     * version instead of hardcoding cg1).
+     * version list a CLIENT advertised in its own {@code bundlecaps} request argument. {@code
+     * HgLocalClient#getBundle} needs this to actually negotiate a changegroup version instead of
+     * hardcoding cg1.
      *
-     * <p>Real hg spec (verified against Mercurial 7.2.2, 2026-09-04, by instrumenting {@code
-     * Wire1Commands.getbundle} and reading a real {@code hg clone}'s actual request): {@code
+     * <p>Real hg spec (captured from a real {@code hg clone}'s actual request): {@code
      * bundlecaps} is a top-level-comma-separated set of tokens (already split by the caller, one
      * token per list element here); the ONE token starting with the literal {@code "bundle2="}
      * prefix carries a percent-encoded blob of newline-separated {@code capability=v1,v2,...}
@@ -418,8 +417,8 @@ public class Bundle2Parser {
      * {@code handlechangegroup} only actually requires the {@code version} param; {@code
      * nbchanges}/{@code treemanifest}/{@code targetphase}/sidedata params are all optional).
      *
-     * <p>Byte-for-byte structure verified against a real bundle produced by Mercurial 7.2.2's own
-     * {@code mercurial.bundle2.bundle20} (2026-09-03): {@code "HG20"} + stream-params-size(int32,
+     * <p>Byte-for-byte structure matching a real bundle produced by Mercurial's own
+     * {@code mercurial.bundle2.bundle20}: {@code "HG20"} + stream-params-size(int32,
      * 0 here) + partHeaderSize(int32) + [nameSize(1B) name partId(4B) mandatoryCount(1B)
      * advisoryCount(1B) (keyLen,valLen) pairs... key bytes... value bytes...] + payload
      * chunkSize(int32, payload length WITHOUT a self-inclusive +4 — unlike the inner changegroup
@@ -431,12 +430,12 @@ public class Bundle2Parser {
 
     /**
      * Same as {@link #wrapChangegroupInBundle2(byte[], String)}, but additionally applies HG20's
-     * own STREAM-level compression (backlog #39, 2026-09-05, {@link
+     * own STREAM-level compression ({@link
      * io.github.search5.hg4j.api.BundleCommand}'s {@code --type gzip-v3}/{@code bzip2-v3}
      * equivalents) -- everything in the envelope AFTER the stream-params block (part header,
      * payload chunks, terminators) is compressed as one continuous stream, exactly matching real
-     * hg's own {@code bundle20.compressed}: verified byte-for-byte against real {@code hg bundle
-     * --all --type bzip2-v3 out.hg} (2026-09-05): {@code "HG20" + int32(14) + "Compression=BZ" +
+     * hg's own {@code bundle20.compressed}: byte-for-byte matching real {@code hg bundle
+     * --all --type bzip2-v3 out.hg}: {@code "HG20" + int32(14) + "Compression=BZ" +
      * <rest of the envelope run through BZip2CompressorOutputStream>}; {@code gzip-v3} is
      * identical but with {@code "Compression=GZ"} and plain zlib/DEFLATE instead (matching {@link
      * #extractChangegroupDetailed}'s existing {@code "GZ"}/{@code "BZ"} read-side branches, which
@@ -506,18 +505,15 @@ public class Bundle2Parser {
 
     /**
      * Builds a minimal, uncompressed HG20/bundle2 "reply" envelope containing a single {@code
-     * reply:changegroup} part -- what a server (backlog item 26: {@code Wire1Commands#unbundle})
+     * reply:changegroup} part -- what a server ({@code Wire1Commands#unbundle})
      * must send back for a push whose request body was itself a bundle2 envelope. Real hg's own
      * client only sends a bundle2-framed push (and therefore only accepts/expects a bundle2-framed
      * REPLY) once the server has advertised the {@code bundle2=} capability at all -- turning that
      * capability on for {@link #decodeChangegroupVersions}'s sake (getbundle version negotiation)
-     * unavoidably also switches every real-hg-client push onto this path (verified 2026-09-04:
-     * before this method existed, a real {@code hg push} against an hg4j server that had just
-     * started advertising {@code bundle2=} failed client-side with "abort: not a Mercurial bundle"
-     * trying to parse hg4j's old plain-text {@code "1\n<status>"} reply as a bundle2 stream).
+     * unavoidably also switches every real-hg-client push onto this path.
      *
-     * <p>Mirrors real hg's own {@code bundle2_part_handlers.handlechangegroup} reply exactly
-     * (verified against Mercurial 7.2.2 source): a {@code reply:changegroup} part with two
+     * <p>Mirrors real hg's own {@code bundle2_part_handlers.handlechangegroup} reply exactly: a
+     * {@code reply:changegroup} part with two
      * advisory params, {@code in-reply-to} (the wire part id of the CLIENT's own {@code
      * changegroup} request part -- see {@link ExtractedBundle2#changegroupPartId}) and {@code
      * return} (an integer; real hg's own client reads this into {@code pushop.cgresult} --
@@ -549,8 +545,8 @@ public class Bundle2Parser {
      * Builds a minimal, uncompressed HG20/bundle2 stream carrying a single {@code error:abort}
      * part with a mandatory {@code message} param -- exactly real hg's own {@code
      * wireprotov1server.unbundle}'s exception-to-wire-response conversion for an {@code
-     * error.Abort} raised while applying a bundle2 push (verified against Mercurial 7.2.2
-     * source, 2026-09-04). Real hg's client-side {@code bundle2.processbundle} recognizes this
+     * error.Abort} raised while applying a bundle2 push. Real hg's client-side {@code
+     * bundle2.processbundle} recognizes this
      * part type and raises {@code AbortFromPart(message)}, which {@code exchange._pushbundle2}
      * reports as {@code "remote: <message>"} -- the bundle2-era equivalent of this server's
      * legacy {@code "0\n<message>"} plain-text error response.

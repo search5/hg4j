@@ -1,16 +1,20 @@
 package io.github.search5.hg4j.revwalk;
 
 /**
- * ChangesetGraph의 순회 순서를 정의하는 열거형입니다.
+ * Enumerates the traversal order used by {@link ChangesetGraph}.
+ *
+ * @apiNote Set via {@link ChangesetGraph#setSortOrder}, consulted only by {@link
+ *     ChangesetGraph#lazyAncestors}. No porcelain command currently sets a non-default sort
+ *     order — every caller of {@code ChangesetGraph} (e.g. {@code LogCommand}, {@code
+ *     BackoutCommand}, {@code MergeCommand}, {@code RebaseCommand}, {@code BookmarkCommand}) uses
+ *     the default breadth-first order today, or calls {@link
+ *     ChangesetGraph#getAllAncestors}/{@link ChangesetGraph#isAncestor}/{@link
+ *     ChangesetGraph#getLcaCandidates} instead, which are order-independent.
  */
 public enum SortOrder {
-    /**
-     * 기본 BFS 순서
-     */
+    /** The default breadth-first traversal order. */
     DEFAULT,
-    
-    /**
-     * 자식이 부모보다 항상 먼저 오는 토폴로지 정렬 순서
-     */
+
+    /** Topological order, where a child always comes before its parent. */
     TOPO
 }

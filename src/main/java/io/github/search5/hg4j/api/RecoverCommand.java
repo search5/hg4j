@@ -11,7 +11,7 @@ import java.util.List;
  * (a leftover {@code .hg/store/journal}), without waiting for the next lock-acquiring command to
  * trigger the same cleanup automatically via {@link HgRepository#checkAndPerformAutoRollback()}.
  *
- * <p>Real hg semantics verified against {@code hg} v7.2 on scratch repositories (2026-09-02):
+ * <p>Matching real hg's own semantics:
  * <ul>
  *   <li>Nothing to recover: real hg prints {@code no interrupted transaction available} and
  *       exits 1.</li>
@@ -24,6 +24,9 @@ import java.util.List;
  * This command mirrors that distinction through {@link RecoverResult} rather than throwing for
  * the "nothing to recover" case, since that is an entirely normal outcome for a library caller
  * (e.g. a "recover before opening" health check) rather than an error.
+ *
+ * @apiNote Typically obtained via {@link Hg#recover()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class RecoverCommand {
 

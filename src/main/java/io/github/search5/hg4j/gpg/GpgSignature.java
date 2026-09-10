@@ -21,6 +21,12 @@ import java.util.Date;
  * Pure Java SCM commit signing representation providing standard OpenPGP/GPG parity.
  * Uses Bouncy Castle PGP APIs to generate and verify true OpenPGP compliant signatures,
  * ensuring seamless integration with standard GPG keyring and gpg --verify commands.
+ *
+ * @apiNote Used by {@code CommitCommand} to sign a new commit and by {@code LogCommand}/{@code
+ *     HgCommit} to expose/verify an existing commit's signature. {@link #sign(byte[], PrivateKey,
+ *     PublicKey, String)} supports any OpenPGP-compatible key type (RSA, EC/ECDSA, Ed25519,
+ *     Ed448); the private-key-only {@link #sign(byte[], PrivateKey, String)} overload exists for
+ *     callers without direct access to the public key but only supports RSA.
  */
 public class GpgSignature {
     private final String signatureHex; // Stores the armored ASCII or raw representation

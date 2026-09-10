@@ -23,6 +23,9 @@ import java.util.Map;
  * for {@code hg log --follow}/{@code hg annotate}-style copy tracing that doesn't need to
  * recompute anything from file content.
  *
+ * @apiNote Unlike most other porcelain commands, not exposed via a {@link Hg} facade method
+ *     today -- construct it directly with a repository obtained from {@link Hg#open}.
+ *
  * <p>Works only on a repository whose changelog was written with copies-sidedata support (which
  * itself requires the changelog-v2 revlog format). On a plain v1 repository — or a v2 repository
  * without the copies-sidedata requirement — every revision simply has no {@code SD_FILES}
@@ -51,12 +54,11 @@ public final class SidedataChangedFilesCommand {
             throw new IllegalStateException("Revision must be set to a non-negative value before calling call()");
         }
 
-        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
-        // changelog-v2 revlog after an external process appended a revision -- see
-        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Especially relevant
-        // here since this command only ever exists for changelog-v2+sidedata repositories (the
-        // exact format family whose docket-based revlog silently missed external changes before
-        // this fix). Cheap no-op in the common (freshly-opened-per-call) case.
+        // Guards against a long-lived HgRepository handle serving a stale cached changelog-v2
+        // revlog after an external process appended a revision -- see DescribeCommand#call()'s
+        // javadoc for the full explanation. Especially relevant here since this command only ever
+        // exists for changelog-v2+sidedata repositories, whose docket-based revlog would otherwise
+        // silently miss external changes. Cheap no-op in the common (freshly-opened-per-call) case.
         repository.refreshIfChangedOnDisk();
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

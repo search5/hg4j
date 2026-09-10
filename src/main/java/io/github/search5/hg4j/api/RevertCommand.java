@@ -20,7 +20,7 @@ import java.util.Map;
 /**
  * Porcelain command to revert changes to files in the working directory.
  *
- * <p>Verified live against real {@code hg} 7.2 (2026-09-05, backlog #39 wave 4):
+ * <p>Matches real {@code hg}'s behavior:
  * <ul>
  *   <li>Reverting a file that is currently "modified" (its on-disk content differs from the
  *   current parent's committed content) backs up the pre-revert on-disk bytes to {@code
@@ -30,15 +30,17 @@ import java.util.Map;
  *   about protecting uncommitted work, not about the revert's target.</li>
  *   <li>Reverting a file that was {@code add}ed but never committed just <em>untracks</em> it
  *   (dirstate entry removed) -- the on-disk content is left exactly as-is, now showing as an
- *   untracked {@code ?} file. This class previously deleted the file outright here, a real
- *   data-loss bug (confirmed live: {@code hg revert} on a freshly {@code hg add}ed file keeps
- *   its content on disk).</li>
+ *   untracked {@code ?} file. Deleting the file outright here would be a data-loss bug:
+ *   {@code hg revert} on a freshly {@code hg add}ed file keeps its content on disk.</li>
  *   <li>Reverting a file that <em>was</em> committed at some point but does not exist in the
  *   target revision (parent1 by default, or an explicit {@code -r} target) deletes it from disk
  *   and marks it {@code r} (removed) in dirstate -- distinct from the "never committed" case
- *   above, and confirmed live against real hg (shows as {@code R <file>} in {@code hg status}
- *   afterward, not silently untracked).</li>
+ *   above, and matching real hg (shows as {@code R <file>} in {@code hg status} afterward, not
+ *   silently untracked).</li>
  * </ul>
+ *
+ * @apiNote Typically obtained via {@link Hg#revert()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class RevertCommand {
 
@@ -84,8 +86,8 @@ public class RevertCommand {
                 // Empty repository (no commits yet): the only file that can legitimately be
                 // reverted here is one that was `hg add`ed but never committed -- real hg keeps
                 // its on-disk content untouched, only removing the dirstate "added" bookkeeping
-                // (verified live: `hg revert` right after `hg add` in a brand-new repo leaves the
-                // file on disk, now shown as untracked "?").
+                // (`hg revert` right after `hg add` in a brand-new repo leaves the file on disk,
+                // now shown as untracked "?").
                 Dirstate.Entry entry = dirstate.getEntries().get(file);
                 if (entry != null && entry.getState() == 'a') {
                     dirstate.removeEntry(file);
@@ -149,12 +151,11 @@ public class RevertCommand {
                 // re-typed by a user at this instant, so a same-size revert to different content
                 // (e.g. "v1\n" -> "v0\n") executed fast enough to land in the same wall-clock
                 // second as the file's own previous recorded state is otherwise indistinguishable
-                // from "unmodified" by a naive size+mtime dirstate check alone -- confirmed live
-                // (2026-09-05, backlog #39 wave 4): reverting a.txt to an older same-length
-                // revision produced a dirstate entry real hg's own `hg status` trusted as clean.
-                // See ShelveCommand's matching fix/comment and StatusCommand's AMBIGUOUS_TIME
-                // handling -- the sentinel makes every reader always re-verify by content,
-                // eliminating the race outright.
+                // from "unmodified" by a naive size+mtime dirstate check alone: without the
+                // sentinel, reverting a.txt to an older same-length revision could produce a
+                // dirstate entry real hg's own `hg status` trusts as clean. See ShelveCommand's
+                // matching handling and StatusCommand's AMBIGUOUS_TIME handling -- the sentinel
+                // makes every reader always re-verify by content, eliminating the race outright.
                 dirstate.addEntry(file, new Dirstate.Entry('n', mode, targetContent.length, 0xFFFFFFFFL));
             } else {
                 Dirstate.Entry entry = dirstate.getEntries().get(file);
@@ -169,7 +170,7 @@ public class RevertCommand {
                     // Was committed at some point but the target revision doesn't have this path
                     // (e.g. it was added after the target revision, or already `hg remove`d) --
                     // real hg deletes it from disk and marks it removed, not merely untracked
-                    // (verified live: `hg status` shows "R <file>" afterward).
+                    // (`hg status` shows "R <file>" afterward).
                     if (diskFile.exists()) {
                         Files.delete(diskFile.toPath());
                     }
@@ -187,7 +188,7 @@ public class RevertCommand {
      * file is currently "modified" relative to the working copy's own recorded parent (dirstate
      * size/mtime, falling back to a content comparison for the same ambiguous-mtime cases {@link
      * StatusCommand} itself guards against). A clean file never gets a backup, regardless of how
-     * different the revert's target revision is (verified live against real hg 7.2).
+     * different the revert's target revision is, matching real hg 7.2.
      */
     private void backupIfModified(Dirstate dirstate, File diskFile) throws IOException {
         if (!diskFile.exists() && !Files.isSymbolicLink(diskFile.toPath())) {

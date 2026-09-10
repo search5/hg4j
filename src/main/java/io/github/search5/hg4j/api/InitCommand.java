@@ -15,11 +15,9 @@ import java.nio.charset.StandardCharsets;
  * Initializes a new Mercurial repository.
  *
  * <p>Beyond the always-on baseline requirements ({@code dotencode}/{@code fncache}/
- * {@code generaldelta}/{@code revlogv1}/{@code store}), this supports every requirement axis of
- * the backlog #39 requirement matrix ({@code exhaustive-interop-matrix-plan.md} §1-1): dirstate-v2,
- * changelog-v2 (+ sidedata-copies), treemanifest, and the three mutually-exclusive
- * storage-extensions (persistent-nodemap / fileindex-v1 / general-v2). Real hg's own
- * mutual-implication rules (verified live against {@code hg}/{@code hg-rust-7.2.4}, 2026-09-05) are
+ * {@code generaldelta}/{@code revlogv1}/{@code store}), this supports dirstate-v2, changelog-v2
+ * (+ sidedata-copies), treemanifest, and the three mutually-exclusive storage-extensions
+ * (persistent-nodemap / fileindex-v1 / general-v2). Real hg's own mutual-implication rules are
  * mirrored here:
  * <ul>
  *   <li>{@code fileindex-v1} implies {@code persistent-nodemap}, and its presence drops
@@ -37,13 +35,15 @@ import java.nio.charset.StandardCharsets;
  * All of this deliberately keeps the single-file, non-{@code share-safe} {@code .hg/requires}
  * layout this class already used for its two original knobs (dirstate-v2/zstd) rather than
  * adopting real hg's modern default split across {@code .hg/requires} + {@code .hg/store/requires}
- * -- live-verified (2026-09-05, both native and via {@code hg-rust-7.2.4}) that real hg accepts
- * this older, still fully-supported layout (single {@code .hg/requires} with every token,
- * {@code format.use-share-safe=no}) identically to the modern split one for every one of these
- * requirement tokens, including {@code treemanifest} (produces the expected {@code meta/<dir>/
- * 00manifest.i} split) and {@code fileindex-v1} (produces the expected {@code fileindex}/
- * {@code fileindex-tree.*}/{@code fileindex-meta.*}/{@code fileindex-list.*} files on first
- * commit) -- so this class does not need to manage the share-safe split at all.
+ * -- real hg accepts this older, still fully-supported layout (single {@code .hg/requires} with
+ * every token, {@code format.use-share-safe=no}) identically to the modern split one for every
+ * one of these requirement tokens, including {@code treemanifest} (produces the expected
+ * {@code meta/<dir>/00manifest.i} split) and {@code fileindex-v1} (produces the expected
+ * {@code fileindex}/{@code fileindex-tree.*}/{@code fileindex-meta.*}/{@code fileindex-list.*}
+ * files on first commit) -- so this class does not need to manage the share-safe split at all.
+ *
+ * @apiNote Typically obtained via the static factory method {@link Hg#init()}
+ *     rather than constructed directly.
  */
 public class InitCommand {
     private File directory;
@@ -151,9 +151,8 @@ public class InitCommand {
             }
         }
 
-        // Mutual-implication rules mirror real hg exactly (live-verified against hg-rust-7.2.4,
-        // 2026-09-05): general-v2 implies fileindex-v1 (which itself implies persistent-nodemap),
-        // and sidedata-copies implies changelog-v2.
+        // Mutual-implication rules mirror real hg exactly: general-v2 implies fileindex-v1
+        // (which itself implies persistent-nodemap), and sidedata-copies implies changelog-v2.
         boolean effectiveFileIndexV1 = fileIndexV1 || generalV2;
         boolean effectivePersistentNodemap = persistentNodemap || effectiveFileIndexV1;
         boolean effectiveChangelogV2 = changelogV2 || sidedataCopies;
@@ -169,8 +168,7 @@ public class InitCommand {
         File requiresFile = new File(hgDir, "requires");
         List<String> requirements = new ArrayList<>();
         // general-v2 (exp-revlogv2.2) fully replaces the revlogv1 format for manifests/filelogs;
-        // fileindex-v1 fully replaces the fncache/dotencode-based store layout -- both confirmed
-        // by diffing real hg's own generated requires files for these combinations.
+        // fileindex-v1 fully replaces the fncache/dotencode-based store layout.
         if (!effectiveFileIndexV1) {
             requirements.add("dotencode");
             requirements.add("fncache");
@@ -213,15 +211,14 @@ public class InitCommand {
 
         // Legacy-client compatibility guard real hg always writes alongside a "store"-format
         // repository (present since Mercurial's "store" requirement was introduced, entirely
-        // independent of share-safe -- confirmed present even with `format.use-share-safe=no`):
-        // a pre-store-aware hg client that ignores `requires` and reads .hg/00changelog.i directly
+        // independent of share-safe, i.e. present even with `format.use-share-safe=no`): a
+        // pre-store-aware hg client that ignores `requires` and reads .hg/00changelog.i directly
         // gets a small self-describing dummy revlog instead of silently misreading a location that
         // now holds nothing meaningful. Not required for any modern client (hg4j included, which
         // always reads the real changelog from the store dir) to function -- real hg itself still
-        // opens/verifies/commits into repositories with this file deleted -- but omitting it was a
-        // real, if low-severity, fidelity gap versus what `hg init` itself always produces.
-        // Exact bytes confirmed against a real `hg init` (2026-09-05): 0x00 0x00 0xff 0xff followed
-        // by the ASCII text "dummy changelog to prevent using the old repo layout" (57 bytes total).
+        // opens/verifies/commits into repositories with this file deleted -- but matches what
+        // `hg init` itself always produces: 0x00 0x00 0xff 0xff followed by the ASCII text
+        // "dummy changelog to prevent using the old repo layout" (57 bytes total).
         File legacyGuard = new File(hgDir, "00changelog.i");
         if (!legacyGuard.exists()) {
             byte[] suffix = " dummy changelog to prevent using the old repo layout"

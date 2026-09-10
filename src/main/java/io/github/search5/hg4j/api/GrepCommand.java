@@ -16,6 +16,9 @@ import java.nio.file.Files;
 /**
  * Porcelain command for searching strings or regular expressions across
  * historical file revisions in Mercurial repositories.
+ *
+ * @apiNote Typically obtained via {@link Hg#grep()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class GrepCommand {
     
@@ -93,18 +96,16 @@ public class GrepCommand {
     /**
      * Enumerates every tracked filelog as {@code [logicalPath, storeRelativeIndexPath]} pairs.
      *
-     * <p>Found and fixed 2026-09-05 (backlog #39, requirement-matrix expansion to
-     * Cat/Files/Locate/Grep/Annotate/Manifest): the old code enumerated files ONLY via {@code
-     * fncache}, silently returning zero results whenever that file does not exist -- which is the
-     * case for any repository created with {@code format.use-fileindex-v1=yes} or {@code
-     * experimental.revlogv2=...} (general-v2, which implies fileindex-v1): both storage
-     * extensions replace {@code fncache} with their own internal {@code fileindex}/{@code
-     * fileindex-list}/{@code fileindex-tree} sidecar files and never write an {@code fncache} at
-     * all (verified against a real {@code hg-rust-7.2.4} container: {@code store/requires} for
-     * such a repository lists {@code store} but neither {@code fncache} nor {@code dotencode}).
-     * {@code hg grep} itself has no such blind spot in real hg (it walks the manifest, not
-     * {@code fncache}), so this was a genuine hg4j completeness gap on an entire, valid class of
-     * repositories, not merely a missed optimization.
+     * <p>Enumerating files via {@code fncache} alone would silently return zero results whenever
+     * that file does not exist -- which is the case for any repository created with {@code
+     * format.use-fileindex-v1=yes} or {@code experimental.revlogv2=...} (general-v2, which implies
+     * fileindex-v1): both storage extensions replace {@code fncache} with their own internal
+     * {@code fileindex}/{@code fileindex-list}/{@code fileindex-tree} sidecar files and never
+     * write an {@code fncache} at all ({@code store/requires} for such a repository lists
+     * {@code store} but neither {@code fncache} nor {@code dotencode}). {@code hg grep} itself has
+     * no such blind spot in real hg (it walks the manifest, not {@code fncache}), so this
+     * enumeration must handle both cases to remain a valid substitute across every repository
+     * format.
      *
      * <p>When {@code fncache} exists, it remains the enumeration source (cheap, and correctly
      * handles hash-encoded long-path entries {@link NodeIdUtil#decodeStoreDataPath} cannot
@@ -120,10 +121,9 @@ public class GrepCommand {
             List<String> fncachePaths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
             for (String storePath : fncachePaths) {
                 if (storePath.endsWith(".i") && storePath.startsWith("data/")) {
-                    // Found and fixed 2026-09-05 alongside the fncache-less fallback below: an
-                    // fncache entry is the ENCODED on-disk path (e.g. an uppercase letter in the
-                    // logical name becomes `_x`), not the logical one -- decoding it the same way
-                    // as the fallback path keeps GrepResult#path consistent (and correct) for
+                    // An fncache entry is the ENCODED on-disk path (e.g. an uppercase letter in
+                    // the logical name becomes `_x`), not the logical one -- decoding it the same
+                    // way as the fallback path keeps GrepResult#path consistent (and correct) for
                     // filenames that needed any encoding at all, not just plain lowercase ASCII.
                     String path = NodeIdUtil.decodeStoreDataPath(storePath);
                     out.add(new String[]{path, storePath});

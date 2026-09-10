@@ -4,6 +4,16 @@ import java.io.IOException;
 
 /**
  * Exception thrown when a revision is not found by hash or revision number.
+ *
+ * @apiNote Thrown by {@code io.github.search5.hg4j.storage.Revlog} when a node ID or revision
+ *     number does not resolve to an entry in the revlog index, and propagated by any porcelain
+ *     command that resolves a user-supplied revision reference (e.g. {@code CatCommand}, {@code
+ *     UpdateCommand}, {@code CommitCommand}, {@code MergeCommand}, {@code GraftCommand}, {@code
+ *     RebaseCommand}, {@code ShelveCommand}) as well as {@code
+ *     io.github.search5.hg4j.treewalk.ManifestTreeIterator}. Use the {@link
+ *     #HgRevisionNotFoundException(String)} constructor for a hex node ID lookup failure and
+ *     {@link #HgRevisionNotFoundException(int)} for a revision-number lookup failure — the
+ *     message wording differs so callers can tell which form of reference the user supplied.
  */
 public class HgRevisionNotFoundException extends IOException {
     private static final long serialVersionUID = 1L;

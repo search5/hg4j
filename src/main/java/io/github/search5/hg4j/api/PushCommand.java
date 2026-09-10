@@ -39,6 +39,9 @@ import java.util.TreeSet;
 /**
  * Porcelain command to push local commits to a remote Mercurial repository.
  * Compiles a dynamic binary changegroup bundle of new revisions and transfers it securely.
+ *
+ * @apiNote Typically obtained via {@link Hg#push()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class PushCommand {
     private static final Logger LOGGER = Logger.getLogger(PushCommand.class.getName());
@@ -93,9 +96,9 @@ public class PushCommand {
     }
 
     public String call() throws IOException, HgLockException {
-        // 실제 hg 스펙(hg help urls): 목적지를 안 주면 paths.default-push를 우선 쓰고,
-        // 없으면 paths.default로 폴백한다 — 2026-09-01 이전에는 여기서 무조건 예외를
-        // 던져서 "그냥 hg push" 형태가 지원이 안 됐다.
+        // Real hg spec (hg help urls): when no destination is given, prefer paths.default-push,
+        // falling back to paths.default when that's absent, so plain "hg push" with no argument
+        // is supported.
         String effectiveDest = destinationUrl;
         if (effectiveDest == null || effectiveDest.isEmpty()) {
             effectiveDest = repository.getConfig().getPath("default-push");
@@ -133,7 +136,7 @@ public class PushCommand {
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
-            // Backlog item 38: mirrors real hg's own client-side push locking its SOURCE repo
+            // Mirrors real hg's own client-side push locking its SOURCE repo
             // (mercurial/exchange.py's push(): `lock = pushop.repo.lock()`, default wait=True,
             // waiting up to ui.timeout -- 600s default -- rather than aborting on the very first
             // contended attempt) so this local read-lock waits like real hg's does instead of
@@ -236,7 +239,7 @@ public class PushCommand {
                 bundle.manifestEntries = new ArrayList<>();
                 bundle.fileGroups = new ArrayList<>();
 
-                // Backlog #39 (2026-09-05): negotiate a changegroup version from what THIS
+                // Negotiate a changegroup version from what THIS
                 // push's own data needs, mirroring HgLocalClient#getBundle's own version
                 // selection for the pull/getbundle response direction: cg5 whenever the
                 // repository carries changelog sidedata (exp-use-copies-side-data-changeset --
@@ -246,30 +249,31 @@ public class PushCommand {
                 // plus zero or more per-directory subgroups; real hg emits this same envelope
                 // even for a flat manifest once the version itself is cg3+, see
                 // ChangegroupParser#isTreeCapableVersion), else the original cg1 (unchanged wire
-                // bytes for every plain-format repo push, still the overwhelming majority).
-                // Previously PushCommand always hand-rolled bare cg1 bytes here, which
-                // structurally could not carry either a treemanifest directory group or a
-                // sidedata chunk -- root-caused via RequirementMatrixPush{Core,Docker}RoundTripTest.
+                // bytes for every plain-format repo push, still the overwhelming majority). Hand-
+                // rolling bare cg1 bytes here would structurally be unable to carry either a
+                // treemanifest directory group or a sidedata chunk.
                 boolean sidedataCopies = repository.isSidedataCopies();
                 boolean treemanifest = repository.isTreemanifest();
                 String version = sidedataCopies ? "05" : (treemanifest ? "03" : "01");
                 boolean treeCapable = !"01".equals(version);
 
                 // 1a. Pack Changelogs
-                // cg1은 각 엔트리의 델타를 "이 그룹 스트림에서 바로 직전에 패킹된 엔트리"를
-                // 기준으로 인코딩한다(mercurial/changegroup.py의 ChangeGroupPacker01,
-                // forcedeltaparentprev=True) -- 단, 그룹의 "첫" 엔트리만은 예외로, 그 엔트리
-                // 자신의 실제 DAG 부모(p1)를 기준으로 삼는다(cg1unpacker._deltaheader:
-                // `if prevnode is None: deltabase = p1`, 실제 hg 소스 확인, 2026-09-04).
-                // 이전 수정(2026-09-02)은 이 "첫 엔트리 예외"를 놓치고 모든 엔트리(첫 엔트리
-                // 포함)에 "startRev-1의 콘텐츠"를 베이스로 썼다 -- 그 값이 첫 신규 엔트리의
-                // 실제 p1과 우연히 같을 때만(직전 로컬 rev가 곧 그 부모인 선형 히스토리)
-                // 맞았고, 그렇지 않으면(예: 여러 head가 있는 저장소로의 push에서 startRev의
-                // 진짜 부모가 startRev-1보다 앞선 리비전인 경우) 수신측이 엉뚱한 베이스로
-                // 델타를 복원해 해시가 깨지고 unbundle이 실패한다(실제 hg 서버로 재현,
-                // 2026-09-04: divergent head를 강제 push하면 HTTP 500). cg2+에서는 이 같은
-                // 베이스를 deltabase 필드에도 명시적으로 실어야 한다(cg1은 스트림 순서로만
-                // 암묵적으로 나타냄) -- HgLocalClient#getBundle의 prevClNode와 동일한 패턴.
+                // cg1 encodes each entry's delta against "whichever entry was packed immediately
+                // before it in this group stream" (mercurial/changegroup.py's
+                // ChangeGroupPacker01, forcedeltaparentprev=True) -- except the group's "first"
+                // entry, which is the one exception: it uses its own actual DAG parent (p1) as
+                // the base instead (cg1unpacker._deltaheader: `if prevnode is None: deltabase =
+                // p1`, matching real hg source). Using "the content of
+                // startRev-1" as the base for every entry, including the first one, would only
+                // happen to be correct when it coincided with the first new entry's actual p1
+                // (a linear history where the immediately preceding local rev is exactly that
+                // parent); otherwise (e.g. pushing to a repository with multiple heads,
+                // where startRev's true parent is a revision earlier than startRev-1) the
+                // receiving side would reconstruct the delta against the wrong base, corrupting
+                // the hash and failing unbundle (e.g. force-pushing a divergent head would return
+                // HTTP 500). For cg2+, this same base must
+                // also be made explicit in the deltabase field (cg1 only expresses it implicitly
+                // via stream order) -- the same pattern as HgLocalClient#getBundle's prevClNode.
                 byte[] prevClContent = null;
                 byte[] prevClNode = new byte[20];
                 for (int r = startRev; r < count; r++) {
@@ -296,7 +300,7 @@ public class PushCommand {
                     clEntry.delta = Revlog.createDelta(deltaBasis, content);
                     if (sidedataCopies) {
                         // Symmetric write-side counterpart of HgLocalClient#getBundle's own
-                        // packChangelogSidedata block (backlog 26) -- push needs to carry
+                        // packChangelogSidedata block -- push needs to carry
                         // outgoing sidedata into the pushed changegroup the same way getbundle
                         // already does for pull responses.
                         Map<Integer, byte[]> sidedata = changelog.getSidedata(r);
@@ -312,9 +316,10 @@ public class PushCommand {
                 // 1b. Pack Manifests
                 Revlog manifest = repository.getManifestRevlog();
                 Set<String> affectedFiles = new HashSet<>();
-                // changelog와 동일한 규칙: 이 그룹의 "첫" 엔트리만 자신의 실제 p1 manifest
-                // 리비전 콘텐츠를 베이스로 삼고(cg1unpacker._deltaheader의 prevnode==None
-                // 규칙), 이후 엔트리는 직전에 패킹된 엔트리를 베이스로 삼는다.
+                // Same rule as changelog: only this group's "first" entry uses its own actual
+                // p1 manifest revision content as the base (cg1unpacker._deltaheader's
+                // prevnode==None rule), and every later entry uses whichever entry was packed
+                // immediately before it.
                 List<ChangegroupParser.ChangeGroupEntry> rootMfEntries = new ArrayList<>();
                 byte[] prevMfContent = null;
                 byte[] prevMfNode = new byte[20];
@@ -379,8 +384,8 @@ public class PushCommand {
                         // push's range, exactly like §1c below already does for filelogs (same
                         // linkRev-range selection, same delta-basis chaining). The RECEIVING
                         // side already fully supports this (FetchCommand#applyBundle's
-                        // bundle.manifestGroups handling) -- only the SENDING side (this method)
-                        // was missing it, which is the actual bug backlog #39's matrix found.
+                        // bundle.manifestGroups handling); the SENDING side (this method) needs
+                        // to pack the same directory manifest groups on the way out.
                         List<String> treeDirs = findTreemanifestDirs(repository);
                         Collections.sort(treeDirs);
                         for (String dirPath : treeDirs) {
@@ -404,13 +409,14 @@ public class PushCommand {
                 }
 
                 // 1c. Pack Filelogs
-                // 같은 규칙: 각 파일은 자기만의 별도 cg1 그룹이므로, 이 파일에서 이번 push로
-                // 새로 패킹되는 "첫" 리비전은 그 리비전 자신의 실제 filelog p1 콘텐츠를
-                // 베이스로 삼아야 한다("linkRev < startRev 중 가장 최근 것"은 틀린 근사치였다
-                // -- 그 리비전이 첫 신규 리비전의 진짜 부모가 아닐 수 있다. 예: 같은 파일이
-                // 서로 다른 head에서 각각 수정된 경우). 이후 리비전은 직전에 패킹된 리비전을
-                // 베이스로 삼는다 -- packRevlogRange()로 일반화(§1b의 treemanifest dirlog
-                // 패킹과 완전히 동일한 규칙이라 backlog #39에서 공용 헬퍼로 뽑음).
+                // Same rule: since each file is its own separate cg1 group, the "first" revision
+                // newly packed for this file by this push must use that revision's own actual
+                // filelog p1 content as the base ("the most recent one with linkRev < startRev"
+                // was a wrong approximation -- that revision may not be the true parent of the
+                // first new revision, e.g. when the same file was independently modified on
+                // different heads). Later revisions use whichever revision was packed
+                // immediately before them -- generalized as packRevlogRange() (the exact same
+                // rule as §1b's treemanifest dirlog packing, pulled out into a shared helper).
                 for (String path : affectedFiles) {
                     File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                     File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
@@ -429,10 +435,7 @@ public class PushCommand {
 
                 // 2. Serialize bundle to binary bytes at the negotiated version, reusing the
                 // same shared writer HgLocalClient#getBundle already relies on for the pull/
-                // getbundle response direction (backlog #39, 2026-09-05: PushCommand used to
-                // hand-roll bare cg1 bytes here via now-removed writeEntryChunk/writePathChunk/
-                // writeTerminalChunk helpers, which structurally could not carry a treemanifest
-                // directory group or a sidedata chunk).
+                // getbundle response direction.
                 ByteArrayOutputStream cgOut = new ByteArrayOutputStream();
                 ChangegroupParser.writeBundle(cgOut, bundle, version);
                 byte[] cgBytes = cgOut.toByteArray();
@@ -458,7 +461,7 @@ public class PushCommand {
                 }
 
                 // 3. Dispatch bundle to remote destination.
-                // Backlog item 38: send real hg's own force sentinel (mercurial/exchange.py's
+                // Send real hg's own force sentinel (mercurial/exchange.py's
                 // `_pushchangeset`: `if pushop.force: remoteheads = [b'force']`) instead of the
                 // real head list when --force was requested -- a receiving server's push-race
                 // re-check (see HgLocalClient#buildPushRaceValidator) treats a bare `["force"]`
@@ -482,7 +485,7 @@ public class PushCommand {
                         }
                     }
                 } catch (Exception e) {
-                    // 북마크 푸시 실패 시 비차단 경고 처리
+                    // A bookmark push failure is treated as a non-blocking warning.
                     LOGGER.log(Level.WARNING, "Failed to push bookmarks to remote: " + e.getMessage(), e);
                 }
 
@@ -515,8 +518,8 @@ public class PushCommand {
      * "remote is empty, nothing to check") when the remote has no valid heads at all -- callers
      * are expected to have already skipped calling this in that case.
      *
-     * <p>Also ports real hg's two remaining {@code checkheads()} exceptions (2026-09-04, real hg
-     * 7.2 {@code mercurial/discovery.py} read directly on this machine):
+     * <p>Also ports real hg's two remaining {@code checkheads()} exceptions from real hg 7.2's
+     * {@code mercurial/discovery.py}:
      *
      * <p><b>1. Obsolescence-marker exception</b> ({@code discovery._postprocessobsolete}): a
      * candidate new head that is itself recorded as obsolete in the LOCAL repo's obsstore (this
@@ -528,14 +531,13 @@ public class PushCommand {
      * for merged/branch-shaped predecessors, that no part of the branch is public or already
      * kept and that every node on it has an outgoing marker ({@code hasoutmarker}/{@code
      * pushingmarkerfor}); this port keeps the simpler single-node form, which is what {@code
-     * hg amend}/{@code rebase}-style single-revision rewrites exercise. Verified directly
-     * against real hg 7.2 (2026-09-04): amending a pushed head and pushing the successor
-     * succeeds without {@code --force} even when the obsolescence markers themselves are never
-     * exchanged with the remote ({@code experimental.evolution.exchange=no}) -- real hg's
-     * client-side accept/reject decision depends only on the PUSHING repo's own obsstore, never
-     * on whether the remote actually learns about the marker. hg4j's push never exchanges
-     * obsmarkers either (bundle1-only), so this is an exact behavioral match, not just a
-     * client-side approximation.
+     * hg amend}/{@code rebase}-style single-revision rewrites exercise. In real hg 7.2, amending
+     * a pushed head and pushing the successor succeeds without {@code --force} even when the
+     * obsolescence markers themselves are never exchanged with the remote ({@code
+     * experimental.evolution.exchange=no}) -- real hg's client-side accept/reject decision
+     * depends only on the PUSHING repo's own obsstore, never on whether the remote actually
+     * learns about the marker. hg4j's push never exchanges obsmarkers either (bundle1-only), so
+     * this is an exact behavioral match, not just a client-side approximation.
      *
      * <p><b>2. Bookmark-head exception</b> ({@code discovery._nowarnheads} /
      * {@code bookmarks.validdest}): a candidate new head that is the target of a local bookmark
@@ -543,7 +545,7 @@ public class PushCommand {
      * increase if the move is a valid "forward" move -- either a plain DAG descendant of the
      * bookmark's old remote position, or reachable from it via a chain that alternates
      * descendant steps and obsolescence-successor steps (real hg's {@code obsutil.foreground}).
-     * Verified against real hg 7.2 (2026-09-04): moving a bookmark to a topologically UNRELATED
+     * In real hg 7.2, moving a bookmark to a topologically UNRELATED
      * head with no obsolescence link at all is still rejected ("push creates new remote head ...
      * with bookmark") -- the exception only fires for genuine forward moves, never as a blanket
      * "bookmarked heads are always fine" rule. Per real hg's source, this exception does NOT
@@ -894,10 +896,9 @@ public class PushCommand {
     /**
      * Packs every revision of {@code revlog} whose {@code linkRev} falls in {@code [startRev,
      * end)} into changegroup entries -- shared by §1c's filelog packing and §1b's treemanifest
-     * dirlog packing (backlog #39, 2026-09-05: these were two independent, near-identical
-     * hand-copies of the same rule before being unified here). Each new entry's delta basis is
+     * dirlog packing, so both follow exactly the same rule. Each new entry's delta basis is
      * its own real parent's content for the first packed revision, and the previously-packed
-     * revision for the rest ("linkRev < startRev 중 가장 최근 것" is NOT used as the first
+     * revision for the rest ("the most recent one with linkRev < startRev" is NOT used as the first
      * entry's base -- that revision may not actually be this entry's real parent, e.g. the same
      * file/directory modified independently on two different heads). Content is always read via
      * {@link Revlog#getRawRevisionContent} (never the decoded {@code getRevisionContent}) so a

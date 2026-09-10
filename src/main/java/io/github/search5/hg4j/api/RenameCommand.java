@@ -17,6 +17,9 @@ import java.nio.file.StandardOpenOption;
 /**
  * Porcelain command to move or rename a file or directory inside the repository.
  * Correctly registers SCM copy metadata in the dirstate copyMap.
+ *
+ * @apiNote Typically obtained via {@link Hg#rename()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public final class RenameCommand {
     private final HgRepository repository;

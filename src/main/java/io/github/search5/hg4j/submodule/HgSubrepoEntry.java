@@ -4,6 +4,11 @@ import java.util.Objects;
 
 /**
  * Represents a single configured subrepository definition from .hgsub or .hgsubstate.
+ *
+ * @apiNote Produced by {@link HgSubrepoParser#parseSubrepositories}; used by {@code
+ *     UpdateCommand} (checking out each subrepo's pinned revision) and {@code MergeCommand}
+ *     (resolving a diverged subrepo pin, dispatching to {@link GitSubrepoUtil}/{@link
+ *     SvnSubrepoUtil} by {@link #getType()}).
  */
 public final class HgSubrepoEntry {
 
@@ -23,8 +28,8 @@ public final class HgSubrepoEntry {
         this(path, sourceUrl, revision, isGit ? Type.GIT : Type.HG);
     }
 
-    /** Backlog 41 (SVN subrepo support): three-way constructor mirroring the {@code [git]}/
-     * {@code [svn]} {@code .hgsub} prefixes -- {@code isSvn} wins if both flags are somehow set. */
+    /** Three-way constructor mirroring the {@code [git]}/{@code [svn]} {@code .hgsub}
+     * prefixes -- {@code isSvn} wins if both flags are somehow set. */
     public HgSubrepoEntry(String path, String sourceUrl, String revision, boolean isGit, boolean isSvn) {
         this(path, sourceUrl, revision, isSvn ? Type.SVN : (isGit ? Type.GIT : Type.HG));
     }
@@ -55,7 +60,7 @@ public final class HgSubrepoEntry {
         return type == Type.GIT;
     }
 
-    /** Whether this is a {@code [svn]}-prefixed {@code .hgsub} entry (backlog 41). */
+    /** Whether this is a {@code [svn]}-prefixed {@code .hgsub} entry. */
     public boolean isSvn() {
         return type == Type.SVN;
     }

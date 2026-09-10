@@ -24,11 +24,18 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * Porcelain API for Mercurial commands, similar to JGit's Git class.
  * Designed with elegant instance-level encapsulation and strict resource management (AutoCloseable).
- * 
+ *
  * <p><strong>Thread Safety:</strong> Hg instances are fully thread-safe and support both parallel concurrent read
  * and concurrent write operations. Multiple threads can safely execute commands concurrently, and complex sequence
  * of operations (e.g. status followed by commit) can be executed with 100% thread/process atomicity using the
  * {@link #runTransaction(Runnable)} API.
+ *
+ * @apiNote The main library entry point: obtain an instance via {@link #open(File)}/{@link
+ *     #open(String)} (an existing repository) or {@link #wrap(HgRepository)}, then call one of
+ *     its per-command factory methods (e.g. {@link #commit()}, {@link #status()}, {@link
+ *     #log()}) to get a pre-configured, ready-to-{@code call()} command object — mirroring
+ *     JGit's {@code Git.foo()} pattern. {@link #init()}/{@link #cloneRepository()} are the two
+ *     static entry points for creating a repository that doesn't exist yet.
  */
 public class Hg implements AutoCloseable {
     
@@ -116,16 +123,14 @@ public class Hg implements AutoCloseable {
         }
 
         // Robustness: Validate repository requirements format to prevent silent data corruption.
-        // 2026-09-04: this allowlist had drifted badly out of sync with real hg's actual
-        // requirement strings AND with what HgRepository.loadRequires() itself already
-        // understands -- see HgOpenRequirementValidationTest for the empirical proof (a vanilla
-        // `hg init` repository, with no special config at all, was being rejected outright).
+        // This allowlist must stay in sync with real hg's actual requirement strings AND with
+        // what HgRepository.loadRequires() itself already understands, or even a vanilla
+        // `hg init` repository with no special config could be rejected outright.
         Set<String> SUPPORTED = Set.of(
             "dotencode", "fncache", "generaldelta", "revlogv1", "store", "dirstate-v2", "share-safe",
             "sparserevlog", "revlog-compression-zstd",
             // The 6 advanced-format requirements HgRepository.loadRequires() already fully
-            // supports (real strings confirmed empirically against actual hg 7.2/hg-rust-7.2.4
-            // output throughout this session, mercurial/requirements.py).
+            // supports (real strings, per mercurial/requirements.py).
             "exp-changelog-v2", "exp-revlogv2.2", "persistent-nodemap", "fileindex-v1",
             "treemanifest", "exp-copies-sidedata-changeset",
             // The real narrow-clone requirement token (NarrowCloneCommand writes exactly this) --
@@ -221,7 +226,7 @@ public class Hg implements AutoCloseable {
     }
 
     /**
-     * P3-33 -- writes a {@link TreeMergeCommand.TreeMergeResult} directly to the store as a real
+     * Writes a {@link TreeMergeCommand.TreeMergeResult} directly to the store as a real
      * 2-parent changeset, without a working directory/dirstate involved. See
      * {@link MergeCommitCommand}'s own javadoc for the full contract.
      */

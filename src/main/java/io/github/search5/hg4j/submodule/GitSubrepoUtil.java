@@ -15,7 +15,7 @@ import java.util.Map;
 /**
  * Minimal shell-out helper replicating the pieces of a {@code [git]}-prefixed {@code .hgsub}
  * subrepo's lifecycle that hg4j needs from real hg's {@code mercurial/subrepo.py}
- * {@code gitsubrepo} class (read live against Mercurial 7.2, backlog item 32 gap #3/#4):
+ * {@code gitsubrepo} class:
  * reading its currently checked-out commit ({@code git rev-parse HEAD}, real hg's
  * {@code _gitstate()}/{@code basestate()}), detecting uncommitted local changes to tracked
  * files while ignoring untracked ones ({@code git status --porcelain --untracked-files=no},
@@ -111,8 +111,7 @@ public final class GitSubrepoUtil {
     }
 
     /**
-     * Mirrors real hg's {@code gitsubrepo.merge()} (Mercurial 7.2, read live + reproduced with
-     * real hg CLI + a real git subrepo, backlog 32 follow-up "gap B") for the deterministic
+     * Mirrors real hg's {@code gitsubrepo.merge()} for the deterministic
      * (non-interactive-default) case where a git subrepo's pinned revision <em>diverged</em>
      * between the two parents of an {@code hg merge} -- i.e. {@code subrepoutil.submerge()}
      * already determined both the local and remote {@code .hgsubstate} pins changed from their
@@ -134,22 +133,12 @@ public final class GitSubrepoUtil {
      * conflicted with unresolved markers + {@code MERGE_HEAD} -- real hg discards the exit code
      * of {@code git merge --no-commit} exactly like every other {@code _gitcommand} call, so it
      * never even notices a conflict here) is picked up later by the already-implemented
-     * dirty()/commit() machinery (backlog 32 gap #3) the next time the parent repo is committed:
+     * dirty()/commit() machinery the next time the parent repo is committed:
      * a clean merge gets recursively {@code git commit -a}ed (or blocks the parent commit
      * without {@code --subrepos}, same as any other dirty git subrepo); an unresolved conflict
      * makes that {@code git commit -a} itself fail, which surfaces as an aborted parent commit.
-     *
-     * <p>Verified live (Mercurial 7.2 + git, 2026-09-04): two hg commits independently modified
-     * a git subrepo from a common git ancestor (added {@code left.txt} vs {@code right.txt} --
-     * no textual overlap, so the underlying {@code git merge --no-commit} itself resolved
-     * cleanly); {@code hg merge} (non-interactively) printed the "subrepository ... diverged ...
-     * (m)erge/(l)ocal/(r)emote" prompt, auto-picked "Merge", and left {@code .hgsubstate}
-     * pointing at the OLD local pin (unchanged) while the git subrepo's working tree held a
-     * real two-parent git merge staged (not yet committed); the following {@code hg commit -S}
-     * then recorded a genuine two-parent git merge commit and updated {@code .hgsubstate} to
-     * its sha, via the pre-existing gap #3 dirty-commit path -- exactly the sequence this method
-     * (plus {@code MergeCommand#mergeSubrepoState}, which deliberately leaves the
-     * {@code .hgsubstate} pin at the local value) reproduces.
+     * (See also {@code MergeCommand#mergeSubrepoState}, which deliberately leaves the
+     * {@code .hgsubstate} pin at the local value.)
      *
      * <p>This method does NOT record anything into {@code .hgsubstate} itself -- matching real
      * hg, where {@code subrepoutil.submerge()} always sets the recorded state to the LOCAL pin
@@ -178,7 +167,7 @@ public final class GitSubrepoUtil {
 
     /**
      * {@code git merge --no-commit <revision>} -- real hg's {@code gitsubrepo.merge()} calls
-     * this via {@code self._gitcommand(...)}, which (verified live and by reading
+     * this via {@code self._gitcommand(...)}, which (per
      * {@code _gitcommand}/{@code _gitdir}/{@code _gitnodir}) discards the process's exit code
      * unconditionally, so a conflicted merge is deliberately NOT treated as an error here
      * either -- the caller only cares about the resulting git working tree state (picked up

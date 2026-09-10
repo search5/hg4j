@@ -14,6 +14,9 @@ import java.util.List;
 /**
  * Subrepo command (submoduleAdd / Init / Update) for Mercurial repositories.
  * Configures and updates subrepositories via standard .hgsub and .hgsubstate file specifications.
+ *
+ * @apiNote Typically obtained via {@link Hg#subrepo()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class SubrepoCommand {
     private final HgRepository repository;
@@ -99,14 +102,13 @@ public class SubrepoCommand {
                     // Find configured revision in .hgsubstate; null means "no pinned revision"
                     // (leave the freshly cloned subrepo's own tip dirstate untouched).
                     //
-                    // Backlog 41 bugfix: this used to grab a fixed-width `substring(0, 40)`,
-                    // which assumed every recorded revision is a 40-hex-char hg/git sha. A svn
-                    // subrepo's .hgsubstate revision is instead a plain (variable-length, often
-                    // much shorter) revision number -- e.g. "1 sub" -- so the fixed-width read
-                    // would either grab trailing garbage past the real revision or throw
-                    // StringIndexOutOfBoundsException outright on a short line. Split on the
-                    // first whitespace instead, matching real hg's own `.hgsubstate` line format
-                    // ("<revision> <path>") for every subrepo type uniformly.
+                    // Not every recorded revision is a 40-hex-char hg/git sha: a svn subrepo's
+                    // .hgsubstate revision is instead a plain (variable-length, often much
+                    // shorter) revision number -- e.g. "1 sub" -- so a fixed-width `substring(0,
+                    // 40)` read would either grab trailing garbage past the real revision or
+                    // throw StringIndexOutOfBoundsException outright on a short line. Split on
+                    // the first whitespace instead, matching real hg's own `.hgsubstate` line
+                    // format ("<revision> <path>") for every subrepo type uniformly.
                     String rev = null;
                     for (String stateLine : hgsubstateLines) {
                         String trimmedState = stateLine.trim();
@@ -132,14 +134,13 @@ public class SubrepoCommand {
 
                     File subrepoDir = new File(repository.getDirectory(), path);
 
-                    // Backlog 41: a [git]-prefixed entry previously fell straight through to the
-                    // plain-hg branches below, which would try to `hg clone` the literal string
-                    // "[git]<url>" as an hg source (or, once the prefix above is stripped, an
-                    // https URL that happens to be a GIT remote, silently producing a broken/
-                    // empty hg-format checkout) -- git subrepos were never actually usable via
-                    // this command despite CommitCommand/UpdateCommand/MergeCommand/CloneCommand
-                    // already fully supporting them. Dispatch git (and the new svn) entries to
-                    // their own type-aware checkout helpers instead, matching those commands.
+                    // A [git]-prefixed entry must not fall through to the plain-hg branches
+                    // below, which would try to `hg clone` the literal string "[git]<url>" as an
+                    // hg source (or, once the prefix above is stripped, an https URL that
+                    // happens to be a GIT remote, silently producing a broken/empty hg-format
+                    // checkout). Dispatch git (and svn) entries to their own type-aware checkout
+                    // helpers instead, matching CommitCommand/UpdateCommand/MergeCommand/
+                    // CloneCommand's own handling of these subrepo types.
                     if (isGitSub) {
                         checkoutGitEntry(subrepoDir, url, rev);
                         continue;
@@ -159,10 +160,10 @@ public class SubrepoCommand {
                             // A plain clone checks out its own tip, which may not be the revision
                             // pinned in .hgsubstate (e.g. the source has advanced past the pin) --
                             // force the working copy to the exact pinned revision, matching real
-                            // hg's `hg update -S`. Previously this only rewrote the subrepo's
-                            // dirstate parent pointer without touching any working-copy file,
-                            // leaving file content silently mismatched with the recorded pin
-                            // whenever it wasn't already the clone's default tip checkout.
+                            // hg's `hg update -S`. Merely rewriting the subrepo's dirstate parent
+                            // pointer would leave file content silently mismatched with the
+                            // recorded pin whenever it wasn't already the clone's default tip
+                            // checkout.
                             if (rev != null) {
                                 try (Hg hg = Hg.open(subrepoDir)) {
                                     new UpdateCommand(hg.getRepository()).setRevision(rev).setForce(true).call();
@@ -175,11 +176,10 @@ public class SubrepoCommand {
                         // Already an initialized subrepo checkout -- bring its working copy in
                         // line with the pinned revision, exactly like real hg's `hg update -S`
                         // (pulling first if the pin hasn't been fetched locally yet, e.g. after
-                        // .hgsubstate was bumped to a revision produced elsewhere). Previously
-                        // this branch only rewrote the subrepo's dirstate parent pointer -- it
-                        // never pulled the new pin nor actually checked out matching file
-                        // content, so a bumped .hgsubstate left the subrepo's working copy
-                        // silently stale.
+                        // .hgsubstate was bumped to a revision produced elsewhere). Merely
+                        // rewriting the subrepo's dirstate parent pointer, without pulling the
+                        // new pin or checking out matching file content, would leave the
+                        // subrepo's working copy silently stale after a bumped .hgsubstate.
                         if (rev != null) {
                             try (Hg hg = Hg.open(subrepoDir)) {
                                 HgRepository subRepo = hg.getRepository();
@@ -204,9 +204,9 @@ public class SubrepoCommand {
     }
 
     /**
-     * Checks out a {@code [git]}-prefixed {@code .hgsub} entry (backlog 41 fix -- see the class
-     * comment above): clones it if not already a git checkout, then checks out the pinned
-     * revision (fetching first if it isn't available locally yet).
+     * Checks out a {@code [git]}-prefixed {@code .hgsub} entry: clones it if not already a git
+     * checkout, then checks out the pinned revision (fetching first if it isn't available
+     * locally yet).
      */
     private static void checkoutGitEntry(File subrepoDir, String url, String rev) throws IOException {
         if (!GitSubrepoUtil.isGitCheckout(subrepoDir)) {
@@ -228,7 +228,7 @@ public class SubrepoCommand {
     }
 
     /**
-     * Checks out a {@code [svn]}-prefixed {@code .hgsub} entry (backlog 41): {@code svn checkout
+     * Checks out a {@code [svn]}-prefixed {@code .hgsub} entry: {@code svn checkout
      * --force <url>@<rev>} when a revision is pinned, matching real hg's own {@code
      * svnsubrepo.get()} (see {@link SvnSubrepoUtil#get}); a plain HEAD checkout when the entry
      * has been declared but not yet recorded in {@code .hgsubstate} (no pinned revision exists

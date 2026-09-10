@@ -13,6 +13,9 @@ import java.util.Map;
 
 /**
  * Porcelain command to retrieve the content of a specific file version in history.
+ *
+ * @apiNote Typically obtained via {@link Hg#cat()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class CatCommand {
 

@@ -22,6 +22,9 @@ import java.util.Arrays;
 
 /**
  * Computes differences between working directory, dirstate, and parent commits.
+ *
+ * @apiNote Typically obtained via {@link Hg#status()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class StatusCommand {
     private final HgRepository repository;
@@ -33,10 +36,9 @@ public class StatusCommand {
     // by size/mtime alone (mercurial/dirstate.py's classic ambiguous-stat handling; real hg's own
     // internal `up_impl.update()` -- used by, among others, `hg shelve`'s revert-to-parent step --
     // writes this sentinel routinely, not just in rare corner cases). See
-    // Dirstate.Entry#isStatAmbiguous() (backlog #39 wave 4, 2026-09-05) for the full sentinel
-    // shape -- originally this class only special-cased the mtime half of it (ShelveRealHgInteropTest,
-    // 2026-09-04), which left the paired size=-1 sentinel unguarded and looking permanently
-    // "modified" on its own.
+    // Dirstate.Entry#isStatAmbiguous() for the full sentinel shape: both the mtime half and the
+    // paired size=-1 half must be guarded, or an entry can look permanently "modified" on its
+    // own.
 
     public StatusCommand(HgRepository repository) {
         this.repository = repository;
@@ -50,10 +52,10 @@ public class StatusCommand {
     }
 
     public Status call() throws IOException {
-        // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
-        // changelog-v2 revlog after an external process appended a revision -- see
-        // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
-        // common (freshly-opened-per-call) case.
+        // Guard against a long-lived HgRepository handle serving a stale cached changelog-v2
+        // revlog after an external process appended a revision -- see DescribeCommand#call()'s
+        // javadoc for the full explanation. Cheap no-op in the common (freshly-opened-per-call)
+        // case.
         repository.refreshIfChangedOnDisk();
         Status status = new Status();
         Dirstate dirstate = repository.getDirstate();
@@ -87,14 +89,12 @@ public class StatusCommand {
                         // Real hg's dirstate can mark an entry's ENTIRE cached stat ambiguous
                         // (not just mtime) -- see Dirstate.Entry#isStatAmbiguous(): a same-second
                         // racy commit lands a 'n' entry with size=-1/mtime=AMBIGUOUS_TIME
-                        // together (verified live: `hg add; hg commit` within the same
-                        // wall-clock second produces mode=0/size=-1/mtime=-1 all at once; also
-                        // independently confirmed via BackoutCommand's own precondition check
-                        // tripping on a freshly, cleanly committed repo). Gating only on mtime
-                        // here left the size-sentinel (-1) comparison unguarded, so it never
-                        // equaled a real on-disk size and every such entry looked permanently
-                        // "modified" instead of falling through to the real content comparison
-                        // below.
+                        // together (`hg add; hg commit` within the same wall-clock second
+                        // produces mode=0/size=-1/mtime=-1 all at once). Gating only on mtime
+                        // would leave the size-sentinel (-1) comparison unguarded, so it would
+                        // never equal a real on-disk size and every such entry would look
+                        // permanently "modified" instead of falling through to the real content
+                        // comparison below.
                         boolean statAmbiguous = dEntry.isStatAmbiguous();
                         if (!statAmbiguous && (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime)) {
                             status.getModified().add(path);

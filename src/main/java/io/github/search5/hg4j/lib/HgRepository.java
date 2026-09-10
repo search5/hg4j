@@ -34,8 +34,17 @@ import java.util.Set;
 /**
  * Represents a local Mercurial repository.
  * <p><strong>Thread Safety:</strong> This class is fully thread-safe and supports parallel concurrent
- * read operations from multiple threads. Critical methods accessing shared cache maps, ignore patterns 
+ * read operations from multiple threads. Critical methods accessing shared cache maps, ignore patterns
  * and repository state are guarded with high-fidelity internal object monitor synchronization.
+ *
+ * @apiNote The sole implementation of {@link Repository} and the object nearly every porcelain
+ *     command is constructed with — obtain one via {@link Repository#open} or {@code
+ *     io.github.search5.hg4j.api.Hg}, not by calling {@link #HgRepository(File)} directly unless
+ *     you specifically need this concrete type (e.g. for {@link #setStoreEngine}). It caches
+ *     opened {@link Revlog} instances ({@link #getRevlog}) across calls for the lifetime of the
+ *     instance, so long-lived handles (e.g. {@code HgHttpWireServer}/{@code HgSshWireServer})
+ *     should call {@link #refreshIfChangedOnDisk()} before trusting cached data if the
+ *     repository may have been mutated by another process.
  */
 public class HgRepository implements Repository {
     private static final Logger LOGGER = Logger.getLogger(HgRepository.class.getName());
@@ -44,9 +53,9 @@ public class HgRepository implements Repository {
     private final File storeDir;
     private boolean defaultDirstateV2 = false;
     private boolean useZstdCompression = false;
-    // 실제 requirement 문자열은 mercurial/requirements.py에서 실측 확인됨
+    // The actual requirement strings were confirmed against mercurial/requirements.py
     // (CHANGELOGV2_REQUIREMENT/REVLOGV2_REQUIREMENT/NODEMAP_REQUIREMENT).
-    // .hg/requires가 아니라 .hg/store/requires에 기록된다 (share-safe 저장소 기준).
+    // They are recorded in .hg/store/requires, not .hg/requires (for a share-safe repository).
     private boolean changelogV2 = false;
     private boolean revlogV2 = false;
     private boolean persistentNodemap = false;
@@ -57,6 +66,15 @@ public class HgRepository implements Repository {
     private Dirstate cachedDirstate = null;
     private final HgRcConfig config = new HgRcConfig();
 
+    /**
+     * Replaces the {@link StoreEngine} used to read/write this repository's store, clearing any
+     * cached {@link Revlog}s opened under the previous engine.
+     *
+     * @apiNote An extension point for swapping in a custom {@link StoreEngine} (e.g. in tests,
+     *     or a caller providing its own storage backend) in place of the default {@link
+     *     DefaultFileStoreEngine} set in the field initializer; a {@code null} argument is
+     *     ignored.
+     */
     public synchronized void setStoreEngine(StoreEngine storeEngine) {
         if (storeEngine != null) {
             this.storeEngine = storeEngine;
@@ -64,10 +82,22 @@ public class HgRepository implements Repository {
         }
     }
 
+    /** Returns this repository's parsed {@code hgrc} configuration (see {@link HgRcConfig}). */
     public HgRcConfig getConfig() {
         return this.config;
     }
 
+    /**
+     * Opens the repository rooted at {@code directory}, resolving its store directory (following
+     * {@code .hg/sharedpath} for a share-safe repository) and reading its {@code requires} and
+     * {@code hgrc} files.
+     *
+     * @apiNote Prefer {@link Repository#open(File)} or {@code
+     *     io.github.search5.hg4j.api.Hg} unless the concrete {@link HgRepository} type is
+     *     specifically needed. Does not validate that {@code directory} actually contains a
+     *     {@code .hg} directory — {@link Repository#open} performs that check before delegating
+     *     here.
+     */
     public HgRepository(File directory) {
         this.directory = directory;
         this.hgDir = new File(directory, ".hg");
@@ -104,8 +134,8 @@ public class HgRepository implements Repository {
 
     private void loadRequires() {
         readRequiresFile(new File(hgDir, "requires"));
-        // share-safe(기본값) 저장소는 store 관련 requirement를 .hg/requires가 아니라
-        // .hg/store/requires에 별도로 기록한다 — 실제 hg CLI(7.2)로 확인됨.
+        // A share-safe (default) repository records store-related requirements separately in
+        // .hg/store/requires rather than .hg/requires -- confirmed against real hg CLI (7.2).
         readRequiresFile(new File(storeDir, "requires"));
     }
 
@@ -139,16 +169,17 @@ public class HgRepository implements Repository {
         }
     }
 
-    /** {@code exp-changelog-v2} requirement — changelog가 revlog v2(docket 기반) 포맷임. */
+    /** {@code exp-changelog-v2} requirement — the changelog is in revlog v2 (docket-based) format. */
     public boolean isChangelogV2() {
         return changelogV2;
     }
 
     /**
-     * {@code exp-revlogv2.2} requirement — 매니페스트/파일로그가 일반 revlog v2 포맷임.
-     * 읽기/쓰기 모두 지원한다({@link io.github.search5.hg4j.storage.RevlogIndex},
-     * {@link io.github.search5.hg4j.storage.Revlog} 참고, Rust 확장이 활성화된 실제
-     * Mercurial 7.2.4 빌드(docker/hg-rust-7.2.4)로 만든 픽스처로 검증됨).
+     * {@code exp-revlogv2.2} requirement — manifests and filelogs are in plain revlog v2 format.
+     * Both reading and writing are supported (see {@link
+     * io.github.search5.hg4j.storage.RevlogIndex}, {@link io.github.search5.hg4j.storage.Revlog}),
+     * verified against fixtures produced by a real Mercurial 7.2.4 build with the Rust extension
+     * enabled (docker/hg-rust-7.2.4).
      */
     public boolean isRevlogV2() {
         return revlogV2;
@@ -200,14 +231,23 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * {@code fileindex-v1} requirement — {@code exp-revlogv2.2} 저장소가 fncache 대신 쓰는
-     * 파일 경로 인덱스({@code .hg/store/fileindex}, 방사 트라이). 읽기/쓰기 모두 지원한다
-     * ({@link io.github.search5.hg4j.storage.FileIndex} 참고).
+     * {@code fileindex-v1} requirement — the radix-trie file path index ({@code
+     * .hg/store/fileindex}) an {@code exp-revlogv2.2} repository uses in place of {@code
+     * fncache}. Both reading and writing are supported (see {@link
+     * io.github.search5.hg4j.storage.FileIndex}).
      */
     public boolean isFileIndexV1() {
         return fileIndexV1;
     }
 
+    /**
+     * {@code revlog-compression-zstd} requirement — new revlog deltas/fulltexts should be
+     * compressed with zstd rather than real hg's default zlib.
+     *
+     * @apiNote Read by {@link io.github.search5.hg4j.storage.DefaultFileStoreEngine} when
+     *     writing revlog data so hg4j-created repositories stay compression-compatible with
+     *     however the repository was originally created.
+     */
     public boolean isUseZstdCompression() {
         return useZstdCompression;
     }
@@ -302,10 +342,26 @@ public class HgRepository implements Repository {
         dirstate.getCopyMap().putAll(originalCopyMap);
     }
 
+    /**
+     * Resolves the flat path-to-file-node manifest for the given changeset.
+     *
+     * @apiNote Delegates to the current {@link StoreEngine}; used internally by {@link
+     *     #rebuildDirstateFromManifest} and by porcelain commands that need a changeset's
+     *     tracked-file listing (e.g. {@code ManifestCommand}, {@code UpdateCommand}, {@code
+     *     DiffCommand}).
+     */
     public synchronized Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
         return storeEngine.getManifestAtCommit(this, commitNodeId);
     }
 
+    /**
+     * Opens (or returns the cached) manifest revlog ({@code 00manifest.i}/{@code .d}) for this
+     * repository.
+     *
+     * @apiNote Used by commands and wire protocol handlers that need to read or append manifest
+     *     revisions directly (e.g. {@code CommitCommand}, {@code MergeCommand}, {@code
+     *     RebaseCommand}, {@code PushCommand}, {@code CloneCommand}, {@code Wire2Commands}).
+     */
     public synchronized Revlog getManifestRevlog() throws IOException {
         return storeEngine.getManifestRevlog(this);
     }
@@ -336,6 +392,15 @@ public class HgRepository implements Repository {
         }
     };
 
+    /**
+     * Opens (or returns the cached instance for) the revlog identified by its index/data file
+     * pair, e.g. {@code 00changelog.i}/{@code .d} or a per-file {@code data/<path>.i}/{@code .d}.
+     *
+     * @apiNote The shared entry point nearly every command and wire protocol handler uses to
+     *     access changelog, manifest, or per-file revlogs — cached for the lifetime of this
+     *     {@code HgRepository} instance (evicted LRU-style past 100 entries, or all at once by
+     *     {@link #clearRevlogCache()}/{@link #refreshIfChangedOnDisk()}).
+     */
     public synchronized Revlog getRevlog(File idxFile, File datFile) throws IOException {
         File canonicalIdx = idxFile.getCanonicalFile();
         if (!revlogCache.containsKey(canonicalIdx)) {
@@ -344,6 +409,14 @@ public class HgRepository implements Repository {
         return revlogCache.get(canonicalIdx);
     }
 
+    /**
+     * Evicts every cached {@link Revlog} (see {@link #getRevlog}), forcing the next access to
+     * each to re-read from disk.
+     *
+     * @apiNote Called by {@link #setStoreEngine} and {@link #refreshIfChangedOnDisk()}; most
+     *     callers should prefer {@link #refreshIfChangedOnDisk()}, which only clears the cache
+     *     when the on-disk changelog actually changed.
+     */
     public synchronized void clearRevlogCache() {
         for (Revlog r : revlogCache.values()) {
             r.clearCache();
@@ -357,7 +430,7 @@ public class HgRepository implements Repository {
     /**
      * Detects whether the changelog has been externally modified since the last check and, if
      * so, clears the whole revlog cache so the next read rebuilds fresh {@link Revlog}/
-     * {@link com.github.search5.hg4j.storage.RevlogIndex} instances.
+     * {@link io.github.search5.hg4j.storage.RevlogIndex} instances.
      *
      * <p>This exists for long-lived {@code HgRepository} handles -- specifically the ones
      * {@code HgHttpWireServer}/{@code HgSshWireServer} keep open for the lifetime of the server
@@ -370,26 +443,23 @@ public class HgRepository implements Repository {
      * are rewritten in place as more revisions are appended.
      *
      * <p>This must not blindly discard a cached changelog {@link Revlog} that has itself already
-     * written locally in this process (backlog #39, 2026-09-05, found while investigating a
-     * regression this method's own connection into 7 read commands introduced): {@code
-     * clearRevlogCache()} replaces every cached {@code Revlog}/{@code RevlogIndex} with a brand
-     * new instance whose {@code addedRecords} starts empty, which silently discards exactly the
-     * "this instance already knows its own local write history" trust that {@code
-     * RevlogIndex.checkAndUpdate()}'s own {@code addedRecords}-emptiness guard exists to protect
-     * (see that method's javadoc) -- a changelog.i size/mtime change right after this process's
-     * own local commit is indistinguishable from an external one by size/mtime alone, so a naive
-     * unconditional reload here breaks the common "commit, then immediately strip/rebase/histedit
-     * the same revision with the same handle" pattern: the stripped node's {@code findRevision}
-     * on the fresh instance finds no local-write history to trust, reloads from the
-     * already-truncated file, and silently loses track of a revision the caller (e.g.
-     * {@code StripCommand}'s bookmark-relocation loop) still needs to resolve (verified live:
-     * this exact regression reproduced in {@code StripCommandCoverageTest
-     * #stripMovesBookmarkPointingAtStrippedRevisionToNewTip}). So: only clear the cache when the
-     * cached changelog {@code Revlog} either doesn't exist yet or has never itself added a record
-     * locally -- a genuinely external change is unaffected by this (this process never wrote to
-     * it, so {@code hasLocallyAddedRecords()} is trivially false), while a local
-     * commit-then-mutate sequence on the same handle is now protected exactly like
-     * {@code RevlogIndex.checkAndUpdate()} already protects it.
+     * written locally in this process: {@code clearRevlogCache()} replaces every cached {@code
+     * Revlog}/{@code RevlogIndex} with a brand new instance whose {@code addedRecords} starts
+     * empty, which would discard exactly the "this instance already knows its own local write
+     * history" trust that {@code RevlogIndex.checkAndUpdate()}'s own {@code
+     * addedRecords}-emptiness guard exists to protect (see that method's javadoc) -- a
+     * changelog.i size/mtime change right after this process's own local commit is
+     * indistinguishable from an external one by size/mtime alone, so a naive unconditional
+     * reload here would break the common "commit, then immediately strip/rebase/histedit the
+     * same revision with the same handle" pattern: the stripped node's {@code findRevision} on a
+     * freshly-reloaded instance would find no local-write history to trust, reload from the
+     * already-truncated file, and silently lose track of a revision the caller (e.g. {@code
+     * StripCommand}'s bookmark-relocation loop) still needs to resolve. So: only clear the cache
+     * when the cached changelog {@code Revlog} either doesn't exist yet or has never itself
+     * added a record locally -- a genuinely external change is unaffected by this (this process
+     * never wrote to it, so {@code hasLocallyAddedRecords()} is trivially false), while a local
+     * commit-then-mutate sequence on the same handle is protected exactly like {@code
+     * RevlogIndex.checkAndUpdate()} already protects it.
      */
     public synchronized void refreshIfChangedOnDisk() {
         File clIdx = new File(storeDir, "00changelog.i");
@@ -416,10 +486,11 @@ public class HgRepository implements Repository {
      * @throws IOException if loading fails
      */
     public synchronized PhaseRoots getPhaseRoots() throws IOException {
-        // 실제 hg는 phaseroots를 .hg/phaseroots가 아니라 .hg/store/phaseroots에 저장한다
-        // (share-safe 저장소 기준 real hg CLI 7.2로 직접 확인, 2026-09-01) — .hg/phaseroots를
-        // 쓰면 실제 hg가 phase 정보를 전혀 읽지 못해(항상 public으로 간주) 모든 phase 관련
-        // 상호운용(push/pull phase 동기화, hg phase, hg summary 등)이 깨진다.
+        // Real hg stores phaseroots in .hg/store/phaseroots, not .hg/phaseroots (for a
+        // share-safe repository) -- writing to .hg/phaseroots instead would mean real hg never
+        // reads the phase information at all
+        // (it would always be treated as public), breaking every phase-related interop (push/pull
+        // phase sync, hg phase, hg summary, etc.).
         File phaserootsFile = new File(storeDir, "phaseroots");
         return new PhaseRoots(phaserootsFile);
     }
@@ -524,6 +595,14 @@ public class HgRepository implements Repository {
         return sb.toString();
     }
 
+    /**
+     * Checks whether a repository-relative path matches an {@code .hgignore} pattern.
+     *
+     * @apiNote Used by {@link #scanDirectory} during a working-copy walk, and directly by
+     *     {@code PurgeCommand} when deciding which untracked files are eligible for
+     *     {@code --all}-style removal.
+     * @param relativePath a path relative to the repository root, using {@code /} separators
+     */
     public synchronized boolean isIgnored(String relativePath) {
         loadIgnorePatterns();
         for (Pattern pattern : ignorePatterns) {
@@ -534,6 +613,16 @@ public class HgRepository implements Repository {
         return false;
     }
 
+    /**
+     * Recursively walks the working directory (skipping {@code .hg}, {@code .hgignore}d paths,
+     * and declared subrepo boundaries — see {@link #loadSubrepoPaths()}) and returns every file
+     * and symlink found, as repository-relative paths.
+     *
+     * @apiNote The shared working-copy enumeration used by {@code StatusCommand}, {@code
+     *     AddCommand}, {@code AddremoveCommand}, and {@code PurgeCommand} to discover untracked
+     *     files; see {@link io.github.search5.hg4j.treewalk.WorkingDirTreeIterator} for the
+     *     tracked-file counterpart.
+     */
     public synchronized List<String> scanWorkingCopy() {
         ignorePatterns = null;
         List<String> result = new ArrayList<>();
@@ -547,11 +636,11 @@ public class HgRepository implements Repository {
      * the parent's own working copy (that subtree belongs to the subrepo's own dirstate, not the
      * parent's). Without this, a plain {@code hg add}/commit-time working-copy scan would slurp
      * every file physically sitting under a checked-out subrepo directory into the *parent*
-     * repository's own tracked manifest -- verified live against real hg 7.2, where {@code hg
-     * status}/{@code hg add} at the parent level never see inside a subrepo path at all.
-     * Best-effort: any parse failure yields an empty set rather than failing the whole scan.
+     * repository's own tracked manifest -- {@code hg status}/{@code hg add} at the parent level
+     * never see inside a subrepo path at all. Best-effort: any parse failure yields an empty set
+     * rather than failing the whole scan.
      *
-     * <p>Public (backlog #39) so other working-copy-walking commands ({@link
+     * <p>Public so other working-copy-walking commands ({@link
      * io.github.search5.hg4j.api.PurgeCommand}) can apply the exact same subrepo boundary without
      * re-parsing {@code .hgsub} themselves.
      */
@@ -623,9 +712,9 @@ public class HgRepository implements Repository {
             } else if (child.isFile() || Files.isSymbolicLink(child.toPath())) {
                 // A symlink is never recursed into (isDir above already excludes it), but
                 // real hg tracks it as a plain file entry regardless of whether its target
-                // exists, is a file, or is a directory (verified live: real hg `add` accepts
-                // a dangling symlink) — child.isFile() alone follows the link and misses all
-                // three of those cases.
+                // exists, is a file, or is a directory (real hg `add` accepts a dangling
+                // symlink) -- child.isFile() alone follows the link and misses all three of
+                // those cases.
                 result.add(rel);
             }
         }
@@ -678,8 +767,8 @@ public class HgRepository implements Repository {
      * Locks the working directory, waiting up to {@code timeoutMs} if it is already held before
      * giving up -- matches real hg's {@code localrepo.py} {@code wlock(wait=True)} default (backed
      * by {@code mercurial/lock.py}'s {@code trylock()}/{@code lock()} loop). Only the push/unbundle
-     * apply path opts into this today (backlog item 38); every other caller keeps using the
-     * fail-fast {@link #lockWorkingCopy()} overload.
+     * apply path opts into this today; every other caller keeps using the fail-fast {@link
+     * #lockWorkingCopy()} overload.
      *
      * <p>Deliberately NOT {@code synchronized} on this repository instance (unlike most other
      * mutating methods here): the underlying {@link HgLock} constructor can now genuinely block
@@ -687,12 +776,12 @@ public class HgRepository implements Repository {
      * whole wait would block every OTHER {@code synchronized} method on the same {@link
      * HgRepository} instance -- including ones a concurrently-racing thread needs to finish its
      * own, unrelated work -- turning a bounded per-lock wait into an effectively unbounded
-     * self-deadlock. Confirmed live (2026-09-04, backlog item 38): with this method still marked
-     * {@code synchronized}, two genuinely concurrent real-hg pushes against the same shared server
-     * repository reliably deadlocked this way -- the winner's own request thread got stuck for
-     * the loser's ENTIRE wait duration on an unrelated {@code synchronized} repository call, even
-     * though the winner itself was never contending on the file lock at all. Mutual exclusion for
-     * the lock itself is already fully guaranteed without this object's monitor, by {@link
+     * self-deadlock: with this method marked {@code synchronized}, two genuinely concurrent
+     * real-hg pushes against the same shared server repository would deadlock this way -- the
+     * winner's own request thread stuck for the loser's ENTIRE wait duration on an unrelated
+     * {@code synchronized} repository call, even though the winner itself was never contending
+     * on the file lock at all. Mutual exclusion for the lock itself is already fully guaranteed
+     * without this object's monitor, by {@link
      * HgLock}'s own static, path-keyed tracking plus the atomic filesystem symlink/file creation
      * it uses.
      *
@@ -722,16 +811,15 @@ public class HgRepository implements Repository {
      * before giving up -- matches real hg's {@code localrepo.py} {@code lock(wait=True)} default
      * (backed by {@code mercurial/lock.py}'s {@code trylock()}/{@code lock()} loop, which itself
      * waits up to {@code ui.timeout} -- default 600 seconds -- before raising {@code
-     * error.LockHeld}). Only the push/unbundle apply path opts into this today (backlog item 38,
-     * see {@link #resolvePushLockTimeoutMs()}); every other caller (commit, update, rebase, ...)
-     * keeps using the fail-fast {@link #lockStore()} overload -- widening the wait behavior to
-     * every command that locks the store is a separate, much larger change this backlog item does
-     * not cover.
+     * error.LockHeld}). Only the push/unbundle apply path opts into this today (see {@link
+     * #resolvePushLockTimeoutMs()}); every other caller (commit, update, rebase, ...) keeps
+     * using the fail-fast {@link #lockStore()} overload -- widening the wait behavior to every
+     * command that locks the store would be a separate, much larger change.
      *
      * <p>Deliberately NOT {@code synchronized} -- see {@link #lockWorkingCopy(int)}'s doc for why
-     * (the exact same self-deadlock hazard applies here, and was in fact where it was first
-     * reproduced live: this is the lock the push/unbundle apply path actually contends on).
-     * {@link #checkAndPerformAutoRollback()} keeps its own independent {@code synchronized}
+     * (the exact same self-deadlock hazard applies here: this is the lock the push/unbundle apply
+     * path actually contends on). {@link #checkAndPerformAutoRollback()} keeps its own independent
+     * {@code synchronized}
      * modifier, so it is still safely serialized against itself regardless.
      *
      * @param timeoutMs how long to wait for contention to clear, in milliseconds; {@code 0} means
@@ -760,10 +848,7 @@ public class HgRepository implements Repository {
      * use for this repository -- mirrors real hg's own {@code ui.timeout} config (default {@code
      * "600"} seconds; {@code mercurial/localrepo.py}'s {@code _lock()} reads it whenever a caller
      * asks to wait, and {@code mercurial/lock.py}'s {@code lock()} loop treats {@code timeout == 0}
-     * as "fail immediately" rather than "wait forever"). Confirmed against real hg 7.2 directly
-     * (2026-09-04, backlog item 38): a real {@code hg push} against a repository whose store lock
-     * is held waits for exactly the configured {@code ui.timeout} before the server-side push
-     * fails.
+     * as "fail immediately" rather than "wait forever").
      */
     public int resolvePushLockTimeoutMs() {
         String raw = getConfig().get("ui", "timeout", "600");
@@ -779,6 +864,17 @@ public class HgRepository implements Repository {
         }
     }
 
+    /**
+     * If a leftover {@code .hg/store/journal} exists (from a process that crashed or was killed
+     * mid-transaction), restores every backed-up file it references and deletes the journal —
+     * matching real hg's own crash-recovery behavior.
+     *
+     * @apiNote Called automatically by every {@link #lockStore()}/{@link #lockStore(int)}, so
+     *     acquiring the store lock before a mutation is itself enough to recover from a prior
+     *     crash. {@code RecoverCommand} (hg's {@code recover}) also calls this directly so a
+     *     user can trigger recovery explicitly without otherwise touching the repository. A
+     *     no-op when no journal file exists.
+     */
     public synchronized void checkAndPerformAutoRollback() {
         File journalFile = new File(storeDir, "journal");
         if (!journalFile.exists()) {
@@ -815,17 +911,15 @@ public class HgRepository implements Repository {
                     File dirstateFile = new File(hgDir, "dirstate");
                     if (dirstateBackup.exists()) {
                         Files.move(dirstateBackup.toPath(), dirstateFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                        // dirstate-v2's own companion data file (backlog #39, found live
-                        // 2026-09-05): the docket bytes just restored above may reference a
-                        // "<uid>" whose ".hg/dirstate.<uid>" data file Dirstate.write()'s own
-                        // "W-LEAK" cleanup already deleted (it removes the *previous* uid's data
-                        // file the instant the crashed transaction durably wrote its own new
-                        // docket) -- restore it from the durable backup CommitCommand leaves
-                        // alongside "dirstate.backup" (see its own recordRevlogRollbackState-
-                        // adjacent comment) if it is indeed missing. Without this, real hg's own
-                        // dirstate-v2 reader treats the dangling reference as an unrecoverable
-                        // "dirstate read race" and aborts outright (verified live against
-                        // hg-rust-7.2.4).
+                        // dirstate-v2's own companion data file: the docket bytes just restored
+                        // above may reference a "<uid>" whose ".hg/dirstate.<uid>" data file
+                        // Dirstate.write()'s own "W-LEAK" cleanup already deleted (it removes the
+                        // *previous* uid's data file the instant the crashed transaction durably
+                        // wrote its own new docket) -- restore it from the durable backup
+                        // CommitCommand leaves alongside "dirstate.backup" (see its own
+                        // recordRevlogRollbackState-adjacent comment) if it is indeed missing.
+                        // Without this, real hg's own dirstate-v2 reader treats the dangling
+                        // reference as an unrecoverable "dirstate read race" and aborts outright.
                         String uid = readDirstateV2Uid(dirstateFile);
                         if (uid != null) {
                             File dataFile = new File(hgDir, "dirstate." + uid);
@@ -851,11 +945,11 @@ public class HgRepository implements Repository {
                     // did not exist before, delete it"), this is for companion files of a v2/
                     // docket revlog (a filelog/manifest/changelog's resolved .idx/.dat/.sda) that
                     // real hg always expects to physically exist -- even empty -- as long as the
-                    // docket references them (backlog #39, found live 2026-09-05: a fresh v2
-                    // revlog's sidedata companion is legitimately 0 bytes from the moment the
-                    // docket is created, and deleting it on rollback instead of truncating made
-                    // real hg abort with "No such file or directory" reading the docket
-                    // afterward). See CommitCommand#recordRevlogRollbackState's javadoc.
+                    // docket references them (a fresh v2 revlog's sidedata companion is
+                    // legitimately 0 bytes from the moment the docket is created; deleting it on
+                    // rollback instead of truncating would make real hg abort with "No such file
+                    // or directory" reading the docket afterward). See
+                    // CommitCommand#recordRevlogRollbackState's javadoc.
                     String content = line.substring("trunc ".length()).trim();
                     int splitIdx = content.lastIndexOf('\t');
                     if (splitIdx != -1) {

@@ -18,6 +18,9 @@ import java.util.Arrays;
 
 /**
  * Porcelain command to untrack and remove files from the working directory and staging area.
+ *
+ * @apiNote Typically obtained via {@link Hg#remove()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class RemoveCommand {
 
@@ -94,10 +97,9 @@ public class RemoveCommand {
                             // when the file was committed within the same wall-clock second as
                             // the dirstate write) can never be trusted via a raw size/mtime
                             // comparison: its sentinel size (-1) never equals a real on-disk size,
-                            // which previously made EVERY such entry look permanently "modified"
-                            // and made `remove` (without --force) wrongly refuse a genuinely
-                            // untouched file -- confirmed live against a real hg-authored
-                            // dirstate produced by an add+commit that landed in the same second.
+                            // which would make EVERY such entry look permanently "modified" and
+                            // make `remove` (without --force) wrongly refuse a genuinely untouched
+                            // file.
                             boolean isDirty = !entry.isStatAmbiguous()
                                     && (entry.getSize() != diskSize || entry.getTime() != diskTime);
                             if (!isDirty) {

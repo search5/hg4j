@@ -19,6 +19,13 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
  * </ul>
  *
  * <p>This class is stateless and all methods are static.
+ *
+ * @apiNote {@link #applyDelta} is used by {@link io.github.search5.hg4j.storage.Revlog} and
+ *     {@link io.github.search5.hg4j.storage.DeltaCodec} to reconstruct a revision's fulltext
+ *     from a stored delta chain, and directly by {@code IncomingCommand} when previewing
+ *     incoming changes without applying them. {@link #createDelta} is used by {@link
+ *     io.github.search5.hg4j.storage.Revlog} when appending a new revision, to decide whether
+ *     storing a delta against the previous revision is smaller than a fresh fulltext.
  */
 public final class DeltaEngine {
 
@@ -117,7 +124,7 @@ public final class DeltaEngine {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // createDelta (LCS 기반 멀티-hunk)
+    // createDelta (LCS-based multi-hunk)
     // ─────────────────────────────────────────────────────────────────────
 
     /**

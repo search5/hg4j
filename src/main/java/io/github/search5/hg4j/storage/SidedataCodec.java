@@ -41,8 +41,7 @@ public final class SidedataCodec {
      * (mercurial/revlogutils/sidedata.py) — currently the only sidedata key any shipped hg
      * version actually writes (the older {@code SD_P1COPIES}/{@code SD_P2COPIES}/{@code
      * SD_FILESADDED}/{@code SD_FILESREMOVED} constants are defined but dead code upstream, never
-     * produced or consumed by any current code path — confirmed by grepping the installed
-     * Mercurial 7.2 source tree).
+     * produced or consumed by any current code path).
      */
     public static final int SD_FILES = 12;
 

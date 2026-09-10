@@ -31,6 +31,9 @@ import java.util.TreeSet;
 /**
  * Porcelain command for Interactive Rebase (histedit) on Mercurial repositories.
  * Supports rule-based PICK, DROP, FOLD, and ROLL actions to modify history.
+ *
+ * @apiNote Typically obtained via {@link Hg#histedit()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class HisteditCommand implements AutoCloseable {
     public enum Action { PICK, DROP, FOLD, ROLL }
@@ -164,15 +167,14 @@ public class HisteditCommand implements AutoCloseable {
                     // Drop this commit message, keep the accumulated pending CommitMsg
                     pendingHexNodes.add(rule.hexNode);
                 } else if (rule.action == Action.DROP) {
-                    // Skip completely -- but, like real `hg histedit` (verified live, 2026-09-05:
-                    // under experimental.evolution=all, real hg's own histedit registers a
-                    // "prune" obsmarker -- precursor with an empty successor set -- for a dropped
+                    // Skip completely -- but, like real `hg histedit` (under
+                    // experimental.evolution=all, real hg's own histedit registers a "prune"
+                    // obsmarker -- precursor with an empty successor set -- for a dropped
                     // revision, exactly like StripCommand.call() already does for a plain `hg
                     // strip`), the dropped revision must be marked pruned so a plain `hg log`
                     // hides it. This class never physically strips (matching RebaseCommand's own
-                    // 2026-09-04 evolution-only design), so without this marker the dropped
-                    // revision stayed fully visible in a plain log forever -- found live via this
-                    // class's own requirement-matrix interop test.
+                    // evolution-only design), so without this marker the dropped revision would
+                    // stay fully visible in a plain log forever.
                     try {
                         HgObsMarker.writeMarker(repository.getStoreDir(), nodeBytes, List.of(), "prune");
                     } catch (Exception e) {
@@ -192,13 +194,10 @@ public class HisteditCommand implements AutoCloseable {
             // Verified against real `hg histedit`: dropping a commit that added b.txt leaves
             // b.txt off disk (and out of `hg manifest -r tip`) once histedit finishes.
             //
-            // The dirstate's own tracked-path set must be reconciled the same way -- found live
-            // via this class's own requirement-matrix interop test (2026-09-05): `hg verify`
-            // reported "<path> marked as tracked in p1 (...) but not in manifest1" because this
-            // loop used to only delete the dropped path's physical file, never its dirstate
-            // entry, leaving a dropped commit's path permanently stuck as tracked afterward
-            // (undetectable by any test that only checks `File.exists()`/log content, since
-            // `hg status`/`hg add` would still silently treat it as already-removed-from-disk).
+            // The dirstate's own tracked-path set must be reconciled the same way: deleting only
+            // the dropped path's physical file, without also removing its dirstate entry, would
+            // leave a dropped commit's path permanently stuck as tracked afterward, and `hg
+            // verify` would report "<path> marked as tracked in p1 (...) but not in manifest1".
             Revlog manifestRevlogForCleanup = repository.getRevlog(mfIdx, mfDat);
             Map<String, String> oldManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, originalParent);
             Map<String, String> finalManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, lastCommittedNode);
@@ -372,12 +371,12 @@ public class HisteditCommand implements AutoCloseable {
         List<String> filesModified = new ArrayList<>(filesModifiedSet);
 
         // 3. Serialize and append new manifest revision. Real hg requires manifest entries to be
-        // in strict sorted-by-path order ("hg verify": "Manifest lines not in sorted order" --
-        // found live via this class's own requirement-matrix interop test, 2026-09-05); newManifest
-        // is a LinkedHashMap seeded from the parent's already-sorted manifest text but then mutated
-        // in file-processing order above (new paths introduced by a fold/pick group land wherever
-        // they were encountered, not in sorted position), so the keys must be explicitly re-sorted
-        // before serializing rather than trusting entrySet()'s insertion order.
+        // in strict sorted-by-path order ("hg verify": "Manifest lines not in sorted order");
+        // newManifest is a LinkedHashMap seeded from the parent's already-sorted manifest text
+        // but then mutated in file-processing order above (new paths introduced by a fold/pick
+        // group land wherever they were encountered, not in sorted position), so the keys must
+        // be explicitly re-sorted before serializing rather than trusting entrySet()'s insertion
+        // order.
         List<String> sortedManifestPaths = new ArrayList<>(newManifest.keySet());
         Collections.sort(sortedManifestPaths, NodeIdUtil.UTF8_STRING_COMPARATOR);
         StringBuilder manifestSb = new StringBuilder();

@@ -22,12 +22,12 @@ import java.util.TreeMap;
 import java.util.TimeZone;
 
 /**
- * P3-33 -- writes a {@link TreeMergeCommand.TreeMergeResult} directly to the changelog/manifest/
+ * Writes a {@link TreeMergeCommand.TreeMergeResult} directly to the changelog/manifest/
  * filelog revlogs as a real 2-parent changeset, without ever touching the working directory or
- * dirstate (JGit {@code inCore} merge-commit parity). Replaces the previous approach of cloning
- * the target repository to a throwaway directory, checking it out, running the working-copy-based
- * {@link MergeCommand} + {@link CommitCommand}, then pushing the single resulting changeset back
- * (see the P3-27/P3-33 design log) -- that approach's cost was proportional to the ENTIRE target
+ * dirstate (JGit {@code inCore} merge-commit parity). This avoids an alternative approach of
+ * cloning the target repository to a throwaway directory, checking it out, running the
+ * working-copy-based {@link MergeCommand} + {@link CommitCommand}, then pushing the single
+ * resulting changeset back -- that approach's cost is proportional to the ENTIRE target
  * repository's history+working-tree size; this command's cost is proportional only to the files
  * the merge actually touched, exactly like {@link TreeMergeCommand}'s own computation already is.
  *
@@ -42,23 +42,25 @@ import java.util.TimeZone;
  * {@link Revlog#appendRevision} for the actual filelog/manifest/changelog writes -- the same
  * general-purpose primitive {@link CommitCommand} itself ultimately calls.
  *
- * <p><b>Locking (P3-33 design decision):</b> only {@link HgRepository#lockStore()} (fail-fast, no
+ * <p><b>Locking:</b> only {@link HgRepository#lockStore()} (fail-fast, no
  * wait) is held for the filelog/manifest/changelog write section -- unlike {@link CommitCommand},
  * this class never reads or writes dirstate, {@code fncache}/file-index bookkeeping aside, or any
  * working-directory file, so {@link HgRepository#lockWorkingCopy()} (which exists specifically to
  * guard dirstate/working-copy metadata) is not needed. A "waiting" lock
- * ({@code lockStore(timeoutMs)}) is deliberately NOT used here -- this codebase has hit a real
- * deadlock from a waiting store lock before (see {@code HgRepository#lockStore(int)}'s own
- * javadoc); every other commit-shaped command (including {@link CommitCommand}) already defaults
- * to the fail-fast overload, and callers that need retry-on-contention (see
- * {@code PullRequestServiceImpl.hgMerge()}) are expected to re-resolve their parents and retry
- * from scratch rather than wait for this lock.
+ * ({@code lockStore(timeoutMs)}) is deliberately NOT used here -- a waiting store lock can deadlock
+ * (see {@code HgRepository#lockStore(int)}'s own javadoc); every other commit-shaped command
+ * (including {@link CommitCommand}) already defaults to the fail-fast overload, and callers that
+ * need retry-on-contention are expected to re-resolve their parents and retry from scratch rather
+ * than wait for this lock.
  *
  * <p>This class intentionally does NOT touch bookmarks -- exactly like {@link CommitCommand}
  * never moves a bookmark on the caller's behalf, advancing the target bookmark to the returned
  * changeset id is the caller's responsibility (via {@link BookmarkCommand}), so this command
  * has a single, easily-testable responsibility: turn a {@link TreeMergeCommand.TreeMergeResult}
  * into a durable changeset.
+ *
+ * @apiNote Typically obtained via {@link Hg#mergeCommit()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class MergeCommitCommand {
     private final HgRepository repository;

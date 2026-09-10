@@ -11,6 +11,9 @@ import java.util.List;
 /**
  * Porcelain command for exporting Mercurial changeset commits
  * into standard patch file formats.
+ *
+ * @apiNote Typically obtained via {@link Hg#export()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class ExportCommand {
     private final HgRepository repository;

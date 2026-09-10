@@ -23,9 +23,7 @@ import java.util.Set;
 /**
  * Manages the local caching and resolution of LFS (Large File Storage) objects.
  *
- * <p>Two storage layers, mirroring real hg's {@code hgext/lfs/blobstore.py} {@code local} class
- * (confirmed 2026-09-06 by reproducing a real hg 7.2 LFS commit with {@code strace}/{@code -v}
- * and inspecting both resulting directories):
+ * <p>Two storage layers, mirroring real hg's {@code hgext/lfs/blobstore.py} {@code local} class:
  * <ul>
  *   <li>The per-repository local store, {@code .hg/store/lfs/objects/}, always populated on a
  *       commit or a successful remote fetch, regardless of any cache config.</li>
@@ -34,14 +32,18 @@ import java.util.Set;
  *       blob already downloaded once for repo A doesn't need re-downloading for repo B. Real hg
  *       defaults this to {@code $XDG_CACHE_HOME/lfs} (or {@code ~/.cache/lfs} if unset) on POSIX,
  *       {@code ~/Library/Caches/lfs} on macOS, and {@code %LOCALAPPDATA%\lfs} (falling back to
- *       {@code %APPDATA%}) on Windows -- verified live: a real hg 7.2 clone/commit under a
- *       controlled {@code XDG_CACHE_HOME} populated exactly {@code $XDG_CACHE_HOME/lfs/<oid[0:2]>/
- *       <oid[2:]>}, the SAME two-character shard scheme {@link #getLocalPath} already used for the
+ *       {@code %APPDATA%}) on Windows, sharded as {@code <cache-root>/lfs/<oid[0:2]>/<oid[2:]>}
+ *       -- the SAME two-character shard scheme {@link #getLocalPath} already uses for the
  *       per-repo store.</li>
  * </ul>
+ *
+ * @apiNote Used by {@code CommitCommand} (storing a new LFS blob on commit), {@code
+ *     UpdateCommand} (materializing an LFS-tracked file's real content into the working copy),
+ *     and {@code AnnotateCommand} (resolving LFS content for annotation). Reads its
+ *     enable/threshold/usercache configuration from {@link HgRcConfig}.
  */
 public final class HgLfsManager {
-    /** Real hg's {@code stringutil._booleans} (confirmed 2026-09-06 against {@code
+    /** Real hg's {@code stringutil._booleans} (see {@code
      * mercurial/utils/stringutil.py}) -- the exact token set {@code ui.configbool} accepts. */
     private static final Set<String> TRUE_TOKENS = Set.of("1", "yes", "true", "on", "always");
     private static final Set<String> FALSE_TOKENS = Set.of("0", "no", "false", "off", "never");
@@ -108,7 +110,7 @@ public final class HgLfsManager {
 
     /**
      * Resolves the effective user-cache directory from config, or {@code null} if disabled.
-     * Real hg's actual precedence (confirmed 2026-09-06 against {@code hgext/lfs/__init__.py}'s
+     * Real hg's actual precedence (see {@code hgext/lfs/__init__.py}'s
      * {@code eh.configitem} declarations and {@code hgext/largefiles/lfutil._usercachedir}):
      * {@code experimental.lfs.disableusercache} (note the literal dot in that config KEY, not a
      * subsection -- real hg reads it as section {@code "experimental"}, key
@@ -129,7 +131,7 @@ public final class HgLfsManager {
 
     /**
      * Pure, independently-testable version of real hg's {@code lfutil._usercachedir(ui, 'lfs')}
-     * per-OS default resolution (confirmed 2026-09-06 against {@code
+     * per-OS default resolution (see {@code
      * hgext/largefiles/lfutil.py}): POSIX prefers {@code $XDG_CACHE_HOME/lfs}, falling back to
      * {@code $HOME/.cache/lfs}; macOS uses {@code $HOME/Library/Caches/lfs}; Windows uses
      * {@code %LOCALAPPDATA%\lfs}, falling back to {@code %APPDATA%\lfs}. Returns {@code null} if
@@ -158,14 +160,11 @@ public final class HgLfsManager {
     /**
      * Resolves the remote LFS server base URL used to fetch a missing blob.
      *
-     * <p>An explicit {@code [lfs] url} config always wins outright (confirmed 2026-09-06 live:
-     * {@code hg clone --config lfs.url=<custom>} attempts the batch request against exactly
-     * {@code <custom>/objects/batch}, with NO further path adjustment). Otherwise, real hg derives
-     * a default from the pull/push remote by appending {@code ".git/info/lfs"} -- a git-lfs
-     * server-discovery convention hg reuses verbatim -- NOT the bare {@code "/info/lfs"} this
-     * codebase used before this fix: confirmed 2026-09-06 by cloning a real hg 7.2 LFS repository
-     * over HTTP with {@code -v} and observing the exact logged line {@code "lfs: assuming remote
-     * store: http://<host>/.git/info/lfs"}.
+     * <p>An explicit {@code [lfs] url} config always wins outright ({@code hg clone --config
+     * lfs.url=<custom>} attempts the batch request against exactly {@code <custom>/objects/batch},
+     * with NO further path adjustment). Otherwise, real hg derives a default from the pull/push
+     * remote by appending {@code ".git/info/lfs"} -- a git-lfs server-discovery convention hg
+     * reuses verbatim -- NOT the bare {@code "/info/lfs"} path.
      *
      * @return the resolved base URL (caller appends {@code "/objects/batch"} etc.), or
      *     {@code null} if neither {@code [lfs] url} nor {@code [paths] default} is configured.
@@ -191,7 +190,7 @@ public final class HgLfsManager {
      * resolved by {@link #resolveServerUrl} on a cache miss. Returns {@code storedContent}
      * unchanged when {@code isExtStored} is {@code false}.
      *
-     * <p>Centralizes what {@code UpdateCommand}'s checkout path and (backlog 42)
+     * <p>Centralizes what {@code UpdateCommand}'s checkout path and
      * {@code AnnotateCommand}'s content-diffing path both need, so both consistently honor the
      * same {@code [lfs] url} override and user-cache config (standard: a single read path, not
      * one-off duplicated logic per caller).
@@ -225,7 +224,7 @@ public final class HgLfsManager {
 
     /**
      * Parses a {@code [lfs] threshold} value the same way real hg's {@code ui.configbytes()}/
-     * {@code util.sizetoint()} does (confirmed 2026-09-04 against {@code mercurial/util.py}):
+     * {@code util.sizetoint()} does (see {@code mercurial/util.py}):
      * a plain number is bytes, otherwise a case-insensitive suffix of {@code b}/{@code k}/
      * {@code kb}/{@code m}/{@code mb}/{@code g}/{@code gb} (checked by string-endswith, which is
      * order-independent since single-letter suffixes never match a two-letter one) multiplies a
@@ -255,12 +254,12 @@ public final class HgLfsManager {
      * Resolves the expected local path for a given OID.
      * E.g., OID "7b1a2c3d..." resolves to: {lfsObjectsDir}/7b/1a2c3d...
      *
-     * <p>Real hg's {@code lfs} extension (verified against hg 7.2, {@code hgext/lfs/blobstore.py}'s
+     * <p>Real hg's {@code lfs} extension ({@code hgext/lfs/blobstore.py}'s
      * {@code lfsvfs.join()}: {@code "split the path at first two characters, like: XX/XXXXX..."})
-     * shards local LFS objects with a single two-character directory level, NOT the two-level
-     * Git-style {@code XX/XX/XXXX...} sharding this used to implement -- which meant an hg4j
-     * repo and a real-hg repo sharing the same {@code .hg/store/lfs/objects/} directory could
-     * never find each other's blobs. Fixed as part of backlog 28's real-hg verification pass.
+     * shards local LFS objects with a single two-character directory level, NOT a two-level
+     * Git-style {@code XX/XX/XXXX...} sharding -- an hg4j repo and a real-hg repo sharing the
+     * same {@code .hg/store/lfs/objects/} directory must use the same scheme to find each
+     * other's blobs.
      *
      * @param oid 64-char hex OID
      * @return cache file reference
@@ -278,7 +277,7 @@ public final class HgLfsManager {
 
     /**
      * Resolves {@code oid}'s path within the user-level cache (same two-character shard scheme
-     * as {@link #getLocalPath}, confirmed live -- see the class doc), or {@code null} if this
+     * as {@link #getLocalPath} -- see the class doc), or {@code null} if this
      * manager instance has no user cache configured/enabled.
      */
     private File getUserCachePath(String oid) {
@@ -314,10 +313,9 @@ public final class HgLfsManager {
      * Writes binary payload into the local LFS objects directory, and -- unless the user cache is
      * disabled/unconfigured -- also into the user-level cache if not already present there.
      * Mirrors real hg's {@code local.write()}/{@code local.download()}, both of which write the
-     * per-repo store then opportunistically link the same bytes into the usercache (confirmed
-     * live 2026-09-06: a real hg 7.2 commit of an LFS file populates BOTH {@code
-     * .hg/store/lfs/objects/<oid[0:2]>/<oid[2:]>} and {@code $XDG_CACHE_HOME/lfs/<oid[0:2]>/
-     * <oid[2:]>} from a single commit).
+     * per-repo store then opportunistically link the same bytes into the usercache (both
+     * {@code .hg/store/lfs/objects/<oid[0:2]>/<oid[2:]>} and
+     * {@code $XDG_CACHE_HOME/lfs/<oid[0:2]>/<oid[2:]>} get populated from a single commit).
      *
      * @param pointer LFS pointer metadata
      * @param data raw file payload bytes

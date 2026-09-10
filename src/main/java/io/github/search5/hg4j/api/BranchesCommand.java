@@ -12,26 +12,27 @@ import java.util.Map;
 
 /**
  * {@code hg branches}-equivalent: one entry per named branch, giving its current head and whether
- * that head is closed. Real hg's own semantics (verified directly against hg 7.2.2, 2026-09-01):
- * when a branch has several heads, the reported head is the highest-revision <em>open</em> one if
- * it has any, else (every head closed) the highest-revision closed one; a branch whose every head
- * is closed is hidden unless {@link #setIncludeClosed} is set, mirroring real hg's own default
- * {@code hg branches} vs {@code hg branches --closed}.
+ * that head is closed. Matching real hg's own semantics: when a branch has several heads, the
+ * reported head is the highest-revision <em>open</em> one if it has any, else (every head closed)
+ * the highest-revision closed one; a branch whose every head is closed is hidden unless
+ * {@link #setIncludeClosed} is set, mirroring real hg's own default {@code hg branches} vs
+ * {@code hg branches --closed}.
  *
- * <p>Ordering (re-verified against real hg 7.2.2's {@code branchmap.branches_info}/
- * {@code commands.branches}, 2026-09-04): a branch is "active" when its highest-revision
- * <em>open</em> head is also a repo-wide topological head (a revision with <em>no</em> children
- * anywhere in the repo, not just within its own branch) -- this is unrelated to which branch the
- * working directory currently has checked out. Real hg sorts
- * {@code (active, rev, name, isOpen)} all descending, i.e. active branches first (by descending
- * rev), then inactive branches (by descending rev), with branch name (reverse-alphabetical) and
- * open-before-closed as further tie-breaks. Naively sorting by revision alone (as this class did
- * before 2026-09-04) diverges from real hg whenever an inactive branch's head revision is higher
- * than some other, still-active branch's head revision -- confirmed with a real {@code hg}
- * scratch repo: branch A forked into branch Z (making A inactive) sorts as
- * {@code Z, Y, A, default} in real hg (Z and Y are active; Y's head revision is lower than A's,
- * yet Y still sorts before A) even though revision numbers alone are {@code Z=3, A=2, Y=1,
- * default=0}.</p>
+ * <p>Ordering (matching real hg's {@code branchmap.branches_info}/{@code commands.branches}):
+ * a branch is "active" when its highest-revision <em>open</em> head is also a repo-wide
+ * topological head (a revision with <em>no</em> children anywhere in the repo, not just within
+ * its own branch) -- this is unrelated to which branch the working directory currently has
+ * checked out. Real hg sorts {@code (active, rev, name, isOpen)} all descending, i.e. active
+ * branches first (by descending rev), then inactive branches (by descending rev), with branch
+ * name (reverse-alphabetical) and open-before-closed as further tie-breaks. Naively sorting by
+ * revision alone diverges from real hg whenever an inactive branch's head revision is higher than
+ * some other, still-active branch's head revision: branch A forked into branch Z (making A
+ * inactive) sorts as {@code Z, Y, A, default} in real hg (Z and Y are active; Y's head revision is
+ * lower than A's, yet Y still sorts before A) even though revision numbers alone are
+ * {@code Z=3, A=2, Y=1, default=0}.</p>
+ *
+ * @apiNote Typically obtained via {@link Hg#branches()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class BranchesCommand {
     private final HgRepository repository;

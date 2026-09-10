@@ -5,6 +5,10 @@ import java.util.List;
 
 /**
  * Represents a Mercurial commit (revision in the changelog).
+ *
+ * @apiNote Returned by {@link LogCommand#call()} (obtained via {@link Hg#log()}); the GPG
+ *     signature fields are populated for a signed commit and can be verified with {@link
+ *     io.github.search5.hg4j.gpg.GpgSignature}.
  */
 public class HgCommit {
     private final int revision;
@@ -16,9 +20,9 @@ public class HgCommit {
     private final List<String> files;
     private final String message;
     private final String branch;
-    // P3-19 — Mercurial commit GPG signature verification, embedded in the changelog `extra`
-    // dictionary (git `gpgsig` commit header equivalent shape; see CommitCommand.setGpgSigner()
-    // and GpgSignatureVerifier.kt). All three are null when this revision has no gpgsig extra.
+    // Mercurial commit GPG signature verification, embedded in the changelog `extra`
+    // dictionary (git `gpgsig` commit header equivalent shape; see CommitCommand.setGpgSigner()).
+    // All three are null when this revision has no gpgsig extra.
     private final String gpgSignature;
     private final String gpgFingerprint;
     private final byte[] unsignedChangelogText;

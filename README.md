@@ -91,6 +91,63 @@ Generate the Jacoco code coverage reports:
 
 ---
 
+## 🔌 Gradle Plugin Usage
+
+`hg4j` is also published to the [Gradle Plugin Portal](https://plugins.gradle.org/plugin/io.github.search5.hg4j) as `io.github.search5.hg4j`, so any Gradle build can pull in the library without hand-managing Maven coordinates.
+
+### 1. Apply the Plugin
+
+Using the modern `plugins {}` DSL (recommended):
+
+```groovy
+plugins {
+    id 'io.github.search5.hg4j' version '1.0.0'
+}
+```
+
+Or with the legacy `buildscript {}` / `apply plugin` syntax:
+
+```groovy
+buildscript {
+    repositories {
+        gradlePluginPortal()
+    }
+    dependencies {
+        // Plugin marker artifact, not the raw `hg4j` library artifact -- resolves the
+        // 'io.github.search5.hg4j' id to its implementation class for `apply plugin:` below.
+        classpath 'io.github.search5.hg4j:io.github.search5.hg4j.gradle.plugin:1.0.0'
+    }
+}
+apply plugin: 'io.github.search5.hg4j'
+```
+
+### 2. What the Plugin Does
+
+Applying `io.github.search5.hg4j` puts the `hg4j` library (see the Plumbing/Porcelain APIs above) on your buildscript classpath and logs a lifecycle confirmation message when the plugin is applied:
+
+```
+> Configure project :
+Applying hg4j Mercurial SCM plugin to project: <your-project-name>
+```
+
+This gives Gradle build authors a stable, versioned entry point for scripting Mercurial operations (`Hg.init()`, `Hg.status()`, `Hg.log()`, etc., from the [Basic Usage Code Examples](#-basic-usage-code-examples) below) directly inside `build.gradle` task actions, without adding a separate `mavenCentral()` dependency by hand:
+
+```groovy
+tasks.register('printHgStatus') {
+    doLast {
+        def repository = io.github.search5.hg4j.api.Hg.init()
+            .setDirectory(file("${projectDir}"))
+            .call()
+        def status = io.github.search5.hg4j.api.Hg.status(repository).call()
+        println "Modified files: ${status.getModified()}"
+    }
+}
+```
+
+Dedicated Gradle tasks and a project extension (e.g. `hg4j { ... }`) for common Mercurial workflows (status/log/commit as first-class tasks) are on the roadmap — today the plugin's job is exposing the library API to your build script, as shown above.
+
+---
+
 ## 📖 Basic Usage Code Examples
 
 ### 1. Initialize and Add Files

@@ -2,6 +2,11 @@ package io.github.search5.hg4j.transport;
 
 /**
  * JGit-style CredentialItem abstractions for secure and modular credentials retrieval.
+ *
+ * @apiNote Instances are passed to {@link CredentialsProvider#get} to request specific pieces of
+ *     credential data; {@link #isSecure()} lets a provider implementation decide whether to mask
+ *     input (e.g. when prompting interactively) for {@link Password}/{@link SshPassphrase} versus
+ *     {@link Username}/{@link SshKeyPath}.
  */
 public abstract class CredentialItem {
     private final String prompt;

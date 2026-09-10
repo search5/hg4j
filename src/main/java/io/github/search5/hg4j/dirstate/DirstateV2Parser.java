@@ -10,6 +10,12 @@ import java.util.Deque;
 
 /**
  * High-performance native parser for Mercurial dirstate-v2 binary format.
+ *
+ * @apiNote Used by {@link Dirstate#read(java.io.File)} to decode the data file a v2 docket
+ *     points at.
+ *     Prefer {@link #parse(byte[], int, int)} (the docket already tells the caller the root
+ *     node's start offset and count); {@link #parse(byte[])} exists only as a fallback for data
+ *     whose root location must be inferred from its trailing layout.
  */
 public class DirstateV2Parser {
 
@@ -71,18 +77,16 @@ public class DirstateV2Parser {
                 // size=-1/mtime=0xFFFFFFFF sentinels, see StatusCommand's AMBIGUOUS_TIME/
                 // nonNormalSize handling) by simply clearing the HAS_MODE_AND_SIZE/HAS_MTIME flag
                 // bits rather than writing a sentinel value -- DirstateV2Node.getSize()/getMtime()
-                // return a literal 0 in that case (verified live against a real-hg-committed
-                // dirstate-v2 repo, 2026-09-05, backlog #39 wave 4: a file committed within the
-                // same wall-clock second as the dirstate save gets flags with both bits cleared).
-                // Passing that literal 0 straight into the shared Dirstate.Entry (as this used to)
-                // collapses "no cached stat available" into "cached size/mtime is exactly 0",
-                // which StatusCommand's fast path then reads as a real recorded size/mtime and
-                // reports as modified even when byte-identical to the parent -- confirmed live via
-                // BackoutCommand's own precondition check tripping on every dirstate-v2 Docker
-                // combo. Translate the flag-absence into the same v1-style sentinels every other
-                // reader (StatusCommand) and writer (RevertCommand/BackoutCommand/ShelveCommand)
-                // already share, so both dirstate versions carry identical "possibly dirty"
-                // semantics up through the rest of hg4j.
+                // return a literal 0 in that case (e.g. a file committed within the same
+                // wall-clock second as the dirstate save gets flags with both bits cleared).
+                // Passing that literal 0 straight into the shared Dirstate.Entry would collapse
+                // "no cached stat available" into "cached size/mtime is exactly 0", which
+                // StatusCommand's fast path would then read as a real recorded size/mtime and
+                // report as modified even when byte-identical to the parent. Translate the
+                // flag-absence into the same v1-style sentinels every other reader
+                // (StatusCommand) and writer (RevertCommand/BackoutCommand/ShelveCommand) already
+                // share, so both dirstate versions carry identical "possibly dirty" semantics up
+                // through the rest of hg4j.
                 int flags = node.getFlags() & 0xFFFF;
                 boolean hasModeAndSize = (flags & DirstateV2Node.HAS_MODE_AND_SIZE) != 0;
                 boolean hasMtime = (flags & DirstateV2Node.HAS_MTIME) != 0;

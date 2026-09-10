@@ -26,19 +26,20 @@ import io.github.search5.hg4j.errors.HgValidationException;
  * header hg4j already uses for filelog copy records, with a single {@code censored} key:
  * {@code "\x01\ncensored: <message>\n\x01\n"}.
  *
- * <p>2026-09-05 (backlog #39 wave 5): real hg's own {@code hgext.censor} ({@code _docensor} in
- * {@code hgext/censor.py}) refuses to censor a file revision that is still reachable as the exact
- * content of that path at any repository (topological) head, or at either working-directory
- * parent -- {@code abort: cannot censor file in heads (<hex>...)} / {@code abort: cannot censor
- * working directory}, both confirmed live against real hg 7.2 (2026-09-04). hg4j previously had no
- * such guard at all, which let it silently produce a repository state real hg's own checkout/head
- * logic would materialize censored (tombstone) content for -- a genuine data-availability bug, not
- * a deliberate looser-API choice, so it is fixed here rather than left as-is per the standing
- * "never silently narrow scope" rule. Since this command identifies the target by filelog node
- * (not by changeset revision the way real hg's {@code -r} does), the translation compares the
- * targeted filenode itself against each head's/parent's manifest entry for {@link #path} -- the
- * direct filenode analogue of real hg's changeset-identity check. {@link #setCheckHeads} mirrors
- * real hg's {@code --check-heads}/{@code --no-check-heads} escape hatch (default {@code true}).
+ * <p>Real hg's own {@code hgext.censor} ({@code _docensor} in {@code hgext/censor.py}) refuses to
+ * censor a file revision that is still reachable as the exact content of that path at any
+ * repository (topological) head, or at either working-directory parent -- {@code abort: cannot
+ * censor file in heads (<hex>...)} / {@code abort: cannot censor working directory}. This command
+ * enforces the same guard: skipping it would let a caller silently produce a repository state
+ * whose checkout/head logic would materialize censored (tombstone) content. Since this command
+ * identifies the target by filelog node (not by changeset revision the way real hg's {@code -r}
+ * does), the translation compares the targeted filenode itself against each head's/parent's
+ * manifest entry for {@link #path} -- the direct filenode analogue of real hg's changeset-identity
+ * check. {@link #setCheckHeads} mirrors real hg's {@code --check-heads}/{@code --no-check-heads}
+ * escape hatch (default {@code true}).
+ *
+ * @apiNote Typically obtained via {@link Hg#censor()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public final class CensorCommand {
     private final HgRepository repository;

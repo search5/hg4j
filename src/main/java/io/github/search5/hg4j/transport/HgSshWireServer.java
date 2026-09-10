@@ -58,7 +58,7 @@ public class HgSshWireServer {
     private final HgRepository repository;
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
-    // yona-wiki P3-21/P3-22 — see HgHttpWireServer's identical fields / Wire1Commands#pushkey.
+    // See HgHttpWireServer's identical fields / Wire1Commands#pushkey.
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
@@ -119,15 +119,17 @@ public class HgSshWireServer {
     }
 
     /**
-     * 백로그 48번: 인가 거부 등 {@link HgRepository}를 아예 만들지 않고 연결을 끊어야 하는
-     * 경우를 위한 진입점. 실제 hg의 SSH 클라이언트({@code mercurial/sshpeer.py}의 {@code
-     * _performhandshake})는 연결하자마자 {@code hello}+{@code between} 두 명령을 응답을
-     * 기다리지 않고 파이프라인으로 먼저 전송하고, {@code between}의 정상 응답({@code "1\n\n"}
-     * 마커)을 볼 때까지는 그 무엇도(즉시 온 에러 라인 포함) 파싱하지 않는다 -- 그 전에 에러
-     * 하나만 쓰고 연결을 끊으면 클라이언트는 between 응답을 영원히 기다리며 멈춘다(hang).
-     * 그래서 저장소가 없어도 hello/between 두 핸드셰이크 명령에는 정상적으로 응답해준 다음,
-     * 그 이후 클라이언트가 실제로 보낼 작업 명령(batch/getbundle 등)에 대한 응답으로 소비될
-     * {@link Wire1Response#oobError(String)}를 내보낸다.
+     * An entry point for cases (e.g. authorization denied) that must terminate the
+     * connection without ever constructing an {@link HgRepository} at all. Real hg's SSH client
+     * ({@code mercurial/sshpeer.py}'s {@code _performhandshake}) pipelines its {@code hello}+
+     * {@code between} commands immediately upon connecting, without waiting for a response, and
+     * does not parse anything at all (including an error line that arrives right away) until it
+     * sees {@code between}'s normal response (the {@code "1\n\n"} marker) -- writing a single
+     * error and disconnecting before that point leaves the client hanging forever waiting for
+     * the between response. So this responds normally to both handshake commands (hello/between)
+     * even with no repository present, then emits a {@link Wire1Response#oobError(String)} to be
+     * consumed as the response to whatever actual work command (batch/getbundle/etc.) the client
+     * sends next.
      */
     public static void rejectConnection(InputStream in, OutputStream out, String reason) throws IOException {
         readLine(in); // "hello" -- real hg's SSH client always sends this first.
@@ -138,16 +140,17 @@ public class HgSshWireServer {
         Map<String, String> betweenArgs = readArgs(in, ARG_SPECS.get("between"));
         writeResponse(out, Wire1Commands.between(betweenArgs));
 
-        // 클라이언트는 위 between 응답의 "1\n\n" 마커를 본 뒤에야 응답을 파싱하기 시작한다 --
-        // 이제 그 다음 실제로 보낼 작업 명령(batch/getbundle 등)에 대한 응답으로 이 에러를 읽는다.
+        // The client only starts parsing responses after seeing the "1\n\n" marker in the
+        // between response above -- it now reads this error as the response to whatever actual
+        // work command (batch/getbundle/etc.) it sends next.
         writeResponse(out, Wire1Response.oobError(reason));
     }
 
     /**
      * {@code unbundle}'s real hg wire shape is distinct from every other command's simple
      * one-request/one-response exchange ({@code mercurial/wireprotoserver.py}'s {@code
-     * getpayload()} + {@code sshserver}'s push handling, confirmed against Mercurial 7.2.4 source
-     * 2026-09-03): after reading the {@code heads} arg, the server must send an <em>empty framed
+     * getpayload()} + {@code sshserver}'s push handling): after reading the {@code heads} arg,
+     * the server must send an <em>empty framed
      * response first</em> — this is the real protocol's "OK to start streaming the payload"
      * signal a real hg client (and, since this fix, {@link HgSshClient}) waits for before writing
      * a single byte of bundle data; skipping it deadlocks both sides (server blocked reading a
@@ -163,15 +166,16 @@ public class HgSshWireServer {
 
         Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
 
-        // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는
-        // (bundle2를 실제로 요청한, 즉 body가 HG20 봉투였던) push에 한해 Wire1Commands.unbundle()이
-        // 더는 위 "1\n<status>"/"0\n<error>" 평문이 아니라 온전한 HG20 봉투 하나를 그대로
-        // 돌려준다(Kind.STREAM_UNCOMPRESSED) -- 실제 hg의 sshserver.py도 이 두 경우를 서로
-        // 다른 응답 타입(`pushres`는 두 개의 개별 프레임값, `streamreslegacy`는 자체-프레임된
-        // 원시 스트림 하나)으로 구분해서 쓴다(실측, mercurial/wireprotoserver.py). SSH에서는
-        // streamres/streamreslegacy 구분이 압축 여부에 영향을 주지 않으므로(SSH 전송 자체가
-        // 비압축) getbundle 등 다른 스트림 응답과 동일하게(아래 writeResponse) 프레이밍 없이
-        // 원시 바이트 그대로 내보낸다.
+        // Now that capabilitiesString() advertises bundle2=, for a push that
+        // actually requested bundle2 (i.e. whose body was an HG20 envelope), Wire1Commands.unbundle()
+        // no longer returns the plain "1\n<status>"/"0\n<error>" text above -- it returns a
+        // whole HG20 envelope as-is (Kind.STREAM_UNCOMPRESSED) instead. Real hg's own
+        // sshserver.py likewise writes these two cases as different response types (`pushres` is
+        // two separate framed values, `streamreslegacy` is one self-framed raw stream) (confirmed
+        // against mercurial/wireprotoserver.py). Since the streamres/streamreslegacy distinction
+        // has no effect on compression over SSH (the SSH transport itself is never compressed),
+        // this is emitted as raw bytes with no framing, exactly like any other stream response
+        // (e.g. getbundle, via writeResponse below).
         if (resp.getKind() == Wire1Response.Kind.STREAM_UNCOMPRESSED) {
             writeResponse(out, resp);
             return;
@@ -205,8 +209,8 @@ public class HgSshWireServer {
         if ("batch".equals(cmd)) {
             return Wire1Commands.batch(repository, args);
         }
-        // yona-wiki P3-21/P3-22 — see HgHttpWireServer's identical branch for why pushkey is
-        // handled directly rather than via Wire1Commands#dispatch (which has no hook-aware overload).
+        // See HgHttpWireServer's identical branch for why pushkey is handled directly rather
+        // than via Wire1Commands#dispatch (which has no hook-aware overload).
         if ("pushkey".equals(cmd)) {
             return Wire1Commands.pushkey(repository, args, prePushkeyHooks, postPushkeyHooks);
         }
@@ -253,11 +257,11 @@ public class HgSshWireServer {
         switch (response.getKind()) {
             case BYTES -> writeLengthPrefixed(out, response.getPayload());
             case STREAM, STREAM_UNCOMPRESSED -> {
-                // 실제 스펙(mercurial/wireprotoserver.py의 sshserver 루프): streamres와
-                // streamreslegacy(백로그 26번의 bundle2 unbundle 회신) 둘 다 SSH에서는 동일하게
-                // _sshv1respondstream()으로 프레이밍 없이 원시 바이트만 쓴다 -- HTTP와 달리
-                // SSH 쪽엔 이 둘을 구분하는 압축 단계 자체가 없다(SSH 전송 자체가 애초에
-                // 비압축).
+                // Real spec (mercurial/wireprotoserver.py's sshserver loop): both streamres and
+                // streamreslegacy (the bundle2 unbundle reply) are written over SSH
+                // identically via _sshv1respondstream(), with no framing -- just raw bytes.
+                // Unlike HTTP, the SSH side has no compression stage to begin with that would
+                // distinguish the two (the SSH transport itself is never compressed).
                 out.write(response.getPayload());
                 out.flush();
             }

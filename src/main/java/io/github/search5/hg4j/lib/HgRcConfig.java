@@ -13,6 +13,14 @@ import java.util.Collections;
 /**
  * Parses and manages Mercurial configuration files (.hg/hgrc, ~/.hgrc) in INI format.
  * Dynamically resolves [ui] username, [paths] default repository, proxy, and TLS settings.
+ *
+ * @apiNote Loaded by {@link HgRepository} on repository open and by {@code
+ *     io.github.search5.hg4j.api.Hg} for standalone config lookups, then queried by many
+ *     porcelain commands for things like {@link #getUsername()} (used by {@code CommitCommand}
+ *     when no explicit author is given) and {@link #getPath(String)} (used by {@code
+ *     PushCommand}/{@code PullCommand}/{@code FetchCommand} to resolve a named remote like
+ *     {@code "default"}). {@code io.github.search5.hg4j.lfs.HgLfsManager} also reads it for
+ *     LFS-related settings.
  */
 public final class HgRcConfig {
     private final Map<String, Map<String, String>> sections = new LinkedHashMap<>();
@@ -92,7 +100,8 @@ public final class HgRcConfig {
                         try {
                             load(includeFile);
                         } catch (IOException ignored) {
-                            // 실제 스펙(mercurial/config.py): ENOENT는 조용히 무시된다.
+                            // Real spec (mercurial/config.py): a missing included file (ENOENT)
+                            // is silently ignored.
                         }
                     }
                 }

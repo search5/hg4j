@@ -42,6 +42,9 @@ import java.util.List;
  * rendering the user asked for -- {@link #call()} always returns the complete entry data (node
  * hex included) regardless of its value, since the porcelain layer never discards information the
  * CLI-formatting layer might need.
+ *
+ * @apiNote Typically obtained via {@link Hg#manifest()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class ManifestCommand {
 

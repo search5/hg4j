@@ -18,6 +18,12 @@ import java.nio.charset.StandardCharsets;
 /**
  * External process SCM hook executor that launches OS shell scripts or binaries
  * and maps repository transaction context data into subprocess environment variables.
+ *
+ * @apiNote The ready-made {@link HgHook} implementation for the common case of running an
+ *     external script/binary as a hook (real hg's own {@code hooks.<name> = <shell command>}
+ *     style); register it via {@link Hg#registerHook} against the appropriate {@link
+ *     HgHookType}. Context values are exposed to the subprocess as {@code HG_<KEY>} environment
+ *     variables, mirroring real hg's own hook environment convention.
  */
 public class ProcessHook implements HgHook {
     private static final Logger LOGGER = Logger.getLogger(ProcessHook.class.getName());

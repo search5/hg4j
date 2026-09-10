@@ -35,6 +35,9 @@ import java.util.logging.Logger;
 /**
  * Porcelain command to update (checkout) working copy to a specified target revision.
  * Built with full transaction isolation and strict dirstate state transitions.
+ *
+ * @apiNote Typically obtained via {@link Hg#update()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class UpdateCommand {
     private static final Logger LOGGER = Logger.getLogger(UpdateCommand.class.getName());
@@ -82,7 +85,7 @@ public class UpdateCommand {
     }
 
     public byte[] call() throws IOException, HgLockException {
-        // Backlog 30: when the caller hasn't explicitly narrowed this update (still the default
+        // When the caller hasn't explicitly narrowed this update (still the default
         // HgTreeFilter.ALL), pick up whatever narrowspec the repository itself was narrow cloned
         // with -- so checkout keeps respecting the narrow scope on every later `update`, not just
         // right after NarrowCloneCommand's own initial checkout.
@@ -193,7 +196,7 @@ public class UpdateCommand {
 
                     byte[] fileContent = filelog.getRevisionContent(fileRev);
 
-                    // LFS pipeline (backlog 31, extended by backlog 42): a REVIDX_EXTSTORED
+                    // LFS pipeline: a REVIDX_EXTSTORED
                     // revision's filelog content is an LFS pointer, not the real bytes -- resolve
                     // it back to the real content before it reaches disk, mirroring real hg's
                     // hgext/lfs `readfromstore` wrapper. Delegated to HgLfsManager#resolveContent
@@ -233,10 +236,10 @@ public class UpdateCommand {
                         }
                     }
 
-                    // Backlog #39 fix: a symlink's dirstate mode must carry the full S_IFLNK +
-                    // rwxrwxrwx bits (0120777), not just the bare S_IFLNK type bits (0120000) --
-                    // verified live against real hg 7.2: every symlink's `lstat` mode is
-                    // unconditionally 0120777 (symlinks have no real permissions of their own), so
+                    // A symlink's dirstate mode must carry the full S_IFLNK +
+                    // rwxrwxrwx bits (0120777), not just the bare S_IFLNK type bits (0120000):
+                    // every symlink's `lstat` mode is
+                    // unconditionally 0120777 in real hg (symlinks have no real permissions of their own), so
                     // a dirstate entry recorded with the bare 0120000 makes real hg's own `hg
                     // status` (which compares the stored mode against a fresh `lstat`) see a
                     // spurious permission mismatch and report the untouched symlink as modified.
@@ -357,17 +360,17 @@ public class UpdateCommand {
      * freshly cloned tip), matching real hg's own behavior of recursing into subrepos on both
      * {@code hg update} and {@code hg clone}.
      *
-     * <p>Backlog 32 gap #4 (verified live against Mercurial 7.2's {@code hgsubrepo._fetch()}/
+     * <p>Matches Mercurial 7.2's {@code hgsubrepo._fetch()}/
      * {@code gitsubrepo._fetch()}, which both check local availability -- {@code
-     * hasunlinkedrev}/{@code _githavelocally} -- before ever pulling/fetching): a subrepo whose
+     * hasunlinkedrev}/{@code _githavelocally} -- before ever pulling/fetching: a subrepo whose
      * pinned revision is ALREADY present in its local clone is checked out directly, without
      * first pulling/fetching from the remote. This matters both for matching real hg's actual
-     * behavior and for correctness in network-isolated environments (e.g. tests using a stale or
+     * behavior and for correctness in network-isolated environments (e.g. a stale or
      * unreachable {@code file://} remote after the subrepo was already fully cloned).
      *
-     * <p>Backlog 32 gap #3: git subrepos ({@code [git]} prefix in {@code .hgsub}) are checked
-     * out too, via the {@code git} CLI -- see {@link GitSubrepoUtil} for exactly what was
-     * verified live for the git side.
+     * <p>Git subrepos ({@code [git]} prefix in {@code .hgsub}) are checked
+     * out too, via the {@code git} CLI -- see {@link GitSubrepoUtil} for what that entails on
+     * the git side.
      */
     static void recursiveSubrepoCheckout(HgRepository repository) {
         File hgsubFile = new File(repository.getDirectory(), ".hgsub");
@@ -391,10 +394,9 @@ public class UpdateCommand {
     /**
      * Checks out a single subrepo entry (hg- or git-typed) to its {@code .hgsubstate}-pinned
      * revision under {@code repositoryDir}. Factored out of {@link #recursiveSubrepoCheckout}
-     * (backlog 32 gap #4) so {@link MergeCommand} can reuse the exact same checkout logic for
+     * so {@link MergeCommand} can reuse the exact same checkout logic for
      * the non-diverged ("remote changed only") case of a two-parent {@code hg merge} that
-     * touches {@code .hgsubstate} -- see {@code MergeCommand#mergeSubrepoState} (backlog 32
-     * follow-up, gap B).
+     * touches {@code .hgsubstate} -- see {@code MergeCommand#mergeSubrepoState}.
      */
     static void checkoutSubrepoEntry(File repositoryDir, HgSubrepoEntry subEntry) {
         File subDir = new File(repositoryDir, subEntry.getPath());
@@ -440,7 +442,7 @@ public class UpdateCommand {
     }
 
     /** Whether {@code revisionHex} already exists in {@code subRepo}'s local changelog --
-     * backlog 32 gap #4's "skip the pull when already available locally" check. */
+     * used to skip the pull when already available locally. */
     static boolean isRevisionPresentLocally(HgRepository subRepo, String revisionHex) {
         try {
             File clIdx = new File(subRepo.getStoreDir(), "00changelog.i");
@@ -458,10 +460,9 @@ public class UpdateCommand {
     /**
      * Checks out a {@code [git]} subrepo to its {@code .hgsubstate}-pinned commit: clones it
      * first if not present locally at all, fetches only if the pinned commit is missing
-     * (backlog 32 gap #4, same local-availability check as the hg-subrepo path above), then
+     * (same local-availability check as the hg-subrepo path above), then
      * {@code git checkout}s it (skipped entirely if already at that commit) -- see {@link
-     * GitSubrepoUtil} for what this simplifies versus real hg's {@code gitsubrepo.get()} and
-     * what was verified live.
+     * GitSubrepoUtil} for what this simplifies versus real hg's {@code gitsubrepo.get()}.
      */
     static void checkoutGitSubrepo(File subDir, HgSubrepoEntry subEntry) {
         String targetSha = subEntry.getRevision();
@@ -502,13 +503,13 @@ public class UpdateCommand {
     }
 
     /**
-     * Checks out a {@code [svn]} subrepo to its {@code .hgsubstate}-pinned revision (backlog
-     * 41): {@code svn checkout --force <url>@<revision>}, real hg's own {@code svnsubrepo.get()}.
+     * Checks out a {@code [svn]} subrepo to its {@code .hgsubstate}-pinned revision:
+     * {@code svn checkout --force <url>@<revision>}, real hg's own {@code svnsubrepo.get()}.
      * Unlike the git-typed sibling ({@link #checkoutGitSubrepo}), real hg's svn {@code get()} has
      * no "already there" fast path of its own -- it unconditionally re-runs {@code checkout
-     * --force} whether the working copy already exists at that revision or not (verified live:
-     * this is cheap/idempotent against svn's own incremental working-copy update), so this
-     * method does not add a skip either, to stay byte-for-byte faithful to real hg's behavior.
+     * --force} whether the working copy already exists at that revision or not (this is
+     * cheap/idempotent against svn's own incremental working-copy update), so this
+     * method does not add a skip either, to stay faithful to real hg's behavior.
      */
     static void checkoutSvnSubrepo(File subDir, HgSubrepoEntry subEntry) {
         String targetRev = subEntry.getRevision();

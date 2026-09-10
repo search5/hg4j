@@ -20,6 +20,9 @@ import java.util.Map;
  *
  * <p>hg4j is a library rather than a CLI, so this returns a structured {@link SummaryInfo} record
  * instead of formatted text (unlike the real {@code hg summary} command's terminal output).</p>
+ *
+ * @apiNote Typically obtained via {@link Hg#summary()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class SummaryCommand {
     private final HgRepository repository;

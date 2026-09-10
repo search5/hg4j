@@ -23,10 +23,15 @@ import java.util.Set;
  * {@code <URL> [<key>=<value> ...]}: the URL is used verbatim (it is a URL, not itself
  * percent-encoded as a whole), and each following {@code key=value} pair is split on the first
  * {@code =} with both key and value percent-decoded.</p>
+ *
+ * @apiNote Used by {@code ClonebundlesCommand} and {@code FetchCommand} (via {@code
+ *     HgRemoteClient}/{@code HgSshClient}/{@code HgRemoteConnection}) to fetch and select a
+ *     usable pre-generated bundle before falling back to a normal changegroup pull.
  */
 public final class ClonebundlesManifest {
 
-    /** Bundle specifications hg4j can actually consume, matching {@link UnbundleCommand}/{@link Bundle2Parser}'s supported formats. */
+    /** Bundle specifications hg4j can actually consume, matching {@link
+     * io.github.search5.hg4j.api.UnbundleCommand}/{@link Bundle2Parser}'s supported formats. */
     private static final Set<String> SUPPORTED_BUNDLESPECS = Set.of(
             "none-v1", "gzip-v1", "bzip2-v1",
             "none-v2", "gzip-v2", "bzip2-v2", "zstd-v2");
@@ -88,7 +93,8 @@ public final class ClonebundlesManifest {
 
     /**
      * Keeps only entries whose {@code BUNDLESPEC} (if present) names a format hg4j's own {@link
-     * UnbundleCommand}/{@link Bundle2Parser} can actually decode — real hg does the same
+     * io.github.search5.hg4j.api.UnbundleCommand}/{@link Bundle2Parser} can actually decode —
+     * real hg does the same
      * client-side filtering so it never attempts to download a bundle it can't apply. An entry
      * with no {@code BUNDLESPEC} at all is kept as-is (matching real hg: it can't be pre-filtered
      * without the hint, so real hg just attempts it). {@code REQUIRESNI}/{@code REQUIREDRAM}

@@ -15,8 +15,8 @@ import java.util.Map;
  * Porcelain command corresponding to {@code hg identify}/{@code hg id}: a one-line summary of a
  * revision (default: the working directory's own parent(s)) -- id, branch, tags and bookmarks.
  *
- * <p>Output format verified directly against real hg 7.2.2 (2026-09-05) and mirrors its default
- * (no {@code --template}) rendering exactly, {@code mercurial/commands.py}'s {@code identify()}:
+ * <p>Output format mirrors real hg's default (no {@code --template}) rendering exactly,
+ * {@code mercurial/commands.py}'s {@code identify()}:
  * <ul>
  *   <li>The id is the 12-hex-digit short node of the working copy's parent(s), {@code +}-joined
  *   when a merge is in progress (two parents), followed by one more trailing {@code +} when the
@@ -30,15 +30,17 @@ import java.util.Map;
  *   <li>Tags and bookmarks are aggregated across <em>every</em> current parent -- not just
  *   {@code p1} -- and rendered as their names joined by {@code "/"} in plain alphabetical order.
  *   During an uncommitted merge this means a tag or bookmark pointing solely at {@code p2} still
- *   appears (verified live, 2026-09-05: merging in a revision carrying a local tag shows that tag
- *   even though the working copy's branch/other display comes from {@code p1}). Ordering includes
- *   the pseudo-tag {@code "tip"} sorting exactly where its name falls (verified:
+ *   appears, even though the working copy's branch/other display comes from {@code p1}. Ordering
+ *   includes the pseudo-tag {@code "tip"} sorting exactly where its name falls (e.g.
  *   {@code "mytag/tip"} but {@code "tip/zzz"}), reusing {@link TagsCommand}'s own
  *   tip-priority-aware tag resolution rather than re-implementing {@code .hgtags}/
- *   {@code localtags} parsing here (that duplicate parser used to also do a lenient bidirectional
- *   hex-prefix match that real hg does not perform -- {@code .hgtags} entries are always full
- *   40-hex node references, exactly like {@link TagsCommand} already treats them).</li>
+ *   {@code localtags} parsing here -- {@code .hgtags} entries are always full 40-hex node
+ *   references, exactly like {@link TagsCommand} already treats them, with no lenient
+ *   bidirectional hex-prefix matching.</li>
  * </ul>
+ *
+ * @apiNote Typically obtained via {@link Hg#identify()} on an open {@link Hg}
+ *     instance rather than constructed directly.
  */
 public class IdentifyCommand {
     private final HgRepository repository;
@@ -106,9 +108,9 @@ public class IdentifyCommand {
 
         // The branch shown is the QUERIED context's own branch: real hg's `-r` case reads it off
         // that revision's own changelog entry, not the working directory's current .hg/branch --
-        // verified live (2026-09-05): `hg identify -r <older rev on a different branch>` while
-        // checked out on "feature" still reports that older revision's own (e.g. default) branch,
-        // never the working copy's current one.
+        // `hg identify -r <older rev on a different branch>` while checked out on "feature" still
+        // reports that older revision's own (e.g. default) branch, never the working copy's
+        // current one.
         String branch;
         if (revision != null && changelog != null) {
             int rev = changelog.findRevision(nodes.get(0));
@@ -123,11 +125,11 @@ public class IdentifyCommand {
             out.append(" (").append(branch).append(')');
         }
 
-        // Tags/bookmarks are aggregated across ALL of the context's parents -- verified live
-        // (2026-09-05): during an uncommitted merge, a tag or bookmark pointing at p2 alone (not
-        // just p1) still shows up in the default identify line, e.g. p1 on branch "other" merging
-        // p2 which alone carries a local tag still prints that tag. A fixed -r query has exactly
-        // one node, so this reduces to that single node's own tags/bookmarks as before.
+        // Tags/bookmarks are aggregated across ALL of the context's parents: during an
+        // uncommitted merge, a tag or bookmark pointing at p2 alone (not just p1) still shows up
+        // in the default identify line, e.g. p1 on branch "other" merging p2 which alone carries
+        // a local tag still prints that tag. A fixed -r query has exactly one node, so this
+        // reduces to that single node's own tags/bookmarks as before.
         List<String> tagNames = new ArrayList<>();
         List<String> bookmarkNames = new ArrayList<>();
         for (byte[] n : nodes) {

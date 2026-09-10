@@ -35,6 +35,12 @@ import io.github.search5.hg4j.bundle.Bundle2Parser;
 
 /**
  * Client for communicating with remote Mercurial repositories using the HTTP Wire Protocol v1.
+ *
+ * @apiNote Handles http:// and https:// URLs from {@link HgRemoteConnectionFactory}; used by
+ *     every networked porcelain command (e.g. {@code PullCommand}, {@code PushCommand}, {@code
+ *     FetchCommand}, {@code CloneCommand}) whenever the remote is an HTTP(S) server. See {@link
+ *     HgRemoteClientV2} for the wire protocol v2 counterpart, used when the server advertises
+ *     support for it.
  */
 public class HgRemoteClient implements HgRemoteConnection {
     private final String baseUrl;
@@ -45,7 +51,7 @@ public class HgRemoteClient implements HgRemoteConnection {
     private boolean forceTls = false;
     private Proxy proxy = Proxy.NO_PROXY;
     
-    private int maxHttpHeaderLimit = 1024; // 기본 1024바이트 제한
+    private int maxHttpHeaderLimit = 1024; // Default limit of 1024 bytes
     // Real hg only uses the GET+X-HgArg-N tier when the server actually advertised
     // httpheader=<N>; a server that never mentions it (very old, or minimal/test servers) gets
     // the 3rd, legacy tier -- args appended straight to the query string -- instead. Tracking
@@ -386,13 +392,9 @@ public class HgRemoteClient implements HgRemoteConnection {
         // there are no roots (meaning "give me the entire history"), never omitted. Real hg's
         // server-side arg decoder (wireprotoserver.py's getargs()) does a plain dict lookup for
         // every declared arg name with no default, so a request that omits the key entirely
-        // raises an uncaught KeyError server-side -- an HTTP 500, not a clean error -- confirmed
-        // 2026-09-05 while building HgWireProtocolMatrixIncomingOutgoingTest: IncomingCommand's
-        // full-history request (`getChangegroup(Collections.emptyList())`) failed against every
-        // single wire combo with exactly this HTTP 500 because this method used to only add
-        // "roots" to the params map when the list was non-empty. HgSshClient.getChangegroup()
-        // already got this right (see its own comment) -- this brought the HTTP client in line
-        // with it.
+        // raises an uncaught KeyError server-side (an HTTP 500, not a clean error) -- so "roots"
+        // must always be added to the params map, even when the list is empty. See
+        // HgSshClient.getChangegroup() for the same rule on the SSH side.
         Map<String, String> params = new HashMap<>();
         StringBuilder sb = new StringBuilder();
         if (roots != null) {
@@ -437,9 +439,7 @@ public class HgRemoteClient implements HgRemoteConnection {
 
         if (narrowScope != null) {
             // Real spec (mercurial/wireprotov1peer.py's getbundle(): boolean -> "%i" % bool(v),
-            // csv -> ",".join(values)) -- verified 2026-09-06 against Mercurial 7.2 source and a
-            // real `hg --debug clone --narrow` packet trace against a local `hg serve
-            // --config extensions.narrow=`. Real hg's own client (mercurial/exchange.py's
+            // csv -> ",".join(values)). Real hg's own client (mercurial/exchange.py's
             // _pullbundle2, `if servernarrow and pullop.includepats: ...`) only sends
             // includepats/excludepats when non-empty -- an empty string would decode server-side
             // as a single bogus empty-string pattern (`"".split(",") == [""]`), so this omits
@@ -466,20 +466,21 @@ public class HgRemoteClient implements HgRemoteConnection {
         params.put("cg", "true"); // include changegroup
         
         if (bundleCaps != null && !bundleCaps.isEmpty()) {
-            // 실제 스펙(wireprototypes.GETBUNDLE_ARGUMENTS): bundlecaps는 "scsv" 타입 —
-            // 최상위 토큰 구분자가 콤마다(스페이스 아님). 예전에 스페이스로 join하던 코드는
-            // 콤마가 하나도 없는 토큰 하나로 뭉쳐져 "HG2"로 시작하는 토큰이 하나도 안 남아
-            // exchange.bundle2requested()가 항상 false가 되고, 결과적으로 어떤 changegroup
-            // 버전을 광고하든 항상 구식 bundle1(cg1)로 조용히 폴백했다(2026-09-03 발견 —
-            // 실제 hg 7.2.2로 로깅 프록시를 붙여 실제 클라이언트 요청 바이트를 직접 캡처해
-            // 확인, Bundle2Parser#buildChangegroupBundleCaps 주석 참고).
+            // Real spec (wireprototypes.GETBUNDLE_ARGUMENTS): bundlecaps is of type "scsv" --
+            // its top-level tokens are comma-separated (not space-separated). The previous code
+            // joined them with spaces, which fused everything into one token with no comma at
+            // all, leaving no token starting with "HG2" -- so exchange.bundle2requested() was
+            // always false, and no matter which changegroup version was advertised, it silently
+            // fell back to the old bundle1 (cg1) format every time -- see
+            // Bundle2Parser#buildChangegroupBundleCaps's own comment.
             params.put("bundlecaps", String.join(",", bundleCaps));
         } else {
             // Default capabilities compatible with bundle2 and legacy changegroups.
-            // changegroup=01..05: 원격이 max(교집합)으로 버전을 고르므로(exchange.py 실측),
-            // hg4j가 cg4/cg5 델타 헤더도 파싱할 수 있게 된 뒤로는(2026-09-03) 04/05까지
-            // 광고해야 최신 hg와 최적 포맷으로 주고받는다. changegroup 버전 목록은
-            // "bundle2=<blob>" 토큰 안에 중첩돼야만 실제로 반영된다 — 위 주석 참고.
+            // changegroup=01..05: since the remote picks the version by max(intersection)
+            // (confirmed against exchange.py), and since hg4j can also parse cg4/cg5 delta
+            // headers, it must advertise up through 04/05 to exchange data with a
+            // modern hg in the optimal format. The changegroup version list only actually takes
+            // effect when nested inside the "bundle2=<blob>" token -- see the comment above.
             params.put("bundlecaps",
                     Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
                             + ",compression=GZ,BZ,ZS");
@@ -590,7 +591,7 @@ public class HgRemoteClient implements HgRemoteConnection {
      * these as an HTTP POST with a form body, which a real server's {@code cgi.FieldStorage}-based
      * arg parser never reads for a v1 GET-oriented command like {@code getbundle} — the server
      * silently saw no {@code bundlecaps} argument at all and fell back to legacy bundle1 (cg1)
-     * regardless of what version list hg4j advertised (2026-09-03 discovery).
+     * regardless of what version list hg4j advertised.
      *
      * <ol>
      * <li>Server advertises {@code httppostargs}: POST body = urlencoded args, header
@@ -799,16 +800,10 @@ public class HgRemoteClient implements HgRemoteConnection {
             }
             String compName = new String(compNameBytes, StandardCharsets.US_ASCII).trim();
 
-            // Real hg's actual v1 -0.2 wire format (confirmed 2026-09-03 by capturing a real
-            // Mercurial 7.2.4 server's raw response bytes): [1-byte namelen][name][compressed
+            // Real hg's actual v1 -0.2 wire format: [1-byte namelen][name][compressed
             // payload straight through to end of stream] -- there is NO additional inner
             // chunk-length framing on top; the payload's own magic bytes (zstd's 28 B5 2F FD,
-            // zlib's 78 9C) begin immediately after the name. An earlier version of this method
-            // assumed an extra 4-byte-length-prefixed chunk layer here that real hg never sends;
-            // that was never caught because hg4j's own server (HgHttpWireServer) never emits -0.2
-            // responses at all (always -0.1), so the two ends of this codebase were only ever
-            // tested against each other -- this path had literally never been exercised against a
-            // real server until the X-HgArg-N / X-HgProto-1 fix above made one finally choose -0.2.
+            // zlib's 78 9C) begin immediately after the name.
             if ("zlib".equalsIgnoreCase(compName) || "deflate".equalsIgnoreCase(compName)) {
                 return new InflaterInputStream(in);
             } else if ("zstd".equalsIgnoreCase(compName)) {
@@ -1023,8 +1018,7 @@ public class HgRemoteClient implements HgRemoteConnection {
      * case: it's an experimental, off-by-default feature) would fall back to {@link
      * #executeArgsCommand}'s GET-based tiers, get a 405 from the server, and (since {@link
      * io.github.search5.hg4j.api.PushCommand} treats a failed bookmark-sync as a non-fatal,
-     * logged-only warning) silently fail to move the remote's bookmark at all -- reproduced
-     * against real hg 7.2.2 over HTTP, 2026-09-04.
+     * logged-only warning) silently fail to move the remote's bookmark at all.
      */
     private byte[] executePushkeyCommand(Map<String, String> params) throws IOException {
         String encodedArgs = encodeArgsSorted(params);

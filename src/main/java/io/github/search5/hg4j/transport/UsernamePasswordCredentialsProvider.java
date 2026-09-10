@@ -7,15 +7,31 @@ public class UsernamePasswordCredentialsProvider implements CredentialsProvider 
     private final String username;
     private final String password;
 
+    /**
+     * Creates a new provider that supplies a fixed username and password.
+     *
+     * @param username the username to supply on {@link #get(String, CredentialItem...)}
+     * @param password the password to supply on {@link #get(String, CredentialItem...)}
+     */
     public UsernamePasswordCredentialsProvider(String username, String password) {
         this.username = username;
         this.password = password;
     }
 
+    /**
+     * Returns the username held by this provider.
+     *
+     * @return the configured username
+     */
     public String getUsername() {
         return username;
     }
 
+    /**
+     * Returns the password held by this provider.
+     *
+     * @return the configured password
+     */
     public String getPassword() {
         return password;
     }

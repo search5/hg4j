@@ -17,6 +17,8 @@ public class HgProtocolException extends HgTransportException {
     private static final long serialVersionUID = 1L;
 
     /**
+     * Creates an instance describing a protocol violation with no underlying cause.
+     *
      * @param remoteUrl      Remote repository URL where the protocol error occurred
      * @param protocolDetail Detailed description of the protocol error
      */
@@ -25,6 +27,8 @@ public class HgProtocolException extends HgTransportException {
     }
 
     /**
+     * Creates an instance describing a protocol violation triggered by an underlying exception.
+     *
      * @param remoteUrl      Remote repository URL where the protocol error occurred
      * @param protocolDetail Detailed description of the protocol error
      * @param cause          The causing exception

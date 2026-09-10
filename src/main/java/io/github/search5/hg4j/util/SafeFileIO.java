@@ -42,6 +42,10 @@ public final class SafeFileIO {
      * whenever its target's mtime happens to floor to a different whole second than what was
      * last recorded. Every porcelain command that records a file's mtime into the dirstate must
      * use this instead of {@code File#lastModified()}.
+     *
+     * @param file the file (or symlink) to query
+     * @return the file's own last-modified time, truncated to whole epoch seconds
+     * @throws IOException if the file's attributes cannot be read
      */
     public static long lastModifiedSeconds(File file) throws IOException {
         return Files.getLastModifiedTime(file.toPath(), LinkOption.NOFOLLOW_LINKS).to(TimeUnit.SECONDS);
@@ -55,6 +59,9 @@ public final class SafeFileIO {
      * @apiNote The default, safe entry point most callers should use; see {@link
      *     #writeAtomic(File, byte[], boolean)} for the lock-bypass variant used when the caller
      *     already holds the repository's own {@code wlock}/{@code store/lock}.
+     * @param file the destination file to write atomically
+     * @param data the raw bytes to write
+     * @throws IOException if the write, rename, or defensive lock acquisition fails
      */
     public static void writeAtomic(File file, byte[] data) throws IOException {
         writeAtomic(file, data, false); // Default safe fallback (Defense-in-depth)
@@ -70,8 +77,11 @@ public final class SafeFileIO {
      *     the extra per-file OS lock redundant. Store/dirstate internals ({@code FileIndex},
      *     {@code RevlogIndex}, {@code Dirstate}) which always run under such a lock use {@code
      *     true}; most porcelain commands go through {@link #writeAtomic(File, byte[])} instead.
+     * @param file the destination file to write atomically
+     * @param data the raw bytes to write
      * @param bypassLock skip the defensive {@code .lock} file when the caller already holds the
      *     repository's own lock
+     * @throws IOException if the write or rename fails
      */
     public static void writeAtomic(File file, byte[] data, boolean bypassLock) throws IOException {
         if (file == null) {
@@ -140,6 +150,9 @@ public final class SafeFileIO {
      * @apiNote Used to persist small text-format repository metadata files — e.g. {@code
      *     HgRcConfig}'s {@code .hg/hgrc}, {@code PhaseRoots}' phase file, bookmark files ({@code
      *     BookmarkCommand}), and the sparse/narrow config written by {@code NarrowCloneCommand}.
+     * @param file the destination file to write atomically
+     * @param content the text content to write, UTF-8 encoded
+     * @throws IOException if the underlying atomic write fails
      */
     public static void writeStringAtomic(File file, String content) throws IOException {
         writeAtomic(file, content.getBytes(StandardCharsets.UTF_8));
@@ -152,6 +165,9 @@ public final class SafeFileIO {
      *     writes on repository creation, {@code StripCommand}'s backup bundle manifest, {@code
      *     PhaseCommand}'s phase roots, and {@code NarrowCloneCommand}/{@code FetchCommand}'s
      *     narrowspec files.
+     * @param file the destination file to write atomically
+     * @param lines the lines to write, in order, each followed by {@code '\n'}
+     * @throws IOException if the underlying atomic write fails
      */
     public static void writeLinesAtomic(File file, List<String> lines) throws IOException {
         StringBuilder sb = new StringBuilder();

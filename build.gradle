@@ -225,10 +225,9 @@ compileJava {
 //
 // JGit(org.eclipse.jgit) 공식 pom.xml 구조를 그대로 따른다 -- UMLDoclet/MDoclet 같은 서드파티
 // doclet 대신 표준 Javadoc + JDK 자체 관례인 @apiNote/@implSpec/@implNote 태그로 계약(API
-// 사용자가 알아야 할 것)/구현 세부사항/구현 참고사항을 구조적으로 분리한다(2026-09-10, README의
-// Gradle Plugin Usage 반려 대응 조사 중 확인). doclint는 기존 코드 전반에 Javadoc이 아직
-// 없어 all로 켜면 즉시 대량 실패하므로 JGit처럼 none으로 비활성 유지 -- 주석을 실제로 채운
-// 뒤 강화할 대상.
+// 사용자가 알아야 할 것)/구현 세부사항/구현 참고사항을 구조적으로 분리한다. 전체 public
+// 메서드/생성자에 Javadoc(@param/@return/@throws 포함)을 채운 뒤로는 doclint를 all로 켜서
+// 신규 코드의 문서화 누락을 빌드 시점에 잡아낸다.
 // javadoc -tag 형식 "이름:위치:제목" (JGit pom.xml의 <tags> 설정과 동일한 3종 태그).
 def javadocTags = [
     'apiNote:a:API Note:',
@@ -245,7 +244,7 @@ javadoc {
         locale = 'en_US' // 기본 영어 로케일 설정
         links('https://docs.oracle.com/en/java/javase/21/docs/api/')
         tags = javadocTags
-        addStringOption('Xdoclint:none', '-quiet')
+        addStringOption('Xdoclint:all', '-quiet')
     }
 }
 
@@ -261,7 +260,7 @@ task javadocKo(type: Javadoc) {
         locale = 'ko_KR' // 한국어 로케일 설정
         links('https://docs.oracle.com/en/java/javase/21/docs/api/')
         tags = javadocTags
-        addStringOption('Xdoclint:none', '-quiet')
+        addStringOption('Xdoclint:all', '-quiet')
     }
 }
 

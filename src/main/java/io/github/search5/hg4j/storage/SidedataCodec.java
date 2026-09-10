@@ -20,8 +20,7 @@ import java.util.TreeMap;
  * layer above the per-key payload formats (e.g. {@link io.github.search5.hg4j.api.ChangingFiles}
  * for the {@link #SD_FILES} key).
  *
- * <p>Wire format, verified byte-for-byte against a real {@code hg}-generated repository (see
- * {@code src/test/resources/fixtures/sidedata-copytracing/README.md}):
+ * <p>Wire format, matching a real {@code hg}-generated repository byte-for-byte:
  * <pre>
  *   header:  count:uint16-be
  *   repeated `count` times, in key order: key:uint16-be  length:uint32-be  sha1(value):20 bytes
@@ -52,6 +51,12 @@ public final class SidedataCodec {
     /**
      * Decodes one revision's already-decompressed sidedata chunk into its key -&gt; payload map.
      * Returns an empty map for a null/empty chunk (no sidedata).
+     *
+     * @param blob the decompressed sidedata chunk, or {@code null}/empty if the revision has no sidedata
+     * @return the decoded key -&gt; payload map, in the order the entries appeared in the container
+     * @throws HgCorruptDataException if the container is truncated, declares an entry whose payload
+     *     extends past the end of {@code blob}, or a payload's SHA-1 digest does not match its
+     *     stored digest
      */
     public static Map<Integer, byte[]> deserialize(byte[] blob) throws HgCorruptDataException {
         Map<Integer, byte[]> result = new LinkedHashMap<>();
@@ -109,6 +114,8 @@ public final class SidedataCodec {
      * {@code serialize_sidedata()} iterates {@code sorted(sidedata.items())} — matters for
      * byte-for-byte compatibility with a real hg reader, not just for determinism here).
      *
+     * @param payloadsByKey the sidedata payloads to encode, keyed by sidedata key (e.g. {@link
+     *     #SD_FILES}), or {@code null}/empty for no sidedata
      * @return an empty (zero-length) array if {@code payloadsByKey} is null/empty — matches
      *         {@link #deserialize}'s treatment of an empty/null blob as "no sidedata".
      */

@@ -32,9 +32,7 @@ import java.util.TreeSet;
  * for how to obtain an instance from a repository.
  */
 public final class ChangingFiles {
-    // Bit layout of each SD_FILES per-file `flag` byte (mercurial/metadata.py, verified against
-    // a real hg-generated fixture -- see
-    // src/test/resources/fixtures/sidedata-copytracing/README.md).
+    // Bit layout of each SD_FILES per-file `flag` byte, matching mercurial/metadata.py.
     private static final int ACTION_MASK = 0b11100;
     private static final int ADDED_FLAG = 0b00100;
     private static final int MERGED_FLAG = 0b01000;
@@ -70,7 +68,11 @@ public final class ChangingFiles {
         this.copiedFromP2 = copiedFromP2;
     }
 
-    /** No files recorded — either the revision has no {@code SD_FILES} sidedata at all. */
+    /**
+     * No files recorded — either the revision has no {@code SD_FILES} sidedata at all.
+     *
+     * @return the shared empty instance
+     */
     public static ChangingFiles empty() {
         return EMPTY;
     }
@@ -80,8 +82,7 @@ public final class ChangingFiles {
      * io.github.search5.hg4j.storage.SidedataCodec#SD_FILES}) payload, as returned by {@link
      * io.github.search5.hg4j.storage.Revlog#getSidedata(int)}.
      *
-     * <p>Wire format (verified byte-for-byte against a real {@code hg}-generated fixture — see
-     * {@code src/test/resources/fixtures/sidedata-copytracing/README.md}):
+     * <p>Wire format, matching a real {@code hg}-generated fixture byte-for-byte:
      * <pre>
      *   header:  totalFiles:uint32-be
      *   repeated `totalFiles` times: flag:signed-byte  fileEnd:uint32-be  copyIndex:uint32-be
@@ -95,6 +96,9 @@ public final class ChangingFiles {
      *
      * @param raw the raw SD_FILES payload, or {@code null} if this revision had no such key
      *            (equivalent to {@link #empty()})
+     * @return the decoded per-file change and copy-source records
+     * @throws HgCorruptDataException if the payload is truncated or has out-of-range filename or
+     *     copy-index bounds
      */
     public static ChangingFiles decode(byte[] raw) throws HgCorruptDataException {
         if (raw == null || raw.length == 0) {
@@ -183,21 +187,64 @@ public final class ChangingFiles {
                 Collections.unmodifiableMap(copiedFromP2));
     }
 
-    /** Every path this revision touched (added/removed/merged/salvaged/touched), NOT including untouched copy sources. */
+    /**
+     * Every path this revision touched (added/removed/merged/salvaged/touched), NOT including
+     * untouched copy sources.
+     *
+     * @return the set of touched paths
+     */
     public Set<String> getTouched() { return touched; }
+
+    /**
+     * Paths newly added by this revision.
+     *
+     * @return the set of added paths
+     */
     public Set<String> getAdded() { return added; }
+
+    /**
+     * Paths removed by this revision.
+     *
+     * @return the set of removed paths
+     */
     public Set<String> getRemoved() { return removed; }
+
+    /**
+     * Paths resolved via merge with content matching a parent exactly.
+     *
+     * @return the set of merged paths
+     */
     public Set<String> getMerged() { return merged; }
+
+    /**
+     * Paths explicitly kept during a merge despite a delete on the other side.
+     *
+     * @return the set of salvaged paths
+     */
     public Set<String> getSalvaged() { return salvaged; }
-    /** Destination path -&gt; source path, for destinations copied from the first parent (p1). */
+
+    /**
+     * Destination path -&gt; source path, for destinations copied from the first parent (p1).
+     *
+     * @return the p1 copy-source map
+     */
     public Map<String, String> getCopiedFromP1() { return copiedFromP1; }
-    /** Destination path -&gt; source path, for destinations copied from the second parent (p2, merge only). */
+
+    /**
+     * Destination path -&gt; source path, for destinations copied from the second parent (p2, merge only).
+     *
+     * @return the p2 copy-source map
+     */
     public Map<String, String> getCopiedFromP2() { return copiedFromP2; }
 
     /**
      * Where {@code path} was copied from in this revision, checking both parents, or {@code
      * null} if this revision does not record {@code path} as a copy destination. Matches real
      * hg's {@code hg debugchangedfiles}/{@code hg log --copies} output for a single revision.
+     *
+     * @param path the destination path to look up
+     * @return the source path {@code path} was copied from, or {@code null} if it was not recorded
+     *     as a copy destination
      */
     public String getCopySource(String path) {
         String source = copiedFromP1.get(path);
@@ -232,6 +279,8 @@ public final class ChangingFiles {
      * @param copiedFromP1 destination -&gt; source, for destinations copied from the first parent.
      * @param copiedFromP2 destination -&gt; source, for destinations copied from the second
      *                     parent (merge commits only).
+     * @return the encoded raw SD_FILES payload, or an empty (zero-length) array if all arguments
+     *     are empty
      */
     public static byte[] encode(Set<String> added, Set<String> removed, Set<String> merged, Set<String> salvaged,
                                  Set<String> touched, Map<String, String> copiedFromP1, Map<String, String> copiedFromP2) {

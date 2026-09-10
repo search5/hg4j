@@ -20,6 +20,13 @@ import java.util.Deque;
 public class DirstateV2Parser {
 
     /**
+     * Creates a new, stateless parser instance. A single instance may be reused across multiple
+     * {@link #parse(byte[])}/{@link #parse(byte[], int, int)} calls.
+     */
+    public DirstateV2Parser() {
+    }
+
+    /**
      * Parses dirstate-v2 binary content into a standard Dirstate instance using absolute tree traversal.
      *
      * @param bytes raw binary content
@@ -42,9 +49,8 @@ public class DirstateV2Parser {
         // copy_source_start/children_start as offsets absolute to the start of this data file —
         // there is no separate "node table" block followed by a "path data" block; paths and
         // node structs are interleaved (each directory's children's paths are written just
-        // before that directory's packed node structs). Verified against a real captured
-        // Mercurial 6.0 dirstate-v2 fixture: a leaf node's path_start pointed directly at byte 0
-        // of the data file with no additional shift needed.
+        // before that directory's packed node structs): a leaf node's path_start points directly
+        // at byte 0 of the data file, with no additional shift needed.
         int dataOffset = 0;
 
         Deque<Integer> stack = new ArrayDeque<>();

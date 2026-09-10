@@ -48,20 +48,49 @@ public class RevertCommand {
     private String file;
     private String revision;
 
+    /**
+     * Creates a revert command bound to the given repository.
+     *
+     * @param repository the repository whose working directory file will be reverted
+     */
     public RevertCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the working-directory-relative path of the file to revert. Required before calling
+     * {@link #call()}.
+     *
+     * @param file the repository-relative path of the file to revert
+     * @return this command, for chaining
+     */
     public RevertCommand setFile(String file) {
         this.file = file;
         return this;
     }
 
+    /**
+     * Sets the revision to revert the file to. When unset, defaults to the working directory's
+     * first parent.
+     *
+     * @param revision the revision identifier (node id, prefix, or numeric revision) to revert to
+     * @return this command, for chaining
+     */
     public RevertCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Reverts the configured file to its content at the target revision, applying the same
+     * added/committed/removed handling documented on this class.
+     *
+     * @return {@code true} if the revert completed (this command never returns {@code false};
+     *         failures are reported via a thrown exception)
+     * @throws IOException if the file's historical content cannot be read or the working copy
+     *         cannot be updated
+     * @throws HgLockException if the working copy or store lock cannot be acquired
+     */
     public boolean call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");

@@ -22,6 +22,11 @@ import java.util.Set;
 public class GcCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a GC command bound to the given repository.
+     *
+     * @param repository repository whose store will be compacted and verified
+     */
     public GcCommand(HgRepository repository) {
         this.repository = repository;
     }

@@ -38,15 +38,31 @@ public class GpgSignature {
         }
     }
 
+    /**
+     * Wraps an already-computed signature and the fingerprint of the key that produced it.
+     *
+     * @param signatureHex the signature, either ASCII-armored OpenPGP text or a raw hex/base64 representation
+     * @param keyFingerprint the fingerprint of the signing key
+     */
     public GpgSignature(String signatureHex, String keyFingerprint) {
         this.signatureHex = signatureHex;
         this.keyFingerprint = keyFingerprint;
     }
 
+    /**
+     * Returns the raw signature text as stored (armored ASCII or a raw representation).
+     *
+     * @return the stored signature text
+     */
     public String getSignatureHex() {
         return signatureHex;
     }
 
+    /**
+     * Returns the fingerprint of the key that produced this signature.
+     *
+     * @return the signing key's fingerprint
+     */
     public String getKeyFingerprint() {
         return keyFingerprint;
     }
@@ -95,6 +111,13 @@ public class GpgSignature {
      * <p>Unlike {@link #sign(byte[], PrivateKey, String)}, this overload works for any key
      * algorithm supported by OpenPGP (RSA, EC/ECDSA, Ed25519, Ed448) since the real public key
      * is supplied directly rather than being reconstructed from the private key alone.</p>
+     *
+     * @param contentToSign the raw bytes to sign
+     * @param privateKey the signer's private key
+     * @param publicKey the signer's public key, matching {@code privateKey}
+     * @param fingerprint the fingerprint of the signing key, recorded on the returned signature
+     * @return the ASCII-armored OpenPGP signature
+     * @throws GeneralSecurityException if the key algorithm is unsupported or signature generation fails
      */
     public static GpgSignature sign(byte[] contentToSign, PrivateKey privateKey, PublicKey publicKey, String fingerprint) throws GeneralSecurityException {
         try {
@@ -133,6 +156,12 @@ public class GpgSignature {
      * modulus using the standard F4 exponent). For EC/Ed25519/Ed448 keys, or whenever the actual
      * public key is available, prefer {@link #sign(byte[], PrivateKey, PublicKey, String)}, which
      * supports every OpenPGP-compatible algorithm.</p>
+     *
+     * @param contentToSign the raw bytes to sign
+     * @param privateKey the signer's RSA private key
+     * @param fingerprint the fingerprint of the signing key, recorded on the returned signature
+     * @return the ASCII-armored OpenPGP signature
+     * @throws GeneralSecurityException if {@code privateKey} is not RSA or signature generation fails
      */
     public static GpgSignature sign(byte[] contentToSign, PrivateKey privateKey, String fingerprint) throws GeneralSecurityException {
         try {
@@ -176,6 +205,11 @@ public class GpgSignature {
 
     /**
      * Verifies the commit content signature against a standard Java PublicKey using OpenPGP standards.
+     *
+     * @param signedContent the raw bytes the signature is expected to cover
+     * @param publicKey the public key to verify the signature against
+     * @return {@code true} if the signature is a valid OpenPGP signature over {@code signedContent} by {@code publicKey}
+     * @throws GeneralSecurityException if the signature cannot be parsed or the key algorithm is unsupported
      */
     public boolean verify(byte[] signedContent, PublicKey publicKey) throws GeneralSecurityException {
         try {
@@ -228,6 +262,9 @@ public class GpgSignature {
 
     /**
      * Formats the signature into standard OpenPGP ASCII-Armored layout.
+     *
+     * @return the signature as an ASCII-armored {@code -----BEGIN/END PGP SIGNATURE-----} block,
+     *     wrapping the raw signature text unchanged if it is already armored
      */
     public String toAsciiArmored() {
         if (this.signatureHex.contains("-----BEGIN PGP SIGNATURE-----")) {
@@ -248,6 +285,10 @@ public class GpgSignature {
 
     /**
      * Parses an OpenPGP ASCII-Armored signature block back to GpgSignature.
+     *
+     * @param armored the ASCII-armored signature text, or {@code null}
+     * @param fingerprint the fingerprint of the signing key to associate with the parsed signature
+     * @return a {@link GpgSignature} wrapping the normalized armored text, or {@code null} if {@code armored} is {@code null}
      */
     public static GpgSignature fromAsciiArmored(String armored, String fingerprint) {
         if (armored == null) return null;

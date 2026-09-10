@@ -19,10 +19,11 @@ import java.util.function.Predicate;
  * {@link io.github.search5.hg4j.transport.HgHttpWireServer}. Reproduces the relevant slice of real
  * hg's {@code mercurial/wireprotoframing.py} — the command-request/response framing, the
  * mandatory identity stream-settings declaration, and the {@code {status: ok|error}} response
- * envelope — verified against a real Mercurial 6.0 server (the last release with a working v2
- * implementation; the protocol was removed entirely in 6.1).
+ * envelope — targeting Mercurial 6.0 (the last release with a working v2 implementation; the
+ * protocol was removed entirely in 6.1).
  */
 public final class Wire2Transport {
+    /** HTTP content type identifying the wire protocol v2 framing format. */
     public static final String FRAMINGTYPE = "application/mercurial-exp-framing-0006";
 
     private Wire2Transport() {
@@ -34,6 +35,11 @@ public final class Wire2Transport {
      * which per real hg's {@code DEFAULT_PROTOCOL_SETTINGS} guarantees the server replies using
      * plain "identity" (uncompressed) stream encoding — avoiding the need to implement zstd/zlib
      * frame-stream compression on the client.
+     *
+     * @param requestId frame request ID this command request is sent under
+     * @param command wire protocol command name
+     * @param args command arguments; {@code null} or empty omits the {@code args} field entirely
+     * @return the encoded frame bytes ready to write to the transport
      */
     public static byte[] buildCommandRequest(int requestId, String command, Map<String, Object> args) {
         Map<String, Object> data = new LinkedHashMap<>();
@@ -56,6 +62,11 @@ public final class Wire2Transport {
      * client: an initial clone batches {@code heads} and {@code known} together this way). Each
      * command keeps its own request id, which the response must echo back so the client can
      * correlate replies.
+     *
+     * @param in stream carrying one or more command-request frame sequences
+     * @return every parsed command request, in the order they were received
+     * @throws IOException if a frame cannot be read, or a frame sequence is malformed or
+     *     truncated
      */
     public static List<ParsedCommandRequest> readAllCommandRequests(InputStream in) throws IOException {
         List<ParsedCommandRequest> result = new ArrayList<>();
@@ -89,7 +100,12 @@ public final class Wire2Transport {
         return result;
     }
 
-    /** The identity stream-settings frame that must open a response stream exactly once. */
+    /**
+     * The identity stream-settings frame that must open a response stream exactly once.
+     *
+     * @param requestId frame request ID this stream-settings frame is sent under
+     * @return the encoded frame bytes
+     */
     public static byte[] buildStreamSettingsFrame(int requestId) {
         byte[] streamSettingsPayload = Cbor.encode("identity");
         return new Wire2Frame(requestId, 2, Wire2Frame.STREAM_FLAG_BEGIN, Wire2Frame.TYPE_STREAM_SETTINGS,
@@ -100,6 +116,11 @@ public final class Wire2Transport {
      * Builds just one command's {@code {status: ok}} + response-object frames, without a
      * stream-settings frame and without the stream-begin flag — for use after
      * {@link #buildStreamSettingsFrame} has already opened the response stream.
+     *
+     * @param requestId frame request ID this response is sent under
+     * @param responseObjects response objects to append after the {@code {status: ok}} envelope
+     * @return the encoded, chunked frame bytes for this command's response
+     * @throws IOException if writing a frame fails
      */
     public static byte[] buildCommandResponseFrames(int requestId, List<Object> responseObjects) throws IOException {
         List<Object> all = new ArrayList<>();
@@ -117,6 +138,10 @@ public final class Wire2Transport {
      * frame. Does not set the stream-begin flag — {@link io.github.search5.hg4j.transport.HgHttpWireServer}, the only caller, always
      * sends {@link #buildStreamSettingsFrame} first regardless of whether the command that
      * follows succeeds or fails.
+     *
+     * @param requestId frame request ID this error response is sent under
+     * @param message human-readable error message
+     * @return the encoded frame bytes
      */
     public static byte[] buildCommandErrorResponse(int requestId, String message) {
         Map<String, Object> error = new LinkedHashMap<>();
@@ -159,8 +184,10 @@ public final class Wire2Transport {
      * "identity" even when the "encoded" stream flag is set), CBOR-decodes the resulting byte
      * stream into its constituent objects, and validates the {@code {status: ...}} envelope.
      *
+     * @param in stream carrying the response frames
      * @return the response objects that followed the status envelope
      * @throws HgProtocolException if the server reported {@code status: error}
+     * @throws IOException if a frame cannot be read
      */
     public static List<Object> readCommandResponse(InputStream in) throws IOException {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
@@ -234,6 +261,13 @@ public final class Wire2Transport {
         return m;
     }
 
+    /**
+     * Wraps a byte array as an {@link InputStream}, for feeding an already-buffered response body
+     * back into the frame-reading methods above.
+     *
+     * @param data bytes to wrap
+     * @return a stream reading {@code data} from the start
+     */
     public static InputStream toStream(byte[] data) {
         return new ByteArrayInputStream(data);
     }
@@ -252,6 +286,8 @@ public final class Wire2Transport {
      *                      (e.g. filesdata's per-path {@code {path, totalitems}} banner) rather
      *                      than a data record — such entries are returned as-is, with no
      *                      following-bytes merge attempted
+     * @return the decoded records, each with any following raw-byte fields merged in under their
+     *     declared field names
      */
     public static List<Map<String, Object>> decodeRecordsWithFollowing(
             List<Object> objects, Predicate<Map<String, Object>> isHeaderEntry) {
@@ -276,11 +312,22 @@ public final class Wire2Transport {
         return result;
     }
 
+    /** A single parsed COMMAND_REQUEST: its frame request ID, command name, and arguments. */
     public static final class ParsedCommandRequest {
+        /** Frame request ID the response must echo back. */
         public final int requestId;
+        /** Wire protocol command name. */
         public final String name;
+        /** Command arguments, as decoded from the request's CBOR payload. */
         public final Map<String, Object> args;
 
+        /**
+         * Creates an instance from an already-parsed request.
+         *
+         * @param requestId frame request ID
+         * @param name command name
+         * @param args command arguments
+         */
         public ParsedCommandRequest(int requestId, String name, Map<String, Object> args) {
             this.requestId = requestId;
             this.name = name;

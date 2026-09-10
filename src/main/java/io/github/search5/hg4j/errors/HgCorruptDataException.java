@@ -18,10 +18,21 @@ import java.io.IOException;
 public class HgCorruptDataException extends IOException {
     private static final long serialVersionUID = 1L;
 
+    /**
+     * Creates the exception with a message describing the corruption found.
+     *
+     * @param message description of the integrity violation
+     */
     public HgCorruptDataException(String message) {
         super(message);
     }
 
+    /**
+     * Creates the exception with a message and the underlying cause.
+     *
+     * @param message description of the integrity violation
+     * @param cause the underlying exception that revealed the corruption
+     */
     public HgCorruptDataException(String message, Throwable cause) {
         super(message, cause);
     }

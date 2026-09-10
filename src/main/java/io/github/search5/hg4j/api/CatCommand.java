@@ -23,25 +23,56 @@ public class CatCommand {
     private String file;
     private String revision;
 
+    /**
+     * Creates the command against the given repository.
+     *
+     * @param repository repository the file content is read from
+     */
     public CatCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the repository-relative path of the file to retrieve.
+     *
+     * @param file repository-relative file path
+     * @return this command, for chaining
+     */
     public CatCommand setFile(String file) {
         this.file = file;
         return this;
     }
 
+    /**
+     * Sets the changeset to read the file at, by revision string.
+     *
+     * @param revision revision identifier accepted by {@link NodeIdUtil#resolveRevision}
+     *                 (e.g. a hex node id prefix, revision number, or {@code "tip"})
+     * @return this command, for chaining
+     */
     public CatCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Sets the changeset to read the file at, by node id.
+     *
+     * @param nodeId node id of the changeset, or {@code null} to clear the revision
+     * @return this command, for chaining
+     */
     public CatCommand setRevision(NodeId nodeId) {
         this.revision = nodeId != null ? nodeId.toHex() : null;
         return this;
     }
 
+    /**
+     * Resolves the configured revision and returns the content of {@link #setFile} as it existed
+     * in that changeset's manifest.
+     *
+     * @return the raw byte content of the file at the resolved revision
+     * @throws IOException if the changelog, manifest, or filelog cannot be read
+     */
     public byte[] call() throws IOException {
         repository.clearRevlogCache();
         if (file == null || file.isEmpty()) {

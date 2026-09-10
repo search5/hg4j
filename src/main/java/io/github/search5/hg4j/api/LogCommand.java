@@ -32,10 +32,23 @@ public class LogCommand {
     private String followPath = null;
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
+    /**
+     * Creates a log command bound to the given repository.
+     *
+     * @param repository repository whose changelog will be traversed
+     */
     public LogCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Restricts the returned commits to those touching at least one file accepted by the given
+     * filter.
+     *
+     * @param treeFilter filter applied to each commit's changed-file list; {@code null} is
+     *     ignored, leaving the current filter (default {@link HgTreeFilter#ALL}) unchanged
+     * @return this command, for chaining
+     */
     public LogCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -43,11 +56,26 @@ public class LogCommand {
         return this;
     }
 
+    /**
+     * Sets whether the log is restricted to ancestors of {@link #setStartRev}.
+     *
+     * @param follow {@code true} to only include revisions that are ancestors of the start
+     *     revision, {@code false} (the default) to include the whole changelog
+     * @return this command, for chaining
+     */
     public LogCommand setFollowAncestors(boolean follow) {
         this.followAncestors = follow;
         return this;
     }
 
+    /**
+     * Sets the revision the log walk starts from.
+     *
+     * @param startRev revision identifier (hash, revision number, or other resolvable form) used
+     *     as the starting point for {@link #setFollowAncestors} and {@link #setFollowPath}; the
+     *     tip is used when unset
+     * @return this command, for chaining
+     */
     public LogCommand setStartRev(String startRev) {
         this.startRev = startRev;
         return this;
@@ -69,6 +97,9 @@ public class LogCommand {
      * {@code exp-copies-sidedata-changeset} requirement -- a plain {@code hg init} repository
      * reports {@code copies-sdc: no} and {@code changelog-v2: no} in {@code hg debugformat}, i.e.
      * the ordinary/default case. Setting this option implies {@link #setFollowAncestors(boolean)}.
+     *
+     * @param path repository-relative file path to follow across renames/copies
+     * @return this command, for chaining
      */
     public LogCommand setFollowPath(String path) {
         this.followPath = path;
@@ -76,6 +107,13 @@ public class LogCommand {
         return this;
     }
 
+    /**
+     * Executes the log command, returning matching commits newest first.
+     *
+     * @return commits from the changelog, filtered per {@link #setFollowAncestors}/{@link
+     *     #setFollowPath}/{@link #setTreeFilter}, in descending revision order
+     * @throws IOException if the changelog or a filelog cannot be read
+     */
     public List<HgCommit> call() throws IOException {
         // Guard against a long-lived HgRepository handle serving a stale cached changelog-v2
         // revlog after an external process appended a revision -- see DescribeCommand#call()'s

@@ -15,7 +15,7 @@ import java.util.List;
  * Porcelain command corresponding to {@code hg manifest} -- lists the files tracked at a given
  * revision, one entry per path.
  *
- * <p>Verified against real {@code hg} 7.2 on scratch repositories:
+ * <p>Matches real {@code hg}'s behavior:
  * <ul>
  *   <li>with no revision specified, the listing matches the first parent of the working
  *       directory (not necessarily {@code tip} -- after {@code hg update -r 0} on a repo with a
@@ -62,6 +62,14 @@ public class ManifestCommand {
         private final boolean executable;
         private final boolean symlink;
 
+        /**
+         * Creates a new manifest entry.
+         *
+         * @param path the repository-relative path of the tracked file
+         * @param nodeHex the full 40-hex node id of the file's content at that revision
+         * @param executable whether the file carries the executable bit
+         * @param symlink whether the file is a symlink
+         */
         public ManifestEntry(String path, String nodeHex, boolean executable, boolean symlink) {
             this.path = path;
             this.nodeHex = nodeHex;
@@ -69,23 +77,48 @@ public class ManifestCommand {
             this.symlink = symlink;
         }
 
+        /**
+         * Returns the repository-relative path of the tracked file.
+         *
+         * @return the file path
+         */
         public String getPath() {
             return path;
         }
 
+        /**
+         * Returns the full 40-hex node id of the file's content at that revision.
+         *
+         * @return the hex node id
+         */
         public String getNodeHex() {
             return nodeHex;
         }
 
+        /**
+         * Returns whether the file carries the executable bit.
+         *
+         * @return {@code true} if the file is executable
+         */
         public boolean isExecutable() {
             return executable;
         }
 
+        /**
+         * Returns whether the file is a symlink.
+         *
+         * @return {@code true} if the file is a symlink
+         */
         public boolean isSymlink() {
             return symlink;
         }
     }
 
+    /**
+     * Creates a new instance bound to the given repository.
+     *
+     * @param repository the repository to list a manifest from
+     */
     public ManifestCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -95,6 +128,10 @@ public class ManifestCommand {
      * (revision number, hex node id/prefix, or {@code "tip"}). When left unset (or set to
      * {@code null}/empty), {@link #call()} defaults to the working directory's first parent,
      * matching real {@code hg manifest} with no {@code -r}.
+     *
+     * @param revision the revision to list, or {@code null}/empty to use the working directory's
+     *     first parent
+     * @return this command, for chaining
      */
     public ManifestCommand setRevision(String revision) {
         this.revision = revision;
@@ -105,16 +142,31 @@ public class ManifestCommand {
      * Records whether the caller wants {@code --debug}-style rendering. Purely advisory: the data
      * {@link #call()} returns is unaffected, since it always carries the full node hex and flags
      * needed for either rendering.
+     *
+     * @param debug whether the caller intends to render {@code --debug}-style output
+     * @return this command, for chaining
      */
     public ManifestCommand setDebug(boolean debug) {
         this.debug = debug;
         return this;
     }
 
+    /**
+     * Returns whether this command was configured for {@code --debug}-style rendering.
+     *
+     * @return the value previously passed to {@link #setDebug(boolean)}
+     */
     public boolean isDebug() {
         return debug;
     }
 
+    /**
+     * Lists the files tracked at the configured revision, sorted by path.
+     *
+     * @return the manifest entries for the resolved revision, or an empty list on a repository
+     *     with no commits or no revision checked out
+     * @throws IOException if the changelog, manifest, or dirstate cannot be read
+     */
     public List<ManifestEntry> call() throws IOException {
         String effectiveRevision = revision;
         if (effectiveRevision == null || effectiveRevision.isEmpty()) {

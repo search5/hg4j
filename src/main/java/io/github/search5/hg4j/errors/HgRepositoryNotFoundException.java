@@ -16,9 +16,12 @@ import java.io.IOException;
 public class HgRepositoryNotFoundException extends IOException {
     private static final long serialVersionUID = 1L;
 
+    /** Path that was expected to contain the repository. */
     private final String path;
 
     /**
+     * Creates an instance for a missing repository with no underlying cause.
+     *
      * @param path Path to the missing or corrupt repository
      */
     public HgRepositoryNotFoundException(String path) {
@@ -27,6 +30,8 @@ public class HgRepositoryNotFoundException extends IOException {
     }
 
     /**
+     * Creates an instance for a missing repository triggered by an underlying exception.
+     *
      * @param path  Path to the missing or corrupt repository
      * @param cause The causing exception
      */
@@ -35,7 +40,11 @@ public class HgRepositoryNotFoundException extends IOException {
         this.path = path;
     }
 
-    /** Returns the repository path. */
+    /**
+     * Returns the repository path.
+     *
+     * @return the path that was expected to contain a repository
+     */
     public String getPath() {
         return path;
     }

@@ -50,24 +50,47 @@ public class MergeCommand {
     private final List<HgHook> postMergeHooks = new ArrayList<>();
 
 
+    /** Outcome of {@link #call()}: whether the merge left unresolved conflicts, and which paths. */
     public static class MergeResult {
         private final boolean conflicted;
         private final List<String> conflicts;
 
+        /**
+         * Creates a result pairing the conflict flag with the conflicting paths.
+         *
+         * @param conflicted whether the merge left any file with unresolved conflict markers
+         * @param conflicts repository-relative paths of the conflicted files
+         */
         public MergeResult(boolean conflicted, List<String> conflicts) {
             this.conflicted = conflicted;
             this.conflicts = conflicts;
         }
 
+        /**
+         * Returns whether the merge left unresolved conflicts.
+         *
+         * @return {@code true} if any file was left with unresolved conflict markers
+         */
         public boolean isConflicted() {
             return conflicted;
         }
 
+        /**
+         * Returns the conflicting paths.
+         *
+         * @return repository-relative paths of the conflicted files
+         */
         public List<String> getConflicts() {
             return conflicts;
         }
     }
 
+    /**
+     * One merge-base candidate for the 3-way merge: either a real changelog revision, or a
+     * synthesized "virtual" base with no revision number of its own -- a manifest (and cached
+     * file contents) built in memory by {@link #getMergeBase} when it recursively merges multiple
+     * candidate ancestors down to a single base.
+     */
     public static class MergeBase {
         final int rev; // -1 if virtual
         final Map<String, String> manifest;
@@ -98,10 +121,22 @@ public class MergeCommand {
         }
     }
 
+    /**
+     * Creates the command against the given repository.
+     *
+     * @param repository repository whose working copy is merged
+     */
     public MergeCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Registers a hook run before the merge starts, with a context containing the repository,
+     * target revision, and target node id; the merge aborts if the hook returns {@code false}.
+     *
+     * @param hook hook to run before the merge proceeds; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public MergeCommand registerPreMergeHook(HgHook hook) {
         if (hook != null) {
             preMergeHooks.add(hook);
@@ -109,6 +144,12 @@ public class MergeCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run after the merge completes.
+     *
+     * @param hook hook to run after the merge completes; {@code null} is ignored
+     * @return this command, for chaining
+     */
     public MergeCommand registerPostMergeHook(HgHook hook) {
         if (hook != null) {
             postMergeHooks.add(hook);
@@ -116,16 +157,35 @@ public class MergeCommand {
         return this;
     }
 
+    /**
+     * Sets the changeset to merge into the working copy, by raw node id.
+     *
+     * @param targetNodeId raw node id of the revision to merge
+     * @return this command, for chaining
+     */
     public MergeCommand setNodeId(byte[] targetNodeId) {
         this.targetNodeId = targetNodeId;
         return this;
     }
 
+    /**
+     * Sets the changeset to merge into the working copy, by node id.
+     *
+     * @param targetNodeId node id of the revision to merge, or {@code null} to clear it
+     * @return this command, for chaining
+     */
     public MergeCommand setNodeId(NodeId targetNodeId) {
         this.targetNodeId = targetNodeId != null ? targetNodeId.getBytes() : null;
         return this;
     }
 
+    /**
+     * Sets the changeset to merge into the working copy, by revision number. Ignored if {@link
+     * #setNodeId} is also called with a non-{@code null} value.
+     *
+     * @param targetRev revision number of the revision to merge
+     * @return this command, for chaining
+     */
     public MergeCommand setRevision(int targetRev) {
         this.targetRev = targetRev;
         return this;
@@ -231,6 +291,15 @@ public class MergeCommand {
         return new MergeBase(virtualManifest, virtualFileContents);
     }
 
+    /**
+     * Merges the configured target revision (p2) into the working copy's current parent (p1):
+     * computes the merge base, 3-way merges every changed file, writes the merged content and
+     * dirstate, and runs any registered pre/post-merge hooks.
+     *
+     * @return whether the merge completed cleanly, and which paths (if any) were left conflicted
+     * @throws IOException if reading revlogs/manifests or writing working-copy files fails
+     * @throws HgLockException if the store or working copy lock cannot be acquired
+     */
     public MergeResult call() throws IOException, HgLockException {
         repository.clearRevlogCache();
         try (HgLock storeLock = repository.lockStore();
@@ -529,6 +598,9 @@ public class MergeCommand {
      * diff against p1 would see no change at all and leave every merge-introduced edit (and
      * every file added purely by p2) untouched on disk. Every path is therefore rewritten (or
      * removed) unconditionally against p1's manifest.
+     *
+     * @throws IOException if reading revlogs/manifests or rewriting working-copy files fails
+     * @throws HgLockException if the store or working copy lock cannot be acquired
      */
     public void abort() throws IOException, HgLockException {
         repository.clearRevlogCache();

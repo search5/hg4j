@@ -15,6 +15,14 @@ public class HgRemoteConnectionFactory {
 
     private static final List<TransportProtocol> protocols = new CopyOnWriteArrayList<>();
 
+    /**
+     * Creates a new factory instance. All functionality is exposed through the static
+     * {@link #register(TransportProtocol)}, {@link #getRegisteredProtocols()}, and
+     * {@link #createConnection(String)} methods, so instantiation is not normally needed.
+     */
+    public HgRemoteConnectionFactory() {
+    }
+
     static {
         // Register default protocols
         protocols.add(new TransportProtocol() {
@@ -74,6 +82,8 @@ public class HgRemoteConnectionFactory {
 
     /**
      * Returns an unmodifiable list of all registered TransportProtocols.
+     *
+     * @return an unmodifiable snapshot view of the currently registered protocols, custom protocols first
      */
     public static List<TransportProtocol> getRegisteredProtocols() {
         return Collections.unmodifiableList(protocols);

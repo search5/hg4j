@@ -13,6 +13,11 @@ import org.gradle.api.Project;
  *     io.github.search5.hg4j.api.Hg} API directly from a custom task action.
  */
 public class HgPlugin implements Plugin<Project> {
+
+    /** Default no-arg constructor, required by Gradle to instantiate this plugin. */
+    public HgPlugin() {
+    }
+
     @Override
     public void apply(Project project) {
         // Register hg4j initialization, logging, or integration tasks in the future

@@ -36,20 +36,38 @@ public class TreeMergeCommand {
     private byte[] ours;
     private byte[] theirs;
 
+    /**
+     * Creates a tree-merge command for the given repository.
+     *
+     * @param repository the repository whose store to compute the merge against
+     */
     public TreeMergeCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the "ours" side of the merge.
+     *
+     * @param ours the raw 20-byte node ID of the "ours" changeset
+     * @return this command, for chaining
+     */
     public TreeMergeCommand setOurs(byte[] ours) {
         this.ours = ours;
         return this;
     }
 
+    /**
+     * Sets the "theirs" side of the merge.
+     *
+     * @param theirs the raw 20-byte node ID of the "theirs" changeset
+     * @return this command, for chaining
+     */
     public TreeMergeCommand setTheirs(byte[] theirs) {
         this.theirs = theirs;
         return this;
     }
 
+    /** The result of a {@link TreeMergeCommand#call()} computation: which paths change, how, and whether any conflict. */
     public static class TreeMergeResult {
         private final boolean conflicted;
         private final List<String> conflicts;
@@ -69,16 +87,29 @@ public class TreeMergeCommand {
             this.copiedFiles = copiedFiles;
         }
 
+        /**
+         * Whether any path's merge produced unresolved conflict markers.
+         *
+         * @return {@code true} if at least one path in {@link #getConflicts()} is non-empty
+         */
         public boolean isConflicted() {
             return conflicted;
         }
 
-        /** Paths whose merged content still contains unresolved conflict markers. */
+        /**
+         * Paths whose merged content still contains unresolved conflict markers.
+         *
+         * @return the conflicted paths
+         */
         public List<String> getConflicts() {
             return conflicts;
         }
 
-        /** Paths that must be added or overwritten (relative to "ours") to reach the merged result, mapped to their final content. */
+        /**
+         * Paths that must be added or overwritten (relative to "ours") to reach the merged result, mapped to their final content.
+         *
+         * @return the changed paths mapped to their final merged content
+         */
         public Map<String, byte[]> getChangedFiles() {
             return changedFiles;
         }
@@ -91,12 +122,18 @@ public class TreeMergeCommand {
          * re-deriving a mode from stat'd disk state -- there is no disk state here -- since an
          * executable-bit or symlink-vs-regular change introduced by "theirs" (or picked during a
          * conflict) can leave the underlying bytes identical to what only the mode flag changed.
+         *
+         * @return each changed path mapped to the POSIX-style mode it should be applied with
          */
         public Map<String, Integer> getChangedModes() {
             return changedModes;
         }
 
-        /** Paths that must be deleted (relative to "ours") to reach the merged result. */
+        /**
+         * Paths that must be deleted (relative to "ours") to reach the merged result.
+         *
+         * @return the removed paths
+         */
         public Set<String> getRemovedFiles() {
             return removedFiles;
         }
@@ -114,12 +151,23 @@ public class TreeMergeCommand {
          * records there either -- only forwards metadata a revision already recorded at its own
          * commit time). Paths with no copy metadata are simply absent from this map (never mapped
          * to an empty value).
+         *
+         * @return each cleanly-adopted-from-theirs changed path mapped to its source revision's copy metadata
          */
         public Map<String, Map<String, String>> getCopiedFiles() {
             return copiedFiles;
         }
     }
 
+    /**
+     * Computes the 3-way merge of {@link #setOurs} and {@link #setTheirs} purely from the
+     * changelog/manifest/filelog store, without touching the working directory or dirstate.
+     *
+     * @return the computed merge result
+     * @throws IOException if the changelog/manifest/filelog store cannot be read
+     * @throws HgRevisionNotFoundException if {@code ours} or {@code theirs} does not resolve to a
+     *     changeset in the repository
+     */
     public TreeMergeResult call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

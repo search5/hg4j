@@ -25,18 +25,37 @@ public final class NarrowCloneCommand {
     private final List<String> includePaths = new ArrayList<>();
     private final List<String> excludePaths = new ArrayList<>();
 
+    /** Creates a command with no source, directory, or narrow patterns set yet. */
     public NarrowCloneCommand() {}
 
+    /**
+     * Sets the URL or path of the repository to clone from.
+     *
+     * @param sourceUrl the source repository location
+     * @return this command, for chaining
+     */
     public NarrowCloneCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;
     }
 
+    /**
+     * Sets the local directory the narrow clone is created in.
+     *
+     * @param directory the target directory, created if it does not already exist
+     * @return this command, for chaining
+     */
     public NarrowCloneCommand setDirectory(File directory) {
         this.directory = directory;
         return this;
     }
 
+    /**
+     * Adds a path prefix to the set of narrowspec include patterns.
+     *
+     * @param prefix the path prefix to include; ignored if {@code null}
+     * @return this command, for chaining
+     */
     public NarrowCloneCommand addIncludePath(String prefix) {
         if (prefix != null) {
             includePaths.add(prefix);
@@ -44,6 +63,12 @@ public final class NarrowCloneCommand {
         return this;
     }
 
+    /**
+     * Adds a path prefix to the set of narrowspec exclude patterns.
+     *
+     * @param prefix the path prefix to exclude; ignored if {@code null}
+     * @return this command, for chaining
+     */
     public NarrowCloneCommand addExcludePath(String prefix) {
         if (prefix != null) {
             excludePaths.add(prefix);
@@ -56,6 +81,7 @@ public final class NarrowCloneCommand {
      *
      * @return cloned repository facade
      * @throws IOException if network or sparse file writing fails
+     * @throws HgLockException if the repository lock cannot be acquired during pull or update
      */
     public Hg call() throws IOException, HgLockException {
         if (sourceUrl == null || directory == null) {
@@ -78,9 +104,8 @@ public final class NarrowCloneCommand {
             normalizedExcludes.add(HgTreeFilter.normalizeNarrowPattern(ex));
         }
 
-        // 3. Mark the repository as a narrow clone. Real hg (verified against hg 7.2's "narrow"
-        // extension) records this as the "narrowhg-experimental" requirement in .hg/requires --
-        // NOT a "narrowspec" requirement.
+        // 3. Mark the repository as a narrow clone. Real hg's "narrow" extension records this as
+        // the "narrowhg-experimental" requirement in .hg/requires -- NOT a "narrowspec" requirement.
         File requiresFile = new File(repo.getHgDir(), "requires");
         List<String> requirements = new ArrayList<>(Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8));
         requirements.add("narrowhg-experimental");

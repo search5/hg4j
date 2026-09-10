@@ -53,7 +53,7 @@ public class HgRepository implements Repository {
     private final File storeDir;
     private boolean defaultDirstateV2 = false;
     private boolean useZstdCompression = false;
-    // The actual requirement strings were confirmed against mercurial/requirements.py
+    // The actual requirement strings match mercurial/requirements.py
     // (CHANGELOGV2_REQUIREMENT/REVLOGV2_REQUIREMENT/NODEMAP_REQUIREMENT).
     // They are recorded in .hg/store/requires, not .hg/requires (for a share-safe repository).
     private boolean changelogV2 = false;
@@ -74,6 +74,7 @@ public class HgRepository implements Repository {
      *     or a caller providing its own storage backend) in place of the default {@link
      *     DefaultFileStoreEngine} set in the field initializer; a {@code null} argument is
      *     ignored.
+     * @param storeEngine the store engine to use from now on, or {@code null} to keep the current one
      */
     public synchronized void setStoreEngine(StoreEngine storeEngine) {
         if (storeEngine != null) {
@@ -82,7 +83,11 @@ public class HgRepository implements Repository {
         }
     }
 
-    /** Returns this repository's parsed {@code hgrc} configuration (see {@link HgRcConfig}). */
+    /**
+     * Returns this repository's parsed {@code hgrc} configuration (see {@link HgRcConfig}).
+     *
+     * @return this repository's configuration
+     */
     public HgRcConfig getConfig() {
         return this.config;
     }
@@ -97,6 +102,7 @@ public class HgRepository implements Repository {
      *     specifically needed. Does not validate that {@code directory} actually contains a
      *     {@code .hg} directory — {@link Repository#open} performs that check before delegating
      *     here.
+     * @param directory the repository's working directory
      */
     public HgRepository(File directory) {
         this.directory = directory;
@@ -135,7 +141,7 @@ public class HgRepository implements Repository {
     private void loadRequires() {
         readRequiresFile(new File(hgDir, "requires"));
         // A share-safe (default) repository records store-related requirements separately in
-        // .hg/store/requires rather than .hg/requires -- confirmed against real hg CLI (7.2).
+        // .hg/store/requires rather than .hg/requires.
         readRequiresFile(new File(storeDir, "requires"));
     }
 
@@ -169,7 +175,11 @@ public class HgRepository implements Repository {
         }
     }
 
-    /** {@code exp-changelog-v2} requirement — the changelog is in revlog v2 (docket-based) format. */
+    /**
+     * {@code exp-changelog-v2} requirement — the changelog is in revlog v2 (docket-based) format.
+     *
+     * @return {@code true} if this repository's changelog uses the v2/docket format
+     */
     public boolean isChangelogV2() {
         return changelogV2;
     }
@@ -177,9 +187,9 @@ public class HgRepository implements Repository {
     /**
      * {@code exp-revlogv2.2} requirement — manifests and filelogs are in plain revlog v2 format.
      * Both reading and writing are supported (see {@link
-     * io.github.search5.hg4j.storage.RevlogIndex}, {@link io.github.search5.hg4j.storage.Revlog}),
-     * verified against fixtures produced by a real Mercurial 7.2.4 build with the Rust extension
-     * enabled (docker/hg-rust-7.2.4).
+     * io.github.search5.hg4j.storage.RevlogIndex}, {@link io.github.search5.hg4j.storage.Revlog}).
+     *
+     * @return {@code true} if this repository's manifests/filelogs use plain revlog v2 format
      */
     public boolean isRevlogV2() {
         return revlogV2;
@@ -196,8 +206,9 @@ public class HgRepository implements Repository {
      * io.github.search5.hg4j.storage.Revlog} also maintains the trie on write (after each
      * appended revision, for non-inline revlogs), via {@link
      * io.github.search5.hg4j.storage.NodeMapFile#persist} — matches real hg's own incremental
-     * (with periodic full-rebuild fallback) strategy, verified against a real Rust-enabled hg
-     * (docker/hg-rust-7.2.4).
+     * (with periodic full-rebuild fallback) strategy.
+     *
+     * @return {@code true} if this repository maintains a persistent node-map trie
      */
     public boolean isPersistentNodemap() {
         return persistentNodemap;
@@ -212,6 +223,8 @@ public class HgRepository implements Repository {
      * io.github.search5.hg4j.treewalk.ManifestTreeIterator}; write support (splitting a new flat
      * manifest into the recursive per-directory revisions on commit) lives in {@link
      * io.github.search5.hg4j.api.CommitCommand}.
+     *
+     * @return {@code true} if this repository uses the treemanifest format
      */
     public boolean isTreemanifest() {
         return treemanifest;
@@ -225,6 +238,8 @@ public class HgRepository implements Repository {
      * io.github.search5.hg4j.api.ChangingFiles#encode}/{@link
      * io.github.search5.hg4j.storage.SidedataCodec#serialize}); read support in {@link
      * io.github.search5.hg4j.api.SidedataChangedFilesCommand}.
+     *
+     * @return {@code true} if this repository records per-commit sidedata copy/change info
      */
     public boolean isSidedataCopies() {
         return sidedataCopies;
@@ -235,6 +250,8 @@ public class HgRepository implements Repository {
      * .hg/store/fileindex}) an {@code exp-revlogv2.2} repository uses in place of {@code
      * fncache}. Both reading and writing are supported (see {@link
      * io.github.search5.hg4j.storage.FileIndex}).
+     *
+     * @return {@code true} if this repository uses the fileindex-v1 file path index
      */
     public boolean isFileIndexV1() {
         return fileIndexV1;
@@ -247,6 +264,7 @@ public class HgRepository implements Repository {
      * @apiNote Read by {@link io.github.search5.hg4j.storage.DefaultFileStoreEngine} when
      *     writing revlog data so hg4j-created repositories stay compression-compatible with
      *     however the repository was originally created.
+     * @return {@code true} if new revlog data should be zstd-compressed
      */
     public boolean isUseZstdCompression() {
         return useZstdCompression;
@@ -349,6 +367,10 @@ public class HgRepository implements Repository {
      *     #rebuildDirstateFromManifest} and by porcelain commands that need a changeset's
      *     tracked-file listing (e.g. {@code ManifestCommand}, {@code UpdateCommand}, {@code
      *     DiffCommand}).
+     * @param commitNodeId the raw 20-byte node ID of the changeset whose manifest to resolve
+     * @return the changeset's manifest, mapping each tracked path to its filelog node hex
+     *     (plus any flag suffix)
+     * @throws IOException if the changelog or manifest revlog cannot be read
      */
     public synchronized Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
         return storeEngine.getManifestAtCommit(this, commitNodeId);
@@ -361,6 +383,8 @@ public class HgRepository implements Repository {
      * @apiNote Used by commands and wire protocol handlers that need to read or append manifest
      *     revisions directly (e.g. {@code CommitCommand}, {@code MergeCommand}, {@code
      *     RebaseCommand}, {@code PushCommand}, {@code CloneCommand}, {@code Wire2Commands}).
+     * @return the (possibly cached) manifest revlog
+     * @throws IOException if the manifest revlog files cannot be opened
      */
     public synchronized Revlog getManifestRevlog() throws IOException {
         return storeEngine.getManifestRevlog(this);
@@ -400,6 +424,10 @@ public class HgRepository implements Repository {
      *     access changelog, manifest, or per-file revlogs — cached for the lifetime of this
      *     {@code HgRepository} instance (evicted LRU-style past 100 entries, or all at once by
      *     {@link #clearRevlogCache()}/{@link #refreshIfChangedOnDisk()}).
+     * @param idxFile the revlog's index ({@code .i}) file
+     * @param datFile the revlog's data ({@code .d}) file (may be unused for an inline revlog)
+     * @return the (possibly cached) revlog for {@code idxFile}/{@code datFile}
+     * @throws IOException if the revlog files cannot be opened
      */
     public synchronized Revlog getRevlog(File idxFile, File datFile) throws IOException {
         File canonicalIdx = idxFile.getCanonicalFile();
@@ -602,6 +630,7 @@ public class HgRepository implements Repository {
      *     {@code PurgeCommand} when deciding which untracked files are eligible for
      *     {@code --all}-style removal.
      * @param relativePath a path relative to the repository root, using {@code /} separators
+     * @return {@code true} if {@code relativePath} matches a loaded {@code .hgignore} pattern
      */
     public synchronized boolean isIgnored(String relativePath) {
         loadIgnorePatterns();
@@ -622,6 +651,7 @@ public class HgRepository implements Repository {
      *     AddCommand}, {@code AddremoveCommand}, and {@code PurgeCommand} to discover untracked
      *     files; see {@link io.github.search5.hg4j.treewalk.WorkingDirTreeIterator} for the
      *     tracked-file counterpart.
+     * @return every file/symlink found under the working directory, as repository-relative paths
      */
     public synchronized List<String> scanWorkingCopy() {
         ignorePatterns = null;
@@ -643,6 +673,9 @@ public class HgRepository implements Repository {
      * <p>Public so other working-copy-walking commands ({@link
      * io.github.search5.hg4j.api.PurgeCommand}) can apply the exact same subrepo boundary without
      * re-parsing {@code .hgsub} themselves.
+     *
+     * @return the set of repository-relative subrepo directory paths declared in {@code .hgsub},
+     *     or an empty set if there is no {@code .hgsub} or it could not be parsed
      */
     public Set<String> loadSubrepoPaths() {
         File hgsubFile = new File(directory, ".hgsub");
@@ -849,6 +882,8 @@ public class HgRepository implements Repository {
      * "600"} seconds; {@code mercurial/localrepo.py}'s {@code _lock()} reads it whenever a caller
      * asks to wait, and {@code mercurial/lock.py}'s {@code lock()} loop treats {@code timeout == 0}
      * as "fail immediately" rather than "wait forever").
+     *
+     * @return the configured store-lock wait timeout, in milliseconds (0 means fail immediately)
      */
     public int resolvePushLockTimeoutMs() {
         String raw = getConfig().get("ui", "timeout", "600");

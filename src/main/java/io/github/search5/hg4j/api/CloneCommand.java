@@ -34,6 +34,17 @@ public class CloneCommand {
     private File directory;
     private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
 
+    /** Creates a command with no source URL or destination directory set yet. */
+    public CloneCommand() {
+    }
+
+    /**
+     * Sets the monitor used to report clone progress.
+     *
+     * @param monitor the progress monitor to report to; a {@code null} value is ignored and
+     *     leaves the current monitor (defaulting to {@link NullProgressMonitor}) in place
+     * @return this command, for chaining
+     */
     public CloneCommand setProgressMonitor(ProgressMonitor monitor) {
         if (monitor != null) {
             this.monitor = monitor;
@@ -41,16 +52,40 @@ public class CloneCommand {
         return this;
     }
 
+    /**
+     * Sets the remote repository URL to clone from.
+     *
+     * @param sourceUrl the remote source URL
+     * @return this command, for chaining
+     */
     public CloneCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;
     }
 
+    /**
+     * Sets the local destination directory to clone into.
+     *
+     * @param directory the destination directory; must not already contain files
+     * @return this command, for chaining
+     */
     public CloneCommand setDirectory(File directory) {
         this.directory = directory;
         return this;
     }
 
+    /**
+     * Initializes a new local repository at the destination directory, pulls all changes from
+     * the source URL, checks out the resulting tip revision, and recursively clones/checks out
+     * any subrepos it declares.
+     *
+     * @return the newly cloned local repository
+     * @throws IOException if reading from the source, writing to the destination, or checking
+     *     out the tip revision fails
+     * @throws HgLockException if the destination repository cannot be locked
+     * @throws IllegalStateException if the source URL or destination directory was not set
+     * @throws HgValidationException if the destination directory already exists and is non-empty
+     */
     public HgRepository call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");

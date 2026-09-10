@@ -14,6 +14,11 @@ public class JschSshSession implements SshSession {
     private InputStream in;
     private OutputStream out;
 
+    /**
+     * Wraps an already-configured JSch session.
+     *
+     * @param session JSch session to adapt to {@link SshSession}; typically not yet connected
+     */
     public JschSshSession(Session session) {
         this.session = session;
     }

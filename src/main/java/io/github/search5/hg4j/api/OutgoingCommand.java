@@ -27,10 +27,21 @@ public class OutgoingCommand {
     private final HgRepository repository;
     private String destinationUrl;
 
+    /**
+     * Creates an instance bound to the given local repository.
+     *
+     * @param repository local repository whose outgoing changesets will be computed
+     */
     public OutgoingCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the remote repository URL to compare against.
+     *
+     * @param destinationUrl URL of the remote repository
+     * @return this command, for chaining
+     */
     public OutgoingCommand setDestination(String destinationUrl) {
         this.destinationUrl = destinationUrl;
         return this;

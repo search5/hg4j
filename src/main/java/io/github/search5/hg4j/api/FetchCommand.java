@@ -55,15 +55,34 @@ public class FetchCommand {
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
     private CredentialsProvider credentialsProvider;
 
+    /**
+     * Creates a fetch command for the given repository.
+     *
+     * @param repository the repository to fetch changesets into
+     */
     public FetchCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the credentials provider used to authenticate against the remote, if it requires
+     * authentication.
+     *
+     * @param credentialsProvider the credentials provider to use, or {@code null} for none
+     * @return this command, for chaining
+     */
     public FetchCommand setCredentialsProvider(CredentialsProvider credentialsProvider) {
         this.credentialsProvider = credentialsProvider;
         return this;
     }
 
+    /**
+     * Restricts the fetch to a subset of the repository tree. Ignored if {@code null}, leaving
+     * whatever filter was already set (default {@link HgTreeFilter#ALL}).
+     *
+     * @param treeFilter the tree filter to apply
+     * @return this command, for chaining
+     */
     public FetchCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -71,6 +90,13 @@ public class FetchCommand {
         return this;
     }
 
+    /**
+     * Sets the progress monitor notified as the fetch proceeds. Ignored if {@code null}, leaving
+     * whatever monitor was already set (default {@link NullProgressMonitor}).
+     *
+     * @param monitor the progress monitor to use
+     * @return this command, for chaining
+     */
     public FetchCommand setProgressMonitor(ProgressMonitor monitor) {
         if (monitor != null) {
             this.monitor = monitor;
@@ -78,6 +104,12 @@ public class FetchCommand {
         return this;
     }
 
+    /**
+     * Sets the remote repository URL to fetch from.
+     *
+     * @param sourceUrl the remote source URL
+     * @return this command, for chaining
+     */
     public FetchCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;
@@ -127,6 +159,14 @@ public class FetchCommand {
         return new HgRemoteConnection.NarrowScope(includes, excludes);
     }
 
+    /**
+     * Connects to the configured remote and fetches its outstanding changesets into the local
+     * store, syncing bookmarks and phases -- the working copy's dirstate is left untouched.
+     *
+     * @return the raw 20-byte node IDs of the changesets newly imported by this fetch
+     * @throws IOException if the network exchange or local store update fails
+     * @throws HgLockException if the store/working-copy lock cannot be acquired
+     */
     public List<byte[]> call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");
@@ -518,6 +558,16 @@ public class FetchCommand {
         }
     }
 
+    /**
+     * Applies an already-parsed changegroup bundle to the local store (changelog, manifest and
+     * filelog revisions, plus fncache/dirstate-adjacent bookkeeping), failing immediately if the
+     * store/working-copy lock is contended.
+     *
+     * @param bundle the parsed changegroup to apply
+     * @return the raw 20-byte node IDs of the changesets newly imported from {@code bundle}
+     * @throws IOException if the local store update fails
+     * @throws HgLockException if the store/working-copy lock is already held
+     */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
         return applyBundle(bundle, 0, null);
     }
@@ -530,8 +580,12 @@ public class FetchCommand {
      * it shares) so a genuinely concurrent push waits like real hg's own {@code repo.lock()}
      * ({@code wait=True} default) instead of aborting on the very first contended attempt.
      *
+     * @param bundle the parsed changegroup to apply
      * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds --
      *                      {@code 0} preserves the original fail-fast behavior.
+     * @return the raw 20-byte node IDs of the changesets newly imported from {@code bundle}
+     * @throws IOException if the local store update fails
+     * @throws HgLockException if the store/working-copy lock cannot be acquired within {@code lockTimeoutMs}
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs) throws IOException, HgLockException {
         return applyBundle(bundle, lockTimeoutMs, null);
@@ -548,6 +602,11 @@ public class FetchCommand {
      */
     @FunctionalInterface
     public interface PostLockValidator {
+        /**
+         * Runs the post-lock-acquisition validation described in this interface's class doc.
+         *
+         * @throws IOException to abort the apply before any part of the bundle is written
+         */
         void validate() throws IOException;
     }
 
@@ -555,6 +614,14 @@ public class FetchCommand {
      * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int)}, but additionally
      * runs {@code postLockValidator} (if non-null) immediately after the store/working-copy locks
      * are acquired and before any mutation begins -- see {@link PostLockValidator}'s doc.
+     *
+     * @param bundle the parsed changegroup to apply
+     * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds --
+     *                      {@code 0} preserves the original fail-fast behavior.
+     * @param postLockValidator validation run right after locks are acquired, or {@code null} to skip it
+     * @return the raw 20-byte node IDs of the changesets newly imported from {@code bundle}
+     * @throws IOException if the local store update fails, or {@code postLockValidator} rejects the apply
+     * @throws HgLockException if the store/working-copy lock cannot be acquired within {@code lockTimeoutMs}
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
                                      PostLockValidator postLockValidator) throws IOException, HgLockException {

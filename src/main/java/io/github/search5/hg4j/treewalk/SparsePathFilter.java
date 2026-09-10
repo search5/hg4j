@@ -14,6 +14,12 @@ import java.util.regex.Pattern;
 public class SparsePathFilter implements PathFilter {
     private final List<Pattern> patterns = new ArrayList<>();
 
+    /**
+     * Creates a filter matching any of the given glob patterns.
+     *
+     * @param globPatterns glob patterns (may be {@code null} or contain {@code null}/empty
+     *     entries, which are skipped); an empty resulting filter accepts every path
+     */
     public SparsePathFilter(String... globPatterns) {
         if (globPatterns != null) {
             for (String glob : globPatterns) {
@@ -24,6 +30,12 @@ public class SparsePathFilter implements PathFilter {
         }
     }
 
+    /**
+     * Creates a filter matching any of the given glob patterns.
+     *
+     * @param globPatterns glob patterns (may be {@code null} or contain {@code null}/empty
+     *     entries, which are skipped); an empty resulting filter accepts every path
+     */
     public SparsePathFilter(List<String> globPatterns) {
         if (globPatterns != null) {
             for (String glob : globPatterns) {
@@ -61,8 +73,7 @@ public class SparsePathFilter implements PathFilter {
                         // glob-to-regex translation (mercurial/match.py _globre:
                         // "a/**/b" -> "a/(?:.*/)?b"). A bare ".*" here would let
                         // the following literal fuse mid-segment (e.g. wrongly
-                        // matching "a/xb" for glob "a/**/b"), which real hg does
-                        // not do (verified against `hg debugsparse`).
+                        // matching "a/xb" for glob "a/**/b"), which real hg does not do.
                         sb.append("(?:.*/)?");
                         i++; // skip next '/', it's absorbed into the group above
                     } else {

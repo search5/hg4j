@@ -73,23 +73,46 @@ public class MergeCommitCommand {
     private Long forcedTime;
     private Integer forcedOffset;
 
+    /**
+     * Creates a merge-commit command bound to the given repository.
+     *
+     * @param repository the repository the merge changeset will be written into
+     */
     public MergeCommitCommand(HgRepository repository) {
         this.repository = repository;
     }
 
-    /** The two parents of the merge commit being created (both required -- a merge commit always has two). */
+    /**
+     * The two parents of the merge commit being created (both required -- a merge commit always has two).
+     *
+     * @param p1 the node id of the first parent
+     * @param p2 the node id of the second parent
+     * @return this command, for chaining
+     */
     public MergeCommitCommand setParents(byte[] p1, byte[] p2) {
         this.parent1 = p1;
         this.parent2 = p2;
         return this;
     }
 
-    /** The already-computed {@link TreeMergeCommand#call()} result to record as a changeset. */
+    /**
+     * The already-computed {@link TreeMergeCommand#call()} result to record as a changeset.
+     *
+     * @param result the non-conflicted merge result describing the file-level changes to record
+     * @return this command, for chaining
+     */
     public MergeCommitCommand setTreeMergeResult(TreeMergeCommand.TreeMergeResult result) {
         this.treeMergeResult = result;
         return this;
     }
 
+    /**
+     * Overrides the author recorded on the merge commit. When not called, a default placeholder
+     * author is used.
+     *
+     * @param author the {@code user} value to record on the merge commit; ignored if {@code null} or empty
+     * @return this command, for chaining
+     */
     public MergeCommitCommand setAuthor(String author) {
         if (author != null && !author.isEmpty()) {
             this.author = author;
@@ -97,23 +120,49 @@ public class MergeCommitCommand {
         return this;
     }
 
+    /**
+     * Sets the commit message for the merge commit. Required before calling {@link #call()}.
+     *
+     * @param message the commit message to record
+     * @return this command, for chaining
+     */
     public MergeCommitCommand setMessage(String message) {
         this.message = message;
         return this;
     }
 
-    /** Named branch (real hg {@code extra["branch"]}) to record on the new changeset, or {@code null}/"default" to omit it (matches {@link CommitCommand}'s own convention). */
+    /** Named branch (real hg {@code extra["branch"]}) to record on the new changeset, or {@code null}/"default" to omit it (matches {@link CommitCommand}'s own convention).
+     *
+     * @param branch the named branch to record, or {@code null}/"default" to omit it
+     * @return this command, for chaining
+     */
     public MergeCommitCommand setBranch(String branch) {
         this.branch = branch;
         return this;
     }
 
+    /**
+     * Overrides the commit timestamp recorded on the merge commit. When not called, the current
+     * time and the JVM's default time zone offset are used.
+     *
+     * @param secs seconds since the epoch to record as the commit time
+     * @param offsetSeconds the UTC offset, in seconds, to record alongside {@code secs}
+     * @return this command, for chaining
+     */
     public MergeCommitCommand setDate(long secs, int offsetSeconds) {
         this.forcedTime = secs;
         this.forcedOffset = offsetSeconds;
         return this;
     }
 
+    /**
+     * Writes the configured {@link TreeMergeCommand.TreeMergeResult} to the changelog, manifest,
+     * and filelog revlogs as a new two-parent changeset.
+     *
+     * @return the node id of the newly created merge changeset
+     * @throws IOException if reading the parent manifests or writing the new revlog revisions fails
+     * @throws HgLockException if the store lock cannot be acquired
+     */
     public byte[] call() throws IOException, HgLockException {
         if (parent1 == null || parent2 == null) {
             throw new IllegalStateException("Both merge parents must be specified.");

@@ -17,9 +17,12 @@ import java.io.IOException;
 public class HgTransportException extends IOException {
     private static final long serialVersionUID = 1L;
 
+    /** The remote repository URL the transport failure occurred against. */
     private final String remoteUrl;
 
     /**
+     * Creates the exception for a transport failure with no underlying cause.
+     *
      * @param remoteUrl Remote repository URL
      * @param message   Error description
      */
@@ -29,6 +32,8 @@ public class HgTransportException extends IOException {
     }
 
     /**
+     * Creates the exception for a transport failure wrapping an underlying cause.
+     *
      * @param remoteUrl Remote repository URL
      * @param message   Error description
      * @param cause     The causing exception
@@ -38,7 +43,11 @@ public class HgTransportException extends IOException {
         this.remoteUrl = remoteUrl;
     }
 
-    /** Returns the remote repository URL. */
+    /**
+     * Returns the remote repository URL.
+     *
+     * @return the URL of the remote repository the transport failure occurred against
+     */
     public String getRemoteUrl() {
         return remoteUrl;
     }

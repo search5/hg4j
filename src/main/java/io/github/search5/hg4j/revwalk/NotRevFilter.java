@@ -11,6 +11,11 @@ import io.github.search5.hg4j.storage.Revlog;
 public class NotRevFilter implements RevFilter {
     private final RevFilter filter;
 
+    /**
+     * Wraps the given filter so this filter's {@link #include} negates its result.
+     *
+     * @param filter the filter to negate; must not be {@code null}
+     */
     public NotRevFilter(RevFilter filter) {
         if (filter == null) {
             throw new IllegalArgumentException("Filter cannot be null");

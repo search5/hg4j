@@ -119,8 +119,7 @@ public class BundleCommand {
 
     /**
      * The bundle container/compression format to write, matching real {@code hg bundle}'s
-     * {@code --type} values. Verified byte-for-byte against real {@code hg} 7.2.2 output
-     * ({@code hg bundle --all --type <x> out.hg}, inspected with {@code xxd}):
+     * {@code --type} values byte-for-byte:
      *
      * <ul>
      *   <li>{@link #NONE_V1} ({@code none-v1}) -- 6-byte ASCII {@code "HG10UN"} header followed by
@@ -139,8 +138,8 @@ public class BundleCommand {
      *       lets the bzip2 stream's own leading {@code "BZh9"} magic supply the rest -- so the file
      *       reads as {@code "HG10" + "BZh9..." = "HG10BZh9..."}, i.e. the on-disk 6-byte prefix
      *       {@code "HG10BZ"} is never written as a literal string, it falls out of concatenating a
-     *       4-byte literal with a standard bzip2 stream. Confirmed against real {@code hg}'s output
-     *       ({@code 4847 3130 425a 6839 31...} = {@code "HG10BZh91"}) and against {@link
+     *       4-byte literal with a standard bzip2 stream ({@code 4847 3130 425a 6839 31...} =
+     *       {@code "HG10BZh91"} on the wire). This matches {@link
      *       UnbundleCommand}'s existing read path, which reads a 6-byte {@code "HG10BZ"} header and
      *       reconstructs the full bzip2 stream by prepending the literal bytes {@code "BZ"} back
      *       onto everything after byte 6 -- i.e. it already assumes exactly this layout.</li>
@@ -164,11 +163,17 @@ public class BundleCommand {
      * </ul>
      */
     public enum BundleType {
+        /** Uncompressed cg1 changegroup with an {@code "HG10UN"} header. */
         NONE_V1("none-v1"),
+        /** zlib/DEFLATE-compressed cg1 changegroup with an {@code "HG10GZ"} header. */
         GZIP_V1("gzip-v1"),
+        /** bzip2-compressed cg1 changegroup, reading back as an {@code "HG10BZ"}-prefixed stream. */
         BZIP2_V1("bzip2-v1"),
+        /** Uncompressed cg3 changegroup wrapped in an {@code "HG20"} bundle2 envelope. */
         NONE_V3("none-v3"),
+        /** zlib/DEFLATE-compressed cg3 changegroup wrapped in an {@code "HG20"} bundle2 envelope. */
         GZIP_V3("gzip-v3"),
+        /** bzip2-compressed cg3 changegroup wrapped in an {@code "HG20"} bundle2 envelope. */
         BZIP2_V3("bzip2-v3");
 
         private final String cliName;
@@ -177,12 +182,22 @@ public class BundleCommand {
             this.cliName = cliName;
         }
 
-        /** The exact spelling real {@code hg bundle --type <name>} uses for this format. */
+        /**
+         * Returns the exact spelling real {@code hg bundle --type <name>} uses for this format.
+         *
+         * @return the exact spelling real {@code hg bundle --type <name>} uses for this format
+         */
         public String cliName() {
             return cliName;
         }
 
-        /** Case-insensitive lookup by {@link #cliName()}, e.g. {@code "gzip-v1"} or {@code "GZIP-V1"}. */
+        /**
+         * Case-insensitive lookup by {@link #cliName()}, e.g. {@code "gzip-v1"} or {@code "GZIP-V1"}.
+         *
+         * @param name CLI-style spelling to look up, e.g. {@code "gzip-v1"}
+         * @return the matching bundle type
+         * @throws IllegalArgumentException if {@code name} does not match any known bundle type
+         */
         public static BundleType fromCliName(String name) {
             for (BundleType t : values()) {
                 if (t.cliName.equalsIgnoreCase(name)) {
@@ -215,11 +230,21 @@ public class BundleCommand {
     private String baseRevision;
     private BundleType type = BundleType.NONE_V1;
 
+    /**
+     * Creates a bundle command bound to the given repository.
+     *
+     * @param repository repository the bundle's changesets are read from
+     */
     public BundleCommand(HgRepository repository) {
         this.repository = repository;
     }
 
-    /** The {@code .hg} file the changegroup bytes are written to. Required. */
+    /**
+     * The {@code .hg} file the changegroup bytes are written to. Required.
+     *
+     * @param outputFile destination file the bundle is written to
+     * @return this command, for chaining
+     */
     public BundleCommand setOutputFile(File outputFile) {
         this.outputFile = outputFile;
         return this;
@@ -232,6 +257,10 @@ public class BundleCommand {
      * for a treemanifest repository (see {@link BundleType}'s javadoc) -- {@link #call()} mirrors
      * real {@code hg bundle}'s own abort when a {@code -v1} type is requested against a
      * treemanifest repository instead of silently upgrading the format underneath the caller.
+     *
+     * @param type container/compression format to write; {@code null} resets to {@link
+     *     BundleType#NONE_V1}
+     * @return this command, for chaining
      */
     public BundleCommand setType(BundleType type) {
         this.type = (type != null) ? type : BundleType.NONE_V1;
@@ -239,7 +268,12 @@ public class BundleCommand {
     }
 
     /** Convenience overload accepting real {@code hg}'s own {@code --type} spelling, e.g.
-     * {@code "gzip-v1"} (case-insensitive). See {@link BundleType#fromCliName(String)}. */
+     * {@code "gzip-v1"} (case-insensitive). See {@link BundleType#fromCliName(String)}.
+     *
+     * @param type CLI-style bundle type spelling, e.g. {@code "gzip-v1"}
+     * @return this command, for chaining
+     * @throws IllegalArgumentException if {@code type} does not match any known bundle type
+     */
     public BundleCommand setType(String type) {
         return setType(BundleType.fromCliName(type));
     }
@@ -249,6 +283,10 @@ public class BundleCommand {
      * its ancestors (further narrowed by {@link #setBaseRevision(String)}). When left unset, every
      * revision in the repository is a candidate target, matching {@code hg}'s "no -r" default of
      * bundling from every head.
+     *
+     * @param revision revision identifier (hash, revision number, or other resolvable form)
+     *     marking the newest changeset to include; {@code null} or empty means every revision
+     * @return this command, for chaining
      */
     public BundleCommand setRevision(String revision) {
         this.revision = revision;
@@ -263,6 +301,11 @@ public class BundleCommand {
      * {@link IllegalStateException} if this is never set, matching real {@code hg bundle}'s own
      * refusal to guess a base without an explicit {@code --base}/{@code -a} or a configured/given
      * destination (see the class-level scope note on why destination inference isn't implemented).
+     *
+     * @param baseRevision revision identifier whose ancestors (itself included) are assumed
+     *     already present at the destination and excluded from the bundle, or {@code "null"} to
+     *     bundle everything
+     * @return this command, for chaining
      */
     public BundleCommand setBaseRevision(String baseRevision) {
         this.baseRevision = baseRevision;
@@ -275,6 +318,14 @@ public class BundleCommand {
      * changes found" / exit-1 behavior, verified: {@code hg bundle --base tip out.hg} on a repo
      * whose tip is already the base prints "no changes found" and leaves no output file behind)
      * and this method simply returns {@code 0}.
+     *
+     * @return the number of changesets written to the bundle, or {@code 0} if there was nothing
+     *     to bundle
+     * @throws IOException if a revlog cannot be read or the output file cannot be written
+     * @throws HgLockException if the store lock cannot be acquired
+     * @throws IllegalStateException if the output file or base revision was never set, or the
+     *     repository is a treemanifest repository and a {@code -v1} {@link BundleType} was
+     *     requested
      */
     public int call() throws IOException, HgLockException {
         if (outputFile == null) {

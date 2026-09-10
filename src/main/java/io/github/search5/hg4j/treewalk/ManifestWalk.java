@@ -26,12 +26,21 @@ public class ManifestWalk {
     private final List<Entry> cachedEntries = new ArrayList<>();
     private int cachedIndex = -1;
 
+    /** A single tracked-file record from a manifest: path, node ID, and file mode flags. */
     public static class Entry {
         private final String path;
         private final byte[] nodeId;
         private final boolean executable;
         private final boolean symlink;
 
+        /**
+         * Creates an entry with the given path and mode.
+         *
+         * @param path repository-relative file path
+         * @param nodeId filelog node ID of this file's content at this revision
+         * @param executable whether the file has the executable bit set
+         * @param symlink whether the file is a symlink
+         */
         public Entry(String path, byte[] nodeId, boolean executable, boolean symlink) {
             this.path = path;
             this.nodeId = nodeId;
@@ -39,35 +48,77 @@ public class ManifestWalk {
             this.symlink = symlink;
         }
 
+        /**
+         * Returns the file path.
+         *
+         * @return repository-relative file path
+         */
         public String getPath() {
             return path;
         }
 
+        /**
+         * Returns the filelog node ID.
+         *
+         * @return filelog node ID of this file's content at this revision
+         */
         public byte[] getNodeId() {
             return nodeId;
         }
 
+        /**
+         * Returns the filelog node ID as a hex string.
+         *
+         * @return hex-encoded filelog node ID
+         */
         public String getNodeIdHex() {
             return NodeIdUtil.toHex(nodeId);
         }
 
+        /**
+         * Returns whether the file is executable.
+         *
+         * @return {@code true} if the executable bit is set
+         */
         public boolean isExecutable() {
             return executable;
         }
 
+        /**
+         * Returns whether the file is a symlink.
+         *
+         * @return {@code true} if the file is a symlink
+         */
         public boolean isSymlink() {
             return symlink;
         }
     }
 
+    /**
+     * Creates an instance walking the manifest of the given revision.
+     *
+     * @param repository repository the manifest is read from
+     * @param revision revision identifier whose manifest is walked
+     */
     public ManifestWalk(HgRepository repository, String revision) {
         this.iterator = new ManifestTreeIterator(repository, revision);
     }
 
+    /**
+     * Creates an instance walking a manifest identified directly by its node ID.
+     *
+     * @param repository repository the manifest is read from
+     * @param manifestNode node ID of the manifest revision to walk
+     */
     public ManifestWalk(HgRepository repository, byte[] manifestNode) {
         this.iterator = new ManifestTreeIterator(repository, manifestNode);
     }
 
+    /**
+     * Rewinds the cursor so the next {@link #next()} call returns the first entry again.
+     *
+     * @throws IOException if the underlying iterator cannot be reset
+     */
     public void reset() throws IOException {
         cachedIndex = -1;
     }
@@ -86,6 +137,14 @@ public class ManifestWalk {
         }
     }
 
+    /**
+     * Advances the cursor to the next manifest entry, loading and caching every entry on first
+     * call.
+     *
+     * @return {@code true} if a next entry is available (retrievable via {@link #getEntry()}),
+     *     {@code false} once the manifest is exhausted
+     * @throws IOException if the manifest cannot be read
+     */
     public boolean next() throws IOException {
         loadAll();
         if (cachedIndex < cachedEntries.size() - 1) {
@@ -95,6 +154,12 @@ public class ManifestWalk {
         return false;
     }
 
+    /**
+     * Returns the entry at the current cursor position.
+     *
+     * @return the current entry
+     * @throws NoSuchElementException if {@link #next()} has not yet been called successfully
+     */
     public Entry getEntry() {
         if (cachedIndex < 0) {
             throw new NoSuchElementException("No current entry");
@@ -102,6 +167,13 @@ public class ManifestWalk {
         return cachedEntries.get(cachedIndex);
     }
 
+    /**
+     * Returns every entry in the manifest as a lazily-populated list backed by {@link
+     * #lazyEntries()}.
+     *
+     * @return list view of every manifest entry
+     * @throws IOException if the manifest cannot be read
+     */
     public List<Entry> getEntries() throws IOException {
         return new AbstractList<Entry>() {
             private final List<Entry> cache = new ArrayList<>();
@@ -136,6 +208,8 @@ public class ManifestWalk {
     /**
      * Provides JGit-{@code TreeWalk}-style lazy streaming traversal.
      * Streams entries sequentially as needed rather than preloading them all (avoids heap pressure).
+     *
+     * @return an iterator that reads manifest entries on demand
      */
     public Iterator<Entry> lazyEntries() {
         return new Iterator<Entry>() {

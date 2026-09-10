@@ -13,11 +13,18 @@ import java.io.IOException;
 public interface TransportProtocol {
     /**
      * Returns whether this protocol handler can process the specified URL.
+     *
+     * @param url the remote repository URL to test
+     * @return {@code true} if this handler recognizes the URL's scheme and can open it
      */
     boolean canHandle(String url);
 
     /**
      * Creates and returns an HgRemoteConnection instance corresponding to the specified URL.
+     *
+     * @param url the remote repository URL to open, for which {@link #canHandle} returned {@code true}
+     * @return an open connection to the remote repository
+     * @throws IOException if the connection cannot be established
      */
     HgRemoteConnection open(String url) throws IOException;
 }

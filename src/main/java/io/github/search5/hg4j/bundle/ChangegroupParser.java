@@ -25,12 +25,16 @@ import java.nio.charset.StandardCharsets;
 public class ChangegroupParser {
     private static final Logger LOGGER = Logger.getLogger(ChangegroupParser.class.getName());
 
-    // Real spec (mercurial/utils/storageutil.py, confirmed against Mercurial 7.2.2): bit values
+    /** Creates a parser instance. All parsing/writing entry points are static; this class holds no state. */
+    public ChangegroupParser() {
+    }
+
+    // Real spec (mercurial/utils/storageutil.py): bit values
     // used in the per-entry protocol_flags field of a cg4/cg5 delta header.
     private static final int CG_FLAG_SIDEDATA = 1;
     private static final int CG_FLAG_FULL_TEXT = 2;
 
-    // Real spec (confirmed against mercurial/revlogutils/constants.py): the bits masked off by
+    // Real spec (mercurial/revlogutils/constants.py): the bits masked off by
     // REVIDX_DELTA_INFO_FLAGS from a cg4 delta header's flags field (REVIDX_DELTA_IS_SNAPSHOT=
     // 0x400 | REVIDX_DELTA_HAS_QUALITY=0x200 | REVIDX_DELTA_IS_GOOD=0x100 |
     // REVIDX_DELTA_P1_IS_SMALL=0x80 | REVIDX_DELTA_P2_IS_SMALL=0x40) -- these are purely
@@ -43,6 +47,12 @@ public class ChangegroupParser {
      * Reads a single chunk from the stream.
      * Each chunk starts with a 4-byte big-endian length field.
      * Length of 0 or {@code < 4} indicates end of chunk collection.
+     *
+     * @param in stream positioned at the start of a chunk (or its terminator)
+     * @return the chunk's payload bytes, or {@code null} if a terminal (length {@code <= 4})
+     *     chunk was read
+     * @throws IOException if the stream ends unexpectedly mid-chunk, or the declared payload size
+     *     exceeds the 20MB guard limit
      */
     public static byte[] readChunk(InputStream in) throws IOException {
         byte[] lenBytes = new byte[4];
@@ -78,15 +88,26 @@ public class ChangegroupParser {
      * Structure representing a single delta/revision entry in a changegroup.
      */
     public static class ChangeGroupEntry {
-        public byte[] node;
-        public byte[] p1;
-        public byte[] p2;
-        public byte[] cs;
-        public byte[] deltabase; // null if cg1, 20-bytes if cg2/cg3/cg4/cg5
-        public int flags;        // 0 if not cg3/cg4/cg5 (cg4: REVIDX_DELTA_INFO_FLAGS already masked off)
-        public byte[] delta;     // bdiff-encoded delta against deltabase, UNLESS fullText is true
+        /** Creates an empty entry to be filled in by a parser or by code building a bundle to write. */
+        public ChangeGroupEntry() {
+        }
 
-        // cg4-only (real spec: confirmed against mercurial/changegroup.py's
+        /** This revision's own 20-byte node hash. */
+        public byte[] node;
+        /** 20-byte node hash of this revision's first parent, or all-zero if none. */
+        public byte[] p1;
+        /** 20-byte node hash of this revision's second parent, or all-zero if none. */
+        public byte[] p2;
+        /** 20-byte node hash of the changeset this revision is linked to. */
+        public byte[] cs;
+        /** Node hash this revision's delta is computed against; {@code null} for cg1, 20 bytes for cg2/cg3/cg4/cg5. */
+        public byte[] deltabase;
+        /** Revlog flags for this revision; {@code 0} if not cg3/cg4/cg5 (cg4: {@code REVIDX_DELTA_INFO_FLAGS} already masked off). */
+        public int flags;
+        /** bdiff-encoded delta against {@link #deltabase}'s content, unless {@link #fullText} is set. */
+        public byte[] delta;
+
+        // cg4-only (real spec: matches mercurial/changegroup.py's
         // _CHANGEGROUPV4_DELTA_HEADER). The cg5 header has no such fields, so these play no role
         // when parsing/packing cg5 (they keep their default values).
         /** {@code protocol_flags & CG_FLAG_FULL_TEXT}: when true, {@link #delta} is not a bdiff
@@ -111,7 +132,7 @@ public class ChangegroupParser {
         /** The source repository's snapshot-level hint. */
         public int storageSnapshotLevel = -1;
 
-        // cg5-only (real spec: confirmed against _CHANGEGROUPV5_DELTA_HEADER). Plays no role
+        // cg5-only (real spec: matches _CHANGEGROUPV5_DELTA_HEADER). Plays no role
         // when parsing/packing cg4.
         /** The raw wire {@code protocol_flags} value (cg4 and cg5 place it at different offsets
          * but it means the same thing: bit0=CG_FLAG_SIDEDATA, bit1=CG_FLAG_FULL_TEXT -- cg5 only
@@ -126,6 +147,10 @@ public class ChangegroupParser {
 
     /**
      * Parses chunks belonging to a single revlog group until a terminal chunk {@code (len <= 4)} is found.
+     *
+     * @param in stream positioned at the start of a group's entries
+     * @return the parsed entries, in the order they appeared on the wire
+     * @throws IOException if a chunk cannot be read or is malformed
      */
     public static List<ChangeGroupEntry> parseGroup(InputStream in) throws IOException {
         return parseGroup(in, "01");
@@ -133,6 +158,12 @@ public class ChangegroupParser {
 
     /**
      * Parses chunks belonging to a single revlog group with a specific changegroup version.
+     *
+     * @param in stream positioned at the start of a group's entries
+     * @param version changegroup version governing the per-entry header layout, one of
+     *     {@code "01"}-{@code "05"}
+     * @return the parsed entries, in the order they appeared on the wire
+     * @throws IOException if a chunk cannot be read or is malformed
      */
     public static List<ChangeGroupEntry> parseGroup(InputStream in, String version) throws IOException {
         return parseGroup(in, version, null);
@@ -140,6 +171,16 @@ public class ChangegroupParser {
 
     /**
      * Parses chunks belonging to a single revlog group with a specific changegroup version and reports the detected version.
+     *
+     * @param in stream positioned at the start of a group's entries
+     * @param version changegroup version governing the per-entry header layout, one of
+     *     {@code "01"}-{@code "05"}
+     * @param outVersion when non-{@code null}, {@code outVersion[0]} is set to the version
+     *     actually used to decode this group: when {@code version} is {@code "01"} this is
+     *     auto-detected from the first chunk's length (which can turn out to be {@code "02"} or
+     *     {@code "03"}); otherwise it always echoes {@code version} back
+     * @return the parsed entries, in the order they appeared on the wire
+     * @throws IOException if a chunk cannot be read or is malformed
      */
     public static List<ChangeGroupEntry> parseGroup(InputStream in, String version, String[] outVersion) throws IOException {
         List<ChangeGroupEntry> entries = new ArrayList<>();
@@ -184,9 +225,8 @@ public class ChangegroupParser {
             ChangeGroupEntry entry = new ChangeGroupEntry();
 
             if ("04".equals(detectedVersion)) {
-                // Real spec (confirmed against mercurial/changegroup.py's
-                // _CHANGEGROUPV4_DELTA_HEADER, Mercurial 7.2.2 -- cross-checked directly against
-                // cg4 bytes produced by a local hg 7.2): node(20) p1(20) p2(20) deltabase(20)
+                // Real spec (matches mercurial/changegroup.py's
+                // _CHANGEGROUPV4_DELTA_HEADER): node(20) p1(20) p2(20) deltabase(20)
                 // cs(20) flags(H,2) snapshot_level(b,1,signed) raw_size(I,4) encoded_comp(B,1)
                 // protocol_flags(B,1) storage_delta_base(20) storage_snapshot_level(b,1,signed) =
                 // 130 bytes. Same field order as cg2/cg3 (deltabase comes before cs), with 6
@@ -215,7 +255,7 @@ public class ChangegroupParser {
                 entry.delta = new byte[deltaLen];
                 System.arraycopy(chunk, headerSize, entry.delta, 0, deltaLen);
             } else if ("05".equals(detectedVersion)) {
-                // Real spec (confirmed against _CHANGEGROUPV5_DELTA_HEADER): protocol_flags(B,1)
+                // Real spec (matches _CHANGEGROUPV5_DELTA_HEADER): protocol_flags(B,1)
                 // node(20) p1(20) p2(20) deltabase(20) cs(20) flags(H,2) = 103 bytes. Unlike
                 // cg2/cg3, protocol_flags comes first.
                 entry.protocolFlags = chunk[0] & 0xFF;
@@ -324,25 +364,48 @@ public class ChangegroupParser {
         return valid;
     }
 
+    /** One directory's manifest revision group within a cg3/cg4/cg5 treemanifest envelope. */
     public static class ManifestGroup {
+        /** Creates an empty group to be filled in by a parser or by code building a bundle to write. */
+        public ManifestGroup() {
+        }
+
+        /** Repository-relative directory path this group's manifest revisions belong to; {@code ""} for the root. */
         public String path;
+        /** This directory's manifest revision entries, in wire order. */
         public List<ChangeGroupEntry> entries;
     }
 
+    /** One file's revision group within a changegroup. */
     public static class FileGroup {
+        /** Repository-relative path of the file this group's revisions belong to. */
         public String path;
+        /** This file's revision entries, in wire order. */
         public List<ChangeGroupEntry> entries;
+
+        /** Creates an empty group to be filled in by a parser or by code building a bundle to write. */
+        public FileGroup() {
+        }
     }
 
+    /** A fully decoded (or about-to-be-written) changegroup: changelog, manifest, and file revision groups. */
     public static class ChangegroupBundle {
+        /** Creates an empty bundle to be filled in by a parser or by code building a bundle to write. */
+        public ChangegroupBundle() {
+        }
+
+        /** Changelog revision entries, in wire order. */
         public List<ChangeGroupEntry> changelogEntries;
-        public List<ChangeGroupEntry> manifestEntries; // null if cg3/cg4/cg5
-        public List<ManifestGroup> manifestGroups;     // cg3/cg4/cg5 treemanifest-capable envelope
+        /** Flat manifest revision entries; {@code null} for cg3/cg4/cg5 (see {@link #manifestGroups} instead). */
+        public List<ChangeGroupEntry> manifestEntries;
+        /** Treemanifest-capable manifest envelope (root group plus optional subdirectory groups) for cg3/cg4/cg5. */
+        public List<ManifestGroup> manifestGroups;
+        /** Per-file revision groups, one per touched file. */
         public List<FileGroup> fileGroups;
     }
 
     /** cg3/cg4/cg5 all write a treemanifest envelope (the root manifest group followed by
-     * optional subdirectory groups plus a terminator marker) -- real spec: confirmed against
+     * optional subdirectory groups plus a terminator marker) -- real spec: matches
      * changegroup.py's {@code manifestsend}, which is {@code b''} (no extra terminator) for
      * cg1/cg2 and {@code closechunk()} for cg3/cg4/cg5. */
     private static boolean isTreeCapableVersion(String version) {
@@ -351,6 +414,10 @@ public class ChangegroupParser {
 
     /**
      * Parses a complete Mercurial changegroup v1 bundle from stream.
+     *
+     * @param in stream positioned at the start of the changegroup payload
+     * @return the fully decoded changegroup
+     * @throws IOException if a chunk cannot be read or is malformed
      */
     public static ChangegroupBundle parseBundle(InputStream in) throws IOException {
         return parseBundle(in, "01");
@@ -358,6 +425,12 @@ public class ChangegroupParser {
 
     /**
      * Parses a complete Mercurial changegroup bundle of specific version from stream.
+     *
+     * @param in stream positioned at the start of the changegroup payload
+     * @param version changegroup version governing header layout and envelope shape, one of
+     *     {@code "01"}-{@code "05"}
+     * @return the fully decoded changegroup
+     * @throws IOException if a chunk cannot be read or is malformed
      */
     public static ChangegroupBundle parseBundle(InputStream in, String version) throws IOException {
         String[] versionHolder = new String[]{ version };
@@ -427,7 +500,13 @@ public class ChangegroupParser {
     // purposes.
     // ------------------------------------------------------------------
 
-    /** Writes a changegroup chunk: 4-byte big-endian length (including these 4 bytes) + payload. */
+    /**
+     * Writes a changegroup chunk: 4-byte big-endian length (including these 4 bytes) + payload.
+     *
+     * @param out stream to write the chunk to
+     * @param payload chunk payload bytes
+     * @throws IOException if writing to {@code out} fails
+     */
     public static void writeChunk(OutputStream out, byte[] payload) throws IOException {
         int len = payload.length + 4;
         out.write((len >>> 24) & 0xFF);
@@ -437,7 +516,12 @@ public class ChangegroupParser {
         out.write(payload);
     }
 
-    /** Writes the zero-length terminal chunk that ends a group or a path-chunk loop. */
+    /**
+     * Writes the zero-length terminal chunk that ends a group or a path-chunk loop.
+     *
+     * @param out stream to write the terminator to
+     * @throws IOException if writing to {@code out} fails
+     */
     public static void writeTerminalChunk(OutputStream out) throws IOException {
         out.write(0);
         out.write(0);
@@ -469,7 +553,7 @@ public class ChangegroupParser {
      * or {@code "05"}.
      *
      * <p>cg1/cg2/cg3 header layouts mirror {@link #parseGroup}'s read side exactly (byte-for-byte
-     * symmetric, verified against real hg 7.2.2 fixtures there): cg1 is {@code node(20) p1(20)
+     * symmetric): cg1 is {@code node(20) p1(20)
      * p2(20) cs(20)} = 80 bytes with NO explicit deltabase field (real hg's cg1 packer always
      * uses {@code forcedeltaparentprev=True} — the delta base is implicit, "whatever revision was
      * packed immediately before this one in the same group stream" — so {@link
@@ -477,6 +561,11 @@ public class ChangegroupParser {
      * what content to diff against); cg2 is {@code node(20) p1(20) p2(20) deltabase(20) cs(20)} =
      * 100 bytes (deltabase now explicit, before cs); cg3 adds a trailing {@code flags(u16)} = 102
      * bytes total.
+     *
+     * @param out stream to write the entry's chunk(s) to
+     * @param entry revision entry to serialize
+     * @param version changegroup version governing the header layout, one of {@code "01"}-{@code "05"}
+     * @throws IOException if writing to {@code out} fails
      */
     public static void writeEntry(OutputStream out, ChangeGroupEntry entry, String version) throws IOException {
         byte[] deltabase = entry.deltabase != null ? entry.deltabase : new byte[20];
@@ -564,7 +653,14 @@ public class ChangegroupParser {
                 || "04".equals(version) || "05".equals(version);
     }
 
-    /** Writes a whole group of entries (any cg1-cg5 version) followed by its terminal chunk. */
+    /**
+     * Writes a whole group of entries (any cg1-cg5 version) followed by its terminal chunk.
+     *
+     * @param out stream to write the group to
+     * @param entries revision entries to serialize, in wire order
+     * @param version changegroup version governing the header layout, one of {@code "01"}-{@code "05"}
+     * @throws IOException if writing to {@code out} fails
+     */
     public static void writeGroup(OutputStream out, List<ChangeGroupEntry> entries, String version) throws IOException {
         for (ChangeGroupEntry entry : entries) {
             writeEntry(out, entry, version);
@@ -582,6 +678,11 @@ public class ChangegroupParser {
      * the single flat manifest group's own end-of-group terminator (written by {@link
      * #writeGroup}) is immediately followed by the file groups, with no extra marker chunk --
      * emitting the extra terminator unconditionally would corrupt a cg1/cg2 stream.
+     *
+     * @param out stream to write the raw changegroup payload to
+     * @param bundle the changelog/manifest/file groups to serialize
+     * @param version changegroup version to write, one of {@code "01"}-{@code "05"}
+     * @throws IOException if writing to {@code out} fails
      */
     public static void writeBundle(OutputStream out, ChangegroupBundle bundle, String version) throws IOException {
         if (!isSupportedWriteVersion(version)) {

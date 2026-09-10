@@ -25,10 +25,21 @@ public class IncomingCommand {
     private final HgRepository repository;
     private String sourceUrl;
 
+    /**
+     * Creates a new instance bound to the given repository.
+     *
+     * @param repository the local repository to compare against the remote
+     */
     public IncomingCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the remote repository URL to compare against.
+     *
+     * @param sourceUrl the remote repository URL
+     * @return this command, for chaining
+     */
     public IncomingCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;

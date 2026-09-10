@@ -22,12 +22,25 @@ import java.nio.file.Files;
  */
 public class GrepCommand {
     
+    /** One matching line found by {@link #call()}, identifying its file, revision, and position. */
     public static class GrepResult {
+        /** The repository-relative path of the matching file. */
         public final String path;
+        /** The hex node ID of the file revision the match was found in. */
         public final String hexNode;
+        /** The 1-based line number within the revision's content where the match occurred. */
         public final int lineNumber;
+        /** The full text of the matching line. */
         public final String lineContent;
 
+        /**
+         * Creates a grep match result.
+         *
+         * @param path the repository-relative path of the matching file
+         * @param hexNode the hex node ID of the file revision the match was found in
+         * @param lineNumber the 1-based line number of the match
+         * @param lineContent the full text of the matching line
+         */
         public GrepResult(String path, String hexNode, int lineNumber, String lineContent) {
             this.path = path;
             this.hexNode = hexNode;
@@ -40,15 +53,32 @@ public class GrepCommand {
     private String query;
     private boolean caseInsensitive = false;
 
+    /**
+     * Creates a grep command for the given repository.
+     *
+     * @param repository the repository to search
+     */
     public GrepCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the search query -- a plain string or regular expression, per real hg's {@code hg grep} default.
+     *
+     * @param query the string or regular expression to search for
+     * @return this command, for chaining
+     */
     public GrepCommand setQuery(String query) {
         this.query = query;
         return this;
     }
 
+    /**
+     * Sets whether the search is case-insensitive ({@code hg grep -i}).
+     *
+     * @param caseInsensitive whether to match case-insensitively
+     * @return this command, for chaining
+     */
     public GrepCommand setCaseInsensitive(boolean caseInsensitive) {
         this.caseInsensitive = caseInsensitive;
         return this;

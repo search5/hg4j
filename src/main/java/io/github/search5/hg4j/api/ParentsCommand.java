@@ -17,13 +17,21 @@ import java.util.List;
 public class ParentsCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a parents command bound to the given repository.
+     *
+     * @param repository the repository whose working directory parents are reported
+     */
     public ParentsCommand(HgRepository repository) {
         this.repository = repository;
     }
 
     /**
+     * Resolves the working directory's parent revision(s) from the dirstate.
+     *
      * @return list of parent node ids (hex), excluding the null parent. Size 1 in the common case,
      *         2 while a merge is in progress, 0 only for a brand-new empty repository.
+     * @throws IOException if the dirstate cannot be read
      */
     public List<String> call() throws IOException {
         List<String> parents = new ArrayList<>();

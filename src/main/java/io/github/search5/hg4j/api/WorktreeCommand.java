@@ -23,10 +23,21 @@ public class WorktreeCommand {
     private final HgRepository repository;
     private File newWorktreeDir;
 
+    /**
+     * Creates the command against the given shared/main repository.
+     *
+     * @param repository the repository whose store will be shared with the new worktree
+     */
     public WorktreeCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the directory in which the new worktree will be created.
+     *
+     * @param newWorktreeDir target directory for the new worktree; must be empty or non-existent
+     * @return this command, for chaining
+     */
     public WorktreeCommand setNewWorktreeDir(File newWorktreeDir) {
         this.newWorktreeDir = newWorktreeDir;
         return this;

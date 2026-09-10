@@ -70,25 +70,59 @@ public class BackoutCommand {
     private String message;
     private String author = "hg4j";
 
+    /**
+     * Creates a backout command bound to the given repository.
+     *
+     * @param repository repository whose history will receive the backout changeset
+     */
     public BackoutCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision whose changes should be undone.
+     *
+     * @param revision revision identifier (hash, revision number, or other resolvable form) of
+     *     the changeset to back out; must be an ancestor of the working copy's parent
+     * @return this command, for chaining
+     */
     public BackoutCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Sets the commit message for the backout changeset.
+     *
+     * @param message commit message to use for the generated backout changeset
+     * @return this command, for chaining
+     */
     public BackoutCommand setMessage(String message) {
         this.message = message;
         return this;
     }
 
+    /**
+     * Sets the author recorded on the backout changeset.
+     *
+     * @param author author string to record; defaults to {@code "hg4j"} if never set
+     * @return this command, for chaining
+     */
     public BackoutCommand setAuthor(String author) {
         this.author = author;
         return this;
     }
 
+    /**
+     * Executes the command, creating a new changeset that reverses the configured revision's
+     * changes as described in the class documentation.
+     *
+     * @return the node ID of the newly created backout changeset
+     * @throws IOException if repository files cannot be read or written
+     * @throws HgLockException if the working copy or store lock cannot be acquired
+     * @throws HgMergeConflictException if backing out an older ancestor produces a conflicting
+     *     3-way merge that could not be resolved automatically
+     */
     public byte[] call() throws IOException, HgLockException, HgMergeConflictException {
         if (revision == null || revision.isEmpty()) {
             throw new IllegalStateException("Revision to back out must be specified.");

@@ -80,7 +80,13 @@ public final class FileIndex {
 
     /** Captures the current on-disk state of {@code storeDir}'s fileindex so it can later be
      * restored via {@link #restore}, even after a subsequent {@link #writeTrackedPaths} call has
-     * deleted the old generation's companion files. */
+     * deleted the old generation's companion files.
+     *
+     * @param storeDir repository store directory containing the {@code fileindex} docket
+     * @return a snapshot of the current docket and companion files, or an empty snapshot if no
+     *     fileindex docket exists yet
+     * @throws IOException if the docket or a companion file exists but cannot be read
+     */
     public static Snapshot snapshot(File storeDir) throws IOException {
         File docketFile = new File(storeDir, "fileindex");
         if (!docketFile.exists()) {
@@ -100,7 +106,13 @@ public final class FileIndex {
 
     /** Restores {@code storeDir}'s fileindex to the state captured by {@code snapshot}, removing
      * any companion files the current (about-to-be-rolled-back) generation left behind that
-     * aren't part of the snapshot. */
+     * aren't part of the snapshot.
+     *
+     * @param storeDir repository store directory whose fileindex is being restored
+     * @param snapshot previously captured state to restore, from {@link #snapshot}
+     * @throws IOException if the docket or a companion file cannot be written, or the current
+     *     docket cannot be read
+     */
     public static void restore(File storeDir, Snapshot snapshot) throws IOException {
         File docketFile = new File(storeDir, "fileindex");
         Set<String> currentCompanionNames = new LinkedHashSet<>();
@@ -136,7 +148,13 @@ public final class FileIndex {
     }
 
     /** Reads the currently-tracked store paths from {@code storeDir}'s fileindex, or an empty set
-     * if no {@code fileindex} docket exists there yet. */
+     * if no {@code fileindex} docket exists there yet.
+     *
+     * @param storeDir repository store directory containing the {@code fileindex} docket
+     * @return every store-relative path currently tracked in the fileindex
+     * @throws IOException if the docket or a companion file exists but cannot be read, or is
+     *     corrupt
+     */
     public static Set<String> readTrackedPaths(File storeDir) throws IOException {
         File docketFile = new File(storeDir, "fileindex");
         if (!docketFile.exists()) {
@@ -168,6 +186,10 @@ public final class FileIndex {
      * — callers pass the complete current tracked-path set). No-op (leaves any existing fileindex
      * untouched) if {@code paths} is empty and no fileindex exists yet, matching a freshly
      * `hg init`'d repository having no fileindex file at all until the first commit.
+     *
+     * @param storeDir repository store directory to write the fileindex into
+     * @param paths complete set of store-relative paths the fileindex should track after this call
+     * @throws IOException if the docket or a companion file cannot be written
      */
     public static void writeTrackedPaths(File storeDir, Collection<String> paths) throws IOException {
         File docketFile = new File(storeDir, "fileindex");

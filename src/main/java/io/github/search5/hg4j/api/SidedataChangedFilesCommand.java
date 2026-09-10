@@ -36,6 +36,11 @@ public final class SidedataChangedFilesCommand {
     private final HgRepository repository;
     private int revision = -1;
 
+    /**
+     * Creates a new command bound to the given repository.
+     *
+     * @param repository the repository whose changelog sidedata will be read
+     */
     public SidedataChangedFilesCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -43,12 +48,25 @@ public final class SidedataChangedFilesCommand {
         this.repository = repository;
     }
 
-    /** The changelog revision number to inspect (0-based, as reported by e.g. {@code hg log -r N}). */
+    /**
+     * The changelog revision number to inspect (0-based, as reported by e.g. {@code hg log -r N}).
+     *
+     * @param revision the changelog revision number to inspect
+     * @return this command, for chaining
+     */
     public SidedataChangedFilesCommand setRevision(int revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Decodes and returns the sidedata-backed file-changes record for the configured revision.
+     *
+     * @return the decoded file-changes record, or {@link ChangingFiles#empty()} if the revision has
+     *     no {@code SD_FILES} sidedata (e.g. a plain v1 repository, or a v2 repository without the
+     *     copies-sidedata requirement)
+     * @throws IOException if the changelog or its sidedata cannot be read
+     */
     public ChangingFiles call() throws IOException {
         if (revision < 0) {
             throw new IllegalStateException("Revision must be set to a non-negative value before calling call()");

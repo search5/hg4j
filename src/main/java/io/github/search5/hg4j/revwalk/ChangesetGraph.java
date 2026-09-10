@@ -23,22 +23,51 @@ public class ChangesetGraph {
     private RevFilter revFilter = RevFilter.ALL;
     private SortOrder sortOrder = SortOrder.DEFAULT;
 
+    /**
+     * Creates a graph view over the given changelog revlog.
+     *
+     * @param changelog the changelog revlog whose parent links this graph traverses; may be
+     *     {@code null}, in which case ancestor lookups treat every revision as having no parents
+     */
     public ChangesetGraph(Revlog changelog) {
         this.changelog = changelog;
     }
 
+    /**
+     * Sets the traversal order used by {@link #lazyAncestors}.
+     *
+     * @param sortOrder the desired order; a {@code null} value resets it to {@link
+     *     SortOrder#DEFAULT}
+     */
     public void setSortOrder(SortOrder sortOrder) {
         this.sortOrder = sortOrder != null ? sortOrder : SortOrder.DEFAULT;
     }
 
+    /**
+     * Returns the traversal order currently configured for {@link #lazyAncestors}.
+     *
+     * @return the configured sort order, never {@code null}
+     */
     public SortOrder getSortOrder() {
         return this.sortOrder;
     }
 
+    /**
+     * Sets the filter used by {@link #lazyAncestors} to decide which visited revisions are
+     * actually yielded.
+     *
+     * @param revFilter the filter to apply; a {@code null} value resets it to {@link
+     *     RevFilter#ALL}
+     */
     public void setRevFilter(RevFilter revFilter) {
         this.revFilter = revFilter != null ? revFilter : RevFilter.ALL;
     }
 
+    /**
+     * Returns the filter currently configured for {@link #lazyAncestors}.
+     *
+     * @return the configured revision filter, never {@code null}
+     */
     public RevFilter getRevFilter() {
         return this.revFilter;
     }
@@ -49,11 +78,24 @@ public class ChangesetGraph {
      *
      * @apiNote Used by {@code LogCommand} to compute the full ancestor set of a starting
      *     revision, so history output can be restricted to it.
+     * @param startRev the revision to start the ancestor walk from
+     * @return the set of all ancestor revisions reachable from {@code startRev}, in traversal
+     *     order (does not include {@code startRev} filtering of any kind -- every reachable
+     *     revision is returned)
      */
     public Set<Integer> getAllAncestors(int startRev) {
         return getAllAncestors(startRev, getRevlogLookup());
     }
 
+    /**
+     * Returns every ancestor of the given revision reachable through {@code parentLookup},
+     * regardless of any configured {@link RevFilter}.
+     *
+     * @param startRev the revision to start the ancestor walk from
+     * @param parentLookup function resolving a revision to its parent revisions (used instead of
+     *     the changelog directly, so callers can substitute their own parent source)
+     * @return the set of all ancestor revisions reachable from {@code startRev}
+     */
     public Set<Integer> getAllAncestors(int startRev, Function<Integer, int[]> parentLookup) {
         Set<Integer> ancestors = new LinkedHashSet<>();
         Queue<Integer> queue = new ArrayDeque<>();
@@ -86,11 +128,24 @@ public class ChangesetGraph {
      * @apiNote Has no callers today (see the class-level {@code apiNote}); provided as a
      *     ready-made streaming alternative to {@link #getAllAncestors}, which materializes the
      *     entire ancestor set at once.
+     * @param startRev the revision to start the ancestor walk from
+     * @return an iterator over ancestor revisions, filtered by the configured {@link RevFilter}
+     *     and ordered according to the configured {@link SortOrder}
      */
     public Iterator<Integer> lazyAncestors(int startRev) {
         return lazyAncestors(startRev, getRevlogLookup());
     }
 
+    /**
+     * Returns an {@link Iterator} that lazily walks ancestors starting from the given revision
+     * using {@code parentLookup} as the parent source, honoring the configured {@link
+     * RevFilter} and {@link SortOrder}.
+     *
+     * @param startRev the revision to start the ancestor walk from
+     * @param parentLookup function resolving a revision to its parent revisions
+     * @return an iterator over ancestor revisions, filtered and ordered per the current
+     *     configuration
+     */
     public Iterator<Integer> lazyAncestors(int startRev, Function<Integer, int[]> parentLookup) {
         if (sortOrder == SortOrder.TOPO) {
             List<Integer> result = new ArrayList<>();
@@ -179,11 +234,25 @@ public class ChangesetGraph {
      *     fast-forward merge), {@code BookmarkCommand} (deciding whether moving a bookmark is a
      *     fast-forward), and {@code RebaseCommand} (checking whether a revision is already an
      *     ancestor of the destination).
+     * @param ancestor the candidate ancestor revision
+     * @param descendant the candidate descendant revision
+     * @return {@code true} if {@code ancestor} is {@code descendant} itself or reachable from it
+     *     by following parent links
      */
     public boolean isAncestor(int ancestor, int descendant) {
         return isAncestor(ancestor, descendant, getRevlogLookup());
     }
 
+    /**
+     * Checks whether {@code ancestor} is an ancestor of (or equal to) {@code descendant}, using
+     * {@code parentLookup} as the parent source. Results are cached per instance.
+     *
+     * @param ancestor the candidate ancestor revision
+     * @param descendant the candidate descendant revision
+     * @param parentLookup function resolving a revision to its parent revisions
+     * @return {@code true} if {@code ancestor} is {@code descendant} itself or reachable from it
+     *     by following parent links
+     */
     public boolean isAncestor(int ancestor, int descendant, Function<Integer, int[]> parentLookup) {
         if (ancestor == descendant) {
             return true;
@@ -238,11 +307,26 @@ public class ChangesetGraph {
      * @apiNote Used by {@code MergeCommand} to find the merge base(s) for a 3-way merge; may
      *     return more than one candidate for a criss-cross merge history, matching real hg's own
      *     ambiguous-ancestor handling.
+     * @param revA the first revision
+     * @param revB the second revision
+     * @return the set of lowest-common-ancestor candidate revisions of {@code revA} and {@code
+     *     revB}; contains {@code revA} alone if the two revisions are equal, and may contain more
+     *     than one revision for a criss-cross merge history
      */
     public Set<Integer> getLcaCandidates(int revA, int revB) {
         return getLcaCandidates(revA, revB, getRevlogLookup());
     }
 
+    /**
+     * Computes the LCA (lowest common ancestor / merge base) candidate set of two revisions using
+     * {@code parentLookup} as the parent source, via a flag-propagation graph walk.
+     *
+     * @param revA the first revision
+     * @param revB the second revision
+     * @param parentLookup function resolving a revision to its parent revisions
+     * @return the set of lowest-common-ancestor candidate revisions of {@code revA} and {@code
+     *     revB}
+     */
     public Set<Integer> getLcaCandidates(int revA, int revB, Function<Integer, int[]> parentLookup) {
         if (revA == revB) {
             return Set.of(revA);

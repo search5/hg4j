@@ -32,8 +32,11 @@ import java.util.logging.Logger;
 public final class SparseConfig {
     private static final Logger LOGGER = Logger.getLogger(SparseConfig.class.getName());
 
+    /** Resolved include patterns (empty means "everything included"). */
     public final Set<String> includes;
+    /** Resolved exclude patterns. */
     public final Set<String> excludes;
+    /** Names of every {@code %include} profile that was actually resolved. */
     public final Set<String> profiles;
 
     private SparseConfig(Set<String> includes, Set<String> excludes, Set<String> profiles) {
@@ -46,6 +49,9 @@ public final class SparseConfig {
      * Parses one {@code .hg/sparse}-formatted document in isolation (no {@code %include}
      * resolution) — mirrors real hg's {@code sparse.parseconfig(ui, raw, action)}.
      *
+     * @param raw raw contents of a {@code .hg/sparse}-formatted document, or {@code null} for an
+     *     empty configuration
+     * @return the parsed include/exclude/profile sets
      * @throws HgValidationException on a malformed document, matching real hg's two abort
      *                                cases: a pattern line before any {@code [include]}/
      *                                {@code [exclude]} section, or an {@code [include]} section
@@ -104,6 +110,11 @@ public final class SparseConfig {
      * {@code ManifestLookupError} handling). If the resolved includes end up non-empty, real
      * hg's {@code .hg*} auto-include rule is applied so dotfiles like {@code .hgtags} stay
      * visible.
+     *
+     * @param repository repository whose {@code .hg/sparse} and tracked profile files are resolved
+     * @param changelogRev changelog revision that profile files are read from
+     * @return the effective, recursively-resolved sparse configuration for that revision
+     * @throws IOException if {@code .hg/sparse} or a tracked profile file cannot be read
      */
     public static SparseConfig resolveForRevision(HgRepository repository, int changelogRev) throws IOException {
         File sparseFile = new File(repository.getHgDir(), "sparse");
@@ -165,6 +176,8 @@ public final class SparseConfig {
      * an include rule (or no include rules are configured — real hg treats an empty include set
      * as "everything") and does not match an exclude rule. When both sets are empty (sparse
      * inactive), everything is accepted, matching real hg's {@code matchmod.always()} fallback.
+     *
+     * @return a filter accepting exactly the paths this sparse configuration includes
      */
     public PathFilter toPathFilter() {
         if (includes.isEmpty() && excludes.isEmpty()) {

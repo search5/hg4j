@@ -40,6 +40,9 @@ public final class NodeIdUtil {
      *     {@code Wire2Commands}) and for merge-state bookkeeping ({@code MergeState}). Returns
      *     {@code ""} for {@code null} rather than throwing, so callers building log/error
      *     messages don't need a null check first.
+     * @param bytes the raw bytes to render, typically a 20-byte node ID; may be {@code null}
+     * @return the lowercase hexadecimal encoding of {@code bytes}, or {@code ""} if {@code bytes}
+     *     is {@code null}
      */
     public static String toHex(byte[] bytes) {
         if (bytes == null) return "";
@@ -56,6 +59,8 @@ public final class NodeIdUtil {
      * @apiNote The counterpart to {@link #toHex}, used to decode node IDs received over the
      *         wire (e.g. in {@code HgRemoteClientV2}, {@code Wire1Commands}) and revision
      *         references resolved from a revset ({@code HgRevsetEngine}).
+     * @param hex the hexadecimal string to decode; {@code null} or empty yields an empty array
+     * @return the decoded bytes, one per pair of hex digits
      * @throws IllegalArgumentException if {@code hex} has an odd length or contains a
      *         non-hexadecimal character
      */
@@ -87,6 +92,8 @@ public final class NodeIdUtil {
      *         BackoutCommand}, {@code AnnotateCommand}, and {@code IdentifyCommand} when deciding
      *         whether a changeset has a given parent at all. Returns {@code true} for {@code
      *         null}, treating "no array" the same as "all zero".
+     * @param bytes the byte array to check, typically a 20-byte node ID; may be {@code null}
+     * @return {@code true} if every byte is zero, or {@code bytes} is {@code null}
      */
     public static boolean isAllZero(byte[] bytes) {
         if (bytes == null) return true;
@@ -103,6 +110,8 @@ public final class NodeIdUtil {
      *         {@code DefaultFileStoreEngine} and porcelain commands that navigate history by
      *         node ID (e.g. {@code LogCommand}, {@code CatCommand}, {@code ManifestCommand},
      *         {@code GraftCommand}, {@code TreeMergeCommand}).
+     * @param revlog the revlog to search; may be {@code null}
+     * @param nodeId the 20-byte node ID to look up; may be {@code null}
      * @return the revision number, or {@code -1} if either argument is {@code null} or the node
      *         ID is not present in the revlog
      */
@@ -297,6 +306,10 @@ public final class NodeIdUtil {
      * {@code store.py}'s sequence: {@code encodedir}, then {@code _encodefname} + {@code
      * _auxencode}, falling back to the {@code dh/}-prefixed hashed form of {@link #hashEncode}
      * once either the raw or the encoded path exceeds {@value #STORE_MAX_PATH_LEN} bytes.
+     * @param relPath the logical filelog/manifest path, e.g. {@code "dir/b.txt"}; a path already
+     *     prefixed with {@code "data/"} or {@code "meta/"} is used as-is, otherwise {@code "data/"}
+     *     is prepended
+     * @return the on-disk store-relative path corresponding to {@code relPath}
      */
     public static String encodeFname(String relPath) {
         String logicalPath = (relPath.startsWith("data/") || relPath.startsWith("meta/")) ? relPath : "data/" + relPath;
@@ -345,6 +358,10 @@ public final class NodeIdUtil {
      * {@code fncache} requirement typically paired with needing the long-path hash fallback in
      * the first place, and the paths this method is applied to come directly from a real
      * filesystem walk, so they were short enough to exist as literal directories/files already.
+     * @param storeRelPath a store-relative path as found on disk under {@code store/data/}, e.g.
+     *     {@code "data/dir/b.txt.i"}
+     * @return the original logical repository-relative path, e.g. {@code "dir/b.txt"}; a
+     *     hash-encoded ({@code dh/}-prefixed) path is returned verbatim, since it is not reversible
      */
     public static String decodeStoreDataPath(String storeRelPath) {
         String noExt = storeRelPath.endsWith(".i") ? storeRelPath.substring(0, storeRelPath.length() - 2) : storeRelPath;

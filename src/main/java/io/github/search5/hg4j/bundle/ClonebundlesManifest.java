@@ -16,7 +16,7 @@ import java.util.Set;
  * ?cmd=clonebundles}, goes over the wire; the bundle download is a plain HTTP(S) GET to whatever
  * URL the manifest lists).
  *
- * <p>Format verified against Mercurial 6.0's {@code mercurial/bundlecaches.py}
+ * <p>Format matches Mercurial 6.0's {@code mercurial/bundlecaches.py}
  * ({@code parseclonebundlesmanifest}/{@code filterclonebundleentries}) and {@code
  * mercurial/wireprotov1server.py} ({@code clonebundles()}, which just returns the raw manifest
  * file content for {@code ?cmd=clonebundles}). Each line is
@@ -39,6 +39,7 @@ public final class ClonebundlesManifest {
     private ClonebundlesManifest() {
     }
 
+    /** One line of a clonebundles manifest: a download URL plus its {@code key=value} attributes. */
     public static final class Entry {
         private final String url;
         private final Map<String, String> attributes;
@@ -48,14 +49,29 @@ public final class ClonebundlesManifest {
             this.attributes = attributes;
         }
 
+        /**
+         * Returns the bundle's download URL, used verbatim (not percent-encoded as a whole).
+         *
+         * @return the entry's download URL
+         */
         public String getUrl() {
             return url;
         }
 
+        /**
+         * Returns this entry's percent-decoded {@code key=value} attributes, in file order.
+         *
+         * @return the entry's attribute map, possibly empty, never {@code null}
+         */
         public Map<String, String> getAttributes() {
             return attributes;
         }
 
+        /**
+         * Returns the entry's {@code BUNDLESPEC} attribute, or {@code null} if it has none.
+         *
+         * @return the {@code BUNDLESPEC} value, or {@code null}
+         */
         public String getBundlespec() {
             return attributes.get("BUNDLESPEC");
         }
@@ -64,6 +80,10 @@ public final class ClonebundlesManifest {
     /**
      * Parses the raw text of a clonebundles manifest (the exact bytes {@code ?cmd=clonebundles}
      * returns) into a list of entries in file order.
+     *
+     * @param manifestText the raw manifest text; {@code null} is treated as an empty manifest
+     * @return the parsed entries, in the order they appear in {@code manifestText}; empty if
+     *     {@code manifestText} is {@code null} or has no valid lines
      */
     public static List<Entry> parse(String manifestText) {
         List<Entry> entries = new ArrayList<>();
@@ -101,6 +121,10 @@ public final class ClonebundlesManifest {
      * (real hg's other two filter criteria) are not filtered here: modern {@code
      * HttpURLConnection} always supports SNI, and hg4j has no reliable JVM-side memory estimate
      * equivalent to real hg's {@code ui.estimatememory()} to check against.
+     *
+     * @param entries the candidate entries to filter; {@code null} is treated as an empty list
+     * @return the entries whose {@code BUNDLESPEC} (if any) hg4j can decode, in the same relative
+     *     order as {@code entries}
      */
     public static List<Entry> filterSupported(List<Entry> entries) {
         if (entries == null) {

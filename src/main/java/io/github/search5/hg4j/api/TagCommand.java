@@ -42,20 +42,46 @@ public class TagCommand {
     private final List<HgHook> preTagHooks = new ArrayList<>();
     private final List<HgHook> postTagHooks = new ArrayList<>();
 
+    /**
+     * Creates a tag command bound to the given repository.
+     *
+     * @param repository the repository to list, create, or remove tags in
+     */
     public TagCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the name of the tag to create or remove. When left unset, {@link #call()} lists the
+     * existing tags instead.
+     *
+     * @param tagName the tag name to create or remove
+     * @return this command, for chaining
+     */
     public TagCommand setTagName(String tagName) {
         this.tagName = tagName;
         return this;
     }
 
+    /**
+     * Sets the node id the new tag should point to. Required when creating a tag (ignored when
+     * {@link #setRemove} is set).
+     *
+     * @param nodeId the node id (at least 20 bytes) the tag should reference
+     * @return this command, for chaining
+     */
     public TagCommand setNodeId(byte[] nodeId) {
         this.nodeId = nodeId;
         return this;
     }
 
+    /**
+     * Whether creating/removing a global tag should also commit the resulting {@code .hgtags}
+     * change. Defaults to {@code true}; has no effect on local tags, which are never committed.
+     *
+     * @param commit {@code true} to commit the {@code .hgtags} change, {@code false} to leave it uncommitted
+     * @return this command, for chaining
+     */
     public TagCommand setCommit(boolean commit) {
         this.commit = commit;
         return this;
@@ -64,6 +90,9 @@ public class TagCommand {
     /**
      * {@code hg tag --local}: write to {@code .hg/localtags} (untracked, never committed) instead
      * of the versioned {@code .hgtags}.
+     *
+     * @param local {@code true} to write to {@code .hg/localtags} instead of the versioned {@code .hgtags}
+     * @return this command, for chaining
      */
     public TagCommand setLocal(boolean local) {
         this.local = local;
@@ -74,6 +103,9 @@ public class TagCommand {
      * {@code hg tag --remove}: append a nullid entry for {@link #setTagName}, marking it deleted.
      * No {@link #setNodeId} is required when this is set -- the nullid is used regardless of
      * whatever node, if any, was configured.
+     *
+     * @param remove {@code true} to remove the tag named by {@link #setTagName} instead of creating one
+     * @return this command, for chaining
      */
     public TagCommand setRemove(boolean remove) {
         this.remove = remove;
@@ -87,12 +119,22 @@ public class TagCommand {
      * for both global and
      * {@link #setLocal local} tags. Irrelevant when {@link #setRemove} is set: real hg lets an
      * existing tag be removed unconditionally, force or not.
+     *
+     * @param force {@code true} to allow moving a tag name that already resolves to a non-null revision
+     * @return this command, for chaining
      */
     public TagCommand setForce(boolean force) {
         this.force = force;
         return this;
     }
 
+    /**
+     * Registers a hook run before the tag is written, with the ability to veto the operation by
+     * returning {@code false}.
+     *
+     * @param hook the hook to run before creating or removing the tag; ignored if {@code null}
+     * @return this command, for chaining
+     */
     public TagCommand registerPreTagHook(HgHook hook) {
         if (hook != null) {
             this.preTagHooks.add(hook);
@@ -100,6 +142,12 @@ public class TagCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run after the tag has been written.
+     *
+     * @param hook the hook to run after creating or removing the tag; ignored if {@code null}
+     * @return this command, for chaining
+     */
     public TagCommand registerPostTagHook(HgHook hook) {
         if (hook != null) {
             this.postTagHooks.add(hook);
@@ -107,6 +155,15 @@ public class TagCommand {
         return this;
     }
 
+    /**
+     * Lists the repository's tags, or creates/removes a tag when {@link #setTagName} was called.
+     *
+     * @return when {@link #setTagName} was not set, a map of tag name to hex node id for every
+     *         tag defined in {@code .hgtags}; when a tag name was set, a single-entry map from
+     *         that name to the hex node id it now resolves to (the nullid hex when removed)
+     * @throws IOException if {@code .hgtags} or {@code .hg/localtags} cannot be read or written
+     * @throws HgLockException if the store lock cannot be acquired while committing the tag change
+     */
     public Map<String, String> call() throws IOException, HgLockException {
         File tagsFile = new File(repository.getDirectory(), ".hgtags");
 

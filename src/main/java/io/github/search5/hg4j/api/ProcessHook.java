@@ -31,14 +31,35 @@ public class ProcessHook implements HgHook {
     private final List<String> command;
     private final File workingDir;
 
+    /**
+     * Creates a new hook that runs the given shell command line, run in the repository directory
+     * by default.
+     *
+     * @param command the shell command line to run, split on whitespace with basic
+     *     single/double-quote support (see {@link #splitCommand(String)})
+     */
     public ProcessHook(String command) {
         this(splitCommand(command), null);
     }
 
+    /**
+     * Creates a new hook that runs the given already-tokenized command, run in the repository
+     * directory by default.
+     *
+     * @param command the command and its arguments, as separate tokens (no shell parsing applied)
+     */
     public ProcessHook(List<String> command) {
         this(command, null);
     }
 
+    /**
+     * Creates a new hook that runs the given already-tokenized command in a specific working
+     * directory.
+     *
+     * @param command the command and its arguments, as separate tokens (no shell parsing applied)
+     * @param workingDir the directory the subprocess should run in, or {@code null} to fall back
+     *     to the repository's directory (resolved from the hook context at run time)
+     */
     public ProcessHook(List<String> command, File workingDir) {
         this.command = new ArrayList<>(command);
         this.workingDir = workingDir;

@@ -16,19 +16,41 @@ import java.util.Arrays;
  */
 public class Merge3 {
 
+    /** Creates a Merge3 instance. All merge functionality is exposed via static methods. */
+    public Merge3() {
+    }
+
+    /** The outcome of a 3-way merge: whether it left unresolved conflicts, and the resulting lines. */
     public static class MergeResult {
         private final boolean conflicted;
         private final List<String> mergedLines;
 
+        /**
+         * Creates a merge result.
+         *
+         * @param conflicted {@code true} if any block of the merge could not be resolved automatically
+         * @param mergedLines the resulting lines, including any {@code <<<<<<<}/{@code =======}/
+         *                    {@code >>>>>>>} conflict markers for conflicted blocks
+         */
         public MergeResult(boolean conflicted, List<String> mergedLines) {
             this.conflicted = conflicted;
             this.mergedLines = mergedLines;
         }
 
+        /**
+         * Whether the merge left one or more unresolved conflicts.
+         *
+         * @return {@code true} if any block of the merge could not be resolved automatically
+         */
         public boolean isConflicted() {
             return conflicted;
         }
 
+        /**
+         * Returns the resulting merged lines.
+         *
+         * @return the resulting lines, including any conflict markers for conflicted blocks
+         */
         public List<String> getMergedLines() {
             return mergedLines;
         }
@@ -37,6 +59,11 @@ public class Merge3 {
     /**
      * Performs a 3-way merge on three lists of lines representing the common base, yours, and theirs.
      * Conflict markers (when a block conflicts) are labeled {@code Yours}/{@code Theirs}.
+     *
+     * @param base the common ancestor's lines
+     * @param yours the local (current working copy) version's lines
+     * @param theirs the other (incoming) version's lines
+     * @return the merge result, with conflict markers labeled {@code Yours}/{@code Theirs} for any conflicted blocks
      */
     public static MergeResult merge(List<String> base, List<String> yours, List<String> theirs) {
         return merge(base, yours, theirs, "Yours", "Theirs");
@@ -45,9 +72,16 @@ public class Merge3 {
     /**
      * Same as {@link #merge(List, List, List)}, but with caller-supplied conflict marker labels
      * (e.g. {@code "dest"}/{@code "source"} for a cherry-pick/rebase, matching real hg's own
-     * default {@code internal:merge} tool markers -- verified byte-for-byte against real hg 7.2:
-     * {@code hg rebase} on a genuine conflict writes exactly {@code <<<<<<< dest} / {@code =======}
-     * / {@code >>>>>>> source}, no {@code |||||||} base section).
+     * default {@code internal:merge} tool markers: {@code hg rebase} on a genuine conflict writes
+     * exactly {@code <<<<<<< dest} / {@code =======} / {@code >>>>>>> source}, no {@code |||||||}
+     * base section).
+     *
+     * @param base the common ancestor's lines
+     * @param yours the local version's lines
+     * @param theirs the other version's lines
+     * @param yoursLabel the label to use after {@code <<<<<<<} for the local side of a conflict
+     * @param theirsLabel the label to use after {@code >>>>>>>} for the other side of a conflict
+     * @return the merge result, with conflict markers labeled using the given labels for any conflicted blocks
      */
     public static MergeResult merge(List<String> base, List<String> yours, List<String> theirs,
                                      String yoursLabel, String theirsLabel) {

@@ -34,8 +34,8 @@ import java.util.Set;
  * Real hg wireprotocol v2 client: capability discovery via the {@code X-HgUpgrade-1}/
  * {@code X-HgProto-1} handshake, then per-command execution over the frame-based
  * {@code application/mercurial-exp-framing-0006} transport at
- * {@code <apibase><namespace>/<ro|rw>/<command>}. Verified end-to-end against a real Mercurial
- * 6.0 server (the last release with a working v2 implementation — removed entirely in 6.1) using
+ * {@code <apibase><namespace>/<ro|rw>/<command>}. Targets Mercurial 6.0's v2 implementation (the
+ * last release with a working one — removed entirely in 6.1), covering
  * {@code capabilities}/{@code heads}/{@code known}/{@code listkeys}/{@code lookup}/
  * {@code pushkey}/{@code branchmap}/{@code changesetdata}/{@code manifestdata}/{@code filesdata}.
  *
@@ -62,6 +62,12 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
     private String namespace;
     private int requestIdCounter = 1;
 
+    /**
+     * Creates a wireprotocol v2 client for the given server URL.
+     *
+     * @param url base URL of the remote server (e.g. an {@code http(s)://} repository URL); a
+     *     trailing slash is stripped
+     */
     public HgRemoteClientV2(String url) {
         this.baseUrl = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
@@ -76,11 +82,23 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         this.namespace = namespace;
     }
 
+    /**
+     * Sets the connect and read timeouts used for every HTTP request this client makes.
+     *
+     * @param connectTimeout connection timeout, in milliseconds
+     * @param readTimeout socket read timeout, in milliseconds
+     */
     public void setTimeouts(int connectTimeout, int readTimeout) {
         this.connectTimeout = connectTimeout;
         this.readTimeout = readTimeout;
     }
 
+    /**
+     * Sets HTTP Basic Authentication credentials to send with every request.
+     *
+     * @param username username to authenticate as, or {@code null} to disable authentication
+     * @param password password to authenticate with, or {@code null} to disable authentication
+     */
     public void setCredentials(String username, String password) {
         this.username = username;
         this.password = password;
@@ -97,10 +115,22 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Sets whether connections are restricted to HTTPS URLs.
+     *
+     * @param forceTls {@code true} to reject any non-{@code https://} URL with a
+     *     {@link SecurityException}, {@code false} (the default) to allow plain HTTP
+     */
     public void setForceTls(boolean forceTls) {
         this.forceTls = forceTls;
     }
 
+    /**
+     * Sets the proxy used for outgoing HTTP connections.
+     *
+     * @param proxy proxy to route requests through; {@code null} is ignored, leaving the current
+     *     proxy (default {@link Proxy#NO_PROXY}) unchanged
+     */
     public void setProxy(Proxy proxy) {
         if (proxy != null) {
             this.proxy = proxy;
@@ -118,8 +148,7 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
      * with {@code X-HgUpgrade-1: exp-http-v2-0003} and {@code X-HgProto-1: cbor}. The server
      * responds (if {@code experimental.web.apiserver} is enabled) with
      * {@code {apibase, apis: {<namespace>: {...}}, v1capabilities}} — real hg's actual shape,
-     * not the flat {@code {commands: {...}}} this class used before it was verified against a
-     * live server.
+     * not a flat {@code {commands: {...}}}.
      */
     private synchronized void ensureDiscovered() throws IOException {
         if (namespace != null) {

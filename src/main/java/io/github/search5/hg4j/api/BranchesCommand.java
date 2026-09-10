@@ -38,15 +38,28 @@ public class BranchesCommand {
     private final HgRepository repository;
     private boolean includeClosed = false;
 
+    /**
+     * Creates a branches command bound to the given repository.
+     *
+     * @param repository repository whose changelog will be scanned for named branches
+     */
     public BranchesCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets whether branches whose only heads are closed should be included in the result.
+     *
+     * @param includeClosed {@code true} to include all-closed branches, {@code false} (the
+     *     default) to hide them, matching {@code hg branches} vs {@code hg branches --closed}
+     * @return this command, for chaining
+     */
     public BranchesCommand setIncludeClosed(boolean includeClosed) {
         this.includeClosed = includeClosed;
         return this;
     }
 
+    /** One named branch's reported head, as computed by {@link BranchesCommand#call()}. */
     public static class BranchHead {
         private final String branch;
         private final byte[] node;
@@ -62,18 +75,38 @@ public class BranchesCommand {
             this.active = active;
         }
 
+        /**
+         * Returns the branch name.
+         *
+         * @return the branch name
+         */
         public String getBranch() {
             return branch;
         }
 
+        /**
+         * Returns the node ID of this branch's reported head revision.
+         *
+         * @return the node ID of this branch's reported head revision
+         */
         public byte[] getNode() {
             return node;
         }
 
+        /**
+         * Returns the revision number of this branch's reported head revision.
+         *
+         * @return the revision number of this branch's reported head revision
+         */
         public int getRev() {
             return rev;
         }
 
+        /**
+         * Returns whether the reported head revision closes the branch.
+         *
+         * @return {@code true} if the reported head revision closes the branch
+         */
         public boolean isClosed() {
             return closed;
         }
@@ -82,12 +115,22 @@ public class BranchesCommand {
          * Mirrors real hg's "(inactive)" marker: {@code true} when this branch's reported head is
          * also a repo-wide topological head (no revision anywhere in the repository has it as a
          * parent). A branch whose only heads are closed is never active.
+         *
+         * @return {@code true} if this branch is active
          */
         public boolean isActive() {
             return active;
         }
     }
 
+    /**
+     * Executes the command, computing one {@link BranchHead} per named branch.
+     *
+     * @return branch heads sorted per real hg's {@code branchmap.branches_info()}/{@code
+     *     commands.branches()} order (active branches first, by descending revision, then
+     *     inactive branches likewise, with branch name and open-before-closed as tie-breaks)
+     * @throws IOException if the changelog cannot be read
+     */
     public List<BranchHead> call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

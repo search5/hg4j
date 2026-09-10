@@ -19,13 +19,12 @@ import java.util.Map;
  * Real hg's SSH wireprotocol v1 line-based protocol, server side — pure transport glue over
  * {@link Wire1Commands}, the same protocol-agnostic core {@link HgHttpWireServer} uses. Analogous
  * to JGit's approach of wiring {@code UploadPack}/{@code ReceivePack} into an SSH {@code Command}
- * (JGit itself ships no SSH server — see the jgit-parity discussion this class's plan came out
- * of); this class only implements the protocol over a plain {@link InputStream}/{@link
- * OutputStream} pair, so it can be plugged into whatever SSH channel implementation the actual
- * {@code hg serve}-equivalent production entry point uses.
+ * (JGit itself ships no SSH server); this class only implements the protocol over a plain
+ * {@link InputStream}/{@link OutputStream} pair, so it can be plugged into whatever SSH channel
+ * implementation the actual {@code hg serve}-equivalent production entry point uses.
  *
- * <p>Framing verified against {@code mercurial/wireprotoserver.py}'s {@code sshv1protocolhandler}
- * (Mercurial 6.0): a command is one line ({@code "<cmdname>\n"}), followed by one line per
+ * <p>Framing matches {@code mercurial/wireprotoserver.py}'s {@code sshv1protocolhandler}:
+ * a command is one line ({@code "<cmdname>\n"}), followed by one line per
  * declared argument name for that command, {@code "<argname> <byte-length>\n"} then exactly that
  * many raw bytes (a {@code "*"} argument name introduces a variable-length dict: a
  * {@code "* <count>\n"} line, then {@code count} more {@code "<name> <len>\n<bytes>"} triples).
@@ -62,31 +61,52 @@ public class HgSshWireServer {
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
+    /**
+     * Creates an SSH wireprotocol v1 server bound to the given repository.
+     *
+     * @param repository repository this server exposes over the SSH wire protocol
+     */
     public HgSshWireServer(HgRepository repository) {
         this.repository = repository;
     }
 
     /** Registers a hook run before an incoming {@code unbundle} (push) is applied — returning
-     * {@code false} aborts it before anything is written, real hg's {@code pretxnchangegroup}. */
+     * {@code false} aborts it before anything is written, real hg's {@code pretxnchangegroup}.
+     *
+     * @param hook hook to invoke before applying an incoming changegroup
+     * @return this server, for chaining
+     */
     public HgSshWireServer registerPreChangegroupHook(HgHook hook) {
         preChangegroupHooks.add(hook);
         return this;
     }
 
-    /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
+    /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}.
+     *
+     * @param hook hook to invoke after an incoming changegroup was applied
+     * @return this server, for chaining
+     */
     public HgSshWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
         return this;
     }
 
     /** Registers a hook run before an incoming {@code pushkey} (e.g. a bookmark move) is applied —
-     * returning {@code false} aborts it, surfaced to the client as the real hg pushkey failure response. */
+     * returning {@code false} aborts it, surfaced to the client as the real hg pushkey failure response.
+     *
+     * @param hook hook to invoke before applying an incoming pushkey update
+     * @return this server, for chaining
+     */
     public HgSshWireServer registerPrePushkeyHook(HgHook hook) {
         prePushkeyHooks.add(hook);
         return this;
     }
 
-    /** Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully. */
+    /** Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully.
+     *
+     * @param hook hook to invoke after a pushkey update was applied
+     * @return this server, for chaining
+     */
     public HgSshWireServer registerPostPushkeyHook(HgHook hook) {
         postPushkeyHooks.add(hook);
         return this;
@@ -96,6 +116,10 @@ public class HgSshWireServer {
      * Serves commands from {@code in} to {@code out} until the input stream ends (real hg's SSH
      * peer keeps the channel open across multiple sequential commands within one session, unlike
      * one-shot HTTP requests).
+     *
+     * @param in stream the client's commands and payloads are read from
+     * @param out stream responses are written to
+     * @throws IOException if reading from {@code in} or writing to {@code out} fails
      */
     public void handleConnection(InputStream in, OutputStream out) throws IOException {
         while (true) {
@@ -130,6 +154,11 @@ public class HgSshWireServer {
      * even with no repository present, then emits a {@link Wire1Response#oobError(String)} to be
      * consumed as the response to whatever actual work command (batch/getbundle/etc.) the client
      * sends next.
+     *
+     * @param in stream the client's handshake commands are read from
+     * @param out stream the handshake responses and final error are written to
+     * @param reason message sent to the client as the out-of-band error
+     * @throws IOException if reading from {@code in} or writing to {@code out} fails
      */
     public static void rejectConnection(InputStream in, OutputStream out, String reason) throws IOException {
         readLine(in); // "hello" -- real hg's SSH client always sends this first.

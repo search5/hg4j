@@ -28,15 +28,32 @@ public class BisectCommand {
     private byte[] goodNode;
     private byte[] badNode;
 
+    /**
+     * Creates a bisect command for the given repository.
+     *
+     * @param repository the repository to search revision history in
+     */
     public BisectCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Marks a revision as known-good ({@code hg bisect --good}).
+     *
+     * @param goodNode the raw 20-byte node ID of a known-good revision
+     * @return this command, for chaining
+     */
     public BisectCommand setGood(byte[] goodNode) {
         this.goodNode = goodNode;
         return this;
     }
 
+    /**
+     * Marks a revision as known-bad ({@code hg bisect --bad}).
+     *
+     * @param badNode the raw 20-byte node ID of a known-bad revision
+     * @return this command, for chaining
+     */
     public BisectCommand setBad(byte[] badNode) {
         this.badNode = badNode;
         return this;

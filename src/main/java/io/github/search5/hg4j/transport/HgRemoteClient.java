@@ -70,6 +70,12 @@ public class HgRemoteClient implements HgRemoteConnection {
     private boolean hasNegotiated = false;
     private HgRemoteClientV2 delegate = null;
 
+    /**
+     * Creates a client bound to the given HTTP(S) remote repository URL.
+     *
+     * @param url remote repository URL; a {@code user[:pass]@host} userinfo component, if
+     *            present, is stripped out and used as the initial credentials
+     */
     public HgRemoteClient(String url) {
         // Real hg's own URL convention (mercurial/urlutil.py's `url` class) lets credentials be
         // embedded directly in the destination -- `https://user:pass@host/path` -- and uses them
@@ -167,6 +173,11 @@ public class HgRemoteClient implements HgRemoteConnection {
      * token that real hg never sends, so the auto-upgrade could never trigger). The real signal
      * is the separate {@code X-HgUpgrade-1}/{@code X-HgProto-1} header handshake performed in
      * {@link #tryEstablishV2FromDiscoveryResponse(byte[])}.
+     *
+     * @param capabilities the remote's advertised v1 capability tokens, or {@code null} to leave
+     *                      the current negotiated state unchanged
+     * @return {@code true} if the remote supports wire protocol v2 (only ever set via {@link
+     *         #tryEstablishV2FromDiscoveryResponse}, not by this method itself)
      */
     public boolean negotiateV2(List<String> capabilities) {
         if (capabilities == null) return this.supportsV2;
@@ -248,6 +259,12 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Returns the maximum HTTP header size the remote advertised via the {@code httpheader=NNNN}
+     * v1 capability token, or the default of 1024 bytes if the remote never advertised one.
+     *
+     * @return the negotiated (or default) HTTP header size limit, in bytes
+     */
     public int getMaxHttpHeaderLimit() {
         return maxHttpHeaderLimit;
     }
@@ -293,11 +310,24 @@ public class HgRemoteClient implements HgRemoteConnection {
         return new String(bytes, StandardCharsets.UTF_8);
     }
 
+    /**
+     * Sets the connect and read timeouts used for subsequent HTTP requests to the remote.
+     *
+     * @param connectTimeout connection timeout, in milliseconds
+     * @param readTimeout read timeout, in milliseconds
+     */
     public void setTimeouts(int connectTimeout, int readTimeout) {
         this.connectTimeout = connectTimeout;
         this.readTimeout = readTimeout;
     }
 
+    /**
+     * Sets the HTTP Basic auth credentials used for subsequent requests, overriding any
+     * credentials parsed from the URL's userinfo component.
+     *
+     * @param username username, or {@code null} to clear credentials
+     * @param password password, or {@code null} to clear credentials
+     */
     public void setCredentials(String username, String password) {
         this.username = username;
         this.password = password;
@@ -317,10 +347,21 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Sets whether to force TLS/HTTPS for the connection regardless of the URL's declared scheme.
+     *
+     * @param forceTls {@code true} to require TLS
+     */
     public void setForceTls(boolean forceTls) {
         this.forceTls = forceTls;
     }
 
+    /**
+     * Sets the proxy used for subsequent HTTP requests to the remote.
+     *
+     * @param proxy proxy to route requests through; {@code null} is ignored (leaves the current
+     *              proxy, {@link Proxy#NO_PROXY} by default, unchanged)
+     */
     public void setProxy(Proxy proxy) {
         if (proxy != null) {
             this.proxy = proxy;
@@ -477,7 +518,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         } else {
             // Default capabilities compatible with bundle2 and legacy changegroups.
             // changegroup=01..05: since the remote picks the version by max(intersection)
-            // (confirmed against exchange.py), and since hg4j can also parse cg4/cg5 delta
+            // (matches exchange.py), and since hg4j can also parse cg4/cg5 delta
             // headers, it must advertise up through 04/05 to exchange data with a
             // modern hg in the optimal format. The changegroup version list only actually takes
             // effect when nested inside the "bundle2=<blob>" token -- see the comment above.
@@ -680,8 +721,8 @@ public class HgRemoteClient implements HgRemoteConnection {
      * {@code httpmediatype=} token is known: always {@code "0.1"} + {@code "partial-pull"}, plus
      * {@code "0.2"} (and {@code "comp=<engines>"} if the server also has a {@code compression=}
      * token) when the server's media type list includes {@code "0.2tx"}. Joined sorted, matching
-     * real hg's {@code b' '.join(sorted(protoparams))} — confirmed against a captured real
-     * request: {@code "0.1 0.2 comp=zstd,zlib,none,bzip2 partial-pull"}.
+     * real hg's {@code b' '.join(sorted(protoparams))}, e.g.
+     * {@code "0.1 0.2 comp=zstd,zlib,none,bzip2 partial-pull"}.
      */
     private String buildXHgProto1Header() {
         if (httpMediaTypes.isEmpty()) {

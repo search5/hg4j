@@ -39,6 +39,7 @@ public final class DeltaCodec {
      *
      * @param data The raw data to compress
      * @return The compressed hunk byte array (default zlib deflate)
+     * @throws IOException if the underlying compression stream fails
      */
     public static byte[] compress(byte[] data) throws IOException {
         return compress(data, false);
@@ -52,6 +53,7 @@ public final class DeltaCodec {
      * @param data The raw data to compress
      * @param useZstd Whether to use Zstd compression
      * @return The compressed hunk byte array
+     * @throws IOException if the underlying compression stream fails
      */
     public static byte[] compress(byte[] data, boolean useZstd) throws IOException {
         if (data == null || data.length == 0) {

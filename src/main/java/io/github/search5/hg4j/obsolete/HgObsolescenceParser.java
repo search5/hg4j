@@ -27,6 +27,10 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
  */
 public final class HgObsolescenceParser {
 
+    /** Creates a parser instance. All parsing/writing entry points are static; this class holds no state. */
+    public HgObsolescenceParser() {
+    }
+
     private static final int FM1_VERSION = 1;
     private static final int FM1_PARENT_NONE = 3;
     // usingsha256 (mercurial/obsutil.py: `usingsha256 = 2`, i.e. bit 1 — NOT bit 2/value 4).

@@ -36,13 +36,24 @@ public final class GitSubrepoUtil {
     private GitSubrepoUtil() {
     }
 
-    /** Whether {@code dir} is (or contains) a local git checkout, mirroring real hg's
-     * {@code gitsubrepo._gitmissing()} check (inverted). */
+    /**
+     * Whether {@code dir} is (or contains) a local git checkout, mirroring real hg's
+     * {@code gitsubrepo._gitmissing()} check (inverted).
+     *
+     * @param dir the candidate subrepo working directory
+     * @return {@code true} if {@code dir} contains a {@code .git} entry
+     */
     public static boolean isGitCheckout(File dir) {
         return new File(dir, ".git").exists();
     }
 
-    /** {@code git rev-parse HEAD} -- real hg's {@code gitsubrepo._gitstate()}/{@code basestate()}. */
+    /**
+     * {@code git rev-parse HEAD} -- real hg's {@code gitsubrepo._gitstate()}/{@code basestate()}.
+     *
+     * @param gitDir the git subrepo's working directory
+     * @return the full SHA-1 of the currently checked-out commit
+     * @throws IOException if the git process fails or cannot be run
+     */
     public static String revParseHead(File gitDir) throws IOException {
         return run(gitDir, Collections.emptyMap(), "rev-parse", "HEAD").trim();
     }
@@ -51,6 +62,10 @@ public final class GitSubrepoUtil {
      * Mirrors {@code gitsubrepo.dirty(ignoreupdate=True)}: staged/unstaged changes to TRACKED
      * files only -- untracked files are ignored, matching real hg's own
      * {@code git diff-index --quiet HEAD} (preceded by {@code git update-index -q --refresh}).
+     *
+     * @param gitDir the git subrepo's working directory
+     * @return {@code true} if any tracked file has uncommitted changes
+     * @throws IOException if the git process fails or cannot be run
      */
     public static boolean isDirty(File gitDir) throws IOException {
         run(gitDir, Collections.emptyMap(), "update-index", "-q", "--refresh");
@@ -58,7 +73,13 @@ public final class GitSubrepoUtil {
         return !out.trim().isEmpty();
     }
 
-    /** {@code git cat-file -e <sha>} -- real hg's {@code gitsubrepo._githavelocally()}. */
+    /**
+     * {@code git cat-file -e <sha>} -- real hg's {@code gitsubrepo._githavelocally()}.
+     *
+     * @param gitDir the git subrepo's working directory
+     * @param sha the commit SHA to check for
+     * @return {@code true} if {@code sha} is present in the local git object store
+     */
     public static boolean hasLocally(File gitDir, String sha) {
         try {
             run(gitDir, Collections.emptyMap(), "cat-file", "-e", sha);
@@ -68,15 +89,40 @@ public final class GitSubrepoUtil {
         }
     }
 
+    /**
+     * {@code git clone -q <sourceUrl> <targetDir>} -- real hg's {@code gitsubrepo._fetch()} initial
+     * clone path, creating {@code parentDir} first if needed.
+     *
+     * @param parentDir the directory {@code targetDir} will live under; created if missing
+     * @param sourceUrl the git remote URL to clone from
+     * @param targetDir the destination working directory for the clone
+     * @throws IOException if the git process fails or cannot be run
+     */
     public static void clone(File parentDir, String sourceUrl, File targetDir) throws IOException {
         parentDir.mkdirs();
         run(parentDir, Collections.emptyMap(), "clone", "-q", sourceUrl, targetDir.getAbsolutePath());
     }
 
+    /**
+     * {@code git fetch -q} -- real hg's {@code gitsubrepo._fetch()} update path for an
+     * already-cloned subrepo.
+     *
+     * @param gitDir the git subrepo's working directory
+     * @throws IOException if the git process fails or cannot be run
+     */
     public static void fetch(File gitDir) throws IOException {
         run(gitDir, Collections.emptyMap(), "fetch", "-q");
     }
 
+    /**
+     * {@code git checkout -q <sha>} -- real hg's {@code gitsubrepo.get()}, always as a plain
+     * detached checkout (see this class's javadoc for the simplification versus real hg's
+     * named-branch preference).
+     *
+     * @param gitDir the git subrepo's working directory
+     * @param sha the commit SHA to check out
+     * @throws IOException if the git process fails or cannot be run
+     */
     public static void checkout(File gitDir, String sha) throws IOException {
         run(gitDir, Collections.emptyMap(), "checkout", "-q", sha);
     }
@@ -86,6 +132,17 @@ public final class GitSubrepoUtil {
      * with {@code GIT_AUTHOR_DATE} set (ISO-8601) when a commit timestamp is supplied, then
      * returns the new HEAD commit sha -- the value {@code CommitCommand} records in
      * {@code .hgsubstate}.
+     *
+     * @param gitDir the git subrepo's working directory
+     * @param message the commit message
+     * @param author the {@code --author} value, or {@code null}/empty to use git's default
+     * @param epochSeconds the commit time to set via {@code GIT_AUTHOR_DATE}, or {@code null} to
+     *     let git use the current time
+     * @param tzOffsetSeconds the timezone offset (from UTC, hg convention: seconds west of UTC)
+     *     applied to {@code epochSeconds}; ignored if {@code epochSeconds} is {@code null},
+     *     treated as UTC if {@code null} itself
+     * @return the new HEAD commit's full SHA-1
+     * @throws IOException if the git process fails or cannot be run
      */
     public static String commit(File gitDir, String message, String author, Long epochSeconds, Integer tzOffsetSeconds) throws IOException {
         List<String> args = new ArrayList<>();
@@ -145,6 +202,11 @@ public final class GitSubrepoUtil {
      * for the "merge" and "local" prompt choices (the "remote" choice, not real hg's default, is
      * the only one that adopts the remote pin instead -- see the class-level {@code merge()}
      * quirk note above); the caller is responsible for that.
+     *
+     * @param gitDir the git subrepo's working directory
+     * @param remoteRev the remote side's pinned commit SHA
+     * @param localRev the local side's pinned commit SHA
+     * @throws IOException if the git process fails or cannot be run
      */
     public static void mergeDiverged(File gitDir, String remoteRev, String localRev) throws IOException {
         if (!hasLocally(gitDir, remoteRev)) {
@@ -160,7 +222,15 @@ public final class GitSubrepoUtil {
         // gitsubrepo.merge() takes neither branch in this case and does nothing at all.
     }
 
-    /** {@code git merge-base <rev1> <rev2>} -- real hg's {@code gitsubrepo.merge()} base lookup. */
+    /**
+     * {@code git merge-base <rev1> <rev2>} -- real hg's {@code gitsubrepo.merge()} base lookup.
+     *
+     * @param gitDir the git subrepo's working directory
+     * @param rev1 the first commit SHA
+     * @param rev2 the second commit SHA
+     * @return the best common ancestor SHA of {@code rev1} and {@code rev2}
+     * @throws IOException if the git process fails or cannot be run
+     */
     public static String mergeBase(File gitDir, String rev1, String rev2) throws IOException {
         return run(gitDir, Collections.emptyMap(), "merge-base", rev1, rev2).trim();
     }
@@ -172,6 +242,11 @@ public final class GitSubrepoUtil {
      * unconditionally, so a conflicted merge is deliberately NOT treated as an error here
      * either -- the caller only cares about the resulting git working tree state (picked up
      * later by {@link #isDirty}/{@link #commit}), not this call's own success/failure.
+     *
+     * @param gitDir the git subrepo's working directory
+     * @param revision the commit SHA to merge into the current HEAD
+     * @throws IOException if the git process itself cannot be started, or is interrupted while
+     *     running (the merge's own exit code is deliberately ignored)
      */
     public static void mergeNoCommit(File gitDir, String revision) throws IOException {
         List<String> cmd = new ArrayList<>();

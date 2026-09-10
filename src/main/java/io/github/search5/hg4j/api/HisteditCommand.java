@@ -36,12 +36,31 @@ import java.util.TreeSet;
  *     instance rather than constructed directly.
  */
 public class HisteditCommand implements AutoCloseable {
-    public enum Action { PICK, DROP, FOLD, ROLL }
+    /** The action to apply to a single revision listed in a histedit rule set. */
+    public enum Action {
+        /** Keep the revision, recommitted as-is (the default action for every revision). */
+        PICK,
+        /** Discard the revision entirely; it is marked pruned rather than physically stripped. */
+        DROP,
+        /** Merge the revision's changes and commit message into the previous PICK/FOLD/ROLL group. */
+        FOLD,
+        /** Merge the revision's changes into the previous group but discard its commit message. */
+        ROLL
+    }
 
+    /** A single line of a histedit rule set: one revision paired with the action to apply to it. */
     public static class Rule {
+        /** The action to apply to {@link #hexNode}. */
         public final Action action;
+        /** The hex node id of the revision this rule applies to. */
         public final String hexNode;
 
+        /**
+         * Creates a rule pairing an action with the revision it applies to.
+         *
+         * @param action the action to apply
+         * @param hexNode the hex node id of the target revision
+         */
         public Rule(Action action, String hexNode) {
             this.action = action;
             this.hexNode = hexNode;
@@ -51,10 +70,22 @@ public class HisteditCommand implements AutoCloseable {
     private final HgRepository repository;
     private final List<Rule> rules = new ArrayList<>();
 
+    /**
+     * Creates a histedit command against the given repository.
+     *
+     * @param repository the repository whose history will be rewritten
+     */
     public HisteditCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Appends one rule to this command's rule set, in the order the rules will be replayed.
+     *
+     * @param action the action to apply to the revision
+     * @param hexNode the hex node id of the revision the rule applies to
+     * @return this command, for chaining further {@code addRule} calls
+     */
     public HisteditCommand addRule(Action action, String hexNode) {
         if (action != null && hexNode != null && !hexNode.isEmpty()) {
             rules.add(new Rule(action, hexNode));
@@ -62,6 +93,14 @@ public class HisteditCommand implements AutoCloseable {
         return this;
     }
 
+    /**
+     * Replays the configured rule set, rewriting the affected revision range and updating the
+     * working copy to match the resulting tip. Does nothing if no rules were added.
+     *
+     * @throws IOException if reading or writing repository storage fails, or a rule references a
+     *     revision that cannot be found
+     * @throws HgLockException if the store or working-copy lock cannot be acquired
+     */
     public void call() throws IOException, HgLockException {
         if (rules.isEmpty()) {
             return;
@@ -123,7 +162,7 @@ public class HisteditCommand implements AutoCloseable {
             byte[] lastCommittedNode = rewriteBase;
             String pendingCommitMsg = null;
             // All hex nodes belonging to the currently open pick/fold/roll group, in rule
-            // order. Verified against real `hg histedit`: a fold/roll must fold *every*
+            // order. Real `hg histedit`: a fold/roll must fold *every*
             // member's file changes into the resulting commit (not just the last one), while
             // the resulting commit's author and branch always stay those of the group's
             // anchor (the pick, or first fold/roll if it opens the group) -- never those of
@@ -191,7 +230,7 @@ public class HisteditCommand implements AutoCloseable {
             // that was part of the pre-histedit working copy but is no longer part of the
             // final manifest (its owning commit got DROPped entirely, or was removed partway
             // through a fold/roll group) must disappear from the working directory too.
-            // Verified against real `hg histedit`: dropping a commit that added b.txt leaves
+            // Real `hg histedit`: dropping a commit that added b.txt leaves
             // b.txt off disk (and out of `hg manifest -r tip`) once histedit finishes.
             //
             // The dirstate's own tracked-path set must be reconciled the same way: deleting only
@@ -293,7 +332,7 @@ public class HisteditCommand implements AutoCloseable {
         File mfDat = new File(repository.getStoreDir(), "00manifest.d");
         Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        // The group anchor is the first rule of the pick/fold/roll group (verified against
+        // The group anchor is the first rule of the pick/fold/roll group (matches
         // real `hg histedit`: the resulting commit's branch -- and, further below, its
         // author -- always come from the anchor, never from a later folded-in commit).
         // The anchor's revision is never absent here: every hex in originalHexNodes was
@@ -308,7 +347,7 @@ public class HisteditCommand implements AutoCloseable {
         Map<String, String> newManifest = getManifestForCommit(changelog, manifestRevlog, parent);
 
         // 2. Replay every group member's own file changes, in rule order, onto the running
-        // manifest. Verified against real `hg histedit`: folding/rolling several commits
+        // manifest. Real `hg histedit`: folding/rolling several commits
         // together must combine ALL of their file changes (e.g. folding a commit that adds
         // b.txt into one that added a.txt must keep both files), not just the last member's.
         Set<String> filesModifiedSet = new LinkedHashSet<>();
@@ -325,7 +364,7 @@ public class HisteditCommand implements AutoCloseable {
                 filesModifiedSet.add(path);
                 String hexAndFlag = originalManifest.get(path);
                 if (hexAndFlag == null) {
-                    // File deleted in this member's commit. Verified against real hg: a
+                    // File deleted in this member's commit. Real hg: a
                     // deletion folded/rolled in behind an earlier group member that (re)wrote
                     // this same path onto disk must actually remove it from the working
                     // directory too, not just from the manifest map.

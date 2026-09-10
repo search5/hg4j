@@ -49,6 +49,11 @@ import java.util.Map;
 public class TagsCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates the command against the given repository.
+     *
+     * @param repository repository whose {@code .hgtags}/{@code localtags} are read
+     */
     public TagsCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -67,24 +72,51 @@ public class TagsCommand {
             this.local = local;
         }
 
+        /**
+         * Returns the tag name.
+         *
+         * @return the tag name
+         */
         public String getName() {
             return name;
         }
 
+        /**
+         * Returns the node id the tag resolves to.
+         *
+         * @return the raw node id the tag resolves to
+         */
         public byte[] getNode() {
             return node;
         }
 
+        /**
+         * Returns the changelog revision number the tag resolves to.
+         *
+         * @return the changelog revision number the tag resolves to
+         */
         public int getRev() {
             return rev;
         }
 
-        /** {@code true} for a tag defined in {@code .hg/localtags}, {@code false} for a global/{@code .hgtags} tag. */
+        /**
+         * {@code true} for a tag defined in {@code .hg/localtags}, {@code false} for a global/{@code .hgtags} tag.
+         *
+         * @return whether this is a local-only tag
+         */
         public boolean isLocal() {
             return local;
         }
     }
 
+    /**
+     * Lists every tag known to the repository (merged global {@code .hgtags} and local
+     * {@code localtags}, plus the pseudo-tag {@code "tip"}), ordered as described in this class's
+     * documentation.
+     *
+     * @return the resolved tags, highest revision first (ties broken by reverse name order)
+     * @throws IOException if the changelog or tag files cannot be read
+     */
     public List<Tag> call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

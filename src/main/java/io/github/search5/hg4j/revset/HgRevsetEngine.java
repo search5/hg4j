@@ -32,6 +32,12 @@ import java.util.TreeSet;
 public final class HgRevsetEngine {
     private final HgRepository repository;
 
+    /**
+     * Creates a revset engine bound to the given repository.
+     *
+     * @param repository the repository to evaluate revset queries against
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public HgRevsetEngine(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -209,10 +215,8 @@ public final class HgRevsetEngine {
     /**
      * Strips a single matching pair of surrounding quotes (single or double) from a
      * revset function argument. Real Mercurial accepts both {@code 'x'} and {@code "x"}
-     * as equivalent string literals (verified against real hg: author('Bob') and
-     * author("Bob") return identical results) -- previously only double quotes were
-     * stripped here, so a single-quoted argument like author('Bob') would search for
-     * the literal text "'bob'" and silently fail to match.
+     * as equivalent string literals: {@code author('Bob')} and {@code author("Bob")}
+     * must return identical results.
      */
     private static String stripQuotes(String value) {
         if (value.length() >= 2) {
@@ -257,11 +261,10 @@ public final class HgRevsetEngine {
                     // mistaken for "or". A single-char punctuation separator like the "," used
                     // to split sort()/limit() arguments has no such ambiguity, and real hg
                     // happily accepts a comma directly after a bare argument with no space,
-                    // e.g. "sort(0 or 1, 'date')" (verified against real hg 7.2). Requiring a
-                    // preceding whitespace/')' here previously made findLogicalKeyword(inner, ",")
-                    // fail to find the separator whenever the sort()/limit() sub-expression didn't
-                    // end in ')' (e.g. a bare revision or an "or"/"and" expression), silently
-                    // returning an empty result instead of splitting the arguments correctly.
+                    // e.g. "sort(0 or 1, 'date')". Requiring a preceding whitespace/')' unconditionally
+                    // would make findLogicalKeyword(inner, ",") fail to find the separator whenever
+                    // the sort()/limit() sub-expression doesn't end in ')' (e.g. a bare revision or
+                    // an "or"/"and" expression).
                     boolean singleCharSeparator = kwLen == 1 && !Character.isLetterOrDigit(trimmedKw.charAt(0));
                     boolean leftOk = singleCharSeparator
                             || (i == 0 || Character.isWhitespace(query.charAt(i - 1)) || query.charAt(i - 1) == ')');

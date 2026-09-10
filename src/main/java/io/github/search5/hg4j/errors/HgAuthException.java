@@ -15,9 +15,12 @@ package io.github.search5.hg4j.errors;
 public class HgAuthException extends HgTransportException {
     private static final long serialVersionUID = 1L;
 
+    /** The username whose credentials were rejected by the remote. */
     private final String username;
 
     /**
+     * Creates an authentication-failure exception for the given remote and username.
+     *
      * @param remoteUrl Target remote repository URL for authentication
      * @param username  Username that failed authentication
      */
@@ -27,6 +30,9 @@ public class HgAuthException extends HgTransportException {
     }
 
     /**
+     * Creates an authentication-failure exception for the given remote and username, wrapping an
+     * underlying cause.
+     *
      * @param remoteUrl Target remote repository URL for authentication
      * @param username  Username that failed authentication
      * @param cause     The causing exception
@@ -36,7 +42,11 @@ public class HgAuthException extends HgTransportException {
         this.username = username;
     }
 
-    /** Returns the username that failed authentication. */
+    /**
+     * Returns the username that failed authentication.
+     *
+     * @return the username whose credentials were rejected
+     */
     public String getUsername() {
         return username;
     }

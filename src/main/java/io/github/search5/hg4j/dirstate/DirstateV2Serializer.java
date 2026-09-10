@@ -18,6 +18,13 @@ import io.github.search5.hg4j.errors.HgValidationException;
  */
 public class DirstateV2Serializer {
 
+    /**
+     * Creates a new serializer instance. Every method on this class is static; instantiation
+     * is not needed.
+     */
+    public DirstateV2Serializer() {
+    }
+
     private static class TreeNode {
         final String name;
         Dirstate.Entry entry;
@@ -53,6 +60,10 @@ public class DirstateV2Serializer {
     /**
      * Convenience overload that wraps a bare entry map in a fresh {@link Dirstate} (with no
      * parents/copies) before serializing.
+     *
+     * @param entries the path-to-entry map to serialize
+     * @return the binary dirstate-v2 encoding of {@code entries}
+     * @throws IOException if a path or copy-source name exceeds the format's length limit
      */
     public static byte[] serialize(Map<String, Dirstate.Entry> entries) throws IOException {
         Dirstate d = new Dirstate();
@@ -64,6 +75,10 @@ public class DirstateV2Serializer {
 
     /**
      * Serializes memory dirstate representation into v2 binary format.
+     *
+     * @param dirstate the in-memory dirstate (entries plus copy map) to serialize
+     * @return the binary dirstate-v2 encoding of {@code dirstate}
+     * @throws IOException if a path or copy-source name exceeds the format's length limit
      */
     public static byte[] serialize(Dirstate dirstate) throws IOException {
         Map<String, Dirstate.Entry> entries = dirstate.getEntries();

@@ -13,6 +13,12 @@ public class MaxCountRevFilter implements RevFilter {
     private final int maxCount;
     private int count = 0;
 
+    /**
+     * Creates a filter that includes at most {@code maxCount} revisions.
+     *
+     * @param maxCount maximum number of revisions to include; must be non-negative
+     * @throws IllegalArgumentException if {@code maxCount} is negative
+     */
     public MaxCountRevFilter(int maxCount) {
         if (maxCount < 0) {
             throw new IllegalArgumentException("Max count must be non-negative");

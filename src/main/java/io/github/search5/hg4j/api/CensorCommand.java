@@ -48,6 +48,12 @@ public final class CensorCommand {
     private String tombstone = "";
     private boolean checkHeads = true;
 
+    /**
+     * Creates a censor command for the given repository.
+     *
+     * @param repository the repository containing the file revision to censor
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public CensorCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -55,17 +61,34 @@ public final class CensorCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the repository-relative path of the file whose revision is to be censored.
+     *
+     * @param path the file's repository-relative path
+     * @return this command, for chaining
+     */
     public CensorCommand setFile(String path) {
         this.path = path;
         return this;
     }
 
+    /**
+     * Sets the target filelog revision to censor, identified by its hex node ID.
+     *
+     * @param nodeHex the hex node ID of the file revision to censor
+     * @return this command, for chaining
+     */
     public CensorCommand setRevision(String nodeHex) {
         this.nodeHex = nodeHex;
         return this;
     }
 
-    /** Optional free-text reason recorded in the tombstone (empty by default, matching real hg). */
+    /**
+     * Optional free-text reason recorded in the tombstone (empty by default, matching real hg).
+     *
+     * @param tombstone the free-text message to embed in the tombstone, or {@code null} for none
+     * @return this command, for chaining
+     */
     public CensorCommand setTombstone(String tombstone) {
         this.tombstone = tombstone == null ? "" : tombstone;
         return this;
@@ -77,12 +100,23 @@ public final class CensorCommand {
      * {@link #path} at a repository head or a working-directory parent (see this class's javadoc).
      * Passing {@code false} bypasses the guard entirely, exactly like real hg's
      * {@code --no-check-heads}.
+     *
+     * @param checkHeads whether to enforce the heads/working-parent reachability guard
+     * @return this command, for chaining
      */
     public CensorCommand setCheckHeads(boolean checkHeads) {
         this.checkHeads = checkHeads;
         return this;
     }
 
+    /**
+     * Performs the censor: replaces the target filelog revision's content with a tombstone,
+     * flagging it {@link Revlog#REVIDX_ISCENSORED}, after checking (unless {@link
+     * #setCheckHeads} disabled it) that the revision is not still live at any head or
+     * working-directory parent.
+     *
+     * @throws IOException if the filelog cannot be read or rewritten
+     */
     public void call() throws IOException {
         if (path == null || path.isEmpty()) {
             throw new HgValidationException("File path is required for censor");

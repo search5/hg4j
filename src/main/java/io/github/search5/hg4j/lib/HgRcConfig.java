@@ -25,6 +25,7 @@ import java.util.Collections;
 public final class HgRcConfig {
     private final Map<String, Map<String, String>> sections = new LinkedHashMap<>();
 
+    /** Creates a new, empty configuration with no sections loaded. */
     public HgRcConfig() {}
 
     /**
@@ -45,6 +46,8 @@ public final class HgRcConfig {
      * Parses INI-format configuration string with no base directory, so a
      * {@code %include} using a relative path cannot be resolved (mirrors calling
      * {@link #parse(String, File)} with a {@code null} directory).
+     *
+     * @param content the raw hgrc text
      */
     public void parse(String content) {
         parse(content, null);
@@ -149,6 +152,11 @@ public final class HgRcConfig {
 
     /**
      * Gets a configuration value, falling back to a default if not found.
+     *
+     * @param section section name (case-insensitive)
+     * @param key key name
+     * @param defaultValue the value to return when {@code section}/{@code key} is not set
+     * @return the config value, or {@code defaultValue} if not found
      */
     public String get(String section, String key, String defaultValue) {
         String val = get(section, key);
@@ -157,6 +165,8 @@ public final class HgRcConfig {
 
     /**
      * Helper to resolve the UI username.
+     *
+     * @return the {@code [ui] username} setting, or {@code null} if unset
      */
     public String getUsername() {
         return get("ui", "username");
@@ -164,6 +174,9 @@ public final class HgRcConfig {
 
     /**
      * Helper to resolve a path url by name (e.g. "default").
+     *
+     * @param name the path name, as it appears as a key in the {@code [paths]} section
+     * @return the configured URL for that path name, or {@code null} if unset
      */
     public String getPath(String name) {
         return get("paths", name);

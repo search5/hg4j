@@ -37,6 +37,11 @@ public class HeadsCommand {
     private boolean includeClosed = false;
     private boolean topo = false;
 
+    /**
+     * Creates a heads command bound to the given repository.
+     *
+     * @param repository the repository to query heads in
+     */
     public HeadsCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -48,6 +53,9 @@ public class HeadsCommand {
      * name unknown to the repository yields an empty result (real hg instead aborts with
      * {@code abort: unknown revision '<name>'} at the CLI layer; this porcelain API returns no
      * heads rather than throwing, consistent with this codebase's other list-returning commands).
+     *
+     * @param branch the named branch to restrict results to, or {@code null} for no filter
+     * @return this command, for chaining
      */
     public HeadsCommand setBranch(String branch) {
         this.branch = branch;
@@ -62,6 +70,9 @@ public class HeadsCommand {
      * Meaningless together with {@link #setTopo}{@code (true)}: a closed head with no children is
      * still a topological leaf and is always included there, exactly as real hg's
      * {@code --topo --closed} combination behaves (closed is simply a no-op).
+     *
+     * @param includeClosed {@code true} to also include closed-branch heads
+     * @return this command, for chaining
      */
     public HeadsCommand setIncludeClosed(boolean includeClosed) {
         this.includeClosed = includeClosed;
@@ -73,6 +84,9 @@ public class HeadsCommand {
      * repo-wide topological heads (revisions with no children anywhere in the repository).
      * Default {@code false}, matching real hg's own default (plain {@code hg heads} is
      * branch-aware, not purely topological).
+     *
+     * @param topo {@code true} to switch to pure topological-leaf mode
+     * @return this command, for chaining
      */
     public HeadsCommand setTopo(boolean topo) {
         this.topo = topo;

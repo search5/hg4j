@@ -33,6 +33,12 @@ public class RecoverCommand {
     private final HgRepository repository;
     private boolean verify = false;
 
+    /**
+     * Creates a recover command for the given repository.
+     *
+     * @param repository the repository to check for an interrupted transaction
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public RecoverCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -45,6 +51,7 @@ public class RecoverCommand {
      * successfully rolled back, additionally runs {@link VerifyCommand} afterward -- mirroring
      * real hg's {@code hg recover --verify} flag -- and reports its errors on the result.
      *
+     * @param verify whether to run {@link VerifyCommand} after a successful rollback
      * @return this command, for chaining
      */
     public RecoverCommand setVerify(boolean verify) {
@@ -55,6 +62,8 @@ public class RecoverCommand {
     /**
      * Checks for an interrupted transaction and rolls it back if one is found, then returns a
      * {@link RecoverResult} describing what happened.
+     *
+     * @return the outcome of the recovery attempt
      */
     public RecoverResult call() {
         File journalFile = new File(repository.getStoreDir(), "journal");
@@ -94,6 +103,8 @@ public class RecoverCommand {
         }
 
         /**
+         * Whether an interrupted transaction was found.
+         *
          * @return {@code true} if an interrupted transaction (a leftover journal) was found.
          * {@code false} corresponds to real hg's "no interrupted transaction available" / exit 1.
          */
@@ -102,6 +113,8 @@ public class RecoverCommand {
         }
 
         /**
+         * Whether recovery (or the lack of anything to recover) completed successfully.
+         *
          * @return {@code true} if there was nothing to recover, or an interrupted transaction was
          * found and successfully rolled back. {@code false} means a journal was found but the
          * rollback could not complete, and it has been retained on disk for a future retry.
@@ -111,6 +124,8 @@ public class RecoverCommand {
         }
 
         /**
+         * The errors found by a post-rollback verify pass, if one was requested and ran.
+         *
          * @return the errors reported by {@link VerifyCommand} when {@code --verify} behavior was
          * requested via {@link RecoverCommand#setVerify(boolean)} and a rollback actually ran and
          * succeeded; {@code null} if verify was not requested, or was skipped because there was

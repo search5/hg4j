@@ -20,10 +20,21 @@ public class RevsetCommand {
     private final HgRepository repository;
     private String expression;
 
+    /**
+     * Creates a revset command for the given repository.
+     *
+     * @param repository the repository whose changelog DAG to query
+     */
     public RevsetCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revset expression to evaluate.
+     *
+     * @param expression a revset functional expression (e.g. {@code "all()"}, {@code "parents(tip)"})
+     * @return this command, for chaining
+     */
     public RevsetCommand setExpression(String expression) {
         this.expression = expression;
         return this;

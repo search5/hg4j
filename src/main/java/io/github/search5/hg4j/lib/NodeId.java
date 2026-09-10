@@ -19,6 +19,8 @@ public final class NodeId implements Comparable<NodeId> {
     private final byte[] bytes;
 
     /**
+     * Creates a node ID wrapping the given raw bytes.
+     *
      * @param bytes the raw 20-byte node ID; copied defensively, so later mutation of the array
      *              by the caller has no effect on this instance
      * @throws IllegalArgumentException if {@code bytes} is {@code null} or not exactly 20 bytes
@@ -34,6 +36,8 @@ public final class NodeId implements Comparable<NodeId> {
      * Parses a 40-character hexadecimal node ID string, as found e.g. in {@code hg log}
      * output or user-supplied revision arguments.
      *
+     * @param hex the 40-character hexadecimal node ID string to parse
+     * @return the parsed node ID
      * @throws IllegalArgumentException if {@code hex} is {@code null}, not exactly 40
      *         characters, or contains a non-hexadecimal character
      */
@@ -54,12 +58,20 @@ public final class NodeId implements Comparable<NodeId> {
         return new NodeId(raw);
     }
 
-    /** Returns a defensive copy of the raw 20-byte node ID. */
+    /**
+     * Returns a defensive copy of the raw 20-byte node ID.
+     *
+     * @return a fresh 20-byte array containing this node ID's bytes
+     */
     public byte[] getBytes() {
         return Arrays.copyOf(bytes, 20);
     }
 
-    /** Renders the node ID as a 40-character lowercase hexadecimal string. */
+    /**
+     * Renders the node ID as a 40-character lowercase hexadecimal string.
+     *
+     * @return the full 40-character hex representation of this node ID
+     */
     public String toHex() {
         StringBuilder sb = new StringBuilder(40);
         for (byte b : bytes) {
@@ -68,7 +80,11 @@ public final class NodeId implements Comparable<NodeId> {
         return sb.toString();
     }
 
-    /** Whether this is the all-zero {@link #NULL} node ID. */
+    /**
+     * Whether this is the all-zero {@link #NULL} node ID.
+     *
+     * @return {@code true} if this node ID equals {@link #NULL}
+     */
     public boolean isNull() {
         return Arrays.equals(this.bytes, NULL.bytes);
     }

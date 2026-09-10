@@ -52,15 +52,33 @@ public class PhaseCommand {
     private int forcePhase = -1; // 0=public, 1=draft, 2=secret
     private boolean force = false;
 
+    /**
+     * Creates a phase command for the given repository.
+     *
+     * @param repository the repository whose phase roots to query or update
+     */
     public PhaseCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the target revision to query or move.
+     *
+     * @param revision a revision identifier (hex node, prefix, or other spec {@code call()} resolves)
+     * @return this command, for chaining
+     */
     public PhaseCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Requests a phase change to {@code phase} for the target revision instead of just querying
+     * its current phase.
+     *
+     * @param phase the target phase (0=public, 1=draft, 2=secret)
+     * @return this command, for chaining
+     */
     public PhaseCommand setPhase(int phase) {
         this.forcePhase = phase;
         return this;
@@ -69,6 +87,9 @@ public class PhaseCommand {
     /**
      * Mirrors real hg's {@code hg phase --force}: without it, moving a revision to a
      * <em>higher</em> phase number (more secret) than its current effective phase is rejected.
+     *
+     * @param force whether to allow moving a revision to a higher (more secret) phase
+     * @return this command, for chaining
      */
     public PhaseCommand setForce(boolean force) {
         this.force = force;

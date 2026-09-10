@@ -36,6 +36,11 @@ public class FilesCommand {
     private String revision;
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
+    /**
+     * Creates a files command bound to the given repository.
+     *
+     * @param repository the repository whose tracked files will be listed
+     */
     public FilesCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -44,12 +49,22 @@ public class FilesCommand {
      * Sets the revision to list files at (revision number, hex node id/prefix, or
      * {@code "tip"}). When unset (the default), the working copy's tracked set
      * (dirstate) is used instead of any specific commit.
+     *
+     * @param revision the revision identifier to list files at, or {@code null} to use the working copy
+     * @return this command, for chaining
      */
     public FilesCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Sets the revision to list files at, as a {@link NodeId}. Equivalent to
+     * {@link #setRevision(String)} with the node's hex representation.
+     *
+     * @param nodeId the node id of the revision to list files at, or {@code null} to use the working copy
+     * @return this command, for chaining
+     */
     public FilesCommand setRevision(NodeId nodeId) {
         this.revision = nodeId != null ? nodeId.toHex() : null;
         return this;
@@ -58,6 +73,9 @@ public class FilesCommand {
     /**
      * Sets an explicit tree filter used to match paths, e.g. one built via
      * {@link HgTreeFilter#createPathPrefixFilter} or wrapping a {@link SparsePathFilter}.
+     *
+     * @param treeFilter the filter paths must match to be included, or {@code null} to match everything
+     * @return this command, for chaining
      */
     public FilesCommand setTreeFilter(HgTreeFilter treeFilter) {
         this.treeFilter = treeFilter != null ? treeFilter : HgTreeFilter.ALL;
@@ -69,12 +87,21 @@ public class FilesCommand {
      * patterns and matches them the same way {@link SparsePathFilter} already does
      * (including its directory-prefix semantics, where a pattern that names a directory
      * matches everything below it).
+     *
+     * @param globPatterns one or more glob patterns paths must match to be included
+     * @return this command, for chaining
      */
     public FilesCommand setPattern(String... globPatterns) {
         this.treeFilter = HgTreeFilter.fromPathFilter(new SparsePathFilter(globPatterns));
         return this;
     }
 
+    /**
+     * Lists the matching tracked file paths, sorted the same way real hg orders them.
+     *
+     * @return the sorted list of repository-relative tracked file paths
+     * @throws IOException if the dirstate or the target revision's manifest cannot be read
+     */
     public List<String> call() throws IOException {
         List<String> paths;
 

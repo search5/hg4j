@@ -52,10 +52,21 @@ public class ImportCommand {
     private final HgRepository repository;
     private String patchText;
 
+    /**
+     * Creates the command against the given repository.
+     *
+     * @param repository repository the patch is applied to and committed against
+     */
     public ImportCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the unified-diff patch text to apply.
+     *
+     * @param patchText patch content, as produced by {@code hg export}/{@code hg diff} or {@link ExportCommand}
+     * @return this command, for chaining
+     */
     public ImportCommand setPatchText(String patchText) {
         this.patchText = patchText;
         return this;
@@ -72,6 +83,7 @@ public class ImportCommand {
      * commits the result via {@link CommitCommand}.
      *
      * @throws IOException if patch parsing or commit writing fails
+     * @throws HgLockException if the working copy or repository lock cannot be acquired for the commit
      */
     public void call() throws IOException, HgLockException {
         if (patchText == null || patchText.isEmpty()) {

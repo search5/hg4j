@@ -42,8 +42,8 @@ import java.nio.file.StandardOpenOption;
  * offset 18:            data_unused (8 bytes, big-endian unsigned) — bytes of dead/orphaned trie
  *                       blocks still physically present in the .nd file (informational only).
  * offset 26:            tip_node_size (8 bytes, big-endian unsigned) — normally 20.
- * offset 34:            uid (uid_size bytes, ASCII) — identifies the companion "<radix>-<uid>.nd"
- *                       raw trie data file.
+ * offset 34:            uid (uid_size bytes, ASCII) — identifies the companion
+ *                       {@code <radix>-<uid>.nd} raw trie data file.
  * offset 34+uid_size:    tip_node (tip_node_size bytes) — the full node hash of revision tip_rev;
  *                       if it doesn't match the revlog's actual node at tip_rev, the docket is
  *                       stale (e.g. history-rewriting since the nodemap was last persisted) and
@@ -88,18 +88,38 @@ public final class NodeMapFile {
         this.uid = uid;
     }
 
+    /**
+     * Returns the revision number the persisted nodemap was last built up to.
+     *
+     * @return the revision number the persisted nodemap was last built up to
+     */
     public int getTipRev() {
         return tipRev;
     }
 
+    /**
+     * Returns the full node hash of {@link #getTipRev()}, used to detect a stale docket.
+     *
+     * @return the full node hash of {@link #getTipRev()}
+     */
     public byte[] getTipNode() {
         return tipNode;
     }
 
+    /**
+     * Returns the size, in bytes, of the valid prefix of the companion {@code .nd} trie data file.
+     *
+     * @return the size, in bytes, of the valid prefix of the companion {@code .nd} trie data file
+     */
     public long getDataLength() {
         return dataLength;
     }
 
+    /**
+     * Returns the number of bytes of dead/orphaned trie blocks still present in the {@code .nd} file.
+     *
+     * @return the number of bytes of dead/orphaned trie blocks still present in the {@code .nd} file
+     */
     public long getDataUnused() {
         return dataUnused;
     }
@@ -117,6 +137,11 @@ public final class NodeMapFile {
      * exact match (this mirrors real hg's own reference nodemap.py {@code _find_node}, and is why
      * production Mercurial's C/Rust nodetree implementations always confirm the candidate's full
      * node before trusting a trie hit).
+     *
+     * @param node20 clipped, 20-byte node hash to look up
+     * @return the revision number encoded at the trie leaf the walk terminates on, or
+     *     {@code null} if the trie has no entry along that path (not yet independently verified
+     *     against the actual node hash -- see above)
      */
     public Integer findRevision(byte[] node20) {
         if (blocks.length == 0) {
@@ -160,6 +185,10 @@ public final class NodeMapFile {
      * hg's own {@code persisted_data()} behaves the same way — a docket that doesn't check out is
      * silently discarded, not an error) so callers can safely fall back to the ordinary
      * full-revlog-scan node lookup.
+     *
+     * @param idxFile revlog index file (e.g. {@code .../00changelog.i}) whose persistent nodemap
+     *     docket and trie data file are loaded, if present and valid
+     * @return the loaded nodemap, or {@code null} if no usable persistent nodemap exists
      */
     public static NodeMapFile tryLoad(File idxFile) {
         try {
@@ -431,6 +460,11 @@ public final class NodeMapFile {
      * docket, exactly matching real hg's own "the persistent nodemap is an accelerating cache, not
      * a source of truth" contract.
      *
+     * @param idxFile revlog index file (e.g. {@code .../00changelog.i}) the nodemap is persisted
+     *                next to
+     * @param existing previously loaded nodemap to attempt an incremental update against, or
+     *                {@code null} to always perform a full rebuild
+     * @param revisionCount total number of revisions the revlog now has
      * @param nodeOf resolves a revision number to its full node hash (>= 20 bytes; only the first
      *               20 are used, matching {@link #clip20}).
      * @return the freshly-written nodemap snapshot (re-read from the files just written, so it is

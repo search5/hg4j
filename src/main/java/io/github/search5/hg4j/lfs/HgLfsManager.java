@@ -63,16 +63,23 @@ public final class HgLfsManager {
      * that DO have a repository's config available should use
      * {@link #HgLfsManager(File, HgRcConfig)} instead, which resolves the user cache exactly like
      * real hg does.
+     *
+     * @param hgDir the repository's {@code .hg} directory
      */
     public HgLfsManager(File hgDir) {
         this(hgDir, null);
     }
 
     /**
+     * Creates an LFS manager for the given repository, resolving the user-level cache directory
+     * from {@code config}.
+     *
+     * @param hgDir the repository's {@code .hg} directory
      * @param config the repository's merged hgrc config, consulted for {@code [lfs] usercache}
      *     (an explicit override path) and {@code [experimental] lfs.disableusercache} (turns the
      *     user cache off entirely) -- {@code null} behaves like an empty config (user cache
      *     enabled at the real default per-OS path, matching real hg's own defaults).
+     * @throws IllegalArgumentException if {@code hgDir} is {@code null}
      */
     public HgLfsManager(File hgDir, HgRcConfig config) {
         if (hgDir == null) {
@@ -84,12 +91,20 @@ public final class HgLfsManager {
         this.userCacheDir = config == null ? null : resolveUserCacheDir(config);
     }
 
+    /**
+     * Returns the per-repository local LFS object store directory ({@code .hg/store/lfs/objects}).
+     *
+     * @return the per-repository local LFS object store directory
+     */
     public File getLfsObjectsDir() {
         return lfsObjectsDir;
     }
 
     /** The resolved user-level LFS cache directory, or {@code null} if disabled/unconfigured for
-     * this manager instance. Exposed mainly for tests. */
+     * this manager instance. Exposed mainly for tests.
+     *
+     * @return the resolved user-level cache directory, or {@code null} if disabled/unresolvable
+     */
     public File getUserCacheDir() {
         return userCacheDir;
     }
@@ -166,6 +181,7 @@ public final class HgLfsManager {
      * remote by appending {@code ".git/info/lfs"} -- a git-lfs server-discovery convention hg
      * reuses verbatim -- NOT the bare {@code "/info/lfs"} path.
      *
+     * @param repository the repository whose LFS server URL is being resolved
      * @return the resolved base URL (caller appends {@code "/objects/batch"} etc.), or
      *     {@code null} if neither {@code [lfs] url} nor {@code [paths] default} is configured.
      */
@@ -195,8 +211,13 @@ public final class HgLfsManager {
      * same {@code [lfs] url} override and user-cache config (standard: a single read path, not
      * one-off duplicated logic per caller).
      *
+     * @param repository the repository the revision belongs to, used to resolve the LFS server URL and cache config
+     * @param storedContent the raw filelog revision content, which is an LFS pointer when {@code isExtStored} is {@code true}
+     * @param isExtStored whether {@code storedContent} is an LFS pointer ({@code REVIDX_EXTSTORED}) rather than literal file content
      * @param pathForErrors the repository-relative file path, included in a thrown message only
      *     -- may be {@code null}
+     * @return the real file bytes, either {@code storedContent} unchanged or the resolved LFS blob
+     * @throws IOException if the pointer is malformed, or the blob is neither cached nor fetchable from the server
      */
     public static byte[] resolveContent(HgRepository repository, byte[] storedContent, boolean isExtStored,
                                          String pathForErrors) throws IOException {
@@ -230,6 +251,7 @@ public final class HgLfsManager {
      * order-independent since single-letter suffixes never match a two-letter one) multiplies a
      * leading (possibly fractional) number by 1/2^10/2^20/2^30 as appropriate.
      *
+     * @param value the raw {@code [lfs] threshold} config value, e.g. {@code "10MB"} or {@code "1024"}
      * @return the parsed byte count, or -1 if {@code value} is {@code null}/blank (no threshold
      *     configured -- caller should treat every file as non-LFS in that case, matching real hg's
      *     own "lfs.threshold unset" default of never triggering).
@@ -499,14 +521,31 @@ public final class HgLfsManager {
         cacheObject(pointer, getResponse.body());
     }
 
+    /**
+     * Minimal recursive-descent JSON parser used to decode the LFS batch API's response body
+     * (objects/actions/errors), avoiding a dependency on a full JSON library for this one
+     * narrow use.
+     */
     public static class MapJsonParser {
         private final String src;
         private int ptr = 0;
-        
+
+        /**
+         * Creates a parser over the given JSON source text.
+         *
+         * @param src the JSON document to parse
+         */
         public MapJsonParser(String src) {
             this.src = src;
         }
-        
+
+        /**
+         * Parses the next JSON value starting at the current position.
+         *
+         * @return the parsed value: a {@code Map<String, Object>}, {@code List<Object>},
+         *         {@code String}, {@code Number}, {@code Boolean}, or {@code null}
+         * @throws IOException if the source text is not valid JSON
+         */
         public Object parse() throws IOException {
             skipWhitespace();
             if (ptr >= src.length()) throw new IOException("Unexpected end of JSON");

@@ -26,6 +26,11 @@ public final class RenameCommand {
     private String sourcePath;
     private String targetPath;
 
+    /**
+     * Creates the command against the given repository.
+     *
+     * @param repository repository the file/directory is renamed within
+     */
     public RenameCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -33,11 +38,23 @@ public final class RenameCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the repository-relative path of the file/directory to rename.
+     *
+     * @param sourcePath repository-relative path of the existing file/directory
+     * @return this command, for chaining
+     */
     public RenameCommand setSource(String sourcePath) {
         this.sourcePath = sourcePath;
         return this;
     }
 
+    /**
+     * Sets the repository-relative destination path of the rename.
+     *
+     * @param targetPath repository-relative path the file/directory is moved to
+     * @return this command, for chaining
+     */
     public RenameCommand setTarget(String targetPath) {
         this.targetPath = targetPath;
         return this;
@@ -47,6 +64,7 @@ public final class RenameCommand {
      * Executes the file rename and SCM copy history registration.
      *
      * @throws IOException if physical file move or dirstate write fails
+     * @throws HgLockException if the working copy lock cannot be acquired
      */
     public void call() throws IOException, HgLockException {
         if (sourcePath == null || targetPath == null) {

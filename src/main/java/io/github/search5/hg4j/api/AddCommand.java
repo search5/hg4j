@@ -25,10 +25,23 @@ public class AddCommand {
     private final HgRepository repository;
     private final List<String> files = new ArrayList<>();
 
+    /**
+     * Creates a command targeting the given repository, with no files selected yet.
+     *
+     * @param repository the repository to add files to
+     */
     public AddCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Selects a specific file to add. If no files are selected before {@link #call()}, all
+     * untracked files in the working copy are added instead.
+     *
+     * @param file the path (relative to the repository root) to add; backslashes are normalized
+     *     to forward slashes; {@code null} or empty values are ignored
+     * @return this command, for chaining
+     */
     public AddCommand addFile(String file) {
         if (file != null && !file.isEmpty()) {
             files.add(file.replace('\\', '/'));
@@ -36,6 +49,15 @@ public class AddCommand {
         return this;
     }
 
+    /**
+     * Adds the selected files (or, if none were selected, every untracked file found by scanning
+     * the working copy) to the dirstate. A path already carrying a dirstate entry is restored via
+     * "normallookup" rather than reset to a fresh add, preserving its filelog history; a path
+     * already pending as a fresh add is left untouched.
+     *
+     * @throws IOException if scanning the working copy or reading/writing the dirstate fails
+     * @throws HgLockException if the working copy cannot be locked
+     */
     public void call() throws IOException, HgLockException {
         try (HgLock wlock = repository.lockWorkingCopy()) {
             Dirstate dirstate = repository.getDirstate();

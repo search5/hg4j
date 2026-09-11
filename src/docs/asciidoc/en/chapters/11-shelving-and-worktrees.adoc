@@ -1,7 +1,7 @@
 == Work in Progress: Shelving & Worktrees
 
 This chapter covers `shelve()`, which sets aside work you don't want to commit yet;
-`worktree()`, which creates another working tree sharing the same repository; and `resolve()`,
+`worktree()`, which creates another working copy sharing the same repository; and `resolve()`,
 which clears conflicts left behind by a merge, graft, rebase, or backout.
 
 === Setting changes aside (shelve)
@@ -11,8 +11,8 @@ which clears conflicts left behind by a merge, graft, rebase, or backout.
 include::{examplesdir}/WorkInProgressExamples.java[tag=shelve-changes]
 ----
 
-`shelve()` saves the working tree's currently modified/added/removed files under a given name,
-then reverts the working tree back to its parent commit. This lets you clear your workspace
+`shelve()` saves the working copy's currently modified/added/removed files under a given name,
+then reverts the working copy back to its parent commit. This lets you clear your workspace
 without committing when you need to switch to something else urgently. Omitting `setName()`
 leaves the name at its default, `"default"`.
 
@@ -24,10 +24,10 @@ include::{examplesdir}/WorkInProgressExamples.java[tag=unshelve-changes]
 ----
 
 Passing `setUnshelve(true)` does the reverse. Internally, the shelved changes are replayed as a
-throwaway commit on top of the parent they were originally shelved from; if the working tree's
+throwaway commit on top of the parent they were originally shelved from; if the working copy's
 parent has since changed (because something else was committed on top of it), that throwaway
 commit is rebased onto the new parent -- a no-op if nothing happened in between -- and the result
-is finally released back onto the working tree as pending, uncommitted changes. The throwaway
+is finally released back onto the working copy as pending, uncommitted changes. The throwaway
 commit created along the way is erased without a trace the moment this succeeds.
 
 If the rebase step hits a conflict, it pauses exactly the way a real `hg rebase` would, and an
@@ -45,9 +45,9 @@ include::{examplesdir}/WorkInProgressExamples.java[tag=create-worktree]
 ----
 
 `worktree()` is just a more Git-familiar name for what is really Mercurial's `hg share` --
-rather than creating an entirely separate repository, it creates a new working tree that shares
-the **same store**. A commit made from either working tree is immediately visible from the
-other. The return value is an `HgRepository` pointing at the new working tree, and the target
+rather than creating an entirely separate repository, it creates a new working copy that shares
+the **same store**. A commit made from either working copy is immediately visible from the
+other. The return value is an `HgRepository` pointing at the new working copy, and the target
 directory must be empty or not yet exist.
 
 === Resolving conflicts

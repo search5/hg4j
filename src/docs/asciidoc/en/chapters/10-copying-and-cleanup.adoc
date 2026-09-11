@@ -1,6 +1,6 @@
 == Copying, Renaming & Cleanup
 
-This chapter covers the commands that work on files in the working tree (`copy()`, `rename()`,
+This chapter covers the commands that work on files in the working copy (`copy()`, `rename()`,
 `addremove()`, `forget()`) and the commands that clean up the repository itself (`purge()`,
 `gc()`).
 
@@ -35,7 +35,7 @@ in the copyMap.
 include::{examplesdir}/FileMaintenanceExamples.java[tag=addremove-untracked-and-missing]
 ----
 
-`addremove()` scans the working tree once, adding every untracked file and marking every tracked
+`addremove()` scans the working copy once, adding every untracked file and marking every tracked
 file that has disappeared from disk as removed. The return value is a list of status-style
 strings such as `"A path/to/new.txt"` / `"R path/to/gone.txt"`, so you can see exactly what
 changed.
@@ -50,7 +50,7 @@ include::{examplesdir}/FileMaintenanceExamples.java[tag=forget-a-file]
 `forget()` is the opposite of `remove()`: it untracks a file **without touching it on disk at
 all**. A file that has never been committed is simply dropped from the dirstate; an
 already-committed file is instead just flagged to be recorded as removed at the next commit,
-while the working tree's content is left exactly as it is.
+while the working copy's content is left exactly as it is.
 
 === Cleaning up untracked files (purge)
 
@@ -64,7 +64,7 @@ using it. Its default matches real `hg purge`: it deletes files that are untrack
 matched by `.hgignore`, plus any directories that end up empty as a result. Conversely:
 
 * Ignored files (matched by `.hgignore`) are never touched.
-* Any path declared as a subrepo is skipped entirely, so a subrepo's own working tree is never
+* Any path declared as a subrepo is skipped entirely, so a subrepo's own working copy is never
   destroyed.
 * A symlink is never followed into whatever it points at, even a directory -- only the link
   itself is ever a deletion candidate (a broken symlink whose target is missing is also a

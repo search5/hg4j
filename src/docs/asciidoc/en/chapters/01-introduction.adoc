@@ -7,8 +7,11 @@ etc.) and a high-level Porcelain layer -- the `Hg` facade and its `XxxCommand` c
 
 This manual is a **task-oriented usage guide**. It covers "how do I add a file, commit it, and
 push it to a remote," not an exhaustive listing of every class and method. For a complete
-reference of every public class, method, and parameter, see the generated Javadoc instead.
+reference of every public class, method, and parameter, see the Javadoc instead:
 
+* **Published (always matches the latest release on Maven Central):** https://javadoc.io/doc/io.github.search5.hg4j/hg4j[javadoc.io/doc/io.github.search5.hg4j/hg4j]
+* **Local build:**
++
 [source,bash]
 ----
 ./gradlew javadoc    # English, generated under build/docs/javadoc/

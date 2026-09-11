@@ -7,8 +7,11 @@
 
 이 매뉴얼은 **작업 중심의 사용법 가이드**입니다. "파일을 추가하고 커밋한 뒤 원격에 푸시하려면
 어떻게 하는가"를 다루지, 모든 클래스와 메서드를 빠짐없이 나열하지는 않습니다. public
-클래스와 메서드, 파라미터의 완전한 레퍼런스가 필요하면 생성된 Javadoc을 참고하세요.
+클래스와 메서드, 파라미터의 완전한 레퍼런스가 필요하면 Javadoc을 참고하세요.
 
+* **배포판(항상 Maven Central의 최신 릴리스와 일치):** https://javadoc.io/doc/io.github.search5.hg4j/hg4j[javadoc.io/doc/io.github.search5.hg4j/hg4j]
+* **로컬 빌드:**
++
 [source,bash]
 ----
 ./gradlew javadoc    # 영문, build/docs/javadoc/ 아래 생성

@@ -1,0 +1,113 @@
+[[patches-and-bundles]]
+== 패치, 번들 & 원격 비교하기
+
+리비전을 다른 곳으로 옮기는 방법은 `push()`/`pull()` 말고도 두 가지가 더 있습니다:
+사람이 읽을 수 있는 텍스트 **패치 파일**(`export()`/`importPatch()`,
+`git format-patch`/`git am`과 유사)과, 바이너리 **체인지그룹 번들**(`bundle()`/
+`unbundle()`, 완전히 다른 포맷)입니다. 이 둘은 이름이 비슷해 보이지만 파일 포맷도, 용도도
+다르므로 서로 바꿔 쓸 수 없습니다. 이 장은 또한 실제로 풀/푸시하지 않고 원격과의 차이만
+미리 보는 `incoming()`/`outgoing()`, 그리고 버전 관리 메타데이터 없이 스냅샷을 뽑아내는
+`archive()`도 함께 다룹니다.
+
+=== 패치 파일 내보내기/적용하기
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=export-patch]
+----
+
+`export()`는 `hg export`의 기본(비-`--git`) 출력 형식과 동일하게, `# HG changeset patch`로
+시작하는 헤더 뒤에 유니파이드 diff 본문이 이어지는 **텍스트 패치**를 만듭니다. 메일로
+보내거나 파일로 저장해두기 좋은 형태입니다.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=import-patch]
+----
+
+`importPatch()`는 이 패치를 작업 디렉터리에 적용한 뒤 **현재 dirstate 부모 위에** 새
+커밋으로 기록합니다. 실제 `hg import`가 `--exact` 없이 동작할 때와 마찬가지로, 패치 자체에
+적힌 `# Node ID`/`# Parent` 헤더는 무시됩니다 -- 작성자/날짜 정보를 읽어오는 데만 쓰이고,
+패치를 어디에 적용할지 결정하는 데는 쓰이지 않습니다. 즉 패치를 만들 때와 다른 부모
+리비전에 체크아웃한 상태에서 적용해도 그 자리에 커밋됩니다.
+
+=== 번들 파일 만들기/적용하기
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=bundle-all]
+----
+
+`bundle()`은 `push()`가 네트워크로 보내는 것과 동일한 체인지그룹 바이트를 로컬 **바이너리
+파일**에 쓴다는 점에서 `export()`의 텍스트 패치와는 전혀 다른 산출물입니다. `setOutputFile()`과
+`setBaseRevision()`은 둘 다 필수입니다 -- 실제 `hg bundle`이 목적지나 `--base`/`-a` 없이는
+"어디까지가 이미 상대에게 있는지" 추측하지 않고 실패하는 것과 마찬가지로, hg4j도 기준을
+암묵적으로 추론하지 않습니다. 저장소 전체를 담으려면 hg의 `--base null`/`--all` 관례를 그대로
+따라 `"null"` 문자열을 기준 리비전으로 넘기면 됩니다.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=bundle-incremental]
+----
+
+`setBaseRevision()`에 실제 리비전을 지정하면, 그 리비전과 그 조상은 모두 번들에서 빠지고
+나머지(자손)만 포함됩니다 -- 상대가 이미 그 지점까지는 가지고 있다고 알려진 경우 차분만
+보내는 용도입니다. `BundleType`으로 컨테이너/압축 형식(`none-v1`/`gzip-v1`/`bzip2-v1`, 또는
+treemanifest 저장소에서 필요한 `-v3` 계열)을 고를 수 있습니다.
+
+IMPORTANT: `setRevision()`/`setBaseRevision()`은 리비전 번호, 16진수 노드 접두어, 또는
+`"tip"`만 해석합니다 -- 태그나 북마크 이름은 그 자체로는 해석되지 않으므로, 먼저 해당 태그가
+가리키는 리비전을 알아낸 뒤 넘겨야 합니다.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=unbundle-changesets]
+----
+
+`unbundle()`은 `bundle()`이 만든(혹은 다른 경로로 전달받은) 번들 파일을 현재 저장소에
+적용합니다. HG10UN/HG10GZ/HG10BZ와 bundle2(HG20) 컨테이너 포맷을 자동으로 판별해서
+읽습니다.
+
+=== clonebundle로 미리 만들어진 번들 내려받기
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=download-clonebundle]
+----
+
+`Hg.clonebundle(url)`은 이 장의 다른 명령들과 달리 `hg.xxx().call()` 형태의 커맨드 객체가
+아니라, **팩토리 메서드 자체가 바로 실행까지 겸하는** 정적 편의 메서드입니다 -- 순수 HTTP(S)
+GET으로 `url`의 번들을 내려받아 곧바로 적용합니다. 실제 hg의 clonebundles 메커니즘과
+마찬가지로, 번들이 만들어진 이후 원본 서버에 새로 커밋된 내용을 따라잡으려면 이어서 일반
+`pull()`을 한 번 더 호출해야 합니다.
+
+=== 원격과의 차이 미리 보기: incoming/outgoing
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=preview-incoming]
+----
+
+`incoming()`은 원격에 연결해서 이 저장소에 없는 리비전을 **실제로 pull하지 않고** 보고합니다.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=preview-outgoing]
+----
+
+`outgoing()`은 반대로 원격에 아직 없는 로컬 리비전을 **실제로 push하지 않고** 보고합니다.
+둘 다 구조화된 커밋 객체가 아니라 `hg incoming`/`hg outgoing`의 사람이 읽는 출력 형식과
+비슷하게 미리 포맷된 문자열 목록(`List<String>`)을 반환하며, 새 리비전이 없으면 그 사실을
+알리는 안내 문자열 한 줄만 담긴 목록이 돌아옵니다.
+
+=== 리비전 스냅샷 뽑아내기
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=archive-snapshot]
+----
+
+`archive()`는 `.hg` 메타데이터가 전혀 없는, 특정 리비전 시점의 순수 스냅샷을 만듭니다 --
+`hg help archive`가 설명하는 것과 동일하게 목적지 확장자로 형식(디렉터리/`zip`/`uzip`/
+`tar`/`tgz`/`tbz2`)을 자동 판별하며, 매 산출물에는 저장소 루트/리비전/브랜치 정보를 담은
+`.hg_archival.txt`가 함께 기록됩니다.

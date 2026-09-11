@@ -1,0 +1,42 @@
+== Undoing Changes & Tagging
+
+=== Removing files
+
+[source,java]
+----
+include::{examplesdir}/HousekeepingExamples.java[tag=remove-files]
+----
+
+`remove()` untracks the file **and** deletes it from disk at the same time -- identical to plain
+`hg remove`.
+
+=== Reverting files
+
+[source,java]
+----
+include::{examplesdir}/HousekeepingExamples.java[tag=revert-files]
+----
+
+A file that is currently modified has its pre-revert on-disk content backed up to `<file>.orig`
+before being overwritten. A file that is already clean gets no such backup, even when reverting
+to a revision whose content differs from what's on disk.
+
+=== Tagging a revision
+
+[source,java]
+----
+include::{examplesdir}/HousekeepingExamples.java[tag=tag-a-revision]
+----
+
+A regular tag is recorded in the version-controlled `.hgtags` file and committed automatically. A
+**local** tag (`setLocal(true)`) is instead written to `.hg/localtags` and is never committed.
+
+=== Listing all tags
+
+[source,java]
+----
+include::{examplesdir}/HousekeepingExamples.java[tag=list-tags]
+----
+
+`tags()` merges both `.hgtags` (committed tags) and `.hg/localtags` (local tags) into a single
+list -- use `Tag#isLocal()` to tell which one a given entry came from.

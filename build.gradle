@@ -38,7 +38,23 @@ java {
     withJavadocJar()
 }
 
+// Asciidoc 매뉴얼(src/docs/asciidoc)이 include::로 발췌하는 예제 코드 전용 소스셋. main
+// 산출물에 대해 실제로 컴파일되므로(compileDocExamplesJava), API가 바뀌면 매뉴얼 예제가
+// 조용히 깨지는 대신 빌드가 즉시 실패한다 -- jar에는 포함되지 않는 문서 전용 코드.
+sourceSets {
+    docExamples {
+        java.srcDirs = ['src/docs/examples/java']
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    docExamplesImplementation.extendsFrom implementation
+}
+
 dependencies {
+
     implementation 'org.apache.commons:commons-compress:1.26.1'
     implementation 'com.github.luben:zstd-jni:1.5.6-3'
     implementation 'com.github.mwiede:jsch:0.2.17'
@@ -266,6 +282,8 @@ task javadocKo(type: Javadoc) {
 
 // 1번: Asciidoctor 다국어 문서화 태스크 설정
 asciidoctor {
+    // 예제 코드가 실제로 컴파일되는지 먼저 검증 -- 매뉴얼 발췌 소스가 깨진 채 방치되는 걸 막는다.
+    dependsOn tasks.named('compileDocExamplesJava')
     sourceDir  file('src/docs/asciidoc')
     sources {
         include '**/index.adoc'
@@ -275,7 +293,8 @@ asciidoctor {
     attributes 'source-highlighter': 'coderay',
                'toc': 'left',
                'icons': 'font',
-               'sectnums': ''
+               'sectnums': '',
+               'examplesdir': "${projectDir}/src/docs/examples/java/io/github/search5/hg4j/docs/examples"
 }
 
 // Gradle Plugin Portal 배포를 위한 플러그인 정의 설정

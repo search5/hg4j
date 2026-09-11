@@ -1,0 +1,76 @@
+[[walking-trees]]
+== 트리 직접 순회하기 (고급)
+
+JGit의 `TreeWalk`를 써본 적이 있다면 이 장은 낯설지 않을 것입니다 -- JGit에서 커스텀
+분석/도구를 만들 때 흔히 쓰는 바로 그 공개 API 패턴을, hg4j도 그대로 노출합니다. `Hg`가
+제공하는 `walkManifest(String)`/`walkWorkingDir()`/`walkTree()`는 대부분의 porcelain
+명령(`StatusCommand`, `DiffCommand`, `CommitCommand`, `UpdateCommand`, `MergeCommand` 등)이
+내부적으로 쓰는 것과 동일한 트리 순회 엔진을 직접 호출하는 것입니다. 일상적인 작업에는 이
+장 이전의 고수준 명령으로 충분하지만, 여러 리비전의 매니페스트를 직접 비교하거나 자체적인
+분석 도구를 만들 때는 이 API가 필요합니다.
+
+=== 한 리비전의 매니페스트 순회하기
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-manifest]
+----
+
+`walkManifest(revision)`은 리비전 번호, hex 노드 ID(또는 그 축약형), `"tip"` 중 무엇이든
+받아 그 시점 매니페스트에 기록된 추적 파일들을 `ManifestWalk.Entry`로 하나씩 돌려줍니다.
+각 항목의 `getNodeIdHex()`는 파일 내용을 가리키는 filelog 노드 ID이지 커밋 ID가 아니라는
+점에 주의하세요. `next()`는 첫 호출 시 전체 항목을 한 번에 읽어 캐시해 두므로, 이후
+호출은 캐시된 목록을 순회할 뿐입니다.
+
+=== 작업 디렉터리 순회하기
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-workingdir]
+----
+
+`walkWorkingDir()`은 추적 중인 파일(dirstate 기준)과 아직 추적되지 않는 파일을 하나의
+정렬된 순회로 합쳐서 보여줍니다 -- 그래서 이미 추가됐는지 여부와 상관없이 작업 디렉터리의
+모든 경로를 한 번에 훑을 수 있습니다. 각 `Entry`의 `getState()`는 dirstate 상태 문자
+(`'n'` 정상, `'a'` 추가됨, `'r'` 삭제됨, `'m'` 머지됨)이거나, 아직 추적되지 않는 경로라면
+`'?'`입니다.
+
+=== `TreeWalk`로 여러 트리를 동시에 비교하기
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-tree-compare]
+----
+
+`walkManifest`/`walkWorkingDir`은 사실 `TreeWalk` 위에 얹힌 편의 파사드입니다. `TreeWalk`는
+JGit의 이름 그대로, 여러 `TreeIterator`(예: 두 개의 `ManifestTreeIterator`, 또는 매니페스트
+하나와 작업 디렉터리)를 병합된 정렬 경로 순서로 동시에 순회하는 엔진입니다. `addTree()`로
+추가한 순서가 곧 인덱스가 되고, `isTracked(int)`/`getNodeId(int)`/`getState(int)`는 그
+인덱스로 특정 트리가 현재 경로를 어떻게 기록하고 있는지 조회합니다 -- 해당 트리가 이 경로를
+추적하지 않는다면 예외 대신 그냥 "추적하지 않음"을 반환합니다. 위 예제는 실제로
+`UpdateCommand.call()` 내부에서 대상 리비전과 현재 부모 리비전의 매니페스트를 비교해 어떤
+파일을 쓰고 지울지 계산하는 것과 동일한 패턴입니다.
+
+=== 필터와 재귀 여부로 순회 범위 좁히기
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-tree-filter]
+----
+
+`setFilter(PathFilter)`는 순회 도중 만나는 모든 경로에 적용되어, 특정 서브트리로 범위를
+좁히고 싶을 때 유용합니다.
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-tree-non-recursive]
+----
+
+`setRecursive(false)`는 "필터가 받아들인 가장 가까운 상위 디렉터리"를 기준으로, 그 디렉터리
+바로 아래 항목까지만 보여주고 더 깊이 내려가지 않도록 순회를 멈춥니다. 필터를 아예 설정하지
+않으면 기준 디렉터리는 저장소 루트가 되므로, 위 예제처럼 경로에 `/`가 전혀 없는 최상위
+파일만 남습니다. 다만 `setFilter`에 준 필터 자체가 서브트리 하위 경로들을 폭넓게 허용하는
+형태(예: `path.startsWith(...)`처럼 하위 디렉터리까지 전부 허용)라면, 그 하위 디렉터리들도
+"필터가 받아들인 가장 가까운 상위 디렉터리"로 인정되어 버려서 `setRecursive(false)`가
+기대한 만큼 재귀를 막아주지 못할 수 있습니다 -- 특정 디렉터리의 바로 아래 항목만 보고
+싶다면, 필터가 그 디렉터리보다 더 깊은 중간 경로는 받아들이지 않도록 직접 작성해야 합니다.

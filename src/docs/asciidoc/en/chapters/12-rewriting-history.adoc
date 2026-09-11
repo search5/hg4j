@@ -1,0 +1,132 @@
+[[rewriting-history]]
+== Rewriting History
+
+The commands in this chapter each "rewrite" in a fundamentally different way. `amend()` and
+`histedit()` follow the same approach as chapter 04's `rebase()`: the original revisions are
+never physically removed, only replaced via an obsolescence marker. `graft()`, by contrast,
+never touches the original at all -- it just copies its changes into a brand-new commit.
+`backout()` doesn't touch history either; it only adds a new "undo" commit on top.
+`treeMerge()`/`mergeCommit()` are different again -- a pure computation/write pair that never
+goes near the working directory. Each section below spells out exactly what that difference
+means in practice.
+
+=== Amending a commit
+
+[source,java]
+----
+include::{examplesdir}/HistoryRewriteExamples.java[tag=amend-tip-commit]
+----
+
+`amend()` creates a new commit that replaces the tip commit -- the new commit is created as a
+**sibling that shares the same parent(s) as the original, not as its child** (matching real
+`hg commit --amend` exactly). Anything not overridden via `setAuthor()`/`setMessage()`/
+`setCloseBranch()` is copied from the original commit's own values. Once done, an obsolescence
+marker linking the original commit to the new one is recorded in `.hg/store/obsstore`, so the
+original only remains visible via `hg log --hidden`.
+
+=== Editing history (histedit)
+
+[source,java]
+----
+include::{examplesdir}/HistoryRewriteExamples.java[tag=histedit-rules]
+----
+
+`histedit()` attaches a rule (`Rule`) to each individual revision and replays them in order.
+The rules accumulated via `addRule(Action, hexNode)` must be listed **oldest revision first**
+(the same concept as an interactive rebase's "todo list"), and the rewritten range always
+starts from the parent of whatever revision the first rule points to.
+
+Each `Action` means:
+
+* `PICK` -- recommit the revision as-is (the default behavior).
+* `FOLD` -- merge this revision's changes and commit message **into the previous
+  PICK/FOLD/ROLL group** (messages are concatenated).
+* `ROLL` -- same as `FOLD`, but discards the commit message.
+* `DROP` -- discard the revision entirely. It is not physically stripped; instead a `prune`
+  obsolescence marker is recorded so it disappears from a plain `hg log`.
+
+Any files a `DROP`ped revision had added also disappear from the working directory once
+histedit finishes, and the dirstate is reconciled against the new tip -- exactly like real
+`hg histedit`'s implicit checkout of the new tip once it finishes.
+
+=== Grafting a commit (cherry-pick)
+
+[source,java]
+----
+include::{examplesdir}/HistoryRewriteExamples.java[tag=graft-cherry-pick]
+----
+
+`graft()` corresponds to Git's cherry-pick: it copies a given source revision's changes onto
+the working copy's current parent as a new commit. Unlike `amend()`/`histedit()`, it writes
+**no obsolescence marker at all** -- matching real `hg graft`, a graft is a copy, not a
+rewrite, so the source revision stays fully visible in a plain `hg log` after grafting.
+
+If the destination and the source have both changed the same file differently, a real 3-way
+merge is performed, and `HgMergeConflictException` is thrown if genuine conflicts remain
+unresolved -- see <<error-handling>> for how to recover. Unlike rebase, graft has its own
+pause/resume state.
+
+[source,java]
+----
+include::{examplesdir}/HistoryRewriteExamples.java[tag=graft-continue-or-abort]
+----
+
+After resolving the conflicted files (by hand, or via `ResolveCommand`) and re-staging the
+resolution on disk, call `continueGraft()` to finish the paused commit, or `abort()` to give
+up on the graft attempt entirely and restore the working copy to its pre-graft state. This
+pause state is hg4j's own private format -- it does not interoperate with real `hg graft
+--continue`/`--abort` at the mid-flight state level, though the resulting commit and conflict
+marker format are themselves compatible with real hg.
+
+=== Backing out a commit
+
+[source,java]
+----
+include::{examplesdir}/HistoryRewriteExamples.java[tag=backout-revision]
+----
+
+`backout()` only adds a **new commit** that undoes a given revision's changes -- history
+itself is never touched (no obsolescence marker, no strip). Merge changesets are not
+supported as a target (specifying one throws), and the result always has a single parent,
+preserving a linear history.
+
+There are two cases:
+
+* The target revision **is the working copy's current parent** (the common case) -- since the
+  working copy already exactly matches that revision, the diff between it and its own parent
+  can simply be applied directly, and this can never conflict.
+* The target revision is an older ancestor -- a genuine 3-way merge is performed, with the
+  ancestor being the target revision itself, "local" the current working copy, and "other" the
+  target revision's own parent. This preserves any unrelated changes made after the target
+  revision while undoing only that revision's own effect.
+
+In the second case, a genuine conflict throws `HgMergeConflictException` and no commit is
+created (see <<error-handling>>). Unlike `graft()`/`rebase()`, however, there is no
+"continue" method for backout -- once the conflicted files are resolved by hand, you simply
+call `commit()` normally instead of calling `backout()` again.
+
+=== Computing and recording a merge without a working copy (treeMerge, mergeCommit)
+
+[source,java]
+----
+include::{examplesdir}/HistoryRewriteExamples.java[tag=tree-merge-and-commit]
+----
+
+`merge()` (chapter 04) is the porcelain command that actually updates the working directory,
+and reports a conflict via `MergeResult.isConflicted()` rather than an exception.
+`treeMerge()` is the opposite: it **never touches the working directory or dirstate at all**,
+computing the merge result purely as data (`TreeMergeResult`) from the changelog/manifest/
+filelog store -- files that must change or be added (`getChangedFiles()`), files that must be
+removed (`getRemovedFiles()`), and whether anything conflicted (`isConflicted()`/
+`getConflicts()`) -- without writing anything to disk.
+
+`mergeCommit()` then writes that computed result (`TreeMergeResult`) directly to the
+changelog/manifest/filelog as a real two-parent changeset -- again without touching the
+working directory. A conflicted `TreeMergeResult` is rejected outright, so only a result whose
+`isConflicted()` is `false` may be passed in. Bookmarks are never moved automatically; call
+`bookmark()` yourself against the returned node if one should advance.
+
+This combination is far cheaper than cloning the whole repository into a scratch directory,
+checking it out, running `merge()` + `commit()`, and pushing the single resulting changeset
+back -- cost here scales only with the files the merge actually touches. It's well suited to
+server-side merges, or previewing a PR's merge result without ever checking anything out.

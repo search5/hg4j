@@ -1,0 +1,81 @@
+== 파일 복사/이름변경 & 정리 (Copying, Renaming & Cleanup)
+
+이 장에서는 작업 트리의 파일을 다루는 명령들(`copy()`, `rename()`, `addremove()`, `forget()`)과
+저장소 자체를 정리하는 명령들(`purge()`, `gc()`)을 다룹니다.
+
+=== 파일 복사하기
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=copy-a-file]
+----
+
+`copy()`는 원본 파일을 그대로 둔 채 대상 경로에 새 파일을 추가하고, dirstate의 copyMap에
+"대상 -> 원본" 관계를 기록합니다 -- 이 메타데이터 덕분에 대상 파일에 대한 `hg log --follow`나
+`hg annotate`가 원본의 히스토리까지 따라갈 수 있습니다. 대상 경로에 이미 파일이 있으면
+기본적으로 거부되며, `setForce(true)`로만 덮어쓸 수 있습니다.
+
+=== 파일 이름 변경하기
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=rename-a-file]
+----
+
+`rename()`은 실제로는 `copy()` + `remove()`를 한 번에 수행하는 것과 동일합니다 -- 파일을 새
+경로로 물리적으로 이동시키고, 원래 경로는 제거된 것으로 표시하며, copyMap에는 여전히 "새 경로
+-> 원래 경로"가 기록됩니다.
+
+=== 한 번에 추가/제거하기 (addremove)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=addremove-untracked-and-missing]
+----
+
+`addremove()`는 작업 트리를 한 번 스캔해서, 추적되지 않는 파일은 모두 추가하고 디스크에서
+사라진 추적 파일은 모두 제거된 것으로 표시합니다. 반환값은 `"A path/to/new.txt"` /
+`"R path/to/gone.txt"` 형태의 상태 문자열 목록으로, 실제로 무엇이 바뀌었는지 바로 확인할 수
+있습니다.
+
+=== 추적 해제하기 (forget)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=forget-a-file]
+----
+
+`forget()`은 `remove()`와 정반대로, **디스크의 파일은 전혀 건드리지 않고** 추적만 해제합니다.
+아직 한 번도 커밋되지 않은 파일이면 dirstate에서 완전히 사라지고, 이미 커밋된 파일이면 다음
+커밋 시점에 제거된 것으로 기록되도록 표시만 해둘 뿐, 작업 트리의 내용은 그대로 남습니다.
+
+=== 미추적 파일 정리하기 (purge)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=purge-untracked-files]
+----
+
+`purge()`는 **실제로 디스크에서 파일을 삭제하는** 위험한 명령이므로 정확한 동작 범위를 알고
+써야 합니다. 기본값은 실제 `hg purge`와 동일하게, 추적되지 않았고(untracked) `.hgignore`에
+걸리지도 않은 파일과, 그 결과 비게 되는 디렉터리까지 함께 삭제합니다. 반대로:
+
+* `.hgignore`에 매치되는 무시된(ignored) 파일은 절대 건드리지 않습니다.
+* 서브레포로 선언된 경로는 통째로 건너뛰어, 서브레포 자신의 작업 트리를 파괴하지 않습니다.
+* 심볼릭 링크는 가리키는 대상이 디렉터리이더라도 절대로 그 안쪽까지 따라 들어가지 않고, 링크
+  자체 하나만 삭제 대상으로 취급합니다(대상이 없는 깨진 심볼릭 링크도 삭제 대상에 포함됩니다).
+
+`setPurgeDirectories(false)`를 주면 파일만 지우고 빈 디렉터리는 그대로 남겨둡니다 -- `--dirs`
+/ `--files` 플래그처럼 삭제 대상을 "추가"하는 게 아니라 오직 "제한"만 한다는 점에 유의하세요.
+
+=== 저장소 스토어 압축하기 (gc)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=gc-compact-store]
+----
+
+`gc()`는 스토어의 모든 revlog를 재압축/재델타화하고 fncache를 다시 만들며, 남아 있는 임시/백업
+파일을 정리합니다. 실제 `hg`의 단일 표준 명령에 정확히 대응하는 기능은 아니며, 굳이 비교하자면
+`hg debugupgraderepo`나 수동 스토어 유지보수에 가깝습니다. 반환값은 몇 개의 revlog가 실제로
+재작성됐고 몇 개의 임시 파일이 삭제됐는지 요약한 문자열입니다.

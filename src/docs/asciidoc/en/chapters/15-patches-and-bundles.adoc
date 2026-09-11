@@ -1,0 +1,117 @@
+[[patches-and-bundles]]
+== Patches, Bundles & Comparing Remotes
+
+Besides `push()`/`pull()`, there are two more ways to move revisions elsewhere: human-readable
+text **patch files** (`export()`/`importPatch()`, similar to `git format-patch`/`git am`), and
+binary **changegroup bundles** (`bundle()`/`unbundle()`, a completely different format). Despite
+the similar-sounding names, these two are different file formats for different purposes and are
+not interchangeable. This chapter also covers `incoming()`/`outgoing()`, which preview what a
+pull/push would bring in or send out without actually pulling or pushing, and `archive()`, which
+extracts a snapshot with no version-control metadata at all.
+
+=== Exporting/applying patch files
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=export-patch]
+----
+
+`export()` produces a **text patch**: a `# HG changeset patch` header block followed by a
+unified-diff body, matching `hg export`'s default (non-`--git`) output format exactly. It's a
+good shape to email or store alongside the repository.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=import-patch]
+----
+
+`importPatch()` applies this patch to the working directory and commits it **on top of the
+current dirstate parent**. Just like real `hg import` without `--exact`, the patch's own
+`# Node ID`/`# Parent` headers are ignored for placement purposes -- they're only read for
+author/date information, never used to decide where the patch gets applied. That means applying
+a patch while checked out on a different parent than the one it was created from still just
+commits it right there.
+
+=== Creating/applying bundle files
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=bundle-all]
+----
+
+`bundle()` writes the same changegroup bytes `push()` would send over the wire to a local
+**binary file** instead -- a completely different artifact from `export()`'s text patch.
+`setOutputFile()` and `setBaseRevision()` are both required: just like real `hg bundle` refuses
+to guess how much the other side already has without a destination or an explicit `--base`/`-a`,
+hg4j never infers a base implicitly either. To bundle the entire repository, follow hg's own
+`--base null`/`--all` convention and pass the literal string `"null"` as the base revision.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=bundle-incremental]
+----
+
+Passing an actual revision to `setBaseRevision()` excludes that revision and all of its
+ancestors from the bundle, leaving only its descendants -- useful for shipping just the delta to
+a peer already known to have everything up to that point. `BundleType` selects the
+container/compression format (`none-v1`/`gzip-v1`/`bzip2-v1`, or the `-v3` family required for a
+treemanifest repository).
+
+IMPORTANT: `setRevision()`/`setBaseRevision()` resolve only a revision number, a hex node
+prefix, or `"tip"` -- a tag or bookmark name is not resolved on its own, so you have to look up
+the revision the tag points to first and pass that instead.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=unbundle-changesets]
+----
+
+`unbundle()` applies a bundle file (produced by `bundle()`, or obtained some other way) to the
+current repository, auto-detecting the HG10UN/HG10GZ/HG10BZ and bundle2 (HG20) container
+formats.
+
+=== Downloading a pre-built bundle via clonebundle
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=download-clonebundle]
+----
+
+Unlike every other command in this chapter, `Hg.clonebundle(url)` is not a command object
+obtained via a no-arg factory method plus a separate `call()` -- **the factory method itself
+performs the download and apply**. It fetches the bundle at `url` with a plain HTTP(S) GET and
+applies it in one step. Matching real hg's own clonebundles mechanism, you should still follow up
+with a normal `pull()` afterward to catch up on anything committed to the origin since the
+bundle was generated.
+
+=== Previewing a remote's differences: incoming/outgoing
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=preview-incoming]
+----
+
+`incoming()` contacts the remote and reports revisions it has that this repository doesn't,
+**without actually pulling them**.
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=preview-outgoing]
+----
+
+`outgoing()` does the reverse: it reports local revisions the remote doesn't have yet,
+**without actually pushing them**. Both return a `List<String>` of pre-formatted display lines --
+similar in shape to `hg incoming`/`hg outgoing`'s human-readable output -- rather than structured
+commit objects, and a list containing just a single informational line when there's nothing new.
+
+=== Extracting a revision snapshot
+
+[source,java]
+----
+include::{examplesdir}/PatchesAndBundlesExamples.java[tag=archive-snapshot]
+----
+
+`archive()` produces a plain snapshot of a given revision with no `.hg` metadata at all -- the
+archive type is auto-detected from the destination's extension (directory/`zip`/`uzip`/`tar`/
+`tgz`/`tbz2`), matching what `hg help archive` documents, and every output carries a
+`.hg_archival.txt` file recording the repository root, revision, and branch.

@@ -1,0 +1,67 @@
+[[branches-bookmarks]]
+== Branches, Bookmarks, Merging & Rebasing
+
+=== Named branches vs. bookmarks
+
+Mercurial has two different ways to name a line of development, and they behave quite
+differently -- this is a common point of confusion for developers coming from Git.
+
+* A **named branch** is a label recorded permanently inside the commit itself (`branch()`). Once
+  committed, it never moves, and it stays visible in `hg log` forever.
+* A **bookmark** (`bookmark()`) is a movable pointer to a specific revision -- much closer to what
+  a Git branch actually is. While active, it moves forward automatically on the next commit.
+
+=== Working with named branches
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=create-branch]
+----
+
+=== Working with bookmarks
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=bookmarks]
+----
+
+=== Updating the working copy
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=update-working-copy]
+----
+
+=== Listing all branches
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=list-branches]
+----
+
+By default, `branches()` returns only each named branch's head, excluding closed branches --
+pass `setIncludeClosed(true)` to include closed branches too.
+
+=== Merging
+
+[source,java]
+----
+include::{examplesdir}/MergingExamples.java[tag=merge-branches]
+----
+
+A conflicted merge is **not** an exception -- `merge()` returns normally, and conflicting paths
+are reported via `MergeResult.isConflicted()`/`getConflicts()`. Each conflicted file already has
+standard `<<<<<<< / ======= / >>>>>>>` markers written to disk; resolve them, then commit just
+like any other merge commit.
+
+=== Rebasing
+
+[source,java]
+----
+include::{examplesdir}/MergingExamples.java[tag=rebase-commits]
+----
+
+Unlike a merge, a rebase conflict is actually reported by **throwing**
+`HgMergeConflictException` -- see <<error-handling>> for how to recover from it. `rebase()` never
+physically removes the original revisions; it records an obsolescence marker instead, so they
+remain visible via `hg log --hidden`.

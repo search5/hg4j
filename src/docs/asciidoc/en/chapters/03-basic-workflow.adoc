@@ -1,0 +1,45 @@
+== Basic Workflow: add, status, commit, log, diff
+
+=== Tracking files
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=add-files]
+----
+
+=== Checking working-copy status
+
+`status()` mirrors `hg status`'s five buckets exactly.
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=check-status]
+----
+
+=== Committing changes
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=commit-changes]
+----
+
+`commit()` returns the new commit's raw 20-byte node id.
+
+=== Viewing history
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=view-log]
+----
+
+=== Viewing a diff
+
+With no revisions configured, `diff()` compares the tip against its parent.
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=view-diff]
+----
+
+To diff two specific revisions directly, use `setOldRevision(...)`/`setNewRevision(...)` (both
+support either an `int` revision number or a `NodeId` overload).

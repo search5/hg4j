@@ -101,7 +101,7 @@ Using the modern `plugins {}` DSL (recommended):
 
 ```groovy
 plugins {
-    id 'io.github.search5.hg4j' version '1.0.0'
+    id 'io.github.search5.hg4j' version '1.0.1'
 }
 ```
 
@@ -115,7 +115,7 @@ buildscript {
     dependencies {
         // Plugin marker artifact, not the raw `hg4j` library artifact -- resolves the
         // 'io.github.search5.hg4j' id to its implementation class for `apply plugin:` below.
-        classpath 'io.github.search5.hg4j:io.github.search5.hg4j.gradle.plugin:1.0.0'
+        classpath 'io.github.search5.hg4j:io.github.search5.hg4j.gradle.plugin:1.0.1'
     }
 }
 apply plugin: 'io.github.search5.hg4j'

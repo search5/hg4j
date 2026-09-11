@@ -6,7 +6,7 @@
 .build.gradle
 ----
 dependencies {
-    implementation 'io.github.search5.hg4j:hg4j:1.0.0'
+    implementation 'io.github.search5.hg4j:hg4j:1.0.1'
 }
 ----
 

@@ -3,14 +3,14 @@
 
 === 네임드 브랜치 vs. 북마크
 
-Mercurial에는 개발 라인에 이름을 붙이는 서로 다른 두 방법이 있고, 동작 방식이 상당히 다릅니다
--- Git에 익숙한 개발자가 흔히 헷갈리는 부분입니다.
+Mercurial에서 개발 라인에 이름을 붙이는 방법은 두 가지인데, 동작 방식이 서로 꽤 다릅니다.
+Git에 익숙한 개발자가 특히 자주 헷갈리는 지점입니다.
 
 * **네임드 브랜치(named branch)**는 커밋 자체에 영구적으로 기록되는 레이블입니다(`branch()`).
   한 번 커밋되면 절대 옮겨가지 않으며, `hg log`에 영원히 남습니다.
-* **북마크(bookmark)**(`bookmark()`)는 특정 리비전을 가리키는 이동 가능한 포인터로, 실제로는
-  Git의 브랜치에 훨씬 가깝습니다. 활성화된 상태에서 다음 커밋이 생기면 자동으로 앞으로
-  이동합니다.
+* **북마크(bookmark)**(`bookmark()`)는 특정 리비전을 가리키는 이동 가능한 포인터라, 오히려
+  Git의 브랜치에 훨씬 가깝습니다. 활성 상태에서 다음 커밋이 생기면 그 커밋으로 알아서 따라
+  옮겨 갑니다.
 
 === 네임드 브랜치 다루기
 
@@ -40,8 +40,8 @@ include::{examplesdir}/BranchingExamples.java[tag=update-working-copy]
 include::{examplesdir}/BranchingExamples.java[tag=list-branches]
 ----
 
-`branches()`는 기본적으로 닫힌(closed) 브랜치를 제외한, 브랜치별 head만 반환합니다 --
-`setIncludeClosed(true)`로 닫힌 브랜치까지 포함시킬 수 있습니다.
+`branches()`는 기본적으로 닫힌(closed) 브랜치를 뺀 브랜치별 head만 반환합니다. 닫힌 브랜치까지
+포함하려면 `setIncludeClosed(true)`를 주면 됩니다.
 
 === 머지하기
 
@@ -50,10 +50,10 @@ include::{examplesdir}/BranchingExamples.java[tag=list-branches]
 include::{examplesdir}/MergingExamples.java[tag=merge-branches]
 ----
 
-충돌이 발생한 머지는 예외가 **아닙니다** -- `merge()`는 정상적으로 반환되고, 충돌 경로는
-`MergeResult.isConflicted()`/`getConflicts()`로 확인합니다. 충돌한 각 파일에는 이미 표준
-`<<<<<<< / ======= / >>>>>>>` 마커가 디스크에 쓰여 있으므로, 이를 해결한 뒤 다른 머지 커밋과
-동일하게 커밋하면 됩니다.
+머지 중에 충돌이 나도 예외로 보고되지 **않습니다**. `merge()`는 그대로 정상 반환하고, 충돌
+경로는 `MergeResult.isConflicted()`와 `getConflicts()`로 확인합니다. 충돌한 파일에는 표준
+`<<<<<<< / ======= / >>>>>>>` 마커가 이미 디스크에 쓰여 있으니, 이를 해결한 뒤 여느 머지 커밋과
+똑같이 커밋하면 됩니다.
 
 === 리베이스하기
 
@@ -62,6 +62,6 @@ include::{examplesdir}/MergingExamples.java[tag=merge-branches]
 include::{examplesdir}/MergingExamples.java[tag=rebase-commits]
 ----
 
-머지와 달리 리베이스 충돌은 `HgMergeConflictException`이 실제로 **던져지는** 형태로 보고됩니다
--- 복구 방법은 <<error-handling>>을 참고하세요. `rebase()`는 원본 리비전을 물리적으로 제거하지
-않고, obsolescence marker를 기록하는 방식이라 `hg log --hidden`으로 여전히 볼 수 있습니다.
+머지와 달리 리베이스 충돌은 `HgMergeConflictException`을 실제로 **던져서** 알립니다. 복구
+방법은 <<error-handling>>을 참고하세요. 한편 `rebase()`는 원본 리비전을 물리적으로 지우지 않고
+obsolescence marker만 기록하므로, `hg log --hidden`으로는 여전히 볼 수 있습니다.

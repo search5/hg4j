@@ -1,7 +1,7 @@
 == 작업 중인 변경사항 다루기: Shelve & Worktree (Work in Progress: Shelving & Worktrees)
 
 이 장에서는 아직 커밋하고 싶지 않은 작업을 잠시 치워두는 `shelve()`, 같은 저장소를 공유하는
-또 다른 작업 트리를 만드는 `worktree()`, 그리고 머지/그래프트/리베이스/백아웃이 남긴 충돌을
+또 다른 작업 디렉터리를 만드는 `worktree()`, 그리고 머지/그래프트/리베이스/백아웃이 남긴 충돌을
 해소하는 `resolve()`를 다룹니다.
 
 === 변경사항 보류하기 (shelve)
@@ -11,9 +11,9 @@
 include::{examplesdir}/WorkInProgressExamples.java[tag=shelve-changes]
 ----
 
-`shelve()`는 현재 작업 트리에서 수정/추가/삭제된 파일을 지정한 이름으로 저장해 두고, 작업
+`shelve()`는 현재 작업 디렉터리에서 수정/추가/삭제된 파일을 지정한 이름으로 저장해 두고, 작업
 트리는 부모 커밋 상태로 되돌립니다. 급하게 다른 작업으로 전환해야 할 때 커밋하지 않고도 작업
-공간을 깨끗하게 비울 수 있습니다. `setName()`을 생략하면 이름은 기본값인 `"default"`가
+공간을 깨끗이 비울 수 있습니다. `setName()`을 생략하면 이름은 기본값인 `"default"`가
 됩니다.
 
 === 보류한 변경사항 복원하기 (unshelve)
@@ -24,18 +24,18 @@ include::{examplesdir}/WorkInProgressExamples.java[tag=unshelve-changes]
 ----
 
 `setUnshelve(true)`를 주면 반대로 동작합니다. 내부적으로는 보류해 둔 변경사항을 원래
-shelve했던 부모 위에 임시 커밋으로 재현한 뒤, 그 사이 작업 트리의 부모가 바뀌었다면(다른
-작업이 그 위에 커밋됐다면) 새 부모 위로 리베이스하고 -- 아무 일도 없었다면 이 리베이스는
-no-op입니다 -- 마지막으로 그 결과를 다시 "언커밋" 상태(대기 중인 변경사항)로 작업 트리에
+shelve했던 부모 위에 임시 커밋으로 재현한 뒤, 그 사이 작업 디렉터리의 부모가 바뀌었다면(다른
+작업이 그 위에 커밋됐다면) 새 부모 위로 리베이스합니다. 아무 일도 없었다면 이 리베이스는
+no-op입니다. 마지막으로 그 결과를 다시 "언커밋" 상태(대기 중인 변경사항)로 작업 디렉터리에
 풀어놓습니다. 이 과정에서 만들어졌던 임시 커밋은 성공하는 순간 흔적도 없이 지워집니다.
 
 리베이스 단계에서 충돌이 나면 실제 `hg rebase`가 멈추는 것과 똑같이 일시 정지되며,
-`HgMergeConflictException`이 던져집니다. 충돌 파일을 해결한 뒤(아래 "충돌 해소하기" 참고)
+`HgMergeConflictException`을 던집니다. 충돌 파일을 해결한 뒤(아래 "충돌 해소하기" 참고)
 `unshelveContinue()`로 이어가거나, `unshelveAbort()`로 이번 시도를 포기하고 shelve 자체는
-그대로 남겨 나중에 다시 시도할 수 있습니다. 두 메서드 모두 이 인스턴스가 아니라 디스크에
+그대로 남겨 나중에 다시 시도하면 됩니다. 두 메서드 모두 이 인스턴스가 아니라 디스크에
 저장된 상태만으로 동작하므로, 새로 얻은 `ShelveCommand` 인스턴스에서 호출해도 무방합니다.
 
-=== 별도 작업 트리 만들기 (worktree)
+=== 별도 작업 디렉터리 만들기 (worktree)
 
 [source,java]
 ----
@@ -43,9 +43,9 @@ include::{examplesdir}/WorkInProgressExamples.java[tag=create-worktree]
 ----
 
 `worktree()`는 Git의 worktree에 익숙한 사용자를 위해 좀 더 친숙한 이름을 붙였을 뿐, 실제로는
-Mercurial의 `hg share`와 같습니다 -- 즉, 완전히 별개의 저장소를 새로 만드는 게 아니라 **같은
-스토어를 공유하는** 새 작업 트리를 만듭니다. 어느 쪽 작업 트리에서 커밋하든 다른 쪽에서도 바로
-보입니다. 반환값은 새 작업 트리를 가리키는 `HgRepository`이며, 대상 디렉터리는 비어 있거나
+Mercurial의 `hg share`와 같습니다. 완전히 별개의 저장소를 새로 만드는 게 아니라 **같은
+스토어를 공유하는** 새 작업 디렉터리를 만듭니다. 어느 쪽 작업 디렉터리에서 커밋하든 다른 쪽에서도 바로
+보입니다. 반환값은 새 작업 디렉터리를 가리키는 `HgRepository`이며, 대상 디렉터리는 비어 있거나
 아직 존재하지 않아야 합니다.
 
 === 충돌 해소하기 (resolve)
@@ -57,9 +57,9 @@ include::{examplesdir}/WorkInProgressExamples.java[tag=resolve-conflicts]
 
 `resolve()`는 <<branches-bookmarks>>의 `merge()`나 <<error-handling>>에서 다룬
 `HgMergeConflictException`을 던지는 `graft()`/`rebase()`/`backout()`이 남긴 충돌 상태를
-조회하고 갱신하는 명령입니다. 이들 명령은 모두 같은 `.hg/merge/state2` 파일을 공유하므로,
-어떤 명령이 남긴 충돌이든 `resolve()`로 조회/해소할 수 있습니다. `list(true)`는 현재 머지에
+조회하고 갱신하는 명령입니다. 이들은 모두 같은 `.hg/merge/state2` 파일을 공유하므로,
+어떤 명령이 남긴 충돌이든 `resolve()`로 조회하고 해소하면 됩니다. `list(true)`는 현재 머지에
 관련된 모든 파일의 해소 상태를 반환하고, `setFile(path).markResolved(true)`는 `<<<<<<< /
 ======= / >>>>>>>` 마커를 손으로(또는 다른 도구로) 정리한 파일 하나를 해소된 것으로
-표시합니다. 머지가 진행 중이 아니거나 대상 파일이 현재 머지에 속하지 않으면 예외가
-던져집니다.
+표시합니다. 머지가 진행 중이 아니거나 대상 파일이 현재 머지에 속하지 않으면 예외를
+던집니다.

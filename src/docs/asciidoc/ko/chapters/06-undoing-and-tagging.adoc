@@ -7,8 +7,8 @@
 include::{examplesdir}/HousekeepingExamples.java[tag=remove-files]
 ----
 
-`remove()`는 추적을 해제함과 **동시에** 디스크에서 파일을 삭제합니다 -- 순수 `hg remove`와
-동일합니다.
+`remove()`는 추적을 해제하는 **동시에** 디스크에서도 파일을 지웁니다. `hg remove` 그대로의
+동작입니다.
 
 === 파일 되돌리기 (revert)
 
@@ -17,8 +17,8 @@ include::{examplesdir}/HousekeepingExamples.java[tag=remove-files]
 include::{examplesdir}/HousekeepingExamples.java[tag=revert-files]
 ----
 
-현재 수정된 상태인 파일은 덮어쓰기 전에 되돌리기 이전 내용이 `<file>.orig`로 백업됩니다 --
-이미 클린한 파일은, 되돌릴 리비전의 내용이 디스크상의 내용과 다르더라도 백업이 생기지
+지금 수정된 상태인 파일은 덮어쓰기 전에 되돌리기 이전 내용을 `<file>.orig`로 백업해 둡니다.
+반면 이미 클린한 파일은 되돌릴 리비전의 내용이 디스크상의 내용과 다르더라도 백업을 남기지
 않습니다.
 
 === 리비전에 태그 달기
@@ -28,8 +28,8 @@ include::{examplesdir}/HousekeepingExamples.java[tag=revert-files]
 include::{examplesdir}/HousekeepingExamples.java[tag=tag-a-revision]
 ----
 
-일반 태그는 버전 관리되는 `.hgtags` 파일에 기록되고 자동으로 커밋됩니다. **로컬** 태그
-(`setLocal(true)`)는 대신 `.hg/localtags`에 기록되며 절대 커밋되지 않습니다.
+일반 태그는 버전 관리 대상인 `.hgtags` 파일에 기록되고 자동으로 커밋까지 됩니다. **로컬**
+태그(`setLocal(true)`)는 대신 `.hg/localtags`에 기록되며 커밋되는 일이 없습니다.
 
 === 전체 태그 목록 조회하기
 
@@ -38,5 +38,5 @@ include::{examplesdir}/HousekeepingExamples.java[tag=tag-a-revision]
 include::{examplesdir}/HousekeepingExamples.java[tag=list-tags]
 ----
 
-`tags()`는 `.hgtags`(커밋된 태그)와 `.hg/localtags`(로컬 태그)를 모두 합쳐서 반환하며,
-`Tag#isLocal()`로 어느 쪽인지 구분할 수 있습니다.
+`tags()`는 `.hgtags`(커밋된 태그)와 `.hg/localtags`(로컬 태그)를 한데 모아 반환합니다. 어느
+쪽에서 온 태그인지는 `Tag#isLocal()`로 구분합니다.

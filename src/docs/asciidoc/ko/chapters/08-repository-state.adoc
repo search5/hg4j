@@ -38,7 +38,7 @@ include::{examplesdir}/RepositoryStateExamples.java[tag=show-parents]
 머지가 진행 중이라 아직 커밋되지 않은 상태라면 2개, 커밋이 하나도 없는 새 저장소라면 0개가
 반환됩니다.
 
-=== 작업 복사본 요약 정보 확인하기
+=== 작업 디렉터리 요약 정보 확인하기
 
 hg4j는 CLI가 아니라 라이브러리이므로, `hg summary`처럼 포맷된 텍스트를 출력하는 대신 구조화된
 `SummaryInfo` 레코드를 반환합니다.
@@ -64,7 +64,7 @@ include::{examplesdir}/RepositoryStateExamples.java[tag=identify-working-copy]
 ----
 
 인자 없이 호출하면 작업 디렉터리 자신의 부모를 식별합니다: ID는 12자리 짧은 hex이고, 머지가
-진행 중이면 두 부모의 ID가 `+`로 연결되며, 작업 복사본이 dirty(수정/추가/삭제된 파일이 있거나
+진행 중이면 두 부모의 ID가 `+`로 연결되며, 작업 디렉터리가 dirty(수정/추가/삭제된 파일이 있거나
 머지 중)하면 끝에 `+`가 하나 더 붙습니다. 저장소에 커밋이 전혀 없으면 `000000000000`을
 반환합니다. 브랜치 이름은 `default`가 아닐 때만 괄호로 표시되고, 태그·북마크는 현재 모든 부모에
 걸쳐 모은 뒤 알파벳순으로 `/`로 이어붙여 표시됩니다.
@@ -77,7 +77,7 @@ include::{examplesdir}/RepositoryStateExamples.java[tag=identify-revision]
 `setRevision(String)`으로 특정 리비전을 고정하면 dirty 마커는 절대 붙지 않고, 부모가 아니라
 그 하나의 리비전만 식별합니다. 이때 함께 표시되는 브랜치는 **조회 대상 리비전 자신의**
 브랜치입니다 -- 예를 들어 `feature` 브랜치로 체크아웃된 상태에서 `default` 브랜치에 속한 예전
-리비전을 `-r`로 조회하면, 현재 작업 복사본이 아니라 그 예전 리비전이 실제로 속한 `default`가
+리비전을 `-r`로 조회하면, 현재 작업 디렉터리가 아니라 그 예전 리비전이 실제로 속한 `default`가
 표시됩니다. 또한 `setRevision`이 받는 문자열은 리비전 번호, hex 프리픽스, `"tip"`뿐입니다 --
 북마크 이름이나 브랜치 이름은 직접 넘길 수 없으므로, 북마크를 식별하려면 먼저
 `hg.bookmark().call()`로 해당 북마크가 가리키는 노드 hex를 얻은 뒤 그 값을 넘겨야 합니다.

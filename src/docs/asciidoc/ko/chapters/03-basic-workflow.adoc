@@ -9,7 +9,7 @@ include::{examplesdir}/BasicWorkflowExamples.java[tag=add-files]
 
 === 작업 디렉터리 상태 확인하기
 
-`status()`는 `hg status`의 5개 분류를 그대로 미러링합니다.
+`status()`는 `hg status`와 똑같은 5개 분류를 그대로 돌려줍니다.
 
 [source,java]
 ----
@@ -41,5 +41,5 @@ include::{examplesdir}/BasicWorkflowExamples.java[tag=view-log]
 include::{examplesdir}/BasicWorkflowExamples.java[tag=view-diff]
 ----
 
-특정 두 리비전을 직접 비교하려면 `setOldRevision(...)`/`setNewRevision(...)`을 사용하세요(두
-메서드 모두 `int` 리비전 번호와 `NodeId` 오버로드를 지원합니다).
+두 리비전을 직접 비교하려면 `setOldRevision(...)`과 `setNewRevision(...)`을 쓰면 됩니다. 둘 다
+`int` 리비전 번호와 `NodeId`를 받는 오버로드를 지원합니다.

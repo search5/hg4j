@@ -326,6 +326,16 @@ gradlePlugin {
 // signPluginMavenPublication을 자체적으로 실행함) -- 그래서 여기서 수동으로 sign()을 호출할
 // 대상이 더 이상 없다(이전엔 이제는 없는 `mavenJava` 퍼블리케이션을 가리키다 빌드가 깨졌었다).
 
+// java-gradle-plugin's auto-generated marker publication (hg4jPluginPluginMarkerMaven --
+// "io.github.search5.hg4j:io.github.search5.hg4j.gradle.plugin", needed only for the
+// `plugins { id '...' }` DSL to resolve via the Gradle Plugin Portal) has nothing to do with
+// Maven Central and must never be pushed there -- com.vanniktech.maven.publish's
+// publishToMavenCentral otherwise sweeps up every registered publication indiscriminately,
+// polluting Central with an artifact real hg4j consumers never need.
+tasks.matching { it.name == 'publishHg4jPluginPluginMarkerMavenPublicationToMavenCentralRepository' }.configureEach {
+    enabled = false
+}
+
 // Gradle 9 암시적 태스크 종속성 경고 및 충돌 방지 설정
 tasks.withType(PublishToMavenRepository).configureEach {
     mustRunAfter(tasks.withType(Sign))

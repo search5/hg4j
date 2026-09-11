@@ -1,0 +1,111 @@
+[[repository-state]]
+== 저장소 상태 조회하기 (Inspecting Repository State)
+
+이 장에서는 저장소 자체의 위치와 현재 상태를 조회하는 커맨드들을 다룹니다: `root()`, `tip()`,
+`parents()`, `summary()`, `identify()`, `heads()`, `describe()`. 모두 저장소를 변경하지 않는
+읽기 전용 커맨드입니다.
+
+=== 저장소 루트 경로 확인하기
+
+`root()`는 `.hg` 디렉터리를 담고 있는 작업 디렉터리의 절대 경로를 반환합니다 -- `hg root`와
+동일합니다.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-root]
+----
+
+=== tip 리비전 확인하기
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-tip]
+----
+
+`tip`은 항상 체인지로그에서 **가장 높은 리비전 번호**를 가리키며, 브랜치나 head와는 무관합니다.
+히스토리가 재작성된 저장소에서는 이것이 "가장 최근에 만들어진" 리비전과 다를 수 있다는 점에
+주의하세요 -- 실제 hg와 마찬가지로 tip은 벽시계 시간이 아니라 리비전 번호 기준입니다. 저장소에
+커밋이 하나도 없으면 `call()`은 `null`을, `getRevisionNumber()`는 `-1`을 반환합니다.
+
+=== 작업 디렉터리의 부모 리비전 확인하기
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-parents]
+----
+
+`parents()`는 dirstate에 기록된 작업 디렉터리의 부모 노드 ID(hex)를 반환합니다. 보통은 1개,
+머지가 진행 중이라 아직 커밋되지 않은 상태라면 2개, 커밋이 하나도 없는 새 저장소라면 0개가
+반환됩니다.
+
+=== 작업 복사본 요약 정보 확인하기
+
+hg4j는 CLI가 아니라 라이브러리이므로, `hg summary`처럼 포맷된 텍스트를 출력하는 대신 구조화된
+`SummaryInfo` 레코드를 반환합니다.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-summary]
+----
+
+`SummaryInfo`에는 부모 리비전 목록(`ParentInfo` -- 리비전 번호, 노드 hex, 커밋 메시지), 현재
+브랜치, 활성 북마크(없으면 `null`), 상태 개수(modified/added/removed/unknown), 머지 진행 여부,
+첫 번째 부모 체인지셋의 phase가 담겨 있습니다. 내부적으로 `parents()`, `BookmarkCommand`,
+`status()`, phase roots를 조합해서 만든 결과이므로, 이 값들을 각각 따로 조회하는 대신
+`summary()` 한 번으로 한꺼번에 얻을 수 있다고 생각하면 됩니다.
+
+=== 리비전 한 줄 식별자 얻기
+
+`identify()`는 `hg identify`(`hg id`)의 기본(템플릿 없는) 출력 형식을 그대로 따릅니다.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=identify-working-copy]
+----
+
+인자 없이 호출하면 작업 디렉터리 자신의 부모를 식별합니다: ID는 12자리 짧은 hex이고, 머지가
+진행 중이면 두 부모의 ID가 `+`로 연결되며, 작업 복사본이 dirty(수정/추가/삭제된 파일이 있거나
+머지 중)하면 끝에 `+`가 하나 더 붙습니다. 저장소에 커밋이 전혀 없으면 `000000000000`을
+반환합니다. 브랜치 이름은 `default`가 아닐 때만 괄호로 표시되고, 태그·북마크는 현재 모든 부모에
+걸쳐 모은 뒤 알파벳순으로 `/`로 이어붙여 표시됩니다.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=identify-revision]
+----
+
+`setRevision(String)`으로 특정 리비전을 고정하면 dirty 마커는 절대 붙지 않고, 부모가 아니라
+그 하나의 리비전만 식별합니다. 이때 함께 표시되는 브랜치는 **조회 대상 리비전 자신의**
+브랜치입니다 -- 예를 들어 `feature` 브랜치로 체크아웃된 상태에서 `default` 브랜치에 속한 예전
+리비전을 `-r`로 조회하면, 현재 작업 복사본이 아니라 그 예전 리비전이 실제로 속한 `default`가
+표시됩니다. 또한 `setRevision`이 받는 문자열은 리비전 번호, hex 프리픽스, `"tip"`뿐입니다 --
+북마크 이름이나 브랜치 이름은 직접 넘길 수 없으므로, 북마크를 식별하려면 먼저
+`hg.bookmark().call()`로 해당 북마크가 가리키는 노드 hex를 얻은 뒤 그 값을 넘겨야 합니다.
+
+=== 브랜치 head 조회하기
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=list-heads]
+----
+
+인자 없이 호출하는 기본 동작(`hg heads`)은 **브랜치별로** open head를 모두 모은 것입니다 --
+브랜치의 head가 저장소 전체 기준의 topological leaf가 아니더라도(예: 그 브랜치 자체의 tip이
+다른 브랜치에 머지되어 흡수된 경우), 같은 브랜치의 자식이 없다면 여전히 head로 포함됩니다.
+`setTopo(true)`를 주면 브랜치 개념을 완전히 무시하고 저장소 전체에서 자식이 하나도 없는 순수
+topological leaf만 반환하는 `hg heads --topo`와 동일하게 동작합니다. `setBranch(name)`으로 특정
+브랜치를 지정하면 그 브랜치 자신의 head만 좁혀서 반환하며, 이 동작은 `--topo`를 함께 주더라도
+동일합니다. 닫힌(closed) 브랜치의 head까지 포함하려면 `setIncludeClosed(true)`를 사용하세요.
+
+=== 가장 가까운 태그 기준으로 리비전 설명하기
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=describe-revision]
+----
+
+`describe()`는 작업 디렉터리의 현재 부모 리비전에서 시작해 조상 방향으로 거슬러 올라가며
+`.hgtags`에 기록된 가장 가까운 태그를 찾습니다. 현재 리비전 자체가 태그된 리비전이면 태그
+이름만 반환하고, 그렇지 않으면 Git의 `git describe`와 비슷한 형식인
+`태그이름-거리-g짧은노드`를 반환합니다. 저장소에 태그가 전혀 없으면 `v0.0-거리-g짧은노드`
+형식으로 대체되고, 커밋이 하나도 없으면 `"empty-repository"`를 반환합니다.

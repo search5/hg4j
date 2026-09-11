@@ -1,0 +1,117 @@
+[[repository-state]]
+== Inspecting Repository State
+
+This chapter covers the commands that inspect the repository's own location and current state:
+`root()`, `tip()`, `parents()`, `summary()`, `identify()`, `heads()`, `describe()`. All of them
+are read-only and never modify the repository.
+
+=== Finding the repository's root path
+
+`root()` returns the absolute path of the working directory that contains `.hg` -- the same as
+`hg root`.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-root]
+----
+
+=== Checking the tip revision
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-tip]
+----
+
+`tip` always refers to the **highest revision number** in the changelog, regardless of branch or
+head. In a repository whose history has been rewritten, this can differ from "the most recently
+created" revision -- just like real hg, tip is defined by revision number, not by wall-clock time.
+On a repository with no commits at all, `call()` returns `null` and `getRevisionNumber()` returns
+`-1`.
+
+=== Checking the working directory's parent revision(s)
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-parents]
+----
+
+`parents()` returns the working directory's parent node id(s) (hex), as recorded in the dirstate.
+The common case is one entry; while an uncommitted merge is in progress it is two; a brand-new
+repository with no commits yet returns zero.
+
+=== Checking a working-copy summary
+
+hg4j is a library rather than a CLI, so instead of printing formatted text like `hg summary`, it
+returns a structured `SummaryInfo` record.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=show-summary]
+----
+
+`SummaryInfo` bundles the list of parent revisions (`ParentInfo` -- revision number, node hex,
+commit message), the current branch, the active bookmark (`null` if none), status counts
+(modified/added/removed/unknown), whether a merge is in progress, and the phase of the first
+parent changeset. Internally it is assembled from `parents()`, `BookmarkCommand`, `status()`, and
+the phase roots, so think of `summary()` as a single call that gathers all of those separately
+queryable values at once.
+
+=== Getting a one-line revision identity
+
+`identify()` follows the exact format of `hg identify` (`hg id`)'s default (no `--template`)
+output.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=identify-working-copy]
+----
+
+Called with no arguments, it identifies the working directory's own parent(s): the id is the
+12-hex short node, `+`-joined for both parents when a merge is in progress, with one more trailing
+`+` appended whenever the working copy is dirty (modified/added/removed files, or a merge in
+progress). An empty repository with no commits at all identifies as `000000000000`. The branch
+name is only shown in parentheses when it is not `default`, and tags/bookmarks are aggregated
+across every current parent, sorted alphabetically, and joined with `/`.
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=identify-revision]
+----
+
+`setRevision(String)` pins the query to a fixed revision instead: no dirty marker is ever
+appended, and exactly that one revision is identified rather than the working copy's parent(s).
+The branch shown in that case is the **queried revision's own** branch -- for example, while
+checked out on branch `feature`, identifying an older revision that belongs to `default` via `-r`
+shows `default`, the branch that revision actually belongs to, not the working copy's current
+branch. Also note that the string `setRevision` accepts is limited to a revision number, a hex
+prefix, or `"tip"` -- it does not resolve bookmark or branch names directly, so to identify a
+bookmark you first need `hg.bookmark().call()` to get the node hex it points to, and pass that.
+
+=== Listing branch heads
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=list-heads]
+----
+
+The no-argument default (`hg heads`) collects each named branch's own open head(s) -- even when
+such a head is not a repository-wide topological leaf (e.g. a branch whose own tip has since been
+merged into and absorbed by another branch), it is still included as long as it has no
+same-branch child. Passing `setTopo(true)` switches to `hg heads --topo`'s behavior: it ignores
+branch mechanics entirely and returns only the pure topological leaves that have no children
+anywhere in the repository. `setBranch(name)` narrows the result to just that branch's own heads,
+and this behaves the same whether or not `--topo` is layered on top of it. Use
+`setIncludeClosed(true)` to also include heads closed via `hg commit --close-branch`.
+
+=== Describing a revision relative to its nearest tag
+
+[source,java]
+----
+include::{examplesdir}/RepositoryStateExamples.java[tag=describe-revision]
+----
+
+`describe()` starts from the working directory's current parent revision and walks backward
+through ancestry to find the closest tag recorded in `.hgtags`. If the current revision is itself
+a tagged revision, only the tag name is returned; otherwise it returns a Git-`describe`-style
+`tagname-distance-gshortnode` string. If the repository has no tags at all, `v0.0-distance-gshortnode`
+is used instead, and a repository with no commits returns `"empty-repository"`.

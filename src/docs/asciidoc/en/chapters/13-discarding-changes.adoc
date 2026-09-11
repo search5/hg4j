@@ -1,0 +1,67 @@
+[[discarding-changes]]
+== Discarding Changes: Strip, Rollback & Censor
+
+All three commands in this chapter are **either irreversible, or reversible only within a very
+narrow window**. Use them with real caution. `strip()` in particular is worth contrasting
+sharply with chapter 12's `rebase()`/`histedit()`: those record only an obsolescence marker,
+leaving the original revisions still visible via `hg log --hidden`, whereas `strip()`
+physically removes revisions from the revlogs.
+
+=== Stripping revisions outright
+
+[source,java]
+----
+include::{examplesdir}/DiscardingChangesExamples.java[tag=strip-revision]
+----
+
+`strip()` physically truncates the given revision -- and every descendant of it -- out of the
+changelog/manifest/filelog revlogs. Unlike the obsolescence-marker-based rewriting from
+chapter 12, a stripped revision can no longer be recovered via `hg log --hidden` either -- it
+is simply gone from the store. A successful strip also erases the undo information that
+`rollback()` (covered below) relies on -- if you commit twice and then strip the tip, the undo
+information for that second commit disappears along with it.
+
+A bookmark that pointed at a stripped revision is not deleted; it follows the stripped
+revision back to the nearest surviving ancestor (or to the null revision, if everything was
+stripped) -- matching real `hg strip`'s own behavior exactly.
+
+=== Rolling back the last transaction
+
+[source,java]
+----
+include::{examplesdir}/DiscardingChangesExamples.java[tag=rollback-last-transaction]
+----
+
+NOTE: Unlike the other commands here, `rollback()` is **not** a `Hg.rollback().call()`-style
+builder -- it's a plain `void Hg.rollback() throws IOException` method you call directly.
+
+`rollback()` can only undo the **single most recent transaction** -- a commit or a pull. It
+works by restoring the store/dirstate/bookmarks from the `.hg/store/undo*` files that
+`CommitCommand`/`FetchCommand` leave behind right after succeeding, so committing once more
+overwrites that undo information and makes it unreachable. Calling it when no undo information
+exists at all (no prior commit, or after an operation like `strip()` above that erases it)
+throws `IllegalStateException` -- note that this is an unchecked exception not declared in the
+`throws` clause, so it doesn't appear in <<error-handling>>'s checked-exception table.
+
+=== Censoring a file revision
+
+[source,java]
+----
+include::{examplesdir}/DiscardingChangesExamples.java[tag=censor-file-revision]
+----
+
+`censor()` corresponds to real `hg censor` (used to permanently scrub content such as an
+accidentally committed secret). Importantly, it censors **exactly one file revision you
+specify -- not that file's entire history**. The value passed to `setRevision()` is not the
+changeset's commit hash; it's the 40-character hex node ID of that specific filelog revision
+(obtainable, as in the example above, by looking up the file's node hex at a given changeset
+via the `manifest()` command). Earlier and later revisions of the same path are left
+completely untouched, so if the same secret is spread across several commits, `censor()` needs
+to be called once per affected revision.
+
+The censored content is replaced with a tombstone, but the revision's node ID, parents, and
+linkrev are all preserved -- history/DAG shape is unaffected. By default
+(`setCheckHeads(true)`, the default), censoring is refused if that exact content is still live
+at any head or at a working-directory parent -- clean/delete and commit, or update away first,
+or pass `setCheckHeads(false)` to bypass the guard entirely (matching real hg's
+`--no-check-heads`).

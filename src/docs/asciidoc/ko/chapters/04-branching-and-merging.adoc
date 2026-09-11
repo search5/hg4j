@@ -1,0 +1,67 @@
+[[branches-bookmarks]]
+== 브랜치, 북마크, 머지 & 리베이스
+
+=== 네임드 브랜치 vs. 북마크
+
+Mercurial에는 개발 라인에 이름을 붙이는 서로 다른 두 방법이 있고, 동작 방식이 상당히 다릅니다
+-- Git에 익숙한 개발자가 흔히 헷갈리는 부분입니다.
+
+* **네임드 브랜치(named branch)**는 커밋 자체에 영구적으로 기록되는 레이블입니다(`branch()`).
+  한 번 커밋되면 절대 옮겨가지 않으며, `hg log`에 영원히 남습니다.
+* **북마크(bookmark)**(`bookmark()`)는 특정 리비전을 가리키는 이동 가능한 포인터로, 실제로는
+  Git의 브랜치에 훨씬 가깝습니다. 활성화된 상태에서 다음 커밋이 생기면 자동으로 앞으로
+  이동합니다.
+
+=== 네임드 브랜치 다루기
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=create-branch]
+----
+
+=== 북마크 다루기
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=bookmarks]
+----
+
+=== 작업 디렉터리 업데이트하기
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=update-working-copy]
+----
+
+=== 전체 브랜치 목록 조회하기
+
+[source,java]
+----
+include::{examplesdir}/BranchingExamples.java[tag=list-branches]
+----
+
+`branches()`는 기본적으로 닫힌(closed) 브랜치를 제외한, 브랜치별 head만 반환합니다 --
+`setIncludeClosed(true)`로 닫힌 브랜치까지 포함시킬 수 있습니다.
+
+=== 머지하기
+
+[source,java]
+----
+include::{examplesdir}/MergingExamples.java[tag=merge-branches]
+----
+
+충돌이 발생한 머지는 예외가 **아닙니다** -- `merge()`는 정상적으로 반환되고, 충돌 경로는
+`MergeResult.isConflicted()`/`getConflicts()`로 확인합니다. 충돌한 각 파일에는 이미 표준
+`<<<<<<< / ======= / >>>>>>>` 마커가 디스크에 쓰여 있으므로, 이를 해결한 뒤 다른 머지 커밋과
+동일하게 커밋하면 됩니다.
+
+=== 리베이스하기
+
+[source,java]
+----
+include::{examplesdir}/MergingExamples.java[tag=rebase-commits]
+----
+
+머지와 달리 리베이스 충돌은 `HgMergeConflictException`이 실제로 **던져지는** 형태로 보고됩니다
+-- 복구 방법은 <<error-handling>>을 참고하세요. `rebase()`는 원본 리비전을 물리적으로 제거하지
+않고, obsolescence marker를 기록하는 방식이라 `hg log --hidden`으로 여전히 볼 수 있습니다.

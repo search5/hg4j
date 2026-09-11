@@ -1,0 +1,88 @@
+[[maintenance-and-config]]
+== 저장소 유지보수 & 고급 설정
+
+이 장에서 다루는 명령들은 평소 작업 흐름보다는 저장소를 건강하게 유지하고, 설정을 읽고,
+서브저장소나 부분 클론처럼 좀 더 특수한 시나리오를 다룰 때 쓰입니다.
+
+=== 무결성 검사하기
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=verify]
+----
+
+`verify()`는 예외를 던지는 대신 발견한 문제를 문자열 목록으로 돌려줍니다 -- 목록이 비어 있으면
+저장소가 건강하다는 뜻입니다. changelog, manifest(treemanifest를 쓰는 저장소라면 `meta/`
+아래의 서브매니페스트까지), 그리고 모든 filelog의 노드 ID 해시를 재계산해 저장된 값과
+비교합니다. 커밋이 한 번도 없는 갓 만든(혹은 아직 pull하지 않은) 저장소는 changelog가
+비어 있는 것이 정상이므로 오류로 보고되지 않습니다.
+
+=== 중단된 트랜잭션 복구하기
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=recover]
+----
+
+`recover()`는 크래시나 강제 종료로 남은 `.hg/store/journal`을 찾아 롤백합니다. 결과는
+`RecoverCommand.RecoverResult`로 반환되며, `wasInterrupted()`로 애초에 복구할 트랜잭션이
+있었는지, `isSuccess()`로 롤백이 실제로 끝났는지를 구분해서 확인해야 합니다 -- 롤백할 것이
+없는 경우도 실패가 아니라 정상적인 결과이기 때문입니다. `setVerify(true)`를 설정하면 롤백이
+실제로 성공했을 때만 추가로 `verify()`를 실행해 그 결과를 `getVerifyErrors()`로 함께
+받아볼 수 있습니다.
+
+=== 설정 읽기
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=config]
+----
+
+`config()`가 반환하는 `HgRcConfig`는 시스템 전역(`/etc/mercurial/hgrc`), 사용자 전역
+(`~/.hgrc` 또는 `~/mercurial.ini`), 저장소 로컬(`.hg/hgrc`) 설정을 이 순서의 우선순위로
+병합한 결과입니다. `getUsername()`/`getPath(name)`처럼 자주 쓰는 값을 위한 헬퍼 메서드가
+있고, `getSection(section)`으로 `[paths]` 같은 섹션 전체를 파싱된 순서 그대로 가져올 수도
+있습니다.
+
+=== 서브저장소 다루기
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=subrepo]
+----
+
+`subrepo()`의 `setAction(...)`은 `"add"`(`.hgsub`/`.hgsubstate`에 새 항목 등록),
+`"init"`, `"update"`(둘 다 설정된 서브저장소들을 각자 고정된 리비전으로 체크아웃) 세 가지를
+받습니다. `"add"`는 파일을 갱신할 뿐 실제로 클론하지는 않으며, 이후 `"update"`를 호출해야
+서브저장소가 실제로 클론되고 지정한 리비전으로 체크아웃됩니다. `.hgsubstate`에 기록된 리비전이
+이미 바뀌어 있는 기존 체크아웃에 대해 다시 `"update"`를 호출해도 안전합니다 -- 필요하면
+먼저 pull한 뒤 고정된 리비전으로 강제 업데이트합니다.
+
+=== 부분(narrow) 클론
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=narrow-clone]
+----
+
+`Hg.narrowClone()`은 `Hg.init()`/`Hg.cloneRepository()`와 마찬가지로 **정적(static)**
+메서드입니다 -- 존재하지 않는 새 저장소를 만들어내는 작업이라 호출할 기존 `Hg` 인스턴스가
+없기 때문입니다. include/exclude 경로 패턴으로 메타데이터 추적 범위 자체를 제한하며, 실제
+hg의 narrow 확장과 동일하게 `.hg/requires`에 `narrowhg-experimental` requirement를
+기록합니다.
+
+=== Sparse 프로필 해석하기
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=sparse-config]
+----
+
+`sparseConfig(int changelogRev)`는 다른 명령들과 달리 `Command` 빌더가 아니라 `Hg`의
+직접 메서드로, `SparseConfig`를 즉시 반환합니다. `.hg/sparse`는 추적되지 않는 순수
+작업 디렉터리 파일이라 디스크에서 바로 읽지만, `%include`로 참조하는 프로필 파일은
+**추적되는** 파일이라 지정한 changelog 리비전의 매니페스트에서 읽어옵니다 -- 그래서 리비전을
+바꾸면 적용되는 sparse 규칙도 함께 바뀔 수 있습니다. 반환된 `SparseConfig`의
+`toPathFilter()`는 이 규칙을 `PathFilter`로 변환해주는데, <<walking-trees>>의
+`walkWorkingDir()`/`walkTree()`와 조합해 작업 범위를 활성 sparse 프로필로 제한할 때
+바로 사용할 수 있습니다.

@@ -1,0 +1,36 @@
+== Introduction
+
+`hg4j` is a pure Java implementation of the Mercurial (hg) version control system, modeled after
+JGit's structure and split into a low-level Plumbing layer (`HgRepository`, `Revlog`, `Dirstate`,
+etc.) and a high-level Porcelain layer -- the `Hg` facade and its `XxxCommand` classes, one per
+`hg` subcommand.
+
+This manual is a **task-oriented usage guide**. It covers "how do I add a file, commit it, and
+push it to a remote," not an exhaustive listing of every class and method. For a complete
+reference of every public class, method, and parameter, see the generated Javadoc instead.
+
+[source,bash]
+----
+./gradlew javadoc    # English, generated under build/docs/javadoc/
+./gradlew javadocKo  # Korean,  generated under build/docs/javadoc-ko/
+----
+
+Every code sample in this manual is actually compiled at build time (see
+`src/docs/examples/java`). If the `Hg` API ever changes in a way that breaks an example, the
+build fails outright instead of the manual quietly going stale.
+
+=== The `Hg` facade
+
+Almost everything in this manual goes through a single entry point: the `Hg` class.
+
+* `Hg.init()` / `Hg.cloneRepository()` -- **static** methods. They create a repository that
+  doesn't exist yet and return the resulting `HgRepository`, since there is no existing `Hg`
+  instance to call them on.
+* `Hg.open(path)` / `Hg.wrap(repository)` -- obtain an `Hg` instance bound to an **already
+  existing** repository. Every other command (`add()`, `commit()`, `status()`, `push()`, ...) is
+  an **instance** method on that `Hg` object.
+* `Hg` implements `AutoCloseable` -- always use it inside a try-with-resources block.
+
+Each `XxxCommand` returned by an `Hg` instance method follows the same builder shape: configure it
+via `setXxx(...)` calls (each returning `this` for chaining), then call `call()` to actually run
+it.

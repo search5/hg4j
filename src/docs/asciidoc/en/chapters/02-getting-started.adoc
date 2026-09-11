@@ -1,0 +1,47 @@
+== Getting Started
+
+=== Adding the dependency
+
+[source,groovy]
+.build.gradle
+----
+dependencies {
+    implementation 'io.github.search5.hg4j:hg4j:1.0.0'
+}
+----
+
+`hg4j` targets Java 21. If you want to use `hg4j` as a Gradle SCM plugin instead of (or in
+addition to) a plain library dependency, see the "Gradle Plugin Usage" section of the project
+README.
+
+=== Creating a new repository
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=init-repository]
+----
+
+=== Cloning an existing repository
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=clone-repository]
+----
+
+=== Opening an existing repository
+
+Once a repository already exists on disk, `Hg.open(...)` gives you the facade instance every
+other command in this manual is called on.
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=open-repository]
+----
+
+If you already have an `HgRepository` instance from somewhere else (for example, the return value
+of `Hg.init()`/`Hg.cloneRepository()`), wrap it directly instead of reopening it from disk.
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=wrap-repository]
+----

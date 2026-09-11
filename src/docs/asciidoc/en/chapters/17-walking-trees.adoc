@@ -1,0 +1,76 @@
+[[walking-trees]]
+== Walking Trees Directly (Advanced)
+
+If you've used JGit's `TreeWalk`, this chapter will feel familiar -- it's the same public API
+pattern JGit users reach for when building custom analysis or tooling, and hg4j exposes it too.
+`Hg`'s `walkManifest(String)`/`walkWorkingDir()`/`walkTree()` methods drive the very same tree
+traversal engine that most porcelain commands (`StatusCommand`, `DiffCommand`, `CommitCommand`,
+`UpdateCommand`, `MergeCommand`, and others) already use internally. Everyday work is well served
+by the higher-level commands covered earlier in this manual, but comparing manifests across
+revisions directly, or building your own analysis tooling, is where this API comes in.
+
+=== Walking the manifest of a single revision
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-manifest]
+----
+
+`walkManifest(revision)` accepts a revision number, a hex node id (or an unambiguous prefix), or
+`"tip"`, and returns the tracked files recorded in that manifest one at a time as
+`ManifestWalk.Entry` objects. Note that each entry's `getNodeIdHex()` is the filelog node id
+pointing at that file's content -- not a commit id. `next()` loads and caches every entry on its
+first call, so later calls are just walking the cached list.
+
+=== Walking the working directory
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-workingdir]
+----
+
+`walkWorkingDir()` merges tracked (dirstate) paths and not-yet-tracked paths into a single sorted
+walk -- so you see every relevant working-copy path in one pass, regardless of whether it has been
+added yet. Each `Entry`'s `getState()` is a dirstate state character (`'n'` normal, `'a'` added,
+`'r'` removed, `'m'` merged), or `'?'` for a path that isn't tracked yet.
+
+=== Comparing multiple trees at once with `TreeWalk`
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-tree-compare]
+----
+
+`walkManifest`/`walkWorkingDir` are actually convenience facades built on top of `TreeWalk`. True
+to its JGit namesake, `TreeWalk` simultaneously walks several `TreeIterator`s (say, two
+`ManifestTreeIterator`s, or a manifest and the working directory) in merged, sorted path order.
+The order trees are added via `addTree()` becomes their index, and
+`isTracked(int)`/`getNodeId(int)`/`getState(int)` take that index to ask a specific tree how it
+records the current path -- a tree that doesn't track the current path simply reports "not
+tracked" instead of throwing. The example above follows exactly the pattern
+`UpdateCommand.call()` itself uses internally to compare the target revision's manifest against
+the working copy's current parent revision and work out what to write and delete.
+
+=== Narrowing the walk with a filter and non-recursive mode
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-tree-filter]
+----
+
+`setFilter(PathFilter)` is applied to every path the walk encounters, which is useful for
+narrowing the walk down to one subtree.
+
+[source,java]
+----
+include::{examplesdir}/TreeWalkExamples.java[tag=walk-tree-non-recursive]
+----
+
+`setRecursive(false)` stops the walk at the entries directly below the closest ancestor directory
+the current filter accepts, without descending any further. With no filter set at all, that
+ancestor is the repository root, so -- as in the example above -- only top-level paths with no `/`
+in them survive. Be aware, though: if the filter passed to `setFilter` itself accepts paths
+broadly under a subtree (say, anything matching `path.startsWith(...)`), those deeper paths also
+count as an accepted "closest ancestor directory," and `setRecursive(false)` won't hold back
+recursion the way you might expect. To see only the entries directly inside a given directory,
+write the filter so it does not accept paths any deeper than that directory itself.

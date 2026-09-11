@@ -1,0 +1,39 @@
+== Working with Remotes
+
+=== Pushing
+
+[source,java]
+----
+include::{examplesdir}/RemoteOperationExamples.java[tag=push-changes]
+----
+
+=== Pulling
+
+[source,java]
+----
+include::{examplesdir}/RemoteOperationExamples.java[tag=pull-changes]
+----
+
+=== Pulling with bookmark/phase sync
+
+`fetch()` does everything `pull()` does, plus atomically synchronizes bookmarks and phases with
+the remote.
+
+[source,java]
+----
+include::{examplesdir}/RemoteOperationExamples.java[tag=fetch-changes]
+----
+
+IMPORTANT: Neither `pull()` nor `fetch()` touches the working copy -- both only update the local
+repository's **store**. Always follow either one with `update()` (see <<branches-bookmarks>>) to
+actually check the newly-fetched tip out.
+
+=== Listing configured remote paths
+
+[source,java]
+----
+include::{examplesdir}/RemoteOperationExamples.java[tag=list-paths]
+----
+
+`paths()` returns the `[paths]` aliases (e.g. `default`, `default-push`) registered in
+`.hg/hgrc`, alphabetically ordered -- an empty map if no `[paths]` section is configured.

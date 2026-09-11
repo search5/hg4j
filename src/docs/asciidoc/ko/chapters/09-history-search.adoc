@@ -1,0 +1,133 @@
+[[history-search]]
+== 히스토리 검색 및 탐색 (Searching & Browsing History)
+
+이 장에서는 파일 히스토리와 저장소 콘텐츠를 조회하는 커맨드들을 다룹니다: `annotate()`,
+`cat()`, `files()`, `locate()`, `manifest()`, `tree()`, `grep()`, `revset()`, `phase()`. 이 중
+`cat()`, `files()`, `locate()`, `manifest()`, `phase()`가 받는 리비전 문자열은 리비전 번호, hex
+노드 프리픽스, `"tip"`만 지원합니다 -- 북마크나 브랜치 이름을 직접 넘길 수는 없으므로, 필요하면
+먼저 `bookmark().call()` 등으로 노드 hex를 구한 뒤 그 값을 넘겨야 합니다.
+
+=== 파일 히스토리 blame(annotate)
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=annotate-file]
+----
+
+`annotate()`는 이름 변경(rename)/복사(copy) 경계를 항상 따라갑니다 -- 실제 hg의 `hg annotate`도
+이를 위한 별도의 `--follow` 플래그가 없고 기본 동작 자체가 그렇습니다. `setRevision(int)`가
+받는 값은 체인지로그 리비전이 아니라 **해당 파일의 filelog 리비전 번호**라는 점에 주의하세요
+(기본값 `-1`은 그 파일의 최신 filelog 리비전을 의미합니다). 반대로 결과로 나오는
+`BlameLine#getRevision()`은 그 줄이 도입된 **체인지로그 리비전 번호**(linkRev)입니다 -- 입력과
+출력의 "리비전"이 서로 다른 종류라는 점을 혼동하지 마세요.
+
+=== 특정 리비전에서 파일 내용 읽기
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=cat-file]
+----
+
+`cat()`은 지정한 리비전의 매니페스트를 통해 파일의 filelog 리비전을 찾아 그 원문 바이트를
+반환합니다. 해당 리비전에 파일이 아직 존재하지 않으면(추적되지 않으면)
+`HgRevisionNotFoundException`이 발생합니다.
+
+=== 추적 중인 파일 목록 조회하기
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=list-files]
+----
+
+`files()`는 `hg files`와 마찬가지로 리비전을 지정하지 않으면 **작업 복사본**의 dirstate를
+기준으로 동작합니다 -- 아직 커밋되지 않았지만 추가된(added) 파일은 포함되고, 삭제
+표시(`hg rm`)만 되고 아직 커밋되지 않은 파일은 제외됩니다. 리비전을 지정하면 그 커밋 시점의
+매니페스트를 그대로 나열합니다. `setPattern(...)`은 글롭 패턴으로 좁혀 주며, 디렉터리를 가리키는
+패턴은 그 아래 모든 파일에 매치되는 `SparsePathFilter`의 디렉터리-프리픽스 규칙을 그대로
+따릅니다.
+
+=== 패턴으로 파일 찾기 (locate)
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=locate-files]
+----
+
+`locate()`는 `files()`와는 다른, 더 오래된 커맨드입니다. 리비전을 지정하지 않으면 dirstate를
+**직접** 조회하기 때문에, `hg rm`으로 삭제 표시만 되고 아직 커밋되지 않은 파일도 결과에
+포함됩니다 -- 이 점이 `files()`와의 가장 큰 차이입니다. 패턴을 지정하지 않으면 후보 경로
+전체가 반환되고, 기본 패턴 종류는 실제 hg의 `relglob`(경로의 어느 디렉터리에서든 파일명
+부분에 매치되는, 루트에 고정되지 않은 글롭)입니다. `*`, `**`, `?`만 지원하며 `[...]` 문자
+클래스나 `{a,b}` 중괄호 확장은 지원하지 않고 리터럴 문자로 취급됩니다.
+
+=== 매니페스트 목록 조회하기
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=list-manifest]
+----
+
+`manifest()`는 리비전을 지정하지 않으면 tip이 아니라 **작업 디렉터리의 첫 번째 부모**를
+기준으로 동작합니다 -- 예를 들어 `hg update -r 0`으로 이전 리비전을 체크아웃한 뒤 리비전 없이
+호출하면 tip이 아니라 리비전 0의 파일 목록이 나옵니다. 반환되는 `ManifestEntry`는 파일 경로,
+콘텐츠의 전체 40자리 hex 노드 ID, 실행 가능 여부, 심볼릭 링크 여부를 담고 있습니다.
+`setDebug(boolean)`은 호출자가 어떤 렌더링을 의도했는지 기록해 두는 용도일 뿐이며, `call()`이
+반환하는 데이터 자체에는 아무 영향을 주지 않습니다 -- 항상 렌더링에 필요한 전체 정보(노드 hex
+포함)를 담아 반환합니다.
+
+=== 디렉터리 트리 순회하기
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=walk-tree]
+----
+
+`tree()`는 리비전을 지정하지 않으면(또는 지정한 리비전이 해석되지 않으면) tip을 기준으로
+동작합니다 -- `manifest()`가 작업 디렉터리의 부모를 기본값으로 삼는 것과 다르니 주의하세요.
+`TreeEntry#getMode()`는 POSIX 스타일 모드(일반 파일 `0644`, 실행 파일 `0755`, 심볼릭 링크는
+`0120000`)를 돌려줍니다.
+
+=== 히스토리 전체에서 문자열 검색하기 (grep)
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=grep-history]
+----
+
+`grep()`은 작업 복사본이나 특정 리비전 하나가 아니라, 추적 중인 **모든 파일의 모든 filelog
+리비전**을 대상으로 검색합니다 -- 같은 줄이 여러 리비전에 걸쳐 그대로 남아 있으면 그만큼 여러
+번 결과에 나타날 수 있습니다. `setQuery(...)`는 일반 문자열뿐 아니라 정규식도 그대로 받아들이는
+실제 `hg grep`의 기본 동작과 같습니다. `GrepResult`의 `path`, `hexNode`, `lineNumber`,
+`lineContent`는 getter가 아니라 `public final` 필드로 노출되어 있으니 그대로 접근하면 됩니다.
+
+=== revset 표현식으로 리비전 조회하기
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=query-revset]
+----
+
+`revset()`은 `all()`, `parents(tip)`처럼 함수형 revset 표현식을 받아 매치되는 리비전들의 hex
+노드 ID 목록을 반환합니다. 지원하는 함수 범위는 실제 hg의 전체 revset 언어보다 좁으므로, 복잡한
+표현식을 사용하기 전에 `HgRevsetEngine`이 실제로 지원하는 문법을 먼저 확인하는 것이 좋습니다.
+
+=== phase 조회 및 변경하기
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=query-phase]
+----
+
+phase는 `0`(public), `1`(draft), `2`(secret) 정수로 표현됩니다. `setPhase(...)`를 함께 주면
+단순 조회가 아니라 phase 변경을 수행합니다.
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=set-phase]
+----
+
+phase를 더 낮은(더 public에 가까운) 값으로 옮기는 것은 항상 허용되며, 대상 리비전의 **모든
+조상**에게 함께 적용됩니다 -- 자식이 부모보다 덜 public할 수는 없기 때문입니다. 반대로 더
+높은(더 secret에 가까운) 값으로 옮기는 것은 대상 리비전의 **모든 자손**에게 적용되며, 실제
+hg의 `hg phase --force`와 마찬가지로 `setForce(true)`를 명시하지 않으면
+`IOException`으로 거부됩니다.

@@ -1,0 +1,49 @@
+[[bisecting]]
+== 이분 탐색으로 회귀 원인 찾기
+
+`bisect()`(`hg.bisect()`)는 "좋음"으로 알려진 리비전과 "나쁨"으로 알려진 리비전 사이를
+이분 탐색해서, 버그를 처음 유발한 리비전을 찾아내는 `hg bisect`의 hg4j 대응물입니다.
+
+IMPORTANT: 실제 `hg bisect` CLI는 `.hg/bisect.state` 파일에 진행 상태를 저장하는
+**상태 유지형(stateful)** 명령이지만, hg4j의 `BisectCommand`는 디스크에 아무 상태도
+남기지 않습니다. `next()`를 호출할 때마다 그 시점에 전달된 good/bad 노드만으로 다음 후보를
+새로 계산하므로, 반복(iteration) 사이에 good/bad 범위를 기억하고 갱신하는 책임은 전적으로
+**호출하는 쪽 코드**에 있습니다.
+
+=== 첫 후보 구하기
+
+[source,java]
+----
+include::{examplesdir}/BisectExamples.java[tag=bisect-first-candidate]
+----
+
+`setGood(byte[])`과 `setBad(byte[])`는 둘 다 원시 20바이트 노드 ID를 받습니다 -- 리비전
+번호나 태그 이름이 아닙니다. 이 둘을 설정하지 않고 `next()`를 호출하면
+`IllegalStateException`이 발생하고, 존재하지 않는 노드를 넘기면 `IOException`이
+발생합니다.
+
+`next()`는 good..bad 범위를 가장 균등하게 반으로 가르는 리비전을 골라 반환할 뿐 아니라,
+**그 리비전을 작업 디렉터리에 곧바로 체크아웃**합니다 -- 실제 파일을 갱신하고 dirstate의
+부모를 바꾸고 작업 브랜치까지 후보 리비전에 맞춰 전환합니다. 따라서 후보를 받은 뒤 별도로
+`update()`를 호출할 필요가 없으며, 곧바로 빌드/테스트를 실행하면 됩니다.
+
+=== 범위를 좁혀 원인 리비전까지 반복하기
+
+[source,java]
+----
+include::{examplesdir}/BisectExamples.java[tag=bisect-narrow-loop]
+----
+
+매 단계마다 방금 받은 후보를 테스트한 뒤, 그 결과에 따라 `good` 또는 `bad`를 후보 노드로
+갱신하고 `next()`를 다시 호출하는 식으로 반복합니다. good과 bad가 인접한 리비전이 될 때까지
+(`badRev - goodRev == 1`) 이 과정을 반복하면, 그 시점의 `bad`가 바로 회귀를 처음 유발한
+원인 리비전입니다.
+
+NOTE: 후보 선택 알고리즘은 단순히 리비전 번호 범위의 중간 인덱스를 고르는 것이 아니라, 실제
+`hg`의 `mercurial/hbisect.py`와 마찬가지로 조상(ancestor) 개수를 기준으로 DAG를 가장 균등하게
+가르는 리비전을 고릅니다 -- 머지 커밋이 섞인 브랜치형 히스토리에서는 이 차이가 실제로
+드러납니다.
+
+새로운 이분 탐색을 시작하려면(실제 hg의 `hg bisect --reset`에 해당) 그냥 새 `hg.bisect()`
+인스턴스에 처음부터 `setGood()`/`setBad()`를 다시 지정하면 됩니다 -- 지워야 할 영속 상태
+자체가 없습니다.

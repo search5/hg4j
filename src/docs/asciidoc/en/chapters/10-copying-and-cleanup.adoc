@@ -1,0 +1,88 @@
+== Copying, Renaming & Cleanup
+
+This chapter covers the commands that work on files in the working tree (`copy()`, `rename()`,
+`addremove()`, `forget()`) and the commands that clean up the repository itself (`purge()`,
+`gc()`).
+
+=== Copying a file
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=copy-a-file]
+----
+
+`copy()` leaves the source file untouched and adds a new file at the destination path, recording
+a "destination -> source" relationship in the dirstate's copyMap -- this metadata is what lets
+`hg log --follow` and `hg annotate` on the destination follow through to the source's own history.
+It is refused by default when the destination path already has a file, and can only be overwritten
+with `setForce(true)`.
+
+=== Renaming a file
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=rename-a-file]
+----
+
+`rename()` is effectively `copy()` + `remove()` performed together -- it physically moves the file
+to the new path, marks the original path as removed, and still records "new path -> original path"
+in the copyMap.
+
+=== Adding and removing in one pass (addremove)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=addremove-untracked-and-missing]
+----
+
+`addremove()` scans the working tree once, adding every untracked file and marking every tracked
+file that has disappeared from disk as removed. The return value is a list of status-style
+strings such as `"A path/to/new.txt"` / `"R path/to/gone.txt"`, so you can see exactly what
+changed.
+
+=== Untracking a file (forget)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=forget-a-file]
+----
+
+`forget()` is the opposite of `remove()`: it untracks a file **without touching it on disk at
+all**. A file that has never been committed is simply dropped from the dirstate; an
+already-committed file is instead just flagged to be recorded as removed at the next commit,
+while the working tree's content is left exactly as it is.
+
+=== Cleaning up untracked files (purge)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=purge-untracked-files]
+----
+
+`purge()` **actually deletes files from disk**, so it's worth knowing its exact scope before
+using it. Its default matches real `hg purge`: it deletes files that are untracked and not
+matched by `.hgignore`, plus any directories that end up empty as a result. Conversely:
+
+* Ignored files (matched by `.hgignore`) are never touched.
+* Any path declared as a subrepo is skipped entirely, so a subrepo's own working tree is never
+  destroyed.
+* A symlink is never followed into whatever it points at, even a directory -- only the link
+  itself is ever a deletion candidate (a broken symlink whose target is missing is also a
+  deletion candidate).
+
+`setPurgeDirectories(false)` restricts the sweep to files only, leaving any empty directories
+behind. Note that, like the real `--dirs`/`--files` flags, this only ever *restricts* what gets
+deleted -- it never *adds* to it.
+
+=== Compacting the repository store (gc)
+
+[source,java]
+----
+include::{examplesdir}/FileMaintenanceExamples.java[tag=gc-compact-store]
+----
+
+`gc()` recompresses and re-deltas every revlog in the store, rebuilds fncache, and cleans up
+leftover temp/backup files. It doesn't map onto a single standard `hg` command exactly -- if
+anything, it's closer in spirit to `hg debugupgraderepo` or manual store maintenance. The return
+value is a summary string reporting how many revlogs were actually rewritten and how many
+temporary files were deleted.

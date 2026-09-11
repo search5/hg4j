@@ -1,54 +1,42 @@
-= hg4j Technical Reference Guide
-Antigravity <antigravity@google.com>
-v1.0.0, 2026-05-31
+= hg4j User Manual
+v1.0.0
 :toc: left
 :toclevels: 3
 :sectnums:
 :source-highlighter: coderay
 :icons: font
+:chapters: src/docs/asciidoc/en/chapters
 
-== 1. Introduction
-`hg4j` is an enterprise-grade, pure Java implementation of the **Mercurial (hg) SCM** version control system. Inspired by the clean, modular decoupled architecture of **JGit** in the Git ecosystem, `hg4j` enables complete read/write capability, transactional crash durability, and seamless binary-level interoperability with the official Mercurial CLI (v7.2.2).
+include::{chapters}/01-introduction.adoc[]
 
-This reference manual describes the core architectural layout of the library, the storage format parsing, porcelain facades, and interop testing.
+include::{chapters}/02-getting-started.adoc[]
 
-== 2. Core Architecture
-The design of `hg4j` strictly isolates low-level storage engines (**Plumbing API**) from high-level developer convenience interfaces (**Porcelain API**).
+include::{chapters}/03-basic-workflow.adoc[]
 
-=== 2.1 Plumbing API (Internal Plumbing)
-* **`HgRepository`**: The central coordinator that governs the physical storage layout under the `.hg/` directory, handles write locks, and orchestrates transaction recovery.
-* **`Dirstate`**: Handles working copy file tracking. The engine supports standard v1 format and high-throughput v2 layout (`DirstateV2Node`) designed with zero-copy binary mappings.
-* **`Revlog` (v1)**: Parses index (`.i`) and data (`.d`) files, reconstructing file history chains natively in memory.
-* **`TreeWalk` & `RevWalk`**: Provides high-performance iterative traversals of both file trees (manifests) and revision commit graphs.
+include::{chapters}/04-branching-and-merging.adoc[]
 
-=== 2.2 Porcelain API (User Facades)
-All user-facing workflows are exposed via the `Hg` class facade.
+include::{chapters}/05-remote-operations.adoc[]
 
-[source,java]
-----
-// Initialize a repository
-HgRepository repo = Hg.init().setDirectory(new File("/path/to/repo")).call();
+include::{chapters}/06-undoing-and-tagging.adoc[]
 
-// Add files
-Hg.add(repo).addFile(new File(repo.getDirectory(), "README.md")).call();
+include::{chapters}/07-error-handling.adoc[]
 
-// Commit changes
-Hg.commit(repo).setMessage("Initial commit!").call();
-----
+include::{chapters}/08-repository-state.adoc[]
 
-== 3. Interoperability & Durability
-`hg4j` is meticulously certified against official Mercurial SCM:
+include::{chapters}/09-history-search.adoc[]
 
-* **Crash Durability**: An active transaction engine tracks changes in `journal` logs and backups, allowing automatic, safe, atomic rollbacks if an error occurs.
-* **OS-Level Locks**: Uses Java `FileLock` (`.hg/wlock` and `.hg/store/lock`) to ensure safety under concurrent multi-process environments.
-* **Storage Optimization**: Implements line-level Myers-diff and Longest Common Subsequence (LCS) algorithms for multi-hunk delta generation, saving extensive storage overheads.
+include::{chapters}/10-copying-and-cleanup.adoc[]
 
-== 4. Building and Running Documentations
-To generate this documentation website using the Asciidoctor Gradle plugin, run:
+include::{chapters}/11-shelving-and-worktrees.adoc[]
 
-[source,bash]
-----
-./gradlew asciidoctor
-----
+include::{chapters}/12-rewriting-history.adoc[]
 
-The output will be generated as HTML under: `build/docs/asciidoc/en/index.html`.
+include::{chapters}/13-discarding-changes.adoc[]
+
+include::{chapters}/14-bisecting.adoc[]
+
+include::{chapters}/15-patches-and-bundles.adoc[]
+
+include::{chapters}/16-maintenance-and-config.adoc[]
+
+include::{chapters}/17-walking-trees.adoc[]

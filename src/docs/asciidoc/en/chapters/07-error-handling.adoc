@@ -1,0 +1,46 @@
+[[error-handling]]
+== Error Handling
+
+hg4j's checked-exception hierarchy is deliberate, and -- contrary to what you might expect -- not
+every exception funnels through `IOException`.
+
+[cols="1,1,3"]
+|===
+|Exception |Extends |When it's thrown
+
+|`HgLockException`
+|`HgException` (NOT `IOException`)
+|The `.hg/wlock` or `.hg/store/lock` OS-level file lock could not be acquired -- another process
+(or another `Hg` instance) is currently writing to the repository.
+
+|`HgMergeConflictException`
+|`HgException` (NOT `IOException`)
+|`GraftCommand`, `BackoutCommand`, or `RebaseCommand` left one or more files with unresolved
+conflict markers during their internal cherry-pick/replay merge.
+
+|`HgRepositoryNotFoundException`, `HgRevisionNotFoundException`, `HgValidationException`,
+`HgTransportException`, `HgCorruptDataException`, `HgCensoredContentException`
+|`IOException`
+|Everything else: a missing repository, an unresolvable revision string, bad input, a
+network/wire-protocol failure, or corrupted/censored on-disk data.
+|===
+
+Because `HgLockException` and `HgMergeConflictException` are **not** `IOException` subtypes, a
+bare `catch (IOException e)` lets both of them silently pass through uncaught. This is exactly
+why most command methods declare both explicitly in their `throws` clause -- catch them
+separately whenever you need to react to lock contention or a conflict differently from a generic
+I/O failure.
+
+=== Recovering from lock contention
+
+[source,java]
+----
+include::{examplesdir}/ErrorHandlingExamples.java[tag=handle-lock-exception]
+----
+
+=== Recovering from a merge conflict
+
+[source,java]
+----
+include::{examplesdir}/ErrorHandlingExamples.java[tag=handle-merge-conflict]
+----

@@ -1,0 +1,45 @@
+== 기본 워크플로우: add, status, commit, log, diff
+
+=== 파일 추적하기
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=add-files]
+----
+
+=== 작업 디렉터리 상태 확인하기
+
+`status()`는 `hg status`의 5개 분류를 그대로 미러링합니다.
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=check-status]
+----
+
+=== 변경사항 커밋하기
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=commit-changes]
+----
+
+`commit()`은 새 커밋의 원시 20바이트 노드 ID를 반환합니다.
+
+=== 히스토리 조회하기
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=view-log]
+----
+
+=== 차이 확인하기 (diff)
+
+리비전을 따로 지정하지 않으면 `diff()`는 tip을 그 부모와 비교합니다.
+
+[source,java]
+----
+include::{examplesdir}/BasicWorkflowExamples.java[tag=view-diff]
+----
+
+특정 두 리비전을 직접 비교하려면 `setOldRevision(...)`/`setNewRevision(...)`을 사용하세요(두
+메서드 모두 `int` 리비전 번호와 `NodeId` 오버로드를 지원합니다).

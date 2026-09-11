@@ -1,0 +1,46 @@
+== 시작하기 (Getting Started)
+
+=== 의존성 추가
+
+[source,groovy]
+.build.gradle
+----
+dependencies {
+    implementation 'io.github.search5.hg4j:hg4j:1.0.0'
+}
+----
+
+`hg4j`는 Java 21을 대상으로 합니다. 라이브러리 의존성이 아니라(또는 그와 별개로) Gradle SCM
+플러그인으로 `hg4j`를 쓰고 싶다면, 프로젝트 README의 "Gradle Plugin Usage" 절을 참고하세요.
+
+=== 새 저장소 만들기
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=init-repository]
+----
+
+=== 기존 저장소 클론하기
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=clone-repository]
+----
+
+=== 기존 저장소 열기
+
+디스크에 저장소가 이미 존재한다면, `Hg.open(...)`으로 이 매뉴얼의 나머지 모든 커맨드를 호출할
+파사드 인스턴스를 얻습니다.
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=open-repository]
+----
+
+다른 경로(예: `Hg.init()`/`Hg.cloneRepository()`의 반환값)에서 이미 `HgRepository` 인스턴스를
+갖고 있다면, 디스크에서 다시 여는 대신 바로 감싸면 됩니다.
+
+[source,java]
+----
+include::{examplesdir}/GettingStartedExamples.java[tag=wrap-repository]
+----

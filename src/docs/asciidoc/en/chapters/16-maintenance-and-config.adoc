@@ -1,0 +1,90 @@
+[[maintenance-and-config]]
+== Repository Maintenance & Advanced Configuration
+
+The commands in this chapter are less about everyday workflow and more about keeping a repository
+healthy, reading configuration, and handling more specialized scenarios like subrepositories or
+narrow clones.
+
+=== Checking integrity
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=verify]
+----
+
+Instead of throwing, `verify()` returns a list of the problems it found -- an empty list means the
+repository is healthy. It recomputes and compares node id hashes across the changelog, the
+manifest (including any treemanifest submanifests under `meta/`), and every filelog. A freshly
+created repository (or one that hasn't been pulled into yet) legitimately has an empty changelog,
+so that case is never reported as an error.
+
+=== Recovering an interrupted transaction
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=recover]
+----
+
+`recover()` looks for a leftover `.hg/store/journal` from a crashed or killed command and rolls it
+back. The outcome comes back as a `RecoverCommand.RecoverResult`, and you need to check both
+`wasInterrupted()` (was there anything to recover in the first place) and `isSuccess()` (did the
+rollback actually complete) separately -- there being nothing to roll back is itself a normal
+outcome, not a failure. Setting `setVerify(true)` additionally runs `verify()`, but only once the
+rollback has actually succeeded, and its result is exposed via `getVerifyErrors()`.
+
+=== Reading configuration
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=config]
+----
+
+The `HgRcConfig` returned by `config()` merges the system-wide (`/etc/mercurial/hgrc`), user-wide
+(`~/.hgrc` or `~/mercurial.ini`), and repository-local (`.hg/hgrc`) configuration files, in that
+priority order. There are helper methods for common lookups like `getUsername()`/`getPath(name)`,
+and `getSection(section)` retrieves an entire section (such as `[paths]`) in its original parse
+order.
+
+=== Working with subrepositories
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=subrepo]
+----
+
+`subrepo()`'s `setAction(...)` accepts three values: `"add"` (registers a new entry in
+`.hgsub`/`.hgsubstate`), `"init"`, and `"update"` (both check out every configured subrepo to its
+pinned revision). `"add"` only updates those two files -- it does not actually clone anything --
+so a subsequent `"update"` call is what actually clones the subrepo and checks it out at the
+pinned revision. Calling `"update"` again later on an existing checkout is safe even after
+`.hgsubstate` has moved on to a different pinned revision: it pulls first if needed, then forces
+the working copy to the newly pinned revision.
+
+=== Narrow clones
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=narrow-clone]
+----
+
+`Hg.narrowClone()` is a **static** method, just like `Hg.init()`/`Hg.cloneRepository()` -- it
+creates a repository that doesn't exist yet, so there's no existing `Hg` instance to call it on.
+It restricts the metadata tracked by the clone itself to the given include/exclude path patterns,
+and, matching real hg's own narrow extension, records a `narrowhg-experimental` requirement in
+`.hg/requires`.
+
+=== Resolving the sparse profile
+
+[source,java]
+----
+include::{examplesdir}/MaintenanceExamples.java[tag=sparse-config]
+----
+
+Unlike the other commands in this chapter, `sparseConfig(int changelogRev)` is not a `Command`
+builder -- it's a direct method on `Hg` that returns a `SparseConfig` immediately. `.hg/sparse`
+itself is an untracked, plain working-copy file read straight off disk, but a profile referenced
+via `%include` is a **tracked** file, resolved from the manifest of the given changelog revision --
+so switching revisions can change which sparse rules apply. The returned `SparseConfig`'s
+`toPathFilter()` turns these rules into a `PathFilter`, which composes directly with
+`walkWorkingDir()`/`walkTree()` from <<walking-trees>> to restrict a traversal to the active
+sparse profile.

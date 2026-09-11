@@ -1,0 +1,134 @@
+[[history-search]]
+== Searching & Browsing History
+
+This chapter covers the commands that inspect file history and repository content: `annotate()`,
+`cat()`, `files()`, `locate()`, `manifest()`, `tree()`, `grep()`, `revset()`, `phase()`. Among
+these, the revision strings accepted by `cat()`, `files()`, `locate()`, `manifest()`, and
+`phase()` support only a revision number, a hex node prefix, or `"tip"` -- bookmark or branch
+names cannot be passed directly; resolve them to a node hex first (e.g. via `bookmark().call()`)
+if you need to pass one.
+
+=== Blaming a file's history (annotate)
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=annotate-file]
+----
+
+`annotate()` always follows rename/copy boundaries -- real hg's `hg annotate` has no separate
+`--follow` flag for this either; it is simply the default behavior. Note that the value
+`setRevision(int)` accepts is not a changelog revision but that file's own **filelog revision
+number** (the default `-1` means that file's latest filelog revision). Conversely, the resulting
+`BlameLine#getRevision()` is the **changelog revision number** (linkRev) that introduced the
+line -- don't confuse the two different kinds of "revision" on the input and output sides.
+
+=== Reading a file's content at a given revision
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=cat-file]
+----
+
+`cat()` resolves the file's filelog revision through the target revision's manifest and returns
+its raw bytes. If the file was not yet tracked at that revision, it throws
+`HgRevisionNotFoundException`.
+
+=== Listing tracked files
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=list-files]
+----
+
+Like `hg files`, `files()` operates against the **working copy**'s dirstate when no revision is
+set -- files added but not yet committed are included, while files marked removed (`hg rm`) but
+not yet committed are excluded. With a revision set, it lists that commit's manifest as-is.
+`setPattern(...)` narrows the result by glob pattern, following the same directory-prefix
+semantics as `SparsePathFilter`, where a pattern naming a directory matches everything below it.
+
+=== Finding files by pattern (locate)
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=locate-files]
+----
+
+`locate()` is a distinct, older command from `files()`. With no revision set, it queries the
+dirstate **directly**, so files marked removed (`hg rm`'d) but not yet committed are still
+included in the result -- this is the key difference from `files()`. With no pattern, every
+candidate path is returned; the default pattern kind matches real hg's `relglob` (an unrooted glob
+matched against the basename portion of a path in any directory). Only `*`, `**`, and `?` are
+supported; `[...]` character classes and `{a,b}` brace expansion are not translated and are
+treated as literal characters.
+
+=== Listing a manifest
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=list-manifest]
+----
+
+When no revision is set, `manifest()` operates against the **working directory's first parent**,
+not tip -- for example, after `hg update -r 0` checks out an earlier revision, calling it with no
+revision lists revision 0's files, not tip's. The returned `ManifestEntry` carries the file's
+path, the full 40-hex node id of its content, and its executable/symlink flags. `setDebug(boolean)`
+merely records which rendering the caller intends; it has no effect on the data `call()` returns --
+the full information (node hex included) needed for either rendering is always returned.
+
+=== Walking the directory tree
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=walk-tree]
+----
+
+When no revision is set (or the given one fails to resolve), `tree()` defaults to tip -- note that
+this differs from `manifest()`, which defaults to the working directory's parent instead.
+`TreeEntry#getMode()` returns a POSIX-style mode: `0644` for a regular file, `0755` for an
+executable, and `0120000` for a symlink.
+
+=== Searching across all of history (grep)
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=grep-history]
+----
+
+`grep()` searches **every filelog revision of every tracked file**, not just the working copy or
+a single revision -- a line that remains unchanged across several revisions can therefore appear
+multiple times in the result. `setQuery(...)` accepts a plain string as well as a regular
+expression, matching real `hg grep`'s own default. `GrepResult`'s `path`, `hexNode`, `lineNumber`,
+and `lineContent` are exposed as `public final` fields rather than getters -- access them
+directly.
+
+=== Querying revisions with a revset expression
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=query-revset]
+----
+
+`revset()` accepts a functional revset expression -- such as `all()` or `parents(tip)` -- and
+returns the hex node ids of the matching revisions. The supported function set is narrower than
+real hg's full revset language, so it's worth checking what `HgRevsetEngine` actually supports
+before relying on a more complex expression.
+
+=== Querying and changing phase
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=query-phase]
+----
+
+Phase is represented as an integer: `0` (public), `1` (draft), `2` (secret). Passing
+`setPhase(...)` turns the call into a phase change rather than a plain query.
+
+[source,java]
+----
+include::{examplesdir}/HistorySearchExamples.java[tag=set-phase]
+----
+
+Moving a revision to a lower (more public) phase is always allowed and is applied to **all of its
+ancestors** as well -- a child can never be less public than its parent. Moving it to a higher
+(more secret) phase, conversely, is applied to **all of its descendants**, and -- just like real
+hg's `hg phase --force` -- is rejected with an `IOException` unless `setForce(true)` is given.

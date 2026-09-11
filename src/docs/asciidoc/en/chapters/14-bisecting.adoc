@@ -1,0 +1,50 @@
+[[bisecting]]
+== Bisecting to Find a Regression
+
+`bisect()` (`hg.bisect()`) is hg4j's counterpart to `hg bisect`: it binary-searches between a
+revision known to be "good" and one known to be "bad" to pinpoint the exact revision that first
+introduced a bug.
+
+IMPORTANT: The real `hg bisect` CLI is a **stateful** command that persists its progress in
+`.hg/bisect.state`, but hg4j's `BisectCommand` keeps no state on disk at all. Every call to
+`next()` computes the next candidate fresh from whatever good/bad nodes you pass it at that
+moment, so remembering and updating the good/bad range across iterations is entirely the
+**caller's** responsibility.
+
+=== Getting the first candidate
+
+[source,java]
+----
+include::{examplesdir}/BisectExamples.java[tag=bisect-first-candidate]
+----
+
+`setGood(byte[])` and `setBad(byte[])` both take a raw 20-byte node ID -- not a revision number
+or a tag name. Calling `next()` without setting both throws `IllegalStateException`, and passing
+a node that doesn't exist throws `IOException`.
+
+`next()` not only picks the revision that best splits the good..bad range in half, it also
+**checks that revision out into the working directory immediately** -- it updates the real
+files, moves the dirstate parent, and even switches the working branch to match the candidate.
+So there's no need to call `update()` separately after getting a candidate; you can build/test it
+right away.
+
+=== Narrowing down to the culprit
+
+[source,java]
+----
+include::{examplesdir}/BisectExamples.java[tag=bisect-narrow-loop]
+----
+
+At each step, test the candidate you just received, update either `good` or `bad` to that
+candidate node depending on the result, and call `next()` again. Repeat until good and bad
+become adjacent revisions (`badRev - goodRev == 1`) -- at that point, whatever `bad` currently
+points to is the revision that first introduced the regression.
+
+NOTE: The candidate-selection algorithm doesn't simply pick the midpoint index of the revision
+number range -- like real hg's own `mercurial/hbisect.py`, it picks whichever candidate best
+splits the DAG in half by ancestor count. That distinction actually matters on a branching
+history that includes merge commits.
+
+To start a fresh bisection (real hg's `hg bisect --reset` equivalent), just build a new
+`hg.bisect()` instance and call `setGood()`/`setBad()` from scratch -- there is no persisted
+state to clear in the first place.

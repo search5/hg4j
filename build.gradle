@@ -24,7 +24,7 @@ if (project.hasProperty('agentBuildDir')) {
 }
 
 group = 'io.github.search5.hg4j'
-version = '1.0.0'
+version = '1.0.1'
 
 repositories {
     mavenCentral()
@@ -299,7 +299,14 @@ asciidoctor {
 
 // Gradle Plugin Portal 배포를 위한 플러그인 정의 설정
 gradlePlugin {
-    website = 'https://github.com/search5/hg4j'
+    // Plugin Portal's approval criteria (https://plugins.gradle.org/docs/publish-plugin#approval)
+    // require the project URL to point to English documentation, the project sources, or both --
+    // the bare repository root alone got this plugin rejected for "lacks documentation", so this
+    // points directly at the English entry point of the real user manual (AsciiDoc, auto-deployed
+    // to GitHub Pages by .github/workflows/docs.yml). Deliberately not the language-autodetecting
+    // landing page (the bare root URL), since a reviewer's browser locale could redirect it to
+    // Korean.
+    website = 'https://search5.github.io/hg4j/en/index.html'
     vcsUrl = 'https://github.com/search5/hg4j.git'
     plugins {
         hg4jPlugin {

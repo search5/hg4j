@@ -99,6 +99,7 @@ status: current
 | [decisions/journaling-crash-recovery-plan.md](decisions/journaling-crash-recovery-plan.md) | 트랜잭션 저널링·rollback — ✅ **2026-09-01 완료**, pull 후 rollback이 아예 동작 안 하던 갭 발견·수정 |
 | [decisions/obsolescence-marker-completeness-plan.md](decisions/obsolescence-marker-completeness-plan.md) | Obsolescence marker — ✅ **2026-09-01 완료**, obsstore 바이너리 포맷 자체가 틀렸던 것을 발견해 전면 재작성(실제 hg와 양방향 검증) |
 | [decisions/interop-test-fixture-caching-tradeoff.md](decisions/interop-test-fixture-caching-tradeoff.md) | Interop 테스트를 픽스처로 캐싱할지에 대한 결정 — 포맷/바이트 검증은 캐싱 가능, 프로토콜·행동 검증은 라이브 유지 권장(구현 안 함, 질문에 대한 답변만 문서화) |
+| [decisions/lfs-server-side-batch-api-plan.md](decisions/lfs-server-side-batch-api-plan.md) | LFS 서버 사이드 HTTP Batch API(다른 클라이언트에게 blob 서빙) — ❌ **미착수(2026-09-17 계획만 수립)**. 로컬 커밋/체크아웃 파이프라인(백로그 31/42)은 완료됐지만 서버 역할이 통째로 빠져 있었음을 재조사로 발견, real hg의 `wireprotolfsserver.py`(vendored) 기준 실행 계획 작성 |
 
 ## 최상위 데이터 문서 (2026-09-06 신설)
 | 페이지 | 요약 |

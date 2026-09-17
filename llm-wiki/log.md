@@ -1,5 +1,14 @@
 # 작업 로그
 
+## [2026-09-17] 재조사 | LFS 서버 사이드 Batch API 미착수 상태 발견 + 실행 계획 수립
+gap table의 LFS 행이 "✅ 완료(백로그 42)"였으나, 이는 로컬 커밋/체크아웃 파이프라인과
+클라이언트 fetch 경로만 가리키는 것이었고 **서버가 다른 클라이언트에게 LFS blob을
+서빙하는 HTTP 엔드포인트 자체가 없다**는 걸 재조사로 발견(`HgHttpWireServer`/
+`HgSshWireServer`/`Wire1Commands`/`Wire2Commands` 전부 바이트코드까지 확인, LFS 참조
+0건). vendored된 real hg 소스(`hgext/lfs/wireprotolfsserver.py`)를 근거로 실행 계획을
+[[lfs-server-side-batch-api-plan]]에 작성 — 아직 구현은 착수하지 않음(계획만 수립).
+gap table의 LFS 행을 2줄로 분리해 서버 사이드 항목을 별도로 "❌ 미착수"로 정정.
+
 ## [2026-09-02] PushCommand 증분 push 버그 수정 + 포셀린 노출 갭 완전 해소
 - **`RevlogIndex.checkAndUpdate()`의 200ms 디스크 재확인 스로틀 제거.** 원인:
   `PushCommandTest`의 원격 저장소 핸들(자기 changelog에 한 번도 안 씀)이 push1

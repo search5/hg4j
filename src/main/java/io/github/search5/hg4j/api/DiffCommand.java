@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.lfs.HgLfsManager;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.storage.Revlog;
 
@@ -290,7 +291,11 @@ public class DiffCommand {
         if (rev == -1) {
             return new byte[0];
         }
-        return filelog.getRevisionContent(rev);
+        // The stored revision may be an LFS pointer (REVIDX_EXTSTORED) rather than the real file
+        // bytes -- dereference it the same way UpdateCommand/AnnotateCommand/CatCommand/
+        // ArchiveCommand already do, so a diff of an LFS-tracked file compares the real content
+        // instead of two pointers' oid/size lines against each other.
+        return HgLfsManager.resolveContent(repository, filelog.getRevisionContent(rev), filelog.isExtStored(rev), path);
     }
 
     private String generateUnifiedDiff(String path, byte[] oldBytes, byte[] newBytes, ChangeType changeType) {

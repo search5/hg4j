@@ -418,6 +418,53 @@ public final class HgLfsManager {
     }
 
     /**
+     * Returns the on-disk file already holding {@code oid}'s bytes -- the per-repo local store
+     * checked first, then the user-level cache -- or {@code null} if present in neither. Unlike
+     * {@link #isCached}/{@link #getCachedObject}, this does not check the object's expected size
+     * against any {@link HgLfsPointer}, since callers like {@code HgLfsServer} may need to look up
+     * an object by oid alone (e.g. a Basic Transfer GET) without one at hand.
+     *
+     * @param oid 64-char hex OID
+     * @return the file already holding {@code oid}'s bytes, or {@code null} if absent from both layers
+     */
+    public File locate(String oid) {
+        File local = getLocalPath(oid);
+        if (local.isFile()) {
+            return local;
+        }
+        File user = getUserCachePath(oid);
+        return user != null && user.isFile() ? user : null;
+    }
+
+    /**
+     * @param oid 64-char hex OID
+     * @return whether an object for {@code oid} is present in either storage layer, regardless of
+     *     whether its content actually hashes to {@code oid}
+     */
+    public boolean exists(String oid) {
+        return locate(oid) != null;
+    }
+
+    /**
+     * Recomputes the SHA-256 of the stored bytes for {@code oid} and confirms it matches {@code
+     * oid} itself -- real hg's {@code local.verify()} (see {@code hgext/lfs/blobstore.py}), used by
+     * {@code HgLfsServer} to detect a corrupted local object before serving or skipping a re-upload
+     * of it.
+     *
+     * @param oid 64-char hex OID
+     * @return {@code true} if {@code oid} is present in either storage layer AND its content
+     *     hashes to {@code oid}; {@code false} if absent from both
+     * @throws IOException if the object is present but cannot be read
+     */
+    public boolean verify(String oid) throws IOException {
+        File file = locate(oid);
+        if (file == null) {
+            return false;
+        }
+        return HgLfsPointer.sha256Hex(Files.readAllBytes(file.toPath())).equalsIgnoreCase(oid);
+    }
+
+    /**
      * Fetches the missing LFS object from the remote LFS server and caches it.
      * Built with zero-dependency native HttpClient for specifications fidelity.
      *

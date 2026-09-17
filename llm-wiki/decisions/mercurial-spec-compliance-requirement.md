@@ -66,7 +66,7 @@ status: 번호 매겨진 백로그 1~48번 전부 완료(25번은 오탐으로 �
 | Clonebundles | `mercurial/wireprotov1server.py` | `ClonebundlesCommand` | ✅ 완료(서버 매니페스트-없음 응답 포함, 백로그 44) | [[backlog/clonebundles]] |
 | Narrow clone / narrowspec | `mercurial/narrowspec.py` | `NarrowCloneCommand`, `HgTreeFilter` | ✅ 완료(로컬 필터링 + wire-protocol genuine narrow 협상, 백로그 40 — ellipsis node 전제는 오판으로 폐기) | [[backlog/narrow-clone-and-lfs]] |
 | LFS(Large File Storage) — 로컬 파이프라인·클라이언트 fetch | `mercurial/lfs/` | `HgLfsPointer`, `HgLfsManager` | ✅ 완료(세부 옵션 3가지 포함, 백로그 42) | [[backlog/narrow-clone-and-lfs]] |
-| LFS — 서버 사이드 HTTP Batch API(다른 클라이언트에게 blob 서빙) | `hgext/lfs/wireprotolfsserver.py` | 없음(`HgHttpWireServer`/`HgSshWireServer`/`Wire1Commands`/`Wire2Commands` 전부 확인, LFS 참조 0건) | ❌ 미착수(2026-09-17 재조사로 위 행의 "완료"가 서버 역할까지 포함하지 않음을 발견) | [[lfs-server-side-batch-api-plan]] |
+| LFS — 서버 사이드 HTTP Batch API(다른 클라이언트에게 blob 서빙) | `hgext/lfs/wireprotolfsserver.py` | `HgLfsServer`(Batch API + Basic Transfer), `HgHttpWireServer#enableLfsCapability()` | ✅ 완료(real hg CLI로 push+clone+verify 왕복 검증, 백로그 미부여 — [[lfs-server-side-batch-api-plan]] 참고) | [[lfs-server-side-batch-api-plan]] |
 | Subrepositories (Git) | `mercurial/subrepo.py` | `GitSubrepoUtil`, `HgSubrepoParser` | ✅ 완료 | [[backlog/subrepo]] |
 | Subrepositories (SVN) | `[svn]` prefix, `svnsubrepo` | `SvnSubrepoUtil`, `HgSubrepoParser`, `HgSubrepoEntry` | ✅ 완료(백로그 41) | [[backlog/subrepo]] |
 | 심볼릭 링크 (`lstat` 처리 전반) | Java `File` vs NIO lstat | 10개+ 파일 | ✅ 완료 | [[symlink-handling]] |

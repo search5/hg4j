@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.lfs.HgLfsManager;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.storage.Revlog;
 
@@ -116,7 +117,12 @@ public class CatCommand {
             throw new HgRevisionNotFoundException("File version not found in history: " + file + " @ " + fileHexNode);
         }
 
-        return filelog.getRevisionContent(fileRev);
+        byte[] content = filelog.getRevisionContent(fileRev);
+        // Real hg's `hg cat` is lfs-aware (hgext/lfs/wrapper.py's readfromstore flag processor
+        // runs on every revlog read) -- an EXTSTORED revision's filelog content is the pointer
+        // text, not the real bytes, so a caller of this command must get the same dereferenced
+        // content UpdateCommand/AnnotateCommand already return.
+        return HgLfsManager.resolveContent(repository, content, filelog.isExtStored(fileRev), file);
     }
 
 }

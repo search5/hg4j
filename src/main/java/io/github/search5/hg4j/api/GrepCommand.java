@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lfs.HgLfsManager;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -109,7 +110,11 @@ public class GrepCommand {
                 Revlog filelog = repository.getRevlog(flIdx, flDat);
                 for (int i = 0; i < filelog.getRevisionCount(); i++) {
                     byte[] node = filelog.getIndexRecord(i).getNodeId();
-                    byte[] content = filelog.getRevisionContent(i);
+                    // The stored revision may be an LFS pointer (REVIDX_EXTSTORED) rather than the
+                    // real file bytes -- dereference it so a pattern search matches against the
+                    // real content, not the pointer's own oid/size lines (real hg's `hg grep` does
+                    // the same via the revlog flag processor, with no LFS-specific override).
+                    byte[] content = HgLfsManager.resolveContent(repository, filelog.getRevisionContent(i), filelog.isExtStored(i), path);
                     String text = new String(content, StandardCharsets.UTF_8);
                     String[] lines = text.split("\n");
                     for (int lineNum = 0; lineNum < lines.length; lineNum++) {

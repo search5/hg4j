@@ -1,5 +1,82 @@
 # 작업 로그
 
+## [2026-09-17] LFS 읽기 계열 커맨드 미인지 버그 발견·수정 (CatCommand/ArchiveCommand)
+LFS 서버 사이드 작업(위 항목들)이 계기 — yona 통합 검토 중 웹 코드뷰어가 `hg.cat()`으로
+파일 원문을 가져오는데, LFS 파일이면 실제 바이트 대신 포인터 텍스트가 그대로 노출된다는
+사실을 발견.
+- `UpdateCommand`(체크아웃)/`AnnotateCommand`만 `HgLfsManager.resolveContent()`로 EXTSTORED
+  리비전을 디레퍼런스하고 있었고, `CatCommand`/`ArchiveCommand`는 전혀 LFS를 몰랐다 — 둘 다
+  `filelog.getRevisionContent(rev)`를 아무 처리 없이 그대로 반환.
+- `LfsRealHgInteropTest`에 `hg4jCatsRealHgLfsCommitWithFullContent`/
+  `hg4jArchivesRealHgLfsCommitWithFullContent` 추가해 RED 확인 후, 두 커맨드 모두 동일한
+  `HgLfsManager.resolveContent(repository, content, filelog.isExtStored(rev), path)` 패턴을
+  추가해 GREEN(`./gradlew interopTest --tests ".lfs.LfsRealHgInteropTest"` BUILD SUCCESSFUL).
+- `LocateCommand`/`FilesCommand`/`ManifestCommand`도 점검했으나 손대지 않음 — 경로/메타데이터만
+  반환하고 콘텐츠는 다루지 않아 해당 없음. `ExportCommand`/`DiffCommand`/`GrepCommand`는 당초
+  "real hg 자신도 pointer 메타데이터 수준(oid 비교/`x-is-binary`) fast path라 정상"이라고
+  판단했으나 **틀린 판단이었음 — 바로 아래 항목에서 정정·수정**.
+
+## [2026-09-17] 정정 | DiffCommand/GrepCommand도 LFS 미인지 버그였음(위 항목의 판단 오류 수정)
+바로 위 항목에서 "`DiffCommand`/`GrepCommand`는 real hg도 pointer 레벨 fast path라 정상"이라고
+기록했는데, real hg 소스(`hgext/lfs/wrapper.py` 263~281행)를 재확인해보니 틀렸다 — `filectxcmp`/
+`filectxisbinary`는 "다른지"/"바이너리인지"만 빨리 답하는 최적화용 fast path일 뿐, 실제
+`hg diff`/`hg grep`의 콘텐츠 자체는 `fctx.data()`(revlog 플래그 프로세서 `readfromstore`)를
+거쳐 항상 실제 파일 바이트로 디레퍼런스된다. 즉 real hg는 LFS-tracked 텍스트 파일에 대해 진짜
+줄 단위 diff/grep을 보여주고, hg4j가 포인터 텍스트(`oid sha256:...`, `size ...`)를 그대로
+diff/grep하던 것은 진짜 버그였다.
+- `LfsRealHgInteropTest`에 `hg4jDiffsRealHgLfsCommitsWithFullContent`/
+  `hg4jGrepsRealHgLfsCommitWithFullContent` 추가해 RED 확인 후, `DiffCommand.java`/
+  `GrepCommand.java` 모두 `CatCommand`/`ArchiveCommand`와 동일한
+  `HgLfsManager.resolveContent(repository, content, filelog.isExtStored(rev), path)` 패턴 추가해
+  GREEN(`./gradlew interopTest --tests ".lfs.LfsRealHgInteropTest"` BUILD SUCCESSFUL).
+- `ExportCommand`는 내부적으로 `DiffCommand`를 재사용(`ExportCommand.java` 107행)하므로 별도
+  수정 없이 함께 고쳐짐 — 코드 리딩으로 확인.
+- real hg의 `filectxcmp`/`filectxisbinary` fast-path 자체(전체 blob을 안 당겨오는 최적화)는
+  hg4j에 재현하지 않음 — 정확성과 무관한 순수 성능 최적화라 과설계를 피하고 항상
+  `resolveContent`로 실제 바이트를 디레퍼런스하는 단순한 구현을 택함.
+- 상세는 [[modules/lfs]] 참고.
+
+## [2026-09-17] LFS 서버 사이드 SSH 경로 실측 검증 (실제 sshd + real hg CLI)
+[[lfs-server-side-batch-api-plan]] 7단계를 소스 코드 검토에서 실측 테스트로 마저 채움 —
+직전 항목이 "SSH는 소스 확인만, 실제 sshd 왕복은 안 함"으로 남겨둔 부분.
+- `HgSshWireServer#enableLfsCapability()` 신설(직전 항목의 "HgSshWireServer는 손대지 않음"을
+  정정하게 된 계기) — real hg의 `exchange.push()`가 `remote.capable('lfs')`를 확인하는데,
+  SSH는 이 capability를 `hello` 핸드셰이크 응답으로 전달하므로(`capabilities` 명령이 아님)
+  `hello`/`capabilities` 두 커맨드 모두 패치.
+- 신규 테스트 `HgLfsServerSshRealHgInteropTest`(임베디드 Apache MINA SSHD + real hg CLI,
+  2개 시나리오, GREEN): (1) `[lfs] url` 미설정 상태로 SSH 단독 push 시 real hg가
+  `abort: lfs.url needs to be configured`로 클라이언트 단에서 즉시 실패(사전 소스 분석은
+  "unknown url scheme"으로 잘못 추정했었음 — `_storemap[None]`이 `_promptremote`로 떨어져
+  실제 업로드 시도 시점에야 이 메시지로 abort하는 것을 실측으로 정정), (2) SSH(changegroup)
+  + 명시적 HTTP `[lfs] url`(별도 포트의 `HgLfsServer`) 조합으로 push/clone/verify 전부 성공 —
+  real hg의 실제 지원 토폴로지를 hg4j가 그대로 지원함을 증명.
+- `./gradlew interopTest --tests "io.github.search5.hg4j.lfs.server.*"` 6개 전부 GREEN
+  (HTTP 4 + SSH 2). 상세는 [[modules/lfs]]/[[lfs-server-side-batch-api-plan]] 참고.
+
+## [2026-09-17] LFS 서버 사이드 HTTP Batch API 구현 완료 (TDD)
+[[lfs-server-side-batch-api-plan]]을 TDD로 실행: `HgLfsServerRealHgInteropTest`(RED)로
+시작해 real hg CLI로 push+clone+verify 왕복이 GREEN 될 때까지 반복.
+- 신규: `io.github.search5.hg4j.lfs.server.HgLfsServer`(Batch API + Basic Transfer Adapter),
+  `HgLfsManager#locate/exists/verify`, `HgTestUtils#startServlets`(서블릿 여러 개를 다른
+  경로에 마운트하는 테스트 인프라).
+- 수정: `HgHttpWireServer#enableLfsCapability()` 신설 — 없으면 real hg 클라이언트가
+  LFS 파일 push를 "required features are not supported in the destination: lfs"로
+  거부(capability 광고 누락).
+- RED 과정에서 발견한, 서버 신설과 무관한 기존 버그 2건(`Revlog.appendChangeGroupEntry`,
+  changegroup 수신 공통 경로 — push 수신/pull 양쪽 다 해당): (1) EXTSTORED(LFS) 리비전의
+  노드해시를 포인터 텍스트 기준으로 잘못 재검증하던 것을 검증 스킵으로 수정(real hg의
+  `bypasscheckhash`와 동일 취급, censored 콘텐츠 스킵과 같은 이유), (2) 받은 리비전을
+  로컬 인덱스에 쓸 때 `entry.flags`(REVIDX_EXTSTORED 등)를 버리고 있던 것을 보존하도록
+  수정 — 안 고쳤으면 hg4j가 받은 LFS 리비전을 재전송할 때 포인터 텍스트를 일반 파일로
+  취급했을 것.
+- SSH: real hg 소스(`hgext/lfs/blobstore.py`의 `remote()`)로 1차 확인 — ssh 원격은 http(s)로
+  자동 유추하지 않고 `[lfs] url` 미설정 시 그냥 abort(git과 달리 ssh→https 변환 자체가
+  미구현, 소스 코드 TODO 주석으로 확인). SSH wire 프로토콜 자체에 LFS blob을 얹지 않는다는
+  계획의 가정은 맞았으나, capability 광고는 SSH도 필요했다 — 실제 sshd로 실측한 후속 작업은
+  바로 위 항목 참고.
+상세 검증 과정·발견한 버그의 근거는 [[modules/lfs]], 최종 결과는
+[[lfs-server-side-batch-api-plan]] 참고.
+
 ## [2026-09-17] 재조사 | LFS 서버 사이드 Batch API 미착수 상태 발견 + 실행 계획 수립
 gap table의 LFS 행이 "✅ 완료(백로그 42)"였으나, 이는 로컬 커밋/체크아웃 파이프라인과
 클라이언트 fetch 경로만 가리키는 것이었고 **서버가 다른 클라이언트에게 LFS blob을

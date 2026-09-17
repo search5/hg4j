@@ -21,6 +21,7 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.nio.file.StandardOpenOption;
 
@@ -331,10 +332,25 @@ public class HgTestUtils {
      * #stop(Server)}, read its port with {@link #port(Server)}.
      */
     public static Server startServlet(HttpServlet servlet) throws Exception {
+        return startServlets(Map.of("/*", servlet));
+    }
+
+    /**
+     * Same as {@link #startServlet(HttpServlet)}, but mounts several servlets in the same
+     * context at their own path patterns -- needed to host {@link
+     * io.github.search5.hg4j.transport.HgHttpWireServer} at {@code /*} alongside {@link
+     * io.github.search5.hg4j.lfs.server.HgLfsServer} at {@code /.git/info/lfs/*} and {@code
+     * /.hg/lfs/*} in the same repository's URL space, exactly as production deploys them.
+     * Standard servlet path-mapping precedence (longest matching prefix wins) routes a request to
+     * the right one regardless of registration order.
+     */
+    public static Server startServlets(Map<String, HttpServlet> pathToServlet) throws Exception {
         Server server = new Server(0);
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
-        context.addServlet(new ServletHolder(servlet), "/*");
+        for (Map.Entry<String, HttpServlet> entry : pathToServlet.entrySet()) {
+            context.addServlet(new ServletHolder(entry.getValue()), entry.getKey());
+        }
         server.setHandler(context);
         server.start();
         return server;

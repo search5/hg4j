@@ -40,3 +40,5 @@ include::{chapters}/15-patches-and-bundles.adoc[]
 include::{chapters}/16-maintenance-and-config.adoc[]
 
 include::{chapters}/17-walking-trees.adoc[]
+
+include::{chapters}/18-large-file-storage.adoc[]

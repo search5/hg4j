@@ -1948,12 +1948,20 @@ public class Revlog {
         byte[] p1Node = entry.p1 != null ? entry.p1 : new byte[20];
         byte[] p2Node = entry.p2 != null ? entry.p2 : new byte[20];
 
-        // E3: Verify node hash integrity from remote -- skipped for censored content. A censored
-        // revision's node identity is intentionally preserved from BEFORE censoring while its
-        // content is replaced with a tombstone, so hash(parents, tombstone) can never equal the
-        // transmitted node by design; treating that mismatch as corruption would make it
-        // impossible to ever pull/clone a repository containing a censored revision.
-        if (!isCensoredText(content)) {
+        // E3: Verify node hash integrity from remote -- skipped for censored content and for
+        // EXTSTORED (LFS) content. A censored revision's node identity is intentionally preserved
+        // from BEFORE censoring while its content is replaced with a tombstone, so hash(parents,
+        // tombstone) can never equal the transmitted node by design; treating that mismatch as
+        // corruption would make it impossible to ever pull/clone a repository containing a
+        // censored revision. Real hg's own LFS flag processor registers `bypasscheckhash` (see
+        // `hgext/lfs/wrapper.py`) as its third (validate) element, which unconditionally returns
+        // False -- real hg NEVER validates an EXTSTORED revision's node hash against its stored
+        // (pointer-text) content at all, on write OR on changegroup receipt; the transmitted node
+        // instead reflects a hash of the real dereferenced bytes (see {@code
+        // CommitCommand}'s `lfsHashBasis`/`hashBasisOverride`, used only on the LOCAL-commit path
+        // that actually has those bytes on hand), which this generic wire-receiving code has no
+        // way to reproduce and must not attempt to.
+        if (!isCensoredText(content) && (entry.flags & REVIDX_EXTSTORED) == 0) {
             byte[] expectedHash;
             try {
                 byte[] first = p1Node;
@@ -1993,7 +2001,7 @@ public class Revlog {
         // is already in the same "already-serialized external container" format SidedataCodec
         // itself writes, so it can be passed straight through without re-encoding.
         if (index.isV2()) {
-            appendRevisionV2(rev, content, parent1, parent2, entry.node, linkRev, entry.sidedata);
+            appendRevisionV2(rev, content, parent1, parent2, entry.node, linkRev, entry.sidedata, entry.flags);
             clearCache();
             return;
         }
@@ -2017,8 +2025,13 @@ public class Revlog {
         // A censored revision must always be stored as a full (non-delta) entry: real hg forbids
         // deltas against (or of) a censored revision (revlog.py's iscensored()+delta rejection),
         // since a delta can't sensibly reconstruct a tombstone that replaced arbitrary-length
-        // original content.
-        int flags = isCensoredText(content) ? REVIDX_ISCENSORED : 0;
+        // original content. entry.flags (e.g. REVIDX_EXTSTORED for an LFS pointer, cg2+ only --
+        // cg1 has no wire flags field at all) must be preserved into the persisted index record
+        // as-is: dropping it here would silently un-flag an incoming LFS revision, so a later
+        // outgoing changegroup built from this index would transmit the pointer text as an
+        // ordinary (non-extstored) revision, and a receiving real hg client would then validate
+        // its node hash against the wrong basis and reject it as corrupt.
+        int flags = entry.flags | (isCensoredText(content) ? REVIDX_ISCENSORED : 0);
 
         if (!isMetadataLog && flags == 0 && rev > 0 && parent1 != -1 && chainLen < 100 && !isCensored(parent1)) {
             byte[] baseContent = getRawRevisionContent(parent1);

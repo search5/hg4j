@@ -6,10 +6,12 @@ import io.github.search5.hg4j.transport.wireprotov1.Wire1Commands;
 import io.github.search5.hg4j.transport.wireprotov1.Wire1Response;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -60,6 +62,9 @@ public class HgSshWireServer {
     // See HgHttpWireServer's identical fields / Wire1Commands#pushkey.
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
+    /** Whether to advertise the {@code lfs}/{@code lfs-serve} wire capability tokens -- see {@link
+     * #enableLfsCapability()}. */
+    private boolean lfsCapabilityEnabled = false;
 
     /**
      * Creates an SSH wireprotocol v1 server bound to the given repository.
@@ -110,6 +115,45 @@ public class HgSshWireServer {
     public HgSshWireServer registerPostPushkeyHook(HgHook hook) {
         postPushkeyHooks.add(hook);
         return this;
+    }
+
+    /**
+     * Advertises the {@code lfs} wire capability token -- see {@link
+     * HgHttpWireServer#enableLfsCapability()} for the full rationale (real hg's {@code
+     * exchange.push()} requirement check aborting an LFS-tracked push otherwise). Real hg's SSH
+     * peer reads capabilities from the {@code hello} handshake response, not a separate {@code
+     * capabilities} command call, so both are patched here.
+     *
+     * @return this server, for chaining further {@code registerXxxHook}/{@code enableXxx} calls
+     */
+    public HgSshWireServer enableLfsCapability() {
+        this.lfsCapabilityEnabled = true;
+        return this;
+    }
+
+    private String capabilitiesStringWithLfs() {
+        String base = Wire1Commands.capabilitiesString(repository);
+        if (!lfsCapabilityEnabled) {
+            return base;
+        }
+        return repositoryRequiresLfs() ? base + " lfs-serve lfs" : base + " lfs";
+    }
+
+    private boolean repositoryRequiresLfs() {
+        File requiresFile = new File(repository.getHgDir(), "requires");
+        if (!requiresFile.isFile()) {
+            return false;
+        }
+        try {
+            for (String line : Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8)) {
+                if ("lfs".equals(line.trim())) {
+                    return true;
+                }
+            }
+        } catch (IOException e) {
+            return false;
+        }
+        return false;
     }
 
     /**
@@ -235,6 +279,12 @@ public class HgSshWireServer {
         }
         Map<String, String> args = readArgs(in, spec);
 
+        if (lfsCapabilityEnabled && ("hello".equals(cmd) || "capabilities".equals(cmd))) {
+            String caps = capabilitiesStringWithLfs();
+            return "hello".equals(cmd)
+                    ? Wire1Response.bytes(("capabilities: " + caps + "\n").getBytes(StandardCharsets.UTF_8))
+                    : Wire1Response.bytes(caps.getBytes(StandardCharsets.UTF_8));
+        }
         if ("batch".equals(cmd)) {
             return Wire1Commands.batch(repository, args);
         }

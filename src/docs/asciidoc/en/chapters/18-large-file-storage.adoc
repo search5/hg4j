@@ -1,0 +1,74 @@
+[[large-file-storage]]
+== Large File Storage (LFS)
+
+Supports real hg's `lfs` extension as-is, which reuses the same protocol Git LFS does (the
+`git-lfs` spec). A large file gets only a small pointer text recorded in its revlog instead of its
+literal bytes, and the real bytes are stored separately, either in `.hg/store/lfs/objects/` or on a
+remote LFS server.
+
+=== Setting a threshold and committing
+
+[source,groovy]
+.The repository's own .hg/hgrc, not build.gradle
+----
+[lfs]
+threshold = 10MB
+----
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=configure-threshold]
+----
+
+`[lfs] threshold` is repository configuration itself (`.hg/hgrc`), so there's no dedicated hg4j API
+for it -- `commit()` simply reads and follows it. Once an added or modified file crosses the
+threshold, `commit()` writes an LFS pointer text (`version`/`oid`/`size` lines) into the revlog
+instead of the literal bytes, and sets the `REVIDX_EXTSTORED` flag. The real bytes are cached
+verbatim under `.hg/store/lfs/objects/<oid[0:2]>/<oid[2:]>`.
+
+=== Checking out and reading a file
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=checkout-and-read]
+----
+
+`update()` (checkout) and `cat()` always return the real file bytes -- you never need to worry
+about the pointer. Internally, once a revision is flagged `REVIDX_EXTSTORED`, the pointer is
+parsed and resolved from the local/user cache, or fetched from a remote LFS server if it isn't
+cached yet. `annotate()` and archive generation are equally transparent about this.
+
+=== Fetching a missing object from a remote
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=fetch-remote]
+----
+
+This is exactly what `update()`/`cat()` do internally on a cache miss -- you can also call it
+yourself. `HgLfsManager.resolveServerUrl(repository)` returns the configured `[lfs] url` verbatim
+if one is set, or otherwise derives one by appending `.git/info/lfs` to `[paths] default` (the same
+way real hg reuses git-lfs's own server-discovery convention). `fetchObject()` calls the Git LFS
+Batch API at that URL to get a download action, then downloads and caches the real bytes locally.
+
+=== The user cache
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=usercache]
+----
+
+The path configured via `[lfs] usercache` (or real hg's actual per-OS default cache directory) is
+shared across every repository on this machine -- a blob one repository already downloaded doesn't
+need downloading again for another. If `experimental.lfs.disableusercache` is set, `getUserCacheDir()`
+returns `null`, and only the per-repository local store is ever used.
+
+=== Serving LFS to other clients
+
+Everything above covers hg4j acting as an LFS **client** (committing, checking out, fetching from a
+remote). To run hg4j as a **server** that serves LFS blobs to other hg clients, use
+`io.github.search5.hg4j.lfs.server.HgLfsServer` (an `HttpServlet` implementing the Git LFS Batch
+API and Basic Transfer Adapter) together with `enableLfsCapability()` on
+`HgHttpWireServer`/`HgSshWireServer`. This manual focuses on porcelain command usage -- server
+hosting itself is out of scope here, the same way `HgHttpWireServer`/`HgSshWireServer` themselves
+are -- so see each class's Javadoc for the details.

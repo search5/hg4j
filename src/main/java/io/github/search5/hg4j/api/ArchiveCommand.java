@@ -2,6 +2,7 @@ package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
+import io.github.search5.hg4j.lfs.HgLfsManager;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -362,7 +363,11 @@ public class ArchiveCommand {
         if (rev == -1) {
             throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
-        return filelog.getRevisionContent(rev);
+        byte[] content = filelog.getRevisionContent(rev);
+        // Real hg's `hg archive` dereferences LFS pointers the same as a checkout does (an
+        // archive is meant to hold real file bytes, not internal storage plumbing) -- same
+        // resolveContent call CatCommand/UpdateCommand/AnnotateCommand already use.
+        return HgLfsManager.resolveContent(repository, content, filelog.isExtStored(rev), path);
     }
 
     // -- .hg_archival.txt metadata (repo/node/branch always; tag/latesttag block real hg's own

@@ -1,16 +1,16 @@
 ---
 updated: 2026-09-17
-status: planned (미착수)
+status: completed
 ---
 
-# 계획: LFS 서버 사이드 HTTP Batch API 실행 계획
+# 계획: LFS 서버 사이드 HTTP Batch API 실행 계획 (완료)
 
 > [[mercurial-spec-compliance-requirement]]의 LFS(Large File Storage) 행이 "✅ 완료(세부
 > 옵션 3가지 포함, 백로그 42)"로 기재돼 있으나, 이는 **로컬 커밋/체크아웃 파이프라인과
 > 클라이언트가 원격에서 fetch하는 경로**만을 가리킨다 — hg4j가 **서버 역할로 다른
 > 클라이언트에게 LFS blob을 서빙하는 HTTP 엔드포인트 자체가 없다**는 사실이 그 행에
 > 반영돼 있지 않았다(아래 "현재 구현 상태" 표의 실측 근거 참고). 이 문서는 그 격차를
-> 메우는 계획이다. **아직 착수하지 않았다.**
+> 메우는 계획이었고, TDD로 실행해 완료했다 — 결과는 맨 아래 "완료 결과" 절 참고.
 
 ## 목표
 
@@ -101,3 +101,64 @@ real `hg`(lfs 확장 활성화)로 hg4j가 서빙하는 저장소에 큰 파일�
 - [[mercurial-spec-compliance-requirement]] — 이 계획의 상위 근거(LFS 행 정정 필요)
 - [[narrow-clone-and-lfs]] — 로컬 파이프라인(백로그 31/42) 완료 근거, 이 계획의 전제
 - [[jgit-parity-requirement]] — `lfs.server` 서브패키지 분리 근거
+
+## 완료 결과 (2026-09-17)
+
+계획한 8단계를 TDD로 실행해 전부 마쳤다. 실제 결과는 위 계획과 다음 지점에서 갈렸다.
+
+### 실제로 신설/수정된 것
+- 신규: `io.github.search5.hg4j.lfs.server.HgLfsServer`(Batch API + Basic Transfer, 계획대로
+  `HttpServlet` 상속) + `package-info.java`.
+- 신규: `HgLfsManager#locate(oid)`/`exists(oid)`/`verify(oid)` — 계획 2단계가 예상한 대로
+  `verify(oid): boolean` 하나만으로는 "없음"과 "있는데 손상"을 구분하는 배치 API 응답(404 vs
+  422)을 만들 수 없어서, `locate`/`exists`를 보조로 추가했다.
+- 수정: `io.github.search5.hg4j.transport.HgHttpWireServer`에 `enableLfsCapability()` 신설.
+  계획에는 없던 항목 — RED 테스트의 첫 실패("required features are not supported in the
+  destination: lfs")로 드러난, real hg 클라이언트의 `exchange.push()`가 `remote.capable('lfs')`
+  wire capability를 확인한다는 사실 때문에 필요해졌다.
+- 신규(테스트 인프라): `HgTestUtils#startServlets` — `HgLfsServer`를 `/.git/info/lfs/*`와
+  `/.hg/lfs/*` 두 경로에, `HgHttpWireServer`를 `/*`에 동시에 마운트해야 해서 기존
+  `startServlet`(서블릿 1개 전용)만으로는 부족했다.
+- 인가: 계획이 "구체 인터페이스는 구현 중 결정"이라고 열어둔 부분 — 기존 `HgHook`
+  (`boolean run(Map<String,Object>)`)을 그대로 재사용해 `registerPullPermissionHook`/
+  `registerUploadPermissionHook`으로 노출했다. `HgHttpWireServer`의
+  `registerPreChangegroupHook` 등과 동일 컨벤션이라 억지로 끼워 맞춘 것이 아니라 자연스럽게
+  들어맞았다.
+
+### RED 과정에서 발견한, 계획에 없던 기존 버그 2건
+1번 테스트(real hg push → hg4j 서버 → 다른 real hg가 clone)를 GREEN으로 만드는 과정에서,
+서버 신설과 무관한 `Revlog.appendChangeGroupEntry`(changegroup 수신 공통 경로 -- push 수신과
+pull 양쪽 다 거친다) 자체의 버그 2건이 드러났다(상세 근거는 [[modules/lfs]] 참고):
+1. EXTSTORED(LFS) 리비전의 노드해시를 저장된 포인터 텍스트 기준으로 재검증하고 있었다 —
+   real hg는 애초에 이 검증을 건너뛴다(`hgext/lfs/wrapper.py`의 `bypasscheckhash`).
+2. 받은 changegroup 리비전을 로컬 인덱스에 쓸 때 `entry.flags`(REVIDX_EXTSTORED 등)를
+   버리고 있었다.
+둘 다 hg4j가 지금까지 "hg4j↔hg4j" 또는 "real hg가 만든 저장소를 hg4j가 로컬 커밋으로
+재현" 시나리오만 검증해왔고, "real hg가 만든 changegroup을 hg4j가 wire로 그대로 받아
+저장"하는 LFS 시나리오는 이번이 처음이라 드러나지 않았던 것으로 보인다.
+
+### 7단계 (SSH 경로) 확인 결과
+계획의 원래 문구("SSH remote라도 [lfs] url이 없으면 원격의 HTTP(S) 주소를 유추")는 부정확
+했다. real hg 소스(`hgext/lfs/blobstore.py`의 `remote()`)를 대조한 뒤, 실제 sshd(Apache MINA
+SSHD 임베디드 서버) + real hg CLI 왕복으로 **실측** 확인했다(`HgLfsServerSshRealHgInteropTest`,
+2개 시나리오, GREEN):
+- `.git/info/lfs` 자동 유추는 원격 URL의 스킴이 이미 `http`/`https`일 때만 일어난다.
+- 원격이 `ssh://`면 이 유추 자체가 아예 스킵되고(`# TODO: consider the ssh -> https
+  transformation that git applies` 주석이 이 변환이 real hg에는 없다는 걸 명시), `[lfs] url`
+  도 없으면 `_storemap[None]`인 `_promptremote`로 떨어진다. 이 클래스 생성자 자체는 아무
+  일도 안 하고, prepush 훅이 실제로 blob을 올리려는 첫 시도(`writebatch`)에서만
+  `abort: lfs.url needs to be configured`로 실패한다 — real hg CLI로 그대로 재현해 문자열까지
+  일치 확인.
+- 이 abort 이전에 `hgext/lfs/wrapper.py`의 `push()`가 먼저 `remote.capable(b'lfs')`를
+  검사하므로, SSH 서버도 HTTP와 대칭적으로 이 capability를 광고해야 클라이언트가 그
+  다음 단계(URL 해석 실패)까지 도달한다 — **계획에 없던 추가 수정**:
+  `io.github.search5.hg4j.transport.HgSshWireServer`에도 `enableLfsCapability()`를 신설했다
+  (`HgHttpWireServer`와 동일 컨벤션; SSH는 `capabilities` 명령이 아니라 `hello` 핸드셰이크
+  응답으로 capability를 전달하므로 두 명령 모두 패치).
+- 양성 경로도 실측 확인: SSH(changegroup) + 명시적 `[lfs] url`이 가리키는 별도 HTTP
+  `HgLfsServer`(blob) 조합으로 push/clone/verify가 전부 성공한다 — real hg가 실제로
+  지원하는 유일한 하이브리드 토폴로지를 hg4j가 그대로 지원함을 증명한다.
+- 즉 SSH 원격에서 LFS를 쓰려면 사용자가 `[lfs] url`을 HTTP(S) LFS 서버 주소로 **반드시
+  명시**해야 한다 — 이때도 `HgLfsServer`가 그 URL에서 서빙되기만 하면 충분하고, SSH
+  프로토콜(`HgSshWireServer`)에는 capability 광고 외에 blob 관련 코드를 얹을 필요가 없다는
+  계획의 실용적 결론은 그대로 맞았다.

@@ -8,11 +8,13 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +53,9 @@ public class HgHttpWireServer extends HttpServlet {
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     /** Hooks run after an incoming {@code pushkey} has been applied successfully. */
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
+    /** Whether to advertise the {@code lfs}/{@code lfs-serve} wire capability tokens -- see {@link
+     * #enableLfsCapability()}. */
+    private boolean lfsCapabilityEnabled = false;
 
     /**
      * Creates a wire server exposing {@code repository} over both protocol v1 and v2 HTTP
@@ -97,6 +102,48 @@ public class HgHttpWireServer extends HttpServlet {
         return this;
     }
 
+    /**
+     * Advertises the {@code lfs} wire capability token (real hg's {@code
+     * hgext/lfs/wrapper.py}'s {@code _capabilities} wrapper) -- call this when an {@link
+     * io.github.search5.hg4j.lfs.server.HgLfsServer} for the same repository is ALSO mounted
+     * alongside this wire server, so a real hg client's {@code exchange.push()} requirement check
+     * ({@code remote.capable('lfs')}) doesn't abort a push of LFS-tracked revisions with "required
+     * features are not supported in the destination: lfs" before ever reaching the wire protocol.
+     * Additionally advertises {@code lfs-serve} (telling the client it MUST autoload its own lfs
+     * extension) when this repository's {@code .hg/requires} already lists {@code lfs}.
+     *
+     * @return this server, for chaining further {@code registerXxxHook}/{@code enableXxx} calls
+     */
+    public HgHttpWireServer enableLfsCapability() {
+        this.lfsCapabilityEnabled = true;
+        return this;
+    }
+
+    private String capabilitiesStringWithLfs() {
+        String base = Wire1Commands.capabilitiesString(repository);
+        if (!lfsCapabilityEnabled) {
+            return base;
+        }
+        return repositoryRequiresLfs() ? base + " lfs-serve lfs" : base + " lfs";
+    }
+
+    private boolean repositoryRequiresLfs() {
+        File requiresFile = new File(repository.getHgDir(), "requires");
+        if (!requiresFile.isFile()) {
+            return false;
+        }
+        try {
+            for (String line : Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8)) {
+                if ("lfs".equals(line.trim())) {
+                    return true;
+                }
+            }
+        } catch (IOException e) {
+            return false;
+        }
+        return false;
+    }
+
     @Override
     protected void service(HttpServletRequest request, HttpServletResponse response) throws IOException {
         try {
@@ -109,7 +156,7 @@ public class HgHttpWireServer extends HttpServlet {
                 response.setStatus(200);
                 response.setHeader("Content-Type", "application/mercurial-cbor");
                 try (OutputStream out = response.getOutputStream()) {
-                    handleCapabilitiesDiscovery(Wire1Commands.capabilitiesString(repository), out);
+                    handleCapabilitiesDiscovery(capabilitiesStringWithLfs(), out);
                 }
                 return;
             }
@@ -341,6 +388,9 @@ public class HgHttpWireServer extends HttpServlet {
     private Wire1Response dispatch(String cmd, Map<String, String> args) throws Exception {
         if ("batch".equals(cmd)) {
             return Wire1Commands.batch(repository, args);
+        }
+        if ("capabilities".equals(cmd) && lfsCapabilityEnabled) {
+            return Wire1Response.bytes(capabilitiesStringWithLfs().getBytes(StandardCharsets.UTF_8));
         }
         return Wire1Commands.dispatch(repository, cmd, args);
     }

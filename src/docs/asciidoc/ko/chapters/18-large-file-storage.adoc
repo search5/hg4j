@@ -1,0 +1,73 @@
+[[large-file-storage]]
+== 대용량 파일 저장(LFS)
+
+Git LFS와 같은 프로토콜(`git-lfs` 사양)을 재사용하는 real hg의 `lfs` 확장을 그대로 지원합니다.
+용량이 큰 파일은 revlog에 실제 바이트 대신 작은 포인터 텍스트만 기록되고, 실제 바이트는
+`.hg/store/lfs/objects/`(또는 원격 LFS 서버)에 별도로 저장됩니다.
+
+=== threshold 설정하고 커밋하기
+
+[source,groovy]
+.build.gradle 대신 저장소의 .hg/hgrc
+----
+[lfs]
+threshold = 10MB
+----
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=configure-threshold]
+----
+
+`[lfs] threshold`는 저장소 자체의 설정(`.hg/hgrc`)이라 hg4j에 이걸 위한 별도 API는 없습니다 --
+`commit()`은 이 설정을 그냥 읽어서 따를 뿐입니다. threshold를 넘는 파일이 추가/수정되면
+`commit()`은 실제 바이트 대신 LFS 포인터 텍스트(`version`/`oid`/`size` 줄)를 revlog에 쓰고,
+`REVIDX_EXTSTORED` 플래그를 세팅합니다. 실제 바이트는 `.hg/store/lfs/objects/<oid[0:2]>/<oid[2:]>`에
+그대로 캐시됩니다.
+
+=== 체크아웃과 파일 읽기
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=checkout-and-read]
+----
+
+`update()`(체크아웃)와 `cat()`은 포인터를 신경 쓸 필요 없이 항상 실제 파일 바이트를
+돌려줍니다 -- 내부적으로 리비전이 `REVIDX_EXTSTORED`로 플래그돼 있으면 포인터를 파싱해 로컬/
+유저 캐시에서 찾거나, 없으면 원격 LFS 서버에서 가져옵니다. `annotate()`와 아카이브 생성도
+동일하게 투명합니다.
+
+=== 원격에서 누락된 객체 가져오기
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=fetch-remote]
+----
+
+캐시 미스가 나면 `update()`/`cat()`이 내부적으로 하는 일이 바로 이겁니다 -- 필요하면 직접
+호출할 수도 있습니다. `HgLfsManager.resolveServerUrl(repository)`는 `[lfs] url`이 명시돼
+있으면 그 값을 그대로, 없으면 `[paths] default`에 `.git/info/lfs`를 붙여 유추합니다(real hg가
+git-lfs의 서버 탐색 규칙을 그대로 재사용하는 방식과 동일). `fetchObject()`는 그 URL로 Git LFS
+Batch API를 호출해 다운로드 액션을 받은 뒤 실제 바이트를 받아 로컬에 캐시합니다.
+
+=== 유저 캐시
+
+[source,java]
+----
+include::{examplesdir}/LargeFileStorageExamples.java[tag=usercache]
+----
+
+`[lfs] usercache`(또는 real hg의 실제 기본값 -- OS별 표준 캐시 디렉터리)로 설정된 경로는
+이 머신의 모든 저장소가 공유합니다 -- 저장소 A에서 이미 받은 blob을 저장소 B가 다시 받을
+필요가 없습니다. `experimental.lfs.disableusercache`가 설정돼 있으면 `getUserCacheDir()`는
+`null`을 반환하고, 그 경우 저장소별 로컬 스토어만 쓰입니다.
+
+=== 다른 클라이언트에게 LFS를 서빙하기
+
+지금까지는 hg4j가 LFS **클라이언트** 역할(커밋/체크아웃/원격에서 가져오기)을 하는 경우였습니다.
+hg4j를 **서버**로 띄워 다른 hg 클라이언트에게 LFS blob을 서빙하려면
+`io.github.search5.hg4j.lfs.server.HgLfsServer`(Git LFS Batch API + Basic Transfer Adapter를
+구현한 `HttpServlet`)를 `HgHttpWireServer`/`HgSshWireServer`의 `enableLfsCapability()`와 함께
+사용하면 됩니다 -- 이 매뉴얼은 포터슬레인 명령 사용법에 초점을 맞추므로(서버 호스팅 자체는
+`HgHttpWireServer`/`HgSshWireServer`와 마찬가지로 다루지 않습니다), 자세한 내용은 각 클래스의
+Javadoc을 참고하세요.

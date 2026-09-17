@@ -2,7 +2,11 @@ package io.github.search5.hg4j.lfs;
 
 import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.api.AddCommand;
+import io.github.search5.hg4j.api.ArchiveCommand;
+import io.github.search5.hg4j.api.CatCommand;
 import io.github.search5.hg4j.api.CommitCommand;
+import io.github.search5.hg4j.api.DiffCommand;
+import io.github.search5.hg4j.api.GrepCommand;
 import io.github.search5.hg4j.api.InitCommand;
 import io.github.search5.hg4j.api.RenameCommand;
 import io.github.search5.hg4j.api.AnnotateCommand;
@@ -31,6 +35,8 @@ import java.util.Random;
 import com.sun.net.httpserver.HttpServer;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import java.nio.file.StandardOpenOption;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -240,6 +246,137 @@ public class LfsRealHgInteropTest {
                 "hg4j must check out the real LFS blob content, not the pointer text");
         assertFalse(new String(restored, StandardCharsets.UTF_8).startsWith("version https://git-lfs"),
                 "sanity: the restored file must not be the raw pointer text");
+    }
+
+    /**
+     * {@link CatCommand} must dereference an LFS pointer to the real bytes, the same as {@link
+     * UpdateCommand} and {@link AnnotateCommand} already do -- a plain revlog read returns the
+     * pointer text, not the file real hg's own {@code hg cat} (lfs-aware) shows.
+     */
+    @Test
+    public void hg4jCatsRealHgLfsCommitWithFullContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgTestUtils.nativeRepo(repoDir, dir -> {
+        });
+        Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
+                "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n",
+                StandardOpenOption.APPEND);
+
+        byte[] originalContent = new byte[4096];
+        new Random(2024).nextBytes(originalContent);
+        Files.write(new File(repoDir, "big.bin").toPath(), originalContent);
+        HgTestUtils.hg(repoDir, "add", "big.bin");
+        HgTestUtils.hg(repoDir, "commit", "-u", "tester", "-m", "add big lfs file");
+
+        HgRepository repo = new HgRepository(repoDir);
+        byte[] catOutput = new CatCommand(repo).setFile("big.bin").setRevision("tip").call();
+
+        assertArrayEquals(originalContent, catOutput,
+                "hg4j's CatCommand must return the real LFS blob content, not the pointer text");
+        assertFalse(new String(catOutput, StandardCharsets.UTF_8).startsWith("version https://git-lfs"),
+                "sanity: CatCommand's output must not be the raw pointer text");
+    }
+
+    /**
+     * {@link ArchiveCommand} must dereference an LFS pointer the same way {@link CatCommand} does
+     * -- an archive exists to hold real file bytes, not internal storage plumbing.
+     */
+    @Test
+    public void hg4jArchivesRealHgLfsCommitWithFullContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgTestUtils.nativeRepo(repoDir, dir -> {
+        });
+        Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
+                "[extensions]\nlfs =\n[lfs]\nthreshold = 10\n[experimental]\nlfs.disableusercache = True\n",
+                StandardOpenOption.APPEND);
+
+        byte[] originalContent = new byte[4096];
+        new Random(2025).nextBytes(originalContent);
+        Files.write(new File(repoDir, "big.bin").toPath(), originalContent);
+        HgTestUtils.hg(repoDir, "add", "big.bin");
+        HgTestUtils.hg(repoDir, "commit", "-u", "tester", "-m", "add big lfs file");
+
+        HgRepository repo = new HgRepository(repoDir);
+        File zipFile = tempDir.resolve("archive.zip").toFile();
+        new ArchiveCommand(repo).setRevision("tip").setDestination(zipFile).setType("zip").call();
+
+        byte[] archivedContent = null;
+        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zipFile.toPath()))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entry.getName().endsWith("big.bin")) {
+                    archivedContent = zis.readAllBytes();
+                    break;
+                }
+            }
+        }
+
+        assertNotNull(archivedContent, "the archive must contain big.bin");
+        assertArrayEquals(originalContent, archivedContent,
+                "hg4j's ArchiveCommand must archive the real LFS blob content, not the pointer text");
+    }
+
+    /**
+     * {@link DiffCommand} must dereference an LFS pointer to the real bytes before diffing, the
+     * same as {@link CatCommand}/{@link ArchiveCommand} -- real hg's own {@code hg diff} calls
+     * {@code fctx.data()} for the diff body (only the separate {@code cmp}/{@code isbinary} checks
+     * fast-path on pointer metadata, see {@code hgext/lfs/wrapper.py}), so it shows a real
+     * line-level diff of an LFS-tracked text file, never the pointer's own {@code oid}/{@code
+     * size} lines.
+     */
+    @Test
+    public void hg4jDiffsRealHgLfsCommitsWithFullContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgTestUtils.nativeRepo(repoDir, dir -> {
+        });
+        Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
+                "[extensions]\nlfs =\n[lfs]\ntrack = all()\n[experimental]\nlfs.disableusercache = True\n",
+                StandardOpenOption.APPEND);
+
+        Files.writeString(new File(repoDir, "big.txt").toPath(), "line1\nline2\nline3\n");
+        HgTestUtils.hg(repoDir, "add", "big.txt");
+        HgTestUtils.hg(repoDir, "commit", "-u", "tester", "-m", "add big.txt");
+
+        Files.writeString(new File(repoDir, "big.txt").toPath(), "line1\nCHANGED\nline3\n");
+        HgTestUtils.hg(repoDir, "commit", "-u", "tester", "-m", "change line2");
+
+        HgRepository repo = new HgRepository(repoDir);
+        List<DiffCommand.DiffEntry> diffs = new DiffCommand(repo).setOldRevision(0).setNewRevision(1).call();
+
+        DiffCommand.DiffEntry entry = diffs.stream().filter(d -> d.getPath().equals("big.txt")).findFirst().orElse(null);
+        assertNotNull(entry, "big.txt must appear in the diff");
+        assertTrue(entry.getDiffContent().contains("-line2"), "diff must show the real removed line: " + entry.getDiffContent());
+        assertTrue(entry.getDiffContent().contains("+CHANGED"), "diff must show the real added line: " + entry.getDiffContent());
+        assertFalse(entry.getDiffContent().contains("oid sha256:"),
+                "diff must never expose the LFS pointer's own oid/size lines: " + entry.getDiffContent());
+    }
+
+    /**
+     * {@link GrepCommand} must search the real dereferenced content of an LFS-tracked revision,
+     * matching real hg's own {@code hg grep} (no LFS-specific override -- it reads content via the
+     * same {@code fctx.data()} path {@code hg diff}/{@code hg cat} use).
+     */
+    @Test
+    public void hg4jGrepsRealHgLfsCommitWithFullContent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("repo").toFile();
+        HgTestUtils.nativeRepo(repoDir, dir -> {
+        });
+        Files.writeString(new File(repoDir, ".hg/hgrc").toPath(),
+                "[extensions]\nlfs =\n[lfs]\ntrack = all()\n[experimental]\nlfs.disableusercache = True\n",
+                StandardOpenOption.APPEND);
+
+        Files.writeString(new File(repoDir, "big.txt").toPath(), "alpha\nNEEDLE-here\ngamma\n");
+        HgTestUtils.hg(repoDir, "add", "big.txt");
+        HgTestUtils.hg(repoDir, "commit", "-u", "tester", "-m", "add big.txt");
+
+        HgRepository repo = new HgRepository(repoDir);
+        List<GrepCommand.GrepResult> results = new GrepCommand(repo).setQuery("NEEDLE-here").call();
+
+        assertFalse(results.isEmpty(), "grep must find the match inside the real LFS content");
+        assertTrue(results.stream().anyMatch(r -> r.lineContent.equals("NEEDLE-here")),
+                "grep must return the real matching line, not pointer text");
+        assertTrue(results.stream().noneMatch(r -> r.lineContent.contains("oid sha256:")),
+                "grep must never match against the LFS pointer's own oid/size lines");
     }
 
     /**

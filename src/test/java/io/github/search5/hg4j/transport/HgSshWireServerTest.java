@@ -343,7 +343,7 @@ public class HgSshWireServerTest {
 
         ByteArrayOutputStream reqBytes = new ByteArrayOutputStream();
         reqBytes.write("unbundle\n".getBytes(StandardCharsets.US_ASCII));
-        reqBytes.write(("heads " + hex.length() + "\n" + hex).getBytes(StandardCharsets.US_ASCII));
+        reqBytes.write("heads 0\n".getBytes(StandardCharsets.US_ASCII)); // the empty destination has no heads, like the client's view
         reqBytes.write((bundleBytes.length + "\n").getBytes(StandardCharsets.US_ASCII));
         reqBytes.write(bundleBytes);
         reqBytes.write("0\n".getBytes(StandardCharsets.US_ASCII));
@@ -361,14 +361,10 @@ public class HgSshWireServerTest {
         server.handleConnection(new ByteArrayInputStream(reqBytes.toByteArray()), out);
 
         assertEquals(1, observedContexts.size(), "The pre-changegroup hook must fire exactly once even though it rejects the push");
-        // Real hg's unbundle reply shape: pre-payload "OK to continue" empty frame, then -- since
-        // this push is rejected -- a single non-empty error frame (the client, real or hg4j's own,
-        // treats ANY non-empty frame here as the error message and never even attempts the
-        // would-be-third "result" read; see HgSshClient#push).
+        // A bundle1 push that a hook refuses is answered like the original does (pushres 0): the "OK to continue" frame, an empty
+        // frame, and the result code 0; the reason is only logged on the server (the original writes it to its stderr).
         List<String> parts = splitFramedResponses(out.toByteArray());
-        assertEquals(2, parts.size(), "precheck + error (no separate result frame on rejection): " + parts);
-        assertEquals("", parts.get(0), "pre-payload OK-to-continue frame must be empty");
-        assertFalse(parts.get(1).isEmpty(), "a rejected push must report a non-empty error");
+        assertEquals(List.of("", "", "0"), parts);
 
         File clIdx = new File(destRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(destRepo.getStoreDir(), "00changelog.d");

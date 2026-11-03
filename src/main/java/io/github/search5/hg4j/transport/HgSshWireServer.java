@@ -142,39 +142,26 @@ public class HgSshWireServer {
      */
     private void handleUnbundle(InputStream in, OutputStream out) throws Exception {
         Map<String, String> args = readArgs(in, ARG_SPECS.get("unbundle"));
+        Wire1Response raced = Wire1Commands.preCheckUnbundleHeads(repository, args);
+        if (raced != null) {
+            // refused before the payload is read: this frame takes the place of the "OK to continue" one
+            writeLengthPrefixed(out, raced.getPayload());
+            return;
+        }
         writeLengthPrefixed(out, new byte[0]); // "OK to continue" -- real hg sends this before any payload byte
         byte[] bundleBytes = readPayload(in);
 
         Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks);
 
-        // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는
-        // (bundle2를 실제로 요청한, 즉 body가 HG20 봉투였던) push에 한해 Wire1Commands.unbundle()이
-        // 더는 위 "1\n<status>"/"0\n<error>" 평문이 아니라 온전한 HG20 봉투 하나를 그대로
-        // 돌려준다(Kind.STREAM_UNCOMPRESSED) -- 실제 hg의 sshserver.py도 이 두 경우를 서로
-        // 다른 응답 타입(`pushres`는 두 개의 개별 프레임값, `streamreslegacy`는 자체-프레임된
-        // 원시 스트림 하나)으로 구분해서 쓴다(실측, mercurial/wireprotoserver.py). SSH에서는
-        // streamres/streamreslegacy 구분이 압축 여부에 영향을 주지 않으므로(SSH 전송 자체가
-        // 비압축) getbundle 등 다른 스트림 응답과 동일하게(아래 writeResponse) 프레이밍 없이
-        // 원시 바이트 그대로 내보낸다.
-        if (resp.getKind() == Wire1Response.Kind.STREAM_UNCOMPRESSED) {
-            writeResponse(out, resp);
-            return;
+        switch (resp.getKind()) {
+            case PUSH_RESULT -> {
+                // sshv1: pushres is an empty frame and then the result code
+                writeLengthPrefixed(out, new byte[0]);
+                writeLengthPrefixed(out, String.valueOf(resp.getPushResult()).getBytes(StandardCharsets.US_ASCII));
+            }
+            case PUSH_ERROR -> writeLengthPrefixed(out, resp.getPayload()); // sshv1: pusherr is the message alone
+            default -> writeResponse(out, resp); // a bundle2 answer is a raw stream on SSH (no compression, no framing)
         }
-
-        // Wire1Commands.unbundle()'s payload is always "1\n<status>" (success) or "0\n<error>"
-        // (failure) -- the shared HTTP/SSH string convention. Real hg's SSH client, though, reads
-        // this outcome as two SEPARATE framed values (an error-or-empty check, then a bare
-        // integer result on success), so split it back apart here.
-        String text = new String(resp.getPayload(), StandardCharsets.UTF_8);
-        int nl = text.indexOf('\n');
-        String retDigit = nl == -1 ? text : text.substring(0, nl);
-        String rest = nl == -1 ? "" : text.substring(nl + 1);
-        if (!"1".equals(retDigit)) {
-            writeLengthPrefixed(out, (rest.isEmpty() ? retDigit : rest).getBytes(StandardCharsets.UTF_8));
-            return;
-        }
-        writeLengthPrefixed(out, new byte[0]);
-        writeLengthPrefixed(out, retDigit.getBytes(StandardCharsets.UTF_8));
     }
 
     private Wire1Response dispatch(String cmd, InputStream in) throws Exception {

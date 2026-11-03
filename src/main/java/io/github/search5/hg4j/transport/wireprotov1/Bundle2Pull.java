@@ -198,6 +198,16 @@ final class Bundle2Pull {
         return seen;
     }
 
+    /** {@code repo.heads()}: the heads, newest revision first. */
+    private static List<String> headsNewestFirst(Revlog changelog) {
+        int[] revs = HeadsBuckets.headRevisions(changelog, changelog.getRevisionCount());
+        List<String> heads = new ArrayList<>();
+        for (int i = revs.length - 1; i >= 0; i--) {
+            heads.add(NodeIdUtil.toHex(changelog.getIndexRecord(revs[i]).getNodeId()));
+        }
+        return heads;
+    }
+
     /**
      * {@code addparttagsfnodescache}: pairs of a head's node and the {@code .hgtags} file node cached for it in
      * {@code .hg/cache/hgtagsfnodes1}, only for heads that have a valid cache entry (nothing is computed, like the original).
@@ -209,7 +219,7 @@ final class Bundle2Pull {
         }
         byte[] raw = Files.readAllBytes(cache.toPath());
         Revlog changelog = Wire2Commands.changelog(repo);
-        List<String> heads = requestedHeads.isEmpty() ? new ArrayList<>(new HgLocalClient(repo).getHeads()) : requestedHeads;
+        List<String> heads = requestedHeads.isEmpty() ? headsNewestFirst(changelog) : requestedHeads;
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         for (String head : heads) {
             byte[] node = NodeIdUtil.fromHex(head);

@@ -1611,7 +1611,19 @@ public class Revlog {
             // 이 규칙에 맞춰 "직전에 패킹한 엔트리"를 베이스로 델타를 만들도록 맞췄다 — 반드시
             // rev-1(로컬 revlog에 이번에 순서대로 추가되는 직전 리비전)이어야 하며 parent1로
             // 바꾸면 다중 head(branch) 저장소에서 실제 hg가 만든 cg1 번들 디코딩이 깨진다.
-            if (rev == 0) {
+            if (entry.impliedDeltaBase != null) {
+                // cg1unpacker._deltaheader: the previous chunk of the same group, p1 for the first (set by ChangegroupParser)
+                int impliedRev = NodeIdUtil.isAllZero(entry.impliedDeltaBase) ? -1 : findRevision(entry.impliedDeltaBase);
+                if (impliedRev == -1) {
+                    if (!NodeIdUtil.isAllZero(entry.impliedDeltaBase)) {
+                        throw new HgCorruptDataException("Delta base revision not found in local index: "
+                                + NodeIdUtil.toHex(entry.impliedDeltaBase) + " for commit: " + NodeIdUtil.toHex(entry.node));
+                    }
+                    content = applyDelta(new byte[0], entry.delta);
+                } else {
+                    content = applyDelta(getRawRevisionContent(impliedRev), entry.delta);
+                }
+            } else if (rev == 0) {
                 content = applyDelta(new byte[0], entry.delta);
             } else {
                 byte[] baseContent = getRawRevisionContent(rev - 1);

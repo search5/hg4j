@@ -253,11 +253,16 @@ public class HgHttpWireServer extends HttpServlet {
 
         Wire1Response wireResponse;
         if ("unbundle".equals(cmd)) {
+            Wire1Response raced = Wire1Commands.preCheckUnbundleHeads(repository, args);
+            if (raced != null) {
+                sendPlainHgType(response, "0\n" + raced.getErrorMessage() + "\n");
+                return;
+            }
             byte[] bundleBytes;
             try (InputStream in = request.getInputStream()) {
                 bundleBytes = in.readAllBytes();
             }
-            wireResponse = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks);
+            wireResponse = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, true);
         } else {
             // Real hg sends some commands' args over GET query string, others as a POST
             // form-encoded body (and hg4j's own HgRemoteClient doesn't always agree with real hg
@@ -284,6 +289,8 @@ public class HgHttpWireServer extends HttpServlet {
         }
 
         switch (wireResponse.getKind()) {
+            case PUSH_RESULT -> sendPlainHgType(response, wireResponse.getPushResult() + "\n" + wireResponse.getServerOutput());
+            case PUSH_ERROR -> sendPlainHgType(response, "0\n" + wireResponse.getErrorMessage() + "\n");
             case OOB_ERROR -> {
                 // Real hg's ooberror uses a distinct content type and an always-uncompressed body
                 // (wireprotoserver.py's _callhttp: setresponse(HTTP_OK, HGERRTYPE, bodybytes=...)).
@@ -386,6 +393,12 @@ public class HgHttpWireServer extends HttpServlet {
             default:
                 throw new IOException("unknown compression engine " + engine);
         }
+    }
+
+    /** A plain answer in the v1 media type ({@code application/mercurial-0.1}). */
+    private static void sendPlainHgType(HttpServletResponse response, String text) throws IOException {
+        response.setHeader("Content-Type", "application/mercurial-0.1");
+        sendPlain(response, 200, text);
     }
 
     private static void sendPlain(HttpServletResponse response, int status, String text) throws IOException {

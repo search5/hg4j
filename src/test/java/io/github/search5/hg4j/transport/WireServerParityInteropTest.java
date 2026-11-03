@@ -943,14 +943,26 @@ public class WireServerParityInteropTest {
      */
     private void assertSameSession(String name, java.util.function.Consumer<Path> clientWork, String[] clientArgs,
                                    java.util.function.Consumer<Path> beforeReplay) throws Exception {
+        assertSameSession(name, clientWork, clientArgs, beforeReplay, server -> { });
+    }
+
+    private void assertSameSession(String name, java.util.function.Consumer<Path> clientWork, String[] clientArgs,
+                                   java.util.function.Consumer<Path> beforeReplay,
+                                   java.util.function.Consumer<HgSshWireServer> mineSetup) throws Exception {
+        assertSameSession(repo, name, clientWork, clientArgs, beforeReplay, mineSetup);
+    }
+
+    private void assertSameSession(Path baseRepo, String name, java.util.function.Consumer<Path> clientWork, String[] clientArgs,
+                                   java.util.function.Consumer<Path> beforeReplay,
+                                   java.util.function.Consumer<HgSshWireServer> mineSetup) throws Exception {
         Path recordServer = tmp.resolve(name + "-record");
         Path realServer = tmp.resolve(name + "-real");
         Path mineServer = tmp.resolve(name + "-mine");
-        copyTree(repo, recordServer);
-        copyTree(repo, realServer);
-        copyTree(repo, mineServer);
+        copyTree(baseRepo, recordServer);
+        copyTree(baseRepo, realServer);
+        copyTree(baseRepo, mineServer);
         Path client = tmp.resolve(name + "-client");
-        LocalHg.hgIn(tmp, ".", "clone", repo.toString(), client.toString());
+        LocalHg.hgIn(tmp, ".", "clone", baseRepo.toString(), client.toString());
         clientWork.accept(client);
 
         Path capture = tmp.resolve(name + ".session");
@@ -983,7 +995,9 @@ public class WireServerParityInteropTest {
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (java.io.InputStream in = Files.newInputStream(capture)) {
-            new HgSshWireServer(new HgRepository(mineServer.toFile())).handleConnection(in, out);
+            HgSshWireServer mine = new HgSshWireServer(new HgRepository(mineServer.toFile()));
+            mineSetup.accept(mine);
+            mine.handleConnection(in, out);
         }
         byte[] actual = out.toByteArray();
 
@@ -1006,7 +1020,7 @@ public class WireServerParityInteropTest {
     private void commitOnClient(Path client, String text) {
         try {
             Files.writeString(client.resolve("a.txt"), text);
-            LocalHg.hgIn(tmp, client.getFileName().toString(), "commit", "-u", "dev", "-m", "client " + text.trim());
+            LocalHg.hgIn(tmp, client.getFileName().toString(), "commit", "-A", "-u", "dev", "-m", "client " + text.trim());
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
@@ -1080,6 +1094,72 @@ public class WireServerParityInteropTest {
             hgOn(client, "update", "-r", "feature");
             hgOn(client, "commit", "-u", "dev", "--close-branch", "-m", "close feature");
         }, new String[]{"push"}, server -> { });
+    }
+
+    @Test
+    @DisplayName("unbundle: 번들1 push 세션(성공, 새 head, 경합 거절)의 응답 바이트가 원본과 같다")
+    void unbundleSessionsOfABundle1Push() throws Exception {
+        String[] bundle1 = {"push", "--config", "devel.legacy.exchange=bundle1"};
+        assertSameSession("b1plain", client -> commitOnClient(client, "pushed\n"), bundle1, server -> { });
+        assertSameSession("b1newhead", client -> {
+            hgOn(client, "update", "-r", "0");
+            commitOnClient(client, "a branch off the root\n");
+        }, new String[]{"push", "-f", "--config", "devel.legacy.exchange=bundle1"}, server -> { });
+        assertSameSession("b1race", client -> commitOnClient(client, "pushed\n"), bundle1, server -> {
+            try {
+                Files.writeString(server.resolve("a.txt"), "someone else\n");
+                LocalHg.hgIn(tmp, server.getFileName().toString(), "commit", "-u", "other", "-d", "2020-01-01 00:00 +0000", "-m", "raced");
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+    }
+
+    /** A python hook of the real server that always fails; hg4j gets the equivalent callback registered in code. */
+    private Path failingHook() throws IOException {
+        Path hook = tmp.resolve("rejecting_hook.py");
+        Files.writeString(hook, "def reject(ui, repo, hooktype, **kwargs):\n    return True\n");
+        return hook;
+    }
+
+    private java.util.function.Consumer<Path> realHook(String hookName) throws IOException {
+        Path hook = failingHook();
+        return server -> {
+            try {
+                Files.writeString(server.resolve(".hg/hgrc"), "[hooks]\n" + hookName + " = python:" + hook + ":reject\n");
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("서버 훅(prechangegroup)이 거절하는 push 세션(번들2, 번들1)의 응답 바이트가 원본과 같다")
+    void unbundleSessionsRejectedByAHook() throws Exception {
+        assertSameSession("hook-b2", client -> commitOnClient(client, "pushed\n"), new String[]{"push"},
+                realHook("prechangegroup"), server -> server.registerPreChangegroupHook(ctx -> false));
+        assertSameSession("hook-b1", client -> commitOnClient(client, "pushed\n"),
+                new String[]{"push", "--config", "devel.legacy.exchange=bundle1"},
+                realHook("prechangegroup"), server -> server.registerPreChangegroupHook(ctx -> false));
+    }
+
+    @Test
+    @DisplayName("서버 훅(prepushkey)이 거절하는 북마크 push 세션의 응답이 원본과 같다")
+    void unbundleSessionRejectedByAPushkeyHook() throws Exception {
+        assertSameSession("hook-pushkey", client -> {
+            commitOnClient(client, "pushed\n");
+            hgOn(client, "bookmark", "hooked");
+        }, new String[]{"push", "-B", "hooked"}, realHook("prepushkey"), server -> server.registerPrePushkeyHook(ctx -> false));
+    }
+
+    @Test
+    @DisplayName("unbundle: 빈 저장소에 처음 push 하는 세션(번들2, 번들1)의 응답 바이트가 원본과 같다")
+    void unbundleSessionsIntoAnEmptyRepository() throws Exception {
+        Path empty = tmp.resolve("empty-origin");
+        LocalHg.hgIn(tmp, ".", "init", empty.toString());
+        assertSameSession(empty, "empty-b2", client -> commitOnClient(client, "first\n"), new String[]{"push"}, server -> { }, server -> { });
+        assertSameSession(empty, "empty-b1", client -> commitOnClient(client, "first\n"),
+                new String[]{"push", "--config", "devel.legacy.exchange=bundle1"}, server -> { }, server -> { });
     }
 
     @Test

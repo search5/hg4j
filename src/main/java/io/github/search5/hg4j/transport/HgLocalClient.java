@@ -503,9 +503,19 @@ public class HgLocalClient implements HgRemoteConnection {
         public final String status;
         public final List<String> importedNodeHexes;
 
+        /** File revisions added by the changegroup and the number of distinct files they belong to (for the "added ..." summary). */
+        public final int fileRevisions;
+        public final int files;
+
         public PushResult(String status, List<String> importedNodeHexes) {
+            this(status, importedNodeHexes, 0, 0);
+        }
+
+        public PushResult(String status, List<String> importedNodeHexes, int fileRevisions, int files) {
             this.status = status;
             this.importedNodeHexes = importedNodeHexes;
+            this.fileRevisions = fileRevisions;
+            this.files = files;
         }
     }
 
@@ -585,6 +595,16 @@ public class HgLocalClient implements HgRemoteConnection {
             ChangegroupParser.ChangegroupBundle bundle =
                     ChangegroupParser.parseBundle(bais, cgVersion);
 
+            int fileRevisions = 0;
+            int filesTouched = 0;
+            if (bundle.fileGroups != null) {
+                for (ChangegroupParser.FileGroup group : bundle.fileGroups) {
+                    if (group.entries != null && !group.entries.isEmpty()) {
+                        filesTouched++;
+                        fileRevisions += group.entries.size();
+                    }
+                }
+            }
             List<String> pendingNodeHexes = new ArrayList<>();
             for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                 pendingNodeHexes.add(NodeIdUtil.toHex(entry.node));
@@ -595,7 +615,7 @@ public class HgLocalClient implements HgRemoteConnection {
                 preCtx.put("nodes", pendingNodeHexes);
                 for (HgHook hook : preHooks) {
                     if (!hook.run(preCtx)) {
-                        throw new IOException("push rejected by pre-changegroup hook");
+                        throw new IOException("prechangegroup hook failed"); // the original's wording for a failing hook
                     }
                 }
             }
@@ -620,8 +640,10 @@ public class HgLocalClient implements HgRemoteConnection {
             // HgRepository#lockStore(int)'s doc.
             PullCommand pullApi = new PullCommand(remoteRepo);
             int lockTimeoutMs = remoteRepo.resolvePushLockTimeoutMs();
+            // a bundle2 check:heads part and a bundle1 `heads` argument are reported with the original's two wordings
             FetchCommand.PostLockValidator headsCheck = buildPushRaceValidator(
-                    extracted != null ? extracted.checkHeadsRaw : null, heads);
+                    extracted != null ? extracted.checkHeadsRaw : null, heads,
+                    extracted != null ? PUSH_RACED_MESSAGE : "repository changed while uploading changes - please try again");
             FetchCommand.PostLockValidator raceCheck = headsCheck;
             if (extraValidator != null) {
                 raceCheck = () -> {
@@ -640,6 +662,8 @@ public class HgLocalClient implements HgRemoteConnection {
                 Files.deleteIfExists(dirstateFile.toPath());
             }
 
+            publishImported(imported);
+
             List<String> importedNodeHexes = new ArrayList<>();
             for (byte[] node : imported) {
                 importedNodeHexes.add(NodeIdUtil.toHex(node));
@@ -653,7 +677,39 @@ public class HgLocalClient implements HgRemoteConnection {
                 }
             }
 
-            return new PushResult("push successful, imported " + imported.size() + " changesets natively", importedNodeHexes);
+            return new PushResult("push successful, imported " + imported.size() + " changesets natively", importedNodeHexes, fileRevisions, filesTouched);
+        }
+    }
+
+    /**
+     * {@code phases.registernew}: a publishing repository makes the changesets it receives public (a non-publishing one keeps them
+     * draft, which is what applying a changegroup already recorded).
+     */
+    private void publishImported(List<byte[]> imported) throws IOException {
+        if (imported == null || imported.isEmpty() || !io.github.search5.hg4j.transport.wireprotov2.Wire2Commands.isPublishing(remoteRepo)) {
+            return;
+        }
+        remoteRepo.clearRevlogCache();
+        io.github.search5.hg4j.storage.Revlog changelog = io.github.search5.hg4j.transport.wireprotov2.Wire2Commands.changelog(remoteRepo);
+        io.github.search5.hg4j.phase.PhaseRoots roots = remoteRepo.getPhaseRoots();
+        for (int i = imported.size() - 1; i >= 0; i--) {
+            byte[] node = imported.get(i);
+            if (roots.getPhase(new NodeId(node), changelog) != io.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC) {
+                io.github.search5.hg4j.api.Hg.wrap(remoteRepo).phase().setRevision(NodeIdUtil.toHex(node)).setPhase(0).call();
+            }
+        }
+    }
+
+    /**
+     * {@code exchange.check_heads} for a bundle1 {@code unbundle}: the client's {@code heads} argument (the heads it saw, a hash of
+     * them or {@code force}) against the current ones, reported as {@code repository changed while <context> - please try again}.
+     * The original runs it twice: {@code preparing changes} before it reads the payload and {@code uploading changes} under the lock.
+     */
+    public void checkWireHeads(List<String> wireHeads, String context) throws IOException {
+        FetchCommand.PostLockValidator validator = buildPushRaceValidator(
+                null, wireHeads, "repository changed while " + context + " - please try again");
+        if (validator != null) {
+            validator.validate();
         }
     }
 
@@ -705,13 +761,13 @@ public class HgLocalClient implements HgRemoteConnection {
      * @return {@code null} if no race check applies (nothing to compare against, or the push was
      *         forced); otherwise a validator that throws {@link HgPushRacedException} on mismatch.
      */
-    private FetchCommand.PostLockValidator buildPushRaceValidator(List<byte[]> checkHeadsPartRaw, List<String> wireHeads) {
+    private FetchCommand.PostLockValidator buildPushRaceValidator(List<byte[]> checkHeadsPartRaw, List<String> wireHeads, String racedMessage) {
         if (checkHeadsPartRaw != null) {
             List<String> expectedHex = new ArrayList<>(checkHeadsPartRaw.size());
             for (byte[] node : checkHeadsPartRaw) {
                 expectedHex.add(NodeIdUtil.toHex(node));
             }
-            return () -> validatePushNotRaced(expectedHex);
+            return () -> validatePushNotRaced(expectedHex, racedMessage);
         }
         // Defensive sanitization: PushCommand itself already treats a null entry or the all-zero
         // "no real head" sentinel node as "not a real head" when computing its OWN local
@@ -732,9 +788,9 @@ public class HgLocalClient implements HgRemoteConnection {
         }
         if (sanitized.size() == 2 && HASHED_SENTINEL_HEX.equalsIgnoreCase(sanitized.get(0))) {
             String expectedDigestHex = sanitized.get(1);
-            return () -> validatePushNotRacedHashed(expectedDigestHex);
+            return () -> validatePushNotRacedHashed(expectedDigestHex, racedMessage);
         }
-        return () -> validatePushNotRaced(sanitized);
+        return () -> validatePushNotRaced(sanitized, racedMessage);
     }
 
     private static final String NULL_NODE_HEX = "0".repeat(40);
@@ -756,7 +812,7 @@ public class HgLocalClient implements HgRemoteConnection {
      * handlecheckheads()}: {@code b'remote repository changed while pushing - please try again'}). */
     private static final String PUSH_RACED_MESSAGE = "remote repository changed while pushing - please try again";
 
-    private void validatePushNotRaced(List<String> expectedHeadHex) throws IOException {
+    private void validatePushNotRaced(List<String> expectedHeadHex, String racedMessage) throws IOException {
         // An empty repository's only "head" is the null node (real hg: repo.heads() == [nullid], which is also what a client
         // sends back), so the null node is left out on both sides and "no heads" equals "[nullid]".
         TreeSet<String> expected = new TreeSet<>();
@@ -772,11 +828,11 @@ public class HgLocalClient implements HgRemoteConnection {
             }
         }
         if (!expected.equals(current)) {
-            throw new HgPushRacedException(PUSH_RACED_MESSAGE);
+            throw new HgPushRacedException(racedMessage);
         }
     }
 
-    private void validatePushNotRacedHashed(String expectedDigestHex) throws IOException {
+    private void validatePushNotRacedHashed(String expectedDigestHex, String racedMessage) throws IOException {
         List<String> currentHex = new ArrayList<>(new HgLocalClient(remoteRepo).getHeads());
         if (currentHex.isEmpty()) {
             // real hg's repo.heads() of an empty repository is [nullid], and that is what a client hashes
@@ -793,7 +849,7 @@ public class HgLocalClient implements HgRemoteConnection {
             }
             String actualDigestHex = NodeIdUtil.toHex(sha1.digest());
             if (!actualDigestHex.equalsIgnoreCase(expectedDigestHex)) {
-                throw new HgPushRacedException(PUSH_RACED_MESSAGE);
+                throw new HgPushRacedException(racedMessage);
             }
         } catch (NoSuchAlgorithmException e) {
             throw new IOException("SHA-1 unavailable for push-race hashed-heads check", e);

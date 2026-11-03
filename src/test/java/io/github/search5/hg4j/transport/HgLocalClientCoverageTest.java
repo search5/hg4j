@@ -447,7 +447,7 @@ public class HgLocalClientCoverageTest {
         try (HgLocalClient targetClient = new HgLocalClient(targetRepo)) {
             IOException ex = assertThrows(IOException.class,
                     () -> targetClient.pushWithHooks(bundleBytes, List.of(), List.of(rejectingHook), List.of()));
-            assertTrue(ex.getMessage().contains("pre-changegroup hook"));
+            assertTrue(ex.getMessage().contains("prechangegroup hook failed"), ex.getMessage()); // the original's wording
         }
 
         File clIdx = new File(targetRepo.getStoreDir(), "00changelog.i");

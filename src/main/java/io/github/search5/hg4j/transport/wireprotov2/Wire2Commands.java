@@ -541,6 +541,18 @@ public final class Wire2Commands {
     }
 
     public static boolean applyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal) throws IOException {
+        return applyPushkey(repo, namespace, key, oldVal, newVal, false);
+    }
+
+    /** Whether {@link #applyPushkey} would succeed right now, without changing anything. */
+    public static boolean canApplyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal) throws IOException {
+        return applyPushkey(repo, namespace, key, oldVal, newVal, true);
+    }
+
+    private static boolean applyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal, boolean dryRun) throws IOException {
+        if ("phases".equals(namespace)) {
+            return pushPhase(repo, key, oldVal, newVal, dryRun);
+        }
         if (!"bookmarks".equals(namespace)) {
             return false;
         }
@@ -563,6 +575,9 @@ public final class Wire2Commands {
                 return false;
             }
         }
+        if (dryRun) {
+            return true;
+        }
         if (updated.isEmpty()) {
             bookmarks.remove(key);
         } else {
@@ -579,6 +594,38 @@ public final class Wire2Commands {
             SafeFileIO.writeStringAtomic(bkFile, sb.toString());
         }
         return true;
+    }
+
+    /**
+     * {@code phases.pushphase}: moves {@code key} (a changeset) from phase {@code old} to the lower phase {@code new} when it is
+     * at {@code old}; if it already is at {@code new} the answer is still success (a race that ended the same way).
+     */
+    private static boolean pushPhase(HgRepository repo, String key, String oldVal, String newVal, boolean dryRun) throws IOException {
+        int oldPhase;
+        int newPhase;
+        try {
+            oldPhase = Math.abs(Integer.parseInt(oldVal.trim()));
+            newPhase = Math.abs(Integer.parseInt(newVal.trim()));
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (key == null || key.length() != 40) {
+            return false;
+        }
+        Revlog changelog = changelog(repo);
+        byte[] node = NodeIdUtil.fromHex(key);
+        if (changelog.getRevisionCount() == 0 || changelog.findRevision(node) < 0) {
+            return false;
+        }
+        int current = repo.getPhaseRoots().getPhase(new io.github.search5.hg4j.lib.NodeId(node), changelog).getValue();
+        if (current == oldPhase && newPhase < oldPhase) {
+            if (dryRun) {
+                return true;
+            }
+            io.github.search5.hg4j.api.Hg.wrap(repo).phase().setRevision(key).setPhase(newPhase).call();
+            return true;
+        }
+        return current == newPhase;
     }
 
     public static Revlog changelog(HgRepository repo) throws IOException {

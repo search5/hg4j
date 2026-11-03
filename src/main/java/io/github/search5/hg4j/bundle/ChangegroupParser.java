@@ -36,6 +36,15 @@ public class ChangegroupParser {
      * Length of 0 or {@code < 4} indicates end of chunk collection.
      */
     public static byte[] readChunk(InputStream in) throws IOException {
+        return readChunk(in, 0);
+    }
+
+    /**
+     * Like {@link #readChunk(InputStream)} for a delta chunk whose header is {@code headerSize} bytes: the original reads the
+     * header before anything else, so a stream that is cut short (fewer bytes left than the header and than the chunk claims) ends with {@code stream ended unexpectedly (got N bytes,
+     * expected H)} (mercurial's {@code readexactly}) whatever the chunk claims to hold.
+     */
+    public static byte[] readChunk(InputStream in, int headerSize) throws IOException {
         byte[] lenBytes = new byte[4];
         int read = in.read(lenBytes);
         if (read < 4) {
@@ -50,6 +59,9 @@ public class ChangegroupParser {
             return null;
         }
         int payloadLen = len - 4;
+        if (headerSize > 0 && in.available() < headerSize && in.available() < payloadLen) {
+            throw new HgCorruptDataException("stream ended unexpectedly (got " + in.available() + " bytes, expected " + headerSize + ")");
+        }
         if (payloadLen > 20 * 1024 * 1024) { // 20MB guard limit to prevent DoS OOM
             throw new HgCorruptDataException("Security Guard: Changegroup chunk size exceeds maximum allowed limit (20MB): " + payloadLen);
         }
@@ -73,7 +85,9 @@ public class ChangegroupParser {
         public byte[] p1;
         public byte[] p2;
         public byte[] cs;
-        public byte[] deltabase; // null if cg1, 20-bytes if cg2/cg3/cg4/cg5
+        public byte[] deltabase;
+        /** cg1 only (it has no delta base field): the previous chunk of the same group, or p1 for the first one. */
+        public byte[] impliedDeltaBase; // null if cg1, 20-bytes if cg2/cg3/cg4/cg5
         public int flags;        // 0 if not cg3/cg4/cg5 (cg4: REVIDX_DELTA_INFO_FLAGS already masked off)
         public byte[] delta;     // bdiff-encoded delta against deltabase, UNLESS fullText is true
 
@@ -128,6 +142,7 @@ public class ChangegroupParser {
      */
     public static List<ChangeGroupEntry> parseGroup(InputStream in, String version, String[] outVersion) throws IOException {
         List<ChangeGroupEntry> entries = new ArrayList<>();
+        byte[] previousNode = null;
         boolean first = true;
         String detectedVersion = version;
         int headerSize = 80;
@@ -142,7 +157,7 @@ public class ChangegroupParser {
         }
 
         while (true) {
-            byte[] chunk = readChunk(in);
+            byte[] chunk = readChunk(in, headerSize);
             if (chunk == null) {
                 break;
             }
@@ -255,6 +270,12 @@ public class ChangegroupParser {
                 System.arraycopy(chunk, headerSize, entry.delta, 0, deltaLen);
             }
 
+            if (entry.deltabase == null && entry.node != null) {
+                // cg1 has no delta base field: cg1unpacker._deltaheader takes the previous chunk of the SAME group, and p1 for
+                // the first one (prevnode is reset for every group). It is not "the previous revision of the local revlog".
+                entry.impliedDeltaBase = previousNode == null ? entry.p1 : previousNode;
+            }
+            previousNode = entry.node;
             entries.add(entry);
         }
         return entries;

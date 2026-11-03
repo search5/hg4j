@@ -252,7 +252,7 @@ public class HgSshClientTransportTest {
         String url = "ssh://hg4juser@127.0.0.1:" + port + "/test/repo";
         try (HgSshClient client = new HgSshClient(url)) {
             client.setPassword("hg4jpass");
-            String result = client.push(minimalEmptyBundle1(), List.of("head1"));
+            String result = client.push(minimalEmptyBundle1(), List.of("force")); // a made-up head would be a push race, as on a real server
             assertNotNull(result);
         }
     }

@@ -166,5 +166,30 @@ hg4j와 원본이 **다른** 점(숨기지 않고 기록):
   이 대조로 찾아 고친 차이: ① 오류 부품(`error:pushraced`, `error:abort`, `error:pushkey`, `error:unsupportedcontent`)은 **필수 부품**이고 `message` 등이 필수 파라미터
   (이전에는 선택 부품과 선택 파라미터) ② `reply:changegroup`의 `return`은 head 증감에 따라 `1`, `1+n`, `-1-n`(이전에는 1 고정)
   ③ `known`은 null 노드를 아는 것으로 답한다.
-- 한계: SSH 세션에서만 바이트 대조했다. HTTP는 헤더와 압축 때문에 본문 의미(실제 클라이언트 push)로 검증한다. 훅이 실패하는 등 서버 쪽 `Abort` 문구는
-  원본과 다를 수 있다(문구까지 대조한 것은 경합 거절뿐).
+
+## [2026-11-03] HTTP 세션과 서버 쪽 오류 문구를 원본과 대조
+**HTTP 세션 대조** (`HttpSessionParityInteropTest`): 실제 hg 클라이언트와 실제 `hg serve` 사이에 녹화 프록시를 두어 요청을 기록하고, 같은 상태의 실제 `hg serve`와 hg4j에
+재생해 모든 응답의 상태, `Content-Type`, 본문(zlib 또는 0.2 엔진을 풀고, bundle2는 changegroup을 뺀 부품 단위)을 비교한다. 일치: clone, pull(새 커밋, 이동한 북마크),
+일반 push, 북마크 push, 번들1 push, 경합 거절.
+- 찾아 고친 차이: ① HTTP는 서버가 처리 중 출력한 줄을 응답에 싣는다. 번들2는 `output` 부품(부품 처리 중 출력은 `in-reply-to`가 붙고, 트랜잭션 종료 출력은 파라미터 없는 부품으로
+  **항상** 마지막에 붙음, 오류 응답에서는 그 앞의 `output`들과 빈 `output` 하나), 번들1은 `"<결과>\n<출력>"`. 내용은 `adding changesets`, `adding manifests`, `adding file changes`,
+  `added N changesets with M changes to K files (+n heads)`. 클라이언트에는 `remote: ...`로 보인다. SSH에서는 서버 stderr로 가므로 응답에 넣지 않는다.
+  ② 요청에 `heads`가 없을 때 `hgtagsfnodes`의 head 순서는 `repo.heads()`(최신 우선).
+- 비교에서 **순서를 보지 않는** 것: `hgtagsfnodes` 쌍. 원본은 같은 요청에도 실행마다 쌍 순서가 달라진다(집합 순회로 보임). 흉내 낼 규칙이 없어 쌍의 집합으로 비교한다.
+
+**서버 쪽 오류 문구 대조** (`UnbundleErrorParityInteropTest` 15개, `assertSameSession`의 훅 시나리오): 직접 만든 bundle2를 두 서버에 보내 응답 바이트와 이후 상태를 비교한다.
+일치: 알 수 없는 필수/선택 부품, 분기된 북마크, `bookmarks` 부품의 생성/이동/삭제, 필수/선택 `pushkey`(replycaps 유무), `check:bookmarks`(세 문구), `check:phases`, `check:heads`,
+`check:updated-heads`, `phase-heads`, 깨진 changegroup(`stream ended unexpectedly (got N bytes, expected M)`), 잘린 번들, bundle2가 아닌 본문, 훅 거절(`prechangegroup hook failed`,
+번들2와 번들1, `prepushkey hook failed`).
+- 찾아 고친 차이: 번들1 경로는 거절 문구를 응답에 싣지 않고(서버 stderr) 결과 코드 0만 준다. 경합은 `pusherr`로 문구와 함께: 페이로드를 읽기 전에 `repository changed while preparing
+  changes - please try again`, 락 안에서 `... while uploading changes ...`(둘 다 `remote`가 없음). cg1의 delta base는 그룹의 직전 청크(첫 청크는 p1)여야 하는데 로컬 revlog의 직전
+  리비전으로 가정하고 있어 push된 커밋의 부모가 서버의 마지막 리비전이 아닐 때 번들1 push가 깨졌다(`HG10GZ`/`HG10BZ` 처리를 넣으면서 드러남). 게시형(publishing) 서버가 받은
+  변경셋을 public으로 올리지 않던 것, `pushkey`의 `phases` 네임스페이스(`pushphase`)가 없던 것, 알 수 없는 changegroup 버전을 조용히 받던 것도 고쳤다.
+  변경 전에 가능한 거절(훅, 필수 `pushkey`의 비교 실패, 분기된 북마크)을 changegroup 적용 **전에** 검사하므로, 이런 거절 뒤에는 원본처럼 아무것도 반영되지 않는다.
+
+hg4j와 원본이 **여전히 다른** 점:
+- `bookmarks` 부품이 저장소에 없는 노드를 가리키면 원본은 그대로 저장하지만 hg4j는 거절한다(의도적: 존재하지 않는 리비전을 가리키는 북마크를 만들지 않는다).
+- 알 수 없는 changegroup 버전: 원본은 내부 오류로 연결이 끊기고 hg4j는 `error:abort`로 거절한다.
+- 훅은 `hgrc`의 `[hooks]`가 아니라 Java 콜백(`HgHook`)이다. 문구는 원본의 `<이름> hook failed`에 맞췄지만 `pretxn*`/`prepushkey`가 트랜잭션 안에서 실패할 때 원본이 덧붙이는
+  `transaction abort!`, `rollback completed` 출력은 보내지 않는다(hg4j에는 이 부품들에 걸친 트랜잭션이 없다).
+- 변경 뒤에 실패하는 경우(예: changegroup은 적용됐는데 뒤 부품이 파일 쓰기에서 실패)는 여전히 한 트랜잭션이 아니다.

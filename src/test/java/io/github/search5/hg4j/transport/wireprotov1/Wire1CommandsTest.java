@@ -323,7 +323,8 @@ public class Wire1CommandsTest {
         Wire1Response r = Wire1Commands.unbundle(destRepo, bundleBytes, args);
         // Real hg's pushres leading digit means "were new revisions actually added", not
         // "did the request succeed" -- 1 here since a real commit landed.
-        assertTrue(bytes(r).startsWith("1\n"), "unbundle must report that new revisions were added: " + bytes(r));
+        assertEquals(Wire1Response.Kind.PUSH_RESULT, r.getKind());
+        assertTrue(r.getPushResult() >= 1, "unbundle must report that new revisions were added: " + r.getPushResult());
 
         File clIdx = new File(destRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(destRepo.getStoreDir(), "00changelog.d");
@@ -358,7 +359,8 @@ public class Wire1CommandsTest {
         args.put("heads", NodeIdUtil.toHex(commit));
         Wire1Response r = Wire1Commands.unbundle(destRepo, bundleBytes, args, preHooks, List.of());
 
-        assertTrue(bytes(r).startsWith("0\n"), "A pre-changegroup hook rejection must report no revisions added: " + bytes(r));
+        assertEquals(Wire1Response.Kind.PUSH_RESULT, r.getKind());
+        assertEquals(0, r.getPushResult(), "A pre-changegroup hook rejection must report no revisions added");
 
         File clIdx = new File(destRepo.getStoreDir(), "00changelog.i");
         File clDat = new File(destRepo.getStoreDir(), "00changelog.d");
@@ -388,7 +390,8 @@ public class Wire1CommandsTest {
         Map<String, String> args = new LinkedHashMap<>();
         Wire1Response r = Wire1Commands.unbundle(destRepo, bundleBytes, args, List.of(), postHooks);
 
-        assertTrue(bytes(r).startsWith("1\n"));
+        assertEquals(Wire1Response.Kind.PUSH_RESULT, r.getKind());
+        assertTrue(r.getPushResult() >= 1);
         assertEquals(1, observedContexts.size(), "The post-changegroup hook must fire exactly once for a successful push");
         @SuppressWarnings("unchecked")
         List<String> nodes = (List<String>) observedContexts.get(0).get("nodes");
@@ -407,7 +410,7 @@ public class Wire1CommandsTest {
         });
         Wire1Response r = Wire1Commands.unbundle(destRepo, new byte[0], new LinkedHashMap<>(), List.of(), postHooks);
 
-        assertTrue(bytes(r).startsWith("0\n"));
+        assertEquals(0, r.getPushResult());
         assertTrue(observedContexts.isEmpty(), "No changegroup was received, so the hook must not fire");
     }
 

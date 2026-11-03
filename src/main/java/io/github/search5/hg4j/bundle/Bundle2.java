@@ -8,7 +8,6 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -77,14 +76,14 @@ public final class Bundle2 {
             throw new IOException("not a bundle2 stream");
         }
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(bundle, 4, bundle.length - 4));
-        int paramsSize = in.readInt();
+        int paramsSize = readInt(in);
         if (paramsSize < 0 || paramsSize > in.available()) {
             throw new IOException("illegal bundle2 stream parameter size " + paramsSize);
         }
         String compression = null;
         if (paramsSize > 0) {
             byte[] block = new byte[paramsSize];
-            in.readFully(block);
+            readExactly(in, block);
             for (String piece : new String(block, StandardCharsets.US_ASCII).split(" ")) {
                 String[] kv = piece.split("=", 2);
                 String key = URLDecoder.decode(kv[0], StandardCharsets.ISO_8859_1);
@@ -110,7 +109,7 @@ public final class Bundle2 {
         DataInputStream parts = new DataInputStream(rest);
         List<Part> result = new ArrayList<>();
         while (true) {
-            int headerSize = parts.readInt();
+            int headerSize = readInt(parts);
             if (headerSize == 0) {
                 return result;
             }
@@ -118,9 +117,27 @@ public final class Bundle2 {
                 throw new IOException("illegal bundle2 part header size " + headerSize);
             }
             byte[] header = new byte[headerSize];
-            parts.readFully(header);
+            readExactly(parts, header);
             result.add(parsePart(header, readPayload(parts)));
         }
+    }
+
+    /** mercurial's {@code readexactly}: a short stream is "stream ended unexpectedly (got N bytes, expected M)". */
+    private static void readExactly(DataInputStream in, byte[] into) throws IOException {
+        int got = 0;
+        while (got < into.length) {
+            int n = in.read(into, got, into.length - got);
+            if (n < 0) {
+                throw new IOException("stream ended unexpectedly (got " + got + " bytes, expected " + into.length + ")");
+            }
+            got += n;
+        }
+    }
+
+    private static int readInt(DataInputStream in) throws IOException {
+        byte[] four = new byte[4];
+        readExactly(in, four);
+        return ByteBuffer.wrap(four).getInt();
     }
 
     private static Part parsePart(byte[] header, byte[] payload) throws IOException {
@@ -154,7 +171,7 @@ public final class Bundle2 {
     private static byte[] readPayload(DataInputStream in) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         while (true) {
-            int size = in.readInt();
+            int size = readInt(in);
             if (size == 0) {
                 return out.toByteArray();
             }
@@ -164,11 +181,7 @@ public final class Bundle2 {
                 throw new IOException("bundle2 interrupt chunks are not supported (chunk size " + size + ")");
             }
             byte[] chunk = new byte[size];
-            try {
-                in.readFully(chunk);
-            } catch (EOFException e) {
-                throw new IOException("truncated bundle2 payload", e);
-            }
+            readExactly(in, chunk);
             out.write(chunk);
         }
     }

@@ -48,18 +48,32 @@ final class Bundle2Push {
 
     /** The reply bundle (an {@code HG20} stream) for an incoming push bundle. */
     static byte[] process(HgRepository repo, byte[] bundleBytes, List<String> wireHeads, List<HgHook> preChangegroup,
-                          List<HgHook> postChangegroup, List<HgHook> prePushkey, List<HgHook> postPushkey) throws IOException {
+                          List<HgHook> postChangegroup, List<HgHook> prePushkey, List<HgHook> postPushkey,
+                          boolean captureOutput) throws IOException {
         Bundle2.Writer reply = new Bundle2.Writer();
-        List<Bundle2.Part> parts = Bundle2.read(bundleBytes);
+        // `output` parts the reply holds so far, which an error answer keeps (the original's salvageoutput)
+        List<Object[]> outputs = new ArrayList<>();
+        StringBuilder finalOutput = new StringBuilder();
+        List<Bundle2.Part> parts;
+        try {
+            parts = Bundle2.read(bundleBytes);
+        } catch (IOException e) {
+            if (captureOutput) {
+                reply.addPart("output", false, Map.of(), Map.of(), new byte[0]);
+            }
+            reply.addPart("error:abort", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
+            return reply.toBytes(null);
+        }
 
         for (Bundle2.Part part : parts) {
             if (part.mandatory && !HANDLED.contains(part.type) && !IGNORED.contains(part.type)) {
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("parttype", part.type);
-                if (!part.params.isEmpty()) {
-                    params.put("params", String.join("\0", part.params.keySet()));
-                }
                 // wireprotov1server.unbundle: every error part is a mandatory part with mandatory parameters
+                reply = new Bundle2.Writer();
+                if (captureOutput) {
+                    reply.addPart("output", false, Map.of(), Map.of(), new byte[0]);
+                }
                 reply.addPart("error:unsupportedcontent", true, params, Map.of(), new byte[0]);
                 return reply.toBytes(null);
             }
@@ -79,17 +93,37 @@ final class Bundle2Push {
                 }
             };
 
+            // Everything that can refuse the push is checked before anything is changed, so that a refusal leaves no half-applied
+            // push behind (the original rolls its transaction back; this server has no transaction spanning the parts).
+            for (Bundle2.Part part : parts) {
+                switch (part.type) {
+                    case "pushkey" -> prepareLater(repo, part, prePushkey);
+                    case "bookmarks" -> prepareBookmarks(repo, part, prePushkey);
+                    default -> { }
+                }
+            }
+
             int changegroupResult = 0;
             if (changegroup != null) {
+                String version = changegroup.params.getOrDefault("version", "01");
+                if (!List.of("01", "02", "03", "04", "05").contains(version)) {
+                    // the original fails inside its changegroup lookup (a KeyError); a clear refusal is better than applying garbage
+                    throw new IOException("unsupported changegroup version " + version);
+                }
                 int countBefore = Wire2Commands.changelog(repo).getRevisionCount();
                 HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
                         bundleBytes, wireHeads, preChangegroup, postChangegroup, validator);
                 boolean added = !result.status.startsWith("no changes found");
-                changegroupResult = added ? changegroupReturn(repo, countBefore) : 0;
+                int delta = deltaHeads(repo, countBefore);
+                changegroupResult = added ? (delta < 0 ? delta - 1 : delta + 1) : 0;
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("in-reply-to", String.valueOf(changegroup.id));
                 params.put("return", String.valueOf(changegroupResult));
                 reply.addPart("reply:changegroup", false, Map.of(), params, new byte[0]);
+                if (captureOutput) {
+                    addOutput(reply, outputs, String.valueOf(changegroup.id), "adding changesets\nadding manifests\nadding file changes\n");
+                    finalOutput.append(summaryLine(result, delta));
+                }
             }
             for (Bundle2.Part remote : parts) {
                 if (!remote.type.equals("remote-changegroup")) {
@@ -99,11 +133,16 @@ final class Bundle2Push {
                 int remoteCountBefore = Wire2Commands.changelog(repo).getRevisionCount();
                 HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
                         fetched, List.of(), preChangegroup, postChangegroup, changegroup == null ? validator : null);
-                int returned = result.status.startsWith("no changes found") ? 0 : changegroupReturn(repo, remoteCountBefore);
+                int remoteDelta = deltaHeads(repo, remoteCountBefore);
+                int returned = result.status.startsWith("no changes found") ? 0 : (remoteDelta < 0 ? remoteDelta - 1 : remoteDelta + 1);
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("in-reply-to", String.valueOf(remote.id));
                 params.put("return", String.valueOf(returned));
                 reply.addPart("reply:changegroup", false, Map.of(), params, new byte[0]);
+                if (captureOutput) {
+                    addOutput(reply, outputs, String.valueOf(remote.id), "adding changesets\nadding manifests\nadding file changes\n");
+                    finalOutput.append(summaryLine(result, remoteDelta));
+                }
                 changegroup = changegroup == null ? remote : changegroup;
             }
             if (changegroup == null && !checks.isEmpty()) {
@@ -114,20 +153,23 @@ final class Bundle2Push {
 
             for (Bundle2.Part part : parts) {
                 switch (part.type) {
-                    case "pushkey" -> applyPushkey(repo, part, reply, prePushkey, postPushkey);
-                    case "bookmarks" -> applyBookmarks(repo, part, prePushkey, postPushkey);
+                    case "pushkey" -> applyPushkey(repo, part, reply, List.of(), postPushkey);
+                    case "bookmarks" -> applyBookmarks(repo, part, List.of(), postPushkey);
                     case "phase-heads" -> applyPhaseHeads(repo, part);
                     default -> { }
                 }
             }
+            if (captureOutput) {
+                reply.addPart("output", false, Map.of(), Map.of(), finalOutput.toString().getBytes(StandardCharsets.UTF_8));
+            }
         } catch (HgPushRacedException e) {
-            reply = new Bundle2.Writer();
+            reply = salvaged(outputs, captureOutput);
             reply.addPart("error:pushraced", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
         } catch (PushkeyFailed e) {
-            reply = new Bundle2.Writer();
+            reply = salvaged(outputs, captureOutput);
             reply.addPart("error:pushkey", true, Map.of("in-reply-to", e.params.get("in-reply-to")), e.advisory(), new byte[0]);
         } catch (IOException | RuntimeException | io.github.search5.hg4j.errors.HgLockException e) {
-            reply = new Bundle2.Writer();
+            reply = salvaged(outputs, captureOutput);
             reply.addPart("error:abort", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
         }
         return reply.toBytes(null);
@@ -195,7 +237,13 @@ final class Bundle2Push {
      * heads is unchanged, {@code 1 + n} when {@code n} heads were added, {@code -1 - n} when {@code n} were removed (a head that
      * closes its branch does not count as added). Never 0, which means "nothing applied".
      */
-    private static int changegroupReturn(HgRepository repo, int countBefore) throws IOException {
+    static int changegroupReturn(HgRepository repo, int countBefore) throws IOException {
+        int delta = deltaHeads(repo, countBefore);
+        return delta < 0 ? delta - 1 : delta + 1;
+    }
+
+    /** How many heads the repository gained (negative: lost) since it had {@code countBefore} revisions; closing heads do not count. */
+    static int deltaHeads(HgRepository repo, int countBefore) throws IOException {
         repo.clearRevlogCache();
         Revlog changelog = Wire2Commands.changelog(repo);
         int countAfter = changelog.getRevisionCount();
@@ -212,7 +260,8 @@ final class Bundle2Push {
                 }
             }
         }
-        int delta = 0;
+        // an empty repository has one head, the null revision, which the first changeset replaces
+        int delta = countBefore == 0 ? -1 : 0;
         for (int rev = 0; rev < countAfter; rev++) {
             boolean headAfter = !hasChildAfter[rev];
             boolean headBefore = rev < countBefore && !hasChildBefore[rev];
@@ -222,7 +271,7 @@ final class Bundle2Push {
                 delta -= 1;
             }
         }
-        return delta < 0 ? delta - 1 : delta + 1;
+        return delta;
     }
 
     /** Whether the changeset's extra data has {@code close=1} ({@code hg commit --close-branch}). */
@@ -243,6 +292,38 @@ final class Bundle2Push {
             }
         }
         return false;
+    }
+
+    /** Adds an {@code output} part answering part {@code inReplyTo}. */
+    private static void addOutput(Bundle2.Writer reply, List<Object[]> outputs, String inReplyTo, String text) {
+        reply.addPart("output", false, Map.of(), Map.of("in-reply-to", inReplyTo), text.getBytes(StandardCharsets.UTF_8));
+        outputs.add(new Object[]{inReplyTo, text});
+    }
+
+    /**
+     * The start of an error answer: the {@code output} parts the reply already had, then the (here empty) output of the
+     * transaction that was abandoned, which the original always appends when it captures output.
+     */
+    private static Bundle2.Writer salvaged(List<Object[]> outputs, boolean captureOutput) {
+        Bundle2.Writer writer = new Bundle2.Writer();
+        if (captureOutput) {
+            for (Object[] output : outputs) {
+                writer.addPart("output", false, Map.of(), Map.of("in-reply-to", (String) output[0]),
+                        ((String) output[1]).getBytes(StandardCharsets.UTF_8));
+            }
+            writer.addPart("output", false, Map.of(), Map.of(), new byte[0]);
+        }
+        return writer;
+    }
+
+    /** The line the original prints when a push has been applied: {@code added N changesets with M changes to K files (+n heads)}. */
+    static String summaryLine(HgLocalClient.PushResult result, int deltaHeads) {
+        int changesets = result.importedNodeHexes.size();
+        if (changesets == 0 && result.fileRevisions == 0 && result.files == 0) {
+            return "";
+        }
+        String heads = deltaHeads == 0 ? "" : String.format(" (%+d heads)", deltaHeads);
+        return "added " + changesets + " changesets with " + result.fileRevisions + " changes to " + result.files + " files" + heads + "\n";
     }
 
     private static Bundle2.Part first(List<Bundle2.Part> parts, String type) {
@@ -411,17 +492,59 @@ final class Bundle2Push {
         }
     }
 
+    /** Checks a {@code pushkey} part ahead of time: its {@code prepushkey} hooks, and for a mandatory part whether it can succeed. */
+    private static void prepareLater(HgRepository repo, Bundle2.Part part, List<HgHook> pre) throws IOException {
+        Map<String, String> args = new LinkedHashMap<>();
+        for (String key : List.of("namespace", "key", "old", "new")) {
+            args.put(key, part.params.getOrDefault(key, ""));
+        }
+        runPreHooks(repo, args, pre);
+        if (part.mandatory && !Wire2Commands.canApplyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"))) {
+            throw new PushkeyFailed(part);
+        }
+    }
+
+    /**
+     * The same for a {@code bookmarks} part: no divergent names and the {@code prepushkey} hooks for every change. That its nodes
+     * exist is checked when it is applied, because the changegroup of the same bundle may be what brings them.
+     */
+    private static void prepareBookmarks(HgRepository repo, Bundle2.Part part, List<HgHook> pre) throws IOException {
+        Map<String, byte[]> changes = decodeBookmarks(part.payload);
+        Map<String, String> current = Wire2Commands.readListKeys(repo, "bookmarks");
+        for (Map.Entry<String, byte[]> e : changes.entrySet()) {
+            if (e.getKey().contains("@")) {
+                throw new IOException("cannot accept divergent bookmark " + e.getKey() + "!");
+            }
+            Map<String, String> args = new LinkedHashMap<>();
+            args.put("namespace", "bookmarks");
+            args.put("key", e.getKey());
+            args.put("old", current.getOrDefault(e.getKey(), ""));
+            args.put("new", e.getValue() == null ? "" : NodeIdUtil.toHex(e.getValue()));
+            runPreHooks(repo, args, pre);
+        }
+    }
+
+    private static void runPreHooks(HgRepository repo, Map<String, String> args, List<HgHook> pre) throws IOException {
+        Map<String, Object> context = new LinkedHashMap<>(args);
+        context.put("repository", repo);
+        for (HgHook hook : pre) {
+            if (!hook.run(context)) {
+                throw new IOException("prepushkey hook failed");
+            }
+        }
+    }
+
     private static void applyPushkey(HgRepository repo, Bundle2.Part part, Bundle2.Writer reply,
                                      List<HgHook> pre, List<HgHook> post) throws IOException {
         Map<String, String> args = new LinkedHashMap<>();
         for (String key : List.of("namespace", "key", "old", "new")) {
             args.put(key, part.params.getOrDefault(key, ""));
         }
-        boolean ok = new String(Wire1Commands.pushkey(repo, args, pre, post).getPayload(), StandardCharsets.US_ASCII).startsWith("1");
+        boolean ok = new String(Wire1Commands.pushkeyFromPart(repo, args, pre, post).getPayload(), StandardCharsets.US_ASCII).startsWith("1");
         Map<String, String> params = new LinkedHashMap<>();
         params.put("in-reply-to", String.valueOf(part.id));
         params.put("return", ok ? "1" : "0");
-        reply.addPart("reply:pushkey", false, Map.of(), params, new byte[0]);
+        reply.addPart("reply:pushkey", true, Map.of(), params, new byte[0]);
         if (part.mandatory && !ok) {
             throw new PushkeyFailed(part);
         }
@@ -441,7 +564,7 @@ final class Bundle2Push {
             args.put("key", e.getKey());
             args.put("old", current.getOrDefault(e.getKey(), ""));
             args.put("new", e.getValue() == null ? "" : NodeIdUtil.toHex(e.getValue()));
-            String answer = new String(Wire1Commands.pushkey(repo, args, pre, post).getPayload(), StandardCharsets.US_ASCII);
+            String answer = new String(Wire1Commands.pushkeyFromPart(repo, args, pre, post).getPayload(), StandardCharsets.US_ASCII);
             if (!answer.startsWith("1")) {
                 throw new IOException("could not update bookmark " + e.getKey());
             }

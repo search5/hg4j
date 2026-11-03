@@ -469,8 +469,33 @@ public final class Wire1Commands {
                 return Wire1Response.bytes("0\n".getBytes(StandardCharsets.US_ASCII));
             }
         }
+        return applyPushkeyAndRunPostHooks(repo, args, context, postPushkeyHooks);
+    }
 
-        boolean ok = Wire2Commands.applyPushkey(repo, namespace, key, args.get("old"), args.get("new"));
+    /**
+     * The {@code pushkey} of a bundle2 part: a refusal by a {@code prepushkey} hook is an {@code Abort} ({@code prepushkey hook
+     * failed}, as the original's {@code HookAbort}), not the plain "value not updated" answer.
+     */
+    static Wire1Response pushkeyFromPart(HgRepository repo, Map<String, String> args, List<HgHook> prePushkeyHooks,
+                                         List<HgHook> postPushkeyHooks) throws IOException {
+        Map<String, Object> context = new LinkedHashMap<>();
+        context.put("namespace", args.get("namespace"));
+        context.put("key", args.get("key"));
+        context.put("old", args.getOrDefault("old", ""));
+        context.put("new", args.getOrDefault("new", ""));
+        context.put("repository", repo);
+        for (HgHook hook : prePushkeyHooks) {
+            if (!hook.run(context)) {
+                throw new IOException("prepushkey hook failed");
+            }
+        }
+        return applyPushkeyAndRunPostHooks(repo, args, context, postPushkeyHooks);
+    }
+
+    private static Wire1Response applyPushkeyAndRunPostHooks(HgRepository repo, Map<String, String> args,
+                                                             Map<String, Object> context, List<HgHook> postPushkeyHooks) throws IOException {
+
+        boolean ok = Wire2Commands.applyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"));
         if (ok) {
             for (HgHook hook : postPushkeyHooks) {
                 hook.run(context);
@@ -613,57 +638,56 @@ public final class Wire1Commands {
                                           List<HgHook> postChangegroupHooks,
                                           List<HgHook> prePushkeyHooks,
                                           List<HgHook> postPushkeyHooks) throws IOException, HgLockException {
+        return unbundle(repo, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, false);
+    }
+
+    /**
+     * Same; {@code captureOutput} is true for HTTP, where the original answers with what the server printed while applying the push
+     * ({@code adding changesets}, ..., {@code added 1 changesets with ...}), as {@code output} parts of a bundle2 answer or after the
+     * result code of a bundle1 one. Over SSH it goes to the server's stderr instead.
+     */
+    public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
+                                          List<HgHook> preChangegroupHooks,
+                                          List<HgHook> postChangegroupHooks,
+                                          List<HgHook> prePushkeyHooks,
+                                          List<HgHook> postPushkeyHooks,
+                                          boolean captureOutput) throws IOException, HgLockException {
         if (io.github.search5.hg4j.bundle.Bundle2.isBundle2(bundleBytes)) {
             return Wire1Response.streamUncompressed(Bundle2Push.process(repo, bundleBytes, splitOrEmpty(args.get("heads")),
-                    preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks));
+                    preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, captureOutput));
         }
+        // A bundle1 push (an HG10xx body). Like the original, a refusal other than a push race is only reported on the server's
+        // own stderr (here: the log) and answered with the result code 0; a push race is answered with the message itself.
         List<String> heads = splitOrEmpty(args.get("heads"));
-
-        // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는
-        // push할 때도 (getbundle과 마찬가지로 remote.capable('bundle2') 하나로 양쪽 방향이 다
-        // 갈리는 real hg 자신의 규칙, mercurial/exchange.py의 _forcebundle1 실측) 더는 맨 cg
-        // 바이트가 아니라 HG20/bundle2 봉투로 body를 보내고, 그 경우 응답도 반드시 bundle2
-        // 봉투([reply:changegroup]/[error:abort] 파트)여야 한다 -- 예전의 평문 "N\n<message>"
-        // 그대로 돌려주면 실제 hg 클라이언트는 그걸 bundle2 스트림으로 파싱하려다
-        // "abort: not a Mercurial bundle"로 즉시 깨진다(실측, 2026-09-04: 이 광고를 추가하자
-        // 기존 push interop 테스트가 바로 이 메시지로 재현됨).
-        boolean isBundle2Request = bundleBytes != null && bundleBytes.length >= 4
-                && bundleBytes[0] == 'H' && bundleBytes[1] == 'G' && bundleBytes[2] == '2' && bundleBytes[3] == '0';
-        int changegroupPartId = -1;
-        if (isBundle2Request) {
-            try {
-                changegroupPartId = Bundle2Parser
-                        .extractChangegroupDetailed(new ByteArrayInputStream(bundleBytes))
-                        .changegroupPartId;
-            } catch (Exception noChangegroupPart) {
-                // 실제 hg 스펙(bundle2 파트는 changegroup 하나로 고정돼 있지 않음): 예를 들어
-                // 북마크만 옮기는 push는 changegroup 파트 자체가 없을 수 있다 -- 이 경우 아래
-                // pushWithHooks(bundleBytes...)가 어차피 changegroup 파싱을 다시 시도해 같은
-                // 이유로 "변경 없음"으로 처리되므로, 여기서는 그냥 "회신할 changegroup 파트
-                // 없음"으로만 기록해두고 계속 진행한다.
-                changegroupPartId = -1;
-            }
-        }
-
         try {
+            int countBefore = Wire2Commands.changelog(repo).getRevisionCount();
             HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
                     bundleBytes, heads, preChangegroupHooks, postChangegroupHooks);
-            boolean added = !result.status.startsWith("no changes found");
-            if (isBundle2Request) {
-                if (changegroupPartId >= 0) {
-                    int cgResult = added ? Math.max(1, result.importedNodeHexes.size()) : 0;
-                    return Wire1Response.streamUncompressed(Bundle2Parser
-                            .buildChangegroupReplyBundle2(changegroupPartId, cgResult));
-                }
-                return Wire1Response.streamUncompressed(Bundle2Parser.buildEmptyBundle2Reply());
+            if (result.status.startsWith("no changes found")) {
+                return Wire1Response.pushResult(0);
             }
-            return Wire1Response.bytes(((added ? "1\n" : "0\n") + result.status).getBytes(StandardCharsets.UTF_8));
-        } catch (Exception e) {
-            if (isBundle2Request) {
-                return Wire1Response.streamUncompressed(Bundle2Parser
-                        .buildErrorAbortBundle2(String.valueOf(e.getMessage())));
-            }
-            return Wire1Response.bytes(("0\n" + e.getMessage()).getBytes(StandardCharsets.UTF_8));
+            int delta = Bundle2Push.deltaHeads(repo, countBefore);
+            return Wire1Response.pushResult(delta < 0 ? delta - 1 : delta + 1,
+                    "adding changesets\nadding manifests\nadding file changes\n" + Bundle2Push.summaryLine(result, delta));
+        } catch (io.github.search5.hg4j.errors.HgPushRacedException e) {
+            return Wire1Response.pushError(String.valueOf(e.getMessage()));
+        } catch (IOException | RuntimeException | HgLockException e) {
+            java.util.logging.Logger.getLogger(Wire1Commands.class.getName())
+                    .log(java.util.logging.Level.WARNING, "bundle1 push refused: " + e.getMessage(), e);
+            return Wire1Response.pushResult(0);
+        }
+    }
+
+    /**
+     * The first thing the original's {@code unbundle} does, before it reads the payload: compare the client's {@code heads}
+     * argument with the current heads. Null when they agree (or the client forces), else the {@code pusherr} answer.
+     */
+    public static Wire1Response preCheckUnbundleHeads(HgRepository repo, Map<String, String> args) throws IOException {
+        try {
+            new HgLocalClient(repo).checkWireHeads(splitOrEmpty(args.get("heads")), "preparing changes");
+            return null;
+        } catch (io.github.search5.hg4j.errors.HgPushRacedException e) {
+            return Wire1Response.pushError(String.valueOf(e.getMessage()));
         }
     }
 

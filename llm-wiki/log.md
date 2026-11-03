@@ -605,3 +605,7 @@ phase-heads, remote-changegroup)과 번들1 GZ/BZ push, HTTP 0.2 압축을 구�
 
 ## [2026-11-03] 스트림 파일 순서와 unbundle 응답 바이트를 원본과 맞춤
 `stream_out`/`stream2`를 `store.walk` 순서로, `unbundle` 세션 응답을 녹화·재생으로 바이트 단위 대조(오류 부품의 필수 여부, `reply:changegroup` 반환값, `known`의 null 노드 수정). [[wire-server-command-gaps]]
+
+## [2026-11-03] HTTP 세션과 서버 쪽 오류 문구 대조
+HTTP는 녹화 프록시로 실제 클라이언트 요청을 재생해 응답을 비교(서버 출력 부품 추가), 서버 쪽 오류는 직접 만든 bundle2로 비교. 번들1 cg1 delta base 버그, 게시형 서버의 public 등록, pushkey phases,
+번들1 거절/경합 응답 형식 수정. [[wire-server-command-gaps]]

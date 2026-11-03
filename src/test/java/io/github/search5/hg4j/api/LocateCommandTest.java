@@ -311,7 +311,8 @@ public class LocateCommandTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("initial").call();
 
-        assertThrows(Exception.class, () -> new LocateCommand(repo).setRevision("42").call());
+        // a bare number such as "42" can also be read as a hash prefix, and then resolves in one run out of 256
+        assertThrows(Exception.class, () -> new LocateCommand(repo).setRevision("no-such-revision").call());
     }
 
     @Test

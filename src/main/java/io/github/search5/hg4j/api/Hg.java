@@ -209,6 +209,11 @@ public class Hg implements AutoCloseable {
         return new SignCommand(this.repository);
     }
 
+    /** Verifies the {@code gpgsig} of one commit (made at commit time), see {@link VerifyCommitCommand}. */
+    public VerifyCommitCommand verifyCommit() {
+        return new VerifyCommitCommand(this.repository);
+    }
+
     /** {@code hg sigs}: lists signed changesets, see {@link SigsCommand}. */
     public SigsCommand sigs() {
         return new SigsCommand(this.repository);

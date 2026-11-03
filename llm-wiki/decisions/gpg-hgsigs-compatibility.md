@@ -5,6 +5,13 @@ status: current
 
 # 결정: GPG 서명을 Mercurial `.hgsigs` 방식과 호환되게 구현
 
+> **방향 정정 (2026-11-03, 같은 날 뒤에)**: 이 문서와 [[implementation-plan-gpg-ssh-wire]] Phase 2는 "일반 Mercurial의
+> `hg sigcheck`와 호환"이 목적이라는 **제 전제**로 `.hgsigs`를 구현했다. 사용자가 밝힌 실제 목적은 "로컬에서 커밋할 때 gpg로
+> 서명하고, 원격 저장소에서 서명됨을 보여 주는 것"이다. 이 목적에는 커밋 시점 서명(`gpgsig` extra)이 맞는다(커밋 1개, 서버가
+> 직접 검증 가능). 그래서 같은 키링/서명/검증 코드를 재사용해 `CommitCommand#setGpgSigner(GpgKeyring, ...)`와
+> `VerifyCommitCommand`를 추가했고, `.hgsigs`는 일반 Mercurial 호환이 필요할 때를 위한 부가 기능으로 둔다.
+> 서명이 무엇을 위한 것인지 계획 단계에서 묻지 않은 것이 원인이다.
+
 ## 결정
 [[implementation-plan-gpg-ssh-wire]] Phase 2. Mercurial의 `gpg` 확장(`hgext/gpg.py`)이 정의한 저장 형식과
 의미를 그대로 따르는 서명 생성/검증/명령을 순수 Java(Bouncy Castle)로 구현했다. 기존 git식 `gpgsig` extra

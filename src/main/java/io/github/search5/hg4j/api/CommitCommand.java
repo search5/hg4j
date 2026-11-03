@@ -5,6 +5,10 @@ import java.util.logging.Logger;
 import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.gpg.GpgKeyring;
+import io.github.search5.hg4j.gpg.HgSigner;
+import org.bouncycastle.openpgp.PGPSecretKey;
+import java.time.Instant;
 import io.github.search5.hg4j.storage.FileIndex;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.storage.RevlogIndex;
@@ -165,6 +169,39 @@ public class CommitCommand {
         this.gpgFingerprint = fingerprint;
         this.gpgSigner = signer;
         return this;
+    }
+
+    /**
+     * Signs the new commit with a key from the user's own GnuPG keyring, at commit time (the {@code git commit
+     * -S} workflow). The signature is the ASCII-armored detached OpenPGP signature that {@code gpg
+     * --detach-sign --armor} would produce, stored in the changeset's {@code gpgsig} extra exactly as described
+     * for {@link #setGpgSigner(String, GpgSigner)}, with the signer's primary-key fingerprint in
+     * {@code gpgfingerprint}. Use {@link VerifyCommitCommand} (or any verifier that follows git's {@code
+     * gpgsig} convention) to check it later, locally or on a server that received the changeset.
+     *
+     * <p>The key is resolved NOW, so a wrong key spec fails before the commit starts. A wrong passphrase
+     * surfaces when the signature is made and aborts the commit (no changeset is created).</p>
+     *
+     * @param keyring    must contain the secret key, see {@code GpgKeyring#withSecretKeys}
+     * @param keySpec    like {@code git -u}/{@code gpg --local-user}: part of a user id, or a (suffix of a) key id or
+     *                   fingerprint; null picks the first signing key
+     * @param passphrase the key's passphrase; null or empty for an unprotected key
+     * @throws IllegalArgumentException if the keyring has no matching signing key
+     */
+    public CommitCommand setGpgSigner(GpgKeyring keyring, String keySpec, char[] passphrase) {
+        PGPSecretKey key = keyring.findSigningKey(keySpec);
+        if (key == null) {
+            throw new IllegalArgumentException("no usable signing key found"
+                    + (keySpec == null || keySpec.isBlank() ? "" : " for '" + keySpec + "'")
+                    + (keyring.getNotes().isEmpty() ? "" : " (" + String.join("; ", keyring.getNotes()) + ")"));
+        }
+        String fingerprint;
+        try {
+            fingerprint = keyring.primaryFingerprint(key);
+        } catch (IOException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
+        }
+        return setGpgSigner(fingerprint, payload -> HgSigner.signDetachedArmored(payload, key, passphrase, Instant.now()));
     }
 
     /** {@code hg commit --close-branch}: marks the new commit as closing the named branch head it becomes. */

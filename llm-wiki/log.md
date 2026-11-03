@@ -577,3 +577,9 @@
 - 실제 gpg/hg와 양방향 상호운용 확인(gpg 서명을 hg4j가 검증, hg4j 서명을 gpg와 `hg sigcheck`가 인정, 실제 `hg sign` 결과를 hg4j가 읽음).
 - 테스트 중 발견: 결정적 서명 때문에 같은 초에 두 번 서명하면 `.hgsigs` 내용이 같아져 파일로그 head가 하나가 된다(제품 결함 아님, 테스트는 서명 시각을 달리 지정).
 - 한계: `.hgsigs`만 골라 커밋하지 못함(`CommitCommand`에 경로 필터 없음), gpg-agent 비밀키는 읽지 못함. 기존 `gpgsig` extra 방식은 유지하고 javadoc에 비표준 표시.
+
+## [2026-11-03] 커밋 시점 서명(gpgsig)을 사용자 키링으로 지원 (방향 정정)
+- 사용자가 밝힌 목적: 로컬 커밋 때 gpg로 서명하고 원격에서 "서명됨"을 보여 주기. Phase 2의 `.hgsigs`는 일반 Mercurial 호환 전제였으므로 이 목적에는 커밋 시점 서명이 맞는다. 정정 내용은 [[gpg-hgsigs-compatibility]] 상단, 사용 기준은 [[gpg]] 모듈 문서.
+- 추가: `CommitCommand#setGpgSigner(GpgKeyring, keySpec, passphrase)`, `VerifyCommitCommand`/`Hg#verifyCommit()`, `HgSigner#signDetached`/`signDetachedArmored`, `HgSigVerifier#verifyDetached`, `GpgKeyring#primaryFingerprint`.
+- 확인: 실제 `gpg --verify`가 저장된 서명과 `getUnsignedChangelogText()` 바이트를 인정, 실제 `hg verify`/`clone` 뒤에도 노드와 서명 유지(`CommitSigningInteropTest` 12개).
+- 미확인/남은 일: 원격(yona 서버)에서 변경셋의 `extra`의 `gpgsig`를 읽어 표시하는 부분은 서버 코드가 필요하며 이 저장소 범위 밖. yona에는 git 커밋용 검증기만 있는 것으로 확인됨.

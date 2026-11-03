@@ -193,6 +193,19 @@ public final class GpgKeyring {
         return null;
     }
 
+    /**
+     * @return the fingerprint (uppercase hex) of the PRIMARY key of the ring that holds {@code key}; for a
+     *         signing subkey this is the master key's fingerprint, which is what users and GnuPG name a key by
+     * @throws IOException if {@code key} is not from this keyring
+     */
+    public String primaryFingerprint(PGPSecretKey key) throws IOException {
+        PGPSecretKeyRing ring = secretKeys.getSecretKeyRing(key.getKeyID());
+        if (ring == null) {
+            throw new IOException("key " + String.format("%016X", key.getKeyID()) + " is not in this keyring");
+        }
+        return toHex(ring.getSecretKey().getPublicKey().getFingerprint());
+    }
+
     private static boolean matches(PGPSecretKey key, PGPSecretKey master, String wantedHex, String rawSpec) {
         if (wantedHex.isEmpty()) {
             return true;

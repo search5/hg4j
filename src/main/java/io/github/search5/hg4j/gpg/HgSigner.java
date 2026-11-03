@@ -45,10 +45,23 @@ public final class HgSigner {
      */
     public static HgSigEntry sign(String nodeHex, PGPSecretKey key, char[] passphrase, Instant now)
             throws IOException {
+        byte[] text = HgSigEntry.signedText(nodeHex, HgSigEntry.VERSION_0);
+        return new HgSigEntry(nodeHex, HgSigEntry.VERSION_0, signDetached(text, key, passphrase, now));
+    }
+
+    /**
+     * Signs arbitrary data with a detached binary OpenPGP signature (what {@code gpg --detach-sign} writes):
+     * a version 4 binary-document signature (type 0x00) with a creation time and the issuer's fingerprint
+     * (hashed) and key id (unhashed).
+     *
+     * @return the signature packet bytes
+     * @throws HgSigFormatException if the key cannot sign, or the passphrase is wrong
+     */
+    public static byte[] signDetached(byte[] data, PGPSecretKey key, char[] passphrase, Instant now)
+            throws IOException {
         if (!key.isSigningKey()) {
             throw new HgSigFormatException("key " + String.format("%016X", key.getKeyID()) + " cannot sign");
         }
-        byte[] text = HgSigEntry.signedText(nodeHex, HgSigEntry.VERSION_0);
         PGPPublicKey publicKey = key.getPublicKey();
         try {
             PBESecretKeyDecryptor decryptor = new JcePBESecretKeyDecryptorBuilder(
@@ -68,12 +81,27 @@ public final class HgSigner {
             unhashed.setIssuerKeyID(false, key.getKeyID());
             generator.setUnhashedSubpackets(unhashed.generate());
 
-            generator.update(text);
-            return new HgSigEntry(nodeHex, HgSigEntry.VERSION_0, generator.generate().getEncoded());
+            generator.update(data);
+            return generator.generate().getEncoded();
         } catch (PGPException e) {
             throw new HgSigFormatException("cannot sign with key " + String.format("%016X", key.getKeyID())
                     + ": " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Like {@link #signDetached} but ASCII-armored ({@code -----BEGIN PGP SIGNATURE-----}) with LF line
+     * endings, the form git stores in a commit's {@code gpgsig} header and that hg4j stores in a changeset's
+     * {@code gpgsig} extra.
+     */
+    public static String signDetachedArmored(byte[] data, PGPSecretKey key, char[] passphrase, Instant now)
+            throws IOException {
+        byte[] packet = signDetached(data, key, passphrase, now);
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try (org.bouncycastle.bcpg.ArmoredOutputStream armor = new org.bouncycastle.bcpg.ArmoredOutputStream(out)) {
+            armor.write(packet);
+        }
+        return out.toString(java.nio.charset.StandardCharsets.US_ASCII).replace("\r\n", "\n").stripTrailing();
     }
 
     private static int hashFor(PGPPublicKey key) {

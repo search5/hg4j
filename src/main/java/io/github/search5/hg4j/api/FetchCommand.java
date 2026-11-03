@@ -133,7 +133,7 @@ public class FetchCommand {
         monitor.start("Fetching changes", 3);
         monitor.update(1);
 
-        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl, repository.getConfig())) {
             if (this.credentialsProvider != null) {
                 client.setCredentialsProvider(this.credentialsProvider);
             }

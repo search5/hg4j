@@ -49,13 +49,30 @@ final class HgLfsClient {
         this.local = local;
         this.config = config;
         URI uri = URI.create(url.endsWith("/") ? url.substring(0, url.length() - 1) : url);
-        if (uri.getUserInfo() != null) {
-            this.basicAuthorization = "Basic " + Base64.getEncoder().encodeToString(uri.getUserInfo().getBytes(StandardCharsets.UTF_8));
+        String userInfo = uri.getUserInfo();
+        String bareUrl;
+        if (userInfo != null) {
             String hostPart = uri.getHost() + (uri.getPort() >= 0 ? ":" + uri.getPort() : "");
-            this.baseUrl = uri.getScheme() + "://" + hostPart + (uri.getRawPath() == null ? "" : uri.getRawPath());
+            bareUrl = uri.getScheme() + "://" + hostPart + (uri.getRawPath() == null ? "" : uri.getRawPath());
         } else {
-            this.basicAuthorization = null;
-            this.baseUrl = uri.toString();
+            bareUrl = uri.toString();
+        }
+        this.baseUrl = bareUrl;
+        String user = userInfo == null ? null : (userInfo.contains(":") ? userInfo.substring(0, userInfo.indexOf(':')) : userInfo);
+        boolean hasPassword = userInfo != null && userInfo.contains(":");
+        if (userInfo != null && hasPassword) {
+            this.basicAuthorization = "Basic " + Base64.getEncoder().encodeToString(userInfo.getBytes(StandardCharsets.UTF_8));
+        } else {
+            // credentials of the address first, then the [auth] section
+            io.github.search5.hg4j.transport.HgAuthConfig.Match match =
+                    io.github.search5.hg4j.transport.HgAuthConfig.find(config, bareUrl, user);
+            if (match != null && match.username() != null && match.password() != null) {
+                this.basicAuthorization = "Basic " + Base64.getEncoder()
+                        .encodeToString((match.username() + ":" + match.password()).getBytes(StandardCharsets.UTF_8));
+            } else {
+                this.basicAuthorization = userInfo == null ? null
+                        : "Basic " + Base64.getEncoder().encodeToString(userInfo.getBytes(StandardCharsets.UTF_8));
+            }
         }
     }
 

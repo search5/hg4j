@@ -86,6 +86,14 @@ public class HgRemoteConnectionFactory {
      * @return a concrete {@link HgRemoteConnection} instance
      * @throws IOException if URL protocol is invalid or connection fail
      */
+    public static HgRemoteConnection createConnection(String url, io.github.search5.hg4j.lib.HgRcConfig config) throws IOException {
+        HgRemoteConnection connection = createConnection(url);
+        if (connection instanceof HgRemoteClient http) {
+            http.applyAuthConfig(config);
+        }
+        return connection;
+    }
+
     public static HgRemoteConnection createConnection(String url) throws IOException {
         if (url == null || url.isEmpty()) {
             throw new IllegalArgumentException("Connection URL cannot be null or empty.");

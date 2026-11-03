@@ -87,6 +87,22 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     /**
+     * Takes the password from the {@code [auth]} section when the address did not carry one (Mercurial's
+     * {@code passwordmgr.find_user_password}: credentials of the address first, then {@code [auth]}). hg4j sends them with the
+     * first request instead of after a 401 challenge.
+     */
+    public void applyAuthConfig(io.github.search5.hg4j.lib.HgRcConfig config) {
+        if (password != null) {
+            return;
+        }
+        HgAuthConfig.Match match = HgAuthConfig.find(config, baseUrl, username);
+        if (match != null && match.password() != null && match.username() != null) {
+            this.username = match.username();
+            this.password = match.password();
+        }
+    }
+
+    /**
      * Strips a {@code user[:pass]@} userinfo component out of {@code url}'s authority (if
      * present), sets {@link #username}/{@link #password} from it, and returns the
      * userinfo-stripped URL. A no-op (returns {@code url} unchanged, credentials left

@@ -653,3 +653,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 
 ## [2026-11-04] 의도적 차이 포팅 1/6: SSH push의 번들2 응답 해석
 `HgSshClient.push`가 번들2 페이로드(LFS 저장소의 cg3 봉투)를 보내면 원본의 `_calltwowaystream`처럼 프레임 없이 돌아오는 번들2 응답을 읽어 `Bundle2PushReply`로 해석한다. 이전에는 프레임 정수를 기다리며 멈췄다(수정 전 코드로 새 테스트가 끝나지 않음을 확인). 테스트: `LfsPushSshRealHgInteropTest` 2개(실제 hg `serve --stdio`에 push 성공, 서버 hook 거절이 오류로 전달됨). 검증: 일반 test 2354개 통과, SSH 계열 interop 5개 클래스 17개 통과.
+
+## [2026-11-04] 의도적 차이 포팅 2/6: `[auth]` 설정
+`HgAuthConfig`(원본 `readauthforuri`: 그룹 `prefix`/`username`/`password`/`schemes`, 기본 스킴 https, `*` 접두어, 가장 긴 접두어 우선, 주소의 사용자와 그룹 사용자 일치)를 추가했다. 저장소 설정 아래에 사용자 수준 hgrc(`HGRCPATH`, `/etc/mercurial/hgrc`, `~/.hgrc`)를 둔다. 와이어 HTTP(`HgRemoteConnectionFactory.createConnection(url, config)`, Fetch/Push/Incoming/Outgoing)와 LFS blob 전송(`HgLfsClient`)이 주소의 자격 증명이 없을 때 이를 쓴다. 남은 차이: 원본은 401 응답 뒤에 자격 증명을 보내고 hg4j는 첫 요청부터 보낸다(주소 자격 증명은 원래 그랬다). `cert`/`key`는 미사용.
+테스트: `AuthConfigRealHgInteropTest` 7개(실제 hg와 hg4j가 같은 `[auth]` 설정에서 같은 성패). 구현 전 코드에서 3개 실패 확인. 검증: 일반 test 2354개 통과, Lfs·Push·Pull 등 interop 43개 클래스 293개 통과.

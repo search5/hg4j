@@ -132,7 +132,7 @@ public class PushCommand {
             }
         }
 
-        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(resolvedUrl)) {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(resolvedUrl, repository.getConfig())) {
             List<String> remoteHeads = client.getHeads();
 
             // Like real hg's wrapped exchange.push: a repository that holds LFS files can only go to a remote that has the lfs

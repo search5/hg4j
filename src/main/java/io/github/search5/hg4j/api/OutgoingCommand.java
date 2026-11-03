@@ -46,7 +46,7 @@ public class OutgoingCommand {
         }
 
         List<byte[]> remoteHeads = new ArrayList<>();
-        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(destinationUrl)) {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(destinationUrl, repository.getConfig())) {
             List<String> remoteHeadsStr = client.getHeads();
             if (remoteHeadsStr != null) {
                 for (String headStr : remoteHeadsStr) {

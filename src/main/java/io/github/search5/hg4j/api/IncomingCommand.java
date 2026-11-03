@@ -45,7 +45,7 @@ public class IncomingCommand {
 
         List<byte[]> remoteHeads = new ArrayList<>();
         List<String> remoteHeadsHex = new ArrayList<>();
-        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl, repository.getConfig())) {
             List<String> remoteHeadsStr = client.getHeads();
             if (remoteHeadsStr != null) {
                 for (String headStr : remoteHeadsStr) {
@@ -81,7 +81,7 @@ public class IncomingCommand {
         // FetchCommand#downloadChangegroupBundle's javadoc: calling it with an always-empty roots
         // list against a non-empty remote used to make IncomingCommand fail against literally any
         // real hg server that had content, backlog item 39 wave 5).
-        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl)) {
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(sourceUrl, repository.getConfig())) {
             List<String> caps = client.getCapabilities();
             List<String> common = FetchCommand.computeLocalLeafHexes(changelog);
             FetchCommand.DownloadedChangegroup downloaded =

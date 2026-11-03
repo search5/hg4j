@@ -27,6 +27,8 @@ final class LfsTestProxy implements AutoCloseable {
     final java.util.List<String> userAgents = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
     /** When set, a request without credentials gets a 401 with this {@code WWW-Authenticate} challenge. */
     volatile String authChallenge;
+    /** When set, every request whose {@code Authorization} header is not exactly this value gets a 401 Basic challenge. */
+    volatile String requiredAuthorization;
     /** The number of LFS object requests (GET or PUT of a blob) to drop without any answer, closing the connection. */
     final AtomicInteger dropObjectRequests = new AtomicInteger();
     /** Every blob request that arrived (dropped ones too). */
@@ -54,6 +56,12 @@ final class LfsTestProxy implements AutoCloseable {
                 String agent = exchange.getRequestHeaders().getFirst("User-Agent");
                 if (agent != null) {
                     userAgents.add(agent);
+                }
+                String required = requiredAuthorization;
+                if (required != null && !required.equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
+                    exchange.getResponseHeaders().add("WWW-Authenticate", "Basic realm=\"hg\"");
+                    exchange.sendResponseHeaders(401, -1);
+                    return;
                 }
                 String challenge = authChallenge;
                 if (challenge != null && exchange.getRequestHeaders().getFirst("Authorization") == null) {

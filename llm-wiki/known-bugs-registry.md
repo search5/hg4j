@@ -1,5 +1,5 @@
 ---
-updated: 2026-09-09
+updated: 2026-11-03
 status: current
 ---
 
@@ -391,6 +391,15 @@ treemanifest 매니페스트 작성 이후로 이동(순서 자체가 근본 원
 "인라인이면 `.d` 없음" 규칙과 정반대였다 — 같은 패턴(filelog isInline() 가드)으로
 통일. 상세: [[backlog/revlog-storage-formats]].
 발견 이력: 백로그 43번(2026-09-06), 45번 후속(2026-09-06).
+
+### `Wire1Commands` / `Wire2Commands.readListKeys` / `NodeIdUtil.resolveRevision` — 서버 와이어 응답이 원본과 다름
+**증상**: 실제 `hg` 클라이언트를 hg4j SSH 서버에 붙이면 (1) `clone`한 변경셋이 전부 `draft`, (2) `clone -r <북마크/태그/브랜치>`가
+`unknown revision`, (3) `clone -r <리비전>`이 전체 이력을 받음, (4) `incoming -B`/`outgoing -B`가 `remote doesn't support
+bookmarks`. 원본 서버에서는 모두 정상.
+**근본 원인**: `listkeys phases`에 `publishing True`가 없고 draft 루트가 아니라 모든 변경셋을 나열, `lookup`이 이름 공간을
+모름, `getbundle`이 `heads`를 반영하지 않음(bundle2 경로), `listkeys namespaces`가 빈 응답.
+**수정**: 아직 없음. 실패 테스트가 `WireServerParityInteropTest`에 `@Disabled`로 준비되어 있다(B1, B2, B3, B8).
+**발견 이력**: 2026-11-03 Phase 3 감사(실제 hg 클라이언트 대조). 상세: [[wire-server-command-gaps]].
 
 ## 관련 문서
 - [[dirstate-v2]], [[censor]], [[symlink-handling]], [[push-and-concurrency]],

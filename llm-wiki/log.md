@@ -583,3 +583,9 @@
 - 추가: `CommitCommand#setGpgSigner(GpgKeyring, keySpec, passphrase)`, `VerifyCommitCommand`/`Hg#verifyCommit()`, `HgSigner#signDetached`/`signDetachedArmored`, `HgSigVerifier#verifyDetached`, `GpgKeyring#primaryFingerprint`.
 - 확인: 실제 `gpg --verify`가 저장된 서명과 `getUnsignedChangelogText()` 바이트를 인정, 실제 `hg verify`/`clone` 뒤에도 노드와 서명 유지(`CommitSigningInteropTest` 12개).
 - 미확인/남은 일: 원격(yona 서버)에서 변경셋의 `extra`의 `gpgsig`를 읽어 표시하는 부분은 서버 코드가 필요하며 이 저장소 범위 밖. yona에는 git 커밋용 검증기만 있는 것으로 확인됨.
+
+## [2026-11-03] Phase 3: 서버 와이어 명령 점검 (감사 완료, 수정 미착수)
+- 원본 `wireprotov1server.py`의 23개 명령과 hg4j 서버를 대조. 문자열 검색이 아니라 같은 요청을 실제 `hg -R repo serve --stdio`와 hg4j에 보내는 와이어 대조, 그리고 실제 `hg` 클라이언트를 두 서버에 붙이는 동작 대조로 확인. 결과는 [[wire-server-command-gaps]].
+- 발견: 이름이 없는 명령 8개는 대부분 서버가 광고하지 않아 클라이언트가 부르지 않으므로 영향이 없다. 실제 문제는 구현은 있으나 동작이 다른 곳: `clone`한 변경셋이 전부 draft(B3), 이름으로 `clone -r` 불가(B1), `clone -r <rev>`가 전체 이력 수신(B8), `incoming -B` 불가(B2).
+- 준비: `WireServerParityInteropTest`(통과 항목 고정 + 결함마다 `@Disabled` 실패 테스트). 레지스트리에 등록([[known-bugs-registry]]).
+- 한계: wire protocol v2는 대조하지 못함(이 hg 소스에 v2 서버가 없음), HTTP 서버와 batch/pushkey/unbundle/changegroup*는 이번에 대조하지 않음.

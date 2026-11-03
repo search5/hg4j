@@ -76,6 +76,7 @@ status: current
 | [backlog/misc-command-fixes.md](backlog/misc-command-fixes.md) | 34, 36 | Bisect DAG 검증, Tag 재태깅 가드 |
 | [backlog/branch-restore-bugs.md](backlog/branch-restore-bugs.md) | (번호 없음) | update/histedit/bisect/merge/strip 워킹 브랜치 복원 버그 4건 + histedit 저널링 |
 | [backlog/39-exhaustive-interop-matrix.md](backlog/39-exhaustive-interop-matrix.md) | 39 | Exhaustive interop matrix(68개 명령) 웨이브 1~5 전체 진행 이력, 40여 건 버그 |
+| [backlog/wire-server-command-gaps.md](backlog/wire-server-command-gaps.md) | 서버 와이어 명령 점검: 원본 23개 대조, 실제 hg 클라이언트에서 드러난 결함 B1~B9, capability 비교 (수정 미착수) |
 
 ## concepts/ — Mercurial 도메인 개념
 | 페이지 | 요약 |

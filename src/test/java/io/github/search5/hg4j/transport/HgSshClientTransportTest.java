@@ -214,7 +214,11 @@ public class HgSshClientTransportTest {
         String url = "ssh://hg4juser@127.0.0.1:" + port + "/test/repo";
         try (HgSshClient client = new HgSshClient(url)) {
             client.setPassword("hg4jpass");
-            byte[] result = client.getBundle(List.of(), List.of("head1"), List.of("bundle2"));
+            // A real head of the served repository: the server (like real hg) honours `heads`, so a made-up
+            // value such as "head1" is not a node and is rejected.
+            List<String> heads = client.getHeads();
+            assertEquals(1, heads.size());
+            byte[] result = client.getBundle(List.of(), heads, List.of("bundle2"));
             assertNotNull(result);
         }
     }

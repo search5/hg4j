@@ -222,48 +222,33 @@ public class HgLocalClient implements HgRemoteConnection {
         Revlog changelog = remoteRepo.getRevlog(clIdx, clDat);
         int count = changelog.getRevisionCount();
 
-        // Calculate startRev based on common bases
-        int startRev = 0;
-        List<String> validCommon = new ArrayList<>();
-        if (common != null) {
-            for (String c : common) {
-                if (c != null && !c.equals("0000000000000000000000000000000000000000")) {
-                    validCommon.add(c);
-                }
+        // The changesets to send are exactly ancestors(heads) - ancestors(common), like real hg's
+        // `outgoing` (mercurial/discovery.py outgoing.missing). `heads` empty means "all heads".
+        // (Before 2026-11-03 this assumed a linear history, "everything after the first revision that is
+        // not common", and did not look at `heads` at all: `clone -r <rev>` then transferred the whole
+        // repository, and a branched history sent revisions the client did not ask for.)
+        // Parents always have a lower revision number than their children, so one downward sweep
+        // marks all ancestors.
+        boolean[] inCommon = ancestorsInclusive(changelog, count, nodesToRevs(changelog, common, false));
+        boolean[] wanted;
+        if (heads == null || heads.isEmpty()) {
+            wanted = new boolean[count];
+            java.util.Arrays.fill(wanted, true);
+        } else {
+            wanted = ancestorsInclusive(changelog, count, nodesToRevs(changelog, heads, true));
+        }
+        boolean[] outgoing = new boolean[count];
+        List<Integer> revs = new ArrayList<>();
+        for (int r = 0; r < count; r++) {
+            if (wanted[r] && !inCommon[r]) {
+                outgoing[r] = true;
+                revs.add(r);
             }
         }
 
-        if (!validCommon.isEmpty()) {
-            boolean[] commonKnown = new boolean[count];
-            for (String c : validCommon) {
-                int rev = changelog.findRevision(NodeIdUtil.fromHex(c));
-                if (rev != -1) {
-                    commonKnown[rev] = true;
-                }
-            }
-            // Propagate descendants/ancestors
-            for (int i = count - 1; i >= 0; i--) {
-                if (commonKnown[i]) {
-                    Revlog.IndexRecord rec = changelog.getIndexRecord(i);
-                    if (rec.getParent1() >= 0) commonKnown[rec.getParent1()] = true;
-                    if (rec.getParent2() >= 0) commonKnown[rec.getParent2()] = true;
-                }
-            }
-            int firstNewRev = count;
-            for (int i = 0; i < count; i++) {
-                if (!commonKnown[i]) {
-                    firstNewRev = i;
-                    break;
-                }
-            }
-            startRev = firstNewRev;
-        }
-
-        // (더 이상 여기서 startRev >= count일 때 `new byte[0]`을 조기 반환하지 않는다 -- 바로
-        // 위의 count==0 케이스와 같은 이유. 클라이언트가 이미 최신 상태라 새로 보낼 리비전이
-        // 없는 일반적인 "no-op pull"도 이 분기를 타는데, 아래 changelog/manifest/filelog
-        // 루프들은 전부 `for (int r = startRev; r < count; r++)` 형태라 startRev>=count면 그냥
-        // 0번 반복하고 끝나 정상적으로 빈 bundle이 만들어진다.)
+        // (An empty `revs` -- a freshly `hg init`ed repository, or a client that is already up to date --
+        // still produces a VALID, empty changegroup below; see the 2026-09-08 note in
+        // known-bugs-registry.md for why returning zero bytes is wrong.)
 
         // 백로그 26번: bundleCaps에서 실제로 클라이언트가 요청한 changegroup 버전을 협상한다
         // (실제 스펙, mercurial/exchange.py 실측): 클라이언트가 "HG2"로 시작하는 토큰을 하나도
@@ -301,22 +286,23 @@ public class HgLocalClient implements HgRemoteConnection {
         bundle.manifestEntries = new ArrayList<>();
         bundle.fileGroups = new ArrayList<>();
 
+        // Delta bases follow real hg's cgpacker.group(): the group starts from the PARENT of its first
+        // revision (which the receiver already has), and every later entry is a delta against the entry
+        // packed just before it (cg1 forces delta-parent-prev; for cg2+ the base is declared explicitly,
+        // here too the previous entry). On a linear history the parent is simply the last common revision,
+        // which is what the old startRev-1 shortcut computed.
+
         // 1a. Pack Changelogs
-        // cg1은 각 엔트리의 델타를 "실제 DAG 부모(p1)"가 아니라 "이 그룹 스트림에서 바로
-        // 직전에 패킹된 엔트리"를 기준으로 인코딩한다(mercurial/changegroup.py의
-        // ChangeGroupPacker01, forcedeltaparentprev=True 실측, 2026-09-01). 다중 head
-        // 저장소에서 p1 기준으로 델타를 만들면 실제 hg 및 hg4j 자신의 unbundle 로직과도
-        // 어긋나 콘텐츠가 깨진다.
-        // incremental pull(startRev > 0)이면 첫 신규 엔트리의 베이스는 양쪽이 이미 공유하는
-        // 마지막 공통 리비전(startRev-1)의 콘텐츠여야 한다 — 빈 바이트로 리셋하면 수신측의
-        // rev-1 기준 복원과 어긋난다.
-        byte[] prevClContent = (startRev > 0) ? changelog.getRevisionContent(startRev - 1) : new byte[0];
-        // cg2 이상만 실제로 읽는 명시적 deltabase 필드 -- "이 그룹 스트림에서 바로 직전에
-        // 패킹된 엔트리"의 node를 그대로 선언한다(위 delta 계산과 동일한 베이스를 명시적으로
-        // 밝히는 것뿐, cg1의 암묵적 규칙과 결과적으로 같은 콘텐츠). 첫 엔트리(startRev==0)는
-        // all-zero(널 리비전) 베이스.
-        byte[] prevClNode = (startRev > 0) ? changelog.getIndexRecord(startRev - 1).getNodeId() : new byte[20];
-        for (int r = startRev; r < count; r++) {
+        byte[] prevClContent = new byte[0];
+        byte[] prevClNode = new byte[20];
+        if (!revs.isEmpty()) {
+            int parent = changelog.getIndexRecord(revs.get(0)).getParent1();
+            if (parent >= 0) {
+                prevClContent = changelog.getRevisionContent(parent);
+                prevClNode = changelog.getIndexRecord(parent).getNodeId();
+            }
+        }
+        for (int r : revs) {
             Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
             ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
             clEntry.node = clRec.getNodeId();
@@ -339,29 +325,14 @@ public class HgLocalClient implements HgRemoteConnection {
             prevClNode = clRec.getNodeId();
         }
 
-        // 1b. Pack Manifests
+        // 1b. Pack Manifests: one entry per distinct manifest node of the outgoing changesets, in changelog order.
         Revlog manifest = remoteRepo.getRevlog(mfIdx, mfDat);
-        Set<String> affectedFiles = new HashSet<>();
-        // incremental pull이면 마지막 공통 changelog 리비전(startRev-1)이 가리키는 manifest
-        // 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다(changelog와 동일한 이유).
+        Set<String> affectedFiles = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR); // real hg sends file groups sorted by name
+        Set<String> packedManifests = new HashSet<>();
         byte[] prevMfContent = new byte[0];
-        // cg2 이상의 명시적 deltabase(위 changelog의 prevClNode와 같은 이유) -- 마지막으로
-        // 실제 번들에 추가된 manifest 엔트리의 node. 첫 엔트리는 all-zero(널 리비전) 베이스.
         byte[] deltaBaseMfNode = new byte[20];
-        if (startRev > 0) {
-            byte[] prevClRaw = changelog.getRevisionContent(startRev - 1);
-            String prevClText = new String(prevClRaw, StandardCharsets.UTF_8);
-            int nl = prevClText.indexOf('\n');
-            if (nl > 0) {
-                byte[] prevMfNode = NodeIdUtil.fromHex(prevClText.substring(0, nl).trim().substring(0, 40));
-                int prevMfRev = manifest.findRevision(prevMfNode);
-                if (prevMfRev != -1) {
-                    prevMfContent = manifest.getRevisionContent(prevMfRev);
-                    deltaBaseMfNode = manifest.getIndexRecord(prevMfRev).getNodeId();
-                }
-            }
-        }
-        for (int r = startRev; r < count; r++) {
+        boolean firstManifest = true;
+        for (int r : revs) {
             byte[] clContent = changelog.getRevisionContent(r);
             String clText = new String(clContent, StandardCharsets.UTF_8);
             String[] clLines = clText.split("\n");
@@ -374,8 +345,16 @@ public class HgLocalClient implements HgRemoteConnection {
             byte[] mfNode = NodeIdUtil.fromHex(clLines[0].trim().substring(0, 40));
             int mfRev = manifest.findRevision(mfNode);
             if (mfRev == -1) continue;
+            if (!packedManifests.add(NodeIdUtil.toHex(mfNode))) continue; // same manifest as an earlier outgoing changeset
 
             Revlog.IndexRecord mfRec = manifest.getIndexRecord(mfRev);
+            if (firstManifest) {
+                firstManifest = false;
+                if (mfRec.getParent1() != -1) { // the group starts from the first manifest's parent
+                    prevMfContent = manifest.getRevisionContent(mfRec.getParent1());
+                    deltaBaseMfNode = manifest.getIndexRecord(mfRec.getParent1()).getNodeId();
+                }
+            }
             ChangegroupParser.ChangeGroupEntry mfEntry = new ChangegroupParser.ChangeGroupEntry();
             mfEntry.node = mfRec.getNodeId();
             mfEntry.p1 = (mfRec.getParent1() != -1) ? manifest.getIndexRecord(mfRec.getParent1()).getNodeId() : new byte[20];
@@ -391,7 +370,7 @@ public class HgLocalClient implements HgRemoteConnection {
             deltaBaseMfNode = mfRec.getNodeId();
         }
 
-        // 1c. Pack Filelogs
+        // 1c. Pack Filelogs: the file revisions whose linkrev is an outgoing changeset.
         for (String path : affectedFiles) {
             if (narrowFilter != null && !narrowFilter.accept(path)) {
                 // Backlog 40: this is the actual bandwidth-saving step -- real hg's own
@@ -406,41 +385,40 @@ public class HgLocalClient implements HgRemoteConnection {
             Revlog fl = remoteRepo.getRevlog(flIdx, flDat);
             List<ChangegroupParser.ChangeGroupEntry> flEntries = new ArrayList<>();
 
-            // incremental pull이면 이미 공유된 마지막 filelog 리비전(linkRev < startRev 중 가장
-            // 최근 것)의 콘텐츠를 첫 신규 엔트리의 베이스로 삼는다.
             // Raw (as-stored) content throughout, not getRevisionContent(): a filelog revision
             // can be censored (Revlog.REVIDX_ISCENSORED), and bundling must transfer its
             // tombstone bytes as-is rather than throwing HgCensoredContentException -- real hg's
             // own changegroup packer likewise always uses rawdata()/`_chunk()`, never the decoded
-            // text.
+            // text. The group starts from the parent of its first file revision.
             byte[] prevFlContent = new byte[0];
-            // cg2 이상의 명시적 deltabase(changelog/manifest와 동일한 이유). 첫 엔트리는
-            // all-zero(널 리비전) 베이스.
             byte[] deltaBaseFlNode = new byte[20];
-            for (int i = fl.getRevisionCount() - 1; i >= 0; i--) {
-                if (fl.getIndexRecord(i).getLinkRev() < startRev) {
-                    prevFlContent = fl.getRawRevisionContent(i);
-                    deltaBaseFlNode = fl.getIndexRecord(i).getNodeId();
-                    break;
-                }
-            }
+            boolean firstFileRev = true;
             for (int i = 0; i < fl.getRevisionCount(); i++) {
                 Revlog.IndexRecord flRec = fl.getIndexRecord(i);
-                if (flRec.getLinkRev() >= startRev) {
-                    ChangegroupParser.ChangeGroupEntry flEntry = new ChangegroupParser.ChangeGroupEntry();
-                    flEntry.node = flRec.getNodeId();
-                    flEntry.p1 = (flRec.getParent1() != -1) ? fl.getIndexRecord(flRec.getParent1()).getNodeId() : new byte[20];
-                    flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
-                    flEntry.cs = changelog.getIndexRecord(flRec.getLinkRev()).getNodeId();
-                    flEntry.deltabase = deltaBaseFlNode;
-                    flEntry.flags = flRec.getFlags();
-
-                    byte[] content = fl.getRawRevisionContent(i);
-                    flEntry.delta = Revlog.createDelta(prevFlContent, content);
-                    flEntries.add(flEntry);
-                    prevFlContent = content;
-                    deltaBaseFlNode = flRec.getNodeId();
+                int linkRev = flRec.getLinkRev();
+                if (linkRev < 0 || linkRev >= count || !outgoing[linkRev]) {
+                    continue;
                 }
+                if (firstFileRev) {
+                    firstFileRev = false;
+                    if (flRec.getParent1() != -1) {
+                        prevFlContent = fl.getRawRevisionContent(flRec.getParent1());
+                        deltaBaseFlNode = fl.getIndexRecord(flRec.getParent1()).getNodeId();
+                    }
+                }
+                ChangegroupParser.ChangeGroupEntry flEntry = new ChangegroupParser.ChangeGroupEntry();
+                flEntry.node = flRec.getNodeId();
+                flEntry.p1 = (flRec.getParent1() != -1) ? fl.getIndexRecord(flRec.getParent1()).getNodeId() : new byte[20];
+                flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
+                flEntry.cs = changelog.getIndexRecord(linkRev).getNodeId();
+                flEntry.deltabase = deltaBaseFlNode;
+                flEntry.flags = flRec.getFlags();
+
+                byte[] content = fl.getRawRevisionContent(i);
+                flEntry.delta = Revlog.createDelta(prevFlContent, content);
+                flEntries.add(flEntry);
+                prevFlContent = content;
+                deltaBaseFlNode = flRec.getNodeId();
             }
 
             if (!flEntries.isEmpty()) {
@@ -475,6 +453,43 @@ public class HgLocalClient implements HgRemoteConnection {
             dos.write(cgBytes);
         }
         return baos.toByteArray();
+    }
+
+    /** Changelog revisions of the given nodes. Unknown nodes are skipped when {@code mustExist} is false (the
+     * client's `common` list legitimately names nodes this server never had), else they are an error. */
+    private static List<Integer> nodesToRevs(Revlog changelog, List<String> nodes, boolean mustExist) throws IOException {
+        List<Integer> revs = new ArrayList<>();
+        if (nodes == null) {
+            return revs;
+        }
+        for (String hex : nodes) {
+            if (hex == null || hex.isEmpty() || hex.chars().allMatch(ch -> ch == '0')) {
+                continue; // the null node: "nothing" for common, nothing to ask for in heads
+            }
+            int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
+            if (rev != -1) {
+                revs.add(rev);
+            } else if (mustExist) {
+                throw new io.github.search5.hg4j.errors.HgRevisionNotFoundException(hex);
+            }
+        }
+        return revs;
+    }
+
+    /** {@code marked[r]} is true for every given revision and all of its ancestors. */
+    private static boolean[] ancestorsInclusive(Revlog changelog, int count, List<Integer> start) {
+        boolean[] marked = new boolean[count];
+        for (int r : start) {
+            marked[r] = true;
+        }
+        for (int i = count - 1; i >= 0; i--) {
+            if (marked[i]) {
+                Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+                if (rec.getParent1() >= 0) marked[rec.getParent1()] = true;
+                if (rec.getParent2() >= 0) marked[rec.getParent2()] = true;
+            }
+        }
+        return marked;
     }
 
     @Override

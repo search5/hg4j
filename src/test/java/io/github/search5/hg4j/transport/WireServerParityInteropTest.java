@@ -232,8 +232,20 @@ public class WireServerParityInteropTest {
         return "ssh://localhost/" + repo.toString().substring(1);
     }
 
-    /** {@code hg clone [options]} from the given server; returns the clone's "rev:phase:bookmarks:tags" listing or the error. */
+    /**
+     * {@code hg clone [options]} from the given server; returns the clone's "rev:bookmarks:tags" listing (which
+     * revisions arrived) or the error. Phases are compared separately ({@link #clonePhases}).
+     */
     private String cloneState(boolean real, String name, String... options) throws Exception {
+        return cloneListing(real, name, "{rev}:{bookmarks}:{tags} ", options);
+    }
+
+    /** Like {@link #cloneState} but lists "rev:phase". */
+    private String clonePhases(boolean real, String name, String... options) throws Exception {
+        return cloneListing(real, name, "{rev}:{phase} ", options);
+    }
+
+    private String cloneListing(boolean real, String name, String template, String... options) throws Exception {
         Path dest = tmp.resolve("clone-" + name + (real ? "-real" : "-hg4j"));
         List<String> args = new ArrayList<>(List.of("clone", "--ssh", ssh(real).toString()));
         args.addAll(List.of(options));
@@ -243,7 +255,7 @@ public class WireServerParityInteropTest {
         if (!Files.isDirectory(dest.resolve(".hg"))) {
             return "NO CLONE: " + out.lines().filter(l -> l.startsWith("abort")).findFirst().orElse(out);
         }
-        return client(real, dest, "log", "-T", "{rev}:{phase}:{bookmarks}:{tags} ");
+        return client(real, dest, "log", "-T", template);
     }
 
     @Test
@@ -258,7 +270,8 @@ public class WireServerParityInteropTest {
     @Disabled(GAPS + "B3 a clone from hg4j marks every changeset draft; a publishing server makes them public")
     @DisplayName("hg4j 서버에서 clone 한 변경셋이 원본 서버에서처럼 public 이다")
     void cloneIsPublic() throws Exception {
-        assertEquals(cloneState(true, "phase"), cloneState(false, "phase"));
+        assertEquals(clonePhases(true, "phase"), clonePhases(false, "phase"));
+        assertEquals(clonePhases(true, "phase-r", "-r", "1"), clonePhases(false, "phase-r", "-r", "1"));
     }
 
     @Test
@@ -271,10 +284,29 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B8 getbundle ignores 'heads', so clone -r <rev> transfers the whole history")
     @DisplayName("clone -r <리비전> 이 요청한 범위의 변경셋만 받는다")
     void cloneRevisionTransfersOnlyThatHistory() throws Exception {
         assertEquals(cloneState(true, "r1", "-r", "1"), cloneState(false, "r1", "-r", "1"));
+    }
+
+    @Test
+    @DisplayName("가지가 갈라진 이력에서 clone -r 후 pull -r, pull 을 해도 매번 원본 서버와 같은 변경셋만 받는다 (common/heads 집합)")
+    void incrementalPullsOnBranchedHistory() throws Exception {
+        List<String> steps = new ArrayList<>();
+        for (boolean real : new boolean[]{true, false}) {
+            Path dest = tmp.resolve("pulls-" + real);
+            String ssh = ssh(real).toString();
+            StringBuilder seen = new StringBuilder();
+            client(real, tmp, "clone", "--ssh", ssh, "-r", "2", remoteUrl(), dest.toString());
+            seen.append("after clone -r 2: ").append(client(real, dest, "log", "-T", "{rev}:{branch} ")).append('\n');
+            client(real, dest, "pull", "--ssh", ssh, "-r", "4", remoteUrl()); // the head on branch 'feature'
+            seen.append("after pull -r 4: ").append(client(real, dest, "log", "-T", "{rev}:{branch} ")).append('\n');
+            client(real, dest, "pull", "--ssh", ssh, remoteUrl());
+            seen.append("after pull: ").append(client(real, dest, "log", "-T", "{rev}:{branch} ")).append('\n');
+            seen.append("verify: ").append(client(real, dest, "verify").lines().filter(l -> l.startsWith("checked") || l.contains("error")).toList());
+            steps.add(seen.toString());
+        }
+        assertEquals(steps.get(0), steps.get(1));
     }
 
     @Test

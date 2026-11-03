@@ -129,8 +129,16 @@ class AuthConfigRealHgInteropTest {
     }
 
     private void bothAgree(boolean expected, String authLines) throws Exception {
+        proxy.refusals.set(0);
         boolean real = realHgPulls("real-" + System.nanoTime(), authLines);
+        int realRefusals = proxy.refusals.getAndSet(0);
         boolean ours = ourPull("ours-" + System.nanoTime(), authLines);
+        int ourRefusals = proxy.refusals.get();
+        if (expected) {
+            // the credentials go out only after a 401: the same number of refused requests as real hg
+            assertEquals(realRefusals, ourRefusals, "refused requests, real hg vs hg4j, with:\n" + authLines);
+            assertTrue(ourRefusals > 0, "the first request carried no credentials");
+        }
         assertEquals(expected, real, "real hg with:\n" + authLines);
         assertEquals(expected, ours, "hg4j with:\n" + authLines);
     }

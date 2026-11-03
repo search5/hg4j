@@ -87,19 +87,47 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     /**
-     * Takes the password from the {@code [auth]} section when the address did not carry one (Mercurial's
-     * {@code passwordmgr.find_user_password}: credentials of the address first, then {@code [auth]}). hg4j sends them with the
-     * first request instead of after a 401 challenge.
+     * Remembers the configuration whose {@code [auth]} section supplies the credentials of an address that carries none
+     * (Mercurial's {@code passwordmgr.find_user_password}: credentials of the address first, then {@code [auth]}). Like
+     * Mercurial's Basic authentication handler they are used only after the server answered 401 with a Basic challenge: the
+     * request is then repeated with them, and later requests send them at once.
      */
     public void applyAuthConfig(io.github.search5.hg4j.lib.HgRcConfig config) {
-        if (password != null) {
-            return;
+        this.authConfig = config;
+    }
+
+    private io.github.search5.hg4j.lib.HgRcConfig authConfig;
+    /** True once credentials came from {@code [auth]}: they are sent only after a challenge has been answered. */
+    private boolean credentialsFromAuthConfig;
+    private boolean authChallengeAnswered;
+
+    /** Whether the Authorization header goes out with a request now. */
+    private boolean sendsAuthorization() {
+        return username != null && password != null && (!credentialsFromAuthConfig || authChallengeAnswered);
+    }
+
+    /**
+     * After a 401: finds credentials in {@code [auth]} when the address gave none and says whether the request is worth repeating
+     * (the server asked for Basic authentication and a request without the header was refused).
+     */
+    private boolean answerBasicChallenge(HttpURLConnection conn) {
+        String challenge = conn.getHeaderField("WWW-Authenticate");
+        if (challenge == null || !challenge.toLowerCase(java.util.Locale.ROOT).startsWith("basic") || sendsAuthorization()) {
+            return false;
         }
-        HgAuthConfig.Match match = HgAuthConfig.find(config, baseUrl, username);
-        if (match != null && match.password() != null && match.username() != null) {
-            this.username = match.username();
-            this.password = match.password();
+        if (password == null && authConfig != null) {
+            HgAuthConfig.Match match = HgAuthConfig.find(authConfig, baseUrl, username);
+            if (match != null && match.password() != null && match.username() != null) {
+                this.username = match.username();
+                this.password = match.password();
+                this.credentialsFromAuthConfig = true;
+            }
         }
+        if (username == null || password == null) {
+            return false;
+        }
+        authChallengeAnswered = true;
+        return true;
     }
 
     /**
@@ -544,7 +572,11 @@ public class HgRemoteClient implements HgRemoteConnection {
             throw new HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
+        HttpURLConnection conn;
+        int status;
+        int attempt = 0;
+        while (true) {
+        conn = (HttpURLConnection) url.openConnection(proxy);
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
@@ -554,13 +586,19 @@ public class HgRemoteClient implements HgRemoteConnection {
             conn.setRequestProperty(header.getKey(), header.getValue());
         }
 
-        if (username != null && password != null) {
+        if (sendsAuthorization()) {
             String credentials = username + ":" + password;
             String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
         }
 
-        int status = conn.getResponseCode();
+        status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED && attempt++ == 0 && answerBasicChallenge(conn)) {
+            conn.disconnect();
+            continue;
+        }
+        break;
+        }
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
             throw new HgAuthException(fullUrl, username != null ? username : "anonymous");
         }
@@ -734,7 +772,11 @@ public class HgRemoteClient implements HgRemoteConnection {
             throw new HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
+        HttpURLConnection conn;
+        int status;
+        int attempt = 0;
+        while (true) {
+        conn = (HttpURLConnection) url.openConnection(proxy);
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
@@ -746,7 +788,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             conn.setRequestProperty(header.getKey(), header.getValue());
         }
 
-        if (username != null && password != null) {
+        if (sendsAuthorization()) {
             String credentials = username + ":" + password;
             String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
@@ -759,7 +801,13 @@ public class HgRemoteClient implements HgRemoteConnection {
             os.flush();
         }
 
-        int status = conn.getResponseCode();
+        status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED && attempt++ == 0 && answerBasicChallenge(conn)) {
+            conn.disconnect();
+            continue;
+        }
+        break;
+        }
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
             throw new HgAuthException(fullUrl, username != null ? username : "anonymous");
         }
@@ -889,7 +937,11 @@ public class HgRemoteClient implements HgRemoteConnection {
             throw new HgTransportException(fullUrl, "Malformed URL: " + fullUrl, e);
         }
 
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection(proxy);
+        HttpURLConnection conn;
+        int status;
+        int attempt = 0;
+        while (true) {
+        conn = (HttpURLConnection) url.openConnection(proxy);
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
@@ -899,7 +951,7 @@ public class HgRemoteClient implements HgRemoteConnection {
         conn.setRequestProperty("Content-Type", "application/mercurial-0.1");
         conn.setRequestProperty("Content-Length", String.valueOf(bundleBytes.length));
 
-        if (username != null && password != null) {
+        if (sendsAuthorization()) {
             String credentials = username + ":" + password;
             String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
@@ -910,7 +962,13 @@ public class HgRemoteClient implements HgRemoteConnection {
             os.flush();
         }
 
-        int status = conn.getResponseCode();
+        status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED && attempt++ == 0 && answerBasicChallenge(conn)) {
+            conn.disconnect();
+            continue;
+        }
+        break;
+        }
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
             throw new HgAuthException(fullUrl, username != null ? username : "anonymous");
         }

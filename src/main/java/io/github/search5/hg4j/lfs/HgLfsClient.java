@@ -43,7 +43,7 @@ final class HgLfsClient {
     private final HgLfsManager local;
     private final HgRcConfig config;
     private final String baseUrl;
-    private final String basicAuthorization;
+    private volatile String basicAuthorization;
     private final HttpClient http = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
 
     HgLfsClient(HgLfsManager local, HgRcConfig config, String url) {
@@ -59,22 +59,36 @@ final class HgLfsClient {
             bareUrl = uri.toString();
         }
         this.baseUrl = bareUrl;
-        String user = userInfo == null ? null : (userInfo.contains(":") ? userInfo.substring(0, userInfo.indexOf(':')) : userInfo);
-        boolean hasPassword = userInfo != null && userInfo.contains(":");
-        if (userInfo != null && hasPassword) {
-            this.basicAuthorization = "Basic " + Base64.getEncoder().encodeToString(userInfo.getBytes(StandardCharsets.UTF_8));
-        } else {
-            // credentials of the address first, then the [auth] section
-            io.github.search5.hg4j.transport.HgAuthConfig.Match match =
-                    io.github.search5.hg4j.transport.HgAuthConfig.find(config, bareUrl, user);
-            if (match != null && match.username() != null && match.password() != null) {
-                this.basicAuthorization = "Basic " + Base64.getEncoder()
-                        .encodeToString((match.username() + ":" + match.password()).getBytes(StandardCharsets.UTF_8));
-            } else {
-                this.basicAuthorization = userInfo == null ? null
-                        : "Basic " + Base64.getEncoder().encodeToString(userInfo.getBytes(StandardCharsets.UTF_8));
+        this.user = userInfo == null ? null : (userInfo.contains(":") ? userInfo.substring(0, userInfo.indexOf(':')) : userInfo);
+        // credentials of the address are sent at once; the ones of [auth] only after the server asked for them (see send())
+        this.basicAuthorization = userInfo != null && userInfo.contains(":")
+                ? "Basic " + Base64.getEncoder().encodeToString(userInfo.getBytes(StandardCharsets.UTF_8)) : null;
+    }
+
+    private final String user;
+
+    /**
+     * Sends a request; a 401 that asks for Basic authentication, when the address gave no credentials, is answered once with the
+     * ones the {@code [auth]} section holds for the address (Mercurial's Basic authentication handler), and every later request
+     * carries them from the start.
+     */
+    private <T> HttpResponse<T> send(HttpRequest.Builder request, HttpResponse.BodyHandler<T> handler)
+            throws IOException, InterruptedException {
+        HttpResponse<T> response = http.send(request.build(), handler);
+        if (response.statusCode() == 401 && basicAuthorization == null) {
+            String challenge = response.headers().firstValue("WWW-Authenticate").orElse("");
+            if (challenge.toLowerCase(java.util.Locale.ROOT).startsWith("basic")) {
+                io.github.search5.hg4j.transport.HgAuthConfig.Match match =
+                        io.github.search5.hg4j.transport.HgAuthConfig.find(config, baseUrl, user);
+                if (match != null && match.username() != null && match.password() != null) {
+                    basicAuthorization = "Basic " + Base64.getEncoder().encodeToString(
+                            (match.username() + ":" + match.password()).getBytes(StandardCharsets.UTF_8));
+                    request.header("Authorization", basicAuthorization);
+                    response = http.send(request.build(), handler);
+                }
             }
         }
+        return response;
     }
 
     // ---------------------------------------------------------------- public operations
@@ -126,7 +140,7 @@ final class HgLfsClient {
                 .POST(HttpRequest.BodyPublishers.ofString(requestData, StandardCharsets.UTF_8));
         HttpResponse<String> response;
         try {
-            response = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
+            response = send(request, HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
             throw error("LFS error: " + reason(e), 0, "the \"lfs.url\" config may be used to override " + baseUrl, e);
         }
@@ -338,7 +352,7 @@ final class HgLfsClient {
 
         HttpResponse<byte[]> response;
         try {
-            response = http.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
+            response = send(request, HttpResponse.BodyHandlers.ofByteArray());
         } catch (IOException e) {
             throw error("LFS error: " + reason(e), 0, "attempted connection to " + href, e);
         }

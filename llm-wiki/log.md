@@ -671,3 +671,6 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 `MiniFileset.compile(text, lfsPaths)`에 `lfs()` 술어를 추가하고 `FilesCommand#setFileset`(`setPattern("set:...")` 포함)이 매니페스트 시점의 LFS 파일, 리비전 시점 내용 크기(`size()`)로 평가한다. 작업 사본에서 `lfs()`는 원본처럼 비어 있다(실측). `lfs_files` 템플릿은 템플릿 엔진이 없어 이식하지 않았다.
 테스트: `LfsFilesRealHgInteropTest`에 실제 `hg files set:EXPR`와 8가지 식 x 리비전 4개와 작업 사본을 비교하는 1개 추가. 검증: 일반 test 2354개 통과, FilesCommand·MiniFileset 사용 interop 3개 클래스 통과.
 **의도적 차이 포팅 결과**: 6개 항목 중 5개 이식(1 SSH 번들2 응답, 2 `[auth]`, 3 서버 권한, 5 진행률, 6 `lfs()`), 4번 사유 문구는 이식 불가, `lfs_files` 템플릿은 엔진 부재로 제외. 정리는 [[lfs]] 모듈 문서.
+
+## [2026-11-04] `[auth]`를 원본과 같은 전송 시점으로
+`[auth]`에서 찾은 자격 증명은 서버가 401과 Basic 챌린지로 요청했을 때에만 요청을 한 번 되풀이하며 보내고(`HgRemoteClient`, `HgLfsClient`), 이후 요청은 처음부터 보낸다(Mercurial의 Basic 인증 처리기). 주소(`user:pass@`)와 `setCredentials`의 자격 증명은 종전대로 처음부터 보낸다(원본은 이것도 챌린지 뒤지만 기존 호출자 보존). `AuthConfigRealHgInteropTest`가 성공 시나리오마다 서버가 거절한 요청 수를 실제 hg와 비교한다(같음). 검증: 일반 test 2354개, 인증 interop 3개 클래스 통과.

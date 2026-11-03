@@ -28,7 +28,7 @@ import io.github.search5.hg4j.errors.HgCorruptDataException;
  * {@code "0"} only when the real content is NOT binary, i.e. contains no NUL byte -- absence of
  * the key is real hg's implicit "assume binary" default for LFS content).
  */
-public final class HgLfsPointer {
+public final class HgLfsPointer implements Comparable<HgLfsPointer> {
     private final String version;
     private final String oid;
     private final long size;
@@ -91,6 +91,45 @@ public final class HgLfsPointer {
             sb.append(entry.getKey()).append(' ').append(entry.getValue()).append('\n');
         }
         return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Writes {@link #serialize()} to {@code out} (JGit's {@code LfsPointer#encode}). */
+    public void encode(java.io.OutputStream out) throws IOException {
+        out.write(serialize());
+    }
+
+    /** Reads {@code in} to its end and parses it (JGit's {@code LfsPointer#parseLfsPointer}). */
+    public static HgLfsPointer parse(java.io.InputStream in) throws IOException {
+        return parse(in.readAllBytes());
+    }
+
+    /** Pointers are ordered by object id, then size (JGit's {@code LfsPointer#compareTo}). */
+    @Override
+    public int compareTo(HgLfsPointer other) {
+        int byOid = oid.compareTo(other.oid);
+        return byOid != 0 ? byOid : Long.compare(size, other.size);
+    }
+
+    /** Equal when version, object id, size and every extra field are equal. */
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof HgLfsPointer other)) {
+            return false;
+        }
+        return size == other.size && version.equals(other.version) && oid.equals(other.oid) && extra.equals(other.extra);
+    }
+
+    @Override
+    public int hashCode() {
+        return java.util.Objects.hash(version, oid, size, extra);
+    }
+
+    @Override
+    public String toString() {
+        return "HgLfsPointer[oid=" + oid + ", size=" + size + (extra.isEmpty() ? "" : ", extra=" + extra) + "]";
     }
 
     /** Lowercase hex SHA-256 of {@code data} -- the LFS {@code oid} (git-lfs only supports sha256). */

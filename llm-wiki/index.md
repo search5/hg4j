@@ -23,6 +23,10 @@ status: current
 > **추가 계획서 (2026-11-03)**: [implementation-plan-gpg-ssh-wire.md](implementation-plan-gpg-ssh-wire.md)
 > — SSH를 Apache MINA SSHD로 교체, GPG를 `.hgsigs` 호환으로 재구현, 서버 와이어 명령 누락 점검(미착수).
 >
+> **LFS 계획서 (2026-11-03)**: [implementation-plan-lfs.md](implementation-plan-lfs.md)
+> — JGit의 LFS 인터페이스(`LfsFactory`, `LfsPointer`, `LfsPrePushHook`, `lfs.server`)에 준해 읽기 경로, `lfs.track`/`.hglfs`,
+> push 업로드, LFS 서버, 전송 견고성을 채우는 7단계 계획(미착수).
+>
 > **실제로 작업을 시작할 때는 [implementation-plan.md](implementation-plan.md)부터
 > 보세요** — 위 두 요건을 하나로 통합해 Phase별 실행 순서/체크리스트/검증 명령까지
 > 구체화한 마스터 계획서입니다 (Gemini 등 외부 에이전트에게 그대로 넘길 수 있도록 작성).

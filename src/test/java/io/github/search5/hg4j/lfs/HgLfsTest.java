@@ -72,7 +72,7 @@ public class HgLfsTest {
 
         // Null content
         assertThrows(HgCorruptDataException.class, () -> {
-            HgLfsPointer.parse(null);
+            HgLfsPointer.parse((byte[]) null);
         });
     }
 

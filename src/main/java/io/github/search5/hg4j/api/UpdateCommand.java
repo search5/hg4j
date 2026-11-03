@@ -7,7 +7,7 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.util.SafeFileIO;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.errors.HgLockException;
-import io.github.search5.hg4j.lfs.HgLfsManager;
+import io.github.search5.hg4j.lfs.HgLfsFactory;
 
 import java.io.File;
 import java.io.IOException;
@@ -196,10 +196,10 @@ public class UpdateCommand {
                     // LFS pipeline (backlog 31, extended by backlog 42): a REVIDX_EXTSTORED
                     // revision's filelog content is an LFS pointer, not the real bytes -- resolve
                     // it back to the real content before it reaches disk, mirroring real hg's
-                    // hgext/lfs `readfromstore` wrapper. Delegated to HgLfsManager#resolveContent
+                    // hgext/lfs `readfromstore` wrapper. Delegated to HgLfsFactory#applySmudgeFilter
                     // so this checkout path and AnnotateCommand's content-reading path share one
                     // implementation that consistently honors [lfs] url / usercache config.
-                    fileContent = HgLfsManager.resolveContent(repository, fileContent, filelog.isExtStored(fileRev), path);
+                    fileContent = HgLfsFactory.getInstance().applySmudgeFilter(repository, path, fileContent, filelog.isExtStored(fileRev));
 
                     boolean symlink = tw.isSymlink(1);
 

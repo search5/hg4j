@@ -1,0 +1,54 @@
+package io.github.search5.hg4j.lfs;
+
+import io.github.search5.hg4j.lib.HgRepository;
+
+import java.io.IOException;
+import java.util.Map;
+
+/**
+ * The single seam between hg4j's commands and LFS (JGit's {@code LfsFactory}). Commands never test for LFS themselves: they ask
+ * the factory to turn content into a stored form on the way in ({@link #applyCleanFilter}) and back into content on the way out
+ * ({@link #applySmudgeFilter}). The default is {@link BuiltinHgLfs}.
+ */
+public abstract class HgLfsFactory {
+
+    private static volatile HgLfsFactory instance = new BuiltinHgLfs();
+
+    public static HgLfsFactory getInstance() {
+        return instance;
+    }
+
+    public static void setInstance(HgLfsFactory factory) {
+        if (factory == null) {
+            throw new IllegalArgumentException("factory cannot be null");
+        }
+        instance = factory;
+    }
+
+    /** Whether this implementation can work at all (JGit's {@code isAvailable}). */
+    public abstract boolean isAvailable();
+
+    /**
+     * Result of {@link #applyCleanFilter}: the bytes to put into the filelog, and whether they are an LFS pointer.
+     *
+     * @param stored the bytes the filelog stores (the content itself, or the serialized pointer)
+     * @param pointer the pointer when the content went to the LFS store, otherwise {@code null}
+     */
+    public record Cleaned(byte[] stored, HgLfsPointer pointer) {
+        public boolean isLfs() {
+            return pointer != null;
+        }
+    }
+
+    /**
+     * Decides whether {@code content} of {@code path} is kept in the LFS store, and if so stores it and returns the pointer.
+     *
+     * @param copyMeta rename/copy metadata ({@code copy}, {@code copyrev}) folded into the pointer as {@code x-hg-*}, or null
+     */
+    public abstract Cleaned applyCleanFilter(HgRepository repository, String path, byte[] content,
+                                             Map<String, String> copyMeta) throws IOException;
+
+    /** Turns a filelog's stored bytes back into the content; {@code stored} is returned unchanged unless {@code extStored}. */
+    public abstract byte[] applySmudgeFilter(HgRepository repository, String path, byte[] stored, boolean extStored)
+            throws IOException;
+}

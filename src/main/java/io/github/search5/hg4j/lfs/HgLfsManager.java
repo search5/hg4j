@@ -434,7 +434,8 @@ public final class HgLfsManager {
 
         HttpResponse<String> batchResponse = client.send(batchRequest, HttpResponse.BodyHandlers.ofString());
         if (batchResponse.statusCode() != 200) {
-            throw new IOException("LFS batch API request failed with status: " + batchResponse.statusCode());
+            throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(batchResponse.statusCode(),
+                    "LFS batch API request failed with status: " + batchResponse.statusCode());
         }
 
         String responseBody = batchResponse.body();
@@ -494,7 +495,8 @@ public final class HgLfsManager {
 
         HttpResponse<byte[]> getResponse = client.send(getReqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
         if (getResponse.statusCode() != 200) {
-            throw new IOException("LFS object download failed with status: " + getResponse.statusCode() + " from: " + downloadUrl);
+            throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(getResponse.statusCode(),
+                    "LFS object download failed with status: " + getResponse.statusCode() + " from: " + downloadUrl);
         }
 
         // 3. Cache downloaded object into local store/lfs/objects/

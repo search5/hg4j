@@ -1,6 +1,6 @@
 package io.github.search5.hg4j.api;
 
-import io.github.search5.hg4j.lfs.HgLfsManager;
+import io.github.search5.hg4j.lfs.HgLfsFactory;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -195,13 +195,13 @@ public final class AnnotateCommand {
      * Backlog 42: {@code filelog}'s revision {@code rev} may be LFS-flagged ({@code
      * REVIDX_EXTSTORED}), in which case its raw filelog content is the LFS pointer text, not the
      * real file bytes -- resolve it the same way {@code UpdateCommand}'s checkout path does
-     * (shared via {@link HgLfsManager#resolveContent}) so annotate diffs/attributes the REAL
+     * (shared via {@link HgLfsFactory#applySmudgeFilter}) so annotate diffs/attributes the REAL
      * content instead of the pointer's own text lines. Verified live 2026-09-06: a real hg 7.2
      * {@code hg annotate} on an LFS-tracked, renamed file correctly attributes each real content
      * line to the commit that introduced it (pre- and post-rename) -- hg4j must match.
      */
     private byte[] resolveContent(Revlog filelog, int rev, String path) throws IOException {
-        return HgLfsManager.resolveContent(repository, filelog.getRevisionContent(rev), filelog.isExtStored(rev), path);
+        return HgLfsFactory.getInstance().applySmudgeFilter(repository, path, filelog.getRevisionContent(rev), filelog.isExtStored(rev));
     }
 
     private TraceResult traceLines(String path, int targetRev, Set<String> visitingPaths) throws IOException {

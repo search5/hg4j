@@ -613,3 +613,10 @@ HTTP는 녹화 프록시로 실제 클라이언트 요청을 재생해 응답을
 ## [2026-11-03] 남은 비교 처리와 원본 일치
 changegroup delta를 원본(`imara-diff` Myers)과 바이트까지 같게(`LineDelta`), cg2+ delta base 선택, 구식 changegroup 의미(`roots::heads`), HTTP 압축 바이트, stream2 `cache/`, `pretxnchangegroup`과 롤백 기반
 원자성, 클라이언트 pull의 phase 규칙, `HgSshClient#close()`, 테스트 클래스 이름의 Docker 제거. [[wire-server-command-gaps]]
+
+## [2026-11-03] LFS 구현 계획서 작성
+JGit의 LFS 모듈(`org.eclipse.jgit.lfs*`)과 hg 위키(`ext-lfs.md`), 원본 `hgext/lfs`를 근거로 [[implementation-plan-lfs]] 작성. 점검에서 확인한 공백: 읽기 명령이 포인터 텍스트를 반환(실측 143바이트),
+push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. 코드 변경 없음.
+
+## [2026-11-03] LFS Phase 1: 이음새와 값 객체
+`HgLfsFactory`/`BuiltinHgLfs`(JGit `LfsFactory`/`BuiltinLFS` 대응), `HgLfsException` 계열(401/403, 404, 손상), `HgLfsPointer`의 `encode`/`parse(InputStream)`/`equals`/`compareTo` 추가. `CommitCommand`, `UpdateCommand`, `AnnotateCommand`가 팩터리를 거치도록 이전(동작 변화 없음). 검증: 일반 test 2346개 실패 0, `LfsRealHgInteropTest` 10개 통과. [[implementation-plan-lfs]]

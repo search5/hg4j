@@ -42,12 +42,18 @@ JGit이 정확히 `org.eclipse.jgit.lfs` 패키지를 갖고 있어 이름까지
 ## JGit 인터페이스와의 대응
 계획서([[implementation-plan-lfs]])의 2절 표를 구현했다. 대응이 없는 것: `InstallBuiltinLfsCommand`(hg는 `[extensions] lfs`와 requirement로 켠다), S3 저장소.
 
-## 범위 밖 (의도적)
-- `lfs()` 파일셋과 `lfs_files` 템플릿 구문 자체: hg4j에 파일셋·템플릿 엔진이 없다(값은 `HgLfsFiles`로 제공).
+## 이식한 의도적 차이 (2026-11-04)
+- SSH push: 번들2 응답(`reply:changegroup`, `output`, `error:*`)을 해석한다(`HgSshClient.push`).
+- `[auth]` 설정: `HgAuthConfig`가 와이어 HTTP와 LFS blob 전송에 자격 증명을 준다. 원본은 401 뒤에 보내고 hg4j는 첫 요청부터 보낸다. `cert`/`key`는 쓰지 않는다.
+- 서버 권한 구분: `HgWebPermissions`와 `HgHttpWireServer#setEnforceWebPermissions(true)`(기본 꺼짐, 기존 사용처 보존). 와이어 v2 경로는 적용 전이다.
+- 진행률과 콘솔 줄: `ProgressMonitor#message`, `HgLfsProgress.bind`, `HgByteCount`. `PushCommand`/`UpdateCommand`/`CloneCommand`가 사용한다.
+- `lfs()` 파일셋: `FilesCommand#setFileset`(`set:` 패턴도 같다). 작업 사본에서는 원본처럼 비어 있다.
+
+## 범위 밖 / 이식 불가
+- `lfs_files` 템플릿 구문: hg4j에 템플릿 엔진(`log --template`)이 없다. 값은 `HgLfsFiles#changedBy`로 제공한다.
+- HTTP 상태 줄의 사유 문구: 서블릿 6 API에 설정 수단이 없고 컨테이너가 정한다(이식 불가).
+- 터미널 진행 막대와 `-v`의 `lfs: need to transfer ...` 줄.
 - `convert` 싱크, `rhg`(Rust 클라이언트, 원본도 lfs 저장소를 거절), git-lfs `lock` API.
-- 진행률 표시줄과 `lfs: uploading ...` 콘솔 출력(라이브러리라 UI가 없다), `[auth]` 설정(URL의 자격 증명만).
-- HTTP 상태 줄의 사유 문구(`java.net.http`가 노출하지 않음, `HttpServlet`으로 지정 불가).
-- hg4j 서버에는 `web.allow-push` 같은 권한 구분이 없어 LFS 엔드포인트도 구분하지 않는다.
 
 ## 상위 클래스 코드 위치
 `src/main/java/io/github/search5/hg4j/lfs/`

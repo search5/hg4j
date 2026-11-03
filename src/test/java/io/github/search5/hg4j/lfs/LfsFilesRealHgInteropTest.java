@@ -141,4 +141,47 @@ class LfsFilesRealHgInteropTest {
         Files.writeString(new File(lacking, ".hg/hgrc").toPath(), "[verify]\nskipflags = 8192\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
         assertEquals(List.of(), new VerifyCommand(new HgRepository(lacking)).call(), "verify.skipflags with EXTSTORED skips too");
     }
+
+    /**
+     * 의도적 차이 포팅 6번: {@code hg files "set:EXPR"} is answered by {@code FilesCommand#setFileset}, including the {@code lfs()}
+     * predicate, for every revision and for the working copy.
+     */
+    @Test
+    void filesCommandEvaluatesFilesetsWithLfsLikeRealHg() throws Exception {
+        write("wd.bin", 700, 9);
+        hg(repo, "add", "wd.bin"); // an added, uncommitted file that is not in LFS yet
+        HgRepository repository = new HgRepository(repo);
+        String[] expressions = {
+                "lfs()", "not lfs()", "lfs() and **.bin", "lfs() or **.txt", "(**.bin or **.txt) - lfs()", "lfs() and not lfs()", "lfs() and size(\">550\")",
+                "size(\"<100\")", "(lfs() or **.txt) and not path:other.bin",
+        };
+        for (String expression : expressions) {
+            for (String rev : new String[]{"0", "1", "2", "3", null}) {
+                List<String> realArgs = new java.util.ArrayList<>(List.of("files"));
+                if (rev != null) {
+                    realArgs.add("-r");
+                    realArgs.add(rev);
+                }
+                realArgs.add("set:" + expression);
+                List<String> expected;
+                try {
+                    expected = hg(repo, realArgs.toArray(String[]::new)).lines().map(String::strip)
+                            .filter(line -> !line.isEmpty()).sorted().toList();
+                } catch (AssertionError noMatch) {
+                    // `hg files` exits with 1 when nothing matches
+                    assertTrue(noMatch.getMessage().contains("exit code 1"), noMatch.getMessage());
+                    expected = List.of();
+                }
+                io.github.search5.hg4j.api.FilesCommand command = new io.github.search5.hg4j.api.FilesCommand(repository)
+                        .setFileset(expression);
+                if (rev != null) {
+                    command.setRevision(rev);
+                }
+                assertEquals(expected, command.call(), "set:" + expression + " at " + (rev == null ? "the working copy" : "revision " + rev));
+            }
+        }
+        // the same through setPattern("set:...")
+        assertEquals(List.of("other.bin"), new io.github.search5.hg4j.api.FilesCommand(repository).setRevision("3")
+                .setPattern("set:lfs()").call());
+    }
 }

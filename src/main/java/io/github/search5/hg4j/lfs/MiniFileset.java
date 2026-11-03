@@ -27,10 +27,18 @@ public final class MiniFileset {
     }
 
     public static Matcher compile(String text) throws HgValidationException {
+        return compile(text, null);
+    }
+
+    /**
+     * Same, with the {@code lfs()} predicate of real hg's lfs extension ("files stored in LFS") answered by {@code lfsPaths};
+     * without it {@code lfs()} is an unknown identifier, as it is in {@code lfs.track}.
+     */
+    public static Matcher compile(String text, java.util.function.Predicate<String> lfsPaths) throws HgValidationException {
         Parser parser = new Parser(tokenize(text), text);
         Node tree = parser.parseExpression(0);
         parser.expectEnd();
-        return compileNode(tree);
+        return compileNode(tree, lfsPaths);
     }
 
     /** Parses only (so a syntax error is reported early); used to validate {@code lfs.track} before it is combined with a size. */
@@ -296,9 +304,9 @@ public final class MiniFileset {
 
     // ---------------------------------------------------------------- compile (minifileset._compile)
 
-    private static Matcher compileNode(Node node) throws HgValidationException {
+    private static Matcher compileNode(Node node, java.util.function.Predicate<String> lfsPaths) throws HgValidationException {
         if (node instanceof Group group) {
-            return compileNode(group.inner());
+            return compileNode(group.inner(), lfsPaths);
         }
         if (node instanceof Leaf || (node instanceof Binary b && b.op().equals("kindpat"))) {
             return compilePattern(patternName(node));
@@ -306,18 +314,18 @@ public final class MiniFileset {
         if (node instanceof Binary binary) {
             switch (binary.op()) {
                 case "or" -> {
-                    Matcher left = compileNode(binary.left());
-                    Matcher right = compileNode(binary.right());
+                    Matcher left = compileNode(binary.left(), lfsPaths);
+                    Matcher right = compileNode(binary.right(), lfsPaths);
                     return (p, s) -> left.matches(p, s) || right.matches(p, s);
                 }
                 case "and" -> {
-                    Matcher left = compileNode(binary.left());
-                    Matcher right = compileNode(binary.right());
+                    Matcher left = compileNode(binary.left(), lfsPaths);
+                    Matcher right = compileNode(binary.right(), lfsPaths);
                     return (p, s) -> left.matches(p, s) && right.matches(p, s);
                 }
                 case "minus" -> { // x and not y
-                    Matcher left = compileNode(binary.left());
-                    Matcher right = compileNode(binary.right());
+                    Matcher left = compileNode(binary.left(), lfsPaths);
+                    Matcher right = compileNode(binary.right(), lfsPaths);
                     return (p, s) -> left.matches(p, s) && !right.matches(p, s);
                 }
                 case "list" -> throw new HgValidationException("can't use a list in this context");
@@ -326,7 +334,7 @@ public final class MiniFileset {
         }
         if (node instanceof Unary unary) {
             if (unary.op().equals("not")) {
-                Matcher operand = compileNode(unary.operand());
+                Matcher operand = compileNode(unary.operand(), lfsPaths);
                 return (p, s) -> !operand.matches(p, s);
             }
             throw new HgValidationException("illegal tree: " + unary.op());
@@ -341,6 +349,12 @@ public final class MiniFileset {
             }
             case "none" -> {
                 return (p, s) -> false;
+            }
+            case "lfs" -> {
+                if (lfsPaths == null) {
+                    throw new HgValidationException("unknown identifier: lfs");
+                }
+                return (p, s) -> lfsPaths.test(p);
             }
             case "size" -> {
                 if (!(call.argument() instanceof Leaf arg) || (!arg.kind().equals("string") && !arg.kind().equals("symbol"))) {

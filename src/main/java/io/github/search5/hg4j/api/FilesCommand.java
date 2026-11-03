@@ -68,9 +68,26 @@ public class FilesCommand {
      * matches everything below it).
      */
     public FilesCommand setPattern(String... globPatterns) {
+        if (globPatterns != null && globPatterns.length == 1 && globPatterns[0] != null && globPatterns[0].startsWith("set:")) {
+            this.fileset = globPatterns[0].substring(4);
+            return this;
+        }
         this.treeFilter = HgTreeFilter.fromPathFilter(new SparsePathFilter(globPatterns));
         return this;
     }
+
+    /**
+     * Restricts the listing to the files a fileset expression selects, like {@code hg files "set:EXPR"}. The supported
+     * expression is {@link io.github.search5.hg4j.lfs.MiniFileset}'s (patterns {@code **.ext} and {@code path:},
+     * {@code all()}, {@code none()}, {@code size()}, {@code and}/{@code or}/{@code not}) plus {@code lfs()}, the files stored in LFS.
+     * A pattern given to {@link #setPattern} as {@code set:EXPR} means the same.
+     */
+    public FilesCommand setFileset(String expression) {
+        this.fileset = expression;
+        return this;
+    }
+
+    private String fileset;
 
     public List<String> call() throws IOException {
         List<String> paths;
@@ -91,8 +108,48 @@ public class FilesCommand {
             paths = filtered;
         }
 
+        if (fileset != null) {
+            paths = applyFileset(paths);
+        }
+
         paths.sort(NodeIdUtil.UTF8_STRING_COMPARATOR);
         return paths;
+    }
+
+    private List<String> applyFileset(List<String> paths) throws IOException {
+        String expression = fileset;
+        // the files stored in LFS at the listed revision; the working copy has none (real hg asks the file's revision
+        // history, which a working file does not have), so lfs() is empty there
+        java.util.Set<String> lfsFiles = new java.util.HashSet<>();
+        if (expression.contains("lfs") && revision != null) {
+            Revlog changelog = repository.getRevlog(new File(repository.getStoreDir(), "00changelog.i"),
+                    new File(repository.getStoreDir(), "00changelog.d"));
+            byte[] node = NodeIdUtil.resolveRevision(changelog, revision);
+            int rev = node == null ? -1 : changelog.findRevision(node);
+            if (rev >= 0) {
+                lfsFiles.addAll(io.github.search5.hg4j.lfs.HgLfsFiles.inManifest(repository, rev).keySet());
+            }
+        }
+        io.github.search5.hg4j.lfs.MiniFileset.Matcher matcher =
+                io.github.search5.hg4j.lfs.MiniFileset.compile(expression, lfsFiles::contains);
+        boolean needsSize = expression.contains("size");
+        List<String> kept = new ArrayList<>();
+        for (String path : paths) {
+            long size = -1;
+            if (needsSize) {
+                if (revision == null) {
+                    File onDisk = new File(repository.getDirectory(), path);
+                    size = onDisk.isFile() ? onDisk.length() : 0;
+                } else {
+                    // the size of the content as of that revision (an LFS file counts by its real content, not its pointer)
+                    size = new CatCommand(repository).setFile(path).setRevision(revision).call().length;
+                }
+            }
+            if (matcher.matches(path, size)) {
+                kept.add(path);
+            }
+        }
+        return kept;
     }
 
     private List<String> listWorkingCopyTrackedFiles() throws IOException {

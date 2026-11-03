@@ -666,3 +666,8 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 **4번 HTTP 상태 줄 사유 문구: 이식 불가로 결론.** 서블릿 6.1 API에는 사유 문구를 설정하는 수단이 없고(`setStatus(int, String)` 제거), 컨테이너(Jetty 12 ee11)는 `setStatus(int)`만 처리해 자체 문구를 쓴다. hg4j는 서블릿(`HgHttpWireServer`)만 제공하고 컨테이너는 사용자가 고르므로 라이브러리에서 정할 수 없다. 클라이언트가 읽는 값은 상태 코드와 본문이며 둘은 이미 실제 hg와 같다.
 **5번 진행률·콘솔 출력.** `ProgressMonitor#message`(기본 무동작)를 추가하고 `HgLfsProgress.bind(monitor)`로 현재 스레드의 LFS 전송이 `lfs uploading`/`lfs downloading` 진행(바이트 단위)과 `lfs: uploaded N files (크기)`/`lfs: downloaded ...` 줄을 알리게 했다. 크기 표기는 원본 `util.bytecount` 이식(`HgByteCount`, Python `%.Nf`와 같은 half-even 반올림). `PushCommand`/`UpdateCommand`에 `setProgressMonitor`를 추가했고 `CloneCommand`는 자신의 단계와 섞이지 않도록 메시지 줄만 전달한다. 원본은 `lfs: need to transfer ...`(`-v`)와 터미널 진행 막대를 쓰는데 이식하지 않았다(터미널 표현이라 모니터가 대신한다).
 테스트: `LfsProgressRealHgInteropTest` 2개(실제 `hg serve`로 8가지 크기 조합의 업로드 줄과 다운로드 줄 일치, 진행 바이트 합계 일치). 반올림을 바꾼 변이에서 실패함을 확인. 검증: 일반 test 2354개 통과, LFS 전송·push interop 통과.
+
+## [2026-11-04] 의도적 차이 포팅 6/6: `lfs()` 파일셋 (의도적 차이 포팅 마무리)
+`MiniFileset.compile(text, lfsPaths)`에 `lfs()` 술어를 추가하고 `FilesCommand#setFileset`(`setPattern("set:...")` 포함)이 매니페스트 시점의 LFS 파일, 리비전 시점 내용 크기(`size()`)로 평가한다. 작업 사본에서 `lfs()`는 원본처럼 비어 있다(실측). `lfs_files` 템플릿은 템플릿 엔진이 없어 이식하지 않았다.
+테스트: `LfsFilesRealHgInteropTest`에 실제 `hg files set:EXPR`와 8가지 식 x 리비전 4개와 작업 사본을 비교하는 1개 추가. 검증: 일반 test 2354개 통과, FilesCommand·MiniFileset 사용 interop 3개 클래스 통과.
+**의도적 차이 포팅 결과**: 6개 항목 중 5개 이식(1 SSH 번들2 응답, 2 `[auth]`, 3 서버 권한, 5 진행률, 6 `lfs()`), 4번 사유 문구는 이식 불가, `lfs_files` 템플릿은 엔진 부재로 제외. 정리는 [[lfs]] 모듈 문서.

@@ -6,7 +6,6 @@ import org.bouncycastle.openpgp.PGPPublicKeyRing;
 import org.bouncycastle.openpgp.PGPSignature;
 import org.bouncycastle.openpgp.PGPSignatureList;
 import org.bouncycastle.openpgp.PGPSignatureSubpacketVector;
-import org.bouncycastle.openpgp.PGPUtil;
 import org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory;
 import org.bouncycastle.openpgp.operator.jcajce.JcaPGPContentVerifierBuilderProvider;
 
@@ -40,28 +39,15 @@ public final class HgSigVerifier {
      * @throws HgSigFormatException for an unknown signature version (real hg aborts there too)
      */
     public static HgSigResult verify(HgSigEntry entry, GpgKeyring keyring, Instant now) throws IOException {
-        return verifyDetached(entry.signedText(), entry.getSignature(), keyring, now);
-    }
-
-    /**
-     * Verifies a detached OpenPGP signature over arbitrary data.
-     *
-     * @param signedData the exact bytes that were signed
-     * @param signature  the signature, binary or ASCII-armored
-     */
-    public static HgSigResult verifyDetached(byte[] signedData, byte[] signature, GpgKeyring keyring, Instant now)
-            throws IOException {
-        PGPSignature parsed;
+        byte[] text = entry.signedText();
+        PGPSignature signature;
         try {
-            parsed = parse(signature);
+            signature = parse(entry.getSignature());
         } catch (IOException | PGPException | RuntimeException e) {
             return new HgSigResult(HgSigResult.Status.BAD, 0, "", null,
                     "not a decodable OpenPGP signature: " + e.getMessage());
         }
-        return check(signedData, parsed, keyring, now);
-    }
 
-    private static HgSigResult check(byte[] text, PGPSignature signature, GpgKeyring keyring, Instant now) {
         try {
             long keyId = signature.getKeyID();
             PGPPublicKey signingKey = keyring.findPublicKey(keyId);
@@ -97,9 +83,7 @@ public final class HgSigVerifier {
     }
 
     private static PGPSignature parse(byte[] bytes) throws IOException, PGPException {
-        // getDecoderStream transparently handles both ASCII armor and plain binary packets
-        JcaPGPObjectFactory factory = new JcaPGPObjectFactory(
-                PGPUtil.getDecoderStream(new java.io.ByteArrayInputStream(bytes)));
+        JcaPGPObjectFactory factory = new JcaPGPObjectFactory(bytes);
         Object first = factory.nextObject();
         if (first instanceof PGPSignatureList list && !list.isEmpty()) {
             return list.get(0);

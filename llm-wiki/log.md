@@ -577,13 +577,6 @@
 - 실제 gpg/hg와 양방향 상호운용 확인(gpg 서명을 hg4j가 검증, hg4j 서명을 gpg와 `hg sigcheck`가 인정, 실제 `hg sign` 결과를 hg4j가 읽음).
 - 테스트 중 발견: 결정적 서명 때문에 같은 초에 두 번 서명하면 `.hgsigs` 내용이 같아져 파일로그 head가 하나가 된다(제품 결함 아님, 테스트는 서명 시각을 달리 지정).
 - 한계: `.hgsigs`만 골라 커밋하지 못함(`CommitCommand`에 경로 필터 없음), gpg-agent 비밀키는 읽지 못함. 기존 `gpgsig` extra 방식은 유지하고 javadoc에 비표준 표시.
-
-## [2026-11-03] 커밋 시점 서명(gpgsig)을 사용자 키링으로 지원 (방향 정정)
-- 사용자가 밝힌 목적: 로컬 커밋 때 gpg로 서명하고 원격에서 "서명됨"을 보여 주기. Phase 2의 `.hgsigs`는 일반 Mercurial 호환 전제였으므로 이 목적에는 커밋 시점 서명이 맞는다. 정정 내용은 [[gpg-hgsigs-compatibility]] 상단, 사용 기준은 [[gpg]] 모듈 문서.
-- 추가: `CommitCommand#setGpgSigner(GpgKeyring, keySpec, passphrase)`, `VerifyCommitCommand`/`Hg#verifyCommit()`, `HgSigner#signDetached`/`signDetachedArmored`, `HgSigVerifier#verifyDetached`, `GpgKeyring#primaryFingerprint`.
-- 확인: 실제 `gpg --verify`가 저장된 서명과 `getUnsignedChangelogText()` 바이트를 인정, 실제 `hg verify`/`clone` 뒤에도 노드와 서명 유지(`CommitSigningInteropTest` 12개).
-- 미확인/남은 일: 원격(yona 서버)에서 변경셋의 `extra`의 `gpgsig`를 읽어 표시하는 부분은 서버 코드가 필요하며 이 저장소 범위 밖. yona에는 git 커밋용 검증기만 있는 것으로 확인됨.
-
 ## [2026-11-03] Phase 3: 서버 와이어 명령 점검 (감사 완료, 수정 미착수)
 - 원본 `wireprotov1server.py`의 23개 명령과 hg4j 서버를 대조. 문자열 검색이 아니라 같은 요청을 실제 `hg -R repo serve --stdio`와 hg4j에 보내는 와이어 대조, 그리고 실제 `hg` 클라이언트를 두 서버에 붙이는 동작 대조로 확인. 결과는 [[wire-server-command-gaps]].
 - 발견: 이름이 없는 명령 8개는 대부분 서버가 광고하지 않아 클라이언트가 부르지 않으므로 영향이 없다. 실제 문제는 구현은 있으나 동작이 다른 곳: `clone`한 변경셋이 전부 draft(B3), 이름으로 `clone -r` 불가(B1), `clone -r <rev>`가 전체 이력 수신(B8), `incoming -B` 불가(B2).
@@ -597,3 +590,8 @@
 
 ## [2026-11-03] 개발판 명령과 HTTP/batch/pushkey/changegroup 대조
 `heads_buckets`, `store_shape` 구현(개발판 오라클로 검증), HTTP 서버 대조(400/405 수정), `pushkey` 규칙 정렬, 빈 저장소 `check:heads` 회귀 수정. 상세와 남은 차이는 [[wire-server-command-gaps]].
+
+## [2026-11-03] 커밋 시점 서명(gpgsig) 제거, `hg sign`(.hgsigs) 방식만 유지
+- 사용자 확인: git 방식 서명은 필요 없고, hg 명령으로 커밋한 뒤 서명하는 방식이 목적이다. 커밋 시점 `gpgsig`(eafbf79)는 hg가 해석하지 않는 비표준 방식이라 되돌렸다
+  (`CommitCommand#setGpgSigner`, `VerifyCommitCommand`, `Hg#verifyCommit`, `HgSigner#signDetachedArmored`, `HgSigVerifier#verifyDetached`, `CommitSigningInteropTest`).
+  남은 서명 기능은 [[gpg]]의 `sign`/`sigs`/`sigcheck`(.hgsigs)이며 일반 Mercurial과 호환된다.

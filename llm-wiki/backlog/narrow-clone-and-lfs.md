@@ -269,6 +269,7 @@ getbundle narrow 인자 협상을 구현, 클라이언트+서버 양방향, ✅ 
 
     **정직하게 미구현으로 남김**: `lfs.track`(fileset 표현식 기반 LFS
     추적)은 이번 3개 세부 항목 범위 밖이라 미구현, 문서에 명시.
+    → **2026-11-03 구현됨** ([[implementation-plan-lfs]] Phase 3): `MiniFileset`, `.hglfs`, `HgLfsTracker`.
 
     **검증**: 전체 non-interop `test -x jacocoTestReport` 2286건 GREEN,
     scoped `LfsRealHgInteropTest` 10/10 GREEN.

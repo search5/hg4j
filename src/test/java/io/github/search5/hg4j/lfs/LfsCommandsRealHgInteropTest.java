@@ -5,6 +5,7 @@ import io.github.search5.hg4j.api.BackoutCommand;
 import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.ExportCommand;
 import io.github.search5.hg4j.api.GraftCommand;
+import io.github.search5.hg4j.api.HisteditCommand;
 import io.github.search5.hg4j.api.MergeCommand;
 import io.github.search5.hg4j.api.RebaseCommand;
 import io.github.search5.hg4j.lib.HgRepository;
@@ -44,6 +45,7 @@ class LfsCommandsRealHgInteropTest {
         v1 = "needle first line\n" + "filler line\n".repeat(60);
         v2 = v1 + "changed tail line\n";
         hg("init");
+        trackLargeFiles(dir);
         write("big.txt", v1);
         write("other.txt", "other\n");
         hg("add");
@@ -54,6 +56,11 @@ class LfsCommandsRealHgInteropTest {
         write("other.txt", "other edited\n");
         hg("commit", "-m", "edit small file", "-u", "t");
         assertTrue(hg("debugdata", "big.txt", "1").contains("git-lfs.github.com"), "oracle must have stored a pointer");
+    }
+
+    /** hg4j reads {@code lfs.track} from the repository's hgrc (real hg gets it on the command line too), so write it there. */
+    private static void trackLargeFiles(File repo) throws Exception {
+        Files.writeString(new File(repo, ".hg/hgrc").toPath(), "[extensions]\nlfs =\n[lfs]\ntrack = size(\">100\")\n");
     }
 
     private String hg(String... args) throws Exception {
@@ -118,5 +125,47 @@ class LfsCommandsRealHgInteropTest {
         new RebaseCommand(open()).setSource(node(1)).setTarget(node(2)).call();
         hg("update", "tip");
         assertRealHgAccepts(v2);
+    }
+
+    @Test
+    void histeditRewritesAnLfsFileAsAPointerAgain() throws Exception {
+        // Dropping the commit that introduced v1 gives v2 a different file parent, so histedit has to write a NEW filelog revision
+        // (the same parent and content would just find the existing node).
+        File sub = new File(dir, "hist");
+        assertTrue(sub.mkdirs());
+        String[] cfg = {"--config", "extensions.lfs=", "--config", TRACK};
+        java.util.function.Function<String[], String> hgSub = args -> {
+            try {
+                String[] all = new String[cfg.length + args.length];
+                System.arraycopy(cfg, 0, all, 0, cfg.length);
+                System.arraycopy(args, 0, all, cfg.length, args.length);
+                return HgTestUtils.hg(sub, all);
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        };
+        hgSub.apply(new String[] {"init"});
+        trackLargeFiles(sub);
+        Files.writeString(new File(sub, "small.txt").toPath(), "small\n");
+        hgSub.apply(new String[] {"add"});
+        hgSub.apply(new String[] {"commit", "-m", "r0", "-u", "t"});
+        Files.writeString(new File(sub, "big.txt").toPath(), v1);
+        hgSub.apply(new String[] {"add"});
+        hgSub.apply(new String[] {"commit", "-m", "r1", "-u", "t"});
+        Files.writeString(new File(sub, "big.txt").toPath(), v2);
+        hgSub.apply(new String[] {"commit", "-m", "r2", "-u", "t"});
+        String[] nodes = hgSub.apply(new String[] {"log", "--template", "{node} "}).trim().split(" ");
+
+        new HisteditCommand(new HgRepository(sub))
+                .addRule(HisteditCommand.Action.PICK, nodes[2])
+                .addRule(HisteditCommand.Action.DROP, nodes[1])
+                .addRule(HisteditCommand.Action.PICK, nodes[0])
+                .call();
+
+        assertTrue(hgSub.apply(new String[] {"verify"}).contains("checked"), "real hg verify must accept the rewritten history");
+        assertEquals(v2.trim(), hgSub.apply(new String[] {"cat", "-r", "tip", "big.txt"}));
+        // big.txt had two revisions (v1, v2); the rewrite appended the third, and it must be a pointer again
+        assertTrue(hgSub.apply(new String[] {"debugdata", "big.txt", "2"}).contains("git-lfs.github.com"),
+                "the rewritten revision must be LFS-stored");
     }
 }

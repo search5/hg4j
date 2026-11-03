@@ -28,9 +28,8 @@ public class BuiltinHgLfs extends HgLfsFactory {
     @Override
     public Cleaned applyCleanFilter(HgRepository repository, String path, byte[] content, Map<String, String> copyMeta)
             throws IOException {
-        // Real hg tests `if threshold:`, so 0 behaves exactly like unset.
-        long threshold = HgLfsManager.parseThresholdBytes(repository.getConfig().get("lfs", "threshold"));
-        if (threshold <= 0 || content.length <= threshold) {
+        // lfs.track / .hglfs / the deprecated lfs.threshold, as real hg's _trackedmatcher resolves them
+        if (!HgLfsTracker.forRepository(repository).tracks(path, content.length)) {
             return new Cleaned(content, null);
         }
         Map<String, String> extra = new LinkedHashMap<>();

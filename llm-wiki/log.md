@@ -628,3 +628,8 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-03] LFS Phase 2 마무리
 `VerifyCommand`의 LFS 검증(로컬 blob의 크기·SHA-256, 실제 내용 기준 노드 해시), `HgLfsManager#fetchObjects`(배치 한 번, 헤더 전체 전달, SHA-256 검증), `HgLfsFactory#prefetch`(Clone/Update 일괄 내려받기), `Revlog`의 changegroup 적용에서 `REVIDX_EXTSTORED` 해시 검증 생략과 플래그 보존(실제 hg LFS 저장소 clone 가능), `CloneCommand`의 `[paths] default` 기록. 테스트 `LfsCommandsRealHgInteropTest`(5개, 수정 전 코드에서 5개 모두 실패 확인), `LfsBatchFetchRealHgInteropTest`(4개), `LfsReadPathRealHgInteropTest`(8개). 결함 6건은 [[known-bugs-registry]]에 등록. 테스트가 호스트 `~/.cache/lfs`를 오염시키던 문제를 `build.gradle`의 `XDG_CACHE_HOME` 격리로 해결.
 검증: 일반 test 2346개 실패 0, 부분 interop 112개 클래스 1487개 실패 0(전체 interop 아님). 의도적 미구현: `Diff`/`Annotate`의 `x-is-binary` 최적화(hg4j에 바이너리 판정 자체가 없는 일반 공백).
+
+## [2026-11-03] LFS Phase 3: lfs.track, .hglfs, size()
+`MiniFileset`(원본 `minifileset.py`와 `filesetlang` 결합 강도), `HgLfsTracker`(`.hglfs` 첫 일치 규칙 > `lfs.track` + 폐기 예정 `lfs.threshold`), `BuiltinHgLfs`가 추적자를 사용, `HisteditCommand`가 LFS 파일을 다시 포인터로 기록. 커밋을 만드는 다른 명령(Amend, Graft, Rebase, Merge, Backout, Import)은 `CommitCommand`에 위임하므로 자동 적용(계획서의 미확인 항목 해소: filelog에 직접 쓰는 곳은 `CommitCommand`와 `HisteditCommand`뿐).
+테스트: `LfsTrackRealHgInteropTest` 10개(설정 조합별로 실제 hg와 hg4j가 파일마다 포인터 저장 여부 일치; Phase 3 이전 코드에서 9개 실패 확인), `MiniFilesetTest` 8개, Histedit 시나리오 1개(수정을 빼면 실패 확인). 기존 `LfsCommandsRealHgInteropTest`는 hg4j 저장소의 `hgrc`에 `lfs.track`이 없어 비LFS 경로를 검증하고 있었음을 발견해 보강.
+검증: 일반 test 전체 통과, 커밋 경로 interop 31개 클래스(전체 아님) 통과. [[implementation-plan-lfs]]

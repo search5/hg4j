@@ -364,7 +364,13 @@ public class HisteditCommand implements AutoCloseable {
                 }
 
                 int fileLinkRev = changelog.getRevisionCount();
-                byte[] newFileNode = filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], fileLinkRev);
+                // an LFS-tracked file is rewritten as a pointer (flagged EXTSTORED, node hash over the real content), like a commit
+                io.github.search5.hg4j.lfs.HgLfsFactory.Cleaned cleaned = io.github.search5.hg4j.lfs.HgLfsFactory.getInstance()
+                        .applyCleanFilter(repository, path, fileContent, null);
+                byte[] newFileNode = cleaned.isLfs()
+                        ? filelog.appendRevision(cleaned.stored(), null, parent1FileRev, -1, p1FileNode, new byte[20], fileLinkRev,
+                                null, Revlog.REVIDX_EXTSTORED, Revlog.wrapMetadata(fileContent, null))
+                        : filelog.appendRevision(fileContent, null, parent1FileRev, -1, p1FileNode, new byte[20], fileLinkRev);
 
                 newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
             }

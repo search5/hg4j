@@ -70,7 +70,7 @@ status: current (B8, B3, B1, B2, B4, B9 수정 완료(높음 4개 모두). 나�
 | listkeys | :739 | 구현(부분) | B2, B3, B4 |
 | lookup | :745 | 구현(부분) | **B1** |
 | known | :758 | 구현 | 동일 |
-| protocaps | :767 | 구현(SSH만) | SSH capabilities에 `protocaps`를 추가해 광고. 값은 확인 응답(`OK`)만 하고 저장하지 않음 | 원래: | 서버는 SSH에서 광고하지만(`wireprotoserver.py:455`) 이 소스의 `sshpeer.py`/`wireprotov1peer.py`에는 호출이 없음. 영향 없음 |
+| protocaps | :767 | 구현(SSH만) | 원본 서버는 SSH에서 광고하지만(`wireprotoserver.py:455`) 이 소스의 `sshpeer.py`/`wireprotov1peer.py`에는 호출이 없다. hg4j도 SSH capabilities에 `protocaps`를 광고하고 `OK`로 응답한다(값은 저장하지 않음) |
 | pushkey | :774 | 구현 | 기존 테스트가 다룸 |
 | stream_out | :803 | 없음 | 서버가 `stream` capability를 광고할 때만 호출(`streamclone.py:273`). hg4j는 광고 안 함 → 스트리밍 클론이 없을 뿐 clone은 `getbundle`로 동작. 성능 이점만 없음 |
 | unbundle | :812 | 구현 | 기존 테스트가 다룸 |

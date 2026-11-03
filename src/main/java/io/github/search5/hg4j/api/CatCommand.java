@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lfs.HgLfsFactory;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.storage.Revlog;
@@ -82,7 +83,7 @@ public class CatCommand {
             throw new HgRevisionNotFoundException("File version not found in history: " + file + " @ " + fileHexNode);
         }
 
-        return filelog.getRevisionContent(fileRev);
+        return HgLfsFactory.getInstance().readContent(repository, file, filelog, fileRev);
     }
 
 }

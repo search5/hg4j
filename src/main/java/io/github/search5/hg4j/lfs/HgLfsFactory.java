@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.lfs;
 
 import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.storage.Revlog;
 
 import java.io.IOException;
 import java.util.Map;
@@ -51,4 +52,16 @@ public abstract class HgLfsFactory {
     /** Turns a filelog's stored bytes back into the content; {@code stored} is returned unchanged unless {@code extStored}. */
     public abstract byte[] applySmudgeFilter(HgRepository repository, String path, byte[] stored, boolean extStored)
             throws IOException;
+
+    /**
+     * The content of revision {@code rev} of a file's {@code filelog}: the stored bytes, or for an LFS revision the real content
+     * the pointer stands for. Commands that show or search file content read through this instead of
+     * {@link Revlog#getRevisionContent}, which returns the stored bytes (the pointer text for LFS).
+     */
+    public final byte[] readContent(HgRepository repository, String path, Revlog filelog, int rev) throws IOException {
+        if (rev == -1) {
+            return filelog.getRevisionContent(rev); // the null revision: empty content, as Revlog defines it
+        }
+        return applySmudgeFilter(repository, path, filelog.getRevisionContent(rev), filelog.isExtStored(rev));
+    }
 }

@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lfs.HgLfsFactory;
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import io.github.search5.hg4j.lib.HgRepository;
@@ -334,7 +335,7 @@ public class ArchiveCommand {
         if (rev == -1) {
             throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
-        return filelog.getRevisionContent(rev);
+        return HgLfsFactory.getInstance().readContent(repository, path, filelog, rev);
     }
 
     // -- .hg_archival.txt metadata (repo/node/branch always; tag/latesttag block real hg's own

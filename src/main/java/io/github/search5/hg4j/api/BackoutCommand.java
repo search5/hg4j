@@ -325,7 +325,7 @@ public class BackoutCommand {
         if (rev == -1) {
             throw new HgValidationException("File revision not found in filelog: " + path);
         }
-        return filelog.getRevisionContent(rev);
+        return io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, path, filelog, rev);
     }
 
     private void writeFileToWorkingCopy(String path, byte[] content, int mode) throws IOException {

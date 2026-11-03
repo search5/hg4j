@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lfs.HgLfsFactory;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.storage.Revlog;
@@ -207,7 +208,7 @@ public class DiffCommand {
         if (rev == -1) {
             return new byte[0];
         }
-        return filelog.getRevisionContent(rev);
+        return HgLfsFactory.getInstance().readContent(repository, path, filelog, rev);
     }
 
     private String generateUnifiedDiff(String path, byte[] oldBytes, byte[] newBytes, ChangeType changeType) {

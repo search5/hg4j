@@ -643,6 +643,6 @@ public class GraftCommand {
         if (rev == -1) {
             throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
         }
-        return filelog.getRevisionContent(rev);
+        return io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, path, filelog, rev);
     }
 }

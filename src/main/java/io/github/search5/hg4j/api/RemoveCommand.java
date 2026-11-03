@@ -111,7 +111,7 @@ public class RemoveCommand {
                                             byte[] fileContent = isSymlink
                                                     ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
                                                     : Files.readAllBytes(diskFile.toPath());
-                                            byte[] lastContent = filelog.getRevisionContent(filelog.getRevisionCount() - 1);
+                                            byte[] lastContent = io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, file, filelog, filelog.getRevisionCount() - 1);
                                             if (!Arrays.equals(fileContent, lastContent)) {
                                                 isDirty = true;
                                             }

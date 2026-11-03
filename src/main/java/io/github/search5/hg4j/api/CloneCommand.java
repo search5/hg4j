@@ -158,7 +158,7 @@ public class CloneCommand {
                 throw new HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
             }
 
-            byte[] fileContent = filelog.getRevisionContent(fileRev);
+            byte[] fileContent = io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repo, path, filelog, fileRev);
 
             // Write to working copy
             File diskFile = new File(repo.getDirectory(), path);

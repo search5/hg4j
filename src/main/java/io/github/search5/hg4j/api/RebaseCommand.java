@@ -795,7 +795,7 @@ public class RebaseCommand {
             Revlog filelog = repository.getRevlog(flIdx, flDat);
 
             int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
-            byte[] fileContent = filelog.getRevisionContent(fileRev);
+            byte[] fileContent = io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, path, filelog, fileRev);
 
             File diskFile = new File(repository.getDirectory(), path);
             diskFile.getParentFile().mkdirs();

@@ -119,7 +119,7 @@ public class ShelveCommand {
                 if (fileRev == -1) {
                     return null;
                 }
-                return filelog.getRevisionContent(fileRev);
+                return io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, path, filelog, fileRev);
             }
         }
         return null;
@@ -1240,7 +1240,7 @@ public class ShelveCommand {
         if (rev == -1) {
             return new byte[0];
         }
-        return fl.getRevisionContent(rev);
+        return io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, path, fl, rev);
     }
 
     private void revertToLatestCommit(Dirstate dirstate, List<ShelvedFile> shelvedFiles) throws IOException {
@@ -1296,7 +1296,7 @@ public class ShelveCommand {
                 Revlog filelog = repository.getRevlog(flIdx, flDat);
 
                 int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, NodeIdUtil.fromHex(hexNode));
-                byte[] originalContent = filelog.getRevisionContent(fileRev);
+                byte[] originalContent = io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, sf.path, filelog, fileRev);
 
                 diskFile.getParentFile().mkdirs();
                 if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {

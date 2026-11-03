@@ -620,3 +620,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 
 ## [2026-11-03] LFS Phase 1: 이음새와 값 객체
 `HgLfsFactory`/`BuiltinHgLfs`(JGit `LfsFactory`/`BuiltinLFS` 대응), `HgLfsException` 계열(401/403, 404, 손상), `HgLfsPointer`의 `encode`/`parse(InputStream)`/`equals`/`compareTo` 추가. `CommitCommand`, `UpdateCommand`, `AnnotateCommand`가 팩터리를 거치도록 이전(동작 변화 없음). 검증: 일반 test 2346개 실패 0, `LfsRealHgInteropTest` 10개 통과. [[implementation-plan-lfs]]
+
+## [2026-11-03] LFS Phase 2 (일부): 읽기 경로
+`HgLfsFactory#readContent`를 추가하고 `cat`, `grep`, `diff`, `archive`, `status`(stat 모호 시 내용 비교), `clone` 체크아웃, `merge`, `graft`, `rebase`, `backout`, `histedit`, `shelve`, `remove`, `bisect`가 LFS 파일의 실제 내용을 읽게 함. 발견한 결함: 변경 없는 LFS 파일이 같은 초 커밋 직후 `status`에서 수정으로 보고됨(수정함). changegroup 델타 기준을 만드는 곳(Push, Bundle, Gc, Shelve 일부)은 저장 바이트를 쓰는 것이 맞아 유지. 신규 대조 테스트 `LfsReadPathRealHgInteropTest` 6개(빨강→초록). 검증: 일반 test 전체 통과, 부분 interop 82개 클래스 1106개 실패 0(전체 interop 아님).
+미완(Phase 2 잔여): `Verify`의 blob 검사, `Annotate`/`Diff`의 `x-is-binary` 바이너리 판정, `Export`, Clone/Pull의 `prefetch` 일괄 내려받기, Merge 등의 LFS 전용 대조 테스트. [[implementation-plan-lfs]]

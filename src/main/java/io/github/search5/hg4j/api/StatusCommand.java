@@ -290,7 +290,8 @@ public class StatusCommand {
                 if (fileRev == -1) {
                     return null;
                 }
-                return filelog.getRevisionContent(fileRev);
+                // the REAL content: an LFS file's stored bytes are only the pointer text
+                return io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, path, filelog, fileRev);
             }
         }
         return null;

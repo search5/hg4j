@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lfs.HgLfsFactory;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -76,7 +77,7 @@ public class GrepCommand {
                 Revlog filelog = repository.getRevlog(flIdx, flDat);
                 for (int i = 0; i < filelog.getRevisionCount(); i++) {
                     byte[] node = filelog.getIndexRecord(i).getNodeId();
-                    byte[] content = filelog.getRevisionContent(i);
+                    byte[] content = HgLfsFactory.getInstance().readContent(repository, path, filelog, i);
                     String text = new String(content, StandardCharsets.UTF_8);
                     String[] lines = text.split("\n");
                     for (int lineNum = 0; lineNum < lines.length; lineNum++) {

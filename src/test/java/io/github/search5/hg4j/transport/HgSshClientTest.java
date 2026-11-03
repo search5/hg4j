@@ -111,7 +111,7 @@ public class HgSshClientTest {
     public void testCustomSshSessionFactoryPluggability() throws Exception {
         SshSessionFactory originalFactory = HgSshClient.getSshSessionFactory();
         assertNotNull(originalFactory);
-        assertInstanceOf(JschSessionFactory.class, originalFactory);
+        assertInstanceOf(ApacheSshdSessionFactory.class, originalFactory);
 
         final int customPort = 22222;
         final boolean[] openSessionCalled = {false};

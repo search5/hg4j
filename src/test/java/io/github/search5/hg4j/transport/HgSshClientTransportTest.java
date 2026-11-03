@@ -28,7 +28,6 @@ import io.github.search5.hg4j.errors.HgProtocolException;
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.lib.Repository;
-import com.jcraft.jsch.JSchException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -667,11 +666,11 @@ public class HgSshClientTransportTest {
     // ─────────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("ensureConnected - JSchException 발생 시 HgAuthException으로 래핑")
-    public void testEnsureConnected_jschException_wrapsAsHgAuthException() throws Exception {
+    @DisplayName("ensureConnected - SshAuthenticationException 발생 시 HgAuthException으로 래핑")
+    public void testEnsureConnected_sshAuthenticationException_wrapsAsHgAuthException() throws Exception {
         SshSessionFactory original = HgSshClient.getSshSessionFactory();
         SshSessionFactory failingFactory = (host, p, username, password, key, pass) -> {
-            throw new JSchException("Auth fail");
+            throw new SshAuthenticationException("Auth fail");
         };
         HgSshClient.setSshSessionFactory(failingFactory);
         try {

@@ -1,6 +1,5 @@
 package io.github.search5.hg4j.transport;
 
-import com.jcraft.jsch.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -28,13 +27,17 @@ public class HgSshClient implements HgRemoteConnection {
     private String username;
     private String host;
     private int port = 22;
+    /** False when the URL named no port: then the SSH layer may take it from ~/.ssh/config (default 22). */
+    private boolean portSpecified;
+    /** False when the URL named no user: then the SSH layer may take it from ~/.ssh/config (default: local user). */
+    private boolean userSpecified;
     private String repoPath;
 
     private String password;
     private String privateKeyPath;
     private String passphrase;
 
-    private static SshSessionFactory sshSessionFactory = new JschSessionFactory();
+    private static SshSessionFactory sshSessionFactory = new ApacheSshdSessionFactory();
 
     public static void setSshSessionFactory(SshSessionFactory factory) {
         if (factory != null) {
@@ -83,6 +86,7 @@ public class HgSshClient implements HgRemoteConnection {
             } else {
                 this.username = userPart;
             }
+            this.userSpecified = true;
             authority = authority.substring(atIdx + 1);
         } else {
             this.username = System.getProperty("user.name");
@@ -93,6 +97,7 @@ public class HgSshClient implements HgRemoteConnection {
             this.host = authority.substring(0, colonIdx);
             try {
                 this.port = Integer.parseInt(authority.substring(colonIdx + 1));
+                this.portSpecified = true;
             } catch (NumberFormatException e) {
                 this.port = 22;
             }
@@ -139,6 +144,7 @@ public class HgSshClient implements HgRemoteConnection {
                 }
                 if (user != null && !user.isEmpty()) {
                     this.username = user;
+                    this.userSpecified = true;
                 }
             }
         }
@@ -150,7 +156,10 @@ public class HgSshClient implements HgRemoteConnection {
         }
 
         try {
-            sshSession = sshSessionFactory.createSession(host, port, username, password, privateKeyPath, passphrase);
+            // A port or user the URL/credentials did not name is passed as "unspecified" (0 / null) so the
+            // SSH layer can take it from ~/.ssh/config and otherwise fall back to 22 / the local user.
+            sshSession = sshSessionFactory.createSession(host, portSpecified ? port : 0,
+                    userSpecified ? username : null, password, privateKeyPath, passphrase);
             sshSession.connect(15000); // 15 seconds connection timeout
             sshSession.executeCommand("hg -R " + repoPath + " serve --stdio", 15000);
 
@@ -163,7 +172,7 @@ public class HgSshClient implements HgRemoteConnection {
         } catch (Exception e) {
             close();
             String msg = e.getMessage();
-            if (e instanceof JSchException || (msg != null && (msg.toLowerCase().contains("auth fail") || msg.toLowerCase().contains("authentication") || msg.toLowerCase().contains("permission denied")))) {
+            if (e instanceof SshAuthenticationException || (msg != null && (msg.toLowerCase().contains("auth fail") || msg.toLowerCase().contains("authentication") || msg.toLowerCase().contains("permission denied")))) {
                 throw new HgAuthException(sshUrl, username, e);
             }
             throw new HgProtocolException(sshUrl, "Failed to establish SSH connection: " + msg, e);

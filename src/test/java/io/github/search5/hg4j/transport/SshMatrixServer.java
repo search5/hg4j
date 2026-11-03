@@ -79,7 +79,7 @@ final class SshMatrixServer implements AutoCloseable {
 
     /**
      * Real hg's SSH client shells out to the actual, host-installed {@code ssh} binary (unlike
-     * hg4j's own embedded-JSch SSH client, the only thing every OTHER caller of {@link #url} needs
+     * hg4j's own embedded Apache SSHD client, the only thing every OTHER caller of {@link #url} needs
      * to talk to). Any caller that additionally needs the REAL {@code hg} CLI itself to act as the
      * SSH client against this server (e.g. to compute ground truth for a comparison test) needs a
      * genuine keypair the embedded SSHD's {@code AcceptAllPublickeyAuthenticator} will accept, plus

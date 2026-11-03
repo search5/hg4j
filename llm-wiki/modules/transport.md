@@ -20,13 +20,18 @@ HTTP/SSH 와이어 프로토콜 구현. JGit의 `org.eclipse.jgit.transport`에 
 - `HgRemoteClientV2`: wire protocol v2 클라이언트 — 실제 Mercurial 6.0 서버로 양방향
   검증 완료. `transport.wireprotov2` 서브패키지(`Wire2Frame`/`Cbor`/`Wire2Transport`/
   `Wire2Commands`) 위에서 동작. 상세: [[wireprotocol-v2-support-plan]].
-- `HgSshClient` / `SshSession` / `SshSessionFactory` / `JschSshSession` / `JschSessionFactory`:
-  jsch 기반 SSH 구현. `SshSessionFactory`로 SSH 라이브러리를 추상화해 jsch 외 다른 구현체로
-  교체 가능하게 설계됨 (git log: "SSH 라이브러리 독립적 완전 추상화 아키텍처").
+- `HgSshClient` / `SshSession` / `SshSessionFactory` / `ApacheSshdSession` / `ApacheSshdSessionFactory`:
+  Apache MINA SSHD(2.20.1) 기반 SSH 구현 (2026-11-03에 jsch에서 교체, [[ssh-apache-sshd-migration]]).
+  `SshSessionFactory`로 SSH 라이브러리를 추상화한 구조는 그대로 유지한다. 인증 실패는
+  라이브러리 독립 예외 `SshAuthenticationException`으로 전파되어 `HgSshClient`가 `HgAuthException`으로
+  바꾼다. 지원 범위: 비밀번호, 개인키(+암호문) 인증, `~/.ssh/known_hosts` 검증, `~/.ssh/config`의
+  `HostName`/`User`/`Port`/`IdentityFile`. 포트와 사용자명이 URL에 없으면 "미지정"(0 / null)으로
+  넘겨 설정 파일이 정하고, 설정에도 없으면 22와 로컬 사용자를 쓴다. ssh-agent는 미지원(계획: 별도 커밋).
 - `HgLocalClient`: 로컬 파일시스템 저장소 간 클론/동기화.
 - `HgHttpWireServer`: 서버 측 HTTP 와이어 프로토콜(v1 `?cmd=` GET/POST + v2 `/api/<namespace>/
-  <ro|rw>/<command>` 프레이밍) 구현체. JDK 내장 `com.sun.net.httpserver.HttpHandler`를 직접
-  구현하므로 새 의존성 없이 `com.sun.net.httpserver.HttpServer`에 바로 꽂을 수 있는 실제
+  <ro|rw>/<command>` 프레이밍) 구현체. `jakarta.servlet.http.HttpServlet`을 상속한다
+  (2026-11-03 소스 확인: `HgHttpWireServer.java` import, `build.gradle`의 `jakarta.servlet-api:6.1.0`).
+  서블릿 컨테이너에 올려 쓰며 테스트는 Jetty ee11로 호스팅한다. 실제
   프로덕션 서버 클래스다(테스트 전용 하네스가 아님). 요청마다 `repository.refreshIfChangedOnDisk()`
   를 먼저 호출해 장기 실행 서버 프로세스가 디스크상의 변경(다른 프로세스의 커밋/스트립 등)을
   놓치고 오래된 캐시를 서빙하는 문제를 막는다. v1 응답 종류별 압축 규칙(real hg 기준: `BYTES`/

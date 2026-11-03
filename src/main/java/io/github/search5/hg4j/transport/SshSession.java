@@ -5,7 +5,7 @@ import java.io.OutputStream;
 import java.io.IOException;
 
 /**
- * An independent SSH session abstraction interface that does not depend on a specific SSH library (such as JSch or Apache MINA SSHD).
+ * An independent SSH session abstraction interface that does not depend on a specific SSH library (such as Apache MINA SSHD).
  */
 public interface SshSession extends AutoCloseable {
     /**

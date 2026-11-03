@@ -229,7 +229,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
 
         try (SshMatrixServer ssh = SshMatrixServer.start(tempDir)) {
             // Real hg's own "hg incoming" ground-truth check below shells out to the real ssh
-            // binary (unlike hg4j's client, embedded JSch), so it needs a real keypair + host-key
+            // binary (unlike hg4j's client, embedded Apache SSHD), so it needs a real keypair + host-key
             // checking disabled against this ephemeral test server -- see
             // SshMatrixServer#realHgUiSshOverride's javadoc.
             String uiSsh = ssh.realHgUiSshOverride();
@@ -344,7 +344,7 @@ public class HgWireProtocolMatrixIncomingOutgoingTest {
     }
 
     /** Real hg's SSH client shells out to the actual {@code ssh} binary (unlike hg4j's own
-     * embedded-JSch SSH client used elsewhere in this matrix), so the reverse direction needs a
+     * embedded Apache SSHD client used elsewhere in this matrix), so the reverse direction needs a
      * genuine keypair + {@code ui.ssh=} override -- exactly {@link
      * HgSshWireServerRealHgInteropTest}'s established setup, inlined here since that class's
      * fields/helpers are private to it. */

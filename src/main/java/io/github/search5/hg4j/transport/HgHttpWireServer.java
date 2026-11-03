@@ -45,6 +45,10 @@ public class HgHttpWireServer extends HttpServlet {
     // yona-wiki P3-21/P3-22 — see Wire1Commands#pushkey(HgRepository, Map, List, List): the
     // changegroup hooks above never see which ref (bookmark) moved, only raw changeset nodes —
     // that only happens in the separate `pushkey` wire command, hence a separate hook list.
+    /** When true the {@code [web]} access rules of the repository are enforced like real hgweb does (default: off, all requests allowed). */
+    private boolean enforceWebPermissions;
+    /** Names the authenticated user of a request (Mercurial's {@code REMOTE_USER}); the container's remote user by default. */
+    private java.util.function.Function<HttpServletRequest, String> remoteUser = HttpServletRequest::getRemoteUser;
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
@@ -86,6 +90,39 @@ public class HgHttpWireServer extends HttpServlet {
     public HgHttpWireServer registerPostPushkeyHook(HgHook hook) {
         postPushkeyHooks.add(hook);
         return this;
+    }
+
+    /**
+     * Enforces the {@code [web]} access rules ({@code allow-push}, {@code deny_push}, {@code allow_read}, {@code deny_read},
+     * {@code allowpull}, {@code push_ssl}) of the served repository exactly like Mercurial's own web server, which refuses a push
+     * unless {@code allow-push} names the user and {@code push_ssl} is off or the request is HTTPS. Off by default: an
+     * unconfigured hg4j server accepts every request.
+     */
+    public HgHttpWireServer setEnforceWebPermissions(boolean enforce) {
+        this.enforceWebPermissions = enforce;
+        return this;
+    }
+
+    /** Sets how the authenticated user of a request is determined (default: {@link HttpServletRequest#getRemoteUser()}). */
+    public HgHttpWireServer setRemoteUserResolver(java.util.function.Function<HttpServletRequest, String> resolver) {
+        this.remoteUser = resolver;
+        return this;
+    }
+
+    /** Applies the access rules; answers a refusal like real hg ({@code 0\n<message>\n}) and returns false. */
+    private boolean permitted(HttpServletRequest request, HttpServletResponse response, HgWebPermissions.Operation operation)
+            throws IOException {
+        if (!enforceWebPermissions) {
+            return true;
+        }
+        try {
+            HgWebPermissions.check(repository.getConfig(), request.getScheme(), request.getMethod(),
+                    remoteUser.apply(request), operation);
+            return true;
+        } catch (HgWebPermissions.Denied denied) {
+            sendPlain(response, denied.status(), "0\n" + denied.getMessage() + "\n");
+            return false;
+        }
     }
 
     @Override
@@ -134,6 +171,16 @@ public class HgHttpWireServer extends HttpServlet {
             String applicationPath = path.startsWith("/") ? path.substring(1) : path;
             if (queryParam(query, "cmd") == null
                     && io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handles(repository, applicationPath)) {
+                HgWebPermissions.Operation lfsOperation = null;
+                if (applicationPath.equals(".git/info/lfs/objects/batch")) {
+                    lfsOperation = HgWebPermissions.Operation.PULL; // real hg checks 'pull' even for an upload batch
+                } else if (applicationPath.split("/").length == 4) {
+                    lfsOperation = "PUT".equals(request.getMethod()) ? HgWebPermissions.Operation.UPLOAD
+                            : "GET".equals(request.getMethod()) ? HgWebPermissions.Operation.PULL : null;
+                }
+                if (lfsOperation != null && !permitted(request, response, lfsOperation)) {
+                    return;
+                }
                 io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handle(repository, applicationPath, request, response);
                 return;
             }
@@ -253,6 +300,10 @@ public class HgHttpWireServer extends HttpServlet {
         if (!Wire1Commands.isKnownCommand(cmd)) {
             // wireprotoserver.py / hgweb: an unknown command is HTTP 400, not a protocol-level error body
             sendPlain(response, 400, "no such method: " + cmd);
+            return;
+        }
+        if (!permitted(request, response, Wire1Commands.requiresPush(cmd)
+                ? HgWebPermissions.Operation.PUSH : HgWebPermissions.Operation.PULL)) {
             return;
         }
         if (Wire1Commands.requiresPush(cmd) && !"POST".equals(request.getMethod())) {

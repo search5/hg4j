@@ -657,3 +657,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-04] 의도적 차이 포팅 2/6: `[auth]` 설정
 `HgAuthConfig`(원본 `readauthforuri`: 그룹 `prefix`/`username`/`password`/`schemes`, 기본 스킴 https, `*` 접두어, 가장 긴 접두어 우선, 주소의 사용자와 그룹 사용자 일치)를 추가했다. 저장소 설정 아래에 사용자 수준 hgrc(`HGRCPATH`, `/etc/mercurial/hgrc`, `~/.hgrc`)를 둔다. 와이어 HTTP(`HgRemoteConnectionFactory.createConnection(url, config)`, Fetch/Push/Incoming/Outgoing)와 LFS blob 전송(`HgLfsClient`)이 주소의 자격 증명이 없을 때 이를 쓴다. 남은 차이: 원본은 401 응답 뒤에 자격 증명을 보내고 hg4j는 첫 요청부터 보낸다(주소 자격 증명은 원래 그랬다). `cert`/`key`는 미사용.
 테스트: `AuthConfigRealHgInteropTest` 7개(실제 hg와 hg4j가 같은 `[auth]` 설정에서 같은 성패). 구현 전 코드에서 3개 실패 확인. 검증: 일반 test 2354개 통과, Lfs·Push·Pull 등 interop 43개 클래스 293개 통과.
+
+## [2026-11-04] 의도적 차이 포팅 3/6: LFS 서버 권한 구분 (`[web]` 접근 규칙)
+`HgWebPermissions`(원본 `hgweb.common.checkauthz`: `deny_read`, `allow_read`, `allowpull`, `push_ssl` 기본 true, `deny_push`, `allow-push`/`allow_push`, 푸시 POST·업로드 PUT 요구)를 추가하고 `HgHttpWireServer.setEnforceWebPermissions(true)`로 켠다. 와이어 v1 명령(pull/push 구분)과 LFS 엔드포인트(batch=pull, PUT=upload, GET=pull)에 적용되며 거절은 원본처럼 `0\n<메시지>\n`이다. 사용자는 `setRemoteUserResolver`(기본 `getRemoteUser()`, 원본의 REMOTE_USER에 해당)가 정한다. **기본값은 꺼짐**이다: 켜면 원본처럼 `allow-push`를 지정하지 않은 서버는 push를 거절하므로, 기존 hg4j 서버 사용처(테스트 30여 개 클래스)를 깨지 않으려는 선택이다. 와이어 v2(`/api/`)에는 아직 적용하지 않았다.
+테스트: `WebPermissionsParityInteropTest` 9개(같은 요청 6종을 실제 `hg serve`와 hg4j에 보내 `[web]` 설정 9종에서 상태·본문 일치). 강제를 끈 상태에서 7개 실패 확인. 검증: 일반 test 2354개 통과, LFS 서버·HTTP 서버 대조 interop 통과.

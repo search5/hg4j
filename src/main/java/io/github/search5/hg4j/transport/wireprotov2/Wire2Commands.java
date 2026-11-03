@@ -509,6 +509,14 @@ public final class Wire2Commands {
                     }
                 }
             }
+        } else if ("namespaces".equals(namespace)) {
+            // pushkey.listkeys(b'namespaces'): the names of the pushkey namespaces this repository serves, each with an
+            // empty value. hg 7.2 lists bookmarks, namespaces and phases (plus obsolete only when obsolescence markers
+            // are exchanged, which this server does not serve). A client reads this to learn whether the remote has
+            // bookmarks at all: without it `hg incoming -B` / `outgoing -B` say "remote doesn't support bookmarks".
+            map.put("bookmarks", "");
+            map.put("namespaces", "");
+            map.put("phases", "");
         } else if ("phases".equals(namespace)) {
             // Real hg's phases.listphases(): the DRAFT ROOTS (not every non-public changeset), each valued "1",
             // and, when the repository is publishing, an extra "publishing" = "True". The extra key matters:

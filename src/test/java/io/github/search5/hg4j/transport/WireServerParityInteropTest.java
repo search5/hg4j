@@ -176,7 +176,6 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B2 listkeys namespaces is empty")
     @DisplayName("listkeys namespaces 가 원본처럼 bookmarks/namespaces/phases 를 알려 준다")
     void listkeysNamespaces() throws Exception {
         assertSameAnswer("listkeys", "namespace=namespaces");
@@ -342,7 +341,6 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B2 incoming/outgoing -B report 'remote doesn't support bookmarks'")
     @DisplayName("incoming -B / outgoing -B 가 원본 서버에서처럼 북마크를 비교한다")
     void incomingBookmarks() throws Exception {
         Map<Boolean, String> out = new java.util.HashMap<>();

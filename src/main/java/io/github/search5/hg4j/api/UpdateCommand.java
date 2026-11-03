@@ -81,7 +81,21 @@ public class UpdateCommand {
         return this;
     }
 
+    /** Receives the progress of the LFS downloads and the lines Mercurial prints about them (see {@code HgLfsProgress}). */
+    public UpdateCommand setProgressMonitor(io.github.search5.hg4j.lib.ProgressMonitor monitor) {
+        this.monitor = monitor;
+        return this;
+    }
+
+    private io.github.search5.hg4j.lib.ProgressMonitor monitor;
+
     public byte[] call() throws IOException, HgLockException {
+        try (io.github.search5.hg4j.lfs.HgLfsProgress bound = io.github.search5.hg4j.lfs.HgLfsProgress.bind(monitor)) {
+            return callUpdate();
+        }
+    }
+
+    private byte[] callUpdate() throws IOException, HgLockException {
         // Backlog 30: when the caller hasn't explicitly narrowed this update (still the default
         // HgTreeFilter.ALL), pick up whatever narrowspec the repository itself was narrow cloned
         // with -- so checkout keeps respecting the narrow scope on every later `update`, not just

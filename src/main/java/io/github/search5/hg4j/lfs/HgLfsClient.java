@@ -3,6 +3,7 @@ package io.github.search5.hg4j.lfs;
 import io.github.search5.hg4j.lfs.errors.HgLfsCorruptObjectException;
 import io.github.search5.hg4j.lfs.errors.HgLfsException;
 import io.github.search5.hg4j.lib.HgRcConfig;
+import io.github.search5.hg4j.lib.ProgressMonitor;
 
 import java.io.IOException;
 import java.net.ConnectException;
@@ -210,34 +211,78 @@ final class HgLfsClient {
         }
         int retries = intConfig("lfs", "retry", 5);
         boolean parallel = boolConfig("experimental", "lfs.worker-enable", true) && sorted.size() > 1;
-        if (!parallel) {
-            for (Map.Entry<String, Map<String, Object>> entry : sorted.entrySet()) {
-                transferWithRetry(entry.getValue(), pointers, action, retries);
-            }
-            return;
+        ProgressMonitor monitor = HgLfsProgress.current();
+        long total = 0;
+        for (Map<String, Object> object : sorted.values()) {
+            total += object.get("size") instanceof Number size ? size.longValue() : 0;
         }
-        ExecutorService pool = Executors.newFixedThreadPool(Math.min(MAX_WORKERS, sorted.size()));
+        if (monitor != null) {
+            monitor.start("lfs " + action + "ing", (int) Math.min(total, Integer.MAX_VALUE));
+        }
+        long processed = 0;
+        long reported = 0;
+        int blobs = 0;
         try {
-            List<Future<?>> futures = new ArrayList<>();
-            for (Map<String, Object> object : sorted.values()) {
-                futures.add(pool.submit(() -> {
-                    transferWithRetry(object, pointers, action, retries);
-                    return null;
-                }));
-            }
-            for (Future<?> future : futures) {
+            if (!parallel) {
+                for (Map.Entry<String, Map<String, Object>> entry : sorted.entrySet()) {
+                    transferWithRetry(entry.getValue(), pointers, action, retries);
+                    processed += sizeOf(entry.getValue());
+                    blobs++;
+                    reported = report(monitor, processed, reported);
+                }
+            } else {
+                ExecutorService pool = Executors.newFixedThreadPool(Math.min(MAX_WORKERS, sorted.size()));
                 try {
-                    future.get();
-                } catch (ExecutionException e) {
-                    if (e.getCause() instanceof IOException io) {
-                        throw io;
+                    List<Map<String, Object>> order = new ArrayList<>(sorted.values());
+                    List<Future<?>> futures = new ArrayList<>();
+                    for (Map<String, Object> object : order) {
+                        futures.add(pool.submit(() -> {
+                            transferWithRetry(object, pointers, action, retries);
+                            return null;
+                        }));
                     }
-                    throw new IOException(e.getCause());
+                    for (int i = 0; i < futures.size(); i++) {
+                        try {
+                            futures.get(i).get();
+                        } catch (ExecutionException e) {
+                            if (e.getCause() instanceof IOException io) {
+                                throw io;
+                            }
+                            throw new IOException(e.getCause());
+                        }
+                        processed += sizeOf(order.get(i));
+                        blobs++;
+                        reported = report(monitor, processed, reported);
+                    }
+                } finally {
+                    pool.shutdownNow();
                 }
             }
         } finally {
-            pool.shutdownNow();
+            if (monitor != null) {
+                monitor.end();
+            }
         }
+        if (monitor != null && blobs > 0) {
+            monitor.message("lfs: " + (action.equals("upload") ? "uploaded" : "downloaded") + " " + blobs + " files ("
+                    + HgByteCount.format(processed) + ")");
+        }
+    }
+
+    private static long sizeOf(Map<String, Object> object) {
+        return object.get("size") instanceof Number size ? size.longValue() : 0;
+    }
+
+    /** Tells the monitor the bytes done since the last report (it adds them up); returns the new reported total. */
+    private static long report(ProgressMonitor monitor, long processed, long reported) {
+        if (monitor == null) {
+            return reported;
+        }
+        long now = Math.min(processed, Integer.MAX_VALUE);
+        if (now > reported) {
+            monitor.update((int) (now - reported));
+        }
+        return now;
     }
 
     private void transferWithRetry(Map<String, Object> object, Map<String, HgLfsPointer> pointers, String action, int retries)

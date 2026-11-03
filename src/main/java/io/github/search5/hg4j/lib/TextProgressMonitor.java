@@ -51,6 +51,12 @@ public class TextProgressMonitor implements ProgressMonitor {
     }
 
     @Override
+    public synchronized void message(String text) {
+        out.println(text);
+        out.flush();
+    }
+
+    @Override
     public synchronized boolean isCancelled() {
         return cancelled;
     }

@@ -181,7 +181,17 @@ public class CloneCommand {
                 toReadPaths.add(entry.getKey());
             }
         }
-        io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().prefetch(repo, toRead, toReadPaths);
+        // the clone's own steps use the monitor, so the LFS download only passes its message lines on
+        ProgressMonitor own = monitor;
+        try (io.github.search5.hg4j.lfs.HgLfsProgress bound = io.github.search5.hg4j.lfs.HgLfsProgress.bind(new ProgressMonitor() {
+            @Override public void start(String title, int totalWork) { }
+            @Override public void update(int completed) { }
+            @Override public void end() { }
+            @Override public boolean isCancelled() { return own.isCancelled(); }
+            @Override public void message(String text) { own.message(text); }
+        })) {
+            io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().prefetch(repo, toRead, toReadPaths);
+        }
 
         for (Map.Entry<String, String> entry : manifestEntries.entrySet()) {
             String path = entry.getKey();

@@ -97,7 +97,21 @@ public class PushCommand {
         return this;
     }
 
+    /** Receives the progress of the LFS uploads and the lines Mercurial prints about them (see {@code HgLfsProgress}). */
+    public PushCommand setProgressMonitor(io.github.search5.hg4j.lib.ProgressMonitor monitor) {
+        this.monitor = monitor;
+        return this;
+    }
+
+    private io.github.search5.hg4j.lib.ProgressMonitor monitor;
+
     public String call() throws IOException, HgLockException {
+        try (io.github.search5.hg4j.lfs.HgLfsProgress bound = io.github.search5.hg4j.lfs.HgLfsProgress.bind(monitor)) {
+            return callPush();
+        }
+    }
+
+    private String callPush() throws IOException, HgLockException {
         // 실제 hg 스펙(hg help urls): 목적지를 안 주면 paths.default-push를 우선 쓰고,
         // 없으면 paths.default로 폴백한다 — 2026-09-01 이전에는 여기서 무조건 예외를
         // 던져서 "그냥 hg push" 형태가 지원이 안 됐다.

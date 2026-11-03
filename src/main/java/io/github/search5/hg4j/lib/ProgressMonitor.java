@@ -13,4 +13,11 @@ public interface ProgressMonitor {
     void end();
 
     boolean isCancelled();
+
+    /**
+     * A line of text the operation would print on the console (e.g. Mercurial's {@code lfs: uploaded 1 files (600 bytes)}).
+     * Ignored by default.
+     */
+    default void message(String text) {
+    }
 }

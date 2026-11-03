@@ -526,6 +526,167 @@ public final class HgLfsManager {
         }
     }
 
+    /**
+     * Resolves the LFS store address of a push or bundle, like real hg's {@code blobstore.remote()}: an explicit
+     * {@code [lfs] url} wins; otherwise an {@code http}/{@code https} destination gets {@code /.git/info/lfs} appended.
+     *
+     * @return the address (for an http(s) one the caller appends {@code /objects/batch}), or {@code null} when none can be derived
+     */
+    public static String resolveRemoteUrl(HgRepository repository, String destination) {
+        String override = repository.getConfig().get("lfs", "url");
+        if (override != null && !override.isBlank()) {
+            return override;
+        }
+        if (destination != null && (destination.startsWith("http://") || destination.startsWith("https://"))) {
+            String base = destination.endsWith("/") ? destination.substring(0, destination.length() - 1) : destination;
+            return base + "/.git/info/lfs";
+        }
+        return null;
+    }
+
+    /**
+     * Uploads the objects of {@code pointers} that the server does not have yet: ONE batch request (operation {@code upload}),
+     * then a {@code PUT} for each object the answer gives an {@code upload} action for (an object the server already has gets no
+     * action and is skipped). Each blob is verified against its pointer before it is sent.
+     *
+     * @throws io.github.search5.hg4j.lfs.errors.HgLfsCorruptObjectException if a blob is missing locally or does not match its
+     *     pointer ({@code detected corrupt lfs object})
+     * @throws io.github.search5.hg4j.lfs.errors.HgLfsException if the server refuses
+     */
+    public void uploadObjects(java.util.Collection<HgLfsPointer> pointers, String lfsServerUrl)
+            throws IOException, InterruptedException {
+        if (pointers == null || lfsServerUrl == null) {
+            throw new IllegalArgumentException("Pointers and server URL cannot be null");
+        }
+        Map<String, HgLfsPointer> byOid = new java.util.TreeMap<>();
+        for (HgLfsPointer pointer : pointers) {
+            byOid.putIfAbsent(pointer.getOid(), pointer);
+        }
+        if (byOid.isEmpty()) {
+            return;
+        }
+
+        StringBuilder objectsJson = new StringBuilder();
+        for (HgLfsPointer pointer : byOid.values()) {
+            if (objectsJson.length() > 0) {
+                objectsJson.append(',');
+            }
+            objectsJson.append("{\"oid\":\"").append(pointer.getOid()).append("\",\"size\":").append(pointer.getSize()).append('}');
+        }
+        String batchJson = "{\"operation\":\"upload\",\"transfers\":[\"basic\"],\"objects\":[" + objectsJson + "]}";
+
+        HttpClient client = HttpClient.newHttpClient();
+        HttpResponse<String> batchResponse;
+        try {
+            batchResponse = client.send(HttpRequest.newBuilder()
+                    .uri(URI.create(lfsServerUrl + "/objects/batch"))
+                    .header("Accept", "application/vnd.git-lfs+json")
+                    .header("Content-Type", "application/vnd.git-lfs+json")
+                    .POST(HttpRequest.BodyPublishers.ofString(batchJson, StandardCharsets.UTF_8))
+                    .build(), HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            throw new io.github.search5.hg4j.lfs.errors.HgLfsException(
+                    "LFS error: " + e.getMessage() + "\n(hint: attempted connection to " + lfsServerUrl + "/objects/batch)", 0, e);
+        }
+        if (batchResponse.statusCode() != 200) {
+            throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(batchResponse.statusCode(),
+                    "LFS batch API request failed with status: " + batchResponse.statusCode());
+        }
+
+        List<Object> objects;
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> resMap = (Map<String, Object>) new MapJsonParser(batchResponse.body()).parse();
+            @SuppressWarnings("unchecked")
+            List<Object> parsed = (List<Object>) resMap.get("objects");
+            objects = parsed == null ? List.of() : parsed;
+        } catch (IOException | RuntimeException e) {
+            throw new IOException("Failed to parse LFS batch JSON response. Body: " + batchResponse.body(), e);
+        }
+
+        // fail early on a server error, like real hg's _checkforservererror
+        for (Object element : objects) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> object = (Map<String, Object>) element;
+            if (!object.containsKey("error")) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> error = (Map<String, Object>) object.get("error");
+            Object codeValue = error.get("code");
+            int code = codeValue instanceof Number n ? n.intValue() : 500;
+            if (!byOid.containsKey(object.get("oid"))) {
+                throw new io.github.search5.hg4j.lfs.errors.HgLfsException(
+                        "LFS server error. Unsolicited response for oid " + object.get("oid"), code);
+            }
+            String message = switch (code) {
+                case 404 -> "The object does not exist";
+                case 410 -> "The object was removed by the owner";
+                case 422 -> "Validation error";
+                case 500 -> "Internal server error";
+                default -> "status code " + code;
+            };
+            throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(code, "LFS server error for \"unknown\": " + message);
+        }
+
+        // an object without an upload action is already on the server
+        Map<String, Map<String, Object>> toUpload = new java.util.TreeMap<>();
+        for (Object element : objects) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> object = (Map<String, Object>) element;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> actions = (Map<String, Object>) object.get("actions");
+            if (actions != null && actions.get("upload") != null && object.get("oid") instanceof String oid) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> upload = (Map<String, Object>) actions.get("upload");
+                toUpload.put(oid, upload);
+            }
+        }
+
+        for (Map.Entry<String, Map<String, Object>> entry : toUpload.entrySet()) {
+            HgLfsPointer pointer = byOid.get(entry.getKey());
+            if (pointer == null) {
+                throw new IOException("LFS batch response names an object that was not requested: " + entry.getKey());
+            }
+            byte[] blob;
+            try {
+                blob = getCachedObject(pointer);
+            } catch (IOException missingOrWrongSize) {
+                throw new io.github.search5.hg4j.lfs.errors.HgLfsCorruptObjectException(
+                        "detected corrupt lfs object: " + pointer.getOid() + "\n(hint: run hg verify)");
+            }
+            if (!HgLfsPointer.sha256Hex(blob).equals(pointer.getOid())) {
+                throw new io.github.search5.hg4j.lfs.errors.HgLfsCorruptObjectException(
+                        "detected corrupt lfs object: " + pointer.getOid() + "\n(hint: run hg verify)");
+            }
+            String href = (String) entry.getValue().get("href");
+            if (href == null) {
+                throw new IOException("No upload href for LFS object: " + pointer.getOid());
+            }
+            HttpRequest.Builder put = HttpRequest.newBuilder().uri(URI.create(href))
+                    .PUT(HttpRequest.BodyPublishers.ofByteArray(blob))
+                    .header("Content-Type", "application/octet-stream");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> headers = (Map<String, Object>) entry.getValue().get("header");
+            if (headers != null) {
+                for (Map.Entry<String, Object> header : headers.entrySet()) {
+                    put.header(header.getKey(), String.valueOf(header.getValue()));
+                }
+            }
+            HttpResponse<byte[]> answer;
+            try {
+                answer = client.send(put.build(), HttpResponse.BodyHandlers.ofByteArray());
+            } catch (IOException e) {
+                throw new io.github.search5.hg4j.lfs.errors.HgLfsException(
+                        "LFS error: " + e.getMessage() + "\n(hint: attempted connection to " + href + ")", 0, e);
+            }
+            if (answer.statusCode() / 100 != 2) {
+                throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(answer.statusCode(),
+                        "LFS HTTP error: HTTP Error " + answer.statusCode() + " (oid=" + pointer.getOid() + ", action=upload)");
+            }
+        }
+    }
+
     public static class MapJsonParser {
         private final String src;
         private int ptr = 0;

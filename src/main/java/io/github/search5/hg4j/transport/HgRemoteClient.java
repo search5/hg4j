@@ -914,7 +914,11 @@ public class HgRemoteClient implements HgRemoteConnection {
                 }
                 out.write(buf, 0, count);
             }
-            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+            byte[] answer = out.toByteArray();
+            if (io.github.search5.hg4j.bundle.Bundle2.isBundle2(answer)) {
+                return io.github.search5.hg4j.transport.wireprotov1.Bundle2PushReply.summarize(fullUrl, answer);
+            }
+            return new String(answer, StandardCharsets.UTF_8);
         } finally {
             conn.disconnect();
         }

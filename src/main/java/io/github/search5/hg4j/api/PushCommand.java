@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.bundle.Bundle2;
 import io.github.search5.hg4j.bundle.ChangegroupParser;
 import io.github.search5.hg4j.bundle.Bundle2Parser;
 import io.github.search5.hg4j.lib.HgLock;
@@ -42,6 +43,10 @@ import java.util.TreeSet;
  */
 public class PushCommand {
     private static final Logger LOGGER = Logger.getLogger(PushCommand.class.getName());
+
+    /** What a pushing client tells the server it can understand in the reply (the "replycaps" part). */
+    private static final String PUSH_REPLY_CAPS =
+            "HG20\nchangegroup=01,02,03,04,05\nerror=abort,unsupportedcontent,pushraced,pushkey\npushkey\n";
 
     private final HgRepository repository;
     private String destinationUrl;
@@ -129,6 +134,15 @@ public class PushCommand {
 
         try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(resolvedUrl)) {
             List<String> remoteHeads = client.getHeads();
+
+            // Like real hg's wrapped exchange.push: a repository that holds LFS files can only go to a remote that has the lfs
+            // extension (a local destination is checked by the requirements comparison instead).
+            if (repository.getRequirements().contains("lfs")
+                    && !(client instanceof io.github.search5.hg4j.transport.HgLocalClient)
+                    && !client.getCapabilities().contains("lfs")) {
+                throw new HgValidationException("required features are not supported in the destination: lfs\n"
+                        + "(hint: enable the lfs extension on the server)");
+            }
 
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
@@ -252,7 +266,10 @@ public class PushCommand {
                 // sidedata chunk -- root-caused via RequirementMatrixPush{Core,Docker}RoundTripTest.
                 boolean sidedataCopies = repository.isSidedataCopies();
                 boolean treemanifest = repository.isTreemanifest();
-                String version = sidedataCopies ? "05" : (treemanifest ? "03" : "01");
+                // real hg drops cg1 and cg2 for a repository with the lfs requirement: only cg3 and later carry the per-revision flags
+                // that mark a revision as LFS-stored
+                boolean lfsRepository = repository.getRequirements().contains("lfs");
+                String version = sidedataCopies ? "05" : ((treemanifest || lfsRepository) ? "03" : "01");
                 boolean treeCapable = !"01".equals(version);
 
                 // 1a. Pack Changelogs
@@ -411,6 +428,7 @@ public class PushCommand {
                 // 서로 다른 head에서 각각 수정된 경우). 이후 리비전은 직전에 패킹된 리비전을
                 // 베이스로 삼는다 -- packRevlogRange()로 일반화(§1b의 treemanifest dirlog
                 // 패킹과 완전히 동일한 규칙이라 backlog #39에서 공용 헬퍼로 뽑음).
+                List<Map.Entry<Revlog, Integer>> sentFileRevisions = new ArrayList<>();
                 for (String path : affectedFiles) {
                     File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                     File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
@@ -418,6 +436,11 @@ public class PushCommand {
 
                     Revlog fl = repository.getRevlog(flIdx, flDat);
                     List<ChangegroupParser.ChangeGroupEntry> flEntries = packRevlogRange(fl, changelog, startRev);
+                    for (int fileRev = 0; fileRev < fl.getRevisionCount(); fileRev++) {
+                        if (fl.getIndexRecord(fileRev).getLinkRev() >= startRev) {
+                            sentFileRevisions.add(Map.entry(fl, fileRev));
+                        }
+                    }
 
                     if (!flEntries.isEmpty()) {
                         ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
@@ -454,7 +477,12 @@ public class PushCommand {
                     // Wire1Commands/HgSshWireServer, all funneling into
                     // HgLocalClient#pushWithHooks) only reads an explicit cgVersion off THIS
                     // envelope; its plain "HG10" branch hardcodes cgVersion="01".
-                    bundleBytes = Bundle2Parser.wrapChangegroupInBundle2(cgBytes, version);
+                    // A server that answers a bundle2 push needs the "replycaps" part to build its reply (real hg's own client always
+                    // sends it); without it a real hg server fails with HTTP 500.
+                    Bundle2.Writer envelope = new Bundle2.Writer();
+                    envelope.addPart("replycaps", true, Map.of(), Map.of(), PUSH_REPLY_CAPS.getBytes(StandardCharsets.ISO_8859_1));
+                    envelope.addPart("changegroup", true, Map.of("version", version), Map.of(), cgBytes);
+                    bundleBytes = envelope.toBytes(null);
                 }
 
                 // 3. Dispatch bundle to remote destination.
@@ -467,6 +495,8 @@ public class PushCommand {
                 // is overriding a head conflict could get spuriously rejected as "raced" by a
                 // server-side check that (correctly, for a non-forced push) compares against the
                 // heads this client saw before building the bundle.
+                // the server must have a blob before it receives a pointer to it
+                io.github.search5.hg4j.lfs.HgLfsPrePush.upload(repository, resolvedUrl, sentFileRevisions);
                 String response = client.push(bundleBytes, force ? List.of("force") : remoteHeads);
 
                 // 3a. Sync local bookmarks to remote utilizing pushkey protocol

@@ -633,3 +633,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 `MiniFileset`(원본 `minifileset.py`와 `filesetlang` 결합 강도), `HgLfsTracker`(`.hglfs` 첫 일치 규칙 > `lfs.track` + 폐기 예정 `lfs.threshold`), `BuiltinHgLfs`가 추적자를 사용, `HisteditCommand`가 LFS 파일을 다시 포인터로 기록. 커밋을 만드는 다른 명령(Amend, Graft, Rebase, Merge, Backout, Import)은 `CommitCommand`에 위임하므로 자동 적용(계획서의 미확인 항목 해소: filelog에 직접 쓰는 곳은 `CommitCommand`와 `HisteditCommand`뿐).
 테스트: `LfsTrackRealHgInteropTest` 10개(설정 조합별로 실제 hg와 hg4j가 파일마다 포인터 저장 여부 일치; Phase 3 이전 코드에서 9개 실패 확인), `MiniFilesetTest` 8개, Histedit 시나리오 1개(수정을 빼면 실패 확인). 기존 `LfsCommandsRealHgInteropTest`는 hg4j 저장소의 `hgrc`에 `lfs.track`이 없어 비LFS 경로를 검증하고 있었음을 발견해 보강.
 검증: 일반 test 전체 통과, 커밋 경로 interop 31개 클래스(전체 아님) 통과. [[implementation-plan-lfs]]
+
+## [2026-11-04] LFS Phase 4: push·번들의 blob 업로드
+`HgLfsPrePush`(JGit `LfsPrePushHook` 대응), `HgLfsManager#uploadObjects`(배치 한 번, 서버에 있는 객체 생략, 업로드 전 blob 검증), 원본 `blobstore.remote()`의 저장소 선택 규칙(`http(s)`/`file`/`null`/주소 없음/알 수 없는 스킴, 실측으로 로컬 경로 push도 `lfs.url` 필요함을 확인). `PushCommand`: LFS 저장소는 changegroup 3 이상, `lfs` 능력 없는 대상 거절, 전송 전 blob 업로드. `BundleCommand`: LFS 저장소의 `-v1` 거절, 번들 리비전의 blob 업로드. 선행 결함 수정: 번들2 push가 `replycaps` 없이 실제 서버에서 HTTP 500, 응답 해석 없음(`Bundle2PushReply`).
+테스트: `LfsPushRealHgInteropTest` 5개, `LfsPushDestinationsRealHgInteropTest` 7개(실제 hg와 문구·결과 대조), `LfsTestProxy`(공용 요청 계수 프록시). 검증: 일반 test 전체 통과, push 계열 interop 37개 클래스(전체 아님) 통과. [[implementation-plan-lfs]]

@@ -425,6 +425,23 @@ bookmarks`. 원본 서버에서는 모두 정상.
 ### `HgLfsManager.fetchObject()`: 내려받은 blob의 SHA-256을 검증하지 않음, 헤더 일부만 전달
 **수정**: `fetchObjects`(배치 한 번)로 일반화하고 객체마다 SHA-256 검증(`HgLfsCorruptObjectException`), 다운로드 액션의 헤더 전체를 전달.
 
+### `PushCommand` + `HgRemoteClient#push`: 번들2 push가 실제 hg 서버에서 실패 (2026-11-04, Phase 4)
+**증상**: changegroup 3 이상(treemanifest, sidedata, LFS 저장소)의 push가 실제 `hg serve`에서 HTTP 500. 서버 로그:
+`TypeError: %d format: a real number is required, not NoneType` (`wireprotoserver._callhttp`의 `rsp.res`).
+**근본 원인**: push 번들에 `replycaps` 부품이 없었다. 실제 서버는 이 부품이 있어야 번들2 응답을 만든다. 클라이언트도 번들2 응답
+(`reply:changegroup`, `output`, `error:*`)을 해석하지 못하고 원문 문자열로 돌려줬다.
+**수정**: `PushCommand`가 `replycaps` + `changegroup` 부품을 보내고, `Bundle2PushReply`가 응답을 해석해 `error:*`를 예외로 올린다.
+SSH 전송(`HgSshClient#push`)은 아직 같은 해석이 없다(백로그).
+**테스트**: `LfsPushRealHgInteropTest`.
+
+### LFS 저장소의 push·bundle이 blob을 올리지 않음, changegroup 버전 (2026-11-04, Phase 4)
+**증상**: 포인터만 가고 blob은 서버에 없다. LFS 저장소에 cg1을 써서 `REVIDX_EXTSTORED` 플래그가 전달되지 않는다.
+**수정**: `HgLfsPrePush`(`blobstore.remote()` 규칙: `lfs.url` > http(s) 대상에 `/.git/info/lfs`, 스킴별 `http(s)`/`file`/`null`, 주소 없음은
+`lfs.url needs to be configured`, 알 수 없는 스킴은 `lfs: unknown url scheme`). push는 cg3 이상 고정, 대상이 `lfs` 능력이 없으면
+`required features are not supported in the destination: lfs`. `bundle`은 `-v1` 계열을 거절하고 번들 리비전의 blob을 올린다.
+**원본 확인(실측)**: 로컬 경로 push도 `lfs.url` 없이는 중단한다(원본의 `_promptremote`). 앞서 "주소가 없으면 건너뛴다"고 가정한 것이 틀렸고
+실측으로 바로잡았다.
+
 ### 테스트가 호스트의 `~/.cache/lfs`를 오염시킴
 **원인**: hg4j와 실제 hg가 모두 `XDG_CACHE_HOME`(없으면 `~/.cache`)에서 LFS 사용자 캐시를 정한다. 테스트가 개별로 `disableusercache`를 챙기지 않으면 호스트 캐시에 쓰고,
 다음 실행에서 "캐시에 이미 있어서" 통과하는 순서 의존이 생긴다.

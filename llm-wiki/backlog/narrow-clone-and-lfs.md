@@ -274,3 +274,11 @@ getbundle narrow 인자 협상을 구현, 클라이언트+서버 양방향, ✅ 
     **검증**: 전체 non-interop `test -x jacocoTestReport` 2286건 GREEN,
     scoped `LfsRealHgInteropTest` 10/10 GREEN.
 
+
+
+## LFS 계획서 Phase 4 이후 남은 차이 (2026-11-04)
+- `VerifyCommand`: blob이 로컬에 없을 때 원본은 내려받기를 시도하고 실패하면 `unpacking <node>: ...` 오류로 보고한다(`verify.skipflags`로
+  `EXTSTORED`를 건너뛸 때만 생략). hg4j는 조용히 건너뛴다. 의도하지 않은 차이이므로 Phase 6 이후 맞출 것.
+- SSH push(`HgSshClient#push`)는 번들2 응답 해석이 없다. LFS 업로드는 어차피 `http(s)`/`file`/`null` 저장소만 가능하다.
+- `hg4j` 서버(`HgHttpWireServer`)는 아직 `lfs` 능력을 광고하지 않으므로 LFS 저장소를 hg4j 서버로 push하면 거절된다(Phase 5).
+- 전송 중 재시도, 병렬 전송, 인증은 Phase 6.

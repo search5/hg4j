@@ -20,6 +20,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.zip.Deflater;
@@ -313,9 +314,12 @@ public class BundleCommand {
             // all, and even a cg1 FILE round-trip is independently broken by a real-hg bug for
             // that specific format regardless of cg version).
             boolean treemanifest = repository.isTreemanifest();
-            if (treemanifest && !type.isV3()) {
+            // A repository with LFS files has the same limit: its revisions carry the per-revision LFS flag, which only
+            // changegroup 3 and later can transport, so real hg refuses a "-v1" bundle for it too.
+            boolean lfsRepository = repository.getRequirements().contains("lfs");
+            if ((treemanifest || lfsRepository) && !type.isV3()) {
                 throw new IllegalStateException("abort: repository does not support bundle version 01"
-                        + " (this is a treemanifest repository -- use one of BundleType.NONE_V3/"
+                        + " (this is a " + (treemanifest ? "treemanifest" : "LFS") + " repository -- use one of BundleType.NONE_V3/"
                         + "GZIP_V3/BZIP2_V3, matching real hg's own 'hg bundle --type none-v3' etc.)");
             }
             String version = type.isV3() ? "03" : "01";
@@ -478,6 +482,7 @@ public class BundleCommand {
             // the treemanifest dirlog packing above (both apply the identical "first packed entry
             // uses its own real parent's content, later ones chain off the previous packed entry"
             // rule).
+            List<Map.Entry<Revlog, Integer>> bundledFileRevisions = new ArrayList<>();
             for (String path : affectedFiles) {
                 File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                 File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
@@ -486,6 +491,11 @@ public class BundleCommand {
                 Revlog fl = repository.getRevlog(flIdx, flDat);
                 List<ChangegroupParser.ChangeGroupEntry> flEntries =
                         packRevlogForSelectedRevs(fl, changelog, selectedSet);
+                for (int fileRev = 0; fileRev < fl.getRevisionCount(); fileRev++) {
+                    if (selectedSet.contains(fl.getIndexRecord(fileRev).getLinkRev())) {
+                        bundledFileRevisions.add(Map.entry(fl, fileRev));
+                    }
+                }
 
                 if (!flEntries.isEmpty()) {
                     ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
@@ -508,6 +518,10 @@ public class BundleCommand {
             // javadoc for exactly how each byte layout was verified against real hg) and write to
             // disk -- this remains the only way BundleCommand differs from PushCommand's
             // changegroup-building logic: no HgRemoteConnection dispatch, just a local file.
+            // Like real hg's wrapped writenewbundle: the blobs of the bundled revisions go to the LFS store first (the one of
+            // [lfs] url, or of the default path), so a bundle never refers to a blob that nobody has.
+            io.github.search5.hg4j.lfs.HgLfsPrePush.upload(repository, repository.getConfig().getPath("default"), bundledFileRevisions);
+
             ByteArrayOutputStream fileOut = new ByteArrayOutputStream();
             if (treeCapable) {
                 // -v3: HG20/bundle2 envelope, compression applied at the bundle2 STREAM level

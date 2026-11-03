@@ -1,6 +1,5 @@
 package io.github.search5.hg4j.lfs;
 
-import com.sun.net.httpserver.HttpServer;
 import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.api.CloneCommand;
 import io.github.search5.hg4j.api.InitCommand;
@@ -14,20 +13,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -43,11 +35,8 @@ class LfsBatchFetchRealHgInteropTest {
     Path tempDir;
 
     private Process serve;
-    private HttpServer proxy;
-    private int proxyPort;
+    private LfsTestProxy proxy;
     private int hgPort;
-    private final AtomicInteger batchRequests = new AtomicInteger();
-    private final AtomicBoolean corruptDownloads = new AtomicBoolean();
     private final List<byte[]> contents = new ArrayList<>();
     private final List<HgLfsPointer> pointers = new ArrayList<>();
 
@@ -74,56 +63,13 @@ class LfsBatchFetchRealHgInteropTest {
                 .directory(server).redirectErrorStream(true).start();
         waitForPort(hgPort);
 
-        HttpClient client = HttpClient.newHttpClient();
-        proxy = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        proxyPort = proxy.getAddress().getPort();
-        proxy.createContext("/", exchange -> {
-            try {
-                byte[] body = exchange.getRequestBody().readAllBytes();
-                HttpRequest.Builder request = HttpRequest.newBuilder()
-                        .uri(URI.create("http://127.0.0.1:" + hgPort + exchange.getRequestURI()))
-                        .method(exchange.getRequestMethod(), HttpRequest.BodyPublishers.ofByteArray(body));
-                java.util.Set<String> restricted = java.util.Set.of("host", "content-length", "connection", "expect", "upgrade");
-                exchange.getRequestHeaders().forEach((name, values) -> {
-                    if (!restricted.contains(name.toLowerCase(java.util.Locale.ROOT))) {
-                        values.forEach(value -> request.header(name, value));
-                    }
-                });
-                HttpResponse<byte[]> answer = client.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
-                byte[] out = answer.body();
-                boolean batch = exchange.getRequestURI().getPath().endsWith("/objects/batch");
-                if (batch) {
-                    batchRequests.incrementAndGet();
-                    // point the download links at the proxy too
-                    out = new String(out, StandardCharsets.UTF_8)
-                            .replace("127.0.0.1:" + hgPort, "127.0.0.1:" + proxyPort).getBytes(StandardCharsets.UTF_8);
-                } else if (corruptDownloads.get() && out.length > 0) {
-                    out = out.clone();
-                    out[0] ^= 1;
-                }
-                java.util.Set<String> skipped = java.util.Set.of("transfer-encoding", "connection", "content-length");
-                answer.headers().map().forEach((name, values) -> {
-                    if (!skipped.contains(name.toLowerCase(java.util.Locale.ROOT))) {
-                        values.forEach(value -> exchange.getResponseHeaders().add(name, value));
-                    }
-                });
-                exchange.sendResponseHeaders(answer.statusCode(), out.length == 0 ? -1 : out.length);
-                if (out.length > 0) {
-                    exchange.getResponseBody().write(out);
-                }
-            } catch (Exception e) {
-                exchange.sendResponseHeaders(502, -1);
-            } finally {
-                exchange.close();
-            }
-        });
-        proxy.start();
+        proxy = new LfsTestProxy(hgPort);
     }
 
     @AfterEach
     void stop() throws Exception {
         if (proxy != null) {
-            proxy.stop(0);
+            proxy.close();
         }
         if (serve != null) {
             serve.destroy();
@@ -140,25 +86,25 @@ class LfsBatchFetchRealHgInteropTest {
     }
 
     private String url() {
-        return "http://127.0.0.1:" + proxyPort + "/.git/info/lfs";
+        return proxy.url() + "/.git/info/lfs";
     }
 
     @Test
     void severalObjectsTakeOneBatchRequest() throws Exception {
         HgLfsManager client = freshClient();
         client.fetchObjects(pointers, url());
-        assertEquals(1, batchRequests.get(), "one batch request for all three objects");
+        assertEquals(1, proxy.batchRequests.get(), "one batch request for all three objects");
         for (int i = 0; i < 3; i++) {
             assertArrayEquals(contents.get(i), client.getCachedObject(pointers.get(i)));
         }
         client.fetchObjects(pointers, url());
-        assertEquals(1, batchRequests.get(), "nothing is missing any more, so no further request");
+        assertEquals(1, proxy.batchRequests.get(), "nothing is missing any more, so no further request");
     }
 
     @Test
     void aDownloadThatDoesNotMatchItsPointerIsRefused() throws Exception {
         HgLfsManager client = freshClient();
-        corruptDownloads.set(true);
+        proxy.corruptDownloads.set(true);
         assertThrows(HgLfsCorruptObjectException.class, () -> client.fetchObjects(pointers.subList(0, 1), url()));
         assertFalse(client.isCached(pointers.get(0)), "a corrupt object must not be cached");
     }
@@ -166,11 +112,11 @@ class LfsBatchFetchRealHgInteropTest {
     @Test
     void cloneChecksOutAllLfsFilesWithOneBatchRequest() throws Exception {
         File target = tempDir.resolve("cloned").toFile();
-        new CloneCommand().setSource("http://127.0.0.1:" + proxyPort).setDirectory(target).call();
+        new CloneCommand().setSource(proxy.url()).setDirectory(target).call();
         for (int i = 0; i < 3; i++) {
             assertArrayEquals(contents.get(i), Files.readAllBytes(new File(target, "f" + i + ".bin").toPath()));
         }
-        assertEquals(1, batchRequests.get(), "the checkout asked the server once for all three blobs");
+        assertEquals(1, proxy.batchRequests.get(), "the checkout asked the server once for all three blobs");
     }
 
     @Test

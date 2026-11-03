@@ -674,3 +674,6 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 
 ## [2026-11-04] `[auth]`를 원본과 같은 전송 시점으로
 `[auth]`에서 찾은 자격 증명은 서버가 401과 Basic 챌린지로 요청했을 때에만 요청을 한 번 되풀이하며 보내고(`HgRemoteClient`, `HgLfsClient`), 이후 요청은 처음부터 보낸다(Mercurial의 Basic 인증 처리기). 주소(`user:pass@`)와 `setCredentials`의 자격 증명은 종전대로 처음부터 보낸다(원본은 이것도 챌린지 뒤지만 기존 호출자 보존). `AuthConfigRealHgInteropTest`가 성공 시나리오마다 서버가 거절한 요청 수를 실제 hg와 비교한다(같음). 검증: 일반 test 2354개, 인증 interop 3개 클래스 통과.
+
+## [2026-11-04] 모든 HTTP 자격 증명을 챌린지 뒤에 전송
+주소의 `user:pass@`, `setCredentials`/`setCredentialsProvider`, `[auth]`의 자격 증명이 모두 서버의 401 + Basic 챌린지 뒤에 한 번 되풀이하며 전송되고 이후 요청은 처음부터 보낸다(`HgRemoteClient`, `HgRemoteClientV2`, `HgLfsClient`). 종전 첫 요청부터 보내던 단위 테스트 6개의 모의 서버는 Basic 챌린지를 보내도록 고쳤다. `AuthConfigRealHgInteropTest`에 주소 자격 증명 2개를 추가해 거절 요청 수가 실제 hg와 같음을 확인했다. 검증: 일반 test 2354개, 인증 interop 3개 클래스 통과.

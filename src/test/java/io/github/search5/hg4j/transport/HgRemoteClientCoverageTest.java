@@ -101,6 +101,12 @@ public class HgRemoteClientCoverageTest {
         final String[] authHeader = {null};
         server.createContext("/", exchange -> {
             authHeader[0] = exchange.getRequestHeaders().getFirst("Authorization");
+            if (authHeader[0] == null) { // a server that asks for Basic authentication, like the original's peers
+                exchange.getResponseHeaders().add("WWW-Authenticate", "Basic realm=\"test\"");
+                exchange.sendResponseHeaders(401, -1);
+                exchange.close();
+                return;
+            }
             byte[] body = "head1\n".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -1057,6 +1063,12 @@ public class HgRemoteClientCoverageTest {
         try {
             server.createContext("/", exchange -> {
                 authHeader[0] = exchange.getRequestHeaders().getFirst("Authorization");
+            if (authHeader[0] == null) { // a server that asks for Basic authentication, like the original's peers
+                exchange.getResponseHeaders().add("WWW-Authenticate", "Basic realm=\"test\"");
+                exchange.sendResponseHeaders(401, -1);
+                exchange.close();
+                return;
+            }
                 exchange.getRequestBody().readAllBytes();
                 byte[] resp = new byte[]{0, 0, 0, 0};
                 exchange.sendResponseHeaders(200, resp.length);
@@ -1263,6 +1275,12 @@ public class HgRemoteClientCoverageTest {
         try {
             server.createContext("/", exchange -> {
                 authHeader[0] = exchange.getRequestHeaders().getFirst("Authorization");
+            if (authHeader[0] == null) { // a server that asks for Basic authentication, like the original's peers
+                exchange.getResponseHeaders().add("WWW-Authenticate", "Basic realm=\"test\"");
+                exchange.sendResponseHeaders(401, -1);
+                exchange.close();
+                return;
+            }
                 exchange.getRequestBody().readAllBytes();
                 byte[] resp = "ok\n".getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200, resp.length);

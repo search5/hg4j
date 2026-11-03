@@ -81,6 +81,18 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         this.readTimeout = readTimeout;
     }
 
+    /** The configuration whose {@code [auth]} section may supply credentials when the server asks for them. */
+    public void setAuthConfig(io.github.search5.hg4j.lib.HgRcConfig config) {
+        this.authConfig = config;
+    }
+
+    private io.github.search5.hg4j.lib.HgRcConfig authConfig;
+    private boolean authChallengeAnswered;
+
+    /** Thrown inside this class to repeat a request once the credentials of a Basic challenge are known. */
+    private static final class ChallengeAnswered extends IOException {
+    }
+
     public void setCredentials(String username, String password) {
         this.username = username;
         this.password = password;
@@ -126,11 +138,18 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
             return;
         }
         String url = baseUrl + "/?cmd=capabilities";
-        HttpURLConnection conn = openConnection(url, "GET");
-        conn.setRequestProperty("X-HgUpgrade-1", Wire2Commands.NAMESPACE);
-        conn.setRequestProperty("X-HgProto-1", "cbor");
-
-        byte[] body = readResponseBody(conn, url);
+        byte[] body;
+        while (true) {
+            HttpURLConnection conn = openConnection(url, "GET");
+            conn.setRequestProperty("X-HgUpgrade-1", Wire2Commands.NAMESPACE);
+            conn.setRequestProperty("X-HgProto-1", "cbor");
+            try {
+                body = readResponseBody(conn, url);
+                break;
+            } catch (ChallengeAnswered again) {
+                // repeated with the credentials
+            }
+        }
         List<Object> objs = Cbor.decodeAll(body);
         if (objs.isEmpty()) {
             throw new HgProtocolException(url, "Empty capabilities discovery response");
@@ -150,16 +169,24 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         String url = baseUrl + "/" + apibase + namespace + "/" + permission + "/" + command;
         byte[] requestBody = Wire2Transport.buildCommandRequest(nextRequestId(), command, args);
 
-        HttpURLConnection conn = openConnection(url, "POST");
-        conn.setRequestProperty("Accept", Wire2Transport.FRAMINGTYPE);
-        conn.setRequestProperty("Content-Type", Wire2Transport.FRAMINGTYPE);
-        conn.setDoOutput(true);
-        conn.setRequestProperty("Content-Length", String.valueOf(requestBody.length));
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(requestBody);
-        }
+        byte[] responseBody;
+        while (true) {
+            HttpURLConnection conn = openConnection(url, "POST");
+            conn.setRequestProperty("Accept", Wire2Transport.FRAMINGTYPE);
+            conn.setRequestProperty("Content-Type", Wire2Transport.FRAMINGTYPE);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Length", String.valueOf(requestBody.length));
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(requestBody);
+            }
 
-        byte[] responseBody = readResponseBody(conn, url);
+            try {
+                responseBody = readResponseBody(conn, url);
+                break;
+            } catch (ChallengeAnswered again) {
+                // repeated with the credentials
+            }
+        }
         return Wire2Transport.readCommandResponse(Wire2Transport.toStream(responseBody));
     }
 
@@ -172,7 +199,7 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
         conn.setUseCaches(false);
-        if (username != null && password != null) {
+        if (username != null && password != null && authChallengeAnswered) {
             String credentials = username + ":" + password;
             String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
             conn.setRequestProperty("Authorization", "Basic " + encoded);
@@ -182,6 +209,23 @@ public class HgRemoteClientV2 implements HgRemoteConnection {
 
     private byte[] readResponseBody(HttpURLConnection conn, String url) throws IOException {
         int status = conn.getResponseCode();
+        if (status == HttpURLConnection.HTTP_UNAUTHORIZED && !authChallengeAnswered) {
+            String challenge = conn.getHeaderField("WWW-Authenticate");
+            if (challenge != null && challenge.toLowerCase(java.util.Locale.ROOT).startsWith("basic")) {
+                if (password == null && authConfig != null) {
+                    HgAuthConfig.Match match = HgAuthConfig.find(authConfig, baseUrl, username);
+                    if (match != null && match.password() != null && match.username() != null) {
+                        username = match.username();
+                        password = match.password();
+                    }
+                }
+                if (username != null && password != null) {
+                    authChallengeAnswered = true;
+                    conn.disconnect();
+                    throw new ChallengeAnswered();
+                }
+            }
+        }
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED || status == HttpURLConnection.HTTP_FORBIDDEN) {
             throw new HgAuthException(url, username != null ? username : "anonymous");
         }

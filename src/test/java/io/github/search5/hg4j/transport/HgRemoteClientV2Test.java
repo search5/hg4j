@@ -120,6 +120,11 @@ public class HgRemoteClientV2Test {
             @Override
             protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
                 capturedAuth.add(request.getHeader("Authorization"));
+                if (request.getHeader("Authorization") == null) { // asks for Basic authentication first
+                    response.setHeader("WWW-Authenticate", "Basic realm=\"test\"");
+                    response.setStatus(401);
+                    return;
+                }
                 real.service(request, response);
             }
         });
@@ -146,6 +151,11 @@ public class HgRemoteClientV2Test {
             @Override
             protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
                 capturedAuth.add(request.getHeader("Authorization"));
+                if (request.getHeader("Authorization") == null) { // asks for Basic authentication first
+                    response.setHeader("WWW-Authenticate", "Basic realm=\"test\"");
+                    response.setStatus(401);
+                    return;
+                }
                 real.service(request, response);
             }
         });

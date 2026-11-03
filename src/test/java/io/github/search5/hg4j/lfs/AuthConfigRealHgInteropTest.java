@@ -91,6 +91,13 @@ class AuthConfigRealHgInteropTest {
         }
     }
 
+    /** The address pulled from; a test may put credentials into it. */
+    private String addressUserInfo = "";
+
+    private String address() {
+        return proxy.url().replace("http://", "http://" + addressUserInfo);
+    }
+
     private static String authSection(String settings) {
         return "[auth]\n" + settings;
     }
@@ -101,7 +108,7 @@ class AuthConfigRealHgInteropTest {
         dst.mkdirs();
         HgTestUtils.hg(dst, concat(LFS, "init"));
         Files.writeString(new File(dst, ".hg/hgrc").toPath(),
-                "[extensions]\nlfs =\n[experimental]\nlfs.disableusercache = true\n[paths]\ndefault = " + proxy.url() + "\n"
+                "[extensions]\nlfs =\n[experimental]\nlfs.disableusercache = true\n[paths]\ndefault = " + address() + "\n"
                         + authSection(authLines));
         try {
             HgTestUtils.hg(dst, concat(LFS, "pull", "-u"));
@@ -115,7 +122,7 @@ class AuthConfigRealHgInteropTest {
         File dir = tempDir.resolve(name).toFile();
         new InitCommand().setDirectory(dir).call();
         Files.writeString(new File(dir, ".hg/hgrc").toPath(),
-                "[extensions]\nlfs =\n[experimental]\nlfs.disableusercache = true\n[paths]\ndefault = " + proxy.url() + "\n"
+                "[extensions]\nlfs =\n[experimental]\nlfs.disableusercache = true\n[paths]\ndefault = " + address() + "\n"
                         + authSection(authLines));
         try {
             HgRepository repo = new HgRepository(dir);
@@ -177,5 +184,18 @@ class AuthConfigRealHgInteropTest {
     @Test
     void aPasswordMissingFromTheGroupLeavesTheServerRefusing() throws Exception {
         bothAgree(false, "x.prefix = 127.0.0.1\nx.schemes = http\nx.username = user\n");
+    }
+
+    @Test
+    void credentialsInTheAddressAreAlsoSentOnlyAfterTheChallenge() throws Exception {
+        addressUserInfo = "user:secret@";
+        bothAgree(true, "");
+    }
+
+    @Test
+    void aUserInTheAddressPicksTheAuthGroupOfThatUser() throws Exception {
+        addressUserInfo = "user@";
+        bothAgree(true, "x.prefix = 127.0.0.1\nx.schemes = http\nx.username = user\nx.password = secret\n"
+                + "y.prefix = 127.0.0.1\ny.schemes = http\ny.username = other\ny.password = wrong\n");
     }
 }

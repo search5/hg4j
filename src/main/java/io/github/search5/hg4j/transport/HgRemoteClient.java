@@ -89,21 +89,20 @@ public class HgRemoteClient implements HgRemoteConnection {
     /**
      * Remembers the configuration whose {@code [auth]} section supplies the credentials of an address that carries none
      * (Mercurial's {@code passwordmgr.find_user_password}: credentials of the address first, then {@code [auth]}). Like
-     * Mercurial's Basic authentication handler they are used only after the server answered 401 with a Basic challenge: the
-     * request is then repeated with them, and later requests send them at once.
+     * Mercurial's Basic authentication handler, all credentials (of the address, set by {@link #setCredentials} or found here)
+     * are sent only after the server answered 401 with a Basic challenge: the request is then repeated with them, and later
+     * requests send them at once.
      */
     public void applyAuthConfig(io.github.search5.hg4j.lib.HgRcConfig config) {
         this.authConfig = config;
     }
 
     private io.github.search5.hg4j.lib.HgRcConfig authConfig;
-    /** True once credentials came from {@code [auth]}: they are sent only after a challenge has been answered. */
-    private boolean credentialsFromAuthConfig;
     private boolean authChallengeAnswered;
 
     /** Whether the Authorization header goes out with a request now. */
     private boolean sendsAuthorization() {
-        return username != null && password != null && (!credentialsFromAuthConfig || authChallengeAnswered);
+        return username != null && password != null && authChallengeAnswered;
     }
 
     /**
@@ -112,7 +111,7 @@ public class HgRemoteClient implements HgRemoteConnection {
      */
     private boolean answerBasicChallenge(HttpURLConnection conn) {
         String challenge = conn.getHeaderField("WWW-Authenticate");
-        if (challenge == null || !challenge.toLowerCase(java.util.Locale.ROOT).startsWith("basic") || sendsAuthorization()) {
+        if (challenge == null || !challenge.toLowerCase(java.util.Locale.ROOT).startsWith("basic") || authChallengeAnswered) {
             return false;
         }
         if (password == null && authConfig != null) {
@@ -120,7 +119,6 @@ public class HgRemoteClient implements HgRemoteConnection {
             if (match != null && match.password() != null && match.username() != null) {
                 this.username = match.username();
                 this.password = match.password();
-                this.credentialsFromAuthConfig = true;
             }
         }
         if (username == null || password == null) {
@@ -276,6 +274,7 @@ public class HgRemoteClient implements HgRemoteConnection {
             if (this.username != null && this.password != null) {
                 v2.setCredentials(this.username, this.password);
             }
+            v2.setAuthConfig(this.authConfig);
             v2.setForceTls(this.forceTls);
             v2.setProxy(this.proxy);
             v2.primeDiscovery(discoveredApibase, Wire2Commands.NAMESPACE);

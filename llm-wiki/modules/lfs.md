@@ -44,7 +44,7 @@ JGit이 정확히 `org.eclipse.jgit.lfs` 패키지를 갖고 있어 이름까지
 
 ## 이식한 의도적 차이 (2026-11-04)
 - SSH push: 번들2 응답(`reply:changegroup`, `output`, `error:*`)을 해석한다(`HgSshClient.push`).
-- `[auth]` 설정: `HgAuthConfig`가 와이어 HTTP와 LFS blob 전송에 자격 증명을 준다. 401 Basic 챌린지를 받은 뒤에 보내고 이후 요청은 처음부터 보낸다(원본과 같고, 거절된 요청 수도 실제 hg와 같다). 주소에 적은 자격 증명과 `setCredentials`는 기존대로 처음부터 보낸다. `cert`/`key`는 쓰지 않는다.
+- `[auth]` 설정: `HgAuthConfig`가 와이어 HTTP와 LFS blob 전송에 자격 증명을 준다. 401 Basic 챌린지를 받은 뒤에 보내고 이후 요청은 처음부터 보낸다(원본과 같고, 거절된 요청 수도 실제 hg와 같다). 주소에 적은 자격 증명과 `setCredentials`로 준 자격 증명도 같다(v1, v2 HTTP와 LFS 모두). `cert`/`key`는 쓰지 않는다.
 - 서버 권한 구분: `HgWebPermissions`와 `HgHttpWireServer#setEnforceWebPermissions(true)`(기본 꺼짐, 기존 사용처 보존). 와이어 v2 경로는 적용 전이다.
 - 진행률과 콘솔 줄: `ProgressMonitor#message`, `HgLfsProgress.bind`, `HgByteCount`. `PushCommand`/`UpdateCommand`/`CloneCommand`가 사용한다.
 - `lfs()` 파일셋: `FilesCommand#setFileset`(`set:` 패턴도 같다). 작업 사본에서는 원본처럼 비어 있다.

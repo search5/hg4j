@@ -739,6 +739,12 @@ public class HgRemoteClientTest {
             public void handle(HttpExchange exchange) throws IOException {
                 headsCalled[0] = true;
                 authHeader[0] = exchange.getRequestHeaders().getFirst("Authorization");
+            if (authHeader[0] == null) { // a server that asks for Basic authentication, like the original's peers
+                exchange.getResponseHeaders().add("WWW-Authenticate", "Basic realm=\"test\"");
+                exchange.sendResponseHeaders(401, -1);
+                exchange.close();
+                return;
+            }
 
                 String response = "remotehead1234567890\n";
                 byte[] respBytes = response.getBytes(StandardCharsets.UTF_8);

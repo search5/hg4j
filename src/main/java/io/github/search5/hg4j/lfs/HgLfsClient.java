@@ -60,10 +60,12 @@ final class HgLfsClient {
         }
         this.baseUrl = bareUrl;
         this.user = userInfo == null ? null : (userInfo.contains(":") ? userInfo.substring(0, userInfo.indexOf(':')) : userInfo);
-        // credentials of the address are sent at once; the ones of [auth] only after the server asked for them (see send())
-        this.basicAuthorization = userInfo != null && userInfo.contains(":")
-                ? "Basic " + Base64.getEncoder().encodeToString(userInfo.getBytes(StandardCharsets.UTF_8)) : null;
+        // all credentials, those of the address and those of [auth], are sent only after the server asked for them (see send())
+        this.addressCredentials = userInfo != null && userInfo.contains(":") ? userInfo : null;
+        this.basicAuthorization = null;
     }
+
+    private final String addressCredentials;
 
     private final String user;
 
@@ -78,11 +80,16 @@ final class HgLfsClient {
         if (response.statusCode() == 401 && basicAuthorization == null) {
             String challenge = response.headers().firstValue("WWW-Authenticate").orElse("");
             if (challenge.toLowerCase(java.util.Locale.ROOT).startsWith("basic")) {
-                io.github.search5.hg4j.transport.HgAuthConfig.Match match =
-                        io.github.search5.hg4j.transport.HgAuthConfig.find(config, baseUrl, user);
-                if (match != null && match.username() != null && match.password() != null) {
-                    basicAuthorization = "Basic " + Base64.getEncoder().encodeToString(
-                            (match.username() + ":" + match.password()).getBytes(StandardCharsets.UTF_8));
+                String credentials = addressCredentials;
+                if (credentials == null) {
+                    io.github.search5.hg4j.transport.HgAuthConfig.Match match =
+                            io.github.search5.hg4j.transport.HgAuthConfig.find(config, baseUrl, user);
+                    if (match != null && match.username() != null && match.password() != null) {
+                        credentials = match.username() + ":" + match.password();
+                    }
+                }
+                if (credentials != null) {
+                    basicAuthorization = "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
                     request.header("Authorization", basicAuthorization);
                     response = http.send(request.build(), handler);
                 }

@@ -170,7 +170,12 @@ public class HgSshClient implements HgRemoteConnection {
 
             connected = true;
         } catch (Exception e) {
-            close();
+            try {
+                close();
+            } catch (IOException closeFailure) {
+                // the connection error below is the one to report; the failure to clean up is attached to it
+                e.addSuppressed(closeFailure);
+            }
             String msg = e.getMessage();
             if (e instanceof SshAuthenticationException || (msg != null && (msg.toLowerCase().contains("auth fail") || msg.toLowerCase().contains("authentication") || msg.toLowerCase().contains("permission denied")))) {
                 throw new HgAuthException(sshUrl, username, e);
@@ -1047,13 +1052,12 @@ public class HgSshClient implements HgRemoteConnection {
     }
 
     @Override
-    public synchronized void close() {
-        if (sshSession != null) {
-            try {
-                sshSession.close();
-            } catch (Exception ignored) {}
-            sshSession = null;
-        }
+    public synchronized void close() throws IOException {
+        SshSession closing = sshSession;
+        sshSession = null;
         connected = false;
+        if (closing != null) {
+            closing.close();
+        }
     }
 }

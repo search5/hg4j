@@ -37,7 +37,7 @@ public class DefaultFileStoreEngine implements StoreEngine {
         // CHANGELOGV2, so a *second* real-hg commit on top of such an hg4j-created changelog
         // crashed inside `revlog.py`'s `rank = 1 + self.fast_rank(p1r)` with `TypeError:
         // unsupported operand type(s) for +: 'int' and 'NoneType'` -- found 2026-09-05 by the
-        // requirement matrix (RequirementMatrixInitDockerRoundTripTest, the `cl2/general-v2` and
+        // requirement matrix (RequirementMatrixInitRealHgRoundTripTest, the `cl2/general-v2` and
         // `cl2+sidedata/general-v2` combos) doing exactly that as its own acceptance check.
         boolean createAsChangelogV2 = repository.isChangelogV2()
                 && "00changelog.i".equals(indexFile.getName()) && !indexFile.exists();

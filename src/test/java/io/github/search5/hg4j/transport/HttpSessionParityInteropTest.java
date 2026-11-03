@@ -43,8 +43,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * The HTTP counterpart of the SSH session tests: a REAL hg client talks to a real {@code hg serve} through a recording proxy; the
  * requests it made are then replayed to a pristine copy of the server under the real {@code hg serve} and under hg4j's
  * {@link HgHttpWireServer}, and every answer must have the same status, the same {@code Content-Type} and the same body. Bodies
- * are compared after decompression (zlib or the engine of media type 0.2), and a bundle2 answer part by part without the
- * changegroup, whose deltas may legitimately be encoded differently.
+ * are compared after decompression (zlib or the engine of media type 0.2), and a bundle2 answer part by part (the changegroup included: its deltas are the same bytes as the original's).
  */
 @Tag("interop")
 class HttpSessionParityInteropTest {
@@ -62,47 +61,6 @@ class HttpSessionParityInteropTest {
     }
 
     // ------------------------------------------------------------------ a real hg serve
-
-    private static final class RealServe implements AutoCloseable {
-        final Process process;
-        final int port;
-
-        RealServe(Path repo) throws Exception {
-            ProcessBuilder pb = LocalHg.processBuilder(repo, "serve", "-p", "0", "--address", "127.0.0.1");
-            pb.redirectErrorStream(true);
-            pb.environment().put("PYTHONUNBUFFERED", "1");
-            process = pb.start();
-            CompletableFuture<Integer> found = new CompletableFuture<>();
-            List<String> seen = new CopyOnWriteArrayList<>();
-            Thread reader = new Thread(() -> {
-                try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        seen.add(line);
-                        Matcher m = Pattern.compile("listening at http://[^:/]+:(\\d+)/").matcher(line);
-                        if (m.find()) {
-                            found.complete(Integer.parseInt(m.group(1)));
-                        }
-                    }
-                } catch (IOException ignored) {
-                    // the process was stopped
-                }
-            });
-            reader.setDaemon(true);
-            reader.start();
-            try {
-                port = found.get(30, TimeUnit.SECONDS);
-            } catch (java.util.concurrent.TimeoutException e) {
-                process.destroy();
-                throw new AssertionError("hg serve printed no listening banner; output=" + seen);
-            }
-        }
-
-        @Override
-        public void close() {
-            process.destroy();
-        }
-    }
 
     // ------------------------------------------------------------------ the recording proxy
 
@@ -166,7 +124,7 @@ class HttpSessionParityInteropTest {
         };
     }
 
-    /** {@code status|content type|engine|body}, the body decompressed and, for bundle2, as its parts without the changegroup. */
+    /** {@code status|content type|engine|body}, the body decompressed and, for bundle2, as its parts. */
     private static String normalise(HttpResponse<byte[]> answer) throws IOException {
         String type = answer.headers().firstValue("Content-Type").orElse("");
         byte[] body = answer.body();
@@ -186,7 +144,7 @@ class HttpSessionParityInteropTest {
         text.append(answer.statusCode()).append('|').append(type).append('|').append(engine).append('|');
         if (Bundle2.isBundle2(body)) {
             for (Bundle2.Part part : Bundle2.read(body)) {
-                if (!part.type.equals("changegroup")) {
+                {
                     text.append(part.type).append(part.mandatory ? "!" : "?").append(part.params).append('=')
                             .append(part.type.equals("hgtagsfnodes") ? unorderedRecords(part.payload, 40)
                                     : binary(part.type) ? ParitySupport.hex(part.payload, 0, part.payload.length)
@@ -213,13 +171,18 @@ class HttpSessionParityInteropTest {
     }
 
     private static boolean binary(String type) {
-        return type.equals("bookmarks") || type.equals("phase-heads") || type.equals("hgtagsfnodes") || type.equals("stream2");
+        return type.equals("changegroup") || type.equals("bookmarks") || type.equals("phase-heads") || type.equals("hgtagsfnodes") || type.equals("stream2");
     }
 
     // ------------------------------------------------------------------ one scenario
 
     private void assertSameHttpSession(String name, Consumer<String> client, Consumer<Path> beforeRecord,
                                        Consumer<Path> beforeReplay) throws Exception {
+        assertSameHttpSession(name, client, beforeRecord, beforeReplay, server -> { });
+    }
+
+    private void assertSameHttpSession(String name, Consumer<String> client, Consumer<Path> beforeRecord,
+                                       Consumer<Path> beforeReplay, Consumer<HgHttpWireServer> mineSetup) throws Exception {
         Path recordDir = tmp.resolve(name + "-record");
         Path realDir = tmp.resolve(name + "-real");
         Path mineDir = tmp.resolve(name + "-mine");
@@ -229,7 +192,7 @@ class HttpSessionParityInteropTest {
         }
 
         List<Recorded> requests;
-        try (RealServe recorder = new RealServe(recordDir)) {
+        try (ParitySupport.RealServe recorder = new ParitySupport.RealServe(recordDir)) {
             requests = record(recorder.port, client);
         }
 
@@ -237,12 +200,14 @@ class HttpSessionParityInteropTest {
         beforeReplay.accept(mineDir);
         List<String> expected = new ArrayList<>();
         List<String> actual = new ArrayList<>();
-        try (RealServe real = new RealServe(realDir)) {
+        try (ParitySupport.RealServe real = new ParitySupport.RealServe(realDir)) {
             for (Recorded request : requests) {
                 expected.add(normalise(send(request, real.port)));
             }
         }
-        Server mine = HgTestUtils.startServlet(new HgHttpWireServer(new HgRepository(mineDir.toFile())));
+        HgHttpWireServer mineServlet = new HgHttpWireServer(new HgRepository(mineDir.toFile()));
+        mineSetup.accept(mineServlet);
+        Server mine = HgTestUtils.startServlet(mineServlet);
         try {
             for (Recorded request : requests) {
                 actual.add(normalise(send(request, HgTestUtils.port(mine))));
@@ -330,6 +295,51 @@ class HttpSessionParityInteropTest {
         commit(client, "pushed\n");
         assertSameHttpSession("bundle1", url -> clientCommand(client, "push", "--config", "devel.legacy.exchange=bundle1", url),
                 NOTHING, NOTHING);
+    }
+
+    /** Adds a python hook that always fails to the real server's configuration (the web settings stay). */
+    private Consumer<Path> realHook(String hookName) {
+        return dir -> {
+            try {
+                Path hook = tmp.resolve("rejecting_hook.py");
+                Files.writeString(hook, "def reject(ui, repo, hooktype, **kwargs):\n    return True\n");
+                Path hgrc = dir.resolve(".hg/hgrc");
+                Files.writeString(hgrc, Files.readString(hgrc) + "[hooks]\n" + hookName + " = python:" + hook + ":reject\n");
+            } catch (java.io.IOException e) {
+                throw new IllegalStateException(e);
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("HTTP: 서버 훅이 거절하는 push 세션(prechangegroup, pretxnchangegroup, 번들2와 번들1)의 응답이 원본과 같다")
+    void hookRejectedPushSessions() throws Exception {
+        Path client = newClient("hook-client");
+        commit(client, "pushed\n");
+        for (String bundle : new String[]{"bundle2", "bundle1"}) {
+            String[] extra = bundle.equals("bundle1") ? new String[]{"--config", "devel.legacy.exchange=bundle1"} : new String[0];
+            Consumer<String> push = url -> {
+                String[] args = new String[3 + extra.length];
+                args[0] = "push";
+                System.arraycopy(extra, 0, args, 1, extra.length);
+                args[1 + extra.length] = url;
+                clientCommand(client, java.util.Arrays.copyOf(args, 2 + extra.length));
+            };
+            assertSameHttpSession("prechangegroup-" + bundle, push, NOTHING, realHook("prechangegroup"),
+                    server -> server.registerPreChangegroupHook(ctx -> false));
+            assertSameHttpSession("pretxn-" + bundle, push, NOTHING, realHook("pretxnchangegroup"),
+                    server -> server.registerPreTxnChangegroupHook(ctx -> false));
+        }
+    }
+
+    @Test
+    @DisplayName("HTTP: prepushkey 훅이 거절하는 북마크 push 세션의 응답(롤백 출력 포함)이 원본과 같다")
+    void pushkeyHookRejectedSession() throws Exception {
+        Path client = newClient("hook-pushkey-client");
+        commit(client, "pushed\n");
+        clientCommand(client, "bookmark", "hooked");
+        assertSameHttpSession("prepushkey", url -> clientCommand(client, "push", "-B", "hooked", url), NOTHING, realHook("prepushkey"),
+                server -> server.registerPrePushkeyHook(ctx -> false));
     }
 
     @Test

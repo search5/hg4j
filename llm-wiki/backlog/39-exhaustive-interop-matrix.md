@@ -95,10 +95,10 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     (`PushCommand`/`RebaseCommand`/`ShelveCommand`/`StripCommand`)에 requirement
     매트릭스(native 6 + Docker 30 = 36개 조합)를 확장 적용. 새 테스트 클래스
     8개 추가(명령당 native/Docker 각 1개 — `RequirementMatrixPushCoreRoundTripTest`/
-    `RequirementMatrixPushDockerRoundTripTest`/`RequirementMatrixRebaseCoreRoundTripTest`/
-    `RequirementMatrixRebaseDockerRoundTripTest`/`RequirementMatrixShelveCoreRoundTripTest`/
-    `RequirementMatrixShelveDockerRoundTripTest`/`RequirementMatrixStripCoreRoundTripTest`/
-    `RequirementMatrixStripDockerRoundTripTest`, 전부 `src/test/java/io/github/search5/hg4j/api/`)
+    `RequirementMatrixPushRealHgRoundTripTest`/`RequirementMatrixRebaseCoreRoundTripTest`/
+    `RequirementMatrixRebaseRealHgRoundTripTest`/`RequirementMatrixShelveCoreRoundTripTest`/
+    `RequirementMatrixShelveRealHgRoundTripTest`/`RequirementMatrixStripCoreRoundTripTest`/
+    `RequirementMatrixStripRealHgRoundTripTest`, 전부 `src/test/java/io/github/search5/hg4j/api/`)
     + Docker 쓰기 경로 corruption 회피용 subprocess 헬퍼 4개(`RequirementMatrixStripHelperMain`/
     `RequirementMatrixRebaseHelperMain`/`RequirementMatrixShelveHelperMain`/
     `RequirementMatrixPushHelperMain`, 기존 `RequirementMatrixCommitHelperMain`과
@@ -214,7 +214,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
        공용 헬퍼로 통합.
 
        **검증**: 두 수정 후 `RequirementMatrixPushCoreRoundTripTest`(native
-       6/6) + `RequirementMatrixPushDockerRoundTripTest`(Docker 30/30) 전부
+       6/6) + `RequirementMatrixPushRealHgRoundTripTest`(Docker 30/30) 전부
        GREEN 재확인. 기존 push 관련 테스트(`PushCommandTest`,
        `CatUpdateClonePushCoverageTest`, `CHgPushRoundtripTest`,
        `PushRealHgInteropTest`, `PushLockRaceRealHgInteropTest`)와 비-interop
@@ -234,7 +234,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     좋은 다음 표본으로 판단(사용자가 권장한 "방금 고친 것과 코드 경로를
     공유하는 명령" 기준과는 별개로, "이미 검증된 CommitCommand에 위임하는
     명령들이 조합 전체에서 안전한지"라는 다른 유용한 신호). `RequirementMatrixAmendCoreRoundTripTest`
-    (native)/`RequirementMatrixAmendDockerRoundTripTest`(Docker) +
+    (native)/`RequirementMatrixAmendRealHgRoundTripTest`(Docker) +
     `RequirementMatrixAmendHelperMain`(subprocess 헬퍼) 신규 추가.
     **Native 6/6 + Docker 30/30 전부 GREEN** — 새 실버그 없음(`CommitCommand`로의
     위임이 모든 36개 조합에서 안전함을 재확인).
@@ -242,9 +242,9 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     **Wave 3(2026-09-05, 사용자 지시로 계속 진행)**: `MergeCommand`/`SubrepoCommand`
     두 명령을 함께 배정(코드 공유는 없음, 스케줄링 편의상 묶음). 신규 테스트
     클래스 6개 추가(`RequirementMatrixMergeCoreRoundTripTest`/
-    `RequirementMatrixMergeDockerRoundTripTest`/`RequirementMatrixMergeHelperMain`,
+    `RequirementMatrixMergeRealHgRoundTripTest`/`RequirementMatrixMergeHelperMain`,
     `RequirementMatrixSubrepoCoreRoundTripTest`/
-    `RequirementMatrixSubrepoDockerRoundTripTest`/`RequirementMatrixSubrepoHelperMain`).
+    `RequirementMatrixSubrepoRealHgRoundTripTest`/`RequirementMatrixSubrepoHelperMain`).
     **두 명령 다 native 6/6 + Docker 30/30 전부 GREEN.**
     - **`MergeCommand`**: 두 갈래로 갈라진 히스토리의 충돌 없는 3-way 병합과,
       양쪽이 같은 줄을 고쳐 진짜로 충돌하는 병합(마커 확인 + 실제 hg
@@ -303,9 +303,9 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
        커밋 성공 직후 `.hg/merge`를 재귀 삭제하도록 수정.
 
     **검증**: 위 3건 수정 후 `RequirementMatrixMergeCoreRoundTripTest`(native
-    6/6, clean+conflict 각 6 = 12개) + `RequirementMatrixMergeDockerRoundTripTest`
+    6/6, clean+conflict 각 6 = 12개) + `RequirementMatrixMergeRealHgRoundTripTest`
     (Docker 30/30 x 2 = 60개) + `RequirementMatrixSubrepoCoreRoundTripTest`
-    (native 6/6) + `RequirementMatrixSubrepoDockerRoundTripTest`(Docker 30/30)
+    (native 6/6) + `RequirementMatrixSubrepoRealHgRoundTripTest`(Docker 30/30)
     전부 GREEN. 비-interop `test`(2270+건) + `interopTest`(587건, 무관한
     사전 조건부 스킵 8건 제외 전부 통과) 전체 재확인 — 새 회귀 없음.
     **Wave 3(2026-09-05, `AmendCommand` 완료 이후 다른 wave 3 에이전트와 병렬
@@ -313,8 +313,8 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     Docker 30 = 36개 조합) 확장 적용 — 사용자 지시로 두 명령을 같은 에이전트에
     묶어 순서대로("`RebaseCommand`와 cherry-pick/rewrite 내부 로직을 공유하는지"
     확인 목적) 진행. 신규 테스트 클래스/헬퍼 6개(`RequirementMatrixHisteditCoreRoundTripTest`/
-    `RequirementMatrixHisteditDockerRoundTripTest`/`RequirementMatrixHisteditHelperMain`/
-    `RequirementMatrixGraftCoreRoundTripTest`/`RequirementMatrixGraftDockerRoundTripTest`/
+    `RequirementMatrixHisteditRealHgRoundTripTest`/`RequirementMatrixHisteditHelperMain`/
+    `RequirementMatrixGraftCoreRoundTripTest`/`RequirementMatrixGraftRealHgRoundTripTest`/
     `RequirementMatrixGraftHelperMain`, 전부 `src/test/java/io/github/search5/hg4j/api/`).
 
     - **`HisteditCommand`**: **native 6/6 + Docker 30/30 전부 GREEN** — TDD로
@@ -399,7 +399,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
       `RequirementMatrixGraftCoreRoundTripTest`(native 6/6 — 각 조합마다
       충돌 없는 diverging-branch graft + 충돌 발생·`hg resolve --list`/
       `continueGraft()` 재개까지 두 시나리오 모두 확인)/
-      `RequirementMatrixGraftDockerRoundTripTest`(Docker 30/30, 동일 두
+      `RequirementMatrixGraftRealHgRoundTripTest`(Docker 30/30, 동일 두
       시나리오, conflict/continue 왕복은 `RequirementMatrixGraftHelperMain`의
       `call`/`continue` 2-phase 서브프로세스로 처리)로 재확인. 기존
       `GraftCommandCoverageTest`도 새로 옳아진 동작에 맞춰 갱신 -- 구식
@@ -480,7 +480,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     코드 자체에 근거와 함께 문서화. 나머지 24/36(비-sidedata 조합, 특히
     treemanifest 포함)은 완전히 깨끗한 `hg verify` 통과. 새 테스트 클래스
     3개 추가(`RequirementMatrixBundleCoreRoundTripTest`/
-    `RequirementMatrixBundleDockerRoundTripTest`/
+    `RequirementMatrixBundleRealHgRoundTripTest`/
     `RequirementMatrixBundleHelperMain`, 전부
     `src/test/java/io/github/search5/hg4j/api/`) — 기존
     `BundleCommandTest`(8케이스, 전부 cg1/v1 타입 대상) 회귀 없음 재확인.
@@ -501,7 +501,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     **Wave 3(2026-09-05, `AddCommand`/`BookmarkCommand`/`TagCommand`, 사용자
     지시로 독립 진행)**: 세 명령 각각에 native 6개 + Docker 30개 = 36개 조합
     테스트 클래스 세트(`RequirementMatrix{Add,Bookmark,Tag}CoreRoundTripTest`/
-    `...DockerRoundTripTest`/`...HelperMain`, 기존 8개와 동일 패턴 재사용)를
+    `...RealHgRoundTripTest`/`...HelperMain`, 기존 8개와 동일 패턴 재사용)를
     신설. **세 명령 모두 native 6/6 + Docker 30/30 전부 GREEN.**
 
     - **`AddCommand`**: 새 실버그 없음. 시나리오는 이미 커밋된 루트 파일 1개 +
@@ -596,8 +596,8 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     백로그 23에서 이미 real-hg-CLI 행위 검증을 받았지만 매트릭스 커버리지는
     전무했고, `PhaseCommand`는 독립 로직)에 requirement 매트릭스(native 6 +
     Docker 30 = 36개 조합)를 신규 적용. 새 테스트 클래스 6개 추가
-    (`RequirementMatrixBranchCoreRoundTripTest`/`RequirementMatrixBranchDockerRoundTripTest`/
-    `RequirementMatrixPhaseCoreRoundTripTest`/`RequirementMatrixPhaseDockerRoundTripTest`
+    (`RequirementMatrixBranchCoreRoundTripTest`/`RequirementMatrixBranchRealHgRoundTripTest`/
+    `RequirementMatrixPhaseCoreRoundTripTest`/`RequirementMatrixPhaseRealHgRoundTripTest`
     + Docker 쓰기 경로 subprocess 헬퍼 2개 `RequirementMatrixBranchHelperMain`/
     `RequirementMatrixPhaseHelperMain`, 전부 `src/test/java/io/github/search5/hg4j/api/`).
 
@@ -660,7 +660,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     `RemoveCommand`/`AddremoveCommand`, `AddCommand`와 묶인 소규모 dirstate
     상태-전이 명령군)**: 5개 명령 모두 native 6/6 + Docker 30/30 = 36/36
     **전부 GREEN**(새 테스트 클래스 15개 — 명령당
-    `RequirementMatrix{X}CoreRoundTripTest`/`...DockerRoundTripTest`/
+    `RequirementMatrix{X}CoreRoundTripTest`/`...RealHgRoundTripTest`/
     `...HelperMain` 3종, 기존 8개 명령과 동일 패턴, 전부
     `src/test/java/io/github/search5/hg4j/api/`). 이 과정에서 진짜 hg4j
     프로덕션 버그 **4건**을 real hg 7.2 CLI 직접 대조로 발견·TDD로 수정:
@@ -809,9 +809,9 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     `HAS_MODE_AND_SIZE`/`HAS_MTIME` 플래그를 무조건 세팅한 채 기록하고
     있어 대칭으로 수정.
 
-    검증: `RequirementMatrixResolveCoreRoundTripTest`/`...DockerRoundTripTest`,
-    `RequirementMatrixBackoutCoreRoundTripTest`/`...DockerRoundTripTest`,
-    `RequirementMatrixRevertCoreRoundTripTest`/`...DockerRoundTripTest`(+각
+    검증: `RequirementMatrixResolveCoreRoundTripTest`/`...RealHgRoundTripTest`,
+    `RequirementMatrixBackoutCoreRoundTripTest`/`...RealHgRoundTripTest`,
+    `RequirementMatrixRevertCoreRoundTripTest`/`...RealHgRoundTripTest`(+각
     Docker 서브프로세스 헬퍼 3개) 신규 추가, 전부 GREEN. 위 버그 (2)/root
     커밋 백아웃 관련해 잘못된 기대값을 갖고 있던 기존 `RevertCommandTest`/
     `WorkingCopySafetyTest`/`TrackCMissingCommandsInteropTest`/
@@ -955,8 +955,8 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     `LogCommand`/`StatusCommand`/`RevsetCommand`/`SidedataChangedFilesCommand`)**:
     7개 명령 모두 native 6/6 + Docker 30/30 = 36/36 **전부 GREEN**(새 테스트
     클래스 15개 -- 6개 명령은 명령당 `RequirementMatrix{X}CoreRoundTripTest`/
-    `...DockerRoundTripTest` 2종[전부 순수 read라 `HelperMain` 서브프로세스
-    불필요, 판단 근거는 `RequirementMatrixDescribeDockerRoundTripTest`의
+    `...RealHgRoundTripTest` 2종[전부 순수 read라 `HelperMain` 서브프로세스
+    불필요, 판단 근거는 `RequirementMatrixDescribeRealHgRoundTripTest`의
     javadoc], `BisectCommand`만 `next()`가 실제로 워킹 카피/dirstate를
     쓰므로 `...HelperMain`까지 3종, 전부
     `src/test/java/io/github/search5/hg4j/api/`). `LogCommand`/`StatusCommand`는
@@ -975,7 +975,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
        하위 디렉터리에 있는 모든 파일이 체크아웃되지 않거나 잘못된 콘텐츠로
        쓰였다. `ManifestCommand`/`StatusCommand`/`DiffCommand`가 이미 쓰는
        treemanifest-aware `ManifestWalk`(→`ManifestTreeIterator`)로 교체해
-       해결 -- `RequirementMatrixBisectCoreRoundTripTest`/`...DockerRoundTripTest`
+       해결 -- `RequirementMatrixBisectCoreRoundTripTest`/`...RealHgRoundTripTest`
        양쪽 모두 nested-directory 파일의 체크아웃 콘텐츠를 매 bisect 스텝마다
        `hg cat`과 직접 대조해 이 수정을 검증.
     2. **`Revlog.decompressSidedataChunk`가 `COMP_MODE_DEFAULT`를 zstd로
@@ -1002,7 +1002,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
        아닌 델타 리비전(generaldelta가 기본인 v1 매니페스트/파일로그는
        거의 항상 이 경우)의 경우 실제로 zstd 압축된 것은 bdiff 패치 자체
        (헌크당 12바이트 헤더 + 교체 텍스트)이고 그 바이트 길이는 최종
-       풀텍스트 크기와 무관하다. `RequirementMatrixDiffDockerRoundTripTest`가
+       풀텍스트 크기와 무관하다. `RequirementMatrixDiffRealHgRoundTripTest`가
        real hg 7.2.4(Docker, 강제 zlib 없이 진짜 zstd 사용)가 쓴 매니페스트의
        두 번째 리비전(델타 인코딩됨)을 `ManifestTreeIterator`로 읽다가
        30/30 전부 크래시로 발각 -- native 쪽(항상 zlib 강제)과 hg4j
@@ -1399,7 +1399,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     — 이 wave에서는 재확인만 하고 추가 조치 없음.
 
     **검증**: 6개 명령 각각 `RequirementMatrix{Command}CoreRoundTripTest`
-    (native 6/6)/`...DockerRoundTripTest`(Docker 30/30) 신규 추가(총 12개
+    (native 6/6)/`...RealHgRoundTripTest`(Docker 30/30) 신규 추가(총 12개
     클래스 + 4개 헬퍼 서브프로세스 — `ArchiveCommand`/`PurgeCommand`/
     `UpdateCommand`/`WorktreeCommand`는 실제 쓰기 커맨드라 패턴 일관성을 위해
     헬퍼를 뒀고, `TreeCommand`/`TreeMergeCommand`는 순수 읽기/계산이라 헬퍼
@@ -1444,13 +1444,13 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
     쓰기를 하지 않아 `HelperMain` 서브프로세스가 필요 없음(그 우회 대상이었던
     docker-exec 인터리빙 손상은 hg4j 자신의 revlog *쓰기* 특유의 문제).
     신규 테스트 클래스 4개(`RequirementMatrixCatFilesLocateManifestCoreRoundTripTest`/
-    `...DockerRoundTripTest`가 Cat+Files+Locate+Manifest 4개를, `RequirementMatrixGrepAnnotateCoreRoundTripTest`/
-    `...DockerRoundTripTest`가 Grep+Annotate 2개를 함께 검증 — 앞서 Copy/Rename/
+    `...RealHgRoundTripTest`가 Cat+Files+Locate+Manifest 4개를, `RequirementMatrixGrepAnnotateCoreRoundTripTest`/
+    `...RealHgRoundTripTest`가 Grep+Annotate 2개를 함께 검증 — 앞서 Copy/Rename/
     Forget/Remove/Addremove를 묶은 전례와 같은 근거: 공유 manifest-읽기 경로를
     한 번에 검증하면서 컨테이너 생성 오버헤드도 줄임), `src/test/java/io/github/search5/hg4j/api/`.
     **결과**: `RequirementMatrixCatFilesLocateManifestCoreRoundTripTest` native 6/6,
-    `...DockerRoundTripTest` Docker 30/30; `RequirementMatrixGrepAnnotateCoreRoundTripTest`
-    native 18/18(6 조합 x 3 테스트 메서드), `...DockerRoundTripTest` Docker
+    `...RealHgRoundTripTest` Docker 30/30; `RequirementMatrixGrepAnnotateCoreRoundTripTest`
+    native 18/18(6 조합 x 3 테스트 메서드), `...RealHgRoundTripTest` Docker
     90/90(30 조합 x 3 테스트 메서드). 비-interop `test` 전체 재확인: 2278건
     0 실패/0 에러(2 스킵, 기존과 동일).
 
@@ -1579,7 +1579,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
   발견·수정(changelog-v2 저장소가 zlib 설정인데도 zstd 프레임을 쓰던 문제, docket
   압축 헤더 바이트가 항상 zstd로 하드코딩돼 있던 문제) — 둘 다 real hg가 만든
   저장소를 hg4j가 쓸 때만 드러나는 종류의 버그였다.
-- [x] Docker 30개 조합 — **완료(2026-09-04)**: `RequirementMatrixDockerRoundTripTest`
+- [x] Docker 30개 조합 — **완료(2026-09-04)**: `RequirementMatrixRealHgRoundTripTest`
   (60케이스 = 30읽기+30쓰기), **60개 전부 GREEN**. 쓰기 방향에서 처음엔 dirstate=v2
   18개가 신규 실버그(백로그 #37)로 SKIP됐으나, 근본 원인 규명·수정으로 전부 해소—
   real hg의 dirstate-v2 리더(`hg-rust-7.2.4` 컨테이너의 실제 Rust 소스
@@ -1866,7 +1866,7 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
   `TreeCommand`/`TreeMergeCommand`/`WorktreeCommand` — 워킹카피 조작 계열
   6개를 한 에이전트에 배정)**: 6개 명령 전부 native 6/6 + Docker 30/30 =
   36/36 GREEN. 신규 테스트 클래스 12개(`RequirementMatrix{Command}
-  CoreRoundTripTest`/`...DockerRoundTripTest`, 명령당 하나씩) + 헬퍼
+  CoreRoundTripTest`/`...RealHgRoundTripTest`, 명령당 하나씩) + 헬퍼
   서브프로세스 4개(`ArchiveCommand`/`PurgeCommand`/`UpdateCommand`/
   `WorktreeCommand` — 실제 워킹카피 쓰기 명령이라 패턴 일관성을 위해 둠;
   `TreeCommand`/`TreeMergeCommand`는 순수 읽기/계산이라 헬퍼 없이 직접
@@ -1979,8 +1979,8 @@ requirement 조합(native 6 + Docker 30, `hg-rust-7.2.4` 컨테이너 기반)에
   손상은 hg4j 자신의 revlog *쓰기* 특유의 문제) `HelperMain` 서브프로세스가
   필요 없었음. 신규 테스트 클래스 4개(Cat+Files+Locate+Manifest를 묶은
   `RequirementMatrixCatFilesLocateManifestCoreRoundTripTest`/
-  `...DockerRoundTripTest`, Grep+Annotate를 묶은
-  `RequirementMatrixGrepAnnotateCoreRoundTripTest`/`...DockerRoundTripTest`
+  `...RealHgRoundTripTest`, Grep+Annotate를 묶은
+  `RequirementMatrixGrepAnnotateCoreRoundTripTest`/`...RealHgRoundTripTest`
   — 앞선 wave의 Copy/Rename/Forget/Remove/Addremove 그룹핑과 같은 근거:
   공유 manifest-읽기 경로를 한 저장소로 함께 검증하면서 Docker 컨테이너
   생성 오버헤드도 줄임). 결과: Cat/Files/Locate/Manifest native 6/6 +
@@ -2240,7 +2240,7 @@ tier/압축/bundle2를 바꿀 config 노브가 없어서, 리버스 방향은 (�
 직접 재현해 확인(`/private/var/folders/...` 형태로 나옴, macOS의
 `/var` → `/private/var` 심볼릭 링크) — 이번 세션 초반 Docker `/tmp` →
 `/private/tmp` 마운트 이슈와 정확히 같은 패턴. 흥미롭게도
-`RequirementMatrixWorktreeDockerRoundTripTest`(같은 wave에서 함께 작성됨)는
+`RequirementMatrixWorktreeRealHgRoundTripTest`(같은 wave에서 함께 작성됨)는
 이미 `getCanonicalPath()`로 정확히 검증하고 있었다 — Docker 변형 테스트는
 맞게 짜였는데 정작 프로덕션 코드(`WorktreeCommand`)와 native 변형 테스트
 양쪽 다 이 사실을 놓치고 있었던 것으로 보인다(native 쪽은 처음부터

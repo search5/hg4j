@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Assertions;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * RollbackCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixRollbackDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixRollbackRealHgRoundTripTest}).
  *
  * <p>Unlike {@link RequirementMatrixRecoverCoreRoundTripTest} (which must hand-fabricate a
  * leftover journal), this is fully organic: {@link CommitCommand} already writes {@code

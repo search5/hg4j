@@ -26,7 +26,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * BisectCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixBisectDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixBisectRealHgRoundTripTest}).
  *
  * <p>{@link BisectCommand}'s DAG bisection algorithm was already verified against real hg's own
  * {@code hg bisect} in {@code BisectRealHgInteropTest} (linear history + a merge-commit DAG), but

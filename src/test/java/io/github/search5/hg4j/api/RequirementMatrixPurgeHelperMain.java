@@ -5,7 +5,7 @@ import io.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used by {@link RequirementMatrixPurgeDockerRoundTripTest}.
+ * Standalone JVM entry point used by {@link RequirementMatrixPurgeRealHgRoundTripTest}.
  *
  * <p>Unlike most other requirement-matrix Docker suites in this package, {@link PurgeCommand}
  * never touches store/changelog/manifest data at all (see its class javadoc) -- only the working

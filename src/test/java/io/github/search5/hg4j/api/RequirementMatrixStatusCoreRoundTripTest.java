@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * StatusCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixStatusDockerRoundTripTest}) as a
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixStatusRealHgRoundTripTest}) as a
  * first-class porcelain command in its own right -- {@link StatusCommand}'s logic was already
  * incidentally touched by the Resolve/Backout/Revert wave's dirstate-v2 "possibly dirty" sentinel
  * fix and by {@code RequirementMatrixCoreRoundTripTest}'s clean-after-commit sanity check, but

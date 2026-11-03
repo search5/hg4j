@@ -6,7 +6,7 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixRebaseDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixRebaseRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixCommitHelperMain}'s reason for existing -- see its javadoc for
  * the full root-cause writeup on why hg4j's own revlog-writing commands must run in a dedicated
  * subprocess rather than inline in a JVM that also repeatedly spawns {@code docker exec}/

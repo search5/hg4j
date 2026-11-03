@@ -66,6 +66,7 @@ public class HgSshWireServer {
 
     private final HgRepository repository;
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
+    private final List<HgHook> preTxnChangegroupHooks = new ArrayList<>();
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
     // yona-wiki P3-21/P3-22 — see HgHttpWireServer's identical fields / Wire1Commands#pushkey.
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
@@ -83,6 +84,15 @@ public class HgSshWireServer {
     }
 
     /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
+    /**
+     * Registers a hook run AFTER the incoming changegroup has been applied, abort-capable: returning {@code false} undoes the push, real hg's
+     * {@code pretxnchangegroup} (the hook seen by {@link #registerPreChangegroupHook} runs before anything is written, like {@code prechangegroup}).
+     */
+    public HgSshWireServer registerPreTxnChangegroupHook(HgHook hook) {
+        preTxnChangegroupHooks.add(hook);
+        return this;
+    }
+
     public HgSshWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
         return this;
@@ -151,7 +161,7 @@ public class HgSshWireServer {
         writeLengthPrefixed(out, new byte[0]); // "OK to continue" -- real hg sends this before any payload byte
         byte[] bundleBytes = readPayload(in);
 
-        Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks);
+        Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, preTxnChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, false);
 
         switch (resp.getKind()) {
             case PUSH_RESULT -> {

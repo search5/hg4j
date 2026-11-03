@@ -30,7 +30,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * CensorCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixCensorDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixCensorRealHgRoundTripTest}).
  *
  * <p>Two independent scenarios are covered, both across every combo, both verified live against
  * real {@code hg} 7.2 (2026-09-05):

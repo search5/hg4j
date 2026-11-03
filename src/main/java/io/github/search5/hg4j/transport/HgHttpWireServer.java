@@ -40,6 +40,7 @@ public class HgHttpWireServer extends HttpServlet {
 
     private final HgRepository repository;
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
+    private final List<HgHook> preTxnChangegroupHooks = new ArrayList<>();
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
     // yona-wiki P3-21/P3-22 — see Wire1Commands#pushkey(HgRepository, Map, List, List): the
     // changegroup hooks above never see which ref (bookmark) moved, only raw changeset nodes —
@@ -59,6 +60,15 @@ public class HgHttpWireServer extends HttpServlet {
     }
 
     /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
+    /**
+     * Registers a hook run AFTER the incoming changegroup has been applied, abort-capable: returning {@code false} undoes the push, real hg's
+     * {@code pretxnchangegroup} (the hook seen by {@link #registerPreChangegroupHook} runs before anything is written, like {@code prechangegroup}).
+     */
+    public HgHttpWireServer registerPreTxnChangegroupHook(HgHook hook) {
+        preTxnChangegroupHooks.add(hook);
+        return this;
+    }
+
     public HgHttpWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
         return this;
@@ -262,7 +272,7 @@ public class HgHttpWireServer extends HttpServlet {
             try (InputStream in = request.getInputStream()) {
                 bundleBytes = in.readAllBytes();
             }
-            wireResponse = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, true);
+            wireResponse = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, preTxnChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, true);
         } else {
             // Real hg sends some commands' args over GET query string, others as a POST
             // form-encoded body (and hg4j's own HgRemoteClient doesn't always agree with real hg

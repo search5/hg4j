@@ -28,7 +28,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixMergeCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * TreeMergeCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate
- * fixed at v1 -- v2 needs Docker, see {@code RequirementMatrixTreeMergeDockerRoundTripTest}).
+ * fixed at v1 -- v2 needs Docker, see {@code RequirementMatrixTreeMergeRealHgRoundTripTest}).
  *
  * <p>{@link TreeMergeCommand} never touches the working directory or dirstate at all (see its
  * class javadoc) -- so unlike most other requirement-matrix suites in this package, no subprocess

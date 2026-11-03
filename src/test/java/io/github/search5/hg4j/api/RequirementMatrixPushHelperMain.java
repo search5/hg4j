@@ -8,7 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixPushDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixPushRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixCommitHelperMain}'s reason for existing -- see its javadoc for
  * the full root-cause writeup on why hg4j's own revlog-writing commands (here: two add+commit
  * cycles plus two {@link PushCommand} pushes, into a SEPARATE destination repository) must run in

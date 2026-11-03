@@ -27,7 +27,7 @@ import java.util.ArrayList;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * DiffCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed at
- * v1 -- v2 needs Docker, see {@code RequirementMatrixDiffDockerRoundTripTest}) as a first-class
+ * v1 -- v2 needs Docker, see {@code RequirementMatrixDiffRealHgRoundTripTest}) as a first-class
  * porcelain command in its own right.
  *
  * <p>{@link DiffCommand}'s underlying unified-diff hunk generation ({@code generateUnifiedDiff})

@@ -29,7 +29,7 @@ import java.util.ArrayList;
  * Extends the requirement matrix (see {@link RequirementMatrixMergeCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * TreeCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed at
- * v1 -- v2 needs Docker, see {@code RequirementMatrixTreeDockerRoundTripTest}).
+ * v1 -- v2 needs Docker, see {@code RequirementMatrixTreeRealHgRoundTripTest}).
  *
  * <p>{@link TreeCommand} is a pure read command (only lists a revision's manifest entries) -- so
  * unlike most other requirement-matrix suites in this package, no subprocess helper is used at all.

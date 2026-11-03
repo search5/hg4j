@@ -27,7 +27,7 @@ import java.util.Map;
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * SidedataChangedFilesCommand} across the native 6-combo grid (changelog family x treemanifest,
  * dirstate fixed at v1 -- v2 needs Docker, see {@code
- * RequirementMatrixSidedataChangedFilesDockerRoundTripTest}).
+ * RequirementMatrixSidedataChangedFilesRealHgRoundTripTest}).
  *
  * <p>This command is inherently sidedata-specific (see its own class javadoc): only a repository
  * with the {@code exp-copies-sidedata-changeset} requirement (which itself requires

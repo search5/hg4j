@@ -27,7 +27,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link TagCommand} across the native 6-combo
  * grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixTagDockerRoundTripTest}).
+ * {@code RequirementMatrixTagRealHgRoundTripTest}).
  *
  * <p>Wave 3 (2026-09-05): {@link TagCommand} already has thorough real-hg-CLI behavioural
  * coverage from an earlier backlog item ({@link TagRealHgInteropTest} -- create/move/remove/local

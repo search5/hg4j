@@ -26,7 +26,7 @@ import java.util.Map;
  * lightweight repo-metadata query commands {@link HeadsCommand}, {@link TipCommand} and
  * {@link ParentsCommand} across the native 6-combo grid (changelog family x treemanifest,
  * dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixHeadsDockerRoundTripTest}). These three are grouped into one trio,
+ * {@code RequirementMatrixHeadsRealHgRoundTripTest}). These three are grouped into one trio,
  * matching the precedent set by wave 4's combined {@code RequirementMatrixBranchCoreRoundTripTest}
  * (which covers both {@link BranchCommand} and {@link BranchesCommand}) -- all three are pure
  * read-only DAG queries over the same changelog, so a single scenario naturally exercises all

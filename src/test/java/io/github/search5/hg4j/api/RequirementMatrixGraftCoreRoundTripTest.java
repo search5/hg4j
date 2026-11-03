@@ -34,7 +34,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest} for the reused
  * pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * GraftCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixGraftDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixGraftRealHgRoundTripTest}).
  *
  * <p>Each combo exercises two scenarios in the same repository:
  * <ol>

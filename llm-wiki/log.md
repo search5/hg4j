@@ -609,3 +609,7 @@ phase-heads, remote-changegroup)과 번들1 GZ/BZ push, HTTP 0.2 압축을 구�
 ## [2026-11-03] HTTP 세션과 서버 쪽 오류 문구 대조
 HTTP는 녹화 프록시로 실제 클라이언트 요청을 재생해 응답을 비교(서버 출력 부품 추가), 서버 쪽 오류는 직접 만든 bundle2로 비교. 번들1 cg1 delta base 버그, 게시형 서버의 public 등록, pushkey phases,
 번들1 거절/경합 응답 형식 수정. [[wire-server-command-gaps]]
+
+## [2026-11-03] 남은 비교 처리와 원본 일치
+changegroup delta를 원본(`imara-diff` Myers)과 바이트까지 같게(`LineDelta`), cg2+ delta base 선택, 구식 changegroup 의미(`roots::heads`), HTTP 압축 바이트, stream2 `cache/`, `pretxnchangegroup`과 롤백 기반
+원자성, 클라이언트 pull의 phase 규칙, `HgSshClient#close()`, 테스트 클래스 이름의 Docker 제거. [[wire-server-command-gaps]]

@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * RevsetCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixRevsetDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixRevsetRealHgRoundTripTest}).
  *
  * <p>{@link RevsetCommand}/{@link io.github.search5.hg4j.revset.HgRevsetEngine} implement a
  * hg-revset-INSPIRED query DSL over the changelog, not a byte-identical reimplementation of real

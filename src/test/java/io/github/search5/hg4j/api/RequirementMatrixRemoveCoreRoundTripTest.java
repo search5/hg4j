@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link RemoveCommand} across the native
  * 6-combo grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixRemoveDockerRoundTripTest}).
+ * {@code RequirementMatrixRemoveRealHgRoundTripTest}).
  *
  * <p>Wave 4 (2026-09-05): unlike {@link ForgetCommand}, {@link RemoveCommand} both marks the
  * dirstate entry 'r' AND physically deletes the working copy file. This scenario removes a

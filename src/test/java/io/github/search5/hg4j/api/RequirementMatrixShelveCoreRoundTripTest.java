@@ -27,7 +27,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link ShelveCommand} across the native
  * 6-combo grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixShelveDockerRoundTripTest}).
+ * {@code RequirementMatrixShelveRealHgRoundTripTest}).
  *
  * <p>Scenario mirrors {@code ShelveRealHgInteropTest#hg4jShelveCanBeUnshelvedByRealHg} (hg4j
  * shelves a dirty working copy -- one modified tracked file, one newly added file -- then real hg

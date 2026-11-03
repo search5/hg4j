@@ -27,7 +27,7 @@ import java.util.Map;
  * for why) to {@link ExportCommand} and {@link ImportCommand} together across the native 6-combo
  * grid ({@code format.exp-use-changelog-v2}: v1 / changelog-v2 / changelog-v2+sidedata x {@code
  * experimental.treemanifest}: off / on; {@code dirstate} fixed at v1 -- v2 needs Docker, see
- * {@link RequirementMatrixExportImportDockerRoundTripTest}).
+ * {@link RequirementMatrixExportImportRealHgRoundTripTest}).
  *
  * <p>Grouped as one trio (rather than two) because they are each other's round-trip counterpart:
  * one method per combo covers BOTH directions --

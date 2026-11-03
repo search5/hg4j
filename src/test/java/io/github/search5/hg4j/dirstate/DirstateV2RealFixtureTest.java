@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p><b>2026-09-04</b>: this class is read-only (a static, uncommitted {@code hg add} snapshot).
  * Live write-direction verification (hg4j commits into a dirstate-v2 repo, real hg reads/verifies
  * it back) belongs to the requirement matrix's Docker-backed suite,
- * {@code io.github.search5.hg4j.api.RequirementMatrixDockerRoundTripTest} — which, as of this
+ * {@code io.github.search5.hg4j.api.RequirementMatrixRealHgRoundTripTest} — which, as of this
  * writing, has an OPEN, flagged-not-fixed real bug in exactly that direction (hg4j's {@code
  * Dirstate#write} always emitting {@code children_start=0} for the tree docket, which a real hg
  * multi-root-siblings scenario does not accept the same way). Not duplicated here to avoid a

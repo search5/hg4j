@@ -184,13 +184,22 @@ final class StreamClone {
                     total += file.length();
                 }
             }
+            // the cache files a clone is worth having (cacheutil.cachetocopy), those that exist, after the store; names are
+            // relative to .hg/cache and are marked 'c'
+            for (String name : cacheFilesToCopy()) {
+                File file = new File(new File(repo.getHgDir(), "cache"), name);
+                if (file.isFile()) {
+                    entries.add(new Entry(name, file, file.length(), 'c'));
+                    total += file.length();
+                }
+            }
             if (total > MAX_BYTES) {
                 throw new IOException("the store is larger than this server streams (" + MAX_BYTES + " bytes)");
             }
             ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(total + 4096, Integer.MAX_VALUE - 16));
             for (Entry e : entries) {
                 byte[] name = e.wireName.getBytes(StandardCharsets.ISO_8859_1);
-                out.write('s');
+                out.write(e.source);
                 writeUvarint(out, name.length);
                 writeUvarint(out, e.size);
                 out.write(name);
@@ -204,6 +213,25 @@ final class StreamClone {
         }
     }
 
+    /**
+     * {@code cacheutil.cachetocopy}: the branch, revision-branch, tags and tag-filenode caches, in the original's order (the
+     * repoview subsets from the one others depend on to the dependents: base, immutable, served, visible).
+     */
+    private static List<String> cacheFilesToCopy() {
+        List<String> subsets = List.of("base", "immutable", "served", "visible");
+        List<String> names = new ArrayList<>();
+        names.add("branch2");
+        subsets.forEach(subset -> names.add("branch2-" + subset));
+        names.add("branch3");
+        subsets.forEach(subset -> names.add("branch3-" + subset));
+        names.add("rbc-names-v2");
+        names.add("rbc-revs-v2");
+        names.add("tags2");
+        subsets.forEach(subset -> names.add("tags2-" + subset));
+        names.add("hgtagsfnodes1");
+        return names;
+    }
+
     /** {@code util.uvarintencode}. */
     private static void writeUvarint(ByteArrayOutputStream out, long value) {
         long v = value;
@@ -214,7 +242,11 @@ final class StreamClone {
         out.write((int) v);
     }
 
-    private record Entry(String wireName, File file, long size) {
+    private record Entry(String wireName, File file, long size, char source) {
+        Entry(String wireName, File file, long size) {
+            this(wireName, file, size, 's');
+        }
+
     }
 
     /**

@@ -27,7 +27,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixMergeCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * PurgeCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed at
- * v1 -- v2 needs Docker, see {@code RequirementMatrixPurgeDockerRoundTripTest}).
+ * v1 -- v2 needs Docker, see {@code RequirementMatrixPurgeRealHgRoundTripTest}).
  *
  * <p>{@link PurgeCommand} never touches store/changelog/manifest data at all (only the working
  * directory) -- so unlike most other requirement-matrix suites in this package, no subprocess

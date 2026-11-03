@@ -30,7 +30,7 @@ import java.util.Map;
  * for why) to {@link BundleCommand} across the native 6-combo grid: {@code
  * format.exp-use-changelog-v2} (v1 / changelog-v2 / changelog-v2+sidedata) x {@code
  * experimental.treemanifest} (off / on), {@code dirstate} fixed at v1 (v2 needs Docker, see
- * {@link RequirementMatrixBundleDockerRoundTripTest}).
+ * {@link RequirementMatrixBundleRealHgRoundTripTest}).
  *
  * <p>Unlike push (a two-repository live exchange), bundle is a three-step local-file dance: hg4j
  * writes a bundle FILE from the source repo ({@link BundleCommand}), and real {@code hg unbundle}
@@ -120,7 +120,7 @@ public class RequirementMatrixBundleCoreRoundTripTest {
      * 1 when it finds integrity errors, and the {@code cl2+sidedata} combos are EXPECTED to (see
      * {@link #verifyIsCleanOrKnownSidedataLimitation}), so the verify call itself must not abort
      * the test before that tolerance check gets a chance to run (mirrors {@code
-     * RequirementMatrixBundleDockerRoundTripTest#dockerHgTolerantIn}'s identical reasoning). */
+     * RequirementMatrixBundleRealHgRoundTripTest#dockerHgTolerantIn}'s identical reasoning). */
     private static String hgVerifyTolerant(File repoDir) throws Exception {
         ProcessBuilder pb = new ProcessBuilder("hg", "--config", "format.usezstd=false",
                 "--config", "format.revlog-compression=zlib", "verify");

@@ -23,7 +23,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * DescribeCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixDescribeDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixDescribeRealHgRoundTripTest}).
  *
  * <p>{@link DescribeCommand} is a pure read (changelog + {@code .hgtags} + dirstate only, never the
  * manifest) with no real-hg CLI equivalent to compare against directly ({@code hg describe} does

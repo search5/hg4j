@@ -29,7 +29,7 @@ import java.util.ArrayList;
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to
  * {@link TagsCommand}, {@link PathsCommand} and {@link RootCommand} across the native 6-combo grid
  * (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixTagsDockerRoundTripTest}). These three are grouped into one trio,
+ * {@code RequirementMatrixTagsRealHgRoundTripTest}). These three are grouped into one trio,
  * matching the precedent set by wave 4's combined branch/branches/phase trios -- all three are
  * simple, self-contained metadata listings unrelated to each other functionally but identical in
  * shape (read-only, no working-copy state), so a single scenario covers all three cheaply.

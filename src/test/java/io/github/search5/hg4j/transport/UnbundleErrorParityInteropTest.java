@@ -225,6 +225,36 @@ class UnbundleErrorParityInteropTest {
     }
 
     @Test
+    @DisplayName("changegroup 이 적용된 뒤 다른 부품이 실패하면 changegroup 까지 모두 되돌려진다")
+    void aLateFailureUndoesTheChangegroupToo() throws Exception {
+        // a real bundle with one new changeset, plus a bookmarks part that points at a node nobody has: the part fails only when applied
+        LocalHg.hgIn(tmp, ".", "clone", fx.repo().toString(), "late-client");
+        java.nio.file.Files.writeString(tmp.resolve("late-client/a.txt"), "pushed late\n");
+        LocalHg.hgIn(tmp, "late-client", "commit", "-u", "dev", "-m", "late");
+        Path bundleFile = tmp.resolve("late.hg");
+        LocalHg.hgIn(tmp, "late-client", "bundle", "--type", "none-v2", "-r", "tip", "--base", "tip^", bundleFile.toString());
+        Bundle2.Writer w = bundle();
+        for (Bundle2.Part part : Bundle2.read(java.nio.file.Files.readAllBytes(bundleFile))) {
+            if (part.type.equals("changegroup")) {
+                w.addPart("changegroup", true, part.params, Map.of(), part.payload);
+            }
+        }
+        w.addPart("bookmarks", true, Map.of(), Map.of(), bookmark("ghost", "ab".repeat(20)));
+
+        Path mine = tmp.resolve("late-mine");
+        ParitySupport.copyTree(fx.repo(), mine);
+        String before = LocalHg.hgIn(tmp, "late-mine", "log", "-T", "{node} {phase} {bookmarks}\n");
+        String before1 = LocalHg.hgIn(tmp, "late-mine", "bookmarks");
+        String answer = new String(ParitySupport.sshSession(false, mine, ParitySupport.unbundleRequest("666f726365", w.toBytes(null))),
+                StandardCharsets.ISO_8859_1);
+        assertTrue(answer.contains("ERROR:ABORT") && answer.contains("could not update bookmark ghost"), answer);
+        assertEquals(before, LocalHg.hgIn(tmp, "late-mine", "log", "-T", "{node} {phase} {bookmarks}\n"),
+                "the changegroup must have been rolled back");
+        assertEquals(before1, LocalHg.hgIn(tmp, "late-mine", "bookmarks"));
+        assertTrue(LocalHg.hgIn(tmp, "late-mine", "verify").contains("checking files"), "and the repository must still be sound");
+    }
+
+    @Test
     @DisplayName("알 수 없는 changegroup 버전은 거절한다 (원본은 내부 오류로 연결이 끊긴다)")
     void unknownChangegroupVersionIsRefused() throws Exception {
         Bundle2.Writer w = bundle();

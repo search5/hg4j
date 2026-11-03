@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixBranchDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixBranchRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixTagHelperMain}'s reason for existing -- {@link BranchCommand}
  * (writes {@code .hg/branch}) and {@link CommitCommand} (writes the revlogs/dirstate) both touch
  * repository state that must not be exercised interleaved with this test's repeated {@code docker

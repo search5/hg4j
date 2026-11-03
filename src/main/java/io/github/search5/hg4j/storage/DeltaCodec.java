@@ -179,7 +179,7 @@ public final class DeltaCodec {
      * unrelated to the final fulltext size. Passing the fulltext size as the destination buffer
      * size crashed zstd-jni with "Destination buffer is too small" on perfectly valid,
      * real-hg-written delta revisions -- caught 2026-09-05 by
-     * RequirementMatrixDiffDockerRoundTripTest (whose Docker-container hg CLI uses real zstd
+     * RequirementMatrixDiffRealHgRoundTripTest (whose Docker-container hg CLI uses real zstd
      * compression with no forced zlib override, unlike every native-side {@code
      * RequirementMatrix*CoreRoundTripTest}, which forces zlib and therefore never exercised this
      * exact zstd+delta combination; hg4j's own writers also never delta-encode on the way out, so

@@ -25,7 +25,7 @@ import java.util.Map;
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * GrepCommand} and {@link AnnotateCommand} together across the native 6-combo grid (changelog
  * family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see {@code
- * RequirementMatrixGrepAnnotateDockerRoundTripTest}).
+ * RequirementMatrixGrepAnnotateRealHgRoundTripTest}).
  *
  * <p>Grouped into one trio (see {@link RequirementMatrixCatFilesLocateManifestCoreRoundTripTest}
  * for the same rationale applied to a different foursome) because both are read-only,

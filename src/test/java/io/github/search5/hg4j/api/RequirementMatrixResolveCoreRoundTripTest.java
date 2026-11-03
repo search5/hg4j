@@ -27,7 +27,7 @@ import java.util.ArrayList;
  * conflicting-merge scenario this reuses as the setup step, and backlog #39 / {@code
  * exhaustive-interop-matrix-plan.md} §1) to {@link ResolveCommand} across the native 6-combo grid
  * (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see {@code
- * RequirementMatrixResolveDockerRoundTripTest}).
+ * RequirementMatrixResolveRealHgRoundTripTest}).
  *
  * <p>{@link ResolveCommand} is the read/manage counterpart of {@link MergeCommand}'s conflict
  * bookkeeping ({@code .hg/merge/state2}): a real conflicting merge is triggered first (identical

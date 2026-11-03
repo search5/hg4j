@@ -29,7 +29,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link BookmarkCommand} across the native
  * 6-combo grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixBookmarkDockerRoundTripTest}).
+ * {@code RequirementMatrixBookmarkRealHgRoundTripTest}).
  *
  * <p>Wave 3 (2026-09-05): {@link BookmarkCommand} writes a plain-text {@code .hg/bookmarks}/
  * {@code .hg/bookmarks.current} pair, format-independent of changelog/manifest/dirstate version --

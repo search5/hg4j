@@ -27,7 +27,7 @@ import java.util.Map;
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * CatCommand}, {@link FilesCommand}, {@link LocateCommand} and {@link ManifestCommand} together
  * across the native 6-combo grid (changelog family x treemanifest, dirstate fixed at v1 -- v2
- * needs Docker, see {@code RequirementMatrixCatFilesLocateManifestDockerRoundTripTest}).
+ * needs Docker, see {@code RequirementMatrixCatFilesLocateManifestRealHgRoundTripTest}).
  *
  * <p>These four commands are grouped into one trio (matching earlier waves' precedent of grouping
  * closely-related commands, e.g. Copy/Rename/Forget/Remove/Addremove) because they are all

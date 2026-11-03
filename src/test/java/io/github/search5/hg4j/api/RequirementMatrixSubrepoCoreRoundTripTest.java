@@ -26,7 +26,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest} for the reused
  * pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * SubrepoCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixSubrepoDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixSubrepoRealHgRoundTripTest}).
  *
  * <p>{@code SubrepoCommand} itself (add/init/update) mostly manipulates plain working-copy files
  * ({@code .hgsub}/{@code .hgsubstate}) and a nested subrepo's own (unparametrized) repository, so

@@ -6,7 +6,7 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixDockerRoundTripTest} to run a
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixRealHgRoundTripTest} to run a
  * single hg4j {@code add}+{@code commit} in a <b>fresh, isolated process</b> instead of inline in
  * the test's own JVM.
  *

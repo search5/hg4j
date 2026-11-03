@@ -48,8 +48,8 @@ final class Bundle2Push {
 
     /** The reply bundle (an {@code HG20} stream) for an incoming push bundle. */
     static byte[] process(HgRepository repo, byte[] bundleBytes, List<String> wireHeads, List<HgHook> preChangegroup,
-                          List<HgHook> postChangegroup, List<HgHook> prePushkey, List<HgHook> postPushkey,
-                          boolean captureOutput) throws IOException {
+                          List<HgHook> preTxnChangegroup, List<HgHook> postChangegroup, List<HgHook> prePushkey,
+                          List<HgHook> postPushkey, boolean captureOutput) throws IOException {
         Bundle2.Writer reply = new Bundle2.Writer();
         // `output` parts the reply holds so far, which an error answer keeps (the original's salvageoutput)
         List<Object[]> outputs = new ArrayList<>();
@@ -79,9 +79,15 @@ final class Bundle2Push {
             }
         }
 
+        // What the repository looked like before; the push is undone to this if it fails after something was changed
+        Snapshot snapshot = Snapshot.take(repo);
+        boolean changegroupApplied = false;
+        boolean partsApplied = false;
+        String abortNoteFor = null;   // id of the changegroup part whose application the original would have rolled back
+        boolean abortLines = false;   // whether the original would have printed "transaction abort!" / "rollback completed"
         try {
             Bundle2.Part changegroup = first(parts, "changegroup");
-                List<Bundle2.Part> checks = new ArrayList<>();
+            List<Bundle2.Part> checks = new ArrayList<>();
             for (Bundle2.Part part : parts) {
                 if (part.type.startsWith("check:")) {
                     checks.add(part);
@@ -93,13 +99,30 @@ final class Bundle2Push {
                 }
             };
 
-            // Everything that can refuse the push is checked before anything is changed, so that a refusal leaves no half-applied
-            // push behind (the original rolls its transaction back; this server has no transaction spanning the parts).
-            for (Bundle2.Part part : parts) {
-                switch (part.type) {
-                    case "pushkey" -> prepareLater(repo, part, prePushkey);
-                    case "bookmarks" -> prepareBookmarks(repo, part, prePushkey);
-                    default -> { }
+            // Everything that can refuse the push is checked before anything is changed, so that a refusal leaves nothing behind. The
+            // original would have applied the changegroup of the bundle first (it comes before these parts) and rolled it back;
+            // that it did is what it tells the client, so the same is reported here.
+            int firstChangegroupIndex = -1;
+            for (int i = 0; i < parts.size(); i++) {
+                if (parts.get(i).type.equals("changegroup") || parts.get(i).type.equals("remote-changegroup")) {
+                    firstChangegroupIndex = i;
+                    break;
+                }
+            }
+            for (int i = 0; i < parts.size(); i++) {
+                Bundle2.Part part = parts.get(i);
+                try {
+                    switch (part.type) {
+                        case "pushkey" -> prepareLater(repo, part, prePushkey);
+                        case "bookmarks" -> prepareBookmarks(repo, part, prePushkey);
+                        default -> { }
+                    }
+                } catch (IOException | RuntimeException e) {
+                    if (firstChangegroupIndex >= 0 && firstChangegroupIndex < i) {
+                        abortNoteFor = String.valueOf(parts.get(firstChangegroupIndex).id);
+                        abortLines = true;
+                    }
+                    throw e;
                 }
             }
 
@@ -111,8 +134,16 @@ final class Bundle2Push {
                     throw new IOException("unsupported changegroup version " + version);
                 }
                 int countBefore = Wire2Commands.changelog(repo).getRevisionCount();
-                HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
-                        bundleBytes, wireHeads, preChangegroup, postChangegroup, validator);
+                HgLocalClient.PushResult result;
+                try {
+                    result = new HgLocalClient(repo).pushWithHooks(
+                            bundleBytes, wireHeads, preChangegroup, preTxnChangegroup, postChangegroup, validator);
+                } catch (io.github.search5.hg4j.errors.HgHookRejectedException e) {
+                    abortNoteFor = String.valueOf(changegroup.id);
+                    abortLines = e.isRolledBack();
+                    throw e;
+                }
+                changegroupApplied = true;
                 boolean added = !result.status.startsWith("no changes found");
                 int delta = deltaHeads(repo, countBefore);
                 changegroupResult = added ? (delta < 0 ? delta - 1 : delta + 1) : 0;
@@ -131,8 +162,16 @@ final class Bundle2Push {
                 }
                 byte[] fetched = fetchRemoteChangegroup(remote);
                 int remoteCountBefore = Wire2Commands.changelog(repo).getRevisionCount();
-                HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
-                        fetched, List.of(), preChangegroup, postChangegroup, changegroup == null ? validator : null);
+                HgLocalClient.PushResult result;
+                try {
+                    result = new HgLocalClient(repo).pushWithHooks(
+                            fetched, List.of(), preChangegroup, preTxnChangegroup, postChangegroup, changegroup == null ? validator : null);
+                } catch (io.github.search5.hg4j.errors.HgHookRejectedException e) {
+                    abortNoteFor = String.valueOf(remote.id);
+                    abortLines = e.isRolledBack();
+                    throw e;
+                }
+                changegroupApplied = true;
                 int remoteDelta = deltaHeads(repo, remoteCountBefore);
                 int returned = result.status.startsWith("no changes found") ? 0 : (remoteDelta < 0 ? remoteDelta - 1 : remoteDelta + 1);
                 Map<String, String> params = new LinkedHashMap<>();
@@ -151,6 +190,7 @@ final class Bundle2Push {
                 }
             }
 
+            partsApplied = parts.stream().anyMatch(p -> p.type.equals("pushkey") || p.type.equals("bookmarks") || p.type.equals("phase-heads"));
             for (Bundle2.Part part : parts) {
                 switch (part.type) {
                     case "pushkey" -> applyPushkey(repo, part, reply, List.of(), postPushkey);
@@ -162,15 +202,28 @@ final class Bundle2Push {
             if (captureOutput) {
                 reply.addPart("output", false, Map.of(), Map.of(), finalOutput.toString().getBytes(StandardCharsets.UTF_8));
             }
-        } catch (HgPushRacedException e) {
-            reply = salvaged(outputs, captureOutput);
-            reply.addPart("error:pushraced", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
-        } catch (PushkeyFailed e) {
-            reply = salvaged(outputs, captureOutput);
-            reply.addPart("error:pushkey", true, Map.of("in-reply-to", e.params.get("in-reply-to")), e.advisory(), new byte[0]);
-        } catch (IOException | RuntimeException | io.github.search5.hg4j.errors.HgLockException e) {
-            reply = salvaged(outputs, captureOutput);
-            reply.addPart("error:abort", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
+        } catch (Exception e) {
+            if (changegroupApplied || partsApplied) {
+                // a failure after the repository was changed: put it back (the original aborts its transaction)
+                try {
+                    undo(repo, snapshot, changegroupApplied);
+                } catch (IOException | io.github.search5.hg4j.errors.HgLockException undoFailure) {
+                    e.addSuppressed(undoFailure);
+                }
+                abortLines = true;
+                if (abortNoteFor == null && changegroupApplied) {
+                    Bundle2.Part cg = first(parts, "changegroup") != null ? first(parts, "changegroup") : first(parts, "remote-changegroup");
+                    abortNoteFor = cg == null ? null : String.valueOf(cg.id);
+                }
+            }
+            reply = salvaged(outputs, captureOutput, abortNoteFor, abortLines);
+            if (e instanceof HgPushRacedException) {
+                reply.addPart("error:pushraced", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
+            } else if (e instanceof PushkeyFailed failed) {
+                reply.addPart("error:pushkey", true, Map.of("in-reply-to", failed.params.get("in-reply-to")), failed.advisory(), new byte[0]);
+            } else {
+                reply.addPart("error:abort", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
+            }
         }
         return reply.toBytes(null);
     }
@@ -304,16 +357,69 @@ final class Bundle2Push {
      * The start of an error answer: the {@code output} parts the reply already had, then the (here empty) output of the
      * transaction that was abandoned, which the original always appends when it captures output.
      */
-    private static Bundle2.Writer salvaged(List<Object[]> outputs, boolean captureOutput) {
+    private static Bundle2.Writer salvaged(List<Object[]> outputs, boolean captureOutput, String abortNoteFor, boolean abortLines) {
         Bundle2.Writer writer = new Bundle2.Writer();
         if (captureOutput) {
+            boolean listed = false;
             for (Object[] output : outputs) {
+                listed |= output[0].equals(abortNoteFor);
                 writer.addPart("output", false, Map.of(), Map.of("in-reply-to", (String) output[0]),
                         ((String) output[1]).getBytes(StandardCharsets.UTF_8));
             }
-            writer.addPart("output", false, Map.of(), Map.of(), new byte[0]);
+            if (abortNoteFor != null && !listed) {
+                // the changegroup was (or in the original would have been) applied before the push was refused
+                writer.addPart("output", false, Map.of(), Map.of("in-reply-to", abortNoteFor),
+                        "adding changesets\nadding manifests\nadding file changes\n".getBytes(StandardCharsets.UTF_8));
+            }
+            writer.addPart("output", false, Map.of(), Map.of(),
+                    (abortLines ? "transaction abort!\nrollback completed\n" : "").getBytes(StandardCharsets.UTF_8));
         }
         return writer;
+    }
+
+    /** The files a failed push has to put back, read before anything is changed. */
+    private static final class Snapshot {
+        private final java.io.File[] files;
+        private final byte[][] contents;
+
+        private Snapshot(java.io.File[] files, byte[][] contents) {
+            this.files = files;
+            this.contents = contents;
+        }
+
+        static Snapshot take(HgRepository repo) throws IOException {
+            java.io.File[] files = {
+                    new java.io.File(repo.getHgDir(), "bookmarks"),
+                    new java.io.File(repo.getStoreDir(), "phaseroots"),
+                    new java.io.File(repo.getHgDir(), "dirstate")};
+            byte[][] contents = new byte[files.length][];
+            for (int i = 0; i < files.length; i++) {
+                contents[i] = files[i].isFile() ? java.nio.file.Files.readAllBytes(files[i].toPath()) : null;
+            }
+            return new Snapshot(files, contents);
+        }
+
+        void restore() throws IOException {
+            for (int i = 0; i < files.length; i++) {
+                if (contents[i] == null) {
+                    java.nio.file.Files.deleteIfExists(files[i].toPath());
+                } else {
+                    java.nio.file.Files.write(files[i].toPath(), contents[i]);
+                }
+            }
+        }
+    }
+
+    /** Puts the repository back: the changegroup is rolled back with its undo information, then the small files are restored. */
+    private static void undo(HgRepository repo, Snapshot snapshot, boolean changegroupApplied)
+            throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        if (changegroupApplied) {
+            try (HgLock lock = repo.lockStore(repo.resolvePushLockTimeoutMs())) {
+                new io.github.search5.hg4j.api.RollbackCommand(repo).call();
+            }
+        }
+        snapshot.restore();
+        repo.clearRevlogCache();
     }
 
     /** The line the original prints when a push has been applied: {@code added N changesets with M changes to K files (+n heads)}. */

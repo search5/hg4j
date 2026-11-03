@@ -747,6 +747,50 @@ public class Revlog {
         }
     }
 
+    /** Whether the revlog stores deltas against any earlier revision (the {@code generaldelta} flag of the index header). */
+    public boolean isGeneralDelta() {
+        return index.isGeneralDelta();
+    }
+
+    /**
+     * {@code revlog.deltaparent}: the revision {@code rev} is stored as a delta against, or {@code -1} when it is stored as a full
+     * text. Without {@code generaldelta} the base is always the revision before.
+     */
+    public int getDeltaParent(int rev) throws IOException {
+        int base = getIndexRecord(rev).getBaseRev();
+        if (base == rev) {
+            return -1;
+        }
+        return isGeneralDelta() ? base : rev - 1;
+    }
+
+    /** The stored delta of a revision that is stored as a delta (decompressed), or null when it is stored as a full text. */
+    public synchronized byte[] getStoredDelta(int rev) throws IOException {
+        IndexRecord record = getIndexRecord(rev);
+        if (record.getBaseRev() == rev) {
+            return null;
+        }
+        File targetFile = inline ? idxFile : datFile;
+        try (FileChannel channel = FileChannel.open(targetFile.toPath(), StandardOpenOption.READ)) {
+            return decompressHunk(readHunk(channel, record), record);
+        }
+    }
+
+    /**
+     * {@code revlog.revdiff}: the delta from revision {@code base} ({@code -1} for the empty text) to {@code rev}. When {@code rev} is
+     * stored as a delta against exactly {@code base} the stored delta is returned as it is, otherwise it is computed from the two
+     * raw texts.
+     */
+    public byte[] revDiff(int base, int rev) throws IOException {
+        if (base != -1 && getDeltaParent(rev) == base) {
+            byte[] stored = getStoredDelta(rev);
+            if (stored != null) {
+                return stored;
+            }
+        }
+        return DeltaEngine.createDelta(getRawRevisionContent(base), getRawRevisionContent(rev));
+    }
+
     public synchronized byte[] getRevisionContent(int rev) throws IOException {
         if (rev == -1) {
             return new byte[0];
@@ -1301,7 +1345,7 @@ public class Revlog {
      * for "no parent" (nullrev), matching every other parent-index convention in this class.
      *
      * <p>Found wrong 2026-09-05 (backlog #39 requirement matrix, {@code
-     * RequirementMatrixInitDockerRoundTripTest}'s {@code general-v2} combos): a prior version of
+     * RequirementMatrixInitRealHgRoundTripTest}'s {@code general-v2} combos): a prior version of
      * this method just wrote {@code rev} as the rank (rank 0 for the first commit), silently
      * diverging from real hg's own convention that a root revision's rank is {@code 1} -- every
      * later rank real hg itself computed on top of such a repository would then be off by one from

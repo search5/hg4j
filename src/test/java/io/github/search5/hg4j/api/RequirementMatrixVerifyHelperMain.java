@@ -6,7 +6,7 @@ import java.io.File;
 import java.util.List;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixVerifyDockerRoundTripTest}.
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixVerifyRealHgRoundTripTest}.
  * {@link VerifyCommand} itself never writes anything (it is a pure read/hash-check), so unlike
  * {@link RequirementMatrixCensorHelperMain} it has no data-corruption motive for running out of
  * process -- this exists purely so the Docker test class follows the same "hg4j runs in a

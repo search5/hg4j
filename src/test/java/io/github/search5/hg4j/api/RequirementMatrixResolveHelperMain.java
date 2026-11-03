@@ -9,7 +9,7 @@ import java.nio.file.Files;
 import java.util.Map;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixResolveDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixResolveRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixMergeHelperMain}'s reason for existing -- see its javadoc
  * (which itself defers to {@link RequirementMatrixCommitHelperMain}) for the full root-cause
  * writeup on why hg4j's own revlog-writing commands must run in a dedicated subprocess rather than

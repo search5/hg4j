@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixMergeDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixMergeRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixCommitHelperMain}'s reason for existing -- see its javadoc for
  * the full root-cause writeup on why hg4j's own revlog-writing commands (here, {@link
  * CommitCommand} finalizing a merge) must run in a dedicated subprocess rather than inline in a

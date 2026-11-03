@@ -27,7 +27,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link AmendCommand} across the native
  * 6-combo grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixAmendDockerRoundTripTest}).
+ * {@code RequirementMatrixAmendRealHgRoundTripTest}).
  *
  * <p>Wave 2 (2026-09-05, after PushCommand's wave-1 bugs were fixed): {@link AmendCommand} was
  * picked as a high-value next command because it delegates its actual write work to {@link

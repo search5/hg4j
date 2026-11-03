@@ -5,7 +5,7 @@ import io.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixRemoveDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixRemoveRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixAddHelperMain} -- see {@link
  * RequirementMatrixCommitHelperMain}'s javadoc for the full root-cause writeup on why hg4j's own
  * write commands must run in a dedicated subprocess rather than inline in a JVM that also

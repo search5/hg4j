@@ -529,7 +529,7 @@ public final class Wire1Commands {
     public static Wire1Response changegroupsubset(HgRepository repo, Map<String, String> args) throws IOException {
         List<String> bases = splitOrEmpty(args.get("bases"));
         List<String> heads = splitOrEmpty(args.get("heads"));
-        byte[] bundle = stripHg10Prefix(new HgLocalClient(repo).getBundle(bases, heads, null));
+        byte[] bundle = stripHg10Prefix(new HgLocalClient(repo).getBundleFromRoots(bases, heads));
         return Wire1Response.stream(bundle);
     }
 
@@ -652,9 +652,21 @@ public final class Wire1Commands {
                                           List<HgHook> prePushkeyHooks,
                                           List<HgHook> postPushkeyHooks,
                                           boolean captureOutput) throws IOException, HgLockException {
+        return unbundle(repo, bundleBytes, args, preChangegroupHooks, List.of(), postChangegroupHooks, prePushkeyHooks,
+                postPushkeyHooks, captureOutput);
+    }
+
+    /** Same, with the {@code pretxnchangegroup} hooks (run after the changegroup is applied; a refusal undoes everything). */
+    public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
+                                          List<HgHook> preChangegroupHooks,
+                                          List<HgHook> preTxnChangegroupHooks,
+                                          List<HgHook> postChangegroupHooks,
+                                          List<HgHook> prePushkeyHooks,
+                                          List<HgHook> postPushkeyHooks,
+                                          boolean captureOutput) throws IOException, HgLockException {
         if (io.github.search5.hg4j.bundle.Bundle2.isBundle2(bundleBytes)) {
             return Wire1Response.streamUncompressed(Bundle2Push.process(repo, bundleBytes, splitOrEmpty(args.get("heads")),
-                    preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, captureOutput));
+                    preChangegroupHooks, preTxnChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks, captureOutput));
         }
         // A bundle1 push (an HG10xx body). Like the original, a refusal other than a push race is only reported on the server's
         // own stderr (here: the log) and answered with the result code 0; a push race is answered with the message itself.
@@ -662,7 +674,7 @@ public final class Wire1Commands {
         try {
             int countBefore = Wire2Commands.changelog(repo).getRevisionCount();
             HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
-                    bundleBytes, heads, preChangegroupHooks, postChangegroupHooks);
+                    bundleBytes, heads, preChangegroupHooks, preTxnChangegroupHooks, postChangegroupHooks, null);
             if (result.status.startsWith("no changes found")) {
                 return Wire1Response.pushResult(0);
             }
@@ -671,6 +683,12 @@ public final class Wire1Commands {
                     "adding changesets\nadding manifests\nadding file changes\n" + Bundle2Push.summaryLine(result, delta));
         } catch (io.github.search5.hg4j.errors.HgPushRacedException e) {
             return Wire1Response.pushError(String.valueOf(e.getMessage()));
+        } catch (io.github.search5.hg4j.errors.HgHookRejectedException e) {
+            // pretxnchangegroup: the push was applied and undone again; what the server printed while doing so goes with the answer
+            java.util.logging.Logger.getLogger(Wire1Commands.class.getName())
+                    .log(java.util.logging.Level.WARNING, "bundle1 push refused: " + e.getMessage());
+            return Wire1Response.pushResult(0, "adding changesets\nadding manifests\nadding file changes\n"
+                    + "transaction abort!\nrollback completed\n");
         } catch (IOException | RuntimeException | HgLockException e) {
             java.util.logging.Logger.getLogger(Wire1Commands.class.getName())
                     .log(java.util.logging.Level.WARNING, "bundle1 push refused: " + e.getMessage(), e);

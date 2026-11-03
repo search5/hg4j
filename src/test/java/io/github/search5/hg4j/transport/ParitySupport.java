@@ -3,6 +3,13 @@ package io.github.search5.hg4j.transport;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.testsupport.LocalHg;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -89,6 +96,48 @@ final class ParitySupport {
         out.writeBytes("0\n".getBytes(StandardCharsets.US_ASCII));
         out.writeBytes("\n".getBytes(StandardCharsets.US_ASCII)); // an empty command line ends the session
         return out.toByteArray();
+    }
+
+    /** A real {@code hg serve} on a free port (the repository must allow pushes if the test pushes). */
+    static final class RealServe implements AutoCloseable {
+        final Process process;
+        final int port;
+
+        RealServe(Path repo) throws Exception {
+            ProcessBuilder pb = LocalHg.processBuilder(repo, "serve", "-p", "0", "--address", "127.0.0.1");
+            pb.redirectErrorStream(true);
+            pb.environment().put("PYTHONUNBUFFERED", "1");
+            process = pb.start();
+            CompletableFuture<Integer> found = new CompletableFuture<>();
+            List<String> seen = new CopyOnWriteArrayList<>();
+            Thread reader = new Thread(() -> {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        seen.add(line);
+                        Matcher m = Pattern.compile("listening at http://[^:/]+:(\\d+)/").matcher(line);
+                        if (m.find()) {
+                            found.complete(Integer.parseInt(m.group(1)));
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // the process was stopped
+                }
+            });
+            reader.setDaemon(true);
+            reader.start();
+            try {
+                port = found.get(30, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                process.destroy();
+                throw new AssertionError("hg serve printed no listening banner; output=" + seen);
+            }
+        }
+
+        @Override
+        public void close() {
+            process.destroy();
+        }
     }
 
     static String hex(byte[] b, int from, int to) {

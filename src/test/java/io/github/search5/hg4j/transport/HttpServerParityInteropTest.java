@@ -163,6 +163,63 @@ class HttpServerParityInteropTest {
         assertEquals(get(realPort, "cmd=capabilities").body().split(" ").length, get(hg4jPort, "cmd=capabilities").body().split(" ").length);
     }
 
+    private Answer getWithProto(int port, String query, String proto) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/?" + query)).GET();
+        if (proto != null) {
+            b.header("X-HgProto-1", proto);
+        }
+        HttpResponse<byte[]> r = http.send(b.build(), HttpResponse.BodyHandlers.ofByteArray());
+        return new Answer(r.statusCode(), r.headers().firstValue("Content-Type").orElse(""),
+                new String(r.body(), StandardCharsets.ISO_8859_1));
+    }
+
+    @Test
+    @DisplayName("압축된 getbundle 응답이 협상 결과(엔진, 미디어 타입)와 압축 바이트까지 원본과 같다")
+    void compressedAnswersAreByteIdentical() throws Exception {
+        String blob = "HG20\nbookmarks\nchangegroup=01,02,03\nlistkeys\nphases=heads\nhgtagsfnodes";
+        String bundlecaps = java.net.URLEncoder.encode("HG20,bundle2=" + java.net.URLEncoder.encode(blob, StandardCharsets.UTF_8)
+                .replace("+", "%20"), StandardCharsets.UTF_8);
+        // only the side parts: a changegroup's deltas are compared in WireServerParityInteropTest
+        String query = "cmd=getbundle&heads=" + node2 + "&common=" + "0".repeat(40) + "&bundlecaps=" + bundlecaps
+                + "&cg=0&bookmarks=1&listkeys=bookmarks%2Cphases&phases=1";
+        String[] variants = {null, "0.1 0.2 comp=zlib,none", "0.1 0.2 comp=zstd,zlib,none", "0.1 0.2 comp=none", "0.1 0.2 comp=bzip2",
+                "0.1 0.2 comp=bzip2,zlib", "0.1 0.2 partial-pull", "0.1 0.2 comp=zstd", "0.1"};
+        for (String proto : variants) {
+            Answer expected = getWithProto(realPort, query, proto);
+            Answer actual = getWithProto(hg4jPort, query, proto);
+            assertEquals(expected.status(), actual.status(), "status for " + proto);
+            assertEquals(expected.contentType(), actual.contentType(), "media type for " + proto);
+            assertEquals(expected.body().length(), actual.body().length(), "length of the answer for " + proto);
+            assertEquals(expected.body(), actual.body(), "bytes of the answer for " + proto);
+        }
+    }
+
+    @Test
+    @DisplayName("changegroup 이 든 getbundle 과 구식 changegroup 의 압축 응답도 바이트까지 원본과 같다")
+    void compressedChangegroupAnswersAreByteIdentical() throws Exception {
+        String blob = "HG20\nbookmarks\nchangegroup=01,02,03\nlistkeys\nphases=heads\nhgtagsfnodes";
+        String bundlecaps = java.net.URLEncoder.encode("HG20,bundle2=" + java.net.URLEncoder.encode(blob, StandardCharsets.UTF_8)
+                .replace("+", "%20"), StandardCharsets.UTF_8);
+        String full = "cmd=getbundle&heads=" + node2 + "&common=" + "0".repeat(40) + "&bundlecaps=" + bundlecaps
+                + "&bookmarks=1&listkeys=bookmarks%2Cphases&phases=1";
+        String legacy = "cmd=changegroup&roots=" + "0".repeat(40);
+        for (String query : new String[]{full, legacy}) {
+            for (String proto : new String[]{null, "0.1 0.2 comp=zstd,zlib,none", "0.1 0.2 comp=zlib"}) {
+                Answer expected = getWithProto(realPort, query, proto);
+                Answer actual = getWithProto(hg4jPort, query, proto);
+                assertEquals(expected.contentType(), actual.contentType(), query + " / " + proto);
+                assertEquals(expected.body().length(), actual.body().length(), "length: " + query + " / " + proto);
+                assertEquals(expected.body(), actual.body(), "bytes: " + query + " / " + proto);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("stream_out 의 HTTP 응답 바이트가 원본과 같다")
+    void streamOutOverHttp() throws Exception {
+        assertEquals(get(realPort, "cmd=stream_out"), get(hg4jPort, "cmd=stream_out"));
+    }
+
     @Test
     @DisplayName("알 수 없는 명령은 실제 hg 처럼 HTTP 400 이다")
     void unknownCommandIsBadRequest() throws Exception {

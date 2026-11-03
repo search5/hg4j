@@ -35,7 +35,7 @@ import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
  * Extends the requirement matrix (see {@link RequirementMatrixMergeCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * ArchiveCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixArchiveDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixArchiveRealHgRoundTripTest}).
  *
  * <p>{@link ArchiveCommand} is a pure read/export command (never mutates the repository), so
  * unlike most other requirement-matrix suites in this package, no subprocess helper is needed --

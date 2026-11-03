@@ -35,15 +35,14 @@ status: current
   `/repo-root`로 시작하면 실제 작업 디렉터리로 바꾼다.
 - `hg -R <repo> cat a.txt`처럼 상대 경로를 쓰는 호출은 컨테이너의 작업 디렉터리가 저장소(`/repo`)였기 때문에
   통과했었다. 로컬 실행에서는 `processBuilder(repoDir, ...)`로 작업 디렉터리를 지정해야 한다(3개 클래스).
-- `RequirementMatrixWorktreeDockerRoundTripTest`는 `.hg/sharedpath`를 컨테이너 경로로 덮어써서 컨테이너 안의
+- `RequirementMatrixWorktreeRealHgRoundTripTest`는 `.hg/sharedpath`를 컨테이너 경로로 덮어써서 컨테이너 안의
   hg가 읽게 하는 변환이 있었다. 컨테이너 뷰가 사라졌으므로 변환을 제거했다(30건 실패의 원인이었고 수정 후 30/30 통과).
 - `ClonebundlesAutoWireInteropTest`는 저장소에 정의가 없는 별도 이미지(`hg4j-test-mercurial-6.0`)와 미리 만들어진
   `/repo`에 의존했다. 로컬 `hg`로 2커밋 저장소를 만들고 `hg serve`를 하위 프로세스로 띄우도록 다시 썼다.
   서버 버전은 Mercurial 6.0에서 7.2.4로 바뀌었다.
 
 ## 남은 일
-- 클래스 이름에 `Docker`가 남아 있다(`RequirementMatrix*DockerRoundTripTest` 등). 위키/백로그 참조가 많아 이번에는
-  이름을 바꾸지 않았다.
+- 클래스 이름의 `Docker`는 2026-11-03에 `RequirementMatrix*RealHgRoundTripTest`로 바꿨다(위키와 백로그의 참조도 함께).
 - `docker/hg-rust-7.2.4/`는 삭제하지 않았다(이미지를 직접 쓰는 사람을 위한 참고용).
 - `ClonebundlesRealHgInteropTest`는 수동으로 띄운 외부 서버(`hg4j-hg60-server`)가 필요한 별개 테스트라 건드리지 않았다.
   `HgHttpV1LiveServerCgNegotiationInteropTest` 2건도 같은 이유로 건너뛴다.

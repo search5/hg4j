@@ -39,7 +39,7 @@ import java.util.Map;
  * pure-Python build aborts with "accessing `dirstate-v2` repository without associated fast
  * implementation", the exact same failure mode as general-v2/fileindex-v1/persistent-nodemap.
  * dirstate-v2 has therefore been moved out of this native-only file into the Docker-backed
- * requirement matrix (see {@code RequirementMatrixDockerRoundTripTest}) alongside those three --
+ * requirement matrix (see {@code RequirementMatrixRealHgRoundTripTest}) alongside those three --
  * the matrix plan doc's "native 12 / Docker 24" split needs a matching correction (native 6,
  * Docker 30). What IS genuinely native-buildable and covered here: {@code
  * format.exp-use-changelog-v2} (which {@code format.exp-use-copies-side-data-changeset} implies

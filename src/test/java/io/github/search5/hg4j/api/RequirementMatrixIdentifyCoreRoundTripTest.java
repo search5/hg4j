@@ -28,7 +28,7 @@ import java.util.Map;
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to
  * {@link IdentifyCommand} and {@link SummaryCommand} across the native 6-combo grid (changelog
  * family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixIdentifyDockerRoundTripTest}). These two are grouped into one trio,
+ * {@code RequirementMatrixIdentifyRealHgRoundTripTest}). These two are grouped into one trio,
  * matching the precedent set by wave 4's combined branch/branches trio -- both are one-shot
  * working-copy "snapshot" queries built from the same underlying pieces (parents, branch,
  * bookmarks, tags, phase), so one scenario naturally exercises both.

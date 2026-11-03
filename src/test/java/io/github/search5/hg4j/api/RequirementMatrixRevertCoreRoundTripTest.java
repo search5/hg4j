@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixMergeCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * RevertCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixRevertDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixRevertRealHgRoundTripTest}).
  *
  * <p>Two independent scenarios are covered, both across every combo, both ported from live
  * verification against real {@code hg} 7.2 (2026-09-05 -- see {@link RevertCommand}'s own

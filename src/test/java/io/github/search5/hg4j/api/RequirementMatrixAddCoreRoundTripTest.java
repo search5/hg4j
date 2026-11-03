@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link AddCommand} across the native 6-combo
  * grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixAddDockerRoundTripTest}).
+ * {@code RequirementMatrixAddRealHgRoundTripTest}).
  *
  * <p>Wave 3 (2026-09-05): {@link AddCommand} only writes the working-copy dirstate (no revlog
  * writes of its own), so the scenario below exercises hg4j writing new 'a'(dded) dirstate entries

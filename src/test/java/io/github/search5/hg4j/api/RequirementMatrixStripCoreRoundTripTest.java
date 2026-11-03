@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link StripCommand} across the native 6-combo
  * grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixStripDockerRoundTripTest}).
+ * {@code RequirementMatrixStripRealHgRoundTripTest}).
  *
  * <p>Scenario mirrors {@code StripRealHgInteropTest#stripWithUnevenRevisionSizesLeavesVerifiableRepo}
  * (deliberately uneven revision sizes to stress the approximate {@code .d} truncate-offset

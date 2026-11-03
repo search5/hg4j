@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link AddremoveCommand} across the native
  * 6-combo grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixAddremoveDockerRoundTripTest}).
+ * {@code RequirementMatrixAddremoveRealHgRoundTripTest}).
  *
  * <p>Wave 4 (2026-09-05): {@link AddremoveCommand} auto-detects BOTH untracked new files (which
  * it hands off to {@link AddCommand}) and missing tracked files (handed off to {@link

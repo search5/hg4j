@@ -27,7 +27,7 @@ import java.util.Map;
  * for why) to {@link PushCommand} across the native 6-combo grid: {@code
  * format.exp-use-changelog-v2} (v1 / changelog-v2 / changelog-v2+sidedata) x {@code
  * experimental.treemanifest} (off / on), {@code dirstate} fixed at v1 (v2 needs Docker, see
- * {@code RequirementMatrixPushDockerRoundTripTest}).
+ * {@code RequirementMatrixPushRealHgRoundTripTest}).
  *
  * <p>Unlike the commit/log/status/cat matrix (single repo, one side writes and the other reads),
  * push is inherently a TWO-repository interaction: hg4j reads the destination's current heads

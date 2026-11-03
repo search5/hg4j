@@ -29,7 +29,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link PhaseCommand} across the native 6-combo
  * grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixPhaseDockerRoundTripTest}).
+ * {@code RequirementMatrixPhaseRealHgRoundTripTest}).
  *
  * <p>Wave 4 (2026-09-05): {@link PhaseCommand} had no dedicated real-hg-CLI interop coverage of
  * its own before this class (only same-process unit coverage in {@code PhaseCommandCoverageTest}

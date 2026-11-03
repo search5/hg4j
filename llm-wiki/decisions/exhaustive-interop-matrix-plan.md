@@ -119,12 +119,12 @@ native 6개 + Docker 필요 30개(dirstate-v2×changelog×manifest 6개 + persis
 | 4 | v1 | changelog-v2 | tree | none | **native** | `RequirementMatrixCoreRoundTripTest` — 양방향(쓰기 포함) GREEN, 2026-09-04 완료 |
 | 5 | v1 | changelog-v2+sidedata | flat | none | **native** | `RequirementMatrixCoreRoundTripTest`(신규 양방향) + 기존 `SidedataFilesWriteTest`/`PullSidedataRealHgInteropTest`(이미 쓰기+양방향) — 이중 커버, 2026-09-04 |
 | 6 | v1 | changelog-v2+sidedata | tree | none | **native** | `RequirementMatrixCoreRoundTripTest` — 양방향(쓰기 포함) GREEN, 2026-09-04 완료 |
-| 7 | v2(dirstate) | v1 | flat | none | Docker | `RequirementMatrixDockerRoundTripTest` — 양방향(쓰기 포함) GREEN, 2026-09-04. 기존 `DirstateV2RealFixtureTest`(읽기 방향)도 라이브 쓰기 검증 참조 추가 |
+| 7 | v2(dirstate) | v1 | flat | none | Docker | `RequirementMatrixRealHgRoundTripTest` — 양방향(쓰기 포함) GREEN, 2026-09-04. 기존 `DirstateV2RealFixtureTest`(읽기 방향)도 라이브 쓰기 검증 참조 추가 |
 | 8~12 | v2(dirstate) x (v1/changelog-v2/changelog-v2+sidedata) x (flat/tree), storage-확장=none | — | — | Docker | 위와 동일: 양방향(쓰기 포함) GREEN, 2026-09-04 |
-| 13~24 | v1/v2 x 3changelog x flat/tree | — | persistent-nodemap | Docker | `RequirementMatrixDockerRoundTripTest` — 12개 전부 양방향(쓰기 포함) GREEN |
-| 25 | v1 | v1 | flat | fileindex-v1 | Docker | `RequirementMatrixDockerRoundTripTest`(양방향 GREEN) + 기존 `FileIndexTest`/`NodeMapFileFixtureTest`/`NodeMapFileWriterTest`/`RevlogV2GeneralParserTest`에 라이브 쓰기 검증(`realHgRustAcceptsHg4jWrittenGeneralV2Repository`) 추가 완료 |
+| 13~24 | v1/v2 x 3changelog x flat/tree | — | persistent-nodemap | Docker | `RequirementMatrixRealHgRoundTripTest` — 12개 전부 양방향(쓰기 포함) GREEN |
+| 25 | v1 | v1 | flat | fileindex-v1 | Docker | `RequirementMatrixRealHgRoundTripTest`(양방향 GREEN) + 기존 `FileIndexTest`/`NodeMapFileFixtureTest`/`NodeMapFileWriterTest`/`RevlogV2GeneralParserTest`에 라이브 쓰기 검증(`realHgRustAcceptsHg4jWrittenGeneralV2Repository`) 추가 완료 |
 | 26~30 | 나머지 5개(dirstate/changelog 조합 x fileindex-v1, flat 고정) | — | — | Docker | 5개 전부 양방향(쓰기 포함) GREEN |
-| 31 | v1 | v1 | flat | general-v2 | Docker | `RequirementMatrixDockerRoundTripTest`(양방향 GREEN) + 기존 `RevlogV2GeneralParserTest`에 라이브 쓰기 검증 추가 완료(#25와 같은 커밋으로 보강) |
+| 31 | v1 | v1 | flat | general-v2 | Docker | `RequirementMatrixRealHgRoundTripTest`(양방향 GREEN) + 기존 `RevlogV2GeneralParserTest`에 라이브 쓰기 검증 추가 완료(#25와 같은 커밋으로 보강) |
 | 32~36 | 나머지 5개(dirstate/changelog 조합 x general-v2, flat 고정) | — | — | Docker | 5개 전부 양방향(쓰기 포함) GREEN |
 
 **요약(2026-09-04 갱신, 전부 완료)**: native 6개(#1~6) + Docker 30개(#7~36) =

@@ -10,7 +10,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.UUID;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixRecoverDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixRecoverRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixBackoutHelperMain}'s reason for existing -- see its javadoc
  * (which itself defers to {@link RequirementMatrixCommitHelperMain}) for the full root-cause
  * writeup on why hg4j's own revlog-writing commands must run in a dedicated subprocess rather than
@@ -20,7 +20,7 @@ import java.util.UUID;
  * <p>Duplicates {@link RequirementMatrixRecoverCoreRoundTripTest}'s crash-journal fabrication
  * helpers verbatim (see that class's own javadoc for why a genuinely-crashed transaction cannot be
  * triggered deterministically, and for the exact format being reproduced here) -- per the
- * established convention (see {@link RequirementMatrixStripDockerRoundTripTest}), this is copied
+ * established convention (see {@link RequirementMatrixStripRealHgRoundTripTest}), this is copied
  * rather than shared.
  *
  * <p>Args: {@code repoDir}. The repository must already contain a single committed revision c0

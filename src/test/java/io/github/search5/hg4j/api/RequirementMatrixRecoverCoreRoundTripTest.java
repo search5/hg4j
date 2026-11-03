@@ -29,7 +29,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * RecoverCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixRecoverDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixRecoverRealHgRoundTripTest}).
  *
  * <p>A genuinely-crashed transaction cannot be triggered deterministically (there is no hook point
  * inside {@link CommitCommand#call()} between "journal written" and "journal cleaned up on

@@ -6,7 +6,7 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixTagDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixTagRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixAmendHelperMain}'s reason for existing -- {@link TagCommand}
  * delegates its (non-local, non-remove) commit to {@link CommitCommand}, which touches revlogs, so
  * it needs the same subprocess isolation from this test's repeated {@code docker exec}/

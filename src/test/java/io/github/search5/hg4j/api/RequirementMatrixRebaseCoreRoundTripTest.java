@@ -27,7 +27,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest} for the reused
  * pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * RebaseCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixRebaseDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixRebaseRealHgRoundTripTest}).
  *
  * <p>Real hg builds a diverging two-branch history (matching {@code
  * RebaseRealHgInteropTest#conflictFreeRebaseVerifiedByRealHg}'s scenario, here parametrized across

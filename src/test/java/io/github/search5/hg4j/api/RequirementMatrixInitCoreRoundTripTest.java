@@ -39,7 +39,7 @@ import java.util.Map;
  * the result.
  *
  * <p>Covers the native 6-combo grid (changelog family x treemanifest, dirstate fixed at v1 -- v2
- * needs Docker, see {@code RequirementMatrixInitDockerRoundTripTest}).
+ * needs Docker, see {@code RequirementMatrixInitRealHgRoundTripTest}).
  */
 @Tag("interop")
 public class RequirementMatrixInitCoreRoundTripTest {

@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixStripDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixStripRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixCommitHelperMain}'s reason for existing: running hg4j's own
  * write commands (here, {@link CommitCommand} x4 followed by {@link StripCommand}) inline in the
  * SAME JVM process that is also repeatedly spawning {@code docker exec}/{@code docker run} child

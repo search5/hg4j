@@ -30,7 +30,7 @@ import java.util.Map;
  * for why) to {@link UnbundleCommand} across the native 6-combo grid: {@code
  * format.exp-use-changelog-v2} (v1 / changelog-v2 / changelog-v2+sidedata) x {@code
  * experimental.treemanifest} (off / on), {@code dirstate} fixed at v1 (v2 needs Docker, see
- * {@link RequirementMatrixUnbundleDockerRoundTripTest}).
+ * {@link RequirementMatrixUnbundleRealHgRoundTripTest}).
  *
  * <p>Unbundle is Bundle's read-side counterpart, so this test mirrors {@link
  * RequirementMatrixBundleCoreRoundTripTest}'s shape closely but flips which side is real {@code

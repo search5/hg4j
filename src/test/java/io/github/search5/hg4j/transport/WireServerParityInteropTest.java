@@ -560,13 +560,11 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @DisplayName("stream2 부품의 파라미터, 파일 순서, 내용이 원본과 같다 (cache/ 파일 제외)")
+    @DisplayName("stream2 부품의 파라미터, 파일 순서, 내용이 원본과 같다 (cache/ 파일 포함)")
     void stream2MatchesTheOriginal() throws Exception {
         addManyFiles();
         Stream2 real = stream2(true);
         Stream2 mine = stream2(false);
-        // the original also copies cache/ files (branch and tag caches); hg4j does not send them
-        real.names().removeIf(n -> n.startsWith("cache/"));
         assertEquals(real.params().get("requirements"), mine.params().get("requirements"));
         assertEquals(real.names(), mine.names(), "same files in the same order");
         for (String name : real.names()) {
@@ -581,7 +579,6 @@ public class WireServerParityInteropTest {
         Files.writeString(repo.resolve(".hg/hgrc"), "[phases]\npublish = false\n");
         Stream2 real = stream2(true);
         Stream2 mine = stream2(false);
-        real.names().removeIf(n -> n.startsWith("cache/"));
         assertTrue(real.names().contains("phaseroots"), real.names().toString());
         assertEquals(real.names(), mine.names());
         assertArrayEquals(real.files().get("phaseroots"), mine.files().get("phaseroots"));
@@ -825,6 +822,111 @@ public class WireServerParityInteropTest {
         }
     }
 
+    // ───────────────────────── changegroup contents, entry by entry ─────────────────────────
+
+    /** Every entry of the changegroup in a getbundle answer, as text: node, parents, linknode, delta base, flags and the delta. */
+    private java.util.List<String> changegroupEntries(boolean real, String version, String common) throws Exception {
+        String heads = new String(ask(real, "heads"), StandardCharsets.ISO_8859_1).replaceFirst("^\\d+\\n", "").trim();
+        String blob = "HG20\nchangegroup=" + version;
+        String bundlecaps = "HG20,bundle2=" + java.net.URLEncoder.encode(blob, StandardCharsets.UTF_8).replace("+", "%20");
+        byte[] raw = ask(real, "getbundle", "*heads=" + heads + "&common=" + common + "&bundlecaps=" + bundlecaps);
+        assertTrue(io.github.search5.hg4j.bundle.Bundle2.isBundle2(raw), (real ? "real" : "hg4j") + " answered: " + show(raw));
+        for (io.github.search5.hg4j.bundle.Bundle2.Part part : io.github.search5.hg4j.bundle.Bundle2.read(raw)) {
+            if (!part.type.equals("changegroup")) {
+                continue;
+            }
+            assertEquals(version, part.params.get("version"));
+            io.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle =
+                    io.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(new ByteArrayInputStream(part.payload), version);
+            java.util.List<String> out = new java.util.ArrayList<>();
+            out.add("params " + part.params.keySet());
+            addEntries(out, "changelog", bundle.changelogEntries);
+            if (bundle.manifestEntries != null) {
+                addEntries(out, "manifest", bundle.manifestEntries);
+            }
+            if (bundle.fileGroups != null) {
+                for (io.github.search5.hg4j.bundle.ChangegroupParser.FileGroup group : bundle.fileGroups) {
+                    addEntries(out, "file " + group.path, group.entries);
+                }
+            }
+            return out;
+        }
+        return fail("no changegroup part");
+    }
+
+    private static void addEntries(java.util.List<String> out, String group,
+                                   java.util.List<io.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry> entries) {
+        for (io.github.search5.hg4j.bundle.ChangegroupParser.ChangeGroupEntry e : entries) {
+            String base = e.deltabase != null ? " base=" + ParitySupport.hex(e.deltabase, 0, 20).trim().replace(" ", "") : "";
+            out.add(group + " " + ParitySupport.hex(e.node, 0, 20).replace(" ", "") + " p1=" + ParitySupport.hex(e.p1, 0, 20).replace(" ", "")
+                    + " p2=" + ParitySupport.hex(e.p2, 0, 20).replace(" ", "") + " link=" + ParitySupport.hex(e.cs, 0, 20).replace(" ", "")
+                    + base + " flags=" + e.flags + " delta=" + ParitySupport.hex(e.delta, 0, e.delta.length).replace(" ", ""));
+        }
+    }
+
+    @Test
+    @DisplayName("changegroup 항목(노드, 부모, linknode, delta base, flags, delta)이 원본과 같다 (cg1, cg2, cg3)")
+    void changegroupEntriesMatchTheOriginal() throws Exception {
+        addManyFiles();
+        for (String version : new String[]{"01", "02", "03"}) {
+            java.util.List<String> expected = changegroupEntries(true, version, "0".repeat(40));
+            java.util.List<String> actual = changegroupEntries(false, version, "0".repeat(40));
+            assertEquals(String.join("\n", expected), String.join("\n", actual), "changegroup version " + version);
+        }
+    }
+
+    /** A long file edited at random (seeded) over many commits, on two branches that are merged, so deltas have many hunks. */
+    private void addRandomHistory() throws Exception {
+        java.util.Random random = new java.util.Random(20261103);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (int i = 0; i < 150; i++) {
+            lines.add("line " + i + " " + "x".repeat(random.nextInt(30)));
+        }
+        Path file = repo.resolve("big.txt");
+        Files.writeString(file, String.join("\n", lines) + "\n");
+        LocalHg.hgIn(tmp, "server", "add", "big.txt");
+        LocalHg.hgIn(tmp, "server", "commit", "-u", "dev", "-m", "big");
+        for (int c = 0; c < 14; c++) {
+            if (c == 6) {
+                // go back to an earlier revision: the next commits make a second head
+                LocalHg.hgIn(tmp, "server", "update", "-r", "3");
+            }
+            if (c == 11) {
+                // merge the two heads (the merged file is then rewritten below like any other edit)
+                LocalHg.hgIn(tmp, "server", "merge", "--tool", "internal:local");
+            }
+            int edits = 1 + random.nextInt(8);
+            for (int e = 0; e < edits; e++) {
+                int at = random.nextInt(lines.size());
+                switch (random.nextInt(3)) {
+                    case 0 -> lines.set(at, "changed " + c + " " + e + " " + random.nextInt(1000));
+                    case 1 -> lines.add(at, "inserted " + c + " " + e);
+                    default -> {
+                        if (lines.size() > 20) {
+                            lines.remove(at);
+                        }
+                    }
+                }
+            }
+            Files.writeString(file, String.join("\n", lines) + "\n");
+            LocalHg.hgIn(tmp, "server", "commit", "-A", "-u", "dev", "-d", "2023-01-" + (10 + c) + " 00:00 +0000", "-m", "edit " + c);
+        }
+    }
+
+    @Test
+    @DisplayName("무작위 편집이 많은 긴 이력의 changegroup 항목(delta 포함)이 원본과 같다 (cg1, cg2, cg3, 전체와 증분)")
+    void changegroupEntriesOfARandomHistory() throws Exception {
+        addRandomHistory();
+        String second = LocalHg.hgIn(tmp, "server", "log", "-r", "2", "--template", "{node}");
+        for (String version : new String[]{"01", "02", "03"}) {
+            for (String common : new String[]{"0".repeat(40), second}) {
+                java.util.List<String> expected = changegroupEntries(true, version, common);
+                java.util.List<String> actual = changegroupEntries(false, version, common);
+                assertEquals(String.join("\n", expected), String.join("\n", actual), "version " + version + ", common " + common);
+            }
+        }
+    }
+
     @Test
     @DisplayName("batch 가 여러 명령의 응답을 원본처럼 ';' 로 이어 준다")
     void batchCombinesAnswers() throws Exception {
@@ -889,6 +991,16 @@ public class WireServerParityInteropTest {
     void changegroupAppliesToTheSameRepository() throws Exception {
         assertSameChangegroup("cg-all", "changegroup", "roots=" + "0".repeat(40));
         assertSameChangegroup("cg-subset", "changegroupsubset", "bases=" + "0".repeat(40), "heads=" + n1);
+    }
+
+    @Test
+    @DisplayName("changegroup 과 changegroupsubset 응답이 원본과 바이트까지 같다 (delta 가 같은 알고리즘이므로)")
+    void changegroupBytesMatchTheOriginal() throws Exception {
+        addRandomHistory();
+        assertSameBytes("changegroup", "roots=" + "0".repeat(40));
+        assertSameBytes("changegroup", "roots=" + n1);
+        assertSameBytes("changegroupsubset", "bases=" + n0, "heads=" + n2);
+        assertSameBytes("changegroupsubset", "bases=" + "0".repeat(40), "heads=" + n1);
     }
 
     /** pushkey changes the repository, so the bookmark file is put back between the real server and hg4j. */
@@ -1141,6 +1253,17 @@ public class WireServerParityInteropTest {
         assertSameSession("hook-b1", client -> commitOnClient(client, "pushed\n"),
                 new String[]{"push", "--config", "devel.legacy.exchange=bundle1"},
                 realHook("prechangegroup"), server -> server.registerPreChangegroupHook(ctx -> false));
+    }
+
+    @Test
+    @DisplayName("서버 훅(pretxnchangegroup)이 적용 뒤에 거절하면 되돌려지고 응답이 원본과 같다")
+    void unbundleSessionRejectedByAPretxnHook() throws Exception {
+        // pretxnchangegroup runs after the changegroup is applied; a refusal undoes it, so the server ends up unchanged
+        assertSameSession("pretxn-b2", client -> commitOnClient(client, "pushed\n"), new String[]{"push"},
+                realHook("pretxnchangegroup"), server -> server.registerPreTxnChangegroupHook(ctx -> false));
+        assertSameSession("pretxn-b1", client -> commitOnClient(client, "pushed\n"),
+                new String[]{"push", "--config", "devel.legacy.exchange=bundle1"},
+                realHook("pretxnchangegroup"), server -> server.registerPreTxnChangegroupHook(ctx -> false));
     }
 
     @Test

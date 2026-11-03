@@ -238,32 +238,6 @@ public class DeltaEngineTest {
     }
 
     @Test
-    @DisplayName("Line inner class equals / hashCode consistency test")
-    public void testLineEqualsAndHashCode() throws Exception {
-        List<?> lines = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
-                .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
-        
-        assertNotNull(lines);
-        assertEquals(1, lines.size());
-        Object lineObj1 = lines.get(0);
-        
-        List<?> lines2 = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
-                .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
-        Object lineObj2 = lines2.get(0);
-        
-        assertEquals(lineObj1, lineObj2);
-        assertEquals(lineObj1.hashCode(), lineObj2.hashCode());
-        
-        List<?> lines3 = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
-                .invoke(null, (Object) "Line 2\n".getBytes(StandardCharsets.UTF_8));
-        Object lineObj3 = lines3.get(0);
-        
-        assertNotEquals(lineObj1, lineObj3);
-        assertNotEquals("string", lineObj1);
-        assertNotEquals(null, lineObj1);
-    }
-
-    @Test
     @DisplayName("createDelta edge cases: base null/empty and target null/empty")
     public void testCreateDeltaEdgeCases() throws Exception {
         // 1. base null / target null
@@ -294,10 +268,8 @@ public class DeltaEngineTest {
     // ─────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("createDelta: extremely different large content triggers the d>1000 Myers fallback guard")
-    void testCreateDelta_extremeDifference_triggersFallbackGuard() throws IOException {
-        // Build two texts with entirely disjoint line sets so that no lines ever match,
-        // forcing the Myers edit distance D to reach n+m (well above the d > 1000 guard).
+    @DisplayName("createDelta: texts with no line in common give one piece that replaces everything, and apply back")
+    void testCreateDelta_extremeDifference() throws IOException {
         StringBuilder sb1 = new StringBuilder();
         StringBuilder sb2 = new StringBuilder();
         for (int i = 0; i < 600; i++) {
@@ -309,13 +281,70 @@ public class DeltaEngineTest {
 
         byte[] delta = DeltaEngine.createDelta(base, target);
 
-        // The fallback returns exactly what createSimpleDelta would produce.
-        byte[] expectedFallback = DeltaEngine.createSimpleDelta(base, target);
-        assertArrayEquals(expectedFallback, delta);
+        // nothing matches, so the whole base is replaced by the whole target in one piece, cut at line boundaries (unlike the
+        // byte-wise simple delta, which would also drop the bytes the first and last lines happen to share)
+        ByteBuffer piece = ByteBuffer.wrap(delta);
+        assertEquals(0, piece.getInt());
+        assertEquals(base.length, piece.getInt());
+        assertEquals(target.length, piece.getInt());
+        assertEquals(12 + target.length, delta.length);
+        assertArrayEquals(target, DeltaEngine.applyDelta(base, delta));
+    }
 
-        // Round-trip must still be correct.
-        byte[] result = DeltaEngine.applyDelta(base, delta);
-        assertArrayEquals(target, result);
+    @Test
+    @DisplayName("createDelta: Mercurial's own delta for small edits (vectors taken from the real hg, see WireServerParityInteropTest)")
+    void testCreateDelta_keepsLinesInBetweenAsSeparatePieces() throws IOException {
+        // a changelog entry changing its first line and the lines after the second: two pieces, the unchanged second line stays out
+        byte[] base = ("9fdd6598\ndev\n1793694955 0\n.hgtags\n\nfirst message\n").getBytes(StandardCharsets.UTF_8);
+        byte[] target = ("0123abcd\ndev\n1793694999 0\nb.txt\n\nsecond message\n").getBytes(StandardCharsets.UTF_8);
+        byte[] delta = DeltaEngine.createDelta(base, target);
+        // first piece: bytes 0..9 replaced by "0123abcd\n"
+        ByteBuffer pieces = ByteBuffer.wrap(delta);
+        assertEquals(0, pieces.getInt());
+        assertEquals(9, pieces.getInt());
+        assertEquals(9, pieces.getInt());
+        pieces.position(pieces.position() + 9);
+        // "dev\n" (4 bytes, offsets 9..13) is not part of any piece: the next one starts after it
+        assertEquals(13, pieces.getInt());
+        assertArrayEquals(target, DeltaEngine.applyDelta(base, delta));
+    }
+
+    @Test
+    @DisplayName("createDelta: random edits of a long text always apply back to the target")
+    void testCreateDelta_randomEditsRoundTrip() throws IOException {
+        java.util.Random random = new java.util.Random(42);
+        for (int round = 0; round < 40; round++) {
+            List<String> lines = new java.util.ArrayList<>();
+            for (int i = 0; i < 200; i++) {
+                lines.add("line " + random.nextInt(60) + " " + "y".repeat(random.nextInt(12)));
+            }
+            byte[] base = (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8);
+            for (int e = 0; e < 1 + random.nextInt(25); e++) {
+                int at = random.nextInt(lines.size());
+                switch (random.nextInt(3)) {
+                    case 0 -> lines.set(at, "edit " + random.nextInt(1000));
+                    case 1 -> lines.add(at, "new " + random.nextInt(1000));
+                    default -> lines.remove(at);
+                }
+            }
+            byte[] target = (String.join("\n", lines) + (random.nextBoolean() ? "\n" : "")).getBytes(StandardCharsets.UTF_8);
+            assertArrayEquals(target, DeltaEngine.applyDelta(base, DeltaEngine.createDelta(base, target)), "round " + round);
+        }
+    }
+
+    @Test
+    @DisplayName("createDelta: a very long run of equal lines and a long text cut off at the cost limit still apply back")
+    void testCreateDelta_largeInputsRoundTrip() throws IOException {
+        StringBuilder a = new StringBuilder();
+        StringBuilder b = new StringBuilder();
+        java.util.Random random = new java.util.Random(7);
+        for (int i = 0; i < 3000; i++) {
+            a.append("shared ").append(i % 50).append('\n');
+            b.append(random.nextInt(4) == 0 ? "different " + random.nextInt(100) : "shared " + (i % 50)).append('\n');
+        }
+        byte[] base = a.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] target = b.toString().getBytes(StandardCharsets.UTF_8);
+        assertArrayEquals(target, DeltaEngine.applyDelta(base, DeltaEngine.createDelta(base, target)));
     }
 
     @Test
@@ -391,16 +420,4 @@ public class DeltaEngineTest {
         byte[] result = DeltaEngine.applyDelta(base, delta);
         assertArrayEquals(target, result);
     }
-
-    @Test
-    @DisplayName("Line.equals: comparing to a non-Line object directly returns false")
-    void testLineEquals_nonLineObject_returnsFalse() throws Exception {
-        List<?> lines = (List<?>) DeltaEngine.class.getDeclaredMethod("splitLines", byte[].class)
-                .invoke(null, (Object) "Line 1\n".getBytes(StandardCharsets.UTF_8));
-        Object lineObj = lines.get(0);
-
-        assertFalse(lineObj.equals("not a Line instance"));
-        assertFalse(lineObj.equals(42));
-    }
 }
-

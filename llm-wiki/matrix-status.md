@@ -23,66 +23,66 @@ status: current
 
 | 명령 | 상태 | 테스트 클래스(들) | 비고 |
 |---|---|---|---|
-| AddCommand | ✅ | RequirementMatrixAddCoreRoundTripTest / DockerRoundTripTest | |
-| AddremoveCommand | ✅ | RequirementMatrixAddremoveCoreRoundTripTest / DockerRoundTripTest | |
-| AmendCommand | ✅ | RequirementMatrixAmendCoreRoundTripTest / DockerRoundTripTest | |
-| AnnotateCommand | ✅ | RequirementMatrixGrepAnnotateCoreRoundTripTest / DockerRoundTripTest | Grep과 트리오 |
-| ArchiveCommand | ✅ | RequirementMatrixArchiveCoreRoundTripTest / DockerRoundTripTest / HelperMain | |
-| BackoutCommand | ✅ | RequirementMatrixBackoutCoreRoundTripTest / DockerRoundTripTest | 3-way merge 신규 구현 |
-| BisectCommand | ✅ | RequirementMatrixBisectCoreRoundTripTest / DockerRoundTripTest / HelperMain | |
-| BookmarkCommand | ✅ | RequirementMatrixBookmarkCoreRoundTripTest / DockerRoundTripTest | |
-| BranchCommand | ✅ | RequirementMatrixBranchCoreRoundTripTest / DockerRoundTripTest | Branches와 트리오 |
-| BranchesCommand | ✅ | RequirementMatrixBranchCoreRoundTripTest / DockerRoundTripTest | Branch와 트리오 |
-| BundleCommand | ✅ | RequirementMatrixBundleCoreRoundTripTest / DockerRoundTripTest | cl2+sidedata 콤보는 real-hg 자체 한계로 tolerate |
-| CatCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / DockerRoundTripTest | 4개 명령 트리오 |
-| CensorCommand | ✅ | RequirementMatrixCensorCoreRoundTripTest / DockerRoundTripTest / HelperMain | general-v2 filelog 손상 버그 발견·수정 |
-| CommitCommand | ✅ | RequirementMatrixCoreRoundTripTest / DockerRoundTripTest (baseline 4개 명령 공용) | |
-| CopyCommand | ✅ | RequirementMatrixCopyCoreRoundTripTest / DockerRoundTripTest | |
-| DescribeCommand | ✅ | RequirementMatrixDescribeCoreRoundTripTest / DockerRoundTripTest | |
-| DiffCommand | ✅ | RequirementMatrixDiffCoreRoundTripTest / DockerRoundTripTest | 가짜 후행 개행 버그 발견·수정 |
-| ExportCommand | ✅ | RequirementMatrixExportImportCoreRoundTripTest / DockerRoundTripTest | Import와 트리오 |
-| FilesCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / DockerRoundTripTest | 4개 명령 트리오 |
-| ForgetCommand | ✅ | RequirementMatrixForgetCoreRoundTripTest / DockerRoundTripTest | |
-| GcCommand | ✅ | RequirementMatrixGcCoreRoundTripTest / DockerRoundTripTest / HelperMain | |
-| GraftCommand | ✅ | RequirementMatrixGraftCoreRoundTripTest / DockerRoundTripTest | v2-docket journal 후속 gap 있음, [[backlog/39-exhaustive-interop-matrix]] 참고 |
-| GrepCommand | ✅ | RequirementMatrixGrepAnnotateCoreRoundTripTest / DockerRoundTripTest | Annotate와 트리오, fileindex-v1/general-v2 fallback 버그 발견·수정 |
-| HeadsCommand | ✅ | RequirementMatrixHeadsCoreRoundTripTest / DockerRoundTripTest | Tip+Parents와 트리오 |
-| HisteditCommand | ✅ | RequirementMatrixHisteditCoreRoundTripTest / DockerRoundTripTest | |
-| IdentifyCommand | ✅ | RequirementMatrixIdentifyCoreRoundTripTest / DockerRoundTripTest | Summary와 트리오, 전면 재작성 |
-| ImportCommand | ✅ | RequirementMatrixExportImportCoreRoundTripTest / DockerRoundTripTest | Export와 트리오, treemanifest 미지원 버그 발견·수정 |
-| InitCommand | ✅ | RequirementMatrixInitCoreRoundTripTest / DockerRoundTripTest / HelperMain | 36콤보 중 30+개 생성 불가하던 gap 전면 구현 |
-| LocateCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / DockerRoundTripTest | 4개 명령 트리오 |
-| LogCommand | ✅ | RequirementMatrixLogCoreRoundTripTest / DockerRoundTripTest | |
-| ManifestCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / DockerRoundTripTest | 4개 명령 트리오 |
-| MergeCommand | ✅ | RequirementMatrixMergeCoreRoundTripTest / DockerRoundTripTest | |
-| ParentsCommand | ✅ | RequirementMatrixHeadsCoreRoundTripTest / DockerRoundTripTest | Heads+Tip과 트리오 |
-| PathsCommand | ✅ | RequirementMatrixTagsCoreRoundTripTest / DockerRoundTripTest | Tags+Root와 트리오, 4축 무관 명령이지만 예외 없이 검증 |
-| PhaseCommand | ✅ | RequirementMatrixPhaseCoreRoundTripTest / DockerRoundTripTest | phaseroots 알고리즘 전면 재작성 |
-| PurgeCommand | ✅ | RequirementMatrixPurgeCoreRoundTripTest / DockerRoundTripTest / HelperMain | 심볼릭 링크 데이터 손실 버그 발견·수정 |
-| RebaseCommand | ✅ | RequirementMatrixRebaseCoreRoundTripTest / DockerRoundTripTest | |
-| RecoverCommand | ✅ | RequirementMatrixRecoverCoreRoundTripTest / DockerRoundTripTest / HelperMain | |
-| RemoveCommand | ✅ | RequirementMatrixRemoveCoreRoundTripTest / DockerRoundTripTest | |
-| RenameCommand | ✅ | RequirementMatrixRenameCoreRoundTripTest / DockerRoundTripTest | |
-| ResolveCommand | ✅ | RequirementMatrixResolveCoreRoundTripTest / DockerRoundTripTest | |
-| RevertCommand | ✅ | RequirementMatrixRevertCoreRoundTripTest / DockerRoundTripTest | 데이터 손실 버그 발견·수정 |
-| RevsetCommand | ✅ | RequirementMatrixRevsetCoreRoundTripTest / DockerRoundTripTest | |
-| RollbackCommand | ✅ | RequirementMatrixRollbackCoreRoundTripTest / DockerRoundTripTest / HelperMain | |
-| RootCommand | ✅ | RequirementMatrixTagsCoreRoundTripTest / DockerRoundTripTest | Tags+Paths와 트리오, 4축 무관 명령이지만 예외 없이 검증 |
-| ShelveCommand | ✅ | RequirementMatrixShelveCoreRoundTripTest / DockerRoundTripTest | |
-| SidedataChangedFilesCommand | ✅ | RequirementMatrixSidedataChangedFilesCoreRoundTripTest / DockerRoundTripTest | |
-| StatusCommand | ✅ | RequirementMatrixStatusCoreRoundTripTest / DockerRoundTripTest | |
-| StripCommand | ✅ | RequirementMatrixStripCoreRoundTripTest / DockerRoundTripTest | |
-| SubrepoCommand | ✅ | RequirementMatrixSubrepoCoreRoundTripTest / DockerRoundTripTest | Git+SVN 서브저장소 모두 지원(백로그 41 완료, [[backlog/subrepo]]) |
-| SummaryCommand | ✅ | RequirementMatrixIdentifyCoreRoundTripTest / DockerRoundTripTest | Identify와 트리오 |
-| TagCommand | ✅ | RequirementMatrixTagCoreRoundTripTest / DockerRoundTripTest | |
-| TagsCommand | ✅ | RequirementMatrixTagsCoreRoundTripTest / DockerRoundTripTest | Paths+Root와 트리오 |
-| TipCommand | ✅ | RequirementMatrixHeadsCoreRoundTripTest / DockerRoundTripTest | Heads+Parents와 트리오 |
-| TreeCommand | ✅ | RequirementMatrixTreeCoreRoundTripTest / DockerRoundTripTest | |
-| TreeMergeCommand | ✅ | RequirementMatrixTreeMergeCoreRoundTripTest / DockerRoundTripTest | |
-| UnbundleCommand | ✅ | RequirementMatrixUnbundleCoreRoundTripTest / DockerRoundTripTest | |
-| UpdateCommand | ✅ | RequirementMatrixUpdateCoreRoundTripTest / DockerRoundTripTest / HelperMain | 심볼릭 링크 모드 버그 발견·수정 |
-| VerifyCommand | ✅ | RequirementMatrixVerifyCoreRoundTripTest / DockerRoundTripTest / HelperMain | fileindex-v1/general-v2/treemanifest 검사 누락 발견·수정 |
-| WorktreeCommand | ✅ | RequirementMatrixWorktreeCoreRoundTripTest / DockerRoundTripTest / HelperMain | 실제 체크아웃 미수행 버그 발견·수정. **2026-09-07 재검증에서 회귀 발견·수정**: sharedpath가 getAbsolutePath()(심볼릭 링크 미해석)를 써서 real hg의 realpath 기준과 macOS 심볼릭 링크 경로에서 어긋나던 버그, getCanonicalPath()로 수정 — [[39-exhaustive-interop-matrix]] "후속 회귀 발견" 절 참고 |
+| AddCommand | ✅ | RequirementMatrixAddCoreRoundTripTest / RealHgRoundTripTest | |
+| AddremoveCommand | ✅ | RequirementMatrixAddremoveCoreRoundTripTest / RealHgRoundTripTest | |
+| AmendCommand | ✅ | RequirementMatrixAmendCoreRoundTripTest / RealHgRoundTripTest | |
+| AnnotateCommand | ✅ | RequirementMatrixGrepAnnotateCoreRoundTripTest / RealHgRoundTripTest | Grep과 트리오 |
+| ArchiveCommand | ✅ | RequirementMatrixArchiveCoreRoundTripTest / RealHgRoundTripTest / HelperMain | |
+| BackoutCommand | ✅ | RequirementMatrixBackoutCoreRoundTripTest / RealHgRoundTripTest | 3-way merge 신규 구현 |
+| BisectCommand | ✅ | RequirementMatrixBisectCoreRoundTripTest / RealHgRoundTripTest / HelperMain | |
+| BookmarkCommand | ✅ | RequirementMatrixBookmarkCoreRoundTripTest / RealHgRoundTripTest | |
+| BranchCommand | ✅ | RequirementMatrixBranchCoreRoundTripTest / RealHgRoundTripTest | Branches와 트리오 |
+| BranchesCommand | ✅ | RequirementMatrixBranchCoreRoundTripTest / RealHgRoundTripTest | Branch와 트리오 |
+| BundleCommand | ✅ | RequirementMatrixBundleCoreRoundTripTest / RealHgRoundTripTest | cl2+sidedata 콤보는 real-hg 자체 한계로 tolerate |
+| CatCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / RealHgRoundTripTest | 4개 명령 트리오 |
+| CensorCommand | ✅ | RequirementMatrixCensorCoreRoundTripTest / RealHgRoundTripTest / HelperMain | general-v2 filelog 손상 버그 발견·수정 |
+| CommitCommand | ✅ | RequirementMatrixCoreRoundTripTest / RealHgRoundTripTest (baseline 4개 명령 공용) | |
+| CopyCommand | ✅ | RequirementMatrixCopyCoreRoundTripTest / RealHgRoundTripTest | |
+| DescribeCommand | ✅ | RequirementMatrixDescribeCoreRoundTripTest / RealHgRoundTripTest | |
+| DiffCommand | ✅ | RequirementMatrixDiffCoreRoundTripTest / RealHgRoundTripTest | 가짜 후행 개행 버그 발견·수정 |
+| ExportCommand | ✅ | RequirementMatrixExportImportCoreRoundTripTest / RealHgRoundTripTest | Import와 트리오 |
+| FilesCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / RealHgRoundTripTest | 4개 명령 트리오 |
+| ForgetCommand | ✅ | RequirementMatrixForgetCoreRoundTripTest / RealHgRoundTripTest | |
+| GcCommand | ✅ | RequirementMatrixGcCoreRoundTripTest / RealHgRoundTripTest / HelperMain | |
+| GraftCommand | ✅ | RequirementMatrixGraftCoreRoundTripTest / RealHgRoundTripTest | v2-docket journal 후속 gap 있음, [[backlog/39-exhaustive-interop-matrix]] 참고 |
+| GrepCommand | ✅ | RequirementMatrixGrepAnnotateCoreRoundTripTest / RealHgRoundTripTest | Annotate와 트리오, fileindex-v1/general-v2 fallback 버그 발견·수정 |
+| HeadsCommand | ✅ | RequirementMatrixHeadsCoreRoundTripTest / RealHgRoundTripTest | Tip+Parents와 트리오 |
+| HisteditCommand | ✅ | RequirementMatrixHisteditCoreRoundTripTest / RealHgRoundTripTest | |
+| IdentifyCommand | ✅ | RequirementMatrixIdentifyCoreRoundTripTest / RealHgRoundTripTest | Summary와 트리오, 전면 재작성 |
+| ImportCommand | ✅ | RequirementMatrixExportImportCoreRoundTripTest / RealHgRoundTripTest | Export와 트리오, treemanifest 미지원 버그 발견·수정 |
+| InitCommand | ✅ | RequirementMatrixInitCoreRoundTripTest / RealHgRoundTripTest / HelperMain | 36콤보 중 30+개 생성 불가하던 gap 전면 구현 |
+| LocateCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / RealHgRoundTripTest | 4개 명령 트리오 |
+| LogCommand | ✅ | RequirementMatrixLogCoreRoundTripTest / RealHgRoundTripTest | |
+| ManifestCommand | ✅ | RequirementMatrixCatFilesLocateManifestCoreRoundTripTest / RealHgRoundTripTest | 4개 명령 트리오 |
+| MergeCommand | ✅ | RequirementMatrixMergeCoreRoundTripTest / RealHgRoundTripTest | |
+| ParentsCommand | ✅ | RequirementMatrixHeadsCoreRoundTripTest / RealHgRoundTripTest | Heads+Tip과 트리오 |
+| PathsCommand | ✅ | RequirementMatrixTagsCoreRoundTripTest / RealHgRoundTripTest | Tags+Root와 트리오, 4축 무관 명령이지만 예외 없이 검증 |
+| PhaseCommand | ✅ | RequirementMatrixPhaseCoreRoundTripTest / RealHgRoundTripTest | phaseroots 알고리즘 전면 재작성 |
+| PurgeCommand | ✅ | RequirementMatrixPurgeCoreRoundTripTest / RealHgRoundTripTest / HelperMain | 심볼릭 링크 데이터 손실 버그 발견·수정 |
+| RebaseCommand | ✅ | RequirementMatrixRebaseCoreRoundTripTest / RealHgRoundTripTest | |
+| RecoverCommand | ✅ | RequirementMatrixRecoverCoreRoundTripTest / RealHgRoundTripTest / HelperMain | |
+| RemoveCommand | ✅ | RequirementMatrixRemoveCoreRoundTripTest / RealHgRoundTripTest | |
+| RenameCommand | ✅ | RequirementMatrixRenameCoreRoundTripTest / RealHgRoundTripTest | |
+| ResolveCommand | ✅ | RequirementMatrixResolveCoreRoundTripTest / RealHgRoundTripTest | |
+| RevertCommand | ✅ | RequirementMatrixRevertCoreRoundTripTest / RealHgRoundTripTest | 데이터 손실 버그 발견·수정 |
+| RevsetCommand | ✅ | RequirementMatrixRevsetCoreRoundTripTest / RealHgRoundTripTest | |
+| RollbackCommand | ✅ | RequirementMatrixRollbackCoreRoundTripTest / RealHgRoundTripTest / HelperMain | |
+| RootCommand | ✅ | RequirementMatrixTagsCoreRoundTripTest / RealHgRoundTripTest | Tags+Paths와 트리오, 4축 무관 명령이지만 예외 없이 검증 |
+| ShelveCommand | ✅ | RequirementMatrixShelveCoreRoundTripTest / RealHgRoundTripTest | |
+| SidedataChangedFilesCommand | ✅ | RequirementMatrixSidedataChangedFilesCoreRoundTripTest / RealHgRoundTripTest | |
+| StatusCommand | ✅ | RequirementMatrixStatusCoreRoundTripTest / RealHgRoundTripTest | |
+| StripCommand | ✅ | RequirementMatrixStripCoreRoundTripTest / RealHgRoundTripTest | |
+| SubrepoCommand | ✅ | RequirementMatrixSubrepoCoreRoundTripTest / RealHgRoundTripTest | Git+SVN 서브저장소 모두 지원(백로그 41 완료, [[backlog/subrepo]]) |
+| SummaryCommand | ✅ | RequirementMatrixIdentifyCoreRoundTripTest / RealHgRoundTripTest | Identify와 트리오 |
+| TagCommand | ✅ | RequirementMatrixTagCoreRoundTripTest / RealHgRoundTripTest | |
+| TagsCommand | ✅ | RequirementMatrixTagsCoreRoundTripTest / RealHgRoundTripTest | Paths+Root와 트리오 |
+| TipCommand | ✅ | RequirementMatrixHeadsCoreRoundTripTest / RealHgRoundTripTest | Heads+Parents와 트리오 |
+| TreeCommand | ✅ | RequirementMatrixTreeCoreRoundTripTest / RealHgRoundTripTest | |
+| TreeMergeCommand | ✅ | RequirementMatrixTreeMergeCoreRoundTripTest / RealHgRoundTripTest | |
+| UnbundleCommand | ✅ | RequirementMatrixUnbundleCoreRoundTripTest / RealHgRoundTripTest | |
+| UpdateCommand | ✅ | RequirementMatrixUpdateCoreRoundTripTest / RealHgRoundTripTest / HelperMain | 심볼릭 링크 모드 버그 발견·수정 |
+| VerifyCommand | ✅ | RequirementMatrixVerifyCoreRoundTripTest / RealHgRoundTripTest / HelperMain | fileindex-v1/general-v2/treemanifest 검사 누락 발견·수정 |
+| WorktreeCommand | ✅ | RequirementMatrixWorktreeCoreRoundTripTest / RealHgRoundTripTest / HelperMain | 실제 체크아웃 미수행 버그 발견·수정. **2026-09-07 재검증에서 회귀 발견·수정**: sharedpath가 getAbsolutePath()(심볼릭 링크 미해석)를 써서 real hg의 realpath 기준과 macOS 심볼릭 링크 경로에서 어긋나던 버그, getCanonicalPath()로 수정 — [[39-exhaustive-interop-matrix]] "후속 회귀 발견" 절 참고 |
 
 (전부 `src/test/java/io/github/search5/hg4j/api/`)
 

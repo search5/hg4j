@@ -172,7 +172,7 @@ public class RevlogV2GeneralParserTest {
      * real-hg oracle. Uses the same one-shot {@code docker run --rm} pattern as that test (a
      * single docker invocation AFTER all hg4j commits finish, not interleaved with them) --
      * deliberately avoiding the interleaved-{@code ProcessBuilder} write-corruption pattern the
-     * sibling {@code RequirementMatrixDockerRoundTripTest} had to root-cause and work around via a
+     * sibling {@code RequirementMatrixRealHgRoundTripTest} had to root-cause and work around via a
      * dedicated subprocess.
      */
     @Test

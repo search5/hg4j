@@ -5,7 +5,7 @@ import io.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used by {@link RequirementMatrixArchiveDockerRoundTripTest}.
+ * Standalone JVM entry point used by {@link RequirementMatrixArchiveRealHgRoundTripTest}.
  *
  * <p>Unlike most other requirement-matrix Docker suites in this package, {@link ArchiveCommand}
  * never mutates the repository (see its class javadoc), so running it via a dedicated subprocess

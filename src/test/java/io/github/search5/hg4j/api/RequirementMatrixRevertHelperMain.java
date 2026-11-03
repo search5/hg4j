@@ -5,7 +5,7 @@ import io.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixRevertDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixRevertRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixMergeHelperMain}'s reason for existing -- see its javadoc
  * (which itself defers to {@link RequirementMatrixCommitHelperMain}) for the full root-cause
  * writeup on why hg4j's own dirstate/working-copy-writing commands must run in a dedicated

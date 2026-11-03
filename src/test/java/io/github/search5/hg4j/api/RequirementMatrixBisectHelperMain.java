@@ -6,7 +6,7 @@ import io.github.search5.hg4j.util.NodeIdUtil;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixBisectDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixBisectRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixBackoutHelperMain}'s reason for existing -- see its javadoc
  * (which itself defers to {@link RequirementMatrixCommitHelperMain}) for the full root-cause
  * writeup on why hg4j's own repository-writing commands must run in a dedicated subprocess rather

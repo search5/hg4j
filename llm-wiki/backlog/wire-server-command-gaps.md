@@ -193,3 +193,38 @@ hg4j와 원본이 **여전히 다른** 점:
 - 훅은 `hgrc`의 `[hooks]`가 아니라 Java 콜백(`HgHook`)이다. 문구는 원본의 `<이름> hook failed`에 맞췄지만 `pretxn*`/`prepushkey`가 트랜잭션 안에서 실패할 때 원본이 덧붙이는
   `transaction abort!`, `rollback completed` 출력은 보내지 않는다(hg4j에는 이 부품들에 걸친 트랜잭션이 없다).
 - 변경 뒤에 실패하는 경우(예: changegroup은 적용됐는데 뒤 부품이 파일 쓰기에서 실패)는 여전히 한 트랜잭션이 아니다.
+
+## [2026-11-03] 남은 비교를 마저 하고 원본과 같게 맞춤
+이전 기록에서 "대조하지 못했다"고 적은 것들을 처리했다. 결과는 아래와 같고, 이 절이 앞의 해당 문구를 대체한다.
+
+**changegroup 본문 (delta 바이트까지)**
+- 원본(Rust 확장 빌드)은 저장·교환 delta를 `hg::revlog::diff::text_delta`로 만든다(`mdiff.storage_diff`). 이것은 줄 단위 Myers(`imara-diff 0.2.0`)에 512바이트 단위의 줄 정렬 공통
+  접두/접미 제거를 붙이고, 맞닿은 hunk를 하나의 조각으로 합친다. hg4j의 `DeltaEngine.createDelta`는 자체 Myers 구현이었고, 결과가 "하나의 큰 조각"보다 크면 큰 조각으로 대체했다. 원본은
+  그런 대체가 없다. `LineDelta`로 원본 알고리즘을 그대로 포팅했다(전처리의 매칭 불가 줄 제거, 중간 스네이크 탐색, 비용 한계, `is_odd`가 항상 거짓인 점, `need_min`에서 `ec`가 늘지 않는 점,
+  `zip().rev()`의 정렬 방식 등 원본의 특이한 동작도 의도적으로 같게 두었다).
+- cg2 이상의 delta base: 원본은 저장된 delta 부모를 받는 쪽이 쓸 수 있으면(이미 보냈거나 상대가 가진 이력의 조상) 그것을 쓰고 저장 delta 조각을 재사용한다. 변경로그처럼 전체 텍스트로 저장된
+  리비전(저장 부모가 없음)은 base가 null인 전체 텍스트다. 그 외에는 p1, p2, 그룹 앞 리비전, 전체 텍스트 순서다(`reselectDeltas`, `Revlog#getDeltaParent`/`revDiff`). cg1은 "그룹 안의
+  직전 항목, 첫 항목은 부모"로 이미 같았다. `generaldelta` 플래그를 v1 인덱스에서 읽지 못해 항상 거짓으로 판별하던 결함도 고쳤다.
+- 구식 `changegroup`/`changegroupsubset`: 원본은 `roots::heads`(루트와 그 후손)를 보낸다. hg4j는 루트를 "받는 쪽이 이미 가진 것"으로 취급해 가지가 있는 이력에서 집합이 달랐다. 고쳤다.
+- `changegroup` 부품에 선택 파라미터 `nbchanges`를 붙인다(원본이 붙임).
+- 검증: SSH `getbundle`의 모든 항목(노드, 부모, linknode, base, flags, delta)이 cg1/cg2/cg3에서 원본과 같다. 파일이 여럿인 저장소, 무작위 편집이 많은 긴 이력(가지와 병합 포함, 전체와
+  증분 요청), 구식 명령의 응답은 바이트까지 같다. HTTP는 압축된 응답(zlib, zstd, none, 대체 동작 9가지 협상 변형)이 압축 바이트까지 같다.
+
+**stream_out, stream2**: 파일 순서(`store.walk`)와, stream2에서는 `cache/` 파일(`cachetocopy`)까지 원본과 같다.
+
+**push 응답**: 이전 절의 SSH 바이트 대조에 더해 HTTP도 실제 클라이언트 요청을 녹화해 재생하는 방식으로 비교한다(`HttpSessionParityInteropTest`). 이제 changegroup 본문도 비교에 포함된다.
+
+**서버 쪽 Abort 문구와 훅**: `prechangegroup`, `pretxnchangegroup`, `prepushkey` 거절을 SSH(번들2, 번들1)와 HTTP(롤백 출력 포함)에서 원본과 비교했고 모두 같다.
+`pretxnchangegroup`은 새로 구현했다: 적용 **후** 실행되고, 거절하면 `RollbackCommand`로 모두 되돌린다(`registerPreTxnChangegroupHook`).
+
+**원자성**: 변경이 시작된 뒤 어떤 부품이 실패하면 changegroup을 롤백하고 북마크, phaseroots, dirstate를 복원한다(실제 hg가 만든 번들에 존재하지 않는 노드를 가리키는 북마크 부품을
+붙여 확인, 롤백 뒤 `hg verify` 통과). 변경 전에 알 수 있는 거절은 여전히 적용 전에 검사한다.
+
+**클라이언트**: `FetchCommand`가 pull 뒤 phase를 원본 규칙(`_pullapplyphases`)대로 적용한다. 게시형 원격이면 pull한 이력 전체가 public, 비게시형이면 draft 루트의 후손이 아닌 부분이
+public이다. 실제 hg 클라이언트와 clone, pull 결과의 phase가 같다(`PullPhasesParityInteropTest`). `HgSshClient#close()`는 예외를 삼키지 않고 전파한다.
+
+**아직 다른 점**
+- 위의 원자성은 롤백 방식이다. 원본처럼 한 트랜잭션이 아니므로 롤백 도중 프로세스가 죽으면 이전 상태로 돌아가지 못한다(저널 기반 자동 복구는 다음 `lockStore`에서 일부 처리).
+- 훅은 `hgrc`의 `[hooks]`가 아니라 Java 콜백이다.
+- 존재하지 않는 노드를 가리키는 `bookmarks` 부품 거절, 알 수 없는 changegroup 버전 거절은 의도적 차이다.
+- wire v2는 7.2.4에 서버가 없어 비교할 오라클이 없다.

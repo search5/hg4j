@@ -28,7 +28,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest} for the reused
  * pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * HisteditCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixHisteditDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixHisteditRealHgRoundTripTest}).
  *
  * <p>Real hg builds a 6-commit linear history, hg4j runs a single histedit combining PICK, DROP,
  * FOLD and ROLL (the same rule kinds {@link HisteditCommand} supports -- there is no separate

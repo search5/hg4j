@@ -25,7 +25,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixCoreRoundTripTest}, backlog #39 /
  * {@code exhaustive-interop-matrix-plan.md} §1) to {@link CopyCommand} across the native 6-combo
  * grid (changelog family x treemanifest, dirstate fixed at v1 -- v2 needs Docker, see
- * {@code RequirementMatrixCopyDockerRoundTripTest}).
+ * {@code RequirementMatrixCopyRealHgRoundTripTest}).
  *
  * <p>Wave 4 (2026-09-05): {@link CopyCommand} writes only the working-copy dirstate (a new 'a'
  * entry for the destination plus a copyMap record), like {@link AddCommand}, but its filelog-side

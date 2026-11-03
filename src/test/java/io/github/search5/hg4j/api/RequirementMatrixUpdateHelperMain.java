@@ -5,7 +5,7 @@ import io.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used by {@link RequirementMatrixUpdateDockerRoundTripTest}.
+ * Standalone JVM entry point used by {@link RequirementMatrixUpdateRealHgRoundTripTest}.
  *
  * <p>Unlike most other requirement-matrix Docker suites in this package, {@link UpdateCommand}
  * never appends a revlog revision (see its class javadoc) -- only reads the store and writes the

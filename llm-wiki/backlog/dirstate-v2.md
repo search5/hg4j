@@ -80,7 +80,7 @@ real hg의 `hg status`가 모든 심볼릭 링크를 "M"으로 오판하는 버�
     list 양쪽 모두 basename의 UTF-8 바이트 기준 오름차순으로 정렬(Java `String`의
     UTF-16 비교가 아니라 실제 인코딩 바이트로 비교해 real hg의 `&[u8]`/`HgPath`
     순서와 정확히 일치시킴). `DirstateV2SerializerCoverageTest`에 회귀 유닛
-    테스트 2개(루트 레벨/중첩 레벨 정렬) 추가. `RequirementMatrixDockerRoundTripTest`
+    테스트 2개(루트 레벨/중첩 레벨 정렬) 추가. `RequirementMatrixRealHgRoundTripTest`
     의 18개 스킵 처리를 제거하고 60개 케이스(30읽기+30쓰기) 전부 GREEN 확인,
     전체 회귀도 새 실패 없음(`BUILD SUCCESSFUL`).
 

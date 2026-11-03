@@ -145,7 +145,7 @@ public class HgLocalClient implements HgRemoteConnection {
 
     @Override
     public byte[] getChangegroup(List<String> roots) throws IOException {
-        return getBundle(roots, null, null);
+        return getBundleFromRoots(roots, null);
     }
 
     @Override
@@ -180,6 +180,20 @@ public class HgLocalClient implements HgRemoteConnection {
      * after downloading everything.
      */
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
+                             HgRemoteConnection.NarrowScope narrowScope) throws IOException {
+        return getBundle(common, null, heads, bundleCaps, narrowScope);
+    }
+
+    /**
+     * The legacy {@code changegroup} / {@code changegroupsubset} commands: the changesets to send are {@code roots::heads} of the
+     * original's {@code outgoing(missingroots=..., ancestorsof=...)}, that is the roots themselves and their descendants that are
+     * ancestors of {@code heads} (all heads if empty); roots that are empty or the null node mean "all ancestors of the heads".
+     */
+    public byte[] getBundleFromRoots(List<String> roots, List<String> heads) throws IOException {
+        return getBundle(List.of(), roots, heads, null, null);
+    }
+
+    private byte[] getBundle(List<String> common, List<String> missingRoots, List<String> heads, List<String> bundleCaps,
                              HgRemoteConnection.NarrowScope narrowScope) throws IOException {
         HgTreeFilter narrowFilter = null;
         if (narrowScope != null) {
@@ -237,10 +251,24 @@ public class HgLocalClient implements HgRemoteConnection {
         } else {
             wanted = ancestorsInclusive(changelog, count, nodesToRevs(changelog, heads, true));
         }
+        boolean[] descendantsOfRoots = null;
+        if (missingRoots != null) {
+            // roots::heads: the roots and everything below them (only roots we have, and not the null node)
+            List<Integer> rootRevs = nodesToRevs(changelog, missingRoots, false);
+            if (!rootRevs.isEmpty()) {
+                descendantsOfRoots = new boolean[count];
+                for (int r = 0; r < count; r++) {
+                    Revlog.IndexRecord record = changelog.getIndexRecord(r);
+                    descendantsOfRoots[r] = rootRevs.contains(r)
+                            || (record.getParent1() >= 0 && descendantsOfRoots[record.getParent1()])
+                            || (record.getParent2() >= 0 && descendantsOfRoots[record.getParent2()]);
+                }
+            }
+        }
         boolean[] outgoing = new boolean[count];
         List<Integer> revs = new ArrayList<>();
         for (int r = 0; r < count; r++) {
-            if (wanted[r] && !inCommon[r]) {
+            if (descendantsOfRoots != null ? (wanted[r] && descendantsOfRoots[r]) : (wanted[r] && !inCommon[r])) {
                 outgoing[r] = true;
                 revs.add(r);
             }
@@ -429,6 +457,20 @@ public class HgLocalClient implements HgRemoteConnection {
             }
         }
 
+        if (!"01".equals(version)) {
+            // cg2 and later name the delta base explicitly, and the original does not always send "a delta against the entry before"
+            // (that is cg1's forced rule): it reuses the delta the revlog stores when its base is one the receiver has, and sends
+            // a full text for what is stored as one (see reselectDeltas).
+            reselectDeltas(changelog, bundle.changelogEntries, false);
+            bundle.manifestEntries.sort(java.util.Comparator.comparingInt(e -> manifest.findRevision(e.node)));
+            reselectDeltas(manifest, bundle.manifestEntries, true);
+            for (ChangegroupParser.FileGroup group : bundle.fileGroups) {
+                File flIdx = CommitCommand.getFilelogIndex(remoteRepo.getStoreDir(), group.path);
+                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                reselectDeltas(remoteRepo.getRevlog(flIdx, flDat), group.entries, true);
+            }
+        }
+
         // Serialize to binary bytes at the negotiated version (백로그 26번: 예전엔 cg1
         // "HG10UN"으로 항상 고정 -- 이제 ChangegroupParser.writeBundle을 통해 실제로 협상된
         // 버전(01~05)으로 패킹한다).
@@ -440,7 +482,7 @@ public class HgLocalClient implements HgRemoteConnection {
             // 실제 hg 스펙(exchange.getbundlechunks의 usebundle2 분기, mercurial/exchange.py
             // 실측): 클라이언트가 bundle2를 요청했으면 버전이 결국 "01"이 되더라도 응답은
             // 항상 HG20 봉투로 감싼다.
-            return Bundle2Parser.wrapChangegroupInBundle2(cgBytes, version);
+            return Bundle2Parser.wrapChangegroupInBundle2(cgBytes, version, null, bundle.changelogEntries.size());
         }
 
         // legacy(비-bundle2) 요청 -- hg4j 자체 "HG10UN" 파일 관례(file:// 역할, HgRemoteClient
@@ -540,6 +582,19 @@ public class HgLocalClient implements HgRemoteConnection {
      */
     public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,
                                      List<HgHook> preHooks,
+                                     List<HgHook> postHooks,
+                                     FetchCommand.PostLockValidator extraValidator) throws IOException, HgLockException {
+        return pushWithHooks(bundleBytes, heads, preHooks, List.of(), postHooks, extraValidator);
+    }
+
+    /**
+     * Same, with {@code preTxnHooks}: Mercurial's {@code pretxnchangegroup}. They run after the changegroup has been applied (and see
+     * the nodes it added); if one returns {@code false} everything is undone with {@link RollbackCommand} and the push fails with
+     * {@link io.github.search5.hg4j.errors.HgHookRejectedException} ({@code pretxnchangegroup hook failed}).
+     */
+    public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,
+                                     List<HgHook> preHooks,
+                                     List<HgHook> preTxnHooks,
                                      List<HgHook> postHooks,
                                      FetchCommand.PostLockValidator extraValidator) throws IOException, HgLockException {
         if (bundleBytes == null || bundleBytes.length == 0) {
@@ -662,6 +717,29 @@ public class HgLocalClient implements HgRemoteConnection {
                 Files.deleteIfExists(dirstateFile.toPath());
             }
 
+            if (!preTxnHooks.isEmpty()) {
+                List<String> appliedHexes = new ArrayList<>();
+                for (byte[] node : imported) {
+                    appliedHexes.add(NodeIdUtil.toHex(node));
+                }
+                Map<String, Object> txnCtx = new HashMap<>();
+                txnCtx.put("repository", remoteRepo);
+                txnCtx.put("nodes", appliedHexes);
+                for (HgHook hook : preTxnHooks) {
+                    if (!hook.run(txnCtx)) {
+                        try (io.github.search5.hg4j.lib.HgLock lock = remoteRepo.lockStore(remoteRepo.resolvePushLockTimeoutMs())) {
+                            new io.github.search5.hg4j.api.RollbackCommand(remoteRepo).call();
+                        }
+                        // the rollback restores the dirstate it recorded, which for a bare server is not the one it had
+                        if (dirstateBackup != null) {
+                            Files.write(dirstateFile.toPath(), dirstateBackup);
+                        } else {
+                            Files.deleteIfExists(dirstateFile.toPath());
+                        }
+                        throw new io.github.search5.hg4j.errors.HgHookRejectedException("pretxnchangegroup hook failed", true);
+                    }
+                }
+            }
             publishImported(imported);
 
             List<String> importedNodeHexes = new ArrayList<>();
@@ -710,6 +788,79 @@ public class HgLocalClient implements HgRemoteConnection {
                 null, wireHeads, "repository changed while " + context + " - please try again");
         if (validator != null) {
             validator.validate();
+        }
+    }
+
+    /**
+     * The delta base and delta of every entry of one group, chosen the way {@code revlog._emit_revisions} chooses them in its
+     * standard mode: the revision's stored delta parent if the receiver can use it (it has been sent before in this group, or it
+     * is an ancestor of the history the receiver already has), a full text when the revlog stores the revision as one (a changelog
+     * never stores deltas), otherwise the first usable parent, the revision before the group, or a full text.
+     *
+     * @param storesDeltaChains false for the changelog: it is stored as full texts, so every entry is a full text
+     */
+    private static void reselectDeltas(Revlog log, List<ChangegroupParser.ChangeGroupEntry> entries, boolean storesDeltaChains)
+            throws IOException {
+        if (entries.isEmpty()) {
+            return;
+        }
+        List<Integer> revs = new ArrayList<>();
+        for (ChangegroupParser.ChangeGroupEntry entry : entries) {
+            revs.add(log.findRevision(entry.node));
+        }
+        java.util.Set<Integer> sent = new HashSet<>(revs);
+        // the history the receiver is assumed to have: the ancestors of the parents that are not themselves sent
+        java.util.Deque<Integer> work = new java.util.ArrayDeque<>();
+        java.util.Set<Integer> available = new HashSet<>();
+        for (int rev : revs) {
+            Revlog.IndexRecord record = log.getIndexRecord(rev);
+            for (int parent : new int[]{record.getParent1(), record.getParent2()}) {
+                if (parent >= 0 && !sent.contains(parent) && available.add(parent)) {
+                    work.add(parent);
+                }
+            }
+        }
+        while (!work.isEmpty()) {
+            Revlog.IndexRecord record = log.getIndexRecord(work.poll());
+            for (int parent : new int[]{record.getParent1(), record.getParent2()}) {
+                if (parent >= 0 && available.add(parent)) {
+                    work.add(parent);
+                }
+            }
+        }
+        int prevRev = log.getIndexRecord(revs.get(0)).getParent1();
+        java.util.Set<Integer> emitted = new HashSet<>();
+        for (int i = 0; i < entries.size(); i++) {
+            int rev = revs.get(i);
+            Revlog.IndexRecord record = log.getIndexRecord(rev);
+            int p1 = record.getParent1();
+            int p2 = record.getParent2();
+            int base;
+            if (!storesDeltaChains) {
+                base = -1;
+            } else {
+                int deltaParent = log.getDeltaParent(rev);
+                if (deltaParent != -1 && (emitted.contains(deltaParent) || available.contains(deltaParent))) {
+                    base = deltaParent;
+                } else if (deltaParent == -1) {
+                    base = -1;
+                } else if (p1 != -1 && (emitted.contains(p1) || available.contains(p1))) {
+                    base = p1;
+                } else if (p2 != -1 && (emitted.contains(p2) || available.contains(p2))) {
+                    base = p2;
+                } else {
+                    base = prevRev;
+                }
+                // _candelta: no delta from or to a censored, ellipsis or externally stored revision
+                int unfit = Revlog.REVIDX_ISCENSORED | Revlog.REVIDX_EXTSTORED | 0x4000;
+                if (base != -1 && ((log.getIndexRecord(base).getFlags() & unfit) != 0 || (record.getFlags() & unfit) != 0)) {
+                    base = -1;
+                }
+            }
+            ChangegroupParser.ChangeGroupEntry entry = entries.get(i);
+            entry.deltabase = base == -1 ? new byte[20] : log.getIndexRecord(base).getNodeId();
+            entry.delta = log.revDiff(base, rev);
+            emitted.add(rev);
         }
     }
 

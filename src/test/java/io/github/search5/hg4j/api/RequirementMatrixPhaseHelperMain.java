@@ -5,7 +5,7 @@ import io.github.search5.hg4j.lib.HgRepository;
 import java.io.File;
 
 /**
- * Standalone JVM entry point used ONLY by {@link RequirementMatrixPhaseDockerRoundTripTest},
+ * Standalone JVM entry point used ONLY by {@link RequirementMatrixPhaseRealHgRoundTripTest},
  * mirroring {@link RequirementMatrixTagHelperMain}'s reason for existing -- see {@link
  * RequirementMatrixCommitHelperMain}'s javadoc for the full docker-exec-interleaving root-cause
  * writeup this isolates {@link PhaseCommand}'s write path from.

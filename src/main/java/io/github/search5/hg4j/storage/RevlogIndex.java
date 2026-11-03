@@ -35,6 +35,8 @@ public class RevlogIndex {
     private final Map<Integer, SoftReference<Revlog.IndexRecord>> recordCache = new HashMap<>();
     private final Map<Integer, Revlog.IndexRecord> addedRecords = new HashMap<>();
     private boolean inline = false;
+    /** v1 format flag {@code generaldelta} (0x0002): deltas may be against any earlier revision, not only the one before. */
+    private boolean generalDelta = false;
     private int revisionCount = 0;
     private long lastKnownSize = 0;
 
@@ -250,6 +252,10 @@ public class RevlogIndex {
 
     public boolean isChangelogV2() {
         return isChangelogV2;
+    }
+
+    public boolean isGeneralDelta() {
+        return isV2 || generalDelta;
     }
 
     public int getVersionHeader() {
@@ -545,6 +551,7 @@ public class RevlogIndex {
                         throw new HgCorruptDataException("Unsupported revlog version: " + version);
                     }
                     this.inline = (formatFlags & 0x0001) != 0;
+                    this.generalDelta = (formatFlags & 0x0002) != 0;
                 }
 
                 buf.position(32); // Seek directly to NodeID
@@ -607,6 +614,7 @@ public class RevlogIndex {
             return false; // let the normal path raise the appropriate corruption error
         }
         boolean firstInline = (formatFlags & 0x0001) != 0;
+        this.generalDelta = (formatFlags & 0x0002) != 0;
         if (firstInline) {
             return false; // persistent nodemap is never written for inline revlogs -- nothing to accelerate
         }

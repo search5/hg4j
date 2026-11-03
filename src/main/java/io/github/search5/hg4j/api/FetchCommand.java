@@ -190,7 +190,7 @@ public class FetchCommand {
                 // 새 changeset이 없어도 bookmark/phase는 원격에서 이미 변경됐을 수 있으므로
                 // 반드시 동기화한다 — 예전에는 여기서 그냥 리턴해버려서 "새 커밋 없이
                 // bookmark만 이동한 pull"이 조용히 무시됐다(2026-09-01 발견·수정).
-                syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
+                syncBookmarksAndPhases(client, localChangelog, new ArrayList<>(), remoteHeads);
                 monitor.end();
                 return mergeClonebundleResults(clonebundleImported, new ArrayList<>());
             }
@@ -244,7 +244,7 @@ public class FetchCommand {
 
             DownloadedChangegroup downloaded = downloadChangegroupBundle(client, caps, common, remoteHeads, narrowScopeFor(client, treeFilter));
             if (downloaded == null) {
-                syncBookmarksAndPhases(client, localChangelog, new ArrayList<>());
+                syncBookmarksAndPhases(client, localChangelog, new ArrayList<>(), remoteHeads);
                 monitor.end();
                 return mergeClonebundleResults(clonebundleImported, new ArrayList<>());
             }
@@ -253,7 +253,7 @@ public class FetchCommand {
                     ChangegroupParser.parseBundle(new ByteArrayInputStream(downloaded.changegroupBytes), downloaded.cgVersion);
             List<byte[]> results = applyBundle(bundle);
 
-            syncBookmarksAndPhases(client, localChangelog, results);
+            syncBookmarksAndPhases(client, localChangelog, results, remoteHeads);
 
             monitor.update(1);
             monitor.end();
@@ -472,7 +472,8 @@ public class FetchCommand {
      * @param newCommits 이번 fetch로 새로 받아온 커밋(phase를 draft로 표시하는 데 사용).
      *                   새 커밋이 없으면 빈 리스트.
      */
-    private void syncBookmarksAndPhases(HgRemoteConnection client, Revlog localChangelog, List<byte[]> newCommits) {
+    private void syncBookmarksAndPhases(HgRemoteConnection client, Revlog localChangelog, List<byte[]> newCommits,
+                                        List<String> pulledSubsetHex) {
         try {
             // Bookmarks Sync — ancestor(fast-forward) 인지 진짜 divergence인지 구분하는
             // 공용 병합 로직(BookmarkCommand.mergeFromRemote)에 위임한다. 예전에는 여기서
@@ -483,45 +484,105 @@ public class FetchCommand {
 
             // Phases Sync
             //
-            // Real hg's own phase-registration for newly-pulled-in changesets
-            // (phases.registernew()/advanceboundary()) only records an explicit phaseroots
-            // entry when the target phase is not already implied by the changeset's parents'
-            // phase -- a plain descendant of an existing draft/secret changeset inherits that
-            // phase via ancestry and needs no root of its own. Calling setPhase() unconditionally
-            // for every one of newCommits (as this used to) would append one explicit line per
-            // pulled changeset forever, diverging from real hg's minimal-roots phaseroots file
-            // (see PhaseCommand/CommitCommand for the same fix applied to local commits).
+            // New changesets start as draft, as in the original (phases.registernew), and then the remote's phases are applied
+            // the way exchange._pullapplyphases does it. The "subset" it works on is the heads that were pulled (here: the
+            // remote's heads, whose ancestors include everything that is common):
+            //  - a publishing remote (or one that sends no phase data): the whole subset becomes public;
+            //  - a non-publishing remote: what is not a descendant of one of its draft roots becomes public, the rest stays draft.
             PhaseRoots phaseRoots = repository.getPhaseRoots();
-            Map<String, String> remotePhases = client.listKeys("phases");
             for (byte[] nodeBytes : newCommits) {
                 NodeId nodeId = new NodeId(nodeBytes);
+                // a plain descendant of a draft/secret changeset inherits that phase and needs no root of its own
                 if (phaseRoots.getPhase(nodeId, localChangelog) != PhaseRoots.Phase.DRAFT) {
                     phaseRoots.setPhase(nodeId, PhaseRoots.Phase.DRAFT, localChangelog);
                 }
             }
-            if (remotePhases != null && !remotePhases.isEmpty()) {
+            Map<String, String> remotePhases = client.listKeys("phases");
+            boolean publishing = remotePhases != null && remotePhases.containsKey("publishing")
+                    && !remotePhases.get("publishing").isEmpty();
+            List<Integer> subset = new ArrayList<>();
+            for (String hex : pulledSubsetHex) {
+                int rev = localChangelog.findRevision(NodeIdUtil.fromHex(hex));
+                if (rev >= 0) {
+                    subset.add(rev);
+                }
+            }
+            if (remotePhases != null && !remotePhases.isEmpty() && !publishing) {
+                List<Integer> draftRoots = new ArrayList<>();
                 for (Map.Entry<String, String> entry : remotePhases.entrySet()) {
-                    String hexNode = entry.getKey();
-                    if (hexNode.length() != 40) {
-                        // "publishing" -> "True": data about the remote's publish option, not a changeset (real
-                        // hg's phases.analyzeremotephases ignores it the same way). This client does not yet make
-                        // what it pulled public when the remote is publishing; see
-                        // llm-wiki/backlog/wire-server-command-gaps.md.
-                        continue;
+                    if (entry.getKey().length() != 40) {
+                        continue; // "publishing" and other data that is not a changeset
                     }
-                    int phaseVal = Integer.parseInt(entry.getValue().trim());
-                    byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
-                    if (localChangelog.findRevision(nodeBytes) != -1) {
-                        PhaseRoots.Phase p = PhaseRoots.Phase.fromValue(phaseVal);
-                        NodeId nodeId = new NodeId(nodeBytes);
-                        if (phaseRoots.getPhase(nodeId, localChangelog) != p) {
-                            phaseRoots.setPhase(nodeId, p, localChangelog);
+                    if (Integer.parseInt(entry.getValue().trim()) == PhaseRoots.Phase.DRAFT.getValue()) {
+                        int rev = localChangelog.findRevision(NodeIdUtil.fromHex(entry.getKey()));
+                        if (rev >= 0) {
+                            draftRoots.add(rev);
                         }
                     }
+                }
+                // phases.new_heads: the heads of the pulled history that are not under a draft root
+                for (int head : publicHeads(localChangelog, subset, draftRoots)) {
+                    makePublic(localChangelog, phaseRoots, head);
+                }
+            } else {
+                for (int head : subset) {
+                    makePublic(localChangelog, phaseRoots, head);
                 }
             }
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to synchronize remote bookmarks or phases during fetch", e);
+        }
+    }
+
+    /** {@code phases.new_heads}: the heads of (the ancestors of {@code subset}) minus (the descendants of {@code roots}). */
+    private static List<Integer> publicHeads(Revlog changelog, List<Integer> subset, List<Integer> roots) throws IOException {
+        int count = changelog.getRevisionCount();
+        boolean[] inSubset = new boolean[count];
+        java.util.ArrayDeque<Integer> work = new java.util.ArrayDeque<>();
+        for (int rev : subset) {
+            if (!inSubset[rev]) {
+                inSubset[rev] = true;
+                work.add(rev);
+            }
+        }
+        while (!work.isEmpty()) {
+            Revlog.IndexRecord record = changelog.getIndexRecord(work.poll());
+            for (int parent : new int[]{record.getParent1(), record.getParent2()}) {
+                if (parent >= 0 && !inSubset[parent]) {
+                    inSubset[parent] = true;
+                    work.add(parent);
+                }
+            }
+        }
+        boolean[] underRoot = new boolean[count];
+        for (int rev = 0; rev < count; rev++) {
+            Revlog.IndexRecord record = changelog.getIndexRecord(rev);
+            underRoot[rev] = roots.contains(rev)
+                    || (record.getParent1() >= 0 && underRoot[record.getParent1()])
+                    || (record.getParent2() >= 0 && underRoot[record.getParent2()]);
+        }
+        boolean[] hasChild = new boolean[count];
+        for (int rev = 0; rev < count; rev++) {
+            if (inSubset[rev] && !underRoot[rev]) {
+                Revlog.IndexRecord record = changelog.getIndexRecord(rev);
+                if (record.getParent1() >= 0) hasChild[record.getParent1()] = true;
+                if (record.getParent2() >= 0) hasChild[record.getParent2()] = true;
+            }
+        }
+        List<Integer> heads = new ArrayList<>();
+        for (int rev = 0; rev < count; rev++) {
+            if (inSubset[rev] && !underRoot[rev] && !hasChild[rev]) {
+                heads.add(rev);
+            }
+        }
+        return heads;
+    }
+
+    /** {@code phases.advanceboundary(public, [head])}: the changeset and its ancestors become public (nothing happens if it is). */
+    private void makePublic(Revlog changelog, PhaseRoots phaseRoots, int rev) throws IOException {
+        NodeId node = new NodeId(changelog.getIndexRecord(rev).getNodeId());
+        if (phaseRoots.getPhase(node, changelog) != PhaseRoots.Phase.PUBLIC) {
+            Hg.wrap(repository).phase().setRevision(NodeIdUtil.toHex(node.getBytes())).setPhase(0).call();
         }
     }
 

@@ -426,7 +426,7 @@ public class Bundle2Parser {
      * chunk framing) + payload bytes + terminal chunk(int32 0) + final partHeaderSize(int32 0).
      */
     public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version) throws IOException {
-        return wrapChangegroupInBundle2(changegroupBytes, version, null);
+        return wrapChangegroupInBundle2(changegroupBytes, version, null, -1);
     }
 
     /**
@@ -445,20 +445,38 @@ public class Bundle2Parser {
      * (case-insensitive).
      */
     public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version, String compression) throws IOException {
+        return wrapChangegroupInBundle2(changegroupBytes, version, compression, -1);
+    }
+
+    /**
+     * Same, and when {@code nbChanges} is not negative the part carries the advisory parameter {@code nbchanges} (the number of
+     * changesets in the changegroup) that the original's {@code getbundle} adds after {@code version}.
+     */
+    public static byte[] wrapChangegroupInBundle2(byte[] changegroupBytes, String version, String compression, int nbChanges) throws IOException {
         byte[] partName = "CHANGEGROUP".getBytes(StandardCharsets.US_ASCII);
         byte[] paramKey = "version".getBytes(StandardCharsets.US_ASCII);
         byte[] paramVal = version.getBytes(StandardCharsets.US_ASCII);
+        byte[] advisoryKey = "nbchanges".getBytes(StandardCharsets.US_ASCII);
+        byte[] advisoryVal = String.valueOf(nbChanges).getBytes(StandardCharsets.US_ASCII);
 
         ByteArrayOutputStream header = new ByteArrayOutputStream();
         header.write(partName.length);
         header.write(partName);
         header.write(new byte[]{0, 0, 0, 0}); // part id (unused by a standalone file-level unbundle)
         header.write(1); // mandatoryCount
-        header.write(0); // advisoryCount
+        header.write(nbChanges >= 0 ? 1 : 0); // advisoryCount
         header.write(paramKey.length);
         header.write(paramVal.length);
+        if (nbChanges >= 0) {
+            header.write(advisoryKey.length);
+            header.write(advisoryVal.length);
+        }
         header.write(paramKey);
         header.write(paramVal);
+        if (nbChanges >= 0) {
+            header.write(advisoryKey);
+            header.write(advisoryVal);
+        }
         byte[] headerBytes = header.toByteArray();
 
         ByteArrayOutputStream rest = new ByteArrayOutputStream();

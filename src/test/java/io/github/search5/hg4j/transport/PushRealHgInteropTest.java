@@ -314,6 +314,10 @@ public class PushRealHgInteropTest {
         HgTestUtils.hg(remoteRepoDir, "commit", "-u", "T", "-m", "c1 to amend");
         String c1Hex = HgTestUtils.hg(remoteRepoDir, "log", "-r", "tip", "--template", "{node}");
         allowPush(remoteRepoDir);
+        // The remote must not be publishing: from a publishing remote everything pulled is public, and amending a public changeset
+        // is refused ("cannot amend public changesets", checked against real hg 7.2.4). Only a draft head can be amended and pushed.
+        Files.writeString(new File(remoteRepoDir, ".hg/hgrc").toPath(), "[phases]\npublish = False\n",
+                StandardOpenOption.APPEND);
 
         try (RealHgServeSupport.ServeHandle serve = RealHgServeSupport.start(remoteRepoDir)) {
             File localDir = tempDir.resolve("local").toFile();

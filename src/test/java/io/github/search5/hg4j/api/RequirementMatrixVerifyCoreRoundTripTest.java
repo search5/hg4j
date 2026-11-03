@@ -27,7 +27,7 @@ import java.util.Map;
  * Extends the requirement matrix (see {@link RequirementMatrixBackoutCoreRoundTripTest} for the
  * reused pattern, and backlog #39 / {@code exhaustive-interop-matrix-plan.md} §1) to {@link
  * VerifyCommand} across the native 6-combo grid (changelog family x treemanifest, dirstate fixed
- * at v1 -- v2 needs Docker, see {@code RequirementMatrixVerifyDockerRoundTripTest}).
+ * at v1 -- v2 needs Docker, see {@code RequirementMatrixVerifyRealHgRoundTripTest}).
  *
  * <p>Unlike every other command extended so far, {@link VerifyCommand} never writes anything --
  * it is a pure read/hash-check over a repository built entirely by real {@code hg}. Three

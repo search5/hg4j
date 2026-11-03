@@ -153,6 +153,67 @@ final class StreamClone {
         }
     }
 
+    /** The content of a bundle2 {@code stream2} part. */
+    record Stream2(int fileCount, long byteCount, byte[] payload, String requirements) {
+    }
+
+    /**
+     * {@code generatev2} + {@code addpartbundlestream2}: for every store file a {@code 's'} source marker, the name length and the
+     * data length as unsigned varints (7 bits per byte, low bits first), the name and the data. Files of the
+     * {@code cache/} directory, which the original also copies, are not sent: they are only an optimisation of the receiver.
+     *
+     * @throws IOException when streaming is not allowed (the same messages the original aborts with) or the store is locked
+     */
+    static Stream2 stream2(HgRepository repo) throws IOException {
+        if (!allowServerGeneration(repo)) {
+            throw new IOException("stream data requested but server does not allow this feature");
+        }
+        List<Entry> entries = new ArrayList<>();
+        long total = 0;
+        try (HgLock ignored = repo.lockStore()) {
+            for (String wireName : storeFileNames(repo)) {
+                File file = new File(repo.getStoreDir(),
+                        wireName.startsWith("data/") ? NodeIdUtil.encodeFname(decodeDir(wireName)) : wireName);
+                if (file.isFile()) {
+                    entries.add(new Entry(wireName, file, file.length()));
+                    total += file.length();
+                }
+            }
+            File phaseroots = new File(repo.getStoreDir(), "phaseroots");
+            if (!Wire2Commands.isPublishing(repo) && phaseroots.isFile()) {
+                entries.add(new Entry("phaseroots", phaseroots, phaseroots.length()));
+                total += phaseroots.length();
+            }
+            if (total > MAX_BYTES) {
+                throw new IOException("the store is larger than this server streams (" + MAX_BYTES + " bytes)");
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(total + 4096, Integer.MAX_VALUE - 16));
+            for (Entry e : entries) {
+                byte[] name = e.wireName.getBytes(StandardCharsets.ISO_8859_1);
+                out.write('s');
+                writeUvarint(out, name.length);
+                writeUvarint(out, e.size);
+                out.write(name);
+                out.write(Files.readAllBytes(e.file.toPath()));
+            }
+            String requirements = java.net.URLEncoder.encode(String.join(",", streamedRequirements(repo)), StandardCharsets.US_ASCII)
+                    .replace("+", "%20");
+            return new Stream2(entries.size(), total, out.toByteArray(), requirements);
+        } catch (HgLockException e) {
+            throw new IOException("unable to lock the store for streaming: " + e.getMessage(), e);
+        }
+    }
+
+    /** {@code util.uvarintencode}. */
+    private static void writeUvarint(ByteArrayOutputStream out, long value) {
+        long v = value;
+        while (v >= 0x80) {
+            out.write((int) ((v & 0x7F) | 0x80));
+            v >>>= 7;
+        }
+        out.write((int) v);
+    }
+
     private record Entry(String wireName, File file, long size) {
     }
 

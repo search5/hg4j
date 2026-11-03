@@ -136,6 +136,33 @@ class HttpServerParityInteropTest {
         }
     }
 
+    private static java.util.SortedSet<String> tokens(String line) {
+        java.util.SortedSet<String> out = new java.util.TreeSet<>();
+        for (String token : line.trim().split(" ")) {
+            if (token.startsWith("bundle2=")) {
+                for (String part : java.net.URLDecoder.decode(token.substring(8), StandardCharsets.ISO_8859_1).split("\n")) {
+                    out.add("bundle2:" + part);
+                }
+            } else {
+                out.add(token);
+            }
+        }
+        return out;
+    }
+
+    @Test
+    @DisplayName("HTTP capabilities 토큰이 7.2.4 원본과 정확히 같다")
+    void capabilityTokensMatchTheOriginal() throws Exception {
+        java.util.SortedSet<String> expected = tokens(get(realPort, "cmd=capabilities").body());
+        java.util.SortedSet<String> actual = tokens(get(hg4jPort, "cmd=capabilities").body());
+        java.util.SortedSet<String> missing = new java.util.TreeSet<>(expected);
+        missing.removeAll(actual);
+        java.util.SortedSet<String> extra = new java.util.TreeSet<>(actual);
+        extra.removeAll(expected);
+        assertTrue(missing.isEmpty() && extra.isEmpty(), "hg4j does not advertise: " + missing + "; advertises extra: " + extra);
+        assertEquals(get(realPort, "cmd=capabilities").body().split(" ").length, get(hg4jPort, "cmd=capabilities").body().split(" ").length);
+    }
+
     @Test
     @DisplayName("알 수 없는 명령은 실제 hg 처럼 HTTP 400 이다")
     void unknownCommandIsBadRequest() throws Exception {

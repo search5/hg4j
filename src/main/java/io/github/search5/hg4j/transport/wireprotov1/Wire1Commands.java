@@ -41,86 +41,140 @@ public final class Wire1Commands {
     }
 
     /**
-     * Real v1 capability tokens hg4j's server side can actually back. Kept independent of {@link
-     * HgLocalClient#getCapabilities()} (that list serves a different, simpler purpose — the
-     * {@code file://} local peer role — and changing it could affect unrelated call sites).
+     * The capability tokens a repository-independent server advertises (default configuration): kept for callers that have no
+     * repository at hand. The line a real server sends is {@link #capabilitiesString(HgRepository)}.
      */
     public static String capabilitiesString() {
-        // httpheader=1024: tells the client to send argument-bearing v1 commands (getbundle,
-        // pushkey, ...) as a GET with args split across X-HgArg-N request headers rather than a
-        // legacy query string -- HgHttpWireServer#handleV1Command reassembles them. Matches real
-        // hg's own default server advertisement (confirmed via a real hg --debug clone capture).
-        //
-        // bundle2=...: backlog item 26 -- without this token, a real hg client's own
-        // remote.capable('bundle2') check (mercurial/exchanges/peer.py: exact-match OR any cap
-        // starting with "bundle2=") comes back false, which forces the client onto its legacy
-        // bundle1-only pull path (exchange.py's _forcebundle1/_pullchangeset): it calls
-        // getbundle() with NO bundlecaps argument at all (empty set), so no changegroup version
-        // list is ever sent and hg4j's server can never negotiate anything beyond cg1 -- verified
-        // directly (2026-09-04) by instrumenting Wire1Commands.getbundle and observing a real `hg
-        // clone`'s request args before this fix. Advertising bundle2 here makes the client go
-        // through _pullbundle2 instead, which DOES send its own changegroup=01,02,03 (a real hg
-        // 7.2 client's own default incoming-version list; cg4/cg5 are never offered by client
-        // unless its own repo/config wants them) nested in a bundle2= blob -- see
-        // HgLocalClient#getBundle for the server-side decode/negotiate/response-wrapping logic
-        // this enables. The blob's own advertised list ("01,02,03,04,05") only needs to be
-        // non-empty and truthful about what hg4j's OWN unbundle/push-apply path can accept --
-        // real hg's server-side getbundle version selection never reads the SERVER's own
-        // advertised capability value for the pull direction, only the CLIENT's (see
-        // Bundle2Parser#decodeChangegroupVersions's doc).
-        // exp-narrow-1 (backlog item 40): real hg's NARROWCAP token (mercurial/wireprototypes.py),
-        // appended by wireprotov1server._capabilities() whenever the server has the bundled
-        // `narrow` extension loaded -- unconditionally, not gated on the specific repo being a
-        // narrow clone itself (confirmed 2026-09-06: `hg --config extensions.narrow=
-        // --config experimental.narrow=True serve` advertises it for every repo it serves).
-        // hg4j has no extension system and always understands the narrow getbundle args (see
-        // Wire1Commands#getbundle), so it always advertises this, the same reasoning as
-        // bundle2=/httpheader= above.
-        return "lookup changegroupsubset branchmap pushkey known getbundle batch httpheader=1024 "
-                + "unbundle=HG10UN,HG10GZ exp-narrow-1 "
-                + Bundle2Parser.buildBundle2CapsToken("01,02,03,04,05");
+        return String.join(" ", capabilityTokens(null, false));
     }
 
-    /**
-     * The {@code capabilities} line actually served for a specific repository -- adds the {@code
-     * clonebundles} token when (and only when) {@code .hg/clonebundles.manifest} exists, matching
-     * real hg's own conditional advertisement (real hg additionally requires the server-side {@code
-     * clonebundles} extension to be enabled; hg4j has no extension system, so the manifest file's
-     * presence alone is the equivalent signal).
-     */
+    /** The {@code capabilities} line of an SSH (or transport-neutral) server for {@code repo}. */
     public static String capabilitiesString(HgRepository repo) {
-        String base = capabilitiesString();
-        for (String token : StreamClone.capabilityTokens(repo)) {
-            base = base + " " + token;
-        }
-        if (HeadsBuckets.advertised(repo)) {
-            base = base + " " + HeadsBuckets.CAPABILITY;
-        }
-        if (shapesAdvertised(repo)) {
-            base = base + " exp-shape-1";
-        }
-        File manifest = new File(repo.getHgDir(), "clonebundles.manifest");
-        // real hg's clonebundles extension adds BOTH tokens when a manifest exists
-        return manifest.exists() ? base + " clonebundles clonebundles_manifest" : base;
+        return String.join(" ", capabilityTokens(repo, false));
     }
 
-    /**
-     * Whether {@code exp-shape-1} is advertised. The original needs {@code experimental.narrow} and
-     * {@code experimental.advertise-shapes} (default off); hg4j always serves narrow and offers this by default, and honours an
-     * explicit {@code false}.
-     */
-    static boolean shapesAdvertised(HgRepository repo) {
-        String raw = repo.getConfig().get("experimental", "advertise-shapes", "true");
+    /** The {@code capabilities} line of an HTTP server for {@code repo}: the same plus the HTTP-only tokens. */
+    public static String capabilitiesStringHttp(HgRepository repo) {
+        return String.join(" ", capabilityTokens(repo, true));
+    }
+
+    /** Engines the HTTP server compresses with, in its order of preference ({@code server.compressionengines}). */
+    public static List<String> httpCompressionEngines(HgRepository repo) {
+        String configured = repo == null ? null : repo.getConfig().get("server", "compressionengines", null);
+        List<String> engines = new ArrayList<>();
+        if (configured == null || configured.isBlank()) {
+            return List.of("zstd", "zlib");
+        }
+        for (String name : configured.split("[,\\s]+")) {
+            if (List.of("zstd", "zlib", "bzip2", "none").contains(name) && !engines.contains(name)) {
+                engines.add(name);
+            }
+        }
+        return engines;
+    }
+
+    private static boolean boolConfig(HgRepository repo, String section, String key, boolean fallback) {
+        String raw = repo == null ? null : repo.getConfig().get(section, key, null);
+        if (raw == null) {
+            return fallback;
+        }
         switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "1": case "yes": case "true": case "on": case "always":
+                return true;
             case "0": case "no": case "false": case "off": case "never":
                 return false;
             default:
-                return true;
+                return fallback;
         }
+    }
+
+    /**
+     * The capability tokens, after {@code wireprotov1server._capabilities} and {@code bundle_caps.get_repo_caps} of 7.2.4
+     * (verified against a real server, see {@code WireServerParityInteropTest}); the line is sorted like the original's.
+     * Every token is one this server backs with behaviour: the bundle2 parts listed are all produced or consumed, see
+     * {@link Bundle2Pull} and {@link Bundle2Push}. The narrow getbundle arguments) is advertised only like the original does: {@code exp-narrow-1} with {@code experimental.narrow}, and the
+     * development-tree {@code heads_fingerprints} / {@code exp-shape-1} with their own settings. No hg4j-only token is advertised.
+     */
+    private static java.util.SortedSet<String> capabilityTokens(HgRepository repo, boolean http) {
+        java.util.SortedSet<String> tokens = new java.util.TreeSet<>(List.of(
+                "lookup", "branchmap", "pushkey", "known", "getbundle", "unbundlehash", "batch", "changegroupsubset",
+                "unbundle=HG10GZ,HG10BZ,HG10UN"));
+        if (boolConfig(repo, "experimental", "narrow", false)) {
+            tokens.add("exp-narrow-1"); // as the original, only when narrow is switched on
+        }
+        if (boolConfig(repo, "experimental", "bundle2-advertise", true)) {
+            tokens.add(bundle2CapsToken(repo));
+        }
+        if (repo != null) {
+            tokens.addAll(StreamClone.capabilityTokens(repo));
+            if (HeadsBuckets.advertised(repo)) {
+                tokens.add(HeadsBuckets.CAPABILITY);
+            }
+            if (shapesAdvertised(repo)) {
+                tokens.add("exp-shape-1");
+            }
+            if (new File(repo.getHgDir(), "clonebundles.manifest").exists()) {
+                // real hg's clonebundles extension adds BOTH tokens when a manifest exists
+                tokens.add("clonebundles");
+                tokens.add("clonebundles_manifest");
+            }
+        }
+        if (http) {
+            tokens.add("httpheader=1024");
+            if (boolConfig(repo, "experimental", "httppostargs", false)) {
+                tokens.add("httppostargs");
+            }
+            tokens.add("httpmediatype=0.1rx,0.1tx,0.2tx");
+            List<String> engines = httpCompressionEngines(repo);
+            if (!engines.isEmpty()) {
+                tokens.add("compression=" + String.join(",", engines));
+            }
+        }
+        return tokens;
+    }
+
+    /**
+     * {@code bundle2=<quoted blob>}: one capability per line. {@code stream=v2} is offered only when this server can really
+     * stream the repository (the original offers it whenever {@code server.uncompressed} and {@code server.bundle2.stream}
+     * are on, and then aborts the request for layouts it cannot stream).
+     */
+    private static String bundle2CapsToken(HgRepository repo) {
+        List<String> lines = new ArrayList<>(List.of("HG20", "bookmarks", "changegroup=01,02,03"));
+        if (repo == null || "check-related".equals(repo.getConfig().get("server", "concurrent-push-mode", "check-related"))) {
+            lines.add("checkheads=related");
+        }
+        if (boolConfig(repo, "storage", "revlog.exchange-compressed-delta", true)) {
+            lines.add("delta-compression=none,zlib,zstd");
+        }
+        lines.addAll(List.of("digests=md5,sha1,sha512", "error=abort,unsupportedcontent,pushraced,pushkey", "hgtagsfnodes",
+                "listkeys", "phases=heads", "pushkey", "remote-changegroup=http,https"));
+        try {
+            if (repo != null && boolConfig(repo, "server", "bundle2.stream", true) && StreamClone.allowServerGeneration(repo)) {
+                lines.add("stream=v2");
+            }
+        } catch (IOException e) {
+            // cannot tell whether the repository can be streamed: do not promise it
+        }
+        return "bundle2=" + java.net.URLEncoder.encode(String.join("\n", lines), StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    /** Whether {@code exp-shape-1} is advertised: with {@code experimental.advertise-shapes}, as the original (default off). */
+    static boolean shapesAdvertised(HgRepository repo) {
+        return boolConfig(repo, "experimental", "advertise-shapes", false);
     }
 
     public static Wire1Response capabilities(HgRepository repo) {
         return Wire1Response.bytes(capabilitiesString(repo).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code capabilities} as an HTTP server answers it (with the HTTP-only tokens). */
+    public static Wire1Response capabilitiesHttp(HgRepository repo) {
+        return Wire1Response.bytes(capabilitiesStringHttp(repo).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code hello} as an HTTP server answers it. */
+    public static Wire1Response helloHttp(HgRepository repo) {
+        return Wire1Response.bytes(("capabilities: " + capabilitiesStringHttp(repo) + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
     /** Real hg's SSH handshake bootstrap command; not used over HTTP (which uses {@code ?cmd=capabilities} directly). */
@@ -502,8 +556,20 @@ public final class Wire1Commands {
                     splitCsvOrEmpty(args.get("includepats")),
                     splitCsvOrEmpty(args.get("excludepats")));
         }
-        byte[] bundle = stripHg10Prefix(new HgLocalClient(repo).getBundle(common, heads, bundleCaps, narrowScope));
-        return Wire1Response.stream(bundle);
+        Map<String, List<String>> clientCaps = Bundle2Pull.clientCaps(bundleCaps);
+        boolean withoutChangegroup = "0".equals(args.get("cg")) && !clientCaps.isEmpty();
+        byte[] bundle;
+        if (withoutChangegroup) {
+            // `cg=0`: the client only wants the other parts (bookmarks, phases, ...), no changegroup
+            bundle = new io.github.search5.hg4j.bundle.Bundle2.Writer().toBytes(null);
+        } else {
+            bundle = stripHg10Prefix(new HgLocalClient(repo).getBundle(common, heads, bundleCaps, narrowScope));
+        }
+        if (io.github.search5.hg4j.bundle.Bundle2.isBundle2(bundle) && Bundle2Pull.wantsExtraParts(args, clientCaps)) {
+            bundle = Bundle2Pull.addParts(repo, bundle, args, heads, clientCaps);
+        }
+        return "True".equals(args.get("stream")) || "1".equals(args.get("stream"))
+                ? Wire1Response.streamPreferUncompressed(bundle) : Wire1Response.stream(bundle);
     }
 
     /**
@@ -533,6 +599,22 @@ public final class Wire1Commands {
     public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
                                           List<HgHook> preChangegroupHooks,
                                           List<HgHook> postChangegroupHooks) throws IOException, HgLockException {
+        return unbundle(repo, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, List.of(), List.of());
+    }
+
+    /**
+     * Same, with the pushkey hooks that also apply to the {@code pushkey} and {@code bookmarks} parts of a bundle2 push
+     * (a bookmark moved through a bundle2 part must be subject to the same rules as one moved with the {@code pushkey} command).
+     */
+    public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
+                                          List<HgHook> preChangegroupHooks,
+                                          List<HgHook> postChangegroupHooks,
+                                          List<HgHook> prePushkeyHooks,
+                                          List<HgHook> postPushkeyHooks) throws IOException, HgLockException {
+        if (io.github.search5.hg4j.bundle.Bundle2.isBundle2(bundleBytes)) {
+            return Wire1Response.streamUncompressed(Bundle2Push.process(repo, bundleBytes, splitOrEmpty(args.get("heads")),
+                    preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks));
+        }
         List<String> heads = splitOrEmpty(args.get("heads"));
 
         // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는

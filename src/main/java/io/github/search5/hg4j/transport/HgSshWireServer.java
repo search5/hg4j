@@ -145,7 +145,7 @@ public class HgSshWireServer {
         writeLengthPrefixed(out, new byte[0]); // "OK to continue" -- real hg sends this before any payload byte
         byte[] bundleBytes = readPayload(in);
 
-        Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
+        Wire1Response resp = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks);
 
         // 백로그 26번: capabilitiesString()이 이제 bundle2=를 광고하므로, 실제 hg 클라이언트는
         // (bundle2를 실제로 요청한, 즉 body가 HG20 봉투였던) push에 한해 Wire1Commands.unbundle()이
@@ -211,7 +211,9 @@ public class HgSshWireServer {
 
     /** SSH adds {@code protocaps} to the capabilities it advertises (real hg's sshv1 protocol handler does the same). */
     private Wire1Response sshCapabilities(String cmd) {
-        String caps = Wire1Commands.capabilitiesString(repository) + " protocaps";
+        java.util.SortedSet<String> sorted = new java.util.TreeSet<>(java.util.Arrays.asList(Wire1Commands.capabilitiesString(repository).split(" ")));
+        sorted.add("protocaps"); // real hg's sshv1 protocol handler adds it, and the whole line is sorted
+        String caps = String.join(" ", sorted);
         if (!"hello".equals(cmd)) {
             return Wire1Response.bytes(caps.getBytes(StandardCharsets.UTF_8));
         }

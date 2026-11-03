@@ -391,11 +391,11 @@ public class HgLocalClientCoverageTest {
     @Test
     public void pushRejectsUnsupportedCompressionCodeInAWellFormedHg10Header(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.resolve("repo").toFile()).call();
-        byte[] bzBundle = "HG10BZsomepayloadbytes".getBytes(StandardCharsets.US_ASCII);
+        byte[] bzBundle = "HG10XXsomepayloadbytes".getBytes(StandardCharsets.US_ASCII);
         try (HgLocalClient client = new HgLocalClient(repo)) {
             IOException ex = assertThrows(HgCorruptDataException.class,
                     () -> client.pushWithHooks(bzBundle, List.of(), List.of(), List.of()));
-            assertTrue(ex.getMessage().contains("HG10BZ"), "message should name the unsupported format: " + ex.getMessage());
+            assertTrue(ex.getMessage().contains("HG10XX"), "message should name the unsupported format: " + ex.getMessage());
         }
     }
 

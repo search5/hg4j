@@ -520,6 +520,18 @@ public class HgLocalClient implements HgRemoteConnection {
     public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,
                                      List<HgHook> preHooks,
                                      List<HgHook> postHooks) throws IOException, HgLockException {
+        return pushWithHooks(bundleBytes, heads, preHooks, postHooks, null);
+    }
+
+    /**
+     * Same as {@link #pushWithHooks(byte[], List, List, List)}, with one more validator that runs right after the store lock
+     * is taken and the heads check has passed, before anything is changed (the {@code check:bookmarks},
+     * {@code check:updated-heads} and {@code check:phases} parts of a bundle2 push).
+     */
+    public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,
+                                     List<HgHook> preHooks,
+                                     List<HgHook> postHooks,
+                                     FetchCommand.PostLockValidator extraValidator) throws IOException, HgLockException {
         if (bundleBytes == null || bundleBytes.length == 0) {
             return new PushResult("no changes found", List.of());
         }
@@ -553,6 +565,17 @@ public class HgLocalClient implements HgRemoteConnection {
             ByteArrayInputStream bais = new ByteArrayInputStream(bundleBytes, 6, bundleBytes.length - 6);
             if ("UN".equals(comp)) {
                 changegroupBytes = bais.readAllBytes();
+            } else if ("GZ".equals(comp)) {
+                try (java.util.zip.InflaterInputStream inflater = new java.util.zip.InflaterInputStream(bais)) {
+                    changegroupBytes = inflater.readAllBytes();
+                }
+            } else if ("BZ".equals(comp)) {
+                // for HG10BZ the "BZ" in the header is the first two bytes of the bzip2 stream itself ("BZh9...")
+                try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream bz =
+                             new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(
+                                     new ByteArrayInputStream(bundleBytes, 4, bundleBytes.length - 4))) {
+                    changegroupBytes = bz.readAllBytes();
+                }
             } else {
                 throw new HgCorruptDataException("Unsupported compression format in local push: HG10" + comp);
             }
@@ -597,8 +620,17 @@ public class HgLocalClient implements HgRemoteConnection {
             // HgRepository#lockStore(int)'s doc.
             PullCommand pullApi = new PullCommand(remoteRepo);
             int lockTimeoutMs = remoteRepo.resolvePushLockTimeoutMs();
-            FetchCommand.PostLockValidator raceCheck = buildPushRaceValidator(
+            FetchCommand.PostLockValidator headsCheck = buildPushRaceValidator(
                     extracted != null ? extracted.checkHeadsRaw : null, heads);
+            FetchCommand.PostLockValidator raceCheck = headsCheck;
+            if (extraValidator != null) {
+                raceCheck = () -> {
+                    if (headsCheck != null) {
+                        headsCheck.validate();
+                    }
+                    extraValidator.validate();
+                };
+            }
             List<byte[]> imported = pullApi.applyBundle(bundle, lockTimeoutMs, raceCheck);
 
             // Restore remote dirstate to preserve bare repo status

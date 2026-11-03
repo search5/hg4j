@@ -125,10 +125,34 @@ protocaps, stream_out) 중 **실제로 문제가 되는 것은 구형 discovery�
 - `batch`, `changegroup`, `changegroupsubset`: 응답이 같다. changegroup은 바이트가 아니라 **의미**로 비교한다. 같은 내용을 다른 delta(원본은 revlog에 저장된 delta 재사용, hg4j는 계산)로 인코딩하므로,
   두 응답을 실제 `hg unbundle`로 새 저장소에 적용해 `hg verify`와 이력, manifest가 같음을 확인한다.
 
-남은 차이(미해결, 숨기지 않고 기록):
-- HTTP/SSH `capabilities` 토큰: 원본이 광고하고 hg4j가 광고하지 않는 것은 `unbundlehash`, `HG10BZ`, `httpmediatype`, `compression=`, 그리고 bundle2 부품 목록
-  (`bookmarks`, `checkheads`, `listkeys`, `phases`, `pushkey`, `hgtagsfnodes`, `stream=v2` 등). 반대로 hg4j는 `changegroup=04,05`를 광고한다(원본 7.2.4는 01,02,03).
-  부품별로 실제 처리 여부를 확인하지 않고 늘리면 클라이언트가 처리하지 못하는 경로로 들어오므로 이번에는 건드리지 않았다.
-- `stream_out`의 파일 나열 순서는 원본과 다르다(의미는 같고 실제 클라이언트 복제는 통과).
-- `unbundle`의 서버 응답은 실제 hg 클라이언트 push 테스트로만 확인했고, 원시 바이트 대조는 하지 않았다.
-- `store_shape`에 빈 이름(`names=`)을 주면 원본은 응답 없이 비정상 종료한다. 따라서 그 경우는 흉내 내지 않았다.
+## [2026-11-03] capability와 bundle2 부품을 7.2.4에 맞춤
+기준은 7.2.4 오라클이다. SSH와 HTTP의 `capabilities` 토큰 집합(bundle2 블록은 줄 단위로 펼쳐서)이 원본과 **정확히 같다**
+(`WireServerParityInteropTest#sshCapabilitiesMatchTheOriginal`, `HttpServerParityInteropTest#capabilityTokensMatchTheOriginal`).
+hg4j 전용 토큰은 광고하지 않는다: `exp-narrow-1`은 `experimental.narrow`, `heads_fingerprints`는 `experimental.disco.heads-fingerprints`,
+`exp-shape-1`은 `experimental.advertise-shapes`를 켰을 때만 붙는다(원본과 같은 조건, 기본 꺼짐). 그 결과 narrow 클론을 받으려면 서버 저장소에
+`[experimental] narrow = true`가 있어야 한다(기존 narrow 테스트 3개에 반영).
+
+광고한 토큰마다 뒷받침하는 동작을 구현했다.
+- `unbundle=HG10GZ,HG10BZ,HG10UN`: 이전에는 `HG10GZ`를 광고하면서 `HG10UN`만 처리했다(번들1 push가 "Unsupported compression"으로 실패). 이제 GZ와 BZ를 푼다.
+- `unbundlehash`: 해시 heads 검사는 이미 있었고, 빈 저장소를 `[nullid]`로 해시하도록 고쳤다.
+- bundle2 부품 (`Bundle2` 범용 읽기/쓰기, `Bundle2Pull`, `Bundle2Push`):
+  - pull(getbundle): `bookmarks`, `listkeys`, `phase-heads`, `hgtagsfnodes`(캐시에 있는 것만, 계산하지 않음, 원본과 같음), `stream2`, `cg=0`.
+    부품 순서와 형식은 `exchange.py`를 따른다. `stream2`의 `cache/` 파일은 보내지 않는다(받는 쪽의 최적화일 뿐).
+  - push(unbundle): `check:heads`, `check:updated-heads`, `check:bookmarks`, `check:phases`, `changegroup`, `remote-changegroup`
+    (URL에서 받아 크기와 digest 검증, 번들1만), `pushkey`, `bookmarks`, `phase-heads`. 응답 부품은 `reply:changegroup`, `reply:pushkey`,
+    오류는 `error:abort`, `error:pushraced`, `error:pushkey`, `error:unsupportedcontent`. 알 수 없는 **필수** 부품은 조용히 건너뛰지 않고 거부한다.
+- HTTP: `httpheader`, `httpmediatype=0.1rx,0.1tx,0.2tx`, `compression=<엔진>`(`server.compressionengines`, 기본 zstd,zlib), `httppostargs`(설정 시).
+  클라이언트가 `0.2`를 보내면 엔진 이름 헤더가 붙은 `application/mercurial-0.2`로 zstd/zlib/none 응답, 아니면 0.1 zlib.
+- `capabilities`는 원본처럼 정렬해서 낸다.
+
+검증: 실제 hg 클라이언트로 clone, pull(북마크 이동과 phase 변화), push(북마크 생성, 이동, 삭제, phase 공개), `clone --stream`
+(`Bundle2PartsRealClientInteropTest` 5개), getbundle 부수 부품을 실제 서버와 부품 단위로 비교(공개/비공개 저장소, `cg=0`).
+
+hg4j와 원본이 **다른** 점(숨기지 않고 기록):
+- `pushkey`/`bookmarks`/`phase-heads` 부품은 changegroup 적용과 한 트랜잭션이 아니다. 뒤 부품이 실패해도 changegroup은 이미 반영된다
+  (원본은 전체 롤백). 검사 부품(`check:*`)은 락 안에서 변경 전에 실행되므로 경합 방지는 같다.
+- `bundle2` 블록의 `stream=v2`는 hg4j가 실제로 스트리밍할 수 있는 저장소에서만 광고한다(원본은 설정만 보고 광고하고 요청 시 거부).
+- `stream_out`과 `stream2`의 파일 나열 순서는 원본과 다르다(의미는 같음).
+- `unbundle`의 원시 응답 바이트는 대조하지 않았다. 실제 hg 클라이언트 push로만 확인했다.
+- `obsmarkers`, `pushback`, `stream3-exp`는 광고하지 않는다. 원본 기본값도 광고하지 않는다.
+- `store_shape`에 빈 이름(`names=`)을 주면 원본은 응답 없이 비정상 종료한다. 그 경우는 흉내 내지 않았다.

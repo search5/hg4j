@@ -57,6 +57,9 @@ public class HgHttpWireServerNarrowInteropTest {
 
         serverRepoDir = tempDir.resolve("server_repo").toFile();
         serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        // like the original, narrow is advertised only when switched on
+        Files.writeString(new File(serverRepoDir, ".hg/hgrc").toPath(), "[experimental]\nnarrow = true\n");
+        serverRepo = new HgRepository(serverRepoDir); // the configuration is read when a repository is opened
 
         File includedDir = new File(serverRepoDir, "included");
         File excludedDir = new File(serverRepoDir, "excluded");

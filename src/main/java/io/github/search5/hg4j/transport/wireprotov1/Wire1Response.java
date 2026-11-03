@@ -21,6 +21,7 @@ public final class Wire1Response {
     private final Kind kind;
     private final byte[] payload;
     private final String errorMessage;
+    private boolean preferUncompressed;
 
     private Wire1Response(Kind kind, byte[] payload, String errorMessage) {
         this.kind = kind;
@@ -40,6 +41,20 @@ public final class Wire1Response {
 
     /** A raw, unframed stream response that must NOT be HTTP-compressed (real hg's {@code
      * streamreslegacy}) — e.g. a bundle2 reply envelope for {@code unbundle}. */
+    /**
+     * A compressible stream that the sender would rather not compress (real hg's {@code streamres(prefer_uncompressed=True)}, used
+     * for a streaming clone whose files are already compressed): over HTTP media type 0.2 it is sent with the {@code none} engine.
+     */
+    public static Wire1Response streamPreferUncompressed(byte[] payload) {
+        Wire1Response response = new Wire1Response(Kind.STREAM, payload, null);
+        response.preferUncompressed = true;
+        return response;
+    }
+
+    public boolean isPreferUncompressed() {
+        return preferUncompressed;
+    }
+
     public static Wire1Response streamUncompressed(byte[] payload) {
         return new Wire1Response(Kind.STREAM_UNCOMPRESSED, payload, null);
     }

@@ -595,3 +595,10 @@
 - 사용자 확인: git 방식 서명은 필요 없고, hg 명령으로 커밋한 뒤 서명하는 방식이 목적이다. 커밋 시점 `gpgsig`(eafbf79)는 hg가 해석하지 않는 비표준 방식이라 되돌렸다
   (`CommitCommand#setGpgSigner`, `VerifyCommitCommand`, `Hg#verifyCommit`, `HgSigner#signDetachedArmored`, `HgSigVerifier#verifyDetached`, `CommitSigningInteropTest`).
   남은 서명 기능은 [[gpg]]의 `sign`/`sigs`/`sigcheck`(.hgsigs)이며 일반 Mercurial과 호환된다.
+
+## [2026-11-03] GpgSignature 기반 git식 서명 전부 제거
+`GpgSignature`, `CommitCommand#setGpgSigner`/`GpgSigner`, `HgCommit`의 gpg 필드 3개, `LogCommand`의 gpgsig 파싱, `CommitCommand#stripExtraKey`와 전용 테스트를 삭제했다. 서명은 `.hgsigs`(`sign`/`sigs`/`sigcheck`)만 남는다. [[gpg]]
+
+## [2026-11-03] capability를 7.2.4와 같게 하고 bundle2 부품을 구현
+`capabilities` 토큰이 SSH/HTTP 모두 원본과 같아졌고, 광고한 bundle2 부품(pull: bookmarks, listkeys, phase-heads, hgtagsfnodes, stream2 / push: check:*, pushkey, bookmarks,
+phase-heads, remote-changegroup)과 번들1 GZ/BZ push, HTTP 0.2 압축을 구현. hg4j 전용 토큰은 제거(설정으로만). 상세와 남은 차이는 [[wire-server-command-gaps]].

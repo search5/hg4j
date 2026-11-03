@@ -259,13 +259,20 @@ public class HgHttpWireServerRealHgInteropTest {
             byte[] responseBytes = capturedGetbundleResponse.get();
             assertNotNull(responseBytes, "expected the real hg clone to have issued a ?cmd=getbundle request");
 
-            // application/mercurial-0.1's `streamres` (getbundle) responses are zlib-deflate
-            // compressed on the wire (HgHttpWireServer#deflate / real hg's own "we only compress
-            // streamres" rule) -- inflate before decoding the bundle2 envelope underneath.
+            // A real hg 7.2 client asks for media type 0.2, so the streamres (getbundle) response starts with the name of the
+            // compression engine (one length byte and the name) followed by the stream compressed with that engine.
+            int engineNameLength = responseBytes[0] & 0xFF;
+            String engine = new String(responseBytes, 1, engineNameLength, java.nio.charset.StandardCharsets.US_ASCII);
+            assertTrue(java.util.List.of("zstd", "zlib", "none").contains(engine), "engine named by the 0.2 header: " + engine);
+            java.io.InputStream body = new ByteArrayInputStream(responseBytes, 1 + engineNameLength,
+                    responseBytes.length - 1 - engineNameLength);
             byte[] inflated;
-            try (InflaterInputStream iis =
-                         new InflaterInputStream(new ByteArrayInputStream(responseBytes))) {
-                inflated = iis.readAllBytes();
+            try (java.io.InputStream decoded = switch (engine) {
+                case "zstd" -> new com.github.luben.zstd.ZstdInputStream(body);
+                case "zlib" -> new InflaterInputStream(body);
+                default -> body;
+            }) {
+                inflated = decoded.readAllBytes();
             }
             assertTrue(inflated.length >= 4 && inflated[0] == 'H' && inflated[1] == 'G'
                             && inflated[2] == '2' && inflated[3] == '0',

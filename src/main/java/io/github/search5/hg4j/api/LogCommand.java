@@ -154,9 +154,6 @@ public class LogCommand {
             long timestamp = 0;
             int tzOffset = 0;
             String branch = "default";
-            // P3-19 -- decoded (real-newline) gpgsig/gpgfingerprint extra values, if present.
-            String gpgSignature = null;
-            String gpgFingerprint = null;
 
             String datePart;
             String extraPart = null;
@@ -196,29 +193,9 @@ public class LogCommand {
                         val = CommitCommand.decodeExtraKey(val);
                         if ("branch".equals(key)) {
                             branch = val;
-                        } else if ("gpgsig".equals(key)) {
-                            gpgSignature = val;
-                        } else if ("gpgfingerprint".equals(key)) {
-                            gpgFingerprint = val;
                         }
                     }
                 }
-            }
-
-            // P3-19: reconstruct the exact bytes a gpgsig signature was computed over -- this
-            // revision's own raw text with ONLY the gpgsig extra entry removed (every other
-            // field, including gpgfingerprint/branch/close, stays byte-identical) -- mirrors
-            // git's GpgSignatureVerifier.signedDataOf()'s "strip exactly the gpgsig header,
-            // nothing else" contract. Operates on the still-ENCODED extraPart (not the decoded
-            // key/val above) so surviving entries are preserved byte-for-byte untouched.
-            byte[] unsignedChangelogText = null;
-            if (gpgSignature != null) {
-                String unsignedExtraPart = CommitCommand.stripExtraKey(extraPart, "gpgsig");
-                String unsignedDateLine = (unsignedExtraPart != null && !unsignedExtraPart.isEmpty())
-                        ? datePart + " " + unsignedExtraPart
-                        : datePart;
-                unsignedChangelogText = (text.substring(0, secondNewline + 1) + unsignedDateLine + text.substring(thirdNewline))
-                        .getBytes(StandardCharsets.UTF_8);
             }
 
             int doubleNewline = text.indexOf("\n\n", thirdNewline + 1);
@@ -251,8 +228,7 @@ public class LogCommand {
                 }
             }
 
-            commits.add(new HgCommit(rev, new NodeId(nodeId), new NodeId(manifestNodeId), author, timestamp, tzOffset, files, message, branch,
-                    gpgSignature, gpgFingerprint, unsignedChangelogText));
+            commits.add(new HgCommit(rev, new NodeId(nodeId), new NodeId(manifestNodeId), author, timestamp, tzOffset, files, message, branch));
         }
 
         return commits;

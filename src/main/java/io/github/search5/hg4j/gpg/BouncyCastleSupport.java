@@ -4,7 +4,7 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 import java.security.Security;
 
-/** Registers the Bouncy Castle JCA provider once, as {@link GpgSignature} already does for itself. */
+/** Registers the Bouncy Castle JCA provider once. */
 final class BouncyCastleSupport {
 
     private BouncyCastleSupport() {

@@ -132,7 +132,7 @@ public class HgHttpWireServerCoverageTest {
         assertEquals("application/mercurial-0.1", conn.getHeaderField("Content-Type"));
         String body = bodyOf(conn);
         assertTrue(body.contains("lookup"), "Expected the plain v1 capabilities string: " + body);
-        assertTrue(body.contains("unbundle=HG10UN"), "Expected the plain v1 capabilities string: " + body);
+        assertTrue(body.contains("unbundle=HG10GZ,HG10BZ,HG10UN"), "Expected the plain v1 capabilities string: " + body);
     }
 
     @Test

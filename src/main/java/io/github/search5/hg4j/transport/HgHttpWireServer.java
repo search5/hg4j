@@ -90,7 +90,7 @@ public class HgHttpWireServer extends HttpServlet {
                 response.setStatus(200);
                 response.setHeader("Content-Type", "application/mercurial-cbor");
                 try (OutputStream out = response.getOutputStream()) {
-                    handleCapabilitiesDiscovery(Wire1Commands.capabilitiesString(repository), out);
+                    handleCapabilitiesDiscovery(Wire1Commands.capabilitiesStringHttp(repository), out);
                 }
                 return;
             }
@@ -257,7 +257,7 @@ public class HgHttpWireServer extends HttpServlet {
             try (InputStream in = request.getInputStream()) {
                 bundleBytes = in.readAllBytes();
             }
-            wireResponse = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks);
+            wireResponse = Wire1Commands.unbundle(repository, bundleBytes, args, preChangegroupHooks, postChangegroupHooks, prePushkeyHooks, postPushkeyHooks);
         } else {
             // Real hg sends some commands' args over GET query string, others as a POST
             // form-encoded body (and hg4j's own HgRemoteClient doesn't always agree with real hg
@@ -316,17 +316,75 @@ public class HgHttpWireServer extends HttpServlet {
                 }
             }
             case STREAM -> {
-                // Real hg's server contract: `streamres` (changegroup/getbundle/unbundle) is the
-                // ONLY response kind that gets zlib-compressed under -0.1 (wireprotoserver.py's
-                // comment: "we only compress streamres at the moment").
+                // Real hg's server contract: `streamres` (changegroup/getbundle/unbundle) is the ONLY response kind that gets
+                // compressed. A client that sent "0.2" in X-HgProto-1 gets media type 0.2 (a length byte and the name of the
+                // compression engine, then the compressed stream); any other client, and one that shares no engine with this
+                // server, gets 0.1 with zlib (wireprotoserver.py's _httpresponsetype).
+                String engine = null;
+                List<String> protoCaps = List.of(reassembleHeaderChain(request, "X-HgProto").split(" "));
+                if (protoCaps.contains("0.2")) {
+                    List<String> clientEngines = List.of("zlib", "none");
+                    for (String cap : protoCaps) {
+                        if (cap.startsWith("comp=")) {
+                            clientEngines = List.of(cap.substring(5).split(","));
+                        }
+                    }
+                    if (wireResponse.isPreferUncompressed()) {
+                        engine = "none"; // all clients are expected to support uncompressed data
+                    } else {
+                        for (String candidate : Wire1Commands.httpCompressionEngines(repository)) {
+                            if (clientEngines.contains(candidate)) {
+                                engine = candidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+                byte[] body;
+                if (engine != null) {
+                    ByteArrayOutputStream framed = new ByteArrayOutputStream();
+                    framed.write(engine.length());
+                    framed.write(engine.getBytes(StandardCharsets.US_ASCII));
+                    framed.write(compress(engine, wireResponse.getPayload()));
+                    body = framed.toByteArray();
+                    response.setHeader("Content-Type", "application/mercurial-0.2");
+                } else {
+                    body = deflate(wireResponse.getPayload());
+                    response.setHeader("Content-Type", "application/mercurial-0.1");
+                }
                 response.setStatus(200);
-                response.setHeader("Content-Type", "application/mercurial-0.1");
-                byte[] body = deflate(wireResponse.getPayload());
                 response.setContentLength(body.length);
                 try (OutputStream out = response.getOutputStream()) {
                     out.write(body);
                 }
             }
+        }
+    }
+
+    /** One of the HTTP compression engines ({@code zstd}, {@code zlib}, {@code bzip2}, {@code none}) applied to a whole payload. */
+    private static byte[] compress(String engine, byte[] data) throws IOException {
+        switch (engine) {
+            case "none":
+                return data;
+            case "zlib":
+                return deflate(data);
+            case "zstd": {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                try (com.github.luben.zstd.ZstdOutputStream zos = new com.github.luben.zstd.ZstdOutputStream(baos)) {
+                    zos.write(data);
+                }
+                return baos.toByteArray();
+            }
+            case "bzip2": {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream bos =
+                             new org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream(baos)) {
+                    bos.write(data);
+                }
+                return baos.toByteArray();
+            }
+            default:
+                throw new IOException("unknown compression engine " + engine);
         }
     }
 
@@ -342,6 +400,12 @@ public class HgHttpWireServer extends HttpServlet {
     private Wire1Response dispatch(String cmd, Map<String, String> args) throws Exception {
         if ("batch".equals(cmd)) {
             return Wire1Commands.batch(repository, args);
+        }
+        if ("capabilities".equals(cmd)) {
+            return Wire1Commands.capabilitiesHttp(repository);
+        }
+        if ("hello".equals(cmd)) {
+            return Wire1Commands.helloHttp(repository);
         }
         return Wire1Commands.dispatch(repository, cmd, args);
     }

@@ -7,13 +7,12 @@ status: current
 
 > **2026-11-03 확정**: 사용자가 "git 방식이 아니라 hg 명령으로 커밋한 뒤 서명하는 방식"이 목적이라고 확인했다. 한때 추가했던 커밋 시점 서명
 > (`CommitCommand#setGpgSigner(GpgKeyring, ...)`, `VerifyCommitCommand`)은 hg가 해석하지 않는 비표준이라 제거했다(되돌린 커밋 eafbf79).
-> 기능으로는 `sign`/`sigs`/`sigcheck`(.hgsigs)가 정식이다. 그 이전부터 있던 `GpgSignature` 기반 `setGpgSigner(GpgSignature)`는 이번에 건드리지 않았다.
+> 기능으로는 `sign`/`sigs`/`sigcheck`(.hgsigs)가 정식이다. 그 이전부터 있던 `GpgSignature` 기반 `setGpgSigner`, `HgCommit`의 gpg 필드, `LogCommand`의 gpgsig 파싱도 같은 날 모두 제거했다.
 
 ## 결정
 [[implementation-plan-gpg-ssh-wire]] Phase 2. Mercurial의 `gpg` 확장(`hgext/gpg.py`)이 정의한 저장 형식과
 의미를 그대로 따르는 서명 생성/검증/명령을 순수 Java(Bouncy Castle)로 구현했다. 기존 git식 `gpgsig` extra
-방식은 **삭제하지 않고** 비표준임을 javadoc에 명시했다(사용자 동의, 2026-11-03: 이미 그렇게 서명된 저장소를
-검증할 수 없게 되는 것을 피하기 위함). 시스템 GnuPG 키링 자동 탐색은 범위에 포함했다(사용자 결정).
+방식은 처음에는 삭제하지 않고 javadoc에 비표준임을 명시했으나, 같은 날 사용자가 필요 없다고 확정해 **전부 제거했다**. 시스템 GnuPG 키링 자동 탐색은 범위에 포함했다(사용자 결정).
 
 ## 원본 형식 (원본 소스 `hgext/gpg.py`로 확인)
 - `.hgsigs`: 줄마다 `<40자 hex 노드> <버전> <base64 서명>`. 버전 0만 정의됨. 다른 버전은 원본도 중단.

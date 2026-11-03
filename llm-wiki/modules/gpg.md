@@ -9,21 +9,13 @@ OpenPGP 서명 지원 패키지. [[core-package-split-plan]] Phase 9에서 분�
 `org.eclipse.jgit.gpg.bc`에 대응. 2026-11-03에 Mercurial `.hgsigs` 호환 계층이 추가되었다
 (상세와 근거는 [[gpg-hgsigs-compatibility]]).
 
-## 두 가지 서명 모델 (혼동 주의)
-| | git식 (기존) | Mercurial식 (신규, 호환 대상) |
-|---|---|---|
-| 저장 위치 | 커밋 자신의 `extra["gpgsig"]` | 별도 파일 `.hgsigs` (버전 관리) 또는 `.hg/localsigs` |
-| 서명 대상 | 변경셋 원문(서명 항목 제외) | `hex(node) + "\n"` (이미 존재하는 변경셋) |
-| 클래스 | `GpgSignature`, `CommitCommand.setGpgSigner` | 아래 Mercurial 호환 클래스 |
-| `hg sigcheck` 인식 | **못 함** | 함 (실제 hg로 양방향 검증) |
-
-기존 방식은 이미 그렇게 서명된 저장소를 검증할 수 있도록 삭제하지 않고 javadoc에 비표준임을 명시했다.
+## 서명 모델
+Mercurial 표준인 `.hgsigs`/`.hg/localsigs` 방식만 지원한다. 커밋 뒤에 `hg sign`에 해당하는 `SignCommand`로 서명하며, 서명 대상은
+`hex(node) + "\n"`이고 실제 `hg sigcheck`가 인식한다(실제 hg로 양방향 검증).
+git식(커밋 자신의 `extra["gpgsig"]`)은 hg가 해석하지 않는 비표준이라 **전부 제거했다**(2026-11-03, 사용자 결정):
+`GpgSignature`, `CommitCommand#setGpgSigner`, `HgCommit#getGpgSignature` 등. 근거는 [[gpg-hgsigs-compatibility]].
 
 ## 클래스
-**git식 (기존)**
-- `GpgSignature`: Bouncy Castle로 OpenPGP 서명 생성/검증하는 값 객체.
-
-**Mercurial 호환 (신규)**
 - `HgSigEntry`, `HgSigsFile`: `.hgsigs`/`localsigs`의 한 줄(`<40hex> <버전> <base64>`) 모델과 파서/직렬화.
   형식 오류는 건너뛰지 않고 `HgSigFormatException`(파일명:줄번호 포함).
 - `GpgKeyring`: 공개/비밀키 모음. 직접 넘기거나(`fromPublicKeys`, `withSecretKeys`) GnuPG 홈에서 읽는다
@@ -50,7 +42,6 @@ OpenPGP 서명 지원 패키지. [[core-package-split-plan]] Phase 9에서 분�
 - `HgSigsFileTest`, `KeyboxReaderTest`: 형식과 손상 가드 (일반 `test`).
 - `HgSigsGpgInteropTest`, `SignCommandsInteropTest` (`@Tag("interop")`): 실제 `gpg`와 실제 `hg`(gpg 확장)로
   양방향 검증. 임시 `GNUPGHOME`을 쓰며 `GpgHome`(테스트 지원)이 종료 시 gpg-agent를 정리한다.
-- `GpgSignatureTest`, `GpgSignatureCoverageTest`: 기존 git식 클래스.
 
 ## 코드 위치
 `src/main/java/io/github/search5/hg4j/gpg/`, `src/main/java/io/github/search5/hg4j/api/Sign*.java`·`Sig*.java`

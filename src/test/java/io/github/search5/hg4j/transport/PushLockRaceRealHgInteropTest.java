@@ -559,6 +559,11 @@ public class PushLockRaceRealHgInteropTest {
         Files.writeString(new File(serverRepoDir, "a.txt").toPath(), "base");
         new AddCommand(bootstrap).call();
         new CommitCommand(bootstrap).setMessage("c0").setAuthor("dev").call();
+        // The server's first commit is made public first. While it is still a draft root, a client with nothing to push sends
+        // a phase-heads part that makes it public, and a real push racing with it is rejected by check:phases ("public
+        // expected draft") exactly as a real hg server does (verified with `hg serve`); that is a different race than the
+        // one this test is about.
+        io.github.search5.hg4j.api.Hg.wrap(bootstrap).phase().setRevision("0").setPhase(0).call();
         HgRepository serverRepo = reopenWithTimeoutSeconds(serverRepoDir, 30);
 
         Server server = HgTestUtils.startServlet(new HgHttpWireServer(serverRepo));

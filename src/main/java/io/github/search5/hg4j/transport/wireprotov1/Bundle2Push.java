@@ -1,0 +1,399 @@
+package io.github.search5.hg4j.transport.wireprotov1;
+
+import io.github.search5.hg4j.api.HgHook;
+import io.github.search5.hg4j.bundle.Bundle2;
+import io.github.search5.hg4j.errors.HgPushRacedException;
+import io.github.search5.hg4j.lib.HgLock;
+import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.phase.PhaseRoots;
+import io.github.search5.hg4j.storage.Revlog;
+import io.github.search5.hg4j.transport.HgLocalClient;
+import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
+import io.github.search5.hg4j.lib.NodeId;
+import io.github.search5.hg4j.util.NodeIdUtil;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+
+/**
+ * Server side of a bundle2 {@code unbundle} (a push), after {@code mercurial/bundle2.py} and
+ * {@code mercurial/bundle2_part_handlers.py} of 7.2.4.
+ *
+ * <p>Parts understood: {@code replycaps}, {@code check:heads}, {@code check:updated-heads}, {@code check:bookmarks},
+ * {@code check:phases}, {@code changegroup}, {@code pushkey}, {@code bookmarks}, {@code phase-heads}; the advisory
+ * {@code output}, {@code pushvars}, {@code hgtagsfnodes} and {@code cache:rev-branch-cache} are accepted and ignored. A
+ * <em>mandatory</em> part of any other type is refused with {@code error:unsupportedcontent}, never skipped, so a push is not
+ * partly applied without the client knowing.</p>
+ *
+ * <p>The checks run under the store lock, before anything changes. The changegroup is applied by
+ * {@link HgLocalClient#pushWithHooks}; the {@code pushkey}, {@code bookmarks} and {@code phase-heads} parts are applied after it.
+ * Unlike the original these are separate steps, not one transaction: a failure in a later part leaves the changegroup applied.</p>
+ */
+final class Bundle2Push {
+
+    private static final Set<String> IGNORED = Set.of("output", "pushvars", "hgtagsfnodes", "cache:rev-branch-cache");
+    private static final Set<String> HANDLED = Set.of("replycaps", "check:heads", "check:updated-heads", "check:bookmarks",
+            "check:phases", "changegroup", "remote-changegroup", "pushkey", "bookmarks", "phase-heads");
+    private static final String RACED = "remote repository changed while pushing - please try again";
+
+    private Bundle2Push() {
+    }
+
+    /** The reply bundle (an {@code HG20} stream) for an incoming push bundle. */
+    static byte[] process(HgRepository repo, byte[] bundleBytes, List<String> wireHeads, List<HgHook> preChangegroup,
+                          List<HgHook> postChangegroup, List<HgHook> prePushkey, List<HgHook> postPushkey) throws IOException {
+        Bundle2.Writer reply = new Bundle2.Writer();
+        List<Bundle2.Part> parts = Bundle2.read(bundleBytes);
+
+        for (Bundle2.Part part : parts) {
+            if (part.mandatory && !HANDLED.contains(part.type) && !IGNORED.contains(part.type)) {
+                Map<String, String> params = new LinkedHashMap<>();
+                params.put("parttype", part.type);
+                if (!part.params.isEmpty()) {
+                    params.put("params", String.join(" ", part.params.keySet()));
+                }
+                reply.addPart("error:unsupportedcontent", false, Map.of(), params, new byte[0]);
+                return reply.toBytes(null);
+            }
+        }
+
+        try {
+            Bundle2.Part changegroup = first(parts, "changegroup");
+                List<Bundle2.Part> checks = new ArrayList<>();
+            for (Bundle2.Part part : parts) {
+                if (part.type.startsWith("check:")) {
+                    checks.add(part);
+                }
+            }
+            io.github.search5.hg4j.api.FetchCommand.PostLockValidator validator = () -> {
+                for (Bundle2.Part check : checks) {
+                    runCheck(repo, check);
+                }
+            };
+
+            int changegroupResult = 0;
+            if (changegroup != null) {
+                HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
+                        bundleBytes, wireHeads, preChangegroup, postChangegroup, validator);
+                boolean added = !result.status.startsWith("no changes found");
+                changegroupResult = added ? Math.max(1, result.importedNodeHexes.size()) : 0;
+                Map<String, String> params = new LinkedHashMap<>();
+                params.put("in-reply-to", String.valueOf(changegroup.id));
+                params.put("return", String.valueOf(changegroupResult));
+                reply.addPart("reply:changegroup", false, Map.of(), params, new byte[0]);
+            }
+            for (Bundle2.Part remote : parts) {
+                if (!remote.type.equals("remote-changegroup")) {
+                    continue;
+                }
+                byte[] fetched = fetchRemoteChangegroup(remote);
+                HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
+                        fetched, List.of(), preChangegroup, postChangegroup, changegroup == null ? validator : null);
+                int returned = result.status.startsWith("no changes found") ? 0 : Math.max(1, result.importedNodeHexes.size());
+                Map<String, String> params = new LinkedHashMap<>();
+                params.put("in-reply-to", String.valueOf(remote.id));
+                params.put("return", String.valueOf(returned));
+                reply.addPart("reply:changegroup", false, Map.of(), params, new byte[0]);
+                changegroup = changegroup == null ? remote : changegroup;
+            }
+            if (changegroup == null && !checks.isEmpty()) {
+                try (HgLock lock = repo.lockStore(repo.resolvePushLockTimeoutMs())) {
+                    validator.validate();
+                }
+            }
+
+            for (Bundle2.Part part : parts) {
+                switch (part.type) {
+                    case "pushkey" -> applyPushkey(repo, part, reply, prePushkey, postPushkey);
+                    case "bookmarks" -> applyBookmarks(repo, part, prePushkey, postPushkey);
+                    case "phase-heads" -> applyPhaseHeads(repo, part);
+                    default -> { }
+                }
+            }
+        } catch (HgPushRacedException e) {
+            reply = new Bundle2.Writer();
+            reply.addPart("error:pushraced", false, Map.of(), Map.of("message", String.valueOf(e.getMessage())), new byte[0]);
+        } catch (PushkeyFailed e) {
+            reply = new Bundle2.Writer();
+            reply.addPart("error:pushkey", false, Map.of(), e.params, new byte[0]);
+        } catch (IOException | RuntimeException | io.github.search5.hg4j.errors.HgLockException e) {
+            reply = new Bundle2.Writer();
+            reply.addPart("error:abort", false, Map.of(), Map.of("message", String.valueOf(e.getMessage())), new byte[0]);
+        }
+        return reply.toBytes(null);
+    }
+
+    /**
+     * {@code remote-changegroup}: the client names a bundle (bundle1 only) to download from an {@code http} or {@code https}
+     * URL, with its size and digests; a mismatch of either aborts the push.
+     */
+    private static byte[] fetchRemoteChangegroup(Bundle2.Part part) throws IOException {
+        String url = part.param("url");
+        if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) {
+            throw new IOException("remote-changegroup does not support " + (url == null ? "missing" : url.split(":")[0]) + " urls");
+        }
+        Map<String, String> digests = new LinkedHashMap<>();
+        String types = part.params.getOrDefault("digests", "");
+        for (String type : types.isEmpty() ? new String[0] : types.split(" ")) {
+            String value = part.param("digest:" + type);
+            if (value == null) {
+                throw new IOException("remote-changegroup: missing \"digest:" + type + "\" param for digest type " + type);
+            }
+            digests.put(type, value);
+        }
+        byte[] data;
+        try {
+            java.net.http.HttpResponse<byte[]> response = java.net.http.HttpClient.newHttpClient().send(
+                    java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).GET().build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() != 200) {
+                throw new IOException("remote-changegroup: HTTP " + response.statusCode() + " from " + url);
+            }
+            data = response.body();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while fetching " + url, e);
+        }
+        String size = part.param("size");
+        if (size != null && Long.parseLong(size) != data.length) {
+            throw new IOException("size mismatch: expected " + size + ", got " + data.length);
+        }
+        for (Map.Entry<String, String> e : digests.entrySet()) {
+            String algorithm = switch (e.getKey()) {
+                case "md5" -> "MD5";
+                case "sha1" -> "SHA-1";
+                case "sha512" -> "SHA-512";
+                default -> throw new IOException("remote-changegroup: unknown digest type " + e.getKey());
+            };
+            try {
+                String actual = NodeIdUtil.toHex(java.security.MessageDigest.getInstance(algorithm).digest(data));
+                if (!actual.equalsIgnoreCase(e.getValue())) {
+                    throw new IOException(e.getKey() + " mismatch: expected " + e.getValue() + ", got " + actual);
+                }
+            } catch (java.security.NoSuchAlgorithmException ex) {
+                throw new IOException(algorithm + " is not available", ex);
+            }
+        }
+        if (Bundle2.isBundle2(data)) {
+            throw new IOException(url + ": not a bundle version 1.0");
+        }
+        return data;
+    }
+
+    private static Bundle2.Part first(List<Bundle2.Part> parts, String type) {
+        for (Bundle2.Part part : parts) {
+            if (part.type.equals(type)) {
+                return part;
+            }
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------------ checks
+
+    private static void runCheck(HgRepository repo, Bundle2.Part part) throws IOException {
+        switch (part.type) {
+            case "check:heads" -> {
+                // the changegroup path compares them too (HgLocalClient); this keeps a push without changegroup correct
+                if (!sameHeads(nodes(part.payload), currentHeads(repo))) {
+                    throw new HgPushRacedException(RACED);
+                }
+            }
+            case "check:updated-heads" -> {
+                Set<String> heads = currentHeads(repo);
+                for (String node : nodes(part.payload)) {
+                    if (!heads.contains(node)) {
+                        throw new HgPushRacedException(RACED);
+                    }
+                }
+            }
+            case "check:bookmarks" -> checkBookmarks(repo, part.payload);
+            case "check:phases" -> checkPhases(repo, part.payload);
+            default -> { }
+        }
+    }
+
+    private static boolean sameHeads(Set<String> expected, Set<String> current) {
+        Set<String> a = new TreeSet<>(expected);
+        Set<String> b = new TreeSet<>(current);
+        a.remove(NodeIdUtil.toHex(new byte[20]));
+        b.remove(NodeIdUtil.toHex(new byte[20]));
+        return a.equals(b);
+    }
+
+    private static Set<String> currentHeads(HgRepository repo) throws IOException {
+        return new TreeSet<>(new HgLocalClient(repo).getHeads());
+    }
+
+    private static Set<String> nodes(byte[] payload) {
+        Set<String> out = new TreeSet<>();
+        for (int i = 0; i + 20 <= payload.length; i += 20) {
+            out.add(NodeIdUtil.toHex(java.util.Arrays.copyOfRange(payload, i, i + 20)));
+        }
+        return out;
+    }
+
+    private static void checkBookmarks(HgRepository repo, byte[] payload) throws IOException {
+        Map<String, String> current = Wire2Commands.readListKeys(repo, "bookmarks");
+        for (Map.Entry<String, byte[]> e : decodeBookmarks(payload).entrySet()) {
+            String book = e.getKey();
+            String expected = e.getValue() == null ? null : NodeIdUtil.toHex(e.getValue());
+            String actual = current.get(book);
+            if (java.util.Objects.equals(expected, actual)) {
+                continue;
+            }
+            String prefix = RACED + " (bookmark \"" + book + "\" ";
+            if (expected == null) {
+                throw new HgPushRacedException(prefix + "set on " + actual.substring(0, 12) + ", expected missing)");
+            } else if (actual == null) {
+                throw new HgPushRacedException(prefix + "is missing, expected " + expected.substring(0, 12) + ")");
+            }
+            throw new HgPushRacedException(prefix + "move from " + expected.substring(0, 12) + " to " + actual.substring(0, 12) + ")");
+        }
+    }
+
+    private static void checkPhases(HgRepository repo, byte[] payload) throws IOException {
+        Revlog changelog = Wire2Commands.changelog(repo);
+        PhaseRoots roots = repo.getPhaseRoots();
+        String[] names = {"public", "draft", "secret"};
+        for (Map.Entry<Integer, List<byte[]>> e : decodePhases(payload).entrySet()) {
+            for (byte[] node : e.getValue()) {
+                int actual = roots.getPhase(new NodeId(node), changelog).getValue();
+                if (actual != e.getKey()) {
+                    String hex = NodeIdUtil.toHex(node);
+                    throw new HgPushRacedException(RACED + " (" + hex.substring(0, 12) + " is " + names[actual]
+                            + " expected " + names[e.getKey()] + ")");
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------------- binary payloads
+
+    /** {@code bookmarks.binarydecode}: {@code >20sH} then the name; the working-directory id (20 bytes of 0xff) means "no such bookmark". */
+    static Map<String, byte[]> decodeBookmarks(byte[] payload) throws IOException {
+        Map<String, byte[]> out = new LinkedHashMap<>();
+        ByteBuffer b = ByteBuffer.wrap(payload);
+        while (b.hasRemaining()) {
+            if (b.remaining() < 22) {
+                throw new IOException("truncated bookmarks part");
+            }
+            byte[] node = new byte[20];
+            b.get(node);
+            int length = b.getShort() & 0xFFFF;
+            if (b.remaining() < length) {
+                throw new IOException("truncated bookmarks part");
+            }
+            byte[] name = new byte[length];
+            b.get(name);
+            out.put(new String(name, StandardCharsets.UTF_8), isWdirId(node) ? null : node);
+        }
+        return out;
+    }
+
+    private static boolean isWdirId(byte[] node) {
+        for (byte b : node) {
+            if (b != (byte) 0xFF) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code phases.binarydecode}: {@code >i20s} pairs, grouped by phase. */
+    static Map<Integer, List<byte[]>> decodePhases(byte[] payload) throws IOException {
+        Map<Integer, List<byte[]>> out = new LinkedHashMap<>();
+        for (int i = 0; i <= 2; i++) {
+            out.put(i, new ArrayList<>());
+        }
+        ByteBuffer b = ByteBuffer.wrap(payload);
+        while (b.remaining() >= 24) {
+            int phase = b.getInt();
+            byte[] node = new byte[20];
+            b.get(node);
+            if (!out.containsKey(phase)) {
+                throw new IOException("unknown phase " + phase + " in phase-heads part");
+            }
+            out.get(phase).add(node);
+        }
+        if (b.hasRemaining()) {
+            throw new IOException("truncated phase-heads part");
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------- applying
+
+    /** Failure of a mandatory {@code pushkey} part, reported as {@code error:pushkey}. */
+    private static final class PushkeyFailed extends RuntimeException {
+        final Map<String, String> params = new LinkedHashMap<>();
+
+        PushkeyFailed(Bundle2.Part part) {
+            super("pushkey failed");
+            params.put("in-reply-to", String.valueOf(part.id));
+            for (String key : List.of("namespace", "key", "new", "old")) {
+                if (part.params.containsKey(key)) {
+                    params.put(key, part.params.get(key));
+                }
+            }
+        }
+    }
+
+    private static void applyPushkey(HgRepository repo, Bundle2.Part part, Bundle2.Writer reply,
+                                     List<HgHook> pre, List<HgHook> post) throws IOException {
+        Map<String, String> args = new LinkedHashMap<>();
+        for (String key : List.of("namespace", "key", "old", "new")) {
+            args.put(key, part.params.getOrDefault(key, ""));
+        }
+        boolean ok = new String(Wire1Commands.pushkey(repo, args, pre, post).getPayload(), StandardCharsets.US_ASCII).startsWith("1");
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("in-reply-to", String.valueOf(part.id));
+        params.put("return", ok ? "1" : "0");
+        reply.addPart("reply:pushkey", false, Map.of(), params, new byte[0]);
+        if (part.mandatory && !ok) {
+            throw new PushkeyFailed(part);
+        }
+    }
+
+    private static void applyBookmarks(HgRepository repo, Bundle2.Part part, List<HgHook> pre, List<HgHook> post) throws IOException {
+        Map<String, byte[]> changes = decodeBookmarks(part.payload);
+        for (String book : changes.keySet()) {
+            if (book.contains("@")) {
+                throw new IOException("cannot accept divergent bookmark " + book + "!");
+            }
+        }
+        Map<String, String> current = Wire2Commands.readListKeys(repo, "bookmarks");
+        for (Map.Entry<String, byte[]> e : changes.entrySet()) {
+            Map<String, String> args = new LinkedHashMap<>();
+            args.put("namespace", "bookmarks");
+            args.put("key", e.getKey());
+            args.put("old", current.getOrDefault(e.getKey(), ""));
+            args.put("new", e.getValue() == null ? "" : NodeIdUtil.toHex(e.getValue()));
+            String answer = new String(Wire1Commands.pushkey(repo, args, pre, post).getPayload(), StandardCharsets.US_ASCII);
+            if (!answer.startsWith("1")) {
+                throw new IOException("could not update bookmark " + e.getKey());
+            }
+        }
+    }
+
+    /** {@code phases.updatephases}: moves each listed head (and so its ancestors) to the given phase if that lowers it. */
+    private static void applyPhaseHeads(HgRepository repo, Bundle2.Part part) throws IOException {
+        Revlog changelog = Wire2Commands.changelog(repo);
+        PhaseRoots roots = repo.getPhaseRoots();
+        for (Map.Entry<Integer, List<byte[]>> e : decodePhases(part.payload).entrySet()) {
+            for (byte[] node : e.getValue()) {
+                if (changelog.findRevision(node) < 0 || roots.getPhase(new NodeId(node), changelog).getValue() <= e.getKey()) {
+                    continue;
+                }
+                io.github.search5.hg4j.api.Hg.wrap(repo).phase().setRevision(NodeIdUtil.toHex(node)).setPhase(e.getKey()).call();
+            }
+        }
+    }
+}

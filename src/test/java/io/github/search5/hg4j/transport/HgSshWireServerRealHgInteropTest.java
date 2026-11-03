@@ -278,6 +278,8 @@ public class HgSshWireServerRealHgInteropTest {
 
         File serverRepoDir = tempDir.resolve("server_repo").toFile();
         HgRepository serverRepo = Hg.init().setDirectory(serverRepoDir).call();
+        // like the original, narrow is advertised only when switched on
+        Files.writeString(new File(serverRepoDir, ".hg/hgrc").toPath(), "[experimental]\nnarrow = true\n");
         File includedDir = new File(serverRepoDir, "included");
         File excludedDir = new File(serverRepoDir, "excluded");
         includedDir.mkdirs();

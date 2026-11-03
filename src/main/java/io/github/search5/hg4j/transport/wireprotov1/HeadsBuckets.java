@@ -39,18 +39,14 @@ final class HeadsBuckets {
     private HeadsBuckets() {
     }
 
-    /**
-     * Whether this server advertises heads fingerprints. The original makes this opt-in
-     * ({@code experimental.disco.heads-fingerprints}, default off); hg4j offers it by default and honours an explicit
-     * {@code false} to switch it off.
-     */
+    /** Whether this server advertises heads fingerprints: with {@code experimental.disco.heads-fingerprints}, as the original (default off). */
     static boolean advertised(HgRepository repo) {
-        String raw = repo.getConfig().get("experimental", "disco.heads-fingerprints", "true");
+        String raw = repo.getConfig().get("experimental", "disco.heads-fingerprints", "false");
         switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
-            case "0": case "no": case "false": case "off": case "never":
-                return false;
-            default:
+            case "1": case "yes": case "true": case "on": case "always":
                 return true;
+            default:
+                return false;
         }
     }
 

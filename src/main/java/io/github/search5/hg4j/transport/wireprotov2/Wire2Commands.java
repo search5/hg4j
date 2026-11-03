@@ -485,7 +485,7 @@ public final class Wire2Commands {
     }
 
     /** {@code phases.publish} of the repository's own {@code .hg/hgrc}; true unless set to a false value (default true, like hg). */
-    static boolean isPublishing(HgRepository repo) {
+    public static boolean isPublishing(HgRepository repo) {
         String raw = repo.getConfig().get("phases", "publish", "true");
         switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
             case "0": case "no": case "false": case "off": case "never":

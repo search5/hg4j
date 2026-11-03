@@ -407,14 +407,17 @@ public class WireServerParityInteropTest {
     @Test
     @DisplayName("heads_fingerprints / exp-shape-1 capability 를 광고하고, 설정으로 끌 수 있다")
     void headsFingerprintsAndShapeCapabilities() throws Exception {
-        String on = capabilityLine(false);
-        assertTrue(on.contains(" heads_fingerprints"), on);
-        assertTrue(on.contains(" exp-shape-1"), on);
-        Files.writeString(repo.resolve(".hg/hgrc"),
-                "[experimental]\ndisco.heads-fingerprints = false\nadvertise-shapes = false\n");
+        // like the original: not advertised unless asked for
         String off = capabilityLine(false);
         assertFalse(off.contains("heads_fingerprints"), off);
         assertFalse(off.contains("exp-shape-1"), off);
+        assertFalse(off.contains("exp-narrow-1"), off);
+        Files.writeString(repo.resolve(".hg/hgrc"),
+                "[experimental]\ndisco.heads-fingerprints = true\nadvertise-shapes = true\nnarrow = true\n");
+        String on = capabilityLine(false);
+        assertTrue(on.contains(" heads_fingerprints"), on);
+        assertTrue(on.contains(" exp-shape-1"), on);
+        assertTrue(on.contains(" exp-narrow-1"), on);
     }
 
     // ───────────────────────── streaming clone ─────────────────────────
@@ -639,6 +642,87 @@ public class WireServerParityInteropTest {
     @DisplayName("branches 명령이 원본처럼 응답한다")
     void branchesCommand() throws Exception {
         assertSameAnswer("branches", "nodes=" + n2);
+    }
+
+    /** The capability tokens, with the {@code bundle2=} blob expanded into {@code bundle2:<part>=<values>} entries. */
+    private static java.util.SortedSet<String> capabilityTokens(String line) {
+        java.util.SortedSet<String> tokens = new java.util.TreeSet<>();
+        for (String token : line.trim().split(" ")) {
+            if (token.startsWith("bundle2=")) {
+                String blob = java.net.URLDecoder.decode(token.substring("bundle2=".length()), StandardCharsets.ISO_8859_1);
+                for (String part : blob.split("\n")) {
+                    tokens.add("bundle2:" + part);
+                }
+            } else {
+                tokens.add(token);
+            }
+        }
+        return tokens;
+    }
+
+    @Test
+    @DisplayName("SSH capabilities 토큰이 7.2.4 원본과 정확히 같다 (hg4j 전용 토큰 없음)")
+    void sshCapabilitiesMatchTheOriginal() throws Exception {
+        java.util.SortedSet<String> expected = capabilityTokens(new String(ask(true, "capabilities"), StandardCharsets.ISO_8859_1)
+                .replaceFirst("^\\d+\\n", ""));
+        java.util.SortedSet<String> actual = capabilityTokens(new String(ask(false, "capabilities"), StandardCharsets.ISO_8859_1)
+                .replaceFirst("^\\d+\\n", ""));
+        java.util.SortedSet<String> missing = new java.util.TreeSet<>(expected);
+        missing.removeAll(actual);
+        java.util.SortedSet<String> extra = new java.util.TreeSet<>(actual);
+        extra.removeAll(expected);
+        assertTrue(missing.isEmpty() && extra.isEmpty(), "hg4j does not advertise: " + missing + "; hg4j advertises extra: " + extra);
+    }
+
+    private static final String B2_BLOB = "HG20\nbookmarks\nchangegroup=01,02,03\ndigests=md5,sha1,sha512\n"
+            + "error=abort,unsupportedcontent,pushraced,pushkey\nhgtagsfnodes\nlistkeys\nphases=heads\npushkey\n"
+            + "remote-changegroup=http,https";
+
+    /** Every part but the changegroup (whose deltas may legitimately differ), as {@code type|mandatory|params|payload}. */
+    private java.util.List<String> sideParts(boolean real, String... extraArgs) throws Exception {
+        String bundlecaps = "HG20,bundle2=" + java.net.URLEncoder.encode(B2_BLOB, StandardCharsets.UTF_8).replace("+", "%20");
+        StringBuilder star = new StringBuilder("*heads=" + n2 + "&common=" + "0".repeat(40) + "&bundlecaps=" + bundlecaps);
+        for (String arg : extraArgs) {
+            star.append('&').append(arg);
+        }
+        byte[] raw = ask(real, "getbundle", star.toString());
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (io.github.search5.hg4j.bundle.Bundle2.Part part : io.github.search5.hg4j.bundle.Bundle2.read(raw)) {
+            if (!part.type.equals("changegroup")) {
+                out.add(part.type + "|" + part.mandatory + "|" + part.params + "|" + show(part.payload));
+            }
+        }
+        return out;
+    }
+
+    @Test
+    @DisplayName("getbundle 의 bookmarks, listkeys, phase-heads, hgtagsfnodes 부품이 원본과 같다 (공개 저장소)")
+    void getbundleSideParts() throws Exception {
+        java.util.List<String> expected = sideParts(true, "bookmarks=1", "listkeys=bookmarks,phases", "phases=1", "cg=1");
+        assertFalse(expected.isEmpty());
+        assertEquals(expected, sideParts(false, "bookmarks=1", "listkeys=bookmarks,phases", "phases=1", "cg=1"));
+    }
+
+    @Test
+    @DisplayName("getbundle 의 phase-heads 가 비공개(non-publishing) 저장소에서도 원본과 같다")
+    void getbundlePhaseHeadsOfANonPublishingRepository() throws Exception {
+        Files.writeString(repo.resolve(".hg/hgrc"), "[phases]\npublish = false\n");
+        LocalHg.hgIn(tmp, "server", "phase", "--public", "-r", "0");
+        LocalHg.hgIn(tmp, "server", "phase", "--secret", "-r", "tip", "--force");
+        for (String requested : new String[]{"phases=1", "listkeys=phases", "bookmarks=1"}) {
+            assertEquals(sideParts(true, requested), sideParts(false, requested), requested);
+        }
+    }
+
+    @Test
+    @DisplayName("cg=0 이면 changegroup 부품 없이 나머지 부품만 보낸다")
+    void getbundleWithoutChangegroup() throws Exception {
+        assertEquals(sideParts(true, "bookmarks=1", "cg=0"), sideParts(false, "bookmarks=1", "cg=0"));
+        byte[] raw = ask(false, "getbundle", "*heads=" + n2 + "&common=" + "0".repeat(40) + "&bundlecaps=HG20,bundle2="
+                + java.net.URLEncoder.encode(B2_BLOB, StandardCharsets.UTF_8).replace("+", "%20") + "&cg=0");
+        for (io.github.search5.hg4j.bundle.Bundle2.Part part : io.github.search5.hg4j.bundle.Bundle2.read(raw)) {
+            assertNotEquals("changegroup", part.type);
+        }
     }
 
     @Test

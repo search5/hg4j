@@ -217,4 +217,4 @@ JGit의 `http.*`, `ssh.apache.*`, upload-pack/receive-pack, `gpg.bc`에 대응�
 - 모듈 분리(JGit식 `http.server`, `ssh.apache`, `gpg.bc` 별도 모듈): 배포 요구가 생길 때 [[core-package-split-plan]]
   방식으로 진행.
 - `gpg-agent` 연동(소켓 프로토콜로 개인키 연산을 위임): 이 계획서에서는 다루지 않음. 시스템 키링 자동 탐색은 범위에 포함됨(2-2 결정 2).
-- 기존 `gpgsig` extra 방식의 제거: 하지 않기로 결정함(2-2 결정 1). javadoc 표시만 함.
+- 기존 `gpgsig` extra 방식의 제거: 처음에는 하지 않기로 했으나(2-2 결정 1) 2026-11-03 사용자가 필요 없다고 확정해 **제거함**([[gpg-hgsigs-compatibility]]).

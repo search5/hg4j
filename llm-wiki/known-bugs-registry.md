@@ -442,6 +442,16 @@ SSH 전송(`HgSshClient#push`)은 아직 같은 해석이 없다(백로그).
 **원본 확인(실측)**: 로컬 경로 push도 `lfs.url` 없이는 중단한다(원본의 `_promptremote`). 앞서 "주소가 없으면 건너뛴다"고 가정한 것이 틀렸고
 실측으로 바로잡았다.
 
+### hg4j 서버가 LFS를 말하지 않음, 받은 저장소에 `lfs` requirement가 없음 (2026-11-04, Phase 5)
+**증상**: `lfs` 능력 미광고, LFS Batch API와 blob 전송 엔드포인트 없음. 실제 hg 클라이언트가 hg4j 서버로 push해도 서버 저장소의
+`.hg/requires`에 `lfs`가 추가되지 않아, 확장이 없는 클라이언트가 포인터를 파일 내용으로 읽게 된다.
+**수정**: `lfs.server.HgLfsProtocolHandler`(JGit `LfsProtocolServlet`+`FileLfsServlet` 대응, 원본 `wireprotolfsserver.py`의 상태 코드·문구·JSON 모양),
+`HgLargeFileRepository`/`HgFileLfsRepository`(JGit 대응), `HgLfsConfig`(확장 활성 판정, `experimental.lfs.serve`), `capabilities`에 `lfs`
+(확장 켜짐)와 `lfs-serve`(requirement 있음), `HgLocalClient`가 `EXTSTORED` 플래그 리비전을 받으면 `lfs` requirement 추가(원본 `checkrequireslfs`).
+**의도적 차이**: HTTP 상태 줄의 사유 문구(원본은 메시지를 넣지만 서블릿 API는 지정 불가), `Content-Type`의 공백 표기(Jetty가 `;charset=`로 정규화),
+권한 구분 없음(hg4j 서버에는 `web.allow-push` 개념이 없다).
+**테스트**: `LfsServerParityInteropTest`(실제 `hg serve`와 같은 요청 재생), `LfsServerRealClientInteropTest`(실제 hg 클라이언트 push·clone).
+
 ### 테스트가 호스트의 `~/.cache/lfs`를 오염시킴
 **원인**: hg4j와 실제 hg가 모두 `XDG_CACHE_HOME`(없으면 `~/.cache`)에서 LFS 사용자 캐시를 정한다. 테스트가 개별로 `disableusercache`를 챙기지 않으면 호스트 캐시에 쓰고,
 다음 실행에서 "캐시에 이미 있어서" 통과하는 순서 의존이 생긴다.

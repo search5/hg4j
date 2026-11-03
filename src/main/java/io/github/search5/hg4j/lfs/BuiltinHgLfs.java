@@ -44,7 +44,7 @@ public class BuiltinHgLfs extends HgLfsFactory {
         }
         HgLfsPointer pointer = new HgLfsPointer(POINTER_VERSION, HgLfsPointer.sha256Hex(content), content.length, extra);
         new HgLfsManager(repository.getHgDir(), repository.getConfig()).cacheObject(pointer, content);
-        requireLfs(repository);
+        HgLfsConfig.addRequirement(repository);
         return new Cleaned(pointer.serialize(), pointer);
     }
 
@@ -52,16 +52,6 @@ public class BuiltinHgLfs extends HgLfsFactory {
     public byte[] applySmudgeFilter(HgRepository repository, String path, byte[] stored, boolean extStored)
             throws IOException {
         return HgLfsManager.resolveContent(repository, stored, extStored, path);
-    }
-
-    /** Real hg adds {@code lfs} to {@code .hg/requires} on the first commit that holds an LFS file. */
-    private static void requireLfs(HgRepository repository) throws IOException {
-        File requiresFile = new File(repository.getHgDir(), "requires");
-        List<String> requirements = new ArrayList<>(Files.readAllLines(requiresFile.toPath(), StandardCharsets.UTF_8));
-        if (!requirements.contains("lfs")) {
-            requirements.add("lfs");
-            SafeFileIO.writeLinesAtomic(requiresFile, requirements);
-        }
     }
 
     /** Real hg's binary test for LFS: at least one NUL byte. */

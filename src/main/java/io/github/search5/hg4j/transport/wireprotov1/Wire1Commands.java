@@ -105,6 +105,14 @@ public final class Wire1Commands {
         if (boolConfig(repo, "experimental", "bundle2-advertise", true)) {
             tokens.add(bundle2CapsToken(repo));
         }
+        if (repo != null && io.github.search5.hg4j.lfs.HgLfsConfig.isExtensionEnabled(repo)) {
+            // hgext/lfs/wrapper.py: "lfs-serve" when LFS is required by the repository (the client then MUST load the
+            // extension), and "lfs" whenever the extension is on
+            if (io.github.search5.hg4j.lfs.HgLfsConfig.requiresLfs(repo)) {
+                tokens.add("lfs-serve");
+            }
+            tokens.add("lfs");
+        }
         if (repo != null) {
             tokens.addAll(StreamClone.capabilityTokens(repo));
             if (HeadsBuckets.advertised(repo)) {

@@ -742,6 +742,12 @@ public class HgLocalClient implements HgRemoteConnection {
             }
             publishImported(imported);
 
+            // like real hg's checkrequireslfs hook: a repository that received an LFS revision requires lfs from now on
+            if (bundle.fileGroups != null && bundle.fileGroups.stream().anyMatch(group -> group.entries != null
+                    && group.entries.stream().anyMatch(entry -> (entry.flags & io.github.search5.hg4j.storage.Revlog.REVIDX_EXTSTORED) != 0))) {
+                io.github.search5.hg4j.lfs.HgLfsConfig.addRequirement(remoteRepo);
+            }
+
             List<String> importedNodeHexes = new ArrayList<>();
             for (byte[] node : imported) {
                 importedNodeHexes.add(NodeIdUtil.toHex(node));

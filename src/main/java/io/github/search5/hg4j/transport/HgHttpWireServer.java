@@ -129,6 +129,15 @@ public class HgHttpWireServer extends HttpServlet {
                 }
             }
 
+            // the LFS endpoints (Batch API and Basic transfer) of an lfs-enabled repository, like real hg's wrapped
+            // handlewsgirequest: tried when the request is not a wire protocol request
+            String applicationPath = path.startsWith("/") ? path.substring(1) : path;
+            if (queryParam(query, "cmd") == null
+                    && io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handles(repository, applicationPath)) {
+                io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handle(repository, applicationPath, request, response);
+                return;
+            }
+
             String cmd = queryParam(query, "cmd");
             if (cmd == null) {
                 response.setStatus(404);

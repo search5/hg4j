@@ -288,6 +288,12 @@ public final class HgLfsManager {
         return new File(new File(userCacheDir, oid.substring(0, 2)), oid.substring(2));
     }
 
+    /** The user-cache file of {@code oid} if the user cache is enabled and holds it, otherwise {@code null}. */
+    public File getUserCacheFile(String oid) {
+        File file = getUserCachePath(oid);
+        return file != null && file.isFile() ? file : null;
+    }
+
     private static boolean isValidCacheFile(File f, long expectedSize) {
         return f != null && f.exists() && f.isFile() && f.length() == expectedSize;
     }

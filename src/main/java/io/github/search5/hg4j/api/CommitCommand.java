@@ -137,6 +137,9 @@ public class CommitCommand {
     }
 
     /**
+     * <b>hg4j-specific, NOT Mercurial's signature format</b> (kept so that repositories signed this way stay
+     * verifiable): {@code hg sigcheck} does not see this signature. To sign for Mercurial use {@link SignCommand}.
+     *
      * P3-19 — signs the new commit's changelog revision, embedding the result in its {@code
      * extra} dictionary as {@code gpgsig} (and, if {@code fingerprint} is non-null/non-empty,
      * {@code gpgfingerprint}) -- the same field {@code branch}/{@code close} already use, in

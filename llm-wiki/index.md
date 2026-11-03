@@ -47,7 +47,7 @@ status: current
 | [modules/revset.md](modules/revset.md) | Revset 질의 엔진(`HgRevsetEngine`) — Track A Phase 7에서 분리 |
 | [modules/bundle.md](modules/bundle.md) | Bundle2/changegroup 파서 — Track A Phase 8에서 분리 |
 | [modules/lfs.md](modules/lfs.md) | LFS(Large File Storage) — Track A Phase 9에서 분리 |
-| [modules/gpg.md](modules/gpg.md) | 커밋 서명(GPG/OpenPGP) — Track A Phase 9에서 분리 |
+| [modules/gpg.md](modules/gpg.md) | OpenPGP 서명: git식(기존)과 Mercurial `.hgsigs` 호환(신규), 키링, 한계 |
 
 ## backlog/ — 번호 매겨진 백로그 항목별 상세 문서 (2026-09-06 신설)
 
@@ -104,6 +104,7 @@ status: current
 | [decisions/interop-test-fixture-caching-tradeoff.md](decisions/interop-test-fixture-caching-tradeoff.md) | Interop 테스트를 픽스처로 캐싱할지에 대한 결정 — 포맷/바이트 검증은 캐싱 가능, 프로토콜·행동 검증은 라이브 유지 권장(구현 안 함, 질문에 대한 답변만 문서화) |
 | [decisions/ssh-apache-sshd-migration.md](decisions/ssh-apache-sshd-migration.md) | SSH를 jsch에서 Apache MINA SSHD로 교체한 결정, 동작 보존/변경표, 남은 예외 삼킴 |
 | [decisions/interop-local-hg-instead-of-docker.md](decisions/interop-local-hg-instead-of-docker.md) | interop 테스트의 hg 오라클을 Docker에서 로컬 빌드(`scripts/build-local-hg.sh`)로 교체, 측정 소요 시간 |
+| [decisions/gpg-hgsigs-compatibility.md](decisions/gpg-hgsigs-compatibility.md) | GPG를 Mercurial `.hgsigs` 호환으로 구현한 결정, 키링 실측(kbx는 BC가 빈 결과), 원본과 다른 점, 한계 |
 
 ## 최상위 데이터 문서 (2026-09-06 신설)
 | 페이지 | 요약 |

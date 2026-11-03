@@ -21,6 +21,14 @@ import java.util.Date;
  * Pure Java SCM commit signing representation providing standard OpenPGP/GPG parity.
  * Uses Bouncy Castle PGP APIs to generate and verify true OpenPGP compliant signatures,
  * ensuring seamless integration with standard GPG keyring and gpg --verify commands.
+ *
+ * <p><b>Not Mercurial's signature format.</b> This class and {@code CommitCommand#setGpgSigner} follow the
+ * git model (the signature is stored with the commit, as the {@code gpgsig} entry of the changeset's
+ * {@code extra} dictionary). Mercurial itself has no such thing: its {@code gpg} extension stores signatures
+ * of existing changesets in the {@code .hgsigs} file. A signature made here is therefore invisible to
+ * {@code hg sigcheck}. For interoperating with Mercurial use {@link HgSigner}, {@link HgSigVerifier} and the
+ * {@code SignCommand}/{@code SigsCommand}/{@code SigCheckCommand} in the {@code api} package. This API is kept
+ * so that repositories already signed this way stay verifiable.</p>
  */
 public class GpgSignature {
     private final String signatureHex; // Stores the armored ASCII or raw representation

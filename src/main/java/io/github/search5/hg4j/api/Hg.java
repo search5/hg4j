@@ -204,6 +204,21 @@ public class Hg implements AutoCloseable {
         return new BranchCommand(this.repository);
     }
 
+    /** {@code hg sign}: signs a changeset into {@code .hgsigs} (or {@code localsigs}), see {@link SignCommand}. */
+    public SignCommand sign() {
+        return new SignCommand(this.repository);
+    }
+
+    /** {@code hg sigs}: lists signed changesets, see {@link SigsCommand}. */
+    public SigsCommand sigs() {
+        return new SigsCommand(this.repository);
+    }
+
+    /** {@code hg sigcheck}: verifies the signatures of one changeset, see {@link SigCheckCommand}. */
+    public SigCheckCommand sigcheck() {
+        return new SigCheckCommand(this.repository);
+    }
+
     public TagCommand tag() {
         TagCommand command = new TagCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_TAG)) {

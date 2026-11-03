@@ -570,3 +570,10 @@
 - `UnixSocketSshAgent`/`UnixSocketSshAgentFactory` 추가(Java 유닉스 도메인 소켓, 추가 의존성 없음). SSHD 기본 agent 클라이언트는 tomcat-apr 네이티브 라이브러리가 필요해 쓰지 않음. 상세는 [[ssh-apache-sshd-migration]].
 - 알아둘 점: SSHD는 `~/.ssh/id_*` 기본 신원도 자동으로 시도한다(jsch는 명시한 키만). agent 접속 실패는 경고 후 agent 없이 계속하며 다른 방법이 없으면 인증 실패로 끝난다.
 - 확인 범위: 커버리지 게이트(전체 interopTest 필요, 약 65분)는 실행하지 않음. SSH 관련 테스트만 실행.
+
+## [2026-11-03] Phase 2: GPG를 Mercurial `.hgsigs` 호환으로 구현
+- 추가: `HgSigEntry`/`HgSigsFile`/`GpgKeyring`/`KeyboxReader`/`HgSigner`/`HgSigVerifier`/`HgSigResult`, api의 `SignCommand`/`SigsCommand`/`SigCheckCommand`와 `Hg#sign()`/`sigs()`/`sigcheck()`. 상세는 [[gpg-hgsigs-compatibility]], [[gpg]] 모듈 문서.
+- 실측: Bouncy Castle은 레거시 `pubring.gpg`/`secring.gpg`는 읽지만 GnuPG 2.1+ `pubring.kbx`는 **오류 없이 키 0개**를 돌려준다. 그래서 키박스를 직접 파싱한다(레이아웃은 gpg 2.4.8 파일의 바이트로 확인).
+- 실제 gpg/hg와 양방향 상호운용 확인(gpg 서명을 hg4j가 검증, hg4j 서명을 gpg와 `hg sigcheck`가 인정, 실제 `hg sign` 결과를 hg4j가 읽음).
+- 테스트 중 발견: 결정적 서명 때문에 같은 초에 두 번 서명하면 `.hgsigs` 내용이 같아져 파일로그 head가 하나가 된다(제품 결함 아님, 테스트는 서명 시각을 달리 지정).
+- 한계: `.hgsigs`만 골라 커밋하지 못함(`CommitCommand`에 경로 필터 없음), gpg-agent 비밀키는 읽지 못함. 기존 `gpgsig` extra 방식은 유지하고 javadoc에 비표준 표시.

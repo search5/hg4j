@@ -688,3 +688,11 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 
 ## [2026-11-04] wire protocol v2 제거 (2단계 계획 중 1단계)
 오라클 7.2.4에 v2가 없어 구현·테스트를 삭제했다([[wireprotocol-v2-removed]]). 공유 도우미는 `wireprotov1/RepoSupport`로 이전, `negotiateV2`는 `negotiateCapabilities`로 개명. v2 업그레이드 헤더가 오면 서버는 7.2.4처럼 평범한 v1 capabilities를 돌려주고 `/api/`는 404다(테스트 추가). 일반 test 2207개 통과(v2 전용 테스트 약 150개 삭제), HTTP 서버·클라이언트 interop 7개 클래스 통과.
+
+## [2026-11-04] E2E 보강 (2단계 계획 중 2단계): SSH+HTTP LFS, 긴 이력, 브랜치·병합·태그·북마크·phase
+`TransportE2EMatrixInteropTest`가 16개에서 36개로: ① LFS 이력에 `SSH 전송 + 같은 서버의 HTTP LFS` 조합 추가(4개), ② 40커밋과 1.5MB 파일(중간에 델타로 저장되는 변경)을 가진 긴 이력의 clone과 push(8개), ③ 이름 있는 브랜치, 병합, 태그, 북마크, 두 head, 공개/draft/secret이 섞인 이력을 서버가 `publish=false`로 두고 clone하여 변경집합별 branch·phase·북마크·태그가 서버와 같음을 확인한 뒤, 새 head push 거절과 `--force`, 새 브랜치 push 거절과 `--new-branch`, 그리고 push 뒤에도 양쪽 phase 일치를 확인(8개).
+찾아서 고친 결함 2건:
+1. **secret 변경집합이 서버에서 새어 나갔다**: hg4j 서버(HTTP/SSH)와 file:// peer가 secret 변경집합과 그 자손을 heads, branchmap, getbundle, known, lookup, 북마크에 그대로 내보냈다. 원본의 `served` 뷰처럼 숨기도록 `ServedView`를 추가했다(`HgLocalClient`, `Wire1Commands`, `RepoSupport`).
+2. **비공개(`publish=false`) hg4j 서버가 push로 받은 변경을 draft로 등록하지 않았다**: draft 뿌리가 없어 public으로 계산되었고, 실제 hg 클라이언트가 자기 쪽 변경을 public으로 바꿨다. `HgLocalClient#publishImported`가 비공개 저장소에서는 받은 변경을 draft로 기록한다(원본의 `phases.registernew`).
+미해결: 처음 한 번 `REAL→OWN HTTP`에서 head 생성 push가 거절되지 않은 적이 있으나 그 뒤 4회 재현되지 않았다(secret 누출 수정 전 상태에서 발생했을 가능성). 계속 관찰한다.
+검증: 일반 test 2207개, E2E 36개, phase·서버·peer 관련 interop 8개 클래스 통과.

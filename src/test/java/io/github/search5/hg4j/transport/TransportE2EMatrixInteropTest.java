@@ -55,7 +55,12 @@ class TransportE2EMatrixInteropTest {
 
     enum Side { REAL, OWN }
 
-    enum Wire { HTTP, SSH }
+    /** SSH_HTTP_LFS: the changesets travel over SSH while the LFS blobs go to the same server's HTTP LFS endpoints. */
+    enum Wire { HTTP, SSH, SSH_HTTP_LFS }
+
+    static boolean overSsh(Wire wire) {
+        return wire != Wire.HTTP;
+    }
 
     record Combo(Side client, Side server, Wire wire) {
         @Override
@@ -65,8 +70,16 @@ class TransportE2EMatrixInteropTest {
     }
 
     static Stream<Combo> combos() {
+        return combos(Wire.HTTP, Wire.SSH);
+    }
+
+    static Stream<Combo> lfsCombos() {
+        return combos(Wire.HTTP, Wire.SSH, Wire.SSH_HTTP_LFS);
+    }
+
+    static Stream<Combo> combos(Wire... wires) {
         List<Combo> all = new ArrayList<>();
-        for (Wire wire : Wire.values()) {
+        for (Wire wire : wires) {
             for (Side client : Side.values()) {
                 for (Side server : Side.values()) {
                     all.add(new Combo(client, server, wire));
@@ -85,6 +98,8 @@ class TransportE2EMatrixInteropTest {
     private int sshPort;
     private File sshKey;
     private final byte[] bigData = new byte[600];
+    /** The LFS endpoint of the HTTP server that accompanies an SSH wire (SSH_HTTP_LFS). */
+    private String lfsHttpUrl;
 
     private static final String[] LFS = {"--config", "extensions.lfs=", "--config", "lfs.track=size(\">100\")",
             "--config", "experimental.lfs.disableusercache=true"};
@@ -141,7 +156,7 @@ class TransportE2EMatrixInteropTest {
 
     private String hgOver(File dir, Combo combo, boolean lfs, String... args) throws Exception {
         String[] full = args;
-        if (combo.wire() == Wire.SSH) {
+        if (overSsh(combo.wire())) {
             full = concat(new String[]{"--config", "ui.ssh=ssh -i " + sshKey.getAbsolutePath()
                     + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=" + tempDir.resolve("known_hosts")
                     + " -o IdentitiesOnly=yes -p " + sshPort}, args);
@@ -195,16 +210,22 @@ class TransportE2EMatrixInteropTest {
     }
 
     private String startServer(Combo combo, File repo) throws Exception {
-        if (combo.wire() == Wire.HTTP) {
+        if (combo.wire() == Wire.HTTP || combo.wire() == Wire.SSH_HTTP_LFS) {
+            String http;
             if (combo.server() == Side.REAL) {
                 int port = freePort();
                 realHttp = new ProcessBuilder("hg", "serve", "-p", String.valueOf(port), "--config", "web.push_ssl=false",
                         "--config", "web.allow-push=*").directory(repo).redirectErrorStream(true).start();
                 waitForPort(port);
-                return "http://127.0.0.1:" + port;
+                http = "http://127.0.0.1:" + port;
+            } else {
+                ownHttp = HgTestUtils.startServlet(new HgHttpWireServer(new HgRepository(repo)));
+                http = "http://127.0.0.1:" + HgTestUtils.port(ownHttp);
             }
-            ownHttp = HgTestUtils.startServlet(new HgHttpWireServer(new HgRepository(repo)));
-            return "http://127.0.0.1:" + HgTestUtils.port(ownHttp);
+            if (combo.wire() == Wire.HTTP) {
+                return http;
+            }
+            lfsHttpUrl = http + "/.git/info/lfs";
         }
         sshKey = tempDir.resolve("id_test").toFile();
         Process keygen = new ProcessBuilder("ssh-keygen", "-t", "rsa", "-b", "2048", "-f", sshKey.getAbsolutePath(), "-N", "")
@@ -224,9 +245,11 @@ class TransportE2EMatrixInteropTest {
                 : "ssh://testuser@127.0.0.1:" + sshPort + repo.getAbsolutePath();
     }
 
-    private static void hgrcOf(File dir, String url, boolean lfs, Wire wire, File serverStore) throws Exception {
+    private void hgrcOf(File dir, String url, boolean lfs, Wire wire, File serverStore) throws Exception {
+        String lfsUrl = wire == Wire.SSH ? "file://" + serverStore.getAbsolutePath()
+                : wire == Wire.SSH_HTTP_LFS ? lfsHttpUrl : null;
         String text = (lfs ? "[extensions]\nlfs =\n[lfs]\ntrack = size(\">100\")\n"
-                + (wire == Wire.SSH ? "url = file://" + serverStore.getAbsolutePath() + "\n" : "") : "")
+                + (lfsUrl != null ? "url = " + lfsUrl + "\n" : "") : "")
                 + "[experimental]\nlfs.disableusercache = true\n[paths]\ndefault = " + url + "\n";
         Files.writeString(new File(dir, ".hg/hgrc").toPath(), text);
     }
@@ -240,7 +263,7 @@ class TransportE2EMatrixInteropTest {
     }
 
     @ParameterizedTest(name = "LFS history: {0}")
-    @MethodSource("combos")
+    @MethodSource("lfsCombos")
     void anLfsHistoryTravelsBothWays(Combo combo) throws Exception {
         travel(combo, true);
     }
@@ -325,6 +348,195 @@ class TransportE2EMatrixInteropTest {
         assertEquals(nodes(server, lfs), nodes(client, lfs), "the client has the changeset made on the server");
         assertEquals("from the server\n", Files.readString(new File(client, "later.txt").toPath()));
         hg(client, lfs, "verify");
+    }
+
+    // ---------------------------------------------------------------- history shapes
+
+    private void write(File dir, String name, String text) throws Exception {
+        File file = new File(dir, name);
+        file.getParentFile().mkdirs();
+        Files.writeString(file.toPath(), text);
+    }
+
+    private String node(File dir, String revset) throws Exception {
+        return hg(dir, false, "log", "-r", revset, "-T", "{node}").strip();
+    }
+
+    /**
+     * A server with branches, a merge, a tag, bookmarks, two heads on {@code default}, drafts, a public part and a secret
+     * changeset (which must never be served). Made by real hg directly in the server directory.
+     */
+    private File shapesServer() throws Exception {
+        File srv = tempDir.resolve("server").toFile();
+        srv.mkdirs();
+        hg(srv, false, "init");
+        Files.writeString(new File(srv, ".hg/hgrc").toPath(),
+                "[web]\npush_ssl = false\nallow-push = *\n[phases]\npublish = false\n");
+        write(srv, "c1.txt", "c1\n");
+        hg(srv, false, "add");
+        hg(srv, false, "commit", "-m", "c1", "-u", "t");
+        write(srv, "c2.txt", "c2\n");
+        hg(srv, false, "add");
+        hg(srv, false, "commit", "-m", "c2", "-u", "t");
+        hg(srv, false, "branch", "stable");
+        write(srv, "s.txt", "s1\n");
+        hg(srv, false, "add");
+        hg(srv, false, "commit", "-m", "s1", "-u", "t");
+        write(srv, "s.txt", "s1\ns2\n");
+        hg(srv, false, "commit", "-m", "s2", "-u", "t");
+        hg(srv, false, "update", "default");
+        write(srv, "d.txt", "c3\n");
+        hg(srv, false, "add");
+        hg(srv, false, "commit", "-m", "c3", "-u", "t");
+        hg(srv, false, "bookmark", "feature");
+        hg(srv, false, "merge", "stable");
+        hg(srv, false, "commit", "-m", "merge", "-u", "t");
+        hg(srv, false, "bookmark", "release");
+        hg(srv, false, "tag", "-r", "desc(c2)", "v1", "-u", "t");
+        hg(srv, false, "update", "desc(c2)");
+        write(srv, "h2.txt", "second head\n");
+        hg(srv, false, "add");
+        hg(srv, false, "commit", "-m", "second head", "-u", "t");
+        hg(srv, false, "phase", "--public", "-r", "desc(c2)");
+        hg(srv, false, "update", "desc(merge)");
+        write(srv, "secret.txt", "secret\n");
+        hg(srv, false, "add");
+        hg(srv, false, "commit", "-m", "secret one", "-u", "t");
+        hg(srv, false, "phase", "--secret", "--force", "-r", ".");
+        return srv;
+    }
+
+    /** One line per changeset: node, branch, phase, bookmarks, tags (without "tip"); sorted. */
+    private TreeSet<String> shape(File dir) throws Exception {
+        TreeSet<String> lines = new TreeSet<>();
+        for (String line : hg(dir, false, "log", "-T", "{node}|{branch}|{phase}|{bookmarks}|{tags}\n").split("\n")) {
+            if (line.isBlank()) {
+                continue;
+            }
+            String[] f = line.split("\\|", -1);
+            String tags = String.join(" ", java.util.Arrays.stream(f[4].split(" ")).filter(t -> !t.isEmpty() && !t.equals("tip")).sorted().toList());
+            String marks = String.join(" ", java.util.Arrays.stream(f[3].split(" ")).filter(t -> !t.isEmpty()).sorted().toList());
+            lines.add(f[0] + "|" + f[1] + "|" + f[2] + "|" + marks + "|" + tags);
+        }
+        return lines;
+    }
+
+    @ParameterizedTest(name = "branches, merge, tags, bookmarks, phases: {0}")
+    @MethodSource("combos")
+    void aBranchyHistoryTravelsWithItsBookmarksTagsAndPhases(Combo combo) throws Exception {
+        File server = shapesServer();
+        String url = startServer(combo, server);
+        File client = tempDir.resolve("client").toFile();
+        client.mkdirs();
+        if (combo.client() == Side.REAL) {
+            hgOver(tempDir.toFile(), combo, false, "clone", url, client.getAbsolutePath());
+        } else {
+            new CloneCommand().setSource(url).setDirectory(client).call();
+        }
+        String secret = node(server, "desc('secret one')");
+        TreeSet<String> expected = shape(server);
+        expected.removeIf(line -> line.startsWith(secret));
+        assertEquals(expected, shape(client), "branch, phase, bookmarks and tags of every served changeset; the secret one stays home");
+        hg(client, false, "verify");
+
+        // a changeset that adds a third head to default is refused, and accepted when forced
+        hg(client, false, "update", "-C", "desc(c1)");
+        write(client, "extra.txt", "a new head\n");
+        hg(client, false, "add");
+        hg(client, false, "commit", "-m", "third head", "-u", "t");
+        String thirdHead = node(client, ".");
+        assertThrows(Throwable.class, () -> push(combo, client, url, false, false), "a push that creates a head is refused");
+        assertFalse(nodes(server, false).contains(thirdHead), "the refused push changed nothing");
+        push(combo, client, url, true, false);
+        assertTrue(nodes(server, false).contains(thirdHead), "the forced push arrived");
+
+        // a new named branch is refused without the flag
+        hg(client, false, "branch", "newbranch");
+        write(client, "nb.txt", "on a new branch\n");
+        hg(client, false, "add");
+        hg(client, false, "commit", "-m", "on newbranch", "-u", "t");
+        String onNewBranch = node(client, ".");
+        assertThrows(Throwable.class, () -> push(combo, client, url, false, false), "a new branch needs the flag");
+        assertFalse(nodes(server, false).contains(onNewBranch));
+        push(combo, client, url, false, true);
+        assertTrue(nodes(server, false).contains(onNewBranch), "the changeset of the new branch arrived");
+        assertEquals("newbranch", node2branch(server, onNewBranch));
+        hg(server, false, "verify");
+        TreeSet<String> serverNow = shape(server);
+        serverNow.removeIf(line -> line.startsWith(secret));
+        assertEquals(serverNow, shape(client),
+                "branch, phase, bookmarks and tags agree on both sides, also for the pushed changesets (they stay draft on a non-publishing server)");
+    }
+
+    private String node2branch(File dir, String node) throws Exception {
+        return hg(dir, false, "log", "-r", node, "-T", "{branch}").strip();
+    }
+
+    private void push(Combo combo, File client, String url, boolean force, boolean newBranch) throws Exception {
+        if (combo.client() == Side.REAL) {
+            List<String> args = new ArrayList<>(List.of("push"));
+            if (force) {
+                args.add("-f");
+            }
+            if (newBranch) {
+                args.add("--new-branch");
+            }
+            hgOver(client, combo, false, args.toArray(String[]::new));
+        } else {
+            new PushCommand(new HgRepository(client)).setDestination(url).setForce(force).setAllowNewBranch(newBranch).call();
+        }
+    }
+
+    // ---------------------------------------------------------------- a long history with a big file
+
+    @ParameterizedTest(name = "long history, 1.5 MB file: {0}")
+    @MethodSource("combos")
+    void aLongHistoryWithABigFileTravelsIntact(Combo combo) throws Exception {
+        File server = tempDir.resolve("server").toFile();
+        server.mkdirs();
+        hg(server, false, "init");
+        Files.writeString(new File(server, ".hg/hgrc").toPath(), "[web]\npush_ssl = false\nallow-push = *\n");
+        byte[] big = new byte[1_500_000];
+        new Random(11).nextBytes(big);
+        Files.write(new File(server, "big.dat").toPath(), big);
+        StringBuilder lines = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            lines.append("line ").append(i).append('\n');
+            write(server, "log.txt", lines.toString());
+            write(server, "f" + (i % 7) + ".txt", "version " + i + "\n");
+            if (i == 20) {
+                big[700_000] ^= 0x5a; // a small change of the big file: stored as a delta
+                Files.write(new File(server, "big.dat").toPath(), big);
+            }
+            hg(server, false, "add");
+            hg(server, false, "commit", "-m", "commit " + i, "-u", "t");
+        }
+        String url = startServer(combo, server);
+        File client = tempDir.resolve("client").toFile();
+        client.mkdirs();
+        if (combo.client() == Side.REAL) {
+            hgOver(tempDir.toFile(), combo, false, "clone", url, client.getAbsolutePath());
+        } else {
+            new CloneCommand().setSource(url).setDirectory(client).call();
+        }
+        assertEquals(nodes(server, false), nodes(client, false));
+        assertArrayEquals(big, Files.readAllBytes(new File(client, "big.dat").toPath()), "the big file is intact");
+        hg(client, false, "verify");
+
+        // push a change of the big file back
+        big[10] ^= 0x33;
+        Files.write(new File(client, "big.dat").toPath(), big);
+        if (combo.client() == Side.REAL) {
+            hg(client, false, "commit", "-m", "big again", "-u", "t");
+            hgOver(client, combo, false, "push");
+        } else {
+            new CommitCommand(new HgRepository(client)).setMessage("big again").setAuthor("t").call();
+            new PushCommand(new HgRepository(client)).setDestination(url).call();
+        }
+        assertEquals(nodes(client, false), nodes(server, false));
+        hg(server, false, "verify");
+        hg(server, false, "update", "-C", "tip");
+        assertArrayEquals(big, Files.readAllBytes(new File(server, "big.dat").toPath()));
     }
 
     // ---------------------------------------------------------------- SSH commands

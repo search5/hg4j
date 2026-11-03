@@ -393,7 +393,8 @@ public final class Wire1Commands {
                 byte[] node = NodeIdUtil.fromHex(hex);
                 // localrepo.known: the null node is "known" (its revision is -1, not missing), even in an empty repository
                 boolean isKnown = NodeIdUtil.isAllZero(node)
-                        || (changelog.getRevisionCount() > 0 && changelog.findRevision(node) != -1);
+                        || (changelog.getRevisionCount() > 0 && changelog.findRevision(node) != -1
+                        && !io.github.search5.hg4j.transport.ServedView.isHidden(repo, node));
                 sb.append(isKnown ? '1' : '0');
             }
         }
@@ -412,6 +413,9 @@ public final class Wire1Commands {
      */
     public static Wire1Response lookup(HgRepository repo, Map<String, String> args) throws IOException {
         RevisionLookup.Outcome outcome = RevisionLookup.resolve(repo, args.get("key"));
+        if (outcome.node() != null && io.github.search5.hg4j.transport.ServedView.isHidden(repo, outcome.node())) {
+            outcome = RevisionLookup.Outcome.failed("unknown revision '" + args.get("key") + "'"); // a secret changeset is not served
+        }
         String line = outcome.node() != null
                 ? "1 " + NodeIdUtil.toHex(outcome.node()) + "\n"
                 : "0 " + outcome.message() + "\n";

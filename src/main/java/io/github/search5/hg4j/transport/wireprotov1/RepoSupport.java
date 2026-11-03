@@ -47,6 +47,15 @@ public final class RepoSupport {
                         map.put(line.substring(spaceIdx + 1).trim(), line.substring(0, spaceIdx).trim());
                     }
                 }
+                // served view: a bookmark of a secret changeset is not listed (bookmarks.listbookmarks checks hasnode)
+                Revlog changelog = changelog(repo);
+                boolean[] hidden = io.github.search5.hg4j.transport.ServedView.hidden(repo, changelog);
+                if (hidden != null) {
+                    map.values().removeIf(hex -> {
+                        int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
+                        return rev >= 0 && hidden[rev];
+                    });
+                }
             }
         } else if ("namespaces".equals(namespace)) {
             // pushkey.listkeys(b'namespaces'): the names of the pushkey namespaces this repository serves, each with an

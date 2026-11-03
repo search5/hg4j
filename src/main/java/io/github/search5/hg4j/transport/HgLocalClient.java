@@ -80,8 +80,13 @@ public class HgLocalClient implements HgRemoteConnection {
             return new ArrayList<>();
         }
 
+        // the served view: a hidden (secret) changeset is no head, and does not make its parent a non-head
+        boolean[] hidden = ServedView.hidden(remoteRepo, changelog);
         boolean[] isParent = new boolean[count];
         for (int i = 0; i < count; i++) {
+            if (hidden != null && hidden[i]) {
+                continue;
+            }
             Revlog.IndexRecord rec = changelog.getIndexRecord(i);
             if (rec.getParent1() >= 0) isParent[rec.getParent1()] = true;
             if (rec.getParent2() >= 0) isParent[rec.getParent2()] = true;
@@ -89,7 +94,7 @@ public class HgLocalClient implements HgRemoteConnection {
 
         List<String> heads = new ArrayList<>();
         for (int i = 0; i < count; i++) {
-            if (!isParent[i]) {
+            if (!isParent[i] && (hidden == null || !hidden[i])) {
                 heads.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
             }
         }
@@ -122,8 +127,12 @@ public class HgLocalClient implements HgRemoteConnection {
         for (int i = 0; i < count; i++) {
             branchByRev[i] = CommitCommand.getBranchOfRevision(changelog, i);
         }
+        boolean[] hiddenRevs = ServedView.hidden(remoteRepo, changelog);
         boolean[] hasSameBranchChild = new boolean[count];
         for (int i = 0; i < count; i++) {
+            if (hiddenRevs != null && hiddenRevs[i]) {
+                continue;
+            }
             Revlog.IndexRecord rec = changelog.getIndexRecord(i);
             int p1 = rec.getParent1();
             int p2 = rec.getParent2();
@@ -135,7 +144,7 @@ public class HgLocalClient implements HgRemoteConnection {
             }
         }
         for (int i = 0; i < count; i++) {
-            if (!hasSameBranchChild[i]) {
+            if (!hasSameBranchChild[i] && (hiddenRevs == null || !hiddenRevs[i])) {
                 result.computeIfAbsent(branchByRev[i], b -> new ArrayList<>())
                         .add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
             }
@@ -250,6 +259,14 @@ public class HgLocalClient implements HgRemoteConnection {
             java.util.Arrays.fill(wanted, true);
         } else {
             wanted = ancestorsInclusive(changelog, count, nodesToRevs(changelog, heads, true));
+        }
+        boolean[] hiddenRevs = ServedView.hidden(remoteRepo, changelog);
+        if (hiddenRevs != null) {
+            for (int r = 0; r < count; r++) {
+                if (hiddenRevs[r]) {
+                    wanted[r] = false; // secret changesets are never sent
+                }
+            }
         }
         boolean[] descendantsOfRoots = null;
         if (missingRoots != null) {
@@ -766,16 +783,25 @@ public class HgLocalClient implements HgRemoteConnection {
     }
 
     /**
-     * {@code phases.registernew}: a publishing repository makes the changesets it receives public (a non-publishing one keeps them
-     * draft, which is what applying a changegroup already recorded).
+     * {@code phases.registernew}: a publishing repository makes the changesets it receives public; a non-publishing one records
+     * them as draft (a changeset whose parents are public needs a draft root of its own, otherwise it would count as public).
      */
     private void publishImported(List<byte[]> imported) throws IOException {
-        if (imported == null || imported.isEmpty() || !io.github.search5.hg4j.transport.wireprotov1.RepoSupport.isPublishing(remoteRepo)) {
+        if (imported == null || imported.isEmpty()) {
             return;
         }
         remoteRepo.clearRevlogCache();
         io.github.search5.hg4j.storage.Revlog changelog = io.github.search5.hg4j.transport.wireprotov1.RepoSupport.changelog(remoteRepo);
         io.github.search5.hg4j.phase.PhaseRoots roots = remoteRepo.getPhaseRoots();
+        if (!io.github.search5.hg4j.transport.wireprotov1.RepoSupport.isPublishing(remoteRepo)) {
+            // parents first: a child of a draft or secret changeset inherits that phase and needs no root of its own
+            for (byte[] node : imported) {
+                if (roots.getPhase(new NodeId(node), changelog) == io.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC) {
+                    roots.setPhase(new NodeId(node), io.github.search5.hg4j.phase.PhaseRoots.Phase.DRAFT, changelog);
+                }
+            }
+            return;
+        }
         for (int i = imported.size() - 1; i >= 0; i--) {
             byte[] node = imported.get(i);
             if (roots.getPhase(new NodeId(node), changelog) != io.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC) {

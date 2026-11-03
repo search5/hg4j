@@ -55,7 +55,9 @@ public class HgSshWireServer {
             Map.entry("clonebundles", ""),
             Map.entry("branches", "nodes"),
             Map.entry("debugwireargs", "one two *"),
-            Map.entry("protocaps", "caps")
+            Map.entry("protocaps", "caps"),
+            Map.entry("clonebundles_manifest", "*"),
+            Map.entry("get_cached_bundle_inline", "path")
     );
 
     private final HgRepository repository;

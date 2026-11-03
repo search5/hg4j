@@ -8,6 +8,7 @@ import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -90,7 +91,8 @@ public final class Wire1Commands {
     public static String capabilitiesString(HgRepository repo) {
         String base = capabilitiesString();
         File manifest = new File(repo.getHgDir(), "clonebundles.manifest");
-        return manifest.exists() ? base + " clonebundles" : base;
+        // real hg's clonebundles extension adds BOTH tokens when a manifest exists
+        return manifest.exists() ? base + " clonebundles clonebundles_manifest" : base;
     }
 
     public static Wire1Response capabilities(HgRepository repo) {
@@ -103,15 +105,53 @@ public final class Wire1Commands {
     }
 
     /**
-     * Real hg's {@code clonebundles} wire command: the server repository's {@code
-     * .hg/clonebundles.manifest} file content, verbatim (empty if the file doesn't exist -- real hg
-     * itself only ever routes here when the capability above was advertised, but nothing stops a
-     * client from asking anyway).
+     * Real hg's legacy {@code clonebundles} command (7.2.4): the manifest without {@code peer-bundle-cache://} entries
+     * and without entries whose bundlespec has a {@code store-fingerprint}, see {@link ClonebundlesManifest}. Empty when
+     * there is no manifest. Before 2026-11-03 the file was sent verbatim.
      */
     public static Wire1Response clonebundles(HgRepository repo) throws IOException {
-        File manifest = new File(repo.getHgDir(), "clonebundles.manifest");
-        byte[] body = manifest.exists() ? Files.readAllBytes(manifest.toPath()) : new byte[0];
-        return Wire1Response.bytes(body);
+        return Wire1Response.bytes(ClonebundlesManifest.legacyAnswer(ClonebundlesManifest.getManifestLines(repo)));
+    }
+
+    /**
+     * Real hg's {@code clonebundles_manifest} (7.2.4): every manifest line as it is; the client decides what it can use.
+     * (The development tree's {@code mandatory_params}/{@code store_fingerprint} arguments are not in a release yet.)
+     */
+    public static Wire1Response clonebundlesManifest(HgRepository repo, Map<String, String> args) throws IOException {
+        return Wire1Response.bytes(ClonebundlesManifest.manifestAnswer(ClonebundlesManifest.getManifestLines(repo)));
+    }
+
+    /**
+     * Real hg's {@code get_cached_bundle_inline}: sends one bundle of {@code server.peer-bundle-cache-root} (a directory
+     * under {@code .hg}) as an unframed stream: the length as an unsigned varint, then the file. Used for manifest
+     * entries with the {@code peer-bundle-cache://} scheme. The {@code pretransmit-inline-clone-bundle} hook is not
+     * supported.
+     */
+    public static Wire1Response getCachedBundleInline(HgRepository repo, Map<String, String> args) throws IOException {
+        String root = repo.getConfig().get("server", "peer-bundle-cache-root", null);
+        if (root == null || root.isEmpty()) {
+            throw new IOException("server.peer-bundle-cache-root is not set");
+        }
+        String path = args.getOrDefault("path", "");
+        File rootDir = new File(repo.getHgDir(), root);
+        File bundle = new File(rootDir, path);
+        if (!bundle.exists()) {
+            throw new IOException("clonebundle " + path + " does not exist");
+        }
+        // audit: the bundle must stay below the bundle root once symlinks and ".." are resolved
+        if (!bundle.getCanonicalPath().startsWith(rootDir.getCanonicalPath())) {
+            throw new IOException("clonebundle " + path + " is using an illegal path");
+        }
+        byte[] content = Files.readAllBytes(bundle.toPath());
+        ByteArrayOutputStream out = new ByteArrayOutputStream(content.length + 10);
+        long length = content.length;
+        while (length >= 0x80) { // util.uvarintencode: 7 bits per byte, low group first, high bit = more follow
+            out.write((int) ((length & 0x7f) | 0x80));
+            length >>>= 7;
+        }
+        out.write((int) length);
+        out.write(content);
+        return Wire1Response.streamUncompressed(out.toByteArray());
     }
 
     /**
@@ -512,6 +552,8 @@ public final class Wire1Commands {
             case "changegroupsubset" -> changegroupsubset(repo, args);
             case "getbundle" -> getbundle(repo, args);
             case "clonebundles" -> clonebundles(repo);
+            case "clonebundles_manifest" -> clonebundlesManifest(repo, args);
+            case "get_cached_bundle_inline" -> getCachedBundleInline(repo, args);
             default -> Wire1Response.oobError("unsupported command: " + cmd);
         };
     }

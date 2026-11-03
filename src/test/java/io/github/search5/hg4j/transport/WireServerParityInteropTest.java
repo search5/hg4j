@@ -215,6 +215,59 @@ public class WireServerParityInteropTest {
         }
     }
 
+    private void writeManifest(String... lines) throws Exception {
+        Files.writeString(repo.resolve(".hg/clonebundles.manifest"), String.join("\n", lines) + "\n");
+    }
+
+    @Test
+    @DisplayName("clonebundles 와 clonebundles_manifest 가 여러 형태의 매니페스트 줄에 대해 원본과 바이트까지 같다")
+    void clonebundlesFamily() throws Exception {
+        writeManifest(
+                "http://example.com/a.hg BUNDLESPEC=gzip-v2",
+                "http://example.com/b.hg BUNDLESPEC=none-v2;STREAM=v2",
+                "http://example.com/c.hg BUNDLESPEC=none-v2;SHARD-ID=ab12",
+                "http://example.com/d.hg BUNDLESPEC=none-v2;store-fingerprint=zz REQUIRESNI=true",
+                "peer-bundle-cache://inline-one.hg BUNDLESPEC=none-v2",
+                "http://example.com/e.hg",
+                "",
+                "http://example.com/f.hg BUNDLESPEC=none-v2;requirements%3Dgeneraldelta%2Crevlogv1",
+                "http://example.com/g.hg   BUNDLESPEC=none-v2;STORE-FINGERPRINT%3Dzz;stream=v2",
+                "http://example.com/h.hg BUNDLESPEC=none-v2;Mixed=1");
+        assertSameAnswer("clonebundles");
+        assertSameAnswer("clonebundles_manifest", "*");
+        // 7.2.4 knows no arguments for clonebundles_manifest: they are accepted and ignored
+        assertSameAnswer("clonebundles_manifest", "*mandatory_params=1&store_fingerprint=1");
+    }
+
+    @Test
+    @DisplayName("매니페스트가 없을 때 clonebundles, clonebundles_manifest 가 원본과 같다")
+    void clonebundlesWithoutAManifest() throws Exception {
+        assertSameAnswer("clonebundles");
+        assertSameAnswer("clonebundles_manifest", "*");
+    }
+
+    @Test
+    @DisplayName("get_cached_bundle_inline 이 길이(varint)와 파일 내용을 원본과 같이 보낸다")
+    void getCachedBundleInline() throws Exception {
+        Files.writeString(repo.resolve(".hg/hgrc"), "[server]\npeer-bundle-cache-root = bundle-cache\n");
+        Files.createDirectories(repo.resolve(".hg/bundle-cache"));
+        Files.write(repo.resolve(".hg/bundle-cache/small.hg"), "HG20-pretend-bundle".getBytes(StandardCharsets.US_ASCII));
+        byte[] big = new byte[300]; // longer than 127 bytes: the length needs two varint bytes
+        java.util.Arrays.fill(big, (byte) 'x');
+        Files.write(repo.resolve(".hg/bundle-cache/big.hg"), big);
+        assertSameAnswer("get_cached_bundle_inline", "path=small.hg");
+        assertSameAnswer("get_cached_bundle_inline", "path=big.hg");
+    }
+
+    @Test
+    @DisplayName("매니페스트가 있으면 capabilities 에 clonebundles 와 clonebundles_manifest 를 모두 광고한다")
+    void capabilitiesAdvertiseBothClonebundlesTokens() throws Exception {
+        writeManifest("http://example.com/a.hg BUNDLESPEC=gzip-v2");
+        String mine = show(ask(false, "capabilities"));
+        assertTrue(mine.contains(" clonebundles ") || mine.endsWith(" clonebundles") || mine.contains(" clonebundles clonebundles_manifest"), mine);
+        assertTrue(mine.contains("clonebundles_manifest"), mine);
+    }
+
     // ───────────────────────── known gaps (red tests) ─────────────────────────
 
     @Test

@@ -426,14 +426,15 @@ public class Wire1CommandsTest {
     }
 
     @Test
-    public void clonebundlesCommandReturnsTheManifestFileContentVerbatim(@TempDir Path tempDir) throws Exception {
+    public void clonebundlesCommandReturnsTheManifestLinesEachFollowedByAnEmptyLine(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         String manifestBody = "https://example.com/bundle.hg BUNDLESPEC=none-v2\n";
         Files.writeString(new File(repo.getHgDir(), "clonebundles.manifest").toPath(), manifestBody);
 
         Wire1Response r = Wire1Commands.clonebundles(repo);
         assertEquals(Wire1Response.Kind.BYTES, r.getKind());
-        assertEquals(manifestBody, bytes(r));
+        // hg appends b'' and joins with a newline: every line ends up followed by an empty line (verified against 7.2.4)
+        assertEquals(manifestBody + "\n", bytes(r));
     }
 
     @Test
@@ -450,6 +451,7 @@ public class Wire1CommandsTest {
         Files.writeString(new File(repo.getHgDir(), "clonebundles.manifest").toPath(), manifestBody);
 
         Wire1Response r = Wire1Commands.dispatch(repo, "clonebundles", new LinkedHashMap<>());
-        assertEquals(manifestBody, bytes(r));
+        assertEquals(manifestBody + "\n", bytes(r));
+        assertEquals(manifestBody, bytes(Wire1Commands.dispatch(repo, "clonebundles_manifest", new LinkedHashMap<>())));
     }
 }

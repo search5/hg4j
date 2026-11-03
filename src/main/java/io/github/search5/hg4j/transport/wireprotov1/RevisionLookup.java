@@ -97,10 +97,15 @@ final class RevisionLookup {
             } else {
                 matches = changelog.getIndex().findByHexPrefix(key.toLowerCase());
             }
-            if (matches != null && matches.size() == 1) {
+            // A prefix made only of 'f' (the empty one included) is also a prefix of the working directory's
+            // pseudo node ffff...ff, so one real match makes it ambiguous. Verified against hg 7.2.4: with exactly
+            // one real node starting with 'f' the prefix "f" is ambiguous, "fa" resolves; with none, "f" is unknown.
+            boolean wdirPrefix = key.chars().allMatch(c -> c == 'f' || c == 'F');
+            int total = matches == null ? 0 : matches.size() + (wdirPrefix && matches.size() >= 1 ? 1 : 0);
+            if (matches != null && total == 1) {
                 return Outcome.found(matches.get(0));
             }
-            if (matches != null && matches.size() > 1) {
+            if (matches != null && total > 1) {
                 // the wording is real hg's str() of AmbiguousPrefixLookupError: "<index>@<prefix>: <message>"
                 return Outcome.failed("00changelog@" + key + ": ambiguous identifier");
             }

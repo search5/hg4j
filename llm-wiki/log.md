@@ -650,3 +650,6 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 `HgLfsFiles`(원본 `lfs()` 파일셋의 `inManifest`와 `lfs_files` 템플릿의 `changedBy`가 계산하는 값을 API로 제공, hg4j에는 파일셋·템플릿 엔진이 없음), `LfsUploadCommand`(`debuglfsupload`), `VerifyCommand` 마무리(blob이 로컬에 없으면 내려받기를 시도하고 실패를 `unpacking <노드>: ...`로 보고, `setSkipLfs`와 `verify.skipflags`로 생략).
 테스트: `LfsFilesRealHgInteropTest` 3개(`hg log --template '{lfs_files ...}'`, `hg files 'set:lfs()'`, `hg verify`와 같은 결과), `debuglfsupload` 1개. 검증: 일반 test 전체 통과, Lfs·Verify 계열 interop 14개 클래스 통과.
 **LFS 계획서 7단계 전부 완료.** 요약은 [[implementation-plan-lfs]]의 6절, 구조는 [[lfs]] 모듈 문서. 전체 interop(약 63분)은 이 계획의 어느 단계에서도 돌리지 않았고, 각 단계는 변경 영역의 일반 test 전체와 해당 interop 일부로 검증했다.
+
+## [2026-11-04] 의도적 차이 포팅 1/6: SSH push의 번들2 응답 해석
+`HgSshClient.push`가 번들2 페이로드(LFS 저장소의 cg3 봉투)를 보내면 원본의 `_calltwowaystream`처럼 프레임 없이 돌아오는 번들2 응답을 읽어 `Bundle2PushReply`로 해석한다. 이전에는 프레임 정수를 기다리며 멈췄다(수정 전 코드로 새 테스트가 끝나지 않음을 확인). 테스트: `LfsPushSshRealHgInteropTest` 2개(실제 hg `serve --stdio`에 push 성공, 서버 hook 거절이 오류로 전달됨). 검증: 일반 test 2354개 통과, SSH 계열 interop 5개 클래스 17개 통과.

@@ -721,6 +721,27 @@ public class HgSshClient implements HgRemoteConnection {
 
         writeFramedChunks(bundleBytes);
 
+        if (io.github.search5.hg4j.bundle.Bundle2.isBundle2(bundleBytes)) {
+            // 원본의 _calltwowaystream: 페이로드 뒤에 프레임 없이 번들2 스트림이 파이프로 돌아온다.
+            // reply:changegroup, output, error:* 부품은 Bundle2PushReply가 해석한다.
+            ByteArrayOutputStream reply = new ByteArrayOutputStream();
+            byte[] magic = new byte[4];
+            int got = 0;
+            while (got < 4) {
+                int n = in.read(magic, got, 4 - got);
+                if (n == -1) {
+                    throw new HgProtocolException(sshUrl, "Unexpected EOF while reading the server's bundle2 reply");
+                }
+                got += n;
+            }
+            reply.write(magic);
+            if (!(magic[0] == 'H' && magic[1] == 'G' && magic[2] == '2' && magic[3] == '0')) {
+                throw new HgProtocolException(sshUrl, new String(magic, StandardCharsets.UTF_8) + readLine().trim());
+            }
+            readBundle2StreamInto(reply);
+            return io.github.search5.hg4j.transport.wireprotov1.Bundle2PushReply.summarize(sshUrl, reply.toByteArray());
+        }
+
         byte[] errorOrEmpty = readFramedResponse();
         if (errorOrEmpty.length > 0) {
             throw new HgProtocolException(sshUrl, new String(errorOrEmpty, StandardCharsets.UTF_8).trim());

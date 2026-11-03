@@ -142,7 +142,7 @@ public class HgHttpWireServer extends HttpServlet {
                 return;
             }
 
-            if (path.startsWith("/api/")) {
+            if (path.startsWith("/api/") && !repository.getRequirements().contains("lfs")) {
                 String[] parts = path.substring("/api/".length()).split("/");
                 if (parts.length == 3) {
                     // Buffer the whole response before sending headers -- unlike a v1 command
@@ -214,8 +214,12 @@ public class HgHttpWireServer extends HttpServlet {
      */
     private void handleCapabilitiesDiscovery(String v1CapabilitiesLine, OutputStream out) throws IOException {
         Map<String, Object> apis = new LinkedHashMap<>();
-        apis.put(Wire2Commands.NAMESPACE,
-                Wire2Commands.namespaceDescriptor());
+        // wire protocol v2 has no field for revision flags, so it cannot carry LFS revisions (their node hash is that of the
+        // real content, not of the stored pointer): a repository that requires lfs is offered over v1 (changegroup 3) only
+        if (!repository.getRequirements().contains("lfs")) {
+            apis.put(Wire2Commands.NAMESPACE,
+                    Wire2Commands.namespaceDescriptor());
+        }
 
         Map<String, Object> descriptor = new LinkedHashMap<>();
         descriptor.put("apibase", "api/");

@@ -41,6 +41,7 @@ public final class HgLfsManager {
     private static final Set<String> TRUE_TOKENS = Set.of("1", "yes", "true", "on", "always");
     private static final Set<String> FALSE_TOKENS = Set.of("0", "no", "false", "off", "never");
 
+    private final File hgDir;
     private final File lfsObjectsDir;
     /** The resolved user-level cache directory (already including the trailing {@code "lfs"}
      * path segment, so an oid shards directly under it as {@code <dir>/<oid[0:2]>/<oid[2:]>}),
@@ -72,6 +73,7 @@ public final class HgLfsManager {
         if (hgDir == null) {
             throw new IllegalArgumentException("HG directory cannot be null");
         }
+        this.hgDir = hgDir;
         File storeDir = new File(hgDir, "store");
         File lfsDir = new File(storeDir, "lfs");
         this.lfsObjectsDir = new File(lfsDir, "objects");
@@ -434,7 +436,43 @@ public final class HgLfsManager {
         if (pointers == null || lfsServerUrl == null) {
             throw new IllegalArgumentException("Pointers and server URL cannot be null");
         }
-        new HgLfsClient(this, config, lfsServerUrl).download(pointers, filenames);
+        int colon = lfsServerUrl.indexOf(':');
+        String scheme = colon > 0 ? lfsServerUrl.substring(0, colon).toLowerCase(java.util.Locale.ROOT) : "";
+        switch (scheme) {
+            case "http", "https" -> new HgLfsClient(this, config, lfsServerUrl).download(pointers, filenames);
+            case "null" -> {
+                // real hg's null store: nothing is ever fetched
+            }
+            case "file" -> readFromDirectory(pointers, lfsServerUrl);
+            default -> throw new io.github.search5.hg4j.lfs.errors.HgLfsException("lfs: unknown url scheme: " + scheme);
+        }
+    }
+
+    /**
+     * Real hg's {@code file:} store as a source: each missing blob is read from {@code <dir>/<oid[:2]>/<oid[2:]>}, verified and
+     * put into the local store. A relative path is taken below {@code .hg/lfs}.
+     */
+    private void readFromDirectory(java.util.Collection<HgLfsPointer> pointers, String url) throws IOException {
+        String path = java.net.URI.create(url).getPath();
+        File directory = new File(path).isAbsolute() ? new File(path) : new File(new File(hgDir, "lfs"), path);
+        Map<String, HgLfsPointer> missing = new java.util.TreeMap<>();
+        for (HgLfsPointer pointer : pointers) {
+            if (!isCached(pointer)) {
+                missing.putIfAbsent(pointer.getOid(), pointer);
+            }
+        }
+        for (HgLfsPointer pointer : missing.values()) {
+            File source = new File(new File(directory, pointer.getOid().substring(0, 2)), pointer.getOid().substring(2));
+            if (!source.isFile()) {
+                throw new IOException("[Errno 2] No such file or directory: '" + source.getPath() + "'");
+            }
+            byte[] blob = java.nio.file.Files.readAllBytes(source.toPath());
+            if (!HgLfsPointer.sha256Hex(blob).equals(pointer.getOid())) {
+                throw new io.github.search5.hg4j.lfs.errors.HgLfsCorruptObjectException(
+                        "detected corrupt lfs object: " + pointer.getOid());
+            }
+            cacheObject(pointer, blob);
+        }
     }
 
     /**

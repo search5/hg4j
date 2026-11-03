@@ -677,3 +677,11 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 
 ## [2026-11-04] 모든 HTTP 자격 증명을 챌린지 뒤에 전송
 주소의 `user:pass@`, `setCredentials`/`setCredentialsProvider`, `[auth]`의 자격 증명이 모두 서버의 401 + Basic 챌린지 뒤에 한 번 되풀이하며 전송되고 이후 요청은 처음부터 보낸다(`HgRemoteClient`, `HgRemoteClientV2`, `HgLfsClient`). 종전 첫 요청부터 보내던 단위 테스트 6개의 모의 서버는 Basic 챌린지를 보내도록 고쳤다. `AuthConfigRealHgInteropTest`에 주소 자격 증명 2개를 추가해 거절 요청 수가 실제 hg와 같음을 확인했다. 검증: 일반 test 2354개, 인증 interop 3개 클래스 통과.
+
+## [2026-11-04] 통신 E2E 점검: hg/hg4j 클라이언트 x 서버 x HTTP/SSH
+`TransportE2EMatrixInteropTest`(16개): 클라이언트 2종(실제 hg, hg4j) x 서버 2종(`hg serve`/`serve --stdio`, hg4j `HgHttpWireServer`/`HgSshWireServer`) x HTTP/SSH, 각 조합에서 평문 이력과 LFS 이력을 clone(LFS는 init+pull+update), 새 변경 push(LFS 파일 포함), 서버에서 만든 변경 pull 후 두 저장소 모두 실제 `hg verify` 통과, 내용·실행 비트·이름 변경이 바이트 단위로 같음을 확인한다.
+찾은 결함 3건과 수정:
+1. **wire v2 `filesdata`가 복사·이름 변경 메타데이터를 제거한 내용을 보냄**: hg4j 클라이언트가 hg4j HTTP 서버에서 이름 변경이 있는 이력을 받으면 `Changegroup entry hash mismatch`. `getRawRevisionContent`로 수정(`Wire2Commands`).
+2. **`lfs.url=file://...` 저장소에서 내려받기 미지원**(`invalid URI scheme file`): 원본의 `_dummyremote.readbatch`처럼 디렉터리에서 읽고 검증 후 캐시에 넣는다. `null:`은 무동작, 그 밖의 스킴은 `lfs: unknown url scheme: X`(`HgLfsManager#fetchObjects`).
+3. **v2가 LFS 리비전을 전달 못함**(플래그 필드 없음, 노드 해시는 실제 내용 기준이라 검증 실패): `lfs` requirement가 있는 저장소는 hg4j HTTP 서버가 v2를 광고하지 않아 클라이언트가 v1(changegroup 3)로 내려간다. 원본 7.2.4는 v2 서버 코드를 이미 제거했다.
+검증: 일반 test 2354개, E2E 16개, 영향받는 LFS·서버 광고 interop 7개 클래스 통과.

@@ -337,7 +337,7 @@ public final class Wire2Commands {
                 List<byte[]> following = new ArrayList<>();
                 List<String> followingNames = new ArrayList<>();
                 if (fields.contains("revision")) {
-                    following.add(filelog.getRevisionContent(rev));
+                    following.add(filelog.getRawRevisionContent(rev));
                     followingNames.add("revision");
                 }
                 emitRecordWithFollowing(result, d, followingNames, following);

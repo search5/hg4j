@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -14,14 +15,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -42,35 +41,9 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixAddDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
 
-    @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
 
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
     private static String runHost(String... cmd) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -87,38 +60,21 @@ public class RequirementMatrixAddDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    @BeforeAll
+    static void checkLocalHg() {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
+    @FunctionalInterface
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
+    }
+
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
         Path workDir = Files.createTempDirectory("hg4j-docker-add-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-add-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
     }
@@ -133,12 +89,6 @@ public class RequirementMatrixAddDockerRoundTripTest {
         f.delete();
     }
 
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs hg4j's add in a dedicated subprocess. */
     private static void addInSubprocess(Path repoDir, String... files) throws Exception {
@@ -218,7 +168,7 @@ public class RequirementMatrixAddDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jAddAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -228,11 +178,11 @@ public class RequirementMatrixAddDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "base\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
 
             Files.writeString(hostRepoDir.resolve("top.txt"), "top content\n");
             Files.createDirectories(hostRepoDir.resolve("adir"));
@@ -240,26 +190,26 @@ public class RequirementMatrixAddDockerRoundTripTest {
 
             addInSubprocess(hostRepoDir, "top.txt", "adir/nested.txt");
 
-            String status = dockerHgIn(containerName, repoRelPath, "status");
+            String status = LocalHg.hgIn(workDir, repoRelPath, "status");
             assertTrue(status.lines().anyMatch(l -> l.equals("A top.txt")),
                     "real hg status must see top.txt as added for combo " + combo + ": " + status);
             assertTrue(status.lines().anyMatch(l -> l.equals("A adir/nested.txt")),
                     "real hg status must see adir/nested.txt as added for combo " + combo + ": " + status);
 
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1 add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1 add");
 
-            String verify = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify = LocalHg.hgIn(workDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors after add+commit for combo " + combo + ": " + verify);
 
-            String manifest = dockerHgIn(containerName, repoRelPath, "manifest", "-r", "tip");
+            String manifest = LocalHg.hgIn(workDir, repoRelPath, "manifest", "-r", "tip");
             assertTrue(manifest.lines().anyMatch(l -> l.equals("top.txt")), "manifest: " + manifest);
             assertTrue(manifest.lines().anyMatch(l -> l.equals("adir/nested.txt")), "manifest: " + manifest);
             assertTrue(manifest.lines().anyMatch(l -> l.equals("base.txt")), "manifest: " + manifest);
 
-            String topContent = dockerHgIn(containerName, repoRelPath, "cat", "-r", "tip", "top.txt");
+            String topContent = LocalHg.hgIn(workDir, repoRelPath, "cat", "-r", "tip", "top.txt");
             assertEquals("top content", topContent.trim());
-            String nestedContent = dockerHgIn(containerName, repoRelPath, "cat", "-r", "tip", "adir/nested.txt");
+            String nestedContent = LocalHg.hgIn(workDir, repoRelPath, "cat", "-r", "tip", "adir/nested.txt");
             assertEquals("nested content", nestedContent.trim());
         });
     }

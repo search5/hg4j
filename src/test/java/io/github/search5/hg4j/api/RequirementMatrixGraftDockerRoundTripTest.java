@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -14,14 +15,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -41,35 +40,9 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixGraftDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
 
-    @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
 
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
     private static String runHost(String... cmd) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -86,38 +59,21 @@ public class RequirementMatrixGraftDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    @BeforeAll
+    static void checkLocalHg() {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
+    @FunctionalInterface
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
+    }
+
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
         Path workDir = Files.createTempDirectory("hg4j-docker-graft-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-graft-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
     }
@@ -132,12 +88,6 @@ public class RequirementMatrixGraftDockerRoundTripTest {
         f.delete();
     }
 
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs {@code hg4j}'s graft {@code call()} in a dedicated subprocess. Returns {@code "OK
      * <hex>"} on a clean graft, or {@code "CONFLICT <comma-separated-paths>"} if it paused. */
@@ -227,7 +177,7 @@ public class RequirementMatrixGraftDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jGraftAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -237,88 +187,88 @@ public class RequirementMatrixGraftDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             // --- Scenario 1: conflict-free graft of a diverging branch ---
             Files.writeString(hostRepoDir.resolve("base.txt"), "base\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
 
             Files.writeString(hostRepoDir.resolve("target.txt"), "on-target\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1 target");
-            String targetHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1 target");
+            String targetHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", "0");
+            LocalHg.hgIn(workDir, repoRelPath, "update", "0");
             Files.writeString(hostRepoDir.resolve("source.txt"), "on-source\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2 source");
-            String sourceHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2 source");
+            String sourceHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", targetHex);
+            LocalHg.hgIn(workDir, repoRelPath, "update", targetHex);
 
             String callResult = graftCallInSubprocess(hostRepoDir, sourceHex);
             assertTrue(callResult.startsWith("OK "), "expected a clean graft for combo " + combo + ": " + callResult);
             String graftedHex = callResult.substring("OK ".length()).trim();
 
-            String verify = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify = LocalHg.hgIn(workDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors after graft for combo " + combo + ": " + verify);
 
-            String graftedParent = dockerHgIn(containerName, repoRelPath, "log", "-r", graftedHex, "--template", "{p1node}");
+            String graftedParent = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", graftedHex, "--template", "{p1node}");
             assertEquals(targetHex, graftedParent, "grafted commit's parent must be the destination for combo " + combo);
 
-            String catTarget = dockerHgIn(containerName, repoRelPath, "cat", "-r", graftedHex, "target.txt");
+            String catTarget = LocalHg.hgIn(workDir, repoRelPath, "cat", "-r", graftedHex, "target.txt");
             assertEquals("on-target", catTarget.trim());
-            String catSource = dockerHgIn(containerName, repoRelPath, "cat", "-r", graftedHex, "source.txt");
+            String catSource = LocalHg.hgIn(workDir, repoRelPath, "cat", "-r", graftedHex, "source.txt");
             assertEquals("on-source", catSource.trim());
 
-            String logAll = dockerHgIn(containerName, repoRelPath, "log", "--template", "{node} ");
+            String logAll = LocalHg.hgIn(workDir, repoRelPath, "log", "--template", "{node} ");
             assertTrue(logAll.contains(sourceHex),
                     "a plain graft must never hide its source revision (no obsmarker) for combo " + combo);
 
             // --- Scenario 2: a graft that genuinely conflicts, then continueGraft() ---
-            dockerHgIn(containerName, repoRelPath, "update", graftedHex);
+            LocalHg.hgIn(workDir, repoRelPath, "update", graftedHex);
             Files.writeString(hostRepoDir.resolve("conflict.txt"), "line1\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c3 conflict base");
-            String conflictBaseHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c3 conflict base");
+            String conflictBaseHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("conflict.txt"), "line1-dest\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c4 dest modifies conflict.txt");
-            String destHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c4 dest modifies conflict.txt");
+            String destHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", conflictBaseHex);
+            LocalHg.hgIn(workDir, repoRelPath, "update", conflictBaseHex);
             Files.writeString(hostRepoDir.resolve("conflict.txt"), "line1-source\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c5 source modifies conflict.txt (conflicts with dest)");
-            String conflictSourceHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c5 source modifies conflict.txt (conflicts with dest)");
+            String conflictSourceHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", destHex);
+            LocalHg.hgIn(workDir, repoRelPath, "update", destHex);
 
             String conflictCallResult = graftCallInSubprocess(hostRepoDir, conflictSourceHex);
             assertTrue(conflictCallResult.startsWith("CONFLICT "),
                     "expected a paused, conflicted graft for combo " + combo + ": " + conflictCallResult);
             assertEquals("CONFLICT conflict.txt", conflictCallResult);
 
-            String resolveList = dockerHgIn(containerName, repoRelPath, "resolve", "--list");
+            String resolveList = LocalHg.hgIn(workDir, repoRelPath, "resolve", "--list");
             assertEquals("U conflict.txt", resolveList.trim(),
                     "real hg must see the same unresolved-file bookkeeping for combo " + combo);
 
             Files.writeString(hostRepoDir.resolve("conflict.txt"), "line1-dest\nline1-source\n");
-            dockerHgIn(containerName, repoRelPath, "resolve", "--mark", "conflict.txt");
+            LocalHg.hgIn(workDir, repoRelPath, "resolve", "--mark", "conflict.txt");
 
             String continueResult = graftContinueInSubprocess(hostRepoDir);
             assertTrue(continueResult.startsWith("OK "), "continueGraft() must succeed for combo " + combo + ": " + continueResult);
             String continuedHex = continueResult.substring("OK ".length()).trim();
 
-            String verify2 = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify2 = LocalHg.hgIn(workDir, repoRelPath, "verify");
             assertFalse(verify2.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors after continueGraft() for combo " + combo + ": " + verify2);
 
-            String catConflict = dockerHgIn(containerName, repoRelPath, "cat", "-r", continuedHex, "conflict.txt");
+            String catConflict = LocalHg.hgIn(workDir, repoRelPath, "cat", "-r", continuedHex, "conflict.txt");
             assertEquals("line1-dest\nline1-source", catConflict.trim());
 
-            String resolveListAfter = dockerHgIn(containerName, repoRelPath, "resolve", "--list");
+            String resolveListAfter = LocalHg.hgIn(workDir, repoRelPath, "resolve", "--list");
             assertEquals("", resolveListAfter.trim(), "no unresolved files must remain for combo " + combo);
         });
     }

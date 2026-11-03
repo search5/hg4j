@@ -20,6 +20,9 @@ status: current
 >    규칙 10). 68개 명령의 현재 GREEN/RED 상태 구조화 데이터는
 >    [matrix-status.md](matrix-status.md) 참고.
 >
+> **추가 계획서 (2026-11-03)**: [implementation-plan-gpg-ssh-wire.md](implementation-plan-gpg-ssh-wire.md)
+> — SSH를 Apache MINA SSHD로 교체, GPG를 `.hgsigs` 호환으로 재구현, 서버 와이어 명령 누락 점검(미착수).
+>
 > **실제로 작업을 시작할 때는 [implementation-plan.md](implementation-plan.md)부터
 > 보세요** — 위 두 요건을 하나로 통합해 Phase별 실행 순서/체크리스트/검증 명령까지
 > 구체화한 마스터 계획서입니다 (Gemini 등 외부 에이전트에게 그대로 넘길 수 있도록 작성).
@@ -99,6 +102,8 @@ status: current
 | [decisions/journaling-crash-recovery-plan.md](decisions/journaling-crash-recovery-plan.md) | 트랜잭션 저널링·rollback — ✅ **2026-09-01 완료**, pull 후 rollback이 아예 동작 안 하던 갭 발견·수정 |
 | [decisions/obsolescence-marker-completeness-plan.md](decisions/obsolescence-marker-completeness-plan.md) | Obsolescence marker — ✅ **2026-09-01 완료**, obsstore 바이너리 포맷 자체가 틀렸던 것을 발견해 전면 재작성(실제 hg와 양방향 검증) |
 | [decisions/interop-test-fixture-caching-tradeoff.md](decisions/interop-test-fixture-caching-tradeoff.md) | Interop 테스트를 픽스처로 캐싱할지에 대한 결정 — 포맷/바이트 검증은 캐싱 가능, 프로토콜·행동 검증은 라이브 유지 권장(구현 안 함, 질문에 대한 답변만 문서화) |
+| [decisions/ssh-apache-sshd-migration.md](decisions/ssh-apache-sshd-migration.md) | SSH를 jsch에서 Apache MINA SSHD로 교체한 결정, 동작 보존/변경표, 남은 예외 삼킴 |
+| [decisions/interop-local-hg-instead-of-docker.md](decisions/interop-local-hg-instead-of-docker.md) | interop 테스트의 hg 오라클을 Docker에서 로컬 빌드(`scripts/build-local-hg.sh`)로 교체, 측정 소요 시간 |
 
 ## 최상위 데이터 문서 (2026-09-06 신설)
 | 페이지 | 요약 |

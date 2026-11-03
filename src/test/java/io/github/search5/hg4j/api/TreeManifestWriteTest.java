@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.Assumptions;
@@ -162,7 +163,7 @@ class TreeManifestWriteTest {
     @Test
     @DisplayName("실제 hg-rust-7.2.4가 hg4j로 커밋된 treemanifest 저장소를 verify/log/cat 성공한다")
     void realHgAcceptsHg4jWrittenTreemanifest() throws Exception {
-        Assumptions.assumeTrue(isDockerImageAvailable(), "hg-rust-7.2.4 Docker image not available -- build it via `docker build -t hg-rust-7.2.4 docker/hg-rust-7.2.4` to run this test");
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
 
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = initTreemanifestRepo(repoDir);
@@ -179,14 +180,12 @@ class TreeManifestWriteTest {
         new AddCommand(repo).call();
         new CommitCommand(repo).setMessage("touch deep + add root").call();
 
-        ProcessBuilder verifyPb = new ProcessBuilder("docker", "run", "--rm", "-v", repoDir.getAbsolutePath() + ":/repo",
-                "hg-rust-7.2.4", "hg", "-R", "/repo", "verify");
+        ProcessBuilder verifyPb = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "verify");
         Process verifyProc = verifyPb.start();
         String verifyOut = readAll(verifyProc.getInputStream()) + readAll(verifyProc.getErrorStream());
         assertEquals(0, verifyProc.waitFor(), "real hg verify failed on hg4j-written treemanifest repo:\n" + verifyOut);
 
-        ProcessBuilder logPb = new ProcessBuilder("docker", "run", "--rm", "-v", repoDir.getAbsolutePath() + ":/repo",
-                "hg-rust-7.2.4", "hg", "-R", "/repo", "log", "--template", "{rev}:{node|short}\\n");
+        ProcessBuilder logPb = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "log", "--template", "{rev}:{node|short}\\n");
         Process logProc = logPb.start();
         String logOut = readAll(logProc.getInputStream());
         assertEquals(0, logProc.waitFor(), "real hg log failed:\n" + readAll(logProc.getErrorStream()));
@@ -197,15 +196,13 @@ class TreeManifestWriteTest {
         // `meta/sub/deep/00manifest.i` -- the strongest available interop signal that hg4j wrote
         // structurally correct, real-hg-readable per-directory revisions, not just a root
         // manifest that happens to parse.
-        ProcessBuilder catPb = new ProcessBuilder("docker", "run", "--rm", "-v", repoDir.getAbsolutePath() + ":/repo",
-                "hg-rust-7.2.4", "hg", "-R", "/repo", "cat", "-r", "0", "sub/deep/c.txt");
+        ProcessBuilder catPb = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "cat", "-r", "0", "sub/deep/c.txt");
         Process catProc = catPb.start();
         String catOut = readAll(catProc.getInputStream());
         assertEquals(0, catProc.waitFor(), "real hg cat failed:\n" + readAll(catProc.getErrorStream()));
         assertEquals("deep file\n", catOut);
 
-        ProcessBuilder catPb2 = new ProcessBuilder("docker", "run", "--rm", "-v", repoDir.getAbsolutePath() + ":/repo",
-                "hg-rust-7.2.4", "hg", "-R", "/repo", "cat", "-r", "1", "sub2/d.txt");
+        ProcessBuilder catPb2 = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "cat", "-r", "1", "sub2/d.txt");
         Process catProc2 = catPb2.start();
         String catOut2 = readAll(catProc2.getInputStream());
         assertEquals(0, catProc2.waitFor(), "real hg cat (untouched subtree) failed:\n" + readAll(catProc2.getErrorStream()));
@@ -216,12 +213,4 @@ class TreeManifestWriteTest {
         return new String(in.readAllBytes(), StandardCharsets.UTF_8);
     }
 
-    private static boolean isDockerImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", "hg-rust-7.2.4").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
-    }
 }

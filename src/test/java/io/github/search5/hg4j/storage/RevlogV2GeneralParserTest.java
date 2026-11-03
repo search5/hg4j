@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.storage;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
@@ -178,7 +179,7 @@ public class RevlogV2GeneralParserTest {
     @Tag("interop")
     @DisplayName("hg4j가 새로 쓴 general-v2(+fileindex-v1+persistent-nodemap) 커밋을 real Rust hg가 검증/조회한다 (쓰기 방향)")
     void realHgRustAcceptsHg4jWrittenGeneralV2Repository(@TempDir Path liveDir) throws Exception {
-        Assumptions.assumeTrue(isDockerImageAvailable(), "hg-rust-7.2.4 Docker image not available -- build it via `docker build -t hg-rust-7.2.4 docker/hg-rust-7.2.4` to run this test");
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
 
         File repoDir = liveDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
@@ -205,27 +206,18 @@ public class RevlogV2GeneralParserTest {
             new CommitCommand(repo).setMessage("commit " + i).call();
         }
 
-        ProcessBuilder verifyPb = new ProcessBuilder("docker", "run", "--rm", "-v",
-                repoDir.getAbsolutePath() + ":/repo", "hg-rust-7.2.4", "hg", "-R", "/repo", "verify");
+        ProcessBuilder verifyPb = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "verify");
         Process verifyProc = verifyPb.start();
         String verifyOut = new String(verifyProc.getInputStream().readAllBytes(), StandardCharsets.UTF_8)
                 + new String(verifyProc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
         assertEquals(0, verifyProc.waitFor(), "real hg verify failed on hg4j-written general-v2 repo:\n" + verifyOut);
 
-        ProcessBuilder catPb = new ProcessBuilder("docker", "run", "--rm", "-v",
-                repoDir.getAbsolutePath() + ":/repo", "hg-rust-7.2.4", "hg", "-R", "/repo", "cat", "-r", "tip", "a.txt");
+        ProcessBuilder catPb = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "cat", "-r", "tip", "a.txt");
         Process catProc = catPb.start();
         String catOut = new String(catProc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(0, catProc.waitFor());
+        String catErr = new String(catProc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, catProc.waitFor(), "real hg cat failed:\n" + catErr);
         assertEquals("line 1\nline 2\nline 3\n", catOut, "real hg cat must reproduce hg4j's committed content exactly");
     }
 
-    private static boolean isDockerImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", "hg-rust-7.2.4").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
-    }
 }

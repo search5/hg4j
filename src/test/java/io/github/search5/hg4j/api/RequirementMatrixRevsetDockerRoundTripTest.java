@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -8,21 +9,17 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.File;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest} for
@@ -35,83 +32,26 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixRevsetDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
+
+
+
+
 
     @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
-
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static String runHost(String... cmd) throws Exception {
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-        String out;
-        try (InputStream is = p.getInputStream()) {
-            out = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        int code = p.waitFor();
-        if (code != 0) {
-            throw new AssertionError("host command " + Arrays.toString(cmd) + " failed with exit " + code + ": " + out);
-        }
-        return out;
+    static void checkLocalHg() {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
     }
 
     @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
         Path workDir = Files.createTempDirectory("hg4j-docker-revset-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-revset-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
     }
@@ -126,12 +66,6 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
         f.delete();
     }
 
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** One point in the Docker-only quarter of the requirement matrix -- identical generation to
      * {@link RequirementMatrixDockerRoundTripTest#combos()}. */
@@ -198,8 +132,8 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
         return out.stream();
     }
 
-    private static Set<String> realHexes(String containerName, String repoRelPath, String expr) throws Exception {
-        String out = dockerHgIn(containerName, repoRelPath, "log", "-r", expr, "--template", "{node}\n");
+    private static Set<String> realHexes(Path workDir, String repoRelPath, String expr) throws Exception {
+        String out = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", expr, "--template", "{node}\n");
         Set<String> result = new HashSet<>();
         for (String line : out.split("\n")) {
             if (!line.isBlank()) {
@@ -216,7 +150,7 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void revsetExpressionsAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -226,30 +160,30 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "a");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c0");
-            String hex0 = dockerHgIn(containerName, repoRelPath, "log", "-r", "0", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c0");
+            String hex0 = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", "0", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "branch", "feature");
+            LocalHg.hgIn(workDir, repoRelPath, "branch", "feature");
             Files.writeString(hostRepoDir.resolve("b.txt"), "b");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Bob <b@x.com>", "-m", "c1");
-            String hex1 = dockerHgIn(containerName, repoRelPath, "log", "-r", "1", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "Bob <b@x.com>", "-m", "c1");
+            String hex1 = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", "1", "--template", "{node}");
 
-            dockerHgIn(containerName, repoRelPath, "update", "0");
-            dockerHgIn(containerName, repoRelPath, "branch", "default");
+            LocalHg.hgIn(workDir, repoRelPath, "update", "0");
+            LocalHg.hgIn(workDir, repoRelPath, "branch", "default");
             Files.writeString(hostRepoDir.resolve("c.txt"), "c");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c2");
-            String hex2 = dockerHgIn(containerName, repoRelPath, "log", "-r", "2", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c2");
+            String hex2 = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", "2", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve(".hgtags"), hex0 + " v1.0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c3 tag");
-            String hex3 = dockerHgIn(containerName, repoRelPath, "log", "-r", "3", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "Alice <a@x.com>", "-m", "c3 tag");
+            String hex3 = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", "3", "--template", "{node}");
 
             HgRepository repo = new HgRepository(hostRepoDir.toFile());
 
@@ -274,12 +208,12 @@ public class RequirementMatrixRevsetDockerRoundTripTest {
             );
 
             for (Case c : cases) {
-                Set<String> expected = realHexes(containerName, repoRelPath, c.realHgExpr());
+                Set<String> expected = realHexes(workDir, repoRelPath, c.realHgExpr());
                 Set<String> actual = hg4jHexes(repo, c.hg4jExpr());
                 assertEquals(expected, actual, "revset '" + c.label() + "', combo " + combo);
             }
 
-            assertEquals(Set.of(hex1, hex3), realHexes(containerName, repoRelPath, "heads(all())"), "sanity, combo " + combo);
+            assertEquals(Set.of(hex1, hex3), realHexes(workDir, repoRelPath, "heads(all())"), "sanity, combo " + combo);
         });
     }
 }

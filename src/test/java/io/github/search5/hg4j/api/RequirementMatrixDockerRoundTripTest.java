@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -16,14 +17,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix ({@code llm-wiki/decisions/
@@ -102,59 +101,18 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String containerName;
     private static Path hostWorkDir;
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
 
     @BeforeAll
-    static void startContainer() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-        // Resolve symlinks (macOS /tmp -> /private/tmp) BEFORE handing the path to `docker -v`,
-        // otherwise every path under it comes up "Permission denied" inside the container.
-        hostWorkDir = Files.createTempDirectory("hg4j-docker-matrix").toRealPath();
-        containerName = "hg4j-reqmatrix-docker-" + UUID.randomUUID().toString().substring(0, 8);
-
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", hostWorkDir + ":/repo-root", IMAGE, "sleep", "infinity");
-
-        // Wait for the container to actually be able to run `hg` (a few retries covers slow starts).
-        Exception last = null;
-        for (int i = 0; i < 20; i++) {
-            try {
-                runContainer("hg", "--version");
-                last = null;
-                break;
-            } catch (Exception e) {
-                last = e;
-                Thread.sleep(250);
-            }
-        }
-        if (last != null) {
-            throw new AssertionError("Container " + containerName + " never became ready to run hg", last);
-        }
+    static void setUpWorkDir() throws Exception {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
+        hostWorkDir = Files.createTempDirectory("hg4j-matrix").toRealPath();
     }
 
     @AfterAll
-    static void stopContainer() {
-        if (containerName != null) {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort -- --rm already means the container self-deletes on stop/exit
-            }
-        }
+    static void removeWorkDir() {
         if (hostWorkDir != null) {
-            try {
-                deleteRecursively(hostWorkDir.toFile());
-            } catch (Exception ignored) {
-                // test tmp dir cleanup is best-effort
-            }
+            deleteRecursively(hostWorkDir.toFile());
         }
     }
 
@@ -168,23 +126,9 @@ public class RequirementMatrixDockerRoundTripTest {
         f.delete();
     }
 
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
+
+
 
     private static String runHost(String... cmd) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -201,18 +145,15 @@ public class RequirementMatrixDockerRoundTripTest {
         return out;
     }
 
-    private static String runContainer(String... hgArgsIncludingHg) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid, containerName));
-        cmd.addAll(Arrays.asList(hgArgsIncludingHg));
-        return runHost(cmd.toArray(new String[0]));
-    }
 
-    /** Runs {@code hg <args>} inside the container with cwd set to the given repo's mounted path. */
+
+
+
+
+
+    /** Runs the real {@code hg <args>} with cwd set to the given repo inside the shared work directory. */
     private static String dockerHg(String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, containerName, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
+        return LocalHg.hgIn(hostWorkDir, repoRelPath, args);
     }
 
     /**
@@ -221,18 +162,7 @@ public class RequirementMatrixDockerRoundTripTest {
      * that output, not treat a real finding as a test-harness crash.
      */
     private static String dockerHgTolerant(String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, containerName, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-        String out;
-        try (InputStream is = p.getInputStream()) {
-            out = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        p.waitFor();
-        return out.trim();
+        return LocalHg.hgTolerantIn(hostWorkDir, repoRelPath, args);
     }
 
     /**
@@ -401,7 +331,7 @@ public class RequirementMatrixDockerRoundTripTest {
         // dirstate-vs-manifest mismatch) even though hg4j's own order-agnostic DFS-stack reader
         // parsed the same bytes back fine. See DirstateV2Serializer.compareUtf8Bytes and
         // DirstateV2SerializerCoverageTest's regression tests for the byte-level fix.
-        withFreshContainer((writeContainerName, writeWorkDir) -> {
+        withFreshWorkDir(writeWorkDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = writeWorkDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -411,22 +341,22 @@ public class RequirementMatrixDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(writeContainerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(writeWorkDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("seed.txt"), "seed");
-            dockerHgIn(writeContainerName, repoRelPath, "add");
-            dockerHgIn(writeContainerName, repoRelPath, "commit", "-u", "dev", "-m", "seed");
+            LocalHg.hgIn(writeWorkDir, repoRelPath, "add");
+            LocalHg.hgIn(writeWorkDir, repoRelPath, "commit", "-u", "dev", "-m", "seed");
 
             Files.writeString(hostRepoDir.resolve("hg4j.txt"), "from hg4j");
             String hg4jHex = commitInSubprocess(hostRepoDir, "hg4j", "hg4j commit for " + combo);
 
-            String realTipHex = dockerHgIn(writeContainerName, repoRelPath, "log", "-r", "tip", "--template", "{node}");
+            String realTipHex = LocalHg.hgIn(writeWorkDir, repoRelPath, "log", "-r", "tip", "--template", "{node}");
             assertEquals(hg4jHex, realTipHex, "real hg's tip must be the hg4j-written commit for combo " + combo);
 
-            String catOut = dockerHgIn(writeContainerName, repoRelPath, "cat", "-r", "tip", "hg4j.txt");
+            String catOut = LocalHg.hgIn(writeWorkDir, repoRelPath, "cat", "-r", "tip", "hg4j.txt");
             assertEquals("from hg4j", catOut);
 
-            String verify = dockerHgTolerantIn(writeContainerName, repoRelPath, "verify");
+            String verify = LocalHg.hgTolerantIn(writeWorkDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error") || verify.toLowerCase().contains("error:"),
                     "real hg verify must find no integrity errors for combo " + combo + ": " + verify);
             assertFalse(verify.contains("not marked as tracked"),
@@ -440,60 +370,16 @@ public class RequirementMatrixDockerRoundTripTest {
     }
 
     @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
-        Path workDir = Files.createTempDirectory("hg4j-docker-matrix-write").toRealPath();
-        String freshContainerName = "hg4j-reqmatrix-write-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", freshContainerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
+        Path workDir = Files.createTempDirectory("hg4j-matrix-write").toRealPath();
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, freshContainerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Fresh container " + freshContainerName + " never became ready", last);
-            }
-            test.run(freshContainerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", freshContainerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
-    }
-
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
-
-    private static String dockerHgTolerantIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-        String out;
-        try (InputStream is = p.getInputStream()) {
-            out = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        p.waitFor();
-        return out.trim();
     }
 }

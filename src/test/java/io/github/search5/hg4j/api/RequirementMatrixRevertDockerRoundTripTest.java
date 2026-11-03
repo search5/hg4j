@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -14,12 +15,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -41,35 +40,9 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixRevertDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
 
-    @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
 
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
     private static String runHost(String... cmd) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -86,38 +59,21 @@ public class RequirementMatrixRevertDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    @BeforeAll
+    static void checkLocalHg() {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
+    @FunctionalInterface
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
+    }
+
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
         Path workDir = Files.createTempDirectory("hg4j-docker-revert-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-revert-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
     }
@@ -132,12 +88,6 @@ public class RequirementMatrixRevertDockerRoundTripTest {
         f.delete();
     }
 
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs hg4j's revert(s) in a dedicated subprocess. */
     private static void revertInSubprocess(Path repoDir, String mode, String... extraArgs) throws Exception {
@@ -218,7 +168,7 @@ public class RequirementMatrixRevertDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jRevertsModifiedAddedRemovedAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -228,28 +178,28 @@ public class RequirementMatrixRevertDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "base\n");
             Files.writeString(hostRepoDir.resolve("keep.txt"), "keep\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "modified locally\n");
             Files.writeString(hostRepoDir.resolve("new.txt"), "new content\n");
-            dockerHgIn(containerName, repoRelPath, "add", "new.txt");
-            dockerHgIn(containerName, repoRelPath, "remove", "keep.txt");
+            LocalHg.hgIn(workDir, repoRelPath, "add", "new.txt");
+            LocalHg.hgIn(workDir, repoRelPath, "remove", "keep.txt");
 
             revertInSubprocess(hostRepoDir, "mar");
 
-            assertEquals("base", dockerHgIn(containerName, repoRelPath, "cat", "base.txt"));
-            assertEquals("keep", dockerHgIn(containerName, repoRelPath, "cat", "keep.txt"));
+            assertEquals("base", LocalHg.hgIn(workDir, repoRelPath, "cat", "base.txt"));
+            assertEquals("keep", LocalHg.hgIn(workDir, repoRelPath, "cat", "keep.txt"));
             assertEquals("new content", Files.readString(hostRepoDir.resolve("new.txt")).trim(),
                     "reverting an added-but-uncommitted file must not delete its content for combo " + combo);
             assertEquals("modified locally", Files.readString(hostRepoDir.resolve("base.txt.orig")).trim(),
                     "the .orig backup must hold the pre-revert modified content for combo " + combo);
 
-            String status = dockerHgIn(containerName, repoRelPath, "status");
+            String status = LocalHg.hgIn(workDir, repoRelPath, "status");
             assertEquals("? base.txt.orig\n? new.txt", status,
                     "only the .orig backup and the now-untracked former-added file should remain outstanding for combo "
                             + combo + ": " + status);
@@ -259,7 +209,7 @@ public class RequirementMatrixRevertDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jRevertsToOlderRevisionAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -269,19 +219,19 @@ public class RequirementMatrixRevertDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "v0\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String c0Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String c0Hex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "v1\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
 
             Files.writeString(hostRepoDir.resolve("later.txt"), "added later\n");
-            dockerHgIn(containerName, repoRelPath, "add", "later.txt");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2");
+            LocalHg.hgIn(workDir, repoRelPath, "add", "later.txt");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2");
 
             revertInSubprocess(hostRepoDir, "older", c0Hex);
 
@@ -291,7 +241,7 @@ public class RequirementMatrixRevertDockerRoundTripTest {
             // which is not what this asserts.
             assertEquals("v0", Files.readString(hostRepoDir.resolve("a.txt")).trim());
 
-            String status = dockerHgIn(containerName, repoRelPath, "status");
+            String status = LocalHg.hgIn(workDir, repoRelPath, "status");
             assertEquals("M a.txt\nR later.txt", status,
                     "a.txt must show modified and later.txt must show removed for combo " + combo + ": " + status);
         });

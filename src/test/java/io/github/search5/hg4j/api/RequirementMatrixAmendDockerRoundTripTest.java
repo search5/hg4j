@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -14,13 +15,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -38,35 +37,9 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixAmendDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
 
-    @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
 
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
     private static String runHost(String... cmd) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -83,38 +56,21 @@ public class RequirementMatrixAmendDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    @BeforeAll
+    static void checkLocalHg() {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
+    @FunctionalInterface
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
+    }
+
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
         Path workDir = Files.createTempDirectory("hg4j-docker-amend-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-amend-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
     }
@@ -129,21 +85,14 @@ public class RequirementMatrixAmendDockerRoundTripTest {
         f.delete();
     }
 
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Like {@link #dockerHgIn} but with {@code experimental.evolution=all} added, so a
      * post-amend repository (which always carries an obsmarker) can be queried without the
      * unrelated "obsolete feature not enabled" warning polluting the output being asserted on. */
-    private static String dockerHgEvolutionIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg", "--config", "experimental.evolution=all"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
+    private static String dockerHgEvolutionIn(Path workDir, String repoRelPath, String... args) throws Exception {
+        List<String> all = new ArrayList<>(List.of("--config", "experimental.evolution=all"));
+        all.addAll(Arrays.asList(args));
+        return LocalHg.hgIn(workDir, repoRelPath, all.toArray(new String[0]));
     }
 
     /** Runs hg4j's amend in a dedicated subprocess; returns the amended node's hex. */
@@ -224,7 +173,7 @@ public class RequirementMatrixAmendDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jAmendAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -234,41 +183,41 @@ public class RequirementMatrixAmendDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("base.txt"), "base\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
-            String baseHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0 base");
+            String baseHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "one\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1 to amend");
-            String originalHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1 to amend");
+            String originalHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "one-amended\n");
             String amendedHex = amendInSubprocess(hostRepoDir, "amender", "c1 amended");
 
-            String verify = dockerHgEvolutionIn(containerName, repoRelPath, "verify");
+            String verify = dockerHgEvolutionIn(workDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error"),
                     "real hg verify must find no integrity errors after amend for combo " + combo + ": " + verify);
 
-            String tipHex = dockerHgEvolutionIn(containerName, repoRelPath, "log", "-r", "tip", "--template", "{node}");
+            String tipHex = dockerHgEvolutionIn(workDir, repoRelPath, "log", "-r", "tip", "--template", "{node}");
             assertEquals(amendedHex, tipHex, "amended commit must be the new tip for combo " + combo);
 
-            String tipParent = dockerHgEvolutionIn(containerName, repoRelPath, "log", "-r", "tip", "--template", "{p1node}");
+            String tipParent = dockerHgEvolutionIn(workDir, repoRelPath, "log", "-r", "tip", "--template", "{p1node}");
             assertEquals(baseHex, tipParent, "amended commit must keep the original commit's own parent for combo " + combo);
 
-            String tipDesc = dockerHgEvolutionIn(containerName, repoRelPath, "log", "-r", "tip", "--template", "{desc}");
+            String tipDesc = dockerHgEvolutionIn(workDir, repoRelPath, "log", "-r", "tip", "--template", "{desc}");
             assertEquals("c1 amended", tipDesc.trim());
 
-            String catContent = dockerHgEvolutionIn(containerName, repoRelPath, "cat", "-r", "tip", "a.txt");
+            String catContent = dockerHgEvolutionIn(workDir, repoRelPath, "cat", "-r", "tip", "a.txt");
             assertEquals("one-amended", catContent.trim());
 
-            String logAll = dockerHgEvolutionIn(containerName, repoRelPath, "log", "--template", "{node} ");
+            String logAll = dockerHgEvolutionIn(workDir, repoRelPath, "log", "--template", "{node} ");
             assertFalse(logAll.contains(originalHex), "the amended-away original revision must be hidden from a plain log for combo " + combo);
 
-            String log = dockerHgEvolutionIn(containerName, repoRelPath, "log", "--template", "{rev}:{node}\n");
+            String log = dockerHgEvolutionIn(workDir, repoRelPath, "log", "--template", "{rev}:{node}\n");
             assertEquals(2, log.split("\n").length, "2 visible revisions for combo " + combo + ":\n" + log);
         });
     }

@@ -554,3 +554,14 @@
   `--stop`으로 죽이고 `build/` 산출물을 덮어쓰는 충돌 발생(사용자가 직접 지적해서
   발견) — 전부 킬하고 이후 라운드는 순차 처리(한 명 끝나면 검증 후 다음 재개)로
   전환해 문제없이 마무리. 상세 경위는 [[test-coverage-95-percent-initiative]]에 기록.
+
+## [2026-11-03] GPG/SSH/서버 와이어 보완 구현 계획서 작성
+- [[implementation-plan-gpg-ssh-wire]] 신설(미착수). 사용자 결정: SSH는 jsch에서 Apache MINA SSHD로 교체. GPG는 Mercurial `.hgsigs` 호환으로 재구현, 서버 와이어 명령은 원본과 대조해 누락 목록 작성.
+- 조사로 확인한 사실: hg4j의 GPG는 `extra`의 `gpgsig`(git 방식)이라 hg와 호환되지 않고, `.hgsigs`를 읽거나 쓰는 코드가 없음. `HgSshClient`가 `JSchException`을 직접 참조해 `SshSession` 추상화가 새어 있음.
+- 정정: `modules/transport.md`가 `HgHttpWireServer`를 JDK `HttpHandler` 구현이라고 적었으나 실제 소스는 `jakarta.servlet.http.HttpServlet` 상속. 문서를 수정함.
+- 계획서 갱신: gpgsig extra는 유지(javadoc 표시만), 시스템 GnuPG 키링 자동 탐색을 Phase 2 범위에 포함(사용자 결정).
+
+## [2026-11-03] Phase 1: SSH를 Apache MINA SSHD로 교체 + interop 테스트의 Docker 제거
+- SSH: jsch 제거, `ApacheSshdSession`/`ApacheSshdSessionFactory`/`SshAuthenticationException` 추가, `~/.ssh/config` 지원, 포트/사용자 미지정 전달. 상세와 동작 보존표는 [[ssh-apache-sshd-migration]]. 검증 중 `known_hosts` strict 모드가 664 권한 파일을 거부하는 문제를 발견해 `strict=false`로 보존(회귀 테스트 있음).
+- Docker: interop 테스트의 `hg` 오라클을 로컬 빌드로 교체 ([[interop-local-hg-instead-of-docker]]). 전체 `interopTest`는 약 63분, 일반 `test`는 약 2분. 처음 30건 실패(Worktree 테스트의 sharedpath 컨테이너 경로 변환)는 변환 제거로 해결하고 해당 클래스만 재실행해 30/30 확인. 전체 재실행은 하지 않음.
+- 미완: ssh-agent 구현(별도 커밋), 클래스 이름의 `Docker` 잔재 정리, `HgSshClient.close()`의 예외 삼킴.

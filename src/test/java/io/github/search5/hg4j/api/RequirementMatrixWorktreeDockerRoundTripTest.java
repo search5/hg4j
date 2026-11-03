@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -14,13 +15,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -39,35 +38,9 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixWorktreeDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
 
-    @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
 
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
     private static String runHost(String... cmd) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -84,38 +57,21 @@ public class RequirementMatrixWorktreeDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    @BeforeAll
+    static void checkLocalHg() {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
+    @FunctionalInterface
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
+    }
+
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
         Path workDir = Files.createTempDirectory("hg4j-docker-worktree-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-worktree-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
     }
@@ -130,12 +86,6 @@ public class RequirementMatrixWorktreeDockerRoundTripTest {
         f.delete();
     }
 
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs hg4j's {@link WorktreeCommand} in a dedicated subprocess -- see the class javadoc for
      * why this isn't strictly required for correctness here. */
@@ -215,7 +165,7 @@ public class RequirementMatrixWorktreeDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jWorktreeSharesAndChecksOutMatchingRealHgAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "main";
             Path hostMainDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostMainDir);
@@ -225,14 +175,14 @@ public class RequirementMatrixWorktreeDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostMainDir.resolve("root.txt"), "root content\n");
             Files.createDirectories(hostMainDir.resolve("sub"));
             Files.writeString(hostMainDir.resolve("sub/nested.txt"), "nested content\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
-            String tipHex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            String tipHex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             File hostWorktreeDir = workDir.resolve("worktree").toFile();
             worktreeInSubprocess(hostMainDir.toFile(), hostWorktreeDir);
@@ -249,23 +199,13 @@ public class RequirementMatrixWorktreeDockerRoundTripTest {
                     Files.readString(hostWorktreeDir.toPath().resolve(".hg/sharedpath"), StandardCharsets.UTF_8),
                     "sharedpath must point back at the main repository's .hg directory (host-absolute view) for combo " + combo);
 
-            // hg4j (running on the host) correctly wrote sharedpath as an absolute HOST path
-            // (verified above -- correct for a real, non-containerized deployment where the main
-            // repo and the worktree sit on the very same filesystem view). Real hg running INSIDE
-            // the container sees this same directory tree at a different mount point
-            // (/repo-root/... instead of the host's own absolute path), so sharedpath as hg4j
-            // wrote it can never resolve from inside the container -- purely a test-harness path-
-            // view mismatch, not a production bug (a real host-side hg4j deployment has no such
-            // second view to reconcile). Translate it here, test-side only, so the container's own
-            // real hg can still verify the shared store resolves and the checkout/dirstate content
-            // agree.
+            // Real hg now runs on the host too, so it resolves the absolute host path hg4j wrote into
+            // sharedpath directly (the earlier container mount-point translation is gone).
             String worktreeRelPath = "worktree";
-            String containerSharedPath = "/repo-root/" + repoRelPath + "/.hg";
-            Files.writeString(hostWorktreeDir.toPath().resolve(".hg/sharedpath"), containerSharedPath, StandardCharsets.UTF_8);
 
-            assertEquals(tipHex, dockerHgIn(containerName, worktreeRelPath, "log", "-r", ".", "--template", "{node}"),
+            assertEquals(tipHex, LocalHg.hgIn(workDir, worktreeRelPath, "log", "-r", ".", "--template", "{node}"),
                     "real hg reading the worktree must agree it is checked out to the main repo's tip for combo " + combo);
-            assertEquals("", dockerHgIn(containerName, worktreeRelPath, "status"), "worktree must be a clean working copy for combo " + combo);
+            assertEquals("", LocalHg.hgIn(workDir, worktreeRelPath, "status"), "worktree must be a clean working copy for combo " + combo);
         });
     }
 }

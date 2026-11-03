@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -14,13 +15,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Docker-only half of the requirement matrix (see {@link RequirementMatrixDockerRoundTripTest}
@@ -41,35 +40,9 @@ import java.util.concurrent.TimeUnit;
 @Tag("interop")
 public class RequirementMatrixBackoutDockerRoundTripTest {
 
-    private static final String IMAGE = "localhost/hg-rust-7.2.4";
-    private static String hostUidGid;
-    private static boolean dockerReady = false;
 
-    @BeforeAll
-    static void checkDocker() throws Exception {
-        dockerReady = isDockerAvailable() && isImageAvailable();
-        Assumptions.assumeTrue(dockerReady,
-                "Docker (or the localhost/hg-rust-7.2.4 image) is not available. Skipping the whole class.");
-        hostUidGid = runHost("id", "-u").trim() + ":" + runHost("id", "-g").trim();
-    }
 
-    private static boolean isDockerAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "info").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
-    private static boolean isImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", IMAGE).redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
 
     private static String runHost(String... cmd) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -86,38 +59,21 @@ public class RequirementMatrixBackoutDockerRoundTripTest {
         return out;
     }
 
-    @FunctionalInterface
-    private interface FreshContainerTest {
-        void run(String containerName, Path workDir) throws Exception;
+    @BeforeAll
+    static void checkLocalHg() {
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
     }
 
-    private static void withFreshContainer(FreshContainerTest test) throws Exception {
+    @FunctionalInterface
+    private interface FreshWorkDirTest {
+        void run(Path workDir) throws Exception;
+    }
+
+    private static void withFreshWorkDir(FreshWorkDirTest test) throws Exception {
         Path workDir = Files.createTempDirectory("hg4j-docker-backout-matrix").toRealPath();
-        String containerName = "hg4j-reqmatrix-backout-" + UUID.randomUUID().toString().substring(0, 8);
-        runHost("docker", "run", "-d", "--rm", "--name", containerName,
-                "-v", workDir + ":/repo-root", IMAGE, "sleep", "infinity");
         try {
-            Exception last = null;
-            for (int i = 0; i < 20; i++) {
-                try {
-                    runHost("docker", "exec", "--user", hostUidGid, containerName, "hg", "--version");
-                    last = null;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    Thread.sleep(250);
-                }
-            }
-            if (last != null) {
-                throw new AssertionError("Container " + containerName + " never became ready", last);
-            }
-            test.run(containerName, workDir);
+            test.run(workDir);
         } finally {
-            try {
-                new ProcessBuilder("docker", "stop", containerName).redirectErrorStream(true).start().waitFor(15, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // best effort
-            }
             deleteRecursively(workDir.toFile());
         }
     }
@@ -132,12 +88,6 @@ public class RequirementMatrixBackoutDockerRoundTripTest {
         f.delete();
     }
 
-    private static String dockerHgIn(String container, String repoRelPath, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "exec", "--user", hostUidGid,
-                "-w", "/repo-root/" + repoRelPath, container, "hg"));
-        cmd.addAll(Arrays.asList(args));
-        return runHost(cmd.toArray(new String[0])).trim();
-    }
 
     /** Runs hg4j's backout (and, for {@code conflict} mode, resolve+commit) in a dedicated
      * subprocess; returns the resulting commit's hex. */
@@ -218,7 +168,7 @@ public class RequirementMatrixBackoutDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jCleanTipBackoutAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -228,32 +178,32 @@ public class RequirementMatrixBackoutDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "original\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
 
             Files.writeString(hostRepoDir.resolve("a.txt"), "changed\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
-            String c1Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            String c1Hex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             String backoutHex = backoutInSubprocess(hostRepoDir, "clean", c1Hex);
 
-            String verify = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify = LocalHg.hgIn(workDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error") || verify.toLowerCase().contains("error:"),
                     "real hg verify must find no integrity errors for combo " + combo + ": " + verify);
 
-            String parents = dockerHgIn(containerName, repoRelPath, "log", "-r", backoutHex, "--template", "{p1node} {p2node}");
+            String parents = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", backoutHex, "--template", "{p1node} {p2node}");
             assertEquals(c1Hex + " " + "0".repeat(40), parents,
                     "the backout commit must be a single-parent child of the backed-out revision for combo " + combo);
 
-            assertEquals("original", dockerHgIn(containerName, repoRelPath, "cat", "-r", backoutHex, "a.txt"));
+            assertEquals("original", LocalHg.hgIn(workDir, repoRelPath, "cat", "-r", backoutHex, "a.txt"));
 
-            String desc = dockerHgIn(containerName, repoRelPath, "log", "-r", backoutHex, "--template", "{desc}");
+            String desc = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", backoutHex, "--template", "{desc}");
             assertEquals("Backed out changeset " + c1Hex.substring(0, 12), desc);
 
-            assertEquals("", dockerHgIn(containerName, repoRelPath, "status"),
+            assertEquals("", LocalHg.hgIn(workDir, repoRelPath, "status"),
                     "working copy must be clean right after the backout commit for combo " + combo);
         });
     }
@@ -261,7 +211,7 @@ public class RequirementMatrixBackoutDockerRoundTripTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("combos")
     public void hg4jConflictingOlderAncestorBackoutAcrossDockerCombo(RequirementCombo combo) throws Exception {
-        withFreshContainer((containerName, workDir) -> {
+        withFreshWorkDir(workDir -> {
             String repoRelPath = "repo";
             Path hostRepoDir = workDir.resolve(repoRelPath);
             Files.createDirectories(hostRepoDir);
@@ -271,35 +221,35 @@ public class RequirementMatrixBackoutDockerRoundTripTest {
                 initArgs.add("--config");
                 initArgs.add(c);
             }
-            dockerHgIn(containerName, repoRelPath, initArgs.toArray(new String[0]));
+            LocalHg.hgIn(workDir, repoRelPath, initArgs.toArray(new String[0]));
 
             Files.writeString(hostRepoDir.resolve("conflict.txt"), "line1\nline2\nline3\n");
-            dockerHgIn(containerName, repoRelPath, "add");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c0");
+            LocalHg.hgIn(workDir, repoRelPath, "add");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c0");
 
             Files.writeString(hostRepoDir.resolve("conflict.txt"), "line1\nTARGET\nline3\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c1");
-            String c1Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c1");
+            String c1Hex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             Files.writeString(hostRepoDir.resolve("conflict.txt"), "line1\nAFTER\nline3\n");
-            dockerHgIn(containerName, repoRelPath, "commit", "-u", "dev", "-m", "c2");
-            String c2Hex = dockerHgIn(containerName, repoRelPath, "log", "-r", ".", "--template", "{node}");
+            LocalHg.hgIn(workDir, repoRelPath, "commit", "-u", "dev", "-m", "c2");
+            String c2Hex = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", ".", "--template", "{node}");
 
             String finalHex = backoutInSubprocess(hostRepoDir, "conflict", c1Hex);
 
-            String verify = dockerHgIn(containerName, repoRelPath, "verify");
+            String verify = LocalHg.hgIn(workDir, repoRelPath, "verify");
             assertFalse(verify.toLowerCase().contains("integrity error") || verify.toLowerCase().contains("error:"),
                     "real hg verify must find no integrity errors for combo " + combo + ": " + verify);
 
-            String parents = dockerHgIn(containerName, repoRelPath, "log", "-r", finalHex, "--template", "{p1node} {p2node}");
+            String parents = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", finalHex, "--template", "{p1node} {p2node}");
             assertEquals(c2Hex + " " + "0".repeat(40), parents,
                     "the resolved backout commit must remain a single-parent child of c2 for combo " + combo);
 
-            assertEquals("line1\nRESOLVED\nline3", dockerHgIn(containerName, repoRelPath, "cat", "-r", finalHex, "conflict.txt"));
+            assertEquals("line1\nRESOLVED\nline3", LocalHg.hgIn(workDir, repoRelPath, "cat", "-r", finalHex, "conflict.txt"));
 
-            assertEquals("", dockerHgIn(containerName, repoRelPath, "resolve", "--list"),
+            assertEquals("", LocalHg.hgIn(workDir, repoRelPath, "resolve", "--list"),
                     "no unresolved/resolved entries should remain once the backout is committed for combo " + combo);
-            assertEquals("", dockerHgIn(containerName, repoRelPath, "status"),
+            assertEquals("", LocalHg.hgIn(workDir, repoRelPath, "status"),
                     "working copy must be clean right after the backout commit for combo " + combo);
         });
     }

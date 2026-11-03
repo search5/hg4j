@@ -1,5 +1,6 @@
 package io.github.search5.hg4j.storage;
 
+import io.github.search5.hg4j.testsupport.LocalHg;
 import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
@@ -150,7 +151,7 @@ class NodeMapFileWriterTest {
     @Test
     @DisplayName("실제 hg-rust-7.2.4가 hg4j로 커밋+persistent-nodemap 유지된 저장소를 검증/조회할 수 있다")
     void realHgRustAcceptsHg4jWrittenNodemap() throws Exception {
-        Assumptions.assumeTrue(isDockerImageAvailable(), "hg-rust-7.2.4 Docker image not available -- build it via `docker build -t hg-rust-7.2.4 docker/hg-rust-7.2.4` to run this test");
+        Assumptions.assumeTrue(LocalHg.isAvailable(), LocalHg::unavailableReason);
 
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
@@ -192,16 +193,14 @@ class NodeMapFileWriterTest {
         // simply fall back to a full scan silently (per real hg's own resilience contract), so
         // the strongest signal available from the CLI surface is that everything still works
         // end-to-end with the persistent-nodemap requirement declared and hg4j's files in place.
-        ProcessBuilder verifyPb = new ProcessBuilder("docker", "run", "--rm", "-v", repoDir.getAbsolutePath() + ":/repo",
-                "hg-rust-7.2.4", "hg", "-R", "/repo", "verify");
+        ProcessBuilder verifyPb = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "verify");
         Process verifyProc = verifyPb.start();
         String verifyOut = new String(verifyProc.getInputStream().readAllBytes(), StandardCharsets.UTF_8)
                 + new String(verifyProc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
         int verifyExit = verifyProc.waitFor();
         assertEquals(0, verifyExit, "real hg verify failed on hg4j-written persistent-nodemap repo:\n" + verifyOut);
 
-        ProcessBuilder logPb = new ProcessBuilder("docker", "run", "--rm", "-v", repoDir.getAbsolutePath() + ":/repo",
-                "hg-rust-7.2.4", "hg", "-R", "/repo", "log", "--template", "{rev}:{node|short}\\n");
+        ProcessBuilder logPb = LocalHg.processBuilder(repoDir.toPath(), "-R", repoDir.getAbsolutePath(), "log", "--template", "{rev}:{node|short}\\n");
         Process logProc = logPb.start();
         String logOut = new String(logProc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         String logErr = new String(logProc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -213,18 +212,10 @@ class NodeMapFileWriterTest {
         // Confirm real hg's own debuginstall still reports the Rust extension is actually wired
         // up in this image (guards against silently degrading to the pure-Python fallback, which
         // would make this test meaningless as a persistent-nodemap-specific interop check).
-        ProcessBuilder installPb = new ProcessBuilder("docker", "run", "--rm", "hg-rust-7.2.4", "hg", "debuginstall");
+        ProcessBuilder installPb = LocalHg.processBuilder(null, "debuginstall");
         Process installProc = installPb.start();
         String installOut = new String(installProc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         assertTrue(installOut.contains("checking Rust extensions (installed)"), "Docker image lost its Rust extension:\n" + installOut);
     }
 
-    private static boolean isDockerImageAvailable() {
-        try {
-            Process p = new ProcessBuilder("docker", "image", "inspect", "hg-rust-7.2.4").redirectErrorStream(true).start();
-            return p.waitFor() == 0;
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
-    }
 }

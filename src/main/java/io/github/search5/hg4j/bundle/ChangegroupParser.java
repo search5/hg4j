@@ -402,7 +402,7 @@ public class ChangegroupParser {
                 // writes that exact string as the chunk payload -- verified directly against real
                 // hg 7.2.2 source and confirmed via a real `hg bundle --type v3` byte capture).
                 // Every hg4j caller of `ManifestGroup.path` (BundleCommand/PushCommand's own
-                // writers, FetchCommand#applyBundle's reader, HgRemoteClientV2's in-process
+                // writers, FetchCommand#applyBundle's reader, the former v2 client's in-process
                 // wireproto-v2 assembly) uses the NO-trailing-slash convention internally, so this
                 // is normalized away right here at the wire deserialization boundary -- keeping
                 // every other caller unchanged. See `writeBundle`'s symmetric write-side fix.

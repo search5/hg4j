@@ -12,8 +12,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import io.github.search5.hg4j.util.NodeIdUtil;
-import io.github.search5.hg4j.transport.wireprotov2.Cbor;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.errors.HgAuthException;
 import io.github.search5.hg4j.errors.HgProtocolException;
 import io.github.search5.hg4j.errors.HgTransportException;
@@ -54,7 +52,6 @@ public class HgRemoteClient implements HgRemoteConnection {
     // "httpheader capability present" would make hg4j send X-HgArg-N headers a server never
     // asked for and never parses.
     private boolean sawHttpHeaderCap = false;
-    private boolean supportsV2 = false;
     private boolean supportsClonebundles = false;
     private boolean supportsNarrow = false;
     private boolean supportsHttpPostArgs = false;
@@ -62,7 +59,6 @@ public class HgRemoteClient implements HgRemoteConnection {
     private List<String> httpMediaTypes = Collections.emptyList();
     private List<String> compressionEngines = Collections.emptyList();
     private boolean hasNegotiated = false;
-    private HgRemoteClientV2 delegate = null;
 
     public HgRemoteClient(String url) {
         // Real hg's own URL convention (mercurial/urlutil.py's `url` class) lets credentials be
@@ -196,16 +192,11 @@ public class HgRemoteClient implements HgRemoteConnection {
     }
 
     /**
-     * Parses the real v1 {@code httpheader=NNNN} capability token for the HTTP header size limit.
-     * v2 availability is <b>not</b> inferred from this list — a real v1 {@code capabilities}
-     * response never contains a "v2 is available" flag (no such token exists in the actual
-     * wire protocol; earlier code here matched a fictional {@code "http-v2"}/{@code "api-v2"}
-     * token that real hg never sends, so the auto-upgrade could never trigger). The real signal
-     * is the separate {@code X-HgUpgrade-1}/{@code X-HgProto-1} header handshake performed in
-     * {@link #tryEstablishV2FromDiscoveryResponse(byte[])}.
+     * Reads what the server's v1 {@code capabilities} line says about HTTP: the header size limit ({@code httpheader=NNNN}),
+     * clone bundles, narrow, POSTed arguments, the unbundle hash, the media types and the compression engines.
      */
-    public boolean negotiateV2(List<String> capabilities) {
-        if (capabilities == null) return this.supportsV2;
+    public void negotiateCapabilities(List<String> capabilities) {
+        if (capabilities == null) return;
         for (String cap : capabilities) {
             if (cap.startsWith("httpheader=")) {
                 try {
@@ -232,57 +223,6 @@ public class HgRemoteClient implements HgRemoteConnection {
                 this.compressionEngines = Arrays.asList(cap.substring("compression=".length()).split(","));
             }
         }
-        return this.supportsV2;
-    }
-
-    /**
-     * Attempts real hg's capability-upgrade handshake using the same {@code ?cmd=capabilities}
-     * response the v1 path would otherwise parse as plain text: the request carries
-     * {@code X-HgUpgrade-1: <namespace>} and {@code X-HgProto-1: cbor}, and a server that
-     * supports the upgrade replies with a CBOR {@code {apibase, apis: {<namespace>: {...}}}}
-     * descriptor instead of the plain-text v1 capabilities line. A real v1-only server simply
-     * ignores the unrecognized headers and returns its normal plain-text response, which fails
-     * to CBOR-decode into that shape here and is then parsed as ordinary v1 capabilities by the
-     * caller — so this is a single request that serves either outcome, exactly like a real
-     * client's opportunistic upgrade attempt.
-     *
-     * @return true if the server advertised wireprotocol v2 and {@link #delegate} was wired up
-     */
-    private boolean tryEstablishV2FromDiscoveryResponse(byte[] discoveryResponseBytes) {
-        try {
-            List<Object> objs = Cbor.decodeAll(discoveryResponseBytes);
-            if (objs.isEmpty()) {
-                return false;
-            }
-            Map<String, Object> descriptor = Cbor.asMap(objs.get(0));
-            String discoveredApibase = Cbor.asString(descriptor.get("apibase"));
-            Map<String, Object> apis = Cbor.asMap(descriptor.get("apis"));
-            if (discoveredApibase == null || !apis.containsKey(Wire2Commands.NAMESPACE)) {
-                return false;
-            }
-            this.supportsV2 = true;
-            // The discovery response still embeds the real v1 capabilities line verbatim (see
-            // HgHttpWireServer#handleCapabilitiesDiscovery) even when the client upgrades to v2 --
-            // v1-only tokens like "clonebundles" have no v2 equivalent, so they must still be
-            // parsed out here rather than silently lost on upgrade.
-            String v1CapabilitiesLine = Cbor.asString(descriptor.get("v1capabilities"));
-            if (v1CapabilitiesLine != null && !v1CapabilitiesLine.isEmpty()) {
-                negotiateV2(Arrays.asList(v1CapabilitiesLine.split(" ")));
-            }
-            HgRemoteClientV2 v2 = new HgRemoteClientV2(this.baseUrl);
-            v2.setTimeouts(this.connectTimeout, this.readTimeout);
-            if (this.username != null && this.password != null) {
-                v2.setCredentials(this.username, this.password);
-            }
-            v2.setAuthConfig(this.authConfig);
-            v2.setForceTls(this.forceTls);
-            v2.setProxy(this.proxy);
-            v2.primeDiscovery(discoveredApibase, Wire2Commands.NAMESPACE);
-            this.delegate = v2;
-            return true;
-        } catch (Exception notAV2DiscoveryResponse) {
-            return false;
-        }
     }
 
     public int getMaxHttpHeaderLimit() {
@@ -304,12 +244,6 @@ public class HgRemoteClient implements HgRemoteConnection {
      */
     @Override
     public boolean supportsNarrow() {
-        if (delegate != null) {
-            // hg4j has no v2 narrow implementation (real hg's own v2 wire protocol never grew a
-            // narrow-clone equivalent as of 7.2 -- narrow stays a v1-only feature) -- the v2
-            // delegate's own getBundle()/capabilities plumbing doesn't carry this flag.
-            return false;
-        }
         return supportsNarrow;
     }
 
@@ -368,20 +302,8 @@ public class HgRemoteClient implements HgRemoteConnection {
      * Executes the 'capabilities' command on the remote server.
      */
     public List<String> getCapabilities() throws IOException {
-        if (delegate != null) {
-            return delegate.getCapabilities();
-        }
-        byte[] bytes;
-        boolean firstNegotiation = !hasNegotiated;
-        if (firstNegotiation) {
-            hasNegotiated = true;
-            bytes = executeGetBinaryWithV2UpgradeHeaders("capabilities");
-            if (tryEstablishV2FromDiscoveryResponse(bytes)) {
-                return delegate.getCapabilities();
-            }
-        } else {
-            bytes = executeGetBinary("capabilities");
-        }
+        hasNegotiated = true;
+        byte[] bytes = executeGetBinary("capabilities");
         List<String> caps = new ArrayList<>();
         // new String(bytes, ...) never returns null, so the "resp != null" check some earlier
         // version of this code had here was always true -- dead code, removed.
@@ -392,7 +314,7 @@ public class HgRemoteClient implements HgRemoteConnection {
                 caps.add(clean);
             }
         }
-        negotiateV2(caps);
+        negotiateCapabilities(caps);
         return caps;
     }
 
@@ -400,9 +322,6 @@ public class HgRemoteClient implements HgRemoteConnection {
      * Executes the 'heads' command on the remote server.
      */
     public List<String> getHeads() throws IOException {
-        if (delegate != null) {
-            return delegate.getHeads();
-        }
         byte[] bytes = executeGetBinary("heads");
         List<String> heads = new ArrayList<>();
         String resp = new String(bytes, StandardCharsets.UTF_8);
@@ -421,9 +340,6 @@ public class HgRemoteClient implements HgRemoteConnection {
      * Downloads a changegroup bundle for specified head revisions.
      */
     public byte[] getChangegroup(List<String> roots) throws IOException {
-        if (delegate != null) {
-            return delegate.getChangegroup(roots);
-        }
         // Real hg's "roots" is a required fixed arg of the "changegroup" wire command (spec:
         // "roots") -- it must always be present in the request, sent as an empty string when
         // there are no roots (meaning "give me the entire history"), never omitted. Real hg's
@@ -471,11 +387,6 @@ public class HgRemoteClient implements HgRemoteConnection {
     @Override
     public byte[] getBundle(List<String> common, List<String> heads, List<String> bundleCaps,
                              HgRemoteConnection.NarrowScope narrowScope) throws IOException {
-        if (delegate != null) {
-            // hg4j's v2 delegate has no narrow implementation (see supportsNarrow()) -- fall back
-            // to the plain request rather than silently dropping narrowScope.
-            return delegate.getBundle(common, heads, bundleCaps);
-        }
         Map<String, String> params = new HashMap<>();
 
         if (narrowScope != null) {
@@ -538,19 +449,6 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     private byte[] executeGetBinary(String cmd) throws IOException {
         return executeGetBinary(cmd, Map.of());
-    }
-
-    /**
-     * Same GET as {@link #executeGetBinary(String)} but with extra request headers — used once
-     * per client, on the first {@code capabilities} call, to carry the real
-     * {@code X-HgUpgrade-1}/{@code X-HgProto-1} v2 upgrade-handshake headers alongside the
-     * normal request.
-     */
-    private byte[] executeGetBinaryWithV2UpgradeHeaders(String cmd) throws IOException {
-        Map<String, String> headers = new LinkedHashMap<>();
-        headers.put("X-HgUpgrade-1", Wire2Commands.NAMESPACE);
-        headers.put("X-HgProto-1", "cbor");
-        return executeGetBinary(cmd, headers);
     }
 
     private byte[] executeGetBinary(String cmd, Map<String, String> extraHeaders) throws IOException {
@@ -916,9 +814,6 @@ public class HgRemoteClient implements HgRemoteConnection {
      * @throws IOException if network or push execution fails
      */
     public String push(byte[] bundleBytes, List<String> heads) throws IOException {
-        if (delegate != null) {
-            return delegate.push(bundleBytes, heads);
-        }
         String fullUrl = baseUrl + "?cmd=unbundle";
         List<String> wireHeads = NodeIdUtil.computeUnbundleHeadsWireValue(heads, supportsUnbundleHash);
         if (!wireHeads.isEmpty()) {
@@ -999,9 +894,6 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     @Override
     public Map<String, String> listKeys(String namespace) throws IOException {
-        if (delegate != null) {
-            return delegate.listKeys(namespace);
-        }
         // Fallback to GET for V1
         String resp = executeGet("listkeys?namespace=" + namespace);
         Map<String, String> map = new HashMap<>();
@@ -1021,9 +913,6 @@ public class HgRemoteClient implements HgRemoteConnection {
      * {@code wireprotov1server.branchmap}). */
     @Override
     public Map<String, List<String>> getBranchHeads() throws IOException {
-        if (delegate != null) {
-            return delegate.getBranchHeads();
-        }
         String resp = executeGet("branchmap");
         Map<String, List<String>> map = new HashMap<>();
         if (resp == null || resp.trim().isEmpty()) {
@@ -1074,9 +963,6 @@ public class HgRemoteClient implements HgRemoteConnection {
 
     @Override
     public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
-        if (delegate != null) {
-            return delegate.pushkey(namespace, key, oldVal, newVal);
-        }
         Map<String, String> params = new HashMap<>();
         params.put("namespace", namespace);
         params.put("key", key);

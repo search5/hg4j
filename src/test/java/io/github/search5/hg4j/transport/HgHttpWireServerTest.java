@@ -63,16 +63,9 @@ public class HgHttpWireServerTest {
 
     @Test
     public void capabilitiesAndHeadsRoundTrip() throws Exception {
-        // HgRemoteClient auto-upgrades to wireprotocol v2 on its first getCapabilities() call
-        // whenever the server advertises it (see HgRemoteClient#tryEstablishV2FromDiscoveryResponse)
-        // -- and HgHttpWireServer legitimately supports both v1 and v2, so this is the real,
-        // correct interaction here, not a v1-specific check. v1's own capability string/framing is
-        // covered directly by Wire1CommandsTest and by real-hg-as-client interop (real hg no
-        // longer implements v2 at all, so it always exercises v1 through this same server).
         HgRemoteClient client = new HgRemoteClient(baseUrl());
         List<String> caps = client.getCapabilities();
-        assertTrue(caps.contains("heads"), "Expected the v2 command set once auto-upgraded: " + caps);
-        assertTrue(client.negotiateV2(List.of()), "Client must have recorded the v2 upgrade");
+        assertTrue(caps.contains("getbundle"), "Expected the v1 capability tokens: " + caps);
 
         List<String> heads = client.getHeads();
         assertEquals(1, heads.size());

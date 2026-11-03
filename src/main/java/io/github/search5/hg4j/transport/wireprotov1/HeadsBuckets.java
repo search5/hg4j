@@ -2,7 +2,6 @@ package io.github.search5.hg4j.transport.wireprotov1;
 
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -108,7 +107,7 @@ final class HeadsBuckets {
 
     /** {@code buckets_info}: the buckets of this repository. */
     static Map<Long, Bucket> bucketsInfo(HgRepository repo) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         int count = changelog.getRevisionCount();
         return bucketFingerprints(bucketBoundary(count - 1L), headRevisions(changelog, count));
     }
@@ -130,7 +129,7 @@ final class HeadsBuckets {
      * has. {@code cached} maps a tier to the fingerprint the client remembers (null for none).
      */
     static byte[] encodedBucketInfo(HgRepository repo, Map<Long, byte[]> cached) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         int count = changelog.getRevisionCount();
         Map<Long, Bucket> info = bucketsInfo(repo);
 

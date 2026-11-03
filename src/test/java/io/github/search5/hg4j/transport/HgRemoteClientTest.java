@@ -32,9 +32,6 @@ import io.github.search5.hg4j.errors.HgAuthException;
 import io.github.search5.hg4j.errors.HgCorruptDataException;
 import io.github.search5.hg4j.errors.HgProtocolException;
 import io.github.search5.hg4j.errors.HgTransportException;
-import io.github.search5.hg4j.transport.wireprotov2.Cbor;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
@@ -922,67 +919,8 @@ public class HgRemoteClientTest {
         });
     }
 
-    @Test
-    public void testV1HttpHeaderLimitNegotiationDoesNotFabricateV2Support() {
-        HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/");
 
-        // A real v1 capabilities response never contains a "v2 available" token — earlier code
-        // matched a fictional "http-v2"/"api-v2" flag here, which real hg never sends, so the
-        // auto-upgrade could never actually trigger against a live server. Even if a capabilities
-        // list happens to contain that (unrealistic) literal token, it must no longer be treated
-        // as a v2 signal — only the real X-HgUpgrade-1/X-HgProto-1 handshake response can do that
-        // (see below). httpheader=NNNN parsing is real and must still work.
-        List<String> v1Caps = Arrays.asList("lookup", "changegroup=01,02", "httpheader=2048", "http-v2");
-        boolean supportsV2 = client.negotiateV2(v1Caps);
-        assertFalse(supportsV2, "A plain-text v1 capabilities token must never fabricate v2 support");
-        assertEquals(2048, client.getMaxHttpHeaderLimit(), "Header limit should be correctly parsed as 2048");
-    }
 
-    @Test
-    public void getCapabilitiesAutoUpgradesToV2WhenServerAdvertisesTheRealHandshake() throws Exception {
-        HgRepository repo = Hg.init().setDirectory(Files.createTempDirectory("hg4j-v2-upgrade-server").toFile()).call();
-
-        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repo));
-        try {
-            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(server));
-            List<String> caps = client.getCapabilities();
-
-            // Real v2's command set (heads/known/listkeys/... — see HgHttpTransportV2RoundtripTest),
-            // not the plain-text v1 tokens the fake handler above would have returned had the
-            // upgrade not been detected — proves HgRemoteClient itself auto-upgraded.
-            assertTrue(caps.contains("changesetdata"), "Auto-upgrade must have switched to the real v2 command set");
-        } finally {
-            HgTestUtils.stop(server);
-        }
-    }
-
-    @Test
-    public void getCapabilitiesFallsBackToV1WhenServerIgnoresTheUpgradeHeaders() throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
-        try {
-            server.createContext("/", exchange -> {
-                // A real v1-only server: always returns the plain-text v1 line, regardless of
-                // any X-HgUpgrade-1/X-HgProto-1 headers the client may have sent.
-                byte[] body = "lookup changegroupsubset httpheader=1024".getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().set("Content-Type", "application/mercurial-0.1");
-                exchange.sendResponseHeaders(200, body.length);
-                try (OutputStream out = exchange.getResponseBody()) {
-                    out.write(body);
-                }
-            });
-            server.start();
-
-            HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + server.getAddress().getPort());
-            List<String> caps = client.getCapabilities();
-
-            assertTrue(caps.contains("lookup"));
-            assertTrue(caps.contains("changegroupsubset"));
-            assertEquals(1024, client.getMaxHttpHeaderLimit(),
-                    "A garbled-as-CBOR v1 response must still fall back to correct plain-text v1 parsing");
-        } finally {
-            server.stop(0);
-        }
-    }
 
     @Test
     public void supportsClonebundlesReflectsTheRealCapabilityToken() throws Exception {
@@ -1085,46 +1023,6 @@ public class HgRemoteClientTest {
         }
      }
 
-    @Test
-    public void testHgWireServerV2Integration() throws Exception {
-        File tempStore = Files.createTempDirectory("hg4j_server_v2").toFile();
-        tempStore.deleteOnExit();
-        HgRepository repository = new HgRepository(tempStore);
-        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repository));
-        try {
-            URL url = new URL("http://127.0.0.1:" + HgTestUtils.port(server) + "/?cmd=capabilities");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestProperty("X-HgUpgrade-1", "exp-http-v2-0003");
-            conn.setRequestProperty("X-HgProto-1", "cbor");
-            byte[] body;
-            try (InputStream in = conn.getInputStream()) {
-                body = in.readAllBytes();
-            }
-
-            // 실제 스펙(real Mercurial 6.0 서버로 확인, 2026-09-01): 캡ability 발견 응답은
-            // {"apibase": "api/", "apis": {"exp-http-v2-0003": {"commands": {...},
-            // "framingmediatypes": [...]}}, "v1capabilities": ...} 형태다 — 예전의 평면
-            // {"commands": {...}} 는 실제 서버가 절대 만들지 않는 가짜 형태였다.
-            List<Object> decoded = Cbor.decodeAll(body);
-            Map<String, Object> resp = Cbor.asMap(decoded.get(0));
-            assertEquals("api/", Cbor.asString(resp.get("apibase")));
-            Map<String, Object> apis = Cbor.asMap(resp.get("apis"));
-            Map<String, Object> descriptor = Cbor.asMap(
-                    apis.get(Wire2Commands.NAMESPACE));
-            assertNotNull(descriptor);
-            Map<String, Object> commands = Cbor.asMap(descriptor.get("commands"));
-            assertTrue(commands.containsKey("heads"));
-            assertTrue(commands.containsKey("changesetdata"));
-            List<String> framingTypes = new ArrayList<>();
-            for (Object o : (List<?>) descriptor.get("framingmediatypes")) {
-                framingTypes.add(Cbor.asString(o));
-            }
-            assertTrue(framingTypes.contains(Wire2Transport.FRAMINGTYPE));
-        } finally {
-            HgTestUtils.stop(server);
-            deleteRecursive(tempStore);
-        }
-    }
 
     private void deleteRecursive(File file) {
         if (file.isDirectory()) {

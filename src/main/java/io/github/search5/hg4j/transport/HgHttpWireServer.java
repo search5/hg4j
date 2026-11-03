@@ -18,18 +18,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import io.github.search5.hg4j.errors.HgProtocolException;
-import io.github.search5.hg4j.transport.wireprotov2.Cbor;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
 import java.io.ByteArrayOutputStream;
 import java.util.zip.DeflaterOutputStream;
 
 /**
- * Production HTTP server for real hg's wireprotocol v1 ({@code ?cmd=} GET/POST) and v2
- * (capability-upgrade discovery + {@code /api/<namespace>/<ro|rw>/<command>} framing), analogous
+ * Production HTTP server for real hg's wireprotocol v1 ({@code ?cmd=} GET/POST), analogous
  * to JGit's {@code org.eclipse.jgit.http.server} module ({@code GitServlet}, {@code
  * UploadPackServlet}, {@code ReceivePackServlet}): pure transport glue over the protocol-agnostic
- * cores, {@link Wire1Commands} (v1) and {@code Wire2Commands}/{@code Wire2Transport} (v2).
+ * core {@link Wire1Commands}. Like Mercurial 7.2, which no longer serves wire protocol v2, it answers a v2 upgrade request
+ * ({@code X-HgUpgrade-1}) with the ordinary v1 capabilities.
  *
  * <p>A plain {@link HttpServlet} — deploy it in whatever servlet container the embedding
  * application already uses (e.g. {@code ServletContextHandler.addServlet(new
@@ -132,40 +129,6 @@ public class HgHttpWireServer extends HttpServlet {
             String path = request.getRequestURI();
             String query = request.getQueryString();
 
-            if ("/".equals(path) && query != null && query.contains("cmd=capabilities")
-                    && request.getHeader("X-HgUpgrade-1") != null) {
-                response.setStatus(200);
-                response.setHeader("Content-Type", "application/mercurial-cbor");
-                try (OutputStream out = response.getOutputStream()) {
-                    handleCapabilitiesDiscovery(Wire1Commands.capabilitiesStringHttp(repository), out);
-                }
-                return;
-            }
-
-            if (path.startsWith("/api/") && !repository.getRequirements().contains("lfs")) {
-                String[] parts = path.substring("/api/".length()).split("/");
-                if (parts.length == 3) {
-                    // Buffer the whole response before sending headers -- unlike a v1 command
-                    // (whose response is likewise fully assembled in memory before any header is
-                    // written), sending headers first here would mean a request-parsing failure
-                    // (e.g. a truncated multi-frame COMMAND_REQUEST) throws only after the
-                    // response has already been committed as chunked, leaving the outer catch
-                    // below unable to send its fallback "abort:" body -- the client would see an
-                    // empty response instead of a diagnosable error.
-                    byte[] responseBody;
-                    try (InputStream in = request.getInputStream()) {
-                        responseBody = handleWire2Request(parts[1], parts[2], in);
-                    }
-                    response.setStatus(200);
-                    response.setHeader("Content-Type", Wire2Transport.FRAMINGTYPE);
-                    response.setContentLength(responseBody.length);
-                    try (OutputStream out = response.getOutputStream()) {
-                        out.write(responseBody);
-                    }
-                    return;
-                }
-            }
-
             // the LFS endpoints (Batch API and Basic transfer) of an lfs-enabled repository, like real hg's wrapped
             // handlewsgirequest: tried when the request is not a wire protocol request
             String applicationPath = path.startsWith("/") ? path.substring(1) : path;
@@ -199,104 +162,6 @@ public class HgHttpWireServer extends HttpServlet {
             try (OutputStream out = response.getOutputStream()) {
                 out.write(body);
             }
-        }
-    }
-
-    /**
-     * Real hg's capability-discovery handshake response, sent from the root URL
-     * ({@code /?cmd=capabilities}) when the request carries {@code X-HgUpgrade-1}/
-     * {@code X-HgProto-1} headers (checked by the caller) — {@code {apibase, apis:
-     * {<namespace>: {commands, framingmediatypes}}, v1capabilities}}, verified against a real
-     * Mercurial 6.0 server (the last release with a working wireprotocol v2 implementation).
-     *
-     * @param v1CapabilitiesLine the same string the v1 {@code capabilities} command would return,
-     *                           embedded verbatim as {@code v1capabilities}
-     */
-    private void handleCapabilitiesDiscovery(String v1CapabilitiesLine, OutputStream out) throws IOException {
-        Map<String, Object> apis = new LinkedHashMap<>();
-        // wire protocol v2 has no field for revision flags, so it cannot carry LFS revisions (their node hash is that of the
-        // real content, not of the stored pointer): a repository that requires lfs is offered over v1 (changegroup 3) only
-        if (!repository.getRequirements().contains("lfs")) {
-            apis.put(Wire2Commands.NAMESPACE,
-                    Wire2Commands.namespaceDescriptor());
-        }
-
-        Map<String, Object> descriptor = new LinkedHashMap<>();
-        descriptor.put("apibase", "api/");
-        descriptor.put("apis", apis);
-        descriptor.put("v1capabilities", v1CapabilitiesLine == null ? "" : v1CapabilitiesLine);
-
-        out.write(Cbor.encode(descriptor));
-        out.flush();
-    }
-
-    /**
-     * Real hg's per-command wireprotocol v2 HTTP handler, serving
-     * {@code POST /api/<namespace>/<ro|rw>/<command>}: reads the frame-based
-     * {@code application/mercurial-exp-framing-0006} command-request body, dispatches to
-     * {@link io.github.search5.hg4j.transport.wireprotov2.Wire2Commands}, and writes back a
-     * framed {@code {status: ok, ...}} (or {@code error}) response — the real wire shape,
-     * verified against a live Mercurial 6.0 server.
-     *
-     * @param permission the {@code ro}/{@code rw} URL segment; the caller is responsible for
-     *                   authenticating/authorizing it (real hg maps {@code ro}→pull, {@code rw}→push)
-     * @param urlCommand the command name from the URL, which must match the frame's own command name
-     * @return the fully assembled response body, for the caller to send after committing headers
-     */
-    private byte[] handleWire2Request(String permission, String urlCommand, InputStream in) throws IOException {
-        boolean isMultirequest = "multirequest".equals(urlCommand);
-        List<Wire2Transport.ParsedCommandRequest> commands =
-                Wire2Transport.readAllCommandRequests(in);
-
-        ByteArrayOutputStream combined = new ByteArrayOutputStream();
-        if (!commands.isEmpty()) {
-            // 실제 hg는 응답 스트림 전체에 stream-settings 프레임을 딱 한 번만 보낸다 —
-            // multirequest로 여러 명령을 한 번에 처리할 때도 명령마다 다시 보내지 않는다
-            // (real Mercurial 6.0 서버의 heads+known 배치 clone 요청으로 직접 확인, 2026-09-01).
-            combined.write(Wire2Transport.buildStreamSettingsFrame(commands.get(0).requestId));
-        }
-        for (Wire2Transport.ParsedCommandRequest cmd : commands) {
-            if (!isMultirequest && !cmd.name.equals(urlCommand)) {
-                combined.write(Wire2Transport.buildCommandErrorResponse(
-                        cmd.requestId, "command in frame must match command in URL"));
-                continue;
-            }
-            try {
-                List<Object> responseObjects = dispatchWire2Command(cmd.name, cmd.args);
-                combined.write(Wire2Transport.buildCommandResponseFrames(cmd.requestId, responseObjects));
-            } catch (HgProtocolException e) {
-                combined.write(Wire2Transport.buildCommandErrorResponse(cmd.requestId, e.getMessage()));
-            } catch (Exception e) {
-                combined.write(Wire2Transport.buildCommandErrorResponse(cmd.requestId, String.valueOf(e.getMessage())));
-            }
-        }
-        return combined.toByteArray();
-    }
-
-    private List<Object> dispatchWire2Command(String command, Map<String, Object> args) throws IOException {
-        switch (command) {
-            case "capabilities":
-                return Wire2Commands.capabilities();
-            case "heads":
-                return Wire2Commands.heads(repository);
-            case "known":
-                return Wire2Commands.known(repository, args);
-            case "listkeys":
-                return Wire2Commands.listkeys(repository, args);
-            case "lookup":
-                return Wire2Commands.lookup(repository, args);
-            case "pushkey":
-                return Wire2Commands.pushkey(repository, args);
-            case "branchmap":
-                return Wire2Commands.branchmap(repository);
-            case "changesetdata":
-                return Wire2Commands.changesetdata(repository, args);
-            case "manifestdata":
-                return Wire2Commands.manifestdata(repository, args);
-            case "filesdata":
-                return Wire2Commands.filesdata(repository, args);
-            default:
-                throw new HgProtocolException("wireprotov2", "unsupported wire protocol v2 command: " + command);
         }
     }
 

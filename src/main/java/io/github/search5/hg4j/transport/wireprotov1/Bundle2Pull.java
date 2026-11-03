@@ -6,7 +6,6 @@ import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.phase.PhaseRoots;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.transport.HgLocalClient;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
 import java.io.File;
@@ -87,7 +86,7 @@ final class Bundle2Pull {
             if (!caps.containsKey("bookmarks")) {
                 throw new IOException("no common bookmarks exchange method");
             }
-            byte[] data = encodeBookmarks(Wire2Commands.readListKeys(repo, "bookmarks"));
+            byte[] data = encodeBookmarks(RepoSupport.readListKeys(repo, "bookmarks"));
             if (data.length > 0) {
                 extra.addPart("bookmarks", true, Map.of(), Map.of(), data);
             }
@@ -128,10 +127,10 @@ final class Bundle2Pull {
 
     /** {@code phases.binaryencode} of the {@code phase -> sorted heads} mapping built the way {@code _getbundlephasespart} does. */
     static byte[] phaseHeads(HgRepository repo, List<String> requestedHeads) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         List<String> heads = requestedHeads.isEmpty() ? new ArrayList<>(new HgLocalClient(repo).getHeads()) : requestedHeads;
         List<TreeSet<String>> byPhase = List.of(new TreeSet<>(), new TreeSet<>(), new TreeSet<>());
-        if (Wire2Commands.isPublishing(repo)) {
+        if (RepoSupport.isPublishing(repo)) {
             byPhase.get(0).addAll(heads);
         } else {
             PhaseRoots roots = repo.getPhaseRoots();
@@ -218,7 +217,7 @@ final class Bundle2Pull {
             return new byte[0];
         }
         byte[] raw = Files.readAllBytes(cache.toPath());
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         List<String> heads = requestedHeads.isEmpty() ? headsNewestFirst(changelog) : requestedHeads;
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         for (String head : heads) {

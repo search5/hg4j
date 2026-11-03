@@ -6,8 +6,6 @@ import io.github.search5.hg4j.errors.HgAuthException;
 import io.github.search5.hg4j.errors.HgProtocolException;
 import io.github.search5.hg4j.errors.HgTransportException;
 import io.github.search5.hg4j.lib.HgRepository;
-import io.github.search5.hg4j.transport.wireprotov2.Cbor;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -549,12 +547,6 @@ public class HgRemoteClientCoverageTest {
     // negotiateV2(null)
     // ==========================================================
 
-    @Test
-    public void negotiateV2WithNullCapabilitiesReturnsCurrentV2State() {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        assertFalse(client.negotiateV2(null), "No capabilities negotiated yet -- v2 must not be reported as supported");
-        }
-    }
 
     // ==========================================================
     // Private tryEstablishV2FromDiscoveryResponse(byte[]) decision tree, invoked via reflection
@@ -575,80 +567,11 @@ public class HgRemoteClientCoverageTest {
         }
     }
 
-    @Test
-    public void tryEstablishV2ReturnsFalseWhenDecodedListIsEmpty() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        assertFalse(invokeTryEstablishV2(client, new byte[0]));
-        }
-    }
 
-    @Test
-    public void tryEstablishV2ReturnsFalseWhenApibaseIsMissing() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        Map<String, Object> descriptor = new LinkedHashMap<>();
-        descriptor.put("apis", Map.of(Wire2Commands.NAMESPACE, Map.of()));
-        byte[] bytes = Cbor.encode(descriptor);
-        assertFalse(invokeTryEstablishV2(client, bytes));
-        }
-    }
 
-    @Test
-    public void tryEstablishV2ReturnsFalseWhenApisDoesNotContainTheRealNamespace() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        Map<String, Object> descriptor = new LinkedHashMap<>();
-        descriptor.put("apibase", "api/");
-        descriptor.put("apis", Map.of("some-other-namespace", Map.of()));
-        byte[] bytes = Cbor.encode(descriptor);
-        assertFalse(invokeTryEstablishV2(client, bytes));
-        }
-    }
 
-    @Test
-    public void tryEstablishV2SucceedsAndParsesEmbeddedV1CapabilitiesAndCredentials() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        client.setCredentials("alice", "hunter2");
 
-        Map<String, Object> descriptor = new LinkedHashMap<>();
-        descriptor.put("apibase", "api/");
-        descriptor.put("apis", Map.of(Wire2Commands.NAMESPACE, Map.of()));
-        descriptor.put("v1capabilities", "lookup httpheader=4096 clonebundles");
-        byte[] bytes = Cbor.encode(descriptor);
 
-        boolean upgraded = invokeTryEstablishV2(client, bytes);
-
-        assertTrue(upgraded);
-        // The embedded v1capabilities line must still be parsed for tokens with no v2 equivalent.
-        assertEquals(4096, client.getMaxHttpHeaderLimit());
-        assertTrue(client.supportsClonebundles());
-        }
-    }
-
-    @Test
-    public void tryEstablishV2SucceedsWithEmptyV1CapabilitiesLine() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-
-        Map<String, Object> descriptor = new LinkedHashMap<>();
-        descriptor.put("apibase", "api/");
-        descriptor.put("apis", Map.of(Wire2Commands.NAMESPACE, Map.of()));
-        descriptor.put("v1capabilities", "");
-        byte[] bytes = Cbor.encode(descriptor);
-
-        assertTrue(invokeTryEstablishV2(client, bytes));
-        }
-    }
-
-    @Test
-    public void tryEstablishV2SucceedsWithoutV1CapabilitiesFieldAtAll() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-
-        Map<String, Object> descriptor = new LinkedHashMap<>();
-        descriptor.put("apibase", "api/");
-        descriptor.put("apis", Map.of(Wire2Commands.NAMESPACE, Map.of()));
-        byte[] bytes = Cbor.encode(descriptor);
-
-        assertTrue(invokeTryEstablishV2(client, bytes));
-        }
-    }
 
     // ==========================================================
     // Full v1 -> v2 auto-upgrade delegate wiring: covers "if (delegate != null) return
@@ -657,50 +580,6 @@ public class HgRemoteClientCoverageTest {
     // getCapabilitiesAutoUpgradesToV2WhenServerAdvertisesTheRealHandshake in HgRemoteClientTest).
     // ==========================================================
 
-    @Test
-    public void allPublicMethodsDelegateToV2AfterAutoUpgrade(@TempDir Path tempDir) throws Exception {
-        HgRepository repo = Hg.init().setDirectory(tempDir.resolve("v2_delegate_repo").toFile()).call();
-        File testFile = new File(repo.getDirectory(), "a.txt");
-        Files.writeString(testFile.toPath(), "content", StandardCharsets.UTF_8);
-        Hg hg = Hg.wrap(repo);
-        hg.add().addFile("a.txt").call();
-        byte[] commitNode = hg.commit().setMessage("coverage commit").call();
-        String hex = NodeIdUtil.toHex(commitNode).substring(0, 40);
-
-        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repo));
-        try {
-            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(server))) {
-
-            // Triggers the real X-HgUpgrade-1/X-HgProto-1 handshake and wires up the delegate.
-            List<String> caps = client.getCapabilities();
-            assertTrue(caps.contains("changesetdata"), "Client must have auto-upgraded to v2");
-
-            List<String> heads = client.getHeads();
-            assertEquals(1, heads.size());
-            assertEquals(hex, heads.get(0));
-
-            // getChangegroup/getBundle delegate branches.
-            byte[] changegroupBytes = client.getChangegroup(List.of());
-            assertNotNull(changegroupBytes);
-
-            byte[] bundleBytes = client.getBundle(List.of(), heads, List.of());
-            assertNotNull(bundleBytes);
-            assertTrue(bundleBytes.length > 0);
-
-            // listKeys/pushkey delegate branches, against a real bookmark.
-            assertTrue(client.listKeys("bookmarks").isEmpty());
-            assertTrue(client.pushkey("bookmarks", "covbook", "", hex),
-                    "pushkey on a not-yet-existing key with empty oldVal must succeed");
-            assertEquals(hex, client.listKeys("bookmarks").get("covbook"));
-
-            // push() delegate branch -- real wireprotocol v2 has no push/unbundle command at all.
-            Exception e = assertThrows(Exception.class, () -> client.push(new byte[]{1, 2, 3}, null));
-            assertTrue(e.getMessage().contains("no push/unbundle command"), "Message was: " + e.getMessage());
-            }
-        } finally {
-            HgTestUtils.stop(server);
-        }
-    }
 
     // ==========================================================
     // unwrapResponseStream -- mercurial-0.1 raw-zlib auto-detect branches (private method,
@@ -868,24 +747,6 @@ public class HgRemoteClientCoverageTest {
         }
     }
 
-    @Test
-    public void secondCapabilitiesCallAfterV2UpgradeShortCircuitsToDelegate(@TempDir Path tempDir) throws Exception {
-        HgRepository repo = Hg.init().setDirectory(tempDir.resolve("v2_second_call_repo").toFile()).call();
-        Server server = HgTestUtils.startServlet(new HgHttpWireServer(repo));
-        try {
-            try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:" + HgTestUtils.port(server))) {
-            List<String> first = client.getCapabilities();
-            assertTrue(first.contains("changesetdata"));
-
-            // Second call must hit the top-of-method "if (delegate != null)" short-circuit rather
-            // than re-running the hasNegotiated/upgrade-header logic.
-            List<String> second = client.getCapabilities();
-            assertEquals(first, second);
-            }
-        } finally {
-            HgTestUtils.stop(server);
-        }
-    }
 
     // ==========================================================
     // executePostBinary() -- forceTls and its own 401/5xx status handling (a separate code path
@@ -1096,15 +957,6 @@ public class HgRemoteClientCoverageTest {
     // username, and the null-proxy no-op.
     // ==========================================================
 
-    @Test
-    public void negotiateV2WithMalformedHttpHeaderValueIgnoresParseError() {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        int before = client.getMaxHttpHeaderLimit();
-        boolean supportsV2 = client.negotiateV2(List.of("lookup", "httpheader=not-a-number"));
-        assertFalse(supportsV2);
-        assertEquals(before, client.getMaxHttpHeaderLimit(), "Malformed httpheader value must be ignored, not applied");
-        }
-    }
 
     @Test
     public void setCredentialsProviderWithOnlyUsernameLeavesPasswordNull() throws Exception {
@@ -1202,37 +1054,8 @@ public class HgRemoteClientCoverageTest {
         }
     }
 
-    // ==========================================================
-    // push() -- the v1->v2 delegate branch normally always throws (real wireprotocol v2 has no
-    // push/unbundle command, see allPublicMethodsDelegateToV2AfterAutoUpgrade above), so the
-    // "return delegate.push(...)" statement itself can only ever be observed as *entered*, never
-    // as *completed*, against a real delegate. Substituting a stub delegate via reflection on the
-    // private `delegate` field exercises the same production branch through to a normal return.
-    // ==========================================================
 
-    private static class SucceedingHgRemoteClientV2Stub extends HgRemoteClientV2 {
-        SucceedingHgRemoteClientV2Stub(String url) {
-            super(url);
-        }
 
-        @Override
-        public String push(byte[] bundleBytes, List<String> heads) {
-            return "stubbed-ok:" + bundleBytes.length + ":" + heads;
-        }
-    }
-
-    @Test
-    public void pushDelegatesToV2AndReturnsSuccessfully() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        Field delegateField = HgRemoteClient.class.getDeclaredField("delegate");
-        delegateField.setAccessible(true);
-        delegateField.set(client, new SucceedingHgRemoteClientV2Stub("http://127.0.0.1/"));
-
-        String result = client.push(new byte[]{1, 2, 3}, List.of("head1"));
-
-        assertEquals("stubbed-ok:3:[head1]", result);
-        }
-    }
 
     // ==========================================================
     // push() -- remaining v1 direct-path branches: null heads, Basic auth header wiring, and the
@@ -1522,17 +1345,22 @@ public class HgRemoteClientCoverageTest {
     // are already covered above).
     // ==========================================================
 
+
+    // ==================== negotiateCapabilities (the v1 capabilities line) ====================
+
     @Test
-    public void tryEstablishV2WithUsernameButNoPasswordDoesNotCopyCredentialsToDelegate() throws Exception {
-        try (HgRemoteClient client = new HgRemoteClient("http://127.0.0.1/")) {
-        client.setCredentials("onlyuser", null);
+    public void negotiateCapabilitiesReadsTheV1TokensTheClientActsOn() {
+        HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:1");
+        client.negotiateCapabilities(List.of("httpheader=1024", "clonebundles", "exp-narrow-1", "httppostargs", "unbundlehash",
+                "httpmediatype=0.1rx,0.2tx", "compression=zstd,zlib"));
+        assertTrue(client.supportsNarrow());
+    }
 
-        Map<String, Object> descriptor = new LinkedHashMap<>();
-        descriptor.put("apibase", "api/");
-        descriptor.put("apis", Map.of(Wire2Commands.NAMESPACE, Map.of()));
-        byte[] bytes = Cbor.encode(descriptor);
-
-        assertTrue(invokeTryEstablishV2(client, bytes));
-        }
+    @Test
+    public void negotiateCapabilitiesIgnoresANullListAndAMalformedHeaderLimit() {
+        HgRemoteClient client = new HgRemoteClient("http://127.0.0.1:1");
+        client.negotiateCapabilities(null);
+        client.negotiateCapabilities(List.of("httpheader=not-a-number"));
+        assertFalse(client.supportsNarrow());
     }
 }

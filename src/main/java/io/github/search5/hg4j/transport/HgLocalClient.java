@@ -770,11 +770,11 @@ public class HgLocalClient implements HgRemoteConnection {
      * draft, which is what applying a changegroup already recorded).
      */
     private void publishImported(List<byte[]> imported) throws IOException {
-        if (imported == null || imported.isEmpty() || !io.github.search5.hg4j.transport.wireprotov2.Wire2Commands.isPublishing(remoteRepo)) {
+        if (imported == null || imported.isEmpty() || !io.github.search5.hg4j.transport.wireprotov1.RepoSupport.isPublishing(remoteRepo)) {
             return;
         }
         remoteRepo.clearRevlogCache();
-        io.github.search5.hg4j.storage.Revlog changelog = io.github.search5.hg4j.transport.wireprotov2.Wire2Commands.changelog(remoteRepo);
+        io.github.search5.hg4j.storage.Revlog changelog = io.github.search5.hg4j.transport.wireprotov1.RepoSupport.changelog(remoteRepo);
         io.github.search5.hg4j.phase.PhaseRoots roots = remoteRepo.getPhaseRoots();
         for (int i = imported.size() - 1; i >= 0; i--) {
             byte[] node = imported.get(i);

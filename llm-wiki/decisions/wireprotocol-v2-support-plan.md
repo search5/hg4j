@@ -1,9 +1,11 @@
 ---
 updated: 2026-09-01
-status: completed
+status: superseded
 ---
 
 # 계획: Wire Protocol v2 지원 실행 계획
+
+> **2026-11-04 대체됨**: v2는 제거되었다. [[wireprotocol-v2-removed]] 참조. 아래는 역사 기록이다.
 
 > [[mercurial-spec-compliance-requirement]]에서 "무조건 지원"으로 확정된 항목의 실행 계획.
 > **전면 재구현 완료(2026-09-01), 실제 Mercurial 6.0으로 양방향 검증됨.**

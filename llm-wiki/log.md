@@ -685,3 +685,6 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 2. **`lfs.url=file://...` 저장소에서 내려받기 미지원**(`invalid URI scheme file`): 원본의 `_dummyremote.readbatch`처럼 디렉터리에서 읽고 검증 후 캐시에 넣는다. `null:`은 무동작, 그 밖의 스킴은 `lfs: unknown url scheme: X`(`HgLfsManager#fetchObjects`).
 3. **v2가 LFS 리비전을 전달 못함**(플래그 필드 없음, 노드 해시는 실제 내용 기준이라 검증 실패): `lfs` requirement가 있는 저장소는 hg4j HTTP 서버가 v2를 광고하지 않아 클라이언트가 v1(changegroup 3)로 내려간다. 원본 7.2.4는 v2 서버 코드를 이미 제거했다.
 검증: 일반 test 2354개, E2E 16개, 영향받는 LFS·서버 광고 interop 7개 클래스 통과.
+
+## [2026-11-04] wire protocol v2 제거 (2단계 계획 중 1단계)
+오라클 7.2.4에 v2가 없어 구현·테스트를 삭제했다([[wireprotocol-v2-removed]]). 공유 도우미는 `wireprotov1/RepoSupport`로 이전, `negotiateV2`는 `negotiateCapabilities`로 개명. v2 업그레이드 헤더가 오면 서버는 7.2.4처럼 평범한 v1 capabilities를 돌려주고 `/api/`는 404다(테스트 추가). 일반 test 2207개 통과(v2 전용 테스트 약 150개 삭제), HTTP 서버·클라이언트 interop 7개 클래스 통과.

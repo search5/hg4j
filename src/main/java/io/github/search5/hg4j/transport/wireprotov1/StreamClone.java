@@ -6,7 +6,6 @@ import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.phase.PhaseRoots;
 import io.github.search5.hg4j.storage.Revlog;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
 import java.io.ByteArrayOutputStream;
@@ -172,7 +171,7 @@ final class StreamClone {
         long total = 0;
         try (HgLock ignored = repo.lockStore()) {
             List<String> names = new ArrayList<>(dataFileNames(repo));
-            if (!Wire2Commands.isPublishing(repo) && new File(repo.getStoreDir(), "phaseroots").isFile()) {
+            if (!RepoSupport.isPublishing(repo) && new File(repo.getStoreDir(), "phaseroots").isFile()) {
                 names.add("phaseroots"); // top_entries yields it before the manifest and the changelog
             }
             names.addAll(rootFileNames(repo));
@@ -333,7 +332,7 @@ final class StreamClone {
 
     private static boolean hasSecret(HgRepository repo) throws IOException {
         PhaseRoots roots = repo.getPhaseRoots();
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         for (NodeId root : roots.getRoots(PhaseRoots.Phase.SECRET)) {
             if (changelog.findRevision(root.getBytes()) >= 0) {
                 return true;

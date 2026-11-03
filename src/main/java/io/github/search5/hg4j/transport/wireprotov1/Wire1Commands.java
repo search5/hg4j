@@ -4,7 +4,6 @@ import io.github.search5.hg4j.errors.HgLockException;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.transport.HgLocalClient;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
 import java.io.ByteArrayInputStream;
@@ -306,7 +305,7 @@ public final class Wire1Commands {
         if (pairsArg.isEmpty()) {
             return Wire1Response.bytes(new byte[0]);
         }
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         StringBuilder sb = new StringBuilder();
         // Real hg's localrepo.between(): from `top` walk first parents towards `bottom`, keeping the nodes at
         // distances 1, 2, 4, 8, ... (the legacy bisection discovery). One line per pair, nodes space separated.
@@ -337,7 +336,7 @@ public final class Wire1Commands {
      * Only the pre-1.x discovery protocol uses it.
      */
     public static Wire1Response branches(HgRepository repo, Map<String, String> args) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         List<String> nodes = splitOrEmpty(args.get("nodes"));
         List<Integer> starts = new ArrayList<>();
         if (nodes.isEmpty()) {
@@ -386,7 +385,7 @@ public final class Wire1Commands {
     }
 
     public static Wire1Response known(HgRepository repo, Map<String, String> args) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         String nodesArg = args.getOrDefault("nodes", "");
         StringBuilder sb = new StringBuilder();
         if (!nodesArg.isBlank()) {
@@ -422,7 +421,7 @@ public final class Wire1Commands {
     /** Real hg encodes each namespace entry as {@code key\tvalue}, newline-separated (mercurial/pushkey.py's {@code encodekeys}). */
     public static Wire1Response listkeys(HgRepository repo, Map<String, String> args) throws IOException {
         String namespace = args.get("namespace");
-        Map<String, String> keys = new TreeMap<>(Wire2Commands.readListKeys(repo, namespace));
+        Map<String, String> keys = new TreeMap<>(RepoSupport.readListKeys(repo, namespace));
         List<String> lines = new ArrayList<>();
         for (Map.Entry<String, String> e : keys.entrySet()) {
             lines.add(e.getKey() + '\t' + e.getValue());
@@ -444,14 +443,14 @@ public final class Wire1Commands {
      * {@code preChangegroupHooks}/{@code postChangegroupHooks} for "which ref moved from where to
      * where", which {@code unbundle}'s own hooks never see — {@code unbundle} only ever sees raw
      * changeset nodes, never bookmark/ref names). A pre-hook rejection surfaces through the same
-     * {@code "0\n"} failure response a genuine {@link Wire2Commands#applyPushkey} failure (e.g. a
+     * {@code "0\n"} failure response a genuine {@link RepoSupport#applyPushkey} failure (e.g. a
      * concurrent-update race on {@code old}) would — real hg's own pushkey wire response never
      * distinguishes "hook declined" from "compare-and-swap failed" either (both are a bare
      * {@code 0}), so this keeps parity rather than inventing a new response shape.
      *
      * <p>The context map handed to every hook carries the same information a JGit {@code
      * ReceiveCommand} would for an equivalent ref update: {@code namespace} (only
-     * {@code "bookmarks"} is a real ref move today — {@link Wire2Commands#applyPushkey} itself
+     * {@code "bookmarks"} is a real ref move today — {@link RepoSupport#applyPushkey} itself
      * already no-ops any other namespace), {@code key} (the bookmark name), {@code old}/{@code
      * new} (node hex, or {@code ""} for a bookmark being created/deleted respectively — never
      * {@code null}, matching real hg's own wire encoding of an absent node), and {@code
@@ -503,7 +502,7 @@ public final class Wire1Commands {
     private static Wire1Response applyPushkeyAndRunPostHooks(HgRepository repo, Map<String, String> args,
                                                              Map<String, Object> context, List<HgHook> postPushkeyHooks) throws IOException {
 
-        boolean ok = Wire2Commands.applyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"));
+        boolean ok = RepoSupport.applyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"));
         if (ok) {
             for (HgHook hook : postPushkeyHooks) {
                 hook.run(context);
@@ -680,7 +679,7 @@ public final class Wire1Commands {
         // own stderr (here: the log) and answered with the result code 0; a push race is answered with the message itself.
         List<String> heads = splitOrEmpty(args.get("heads"));
         try {
-            int countBefore = Wire2Commands.changelog(repo).getRevisionCount();
+            int countBefore = RepoSupport.changelog(repo).getRevisionCount();
             HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
                     bundleBytes, heads, preChangegroupHooks, preTxnChangegroupHooks, postChangegroupHooks, null);
             if (result.status.startsWith("no changes found")) {

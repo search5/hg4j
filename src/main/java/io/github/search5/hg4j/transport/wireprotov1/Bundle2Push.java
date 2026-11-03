@@ -8,7 +8,6 @@ import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.phase.PhaseRoots;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.transport.HgLocalClient;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
@@ -133,7 +132,7 @@ final class Bundle2Push {
                     // the original fails inside its changegroup lookup (a KeyError); a clear refusal is better than applying garbage
                     throw new IOException("unsupported changegroup version " + version);
                 }
-                int countBefore = Wire2Commands.changelog(repo).getRevisionCount();
+                int countBefore = RepoSupport.changelog(repo).getRevisionCount();
                 HgLocalClient.PushResult result;
                 try {
                     result = new HgLocalClient(repo).pushWithHooks(
@@ -161,7 +160,7 @@ final class Bundle2Push {
                     continue;
                 }
                 byte[] fetched = fetchRemoteChangegroup(remote);
-                int remoteCountBefore = Wire2Commands.changelog(repo).getRevisionCount();
+                int remoteCountBefore = RepoSupport.changelog(repo).getRevisionCount();
                 HgLocalClient.PushResult result;
                 try {
                     result = new HgLocalClient(repo).pushWithHooks(
@@ -298,7 +297,7 @@ final class Bundle2Push {
     /** How many heads the repository gained (negative: lost) since it had {@code countBefore} revisions; closing heads do not count. */
     static int deltaHeads(HgRepository repo, int countBefore) throws IOException {
         repo.clearRevlogCache();
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         int countAfter = changelog.getRevisionCount();
         boolean[] hasChildBefore = new boolean[countAfter];
         boolean[] hasChildAfter = new boolean[countAfter];
@@ -486,7 +485,7 @@ final class Bundle2Push {
     }
 
     private static void checkBookmarks(HgRepository repo, byte[] payload) throws IOException {
-        Map<String, String> current = Wire2Commands.readListKeys(repo, "bookmarks");
+        Map<String, String> current = RepoSupport.readListKeys(repo, "bookmarks");
         for (Map.Entry<String, byte[]> e : decodeBookmarks(payload).entrySet()) {
             String book = e.getKey();
             String expected = e.getValue() == null ? null : NodeIdUtil.toHex(e.getValue());
@@ -505,7 +504,7 @@ final class Bundle2Push {
     }
 
     private static void checkPhases(HgRepository repo, byte[] payload) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         PhaseRoots roots = repo.getPhaseRoots();
         String[] names = {"public", "draft", "secret"};
         for (Map.Entry<Integer, List<byte[]>> e : decodePhases(payload).entrySet()) {
@@ -605,7 +604,7 @@ final class Bundle2Push {
             args.put(key, part.params.getOrDefault(key, ""));
         }
         runPreHooks(repo, args, pre);
-        if (part.mandatory && !Wire2Commands.canApplyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"))) {
+        if (part.mandatory && !RepoSupport.canApplyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"))) {
             throw new PushkeyFailed(part);
         }
     }
@@ -616,7 +615,7 @@ final class Bundle2Push {
      */
     private static void prepareBookmarks(HgRepository repo, Bundle2.Part part, List<HgHook> pre) throws IOException {
         Map<String, byte[]> changes = decodeBookmarks(part.payload);
-        Map<String, String> current = Wire2Commands.readListKeys(repo, "bookmarks");
+        Map<String, String> current = RepoSupport.readListKeys(repo, "bookmarks");
         for (Map.Entry<String, byte[]> e : changes.entrySet()) {
             if (e.getKey().contains("@")) {
                 throw new IOException("cannot accept divergent bookmark " + e.getKey() + "!");
@@ -663,7 +662,7 @@ final class Bundle2Push {
                 throw new IOException("cannot accept divergent bookmark " + book + "!");
             }
         }
-        Map<String, String> current = Wire2Commands.readListKeys(repo, "bookmarks");
+        Map<String, String> current = RepoSupport.readListKeys(repo, "bookmarks");
         for (Map.Entry<String, byte[]> e : changes.entrySet()) {
             Map<String, String> args = new LinkedHashMap<>();
             args.put("namespace", "bookmarks");
@@ -679,7 +678,7 @@ final class Bundle2Push {
 
     /** {@code phases.updatephases}: moves each listed head (and so its ancestors) to the given phase if that lowers it. */
     private static void applyPhaseHeads(HgRepository repo, Bundle2.Part part) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         PhaseRoots roots = repo.getPhaseRoots();
         for (Map.Entry<Integer, List<byte[]>> e : decodePhases(part.payload).entrySet()) {
             for (byte[] node : e.getValue()) {

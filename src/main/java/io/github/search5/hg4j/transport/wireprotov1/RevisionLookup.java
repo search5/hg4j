@@ -6,7 +6,6 @@ import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.lib.NodeId;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.transport.HgLocalClient;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
 import io.github.search5.hg4j.util.NodeIdUtil;
 
 import java.io.IOException;
@@ -44,7 +43,7 @@ final class RevisionLookup {
     }
 
     static Outcome resolve(HgRepository repo, String key) throws IOException {
-        Revlog changelog = Wire2Commands.changelog(repo);
+        Revlog changelog = RepoSupport.changelog(repo);
         int count = changelog.getRevisionCount();
         byte[] nullNode = new byte[20];
 
@@ -114,7 +113,7 @@ final class RevisionLookup {
     }
 
     private static byte[] byName(HgRepository repo, Revlog changelog, String name) throws IOException {
-        String bookmark = Wire2Commands.readListKeys(repo, "bookmarks").get(name);
+        String bookmark = RepoSupport.readListKeys(repo, "bookmarks").get(name);
         if (bookmark != null) {
             byte[] node = NodeIdUtil.fromHex(bookmark);
             if (changelog.findRevision(node) != -1) {

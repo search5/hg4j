@@ -3,6 +3,8 @@ updated: 2026-09-04
 status: current
 ---
 
+> **2026-11-04**: wire protocol v2(`HgRemoteClientV2`, `wireprotov2`, 자동 업그레이드, `/api/`)는 제거되었다([[wireprotocol-v2-removed]]). 아래의 v2 서술은 역사 기록이다.
+
 # 모듈: transport (`io.github.search5.hg4j.transport`)
 
 HTTP/SSH 와이어 프로토콜 구현. JGit의 `org.eclipse.jgit.transport`에 대응.

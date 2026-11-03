@@ -6,10 +6,6 @@ import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.api.PushCommand;
 import io.github.search5.hg4j.errors.HgProtocolException;
 import io.github.search5.hg4j.lib.HgRepository;
-import io.github.search5.hg4j.transport.wireprotov2.Cbor;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Commands;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Frame;
-import io.github.search5.hg4j.transport.wireprotov2.Wire2Transport;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.HgTestUtils;
 import org.eclipse.jetty.server.Server;
@@ -104,14 +100,6 @@ public class HgHttpWireServerCoverageTest {
         assertEquals(404, conn.getResponseCode());
     }
 
-    @Test
-    public void apiPathWithWrongSegmentCountFallsThroughTo404() throws Exception {
-        // "/api/<namespace>/<ro|rw>/<command>" needs exactly 3 segments after "/api/"; anything
-        // else (here: just one) must fall through to the ordinary v1 "cmd" lookup, which finds
-        // none and 404s, rather than being routed into wireprotocol v2 handling.
-        HttpURLConnection conn = get("/api/onlyonesegment");
-        assertEquals(404, conn.getResponseCode());
-    }
 
     @Test
     public void malformedQueryPairsWithoutAnEqualsSignAreSkippedNotFatal() throws Exception {
@@ -121,19 +109,6 @@ public class HgHttpWireServerCoverageTest {
         assertEquals(NodeIdUtil.toHex(commitNode) + "\n", body);
     }
 
-    @Test
-    public void capabilitiesCommandWithoutTheUpgradeHeaderServesPlainV1Capabilities() throws Exception {
-        // The capabilities-discovery-handshake short-circuit ("/".equals(path) && ... &&
-        // X-HgUpgrade-1 present) requires ALL four conditions; a plain GET (as a real hg client --
-        // wireprotocol v2 was removed entirely after Mercurial 6.1 -- always sends) with no
-        // X-HgUpgrade-1 header at all must fall through to ordinary v1 dispatch instead.
-        HttpURLConnection conn = get("/?cmd=capabilities");
-        assertEquals(200, conn.getResponseCode());
-        assertEquals("application/mercurial-0.1", conn.getHeaderField("Content-Type"));
-        String body = bodyOf(conn);
-        assertTrue(body.contains("lookup"), "Expected the plain v1 capabilities string: " + body);
-        assertTrue(body.contains("unbundle=HG10GZ,HG10BZ,HG10UN"), "Expected the plain v1 capabilities string: " + body);
-    }
 
     @Test
     public void unsupportedV1CommandIsABadRequestLikeRealHg() throws Exception {
@@ -198,144 +173,32 @@ public class HgHttpWireServerCoverageTest {
         }
     }
 
-    // ==================== wireprotocol v2 error/edge framing ====================
+    // ==================== a v2 upgrade request ====================
 
-    private static final String NS = Wire2Commands.NAMESPACE;
-
-    private byte[] postWire2(String urlSuffix, byte[] requestBody) throws IOException {
-        String url = baseUrl() + "/api/" + NS + "/" + urlSuffix;
-        HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", Wire2Transport.FRAMINGTYPE);
-        conn.setDoOutput(true);
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(requestBody);
-        }
+    @Test
+    public void aV2UpgradeRequestIsAnsweredWithPlainV1CapabilitiesLikeMercurial72() throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) URI.create(baseUrl() + "/?cmd=capabilities").toURL().openConnection();
+        conn.setRequestProperty("X-HgUpgrade-1", "exp-http-v2-0003");
+        conn.setRequestProperty("X-HgProto-1", "cbor");
         assertEquals(200, conn.getResponseCode());
-        try (InputStream in = conn.getInputStream()) {
-            return in.readAllBytes();
-        }
+        String body = new String(conn.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(body.contains("getbundle") && body.contains("batch"), "the ordinary v1 capabilities line: " + body);
+        assertFalse(body.contains("apibase"), "no v2 discovery document");
     }
 
     @Test
-    public void emptyWire2RequestBodyProducesAnEmptyResponseInsteadOfAStreamSettingsFrame() throws Exception {
-        byte[] response = postWire2("ro/heads", new byte[0]);
-        assertEquals(0, response.length, "No commands in the request means nothing (not even stream-settings) should be sent back");
-    }
-
-    @Test
-    public void wire2CommandNameMismatchBetweenFrameAndUrlProducesAFramedProtocolError() throws Exception {
-        // Frame says "known", URL says "heads" -- not a multirequest, so this must be rejected per
-        // command instead of being silently dispatched under the wrong name.
-        byte[] requestBody = Wire2Transport.buildCommandRequest(7, "known", Map.of("nodes", List.of()));
-        byte[] response = postWire2("ro/heads", requestBody);
-
-        HgProtocolException e = assertThrows(HgProtocolException.class,
-                () -> Wire2Transport.readCommandResponse(Wire2Transport.toStream(response)));
-        assertTrue(e.getMessage().contains("command in frame must match command in URL"), e.getMessage());
-    }
-
-    @Test
-    public void wire2LookupOfAKnownRevisionReturnsItsRawTwentyByteNode() throws Exception {
-        Map<String, Object> args = new LinkedHashMap<>();
-        args.put("key", "tip");
-        byte[] requestBody = Wire2Transport.buildCommandRequest(1, "lookup", args);
-        byte[] response = postWire2("ro/lookup", requestBody);
-
-        List<Object> objs = Wire2Transport.readCommandResponse(Wire2Transport.toStream(response));
-        assertEquals(1, objs.size());
-        assertArrayEquals(Arrays.copyOf(commitNode, 20), Cbor.asBytes(objs.get(0)));
-    }
-
-    @Test
-    public void wire2LookupOfAnUnknownRevisionSurfacesAsAFramedProtocolErrorNotAConnectionFailure() throws Exception {
-        Map<String, Object> args = new LinkedHashMap<>();
-        args.put("key", "nosuchrevision");
-        byte[] requestBody = Wire2Transport.buildCommandRequest(1, "lookup", args);
-        byte[] response = postWire2("ro/lookup", requestBody);
-
-        HgProtocolException e = assertThrows(HgProtocolException.class,
-                () -> Wire2Transport.readCommandResponse(Wire2Transport.toStream(response)));
-        assertTrue(e.getMessage().contains("unknown revision"), e.getMessage());
-    }
-
-    @Test
-    public void wire2UnsupportedCommandNameSurfacesAsAFramedProtocolError() throws Exception {
-        byte[] requestBody = Wire2Transport.buildCommandRequest(1, "bogus", Map.of());
-        byte[] response = postWire2("ro/bogus", requestBody);
-
-        HgProtocolException e = assertThrows(HgProtocolException.class,
-                () -> Wire2Transport.readCommandResponse(Wire2Transport.toStream(response)));
-        assertTrue(e.getMessage().contains("unsupported wire protocol v2 command"), e.getMessage());
-    }
-
-    @Test
-    public void wire2BranchmapReturnsTheCurrentBranchAndItsHeads() throws Exception {
-        byte[] requestBody = Wire2Transport.buildCommandRequest(1, "branchmap", Map.of());
-        byte[] response = postWire2("ro/branchmap", requestBody);
-
-        List<Object> objs = Wire2Transport.readCommandResponse(Wire2Transport.toStream(response));
-        assertEquals(1, objs.size());
-        Map<String, Object> branchToHeads = Cbor.asMap(objs.get(0));
-        assertEquals(1, branchToHeads.size());
-        List<Object> heads = Cbor.asList(branchToHeads.get("default"));
-        assertEquals(1, heads.size());
-        assertArrayEquals(Arrays.copyOf(commitNode, 20), Cbor.asBytes(heads.get(0)));
-    }
-
-    @Test
-    public void wire2MultirequestToleratesACommandFrameWithNoNameInsteadOfCrashingTheConnection() throws Exception {
-        // A command name of null makes dispatchWire2Command's classic switch(String) throw a
-        // NullPointerException -- not an HgProtocolException -- which must still be turned into a
-        // per-command framed error (the generic catch(Exception), not left to blow up the whole
-        // request). Only reachable via a "multirequest" URL: any other URL would instead trip the
-        // (also-NPE-prone) name-vs-URL comparison one line earlier, which isn't what this test is
-        // targeting.
-        Map<String, Object> data = new LinkedHashMap<>(); // deliberately no "name" key
-        byte[] payload = Cbor.encode(data);
-        Wire2Frame frame = new Wire2Frame(3, 1, Wire2Frame.STREAM_FLAG_BEGIN,
-                Wire2Frame.TYPE_COMMAND_REQUEST, Wire2Frame.FLAG_COMMAND_REQUEST_NEW, payload);
-
-        byte[] response = postWire2("ro/multirequest", frame.encode());
-
-        HgProtocolException e = assertThrows(HgProtocolException.class,
-                () -> Wire2Transport.readCommandResponse(Wire2Transport.toStream(response)));
-        assertTrue(e.getMessage().contains("Remote command error:"), e.getMessage());
-    }
-
-    @Test
-    public void aTruncatedWire2RequestBodyStillProducesAWellFormedHttpResponse() throws Exception {
-        // A COMMAND_REQUEST frame that declares FLAG_COMMAND_REQUEST_MORE_FRAMES but is never
-        // followed by the continuation makes Wire2Transport#readAllCommandRequests throw while
-        // parsing the request -- entirely outside handleWire2Request's own per-command try/catch --
-        // which must still surface as a clean response rather than an aborted/reset connection.
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("name", "heads");
-        byte[] payload = Cbor.encode(data);
-        Wire2Frame frame = new Wire2Frame(1, 1, Wire2Frame.STREAM_FLAG_BEGIN,
-                Wire2Frame.TYPE_COMMAND_REQUEST,
-                Wire2Frame.FLAG_COMMAND_REQUEST_NEW | Wire2Frame.FLAG_COMMAND_REQUEST_MORE_FRAMES, payload);
-
-        String url = baseUrl() + "/api/" + NS + "/ro/heads";
-        HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
+    public void theApiPathOfWireProtocolV2IsNotServed() throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) URI.create(baseUrl() + "/api/exp-http-v2-0003/ro/heads").toURL().openConnection();
         conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", Wire2Transport.FRAMINGTYPE);
-        conn.setDoOutput(true);
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(frame.encode());
-        }
-
-        // Whatever HgHttpWireServer decides to answer with, it must be able to answer at all --
-        // the server-side exception here must not corrupt the HTTP response framing so badly that
-        // the client can't even read a response back.
-        int status = conn.getResponseCode();
-        byte[] body;
-        try (InputStream in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
-            body = in != null ? in.readAllBytes() : new byte[0];
-        }
-        assertEquals(200, status);
-        String bodyText = new String(body, StandardCharsets.UTF_8);
-        assertTrue(bodyText.startsWith("abort: "), bodyText);
-        assertTrue(bodyText.contains("Unexpected EOF while reading a continued command-request"), bodyText);
+        assertEquals(404, conn.getResponseCode());
     }
+
+
+
+
+
+
+
+
+
 }

@@ -318,21 +318,23 @@ public class HgLfsTest {
             HgLfsPointer pointer = new HgLfsPointer("v1", OID_64, 4);
             String lfsServerUrl = "http://localhost:" + port + "/info/lfs";
             IOException ex = assertThrows(IOException.class, () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("LFS batch API request failed with status: 500"));
+            assertEquals("LFS HTTP error: HTTP Error 500: Internal Server Error\n(api=" + lfsServerUrl + "/objects/batch, action=download)",
+                    ex.getMessage());
         } finally {
             server.stop(0);
         }
     }
 
     @Test
-    public void testFetchObjectEmptyObjectsArrayThrows() throws Exception {
+    public void testFetchObjectEmptyObjectsArrayTransfersNothing() throws Exception {
         HttpServer server = startBatchServer("{\"objects\":[]}");
         try {
             HgLfsManager manager = new HgLfsManager(tempDir);
             HgLfsPointer pointer = new HgLfsPointer("v1", OID_64, 4);
             String lfsServerUrl = "http://localhost:" + server.getAddress().getPort() + "/info/lfs";
-            IOException ex = assertThrows(IOException.class, () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("No objects in LFS batch response"), ex.getMessage());
+            // like the original: nothing was answered, so nothing is transferred and no error is reported here
+            assertDoesNotThrow(() -> manager.fetchObject(pointer, lfsServerUrl));
+            assertFalse(manager.isCached(pointer));
         } finally {
             server.stop(0);
         }
@@ -348,7 +350,7 @@ public class HgLfsTest {
             String lfsServerUrl = "http://localhost:" + server.getAddress().getPort() + "/info/lfs";
             IOException ex = assertThrows(io.github.search5.hg4j.lfs.errors.HgLfsObjectNotFoundException.class,
                     () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("LFS object download failed from batch API: 404 - Object does not exist"), ex.getMessage());
+            assertEquals("LFS server error for \"unknown\": The object does not exist", ex.getMessage());
         } finally {
             server.stop(0);
         }
@@ -363,7 +365,8 @@ public class HgLfsTest {
             HgLfsPointer pointer = new HgLfsPointer("v1", OID_64, 4);
             String lfsServerUrl = "http://localhost:" + server.getAddress().getPort() + "/info/lfs";
             IOException ex = assertThrows(IOException.class, () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("No actions for LFS object"), ex.getMessage());
+            // a download answer without actions is a 404 for the original
+            assertEquals("LFS server error for \"unknown\": The object does not exist", ex.getMessage());
         } finally {
             server.stop(0);
         }
@@ -378,7 +381,7 @@ public class HgLfsTest {
             HgLfsPointer pointer = new HgLfsPointer("v1", OID_64, 4);
             String lfsServerUrl = "http://localhost:" + server.getAddress().getPort() + "/info/lfs";
             IOException ex = assertThrows(IOException.class, () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("No download action for LFS object"), ex.getMessage());
+            assertEquals("LFS server error for \"unknown\": The object does not exist", ex.getMessage());
         } finally {
             server.stop(0);
         }
@@ -392,8 +395,7 @@ public class HgLfsTest {
             HgLfsPointer pointer = new HgLfsPointer("v1", OID_64, 4);
             String lfsServerUrl = "http://localhost:" + server.getAddress().getPort() + "/info/lfs";
             IOException ex = assertThrows(IOException.class, () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("Failed to parse LFS batch JSON response"));
-            assertNotNull(ex.getCause());
+            assertEquals("LFS server returns invalid JSON: not-json-at-all", ex.getMessage());
         } finally {
             server.stop(0);
         }
@@ -408,8 +410,7 @@ public class HgLfsTest {
             HgLfsPointer pointer = new HgLfsPointer("v1", OID_64, 4);
             String lfsServerUrl = "http://localhost:" + server.getAddress().getPort() + "/info/lfs";
             IOException ex = assertThrows(IOException.class, () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("Failed to extract download URL"));
-            assertNull(ex.getCause());
+            assertTrue(ex.getMessage().contains("No download href for LFS object: " + OID_64), ex.getMessage());
         } finally {
             server.stop(0);
         }
@@ -438,7 +439,7 @@ public class HgLfsTest {
             HgLfsPointer pointer = new HgLfsPointer("v1", OID_64, 4);
             String lfsServerUrl = "http://localhost:" + port + "/info/lfs";
             IOException ex = assertThrows(IOException.class, () -> manager.fetchObject(pointer, lfsServerUrl));
-            assertTrue(ex.getMessage().contains("LFS object download failed with status: 404"));
+            assertEquals("LFS HTTP error: HTTP Error 404: Not Found (oid=" + OID_64 + ", action=download)", ex.getMessage());
         } finally {
             server.stop(0);
         }

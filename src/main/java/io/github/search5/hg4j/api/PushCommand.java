@@ -141,7 +141,7 @@ public class PushCommand {
                     && !(client instanceof io.github.search5.hg4j.transport.HgLocalClient)
                     && !client.getCapabilities().contains("lfs")) {
                 throw new HgValidationException("required features are not supported in the destination: lfs\n"
-                        + "(hint: enable the lfs extension on the server)");
+                        + "(enable the lfs extension on the server)");
             }
 
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");

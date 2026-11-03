@@ -30,10 +30,18 @@ public class HgLfsException extends IOException {
 
     /** The exception that describes an LFS server's {@code status} answer, with the given message. */
     public static HgLfsException forStatus(int status, String message) {
-        return switch (status) {
+        return forStatus(status, message, null);
+    }
+
+    public static HgLfsException forStatus(int status, String message, Throwable cause) {
+        HgLfsException result = switch (status) {
             case 401, 403 -> new HgLfsUnauthorizedException(message, status);
             case 404 -> new HgLfsObjectNotFoundException(message);
-            default -> new HgLfsException(message, status);
+            default -> new HgLfsException(message, status, cause);
         };
+        if (cause != null && result.getCause() == null) {
+            result.initCause(cause);
+        }
+        return result;
     }
 }

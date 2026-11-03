@@ -23,6 +23,19 @@ final class LfsTestProxy implements AutoCloseable {
     final AtomicInteger batchRequests = new AtomicInteger();
     final AtomicInteger uploads = new AtomicInteger();
     final AtomicBoolean corruptDownloads = new AtomicBoolean();
+    /** The {@code User-Agent} of every request. */
+    final java.util.List<String> userAgents = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+    /** When set, a request without credentials gets a 401 with this {@code WWW-Authenticate} challenge. */
+    volatile String authChallenge;
+    /** The number of LFS object requests (GET or PUT of a blob) to drop without any answer, closing the connection. */
+    final AtomicInteger dropObjectRequests = new AtomicInteger();
+    /** Every blob request that arrived (dropped ones too). */
+    final AtomicInteger objectRequests = new AtomicInteger();
+    /** Milliseconds every blob request is held before it is relayed, to make concurrent transfers overlap. */
+    volatile int objectDelayMillis;
+    private final AtomicInteger activeObjects = new AtomicInteger();
+    /** The highest number of blob requests that were being handled at the same time. */
+    final AtomicInteger maxConcurrentObjects = new AtomicInteger();
     /** Every request the proxy relayed, as {@code METHOD path}; shown in assertion messages. */
     final java.util.List<String> seen = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
@@ -38,6 +51,31 @@ final class LfsTestProxy implements AutoCloseable {
         server.createContext("/", exchange -> {
             try {
                 byte[] body = exchange.getRequestBody().readAllBytes();
+                String agent = exchange.getRequestHeaders().getFirst("User-Agent");
+                if (agent != null) {
+                    userAgents.add(agent);
+                }
+                String challenge = authChallenge;
+                if (challenge != null && exchange.getRequestHeaders().getFirst("Authorization") == null) {
+                    exchange.getResponseHeaders().add("WWW-Authenticate", challenge);
+                    exchange.sendResponseHeaders(401, -1);
+                    return;
+                }
+                boolean blobRequest = exchange.getRequestURI().getPath().contains("/.hg/lfs/objects/");
+                if (blobRequest) {
+                    objectRequests.incrementAndGet();
+                    int active = activeObjects.incrementAndGet();
+                    maxConcurrentObjects.accumulateAndGet(active, Math::max);
+                    if (dropObjectRequests.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
+                        activeObjects.decrementAndGet();
+                        exchange.close(); // no answer at all: the client sees the connection die
+                        return;
+                    }
+                    if (objectDelayMillis > 0) {
+                        Thread.sleep(objectDelayMillis);
+                    }
+                }
+                try {
                 HttpRequest.Builder request = HttpRequest.newBuilder()
                         .uri(URI.create("http://127.0.0.1:" + targetPort + exchange.getRequestURI()))
                         .method(exchange.getRequestMethod(), HttpRequest.BodyPublishers.ofByteArray(body));
@@ -71,12 +109,18 @@ final class LfsTestProxy implements AutoCloseable {
                 if (out.length > 0) {
                     exchange.getResponseBody().write(out);
                 }
+                } finally {
+                    if (blobRequest) {
+                        activeObjects.decrementAndGet();
+                    }
+                }
             } catch (Exception e) {
                 exchange.sendResponseHeaders(502, -1);
             } finally {
                 exchange.close();
             }
         });
+        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool()); // the default is one thread: no concurrency
         server.start();
     }
 

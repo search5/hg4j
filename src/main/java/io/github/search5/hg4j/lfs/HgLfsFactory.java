@@ -73,10 +73,25 @@ public abstract class HgLfsFactory {
      * @param revisions filelog to revision number pairs that are about to be read
      */
     public void prefetch(HgRepository repository, java.util.List<java.util.Map.Entry<Revlog, Integer>> revisions) throws IOException {
+        prefetch(repository, revisions, null);
+    }
+
+    /**
+     * Same, naming the file of each revision ({@code paths}, parallel to {@code revisions}, may be {@code null}) so that a
+     * failure reads {@code LFS server error for "<path>": ...} like real hg's.
+     */
+    public void prefetch(HgRepository repository, java.util.List<java.util.Map.Entry<Revlog, Integer>> revisions,
+                         java.util.List<String> paths) throws IOException {
         java.util.List<HgLfsPointer> pointers = new java.util.ArrayList<>();
-        for (java.util.Map.Entry<Revlog, Integer> revision : revisions) {
+        java.util.Map<String, String> filenames = new java.util.HashMap<>();
+        for (int i = 0; i < revisions.size(); i++) {
+            java.util.Map.Entry<Revlog, Integer> revision = revisions.get(i);
             if (revision.getKey().isExtStored(revision.getValue())) {
-                pointers.add(HgLfsPointer.parse(revision.getKey().getRawRevisionContent(revision.getValue())));
+                HgLfsPointer pointer = HgLfsPointer.parse(revision.getKey().getRawRevisionContent(revision.getValue()));
+                pointers.add(pointer);
+                if (paths != null) {
+                    filenames.putIfAbsent(pointer.getOid(), paths.get(i));
+                }
             }
         }
         if (pointers.isEmpty()) {
@@ -87,7 +102,7 @@ public abstract class HgLfsFactory {
             return;
         }
         try {
-            new HgLfsManager(repository.getHgDir(), repository.getConfig()).fetchObjects(pointers, url);
+            new HgLfsManager(repository.getHgDir(), repository.getConfig()).fetchObjects(pointers, url, filenames);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("interrupted while fetching LFS objects", e);

@@ -452,6 +452,18 @@ SSH 전송(`HgSshClient#push`)은 아직 같은 해석이 없다(백로그).
 권한 구분 없음(hg4j 서버에는 `web.allow-push` 개념이 없다).
 **테스트**: `LfsServerParityInteropTest`(실제 `hg serve`와 같은 요청 재생), `LfsServerRealClientInteropTest`(실제 hg 클라이언트 push·clone).
 
+### LFS 클라이언트의 오류 문구·인증·사용자 에이전트가 원본과 달랐음 (2026-11-04, Phase 6)
+**증상**: 다운로드 실패가 `LFS object download failed from batch API: 404 - ...`처럼 hg4j만의 문구였고 파일 이름과 힌트가 없었다. 사용자 에이전트와
+Basic 인증이 없었고, 전송은 객체마다 순차 단일 요청이었다. 힌트 표기는 `(hint: ...)`로 원본의 `(...)`와 달랐다.
+**수정**: 서버 통신을 `HgLfsClient`로 모았다(JGit `LfsConnectionFactory`+전송). 배치 요청 본문, 상태별 힌트, `_checkforservererror`, `file` 이름 포함,
+`detected corrupt lfs object`, URL의 Basic 자격 증명, Basic 이외의 401 거절, `User-Agent`(`experimental.lfs.user-agent`), 병렬 전송(`lfs.worker-enable`).
+**실측으로 정한 재시도 규칙**: 끊긴 연결은 `lfs.retry`와 무관하다. 원본(파이썬 `urllib`의 keep-alive)은 한 번 투명하게 다시 시도하고(끊김 1건은 성공, 2건이면
+`LFS error: bad HTTP status line` + `(attempted connection to <href>)`로 실패), Java `HttpClient`도 같은 결과와 같은 요청 횟수를 낸다. `lfs.retry`는 URL 계층이 감싸지 않는 로컬
+입출력 오류에만 쓰인다.
+**의도적 차이**: HTTP 상태 줄의 사유 문구(`java.net.http`가 노출하지 않아 표준 문구를 쓴다. 원본 hgweb는 `method not found` 같은 값을 보낸다), 진행률·`lfs: uploading` 콘솔 출력,
+`[auth]` 설정 대신 URL의 자격 증명만 지원.
+**테스트**: `LfsTransferRealHgInteropTest`, `HgLfsTest`(원본 문구로 갱신).
+
 ### 테스트가 호스트의 `~/.cache/lfs`를 오염시킴
 **원인**: hg4j와 실제 hg가 모두 `XDG_CACHE_HOME`(없으면 `~/.cache`)에서 LFS 사용자 캐시를 정한다. 테스트가 개별로 `disableusercache`를 챙기지 않으면 호스트 캐시에 쓰고,
 다음 실행에서 "캐시에 이미 있어서" 통과하는 순서 의존이 생긴다.

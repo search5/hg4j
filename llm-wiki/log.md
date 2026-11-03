@@ -641,3 +641,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-04] LFS Phase 5: LFS 서버
 `lfs.server.HgLfsProtocolHandler`(Batch API `.git/info/lfs/objects/batch`, Basic 전송 `.hg/lfs/objects/<oid>`, 원본 `wireprotolfsserver.py`의 상태 코드·JSON 모양), `HgLargeFileRepository`/`HgFileLfsRepository`(JGit `LargeFileRepository`/`FileLfsRepository` 대응), `HgLfsConfig`(확장 활성, `experimental.lfs.serve`, requirement), `HgHttpWireServer` 연결, `capabilities`의 `lfs`/`lfs-serve`, `HgLocalClient`가 LFS 리비전 수신 시 `lfs` requirement 추가.
 테스트: `LfsServerParityInteropTest` 9개(실제 `hg serve`에 같은 요청을 재생해 상태·Content-Type·본문 비교, 능력 토큰 일치), `LfsServerRealClientInteropTest` 2개(실제 hg 클라이언트가 hg4j 서버에 LFS push 후 다른 실제 클라이언트가 clone). 검증: 일반 test 전체 통과, 서버·push·clone 계열 interop 일부(전체 아님) 통과. [[implementation-plan-lfs]]
+
+## [2026-11-04] LFS Phase 6: 전송 견고성
+`HgLfsClient`(JGit `LfsConnectionFactory`+전송 대응, 원본 `_gitlfsremote`): 배치 요청 본문, `_checkforservererror`와 파일 이름 포함 문구, 상태별 힌트, 접속 불가 시 `lfs.url` 힌트, `detected corrupt lfs object`, URL의 Basic 자격 증명, Basic 이외의 401 거절, `User-Agent`(`git-lfs/2.3.4 (...)`, `experimental.lfs.user-agent`), 병렬 전송(`experimental.lfs.worker-enable`), `lfs.retry`. 재시도는 실제 hg를 끊기는 프록시 뒤에 두고 실측해 규칙을 정함(끊긴 연결은 한 번 투명 재시도, 두 번째 끊김은 `LFS error` + `attempted connection to` 힌트). `prefetch`가 파일 경로를 받아 오류 문구에 사용. 힌트 표기를 원본의 `(...)` 형식으로 정렬.
+테스트: `LfsTransferRealHgInteropTest` 7개(실제 hg와 문구·요청 횟수 비교), `HgLfsTest` 문구 갱신. 검증: 일반 test 전체 통과, LFS·복제·update·pull·push 계열 interop 일부(전체 아님) 통과. 의도적 차이는 [[known-bugs-registry]]에 기록. [[implementation-plan-lfs]]

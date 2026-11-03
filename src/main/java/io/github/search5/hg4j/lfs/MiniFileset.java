@@ -382,6 +382,6 @@ public final class MiniFileset {
             int length = prefix.length();
             return (n, s) -> n.startsWith(prefix) && (n.length() == length || n.charAt(length) == '/');
         }
-        throw new HgValidationException("unsupported file pattern: " + name + "\n(hint: paths must be prefixed with \"path:\")");
+        throw new HgValidationException("unsupported file pattern: " + name + "\n(paths must be prefixed with \"path:\")");
     }
 }

@@ -167,6 +167,7 @@ public class CloneCommand {
 
         // one batch request for every LFS blob this checkout needs, instead of one request per file
         java.util.List<Map.Entry<Revlog, Integer>> toRead = new java.util.ArrayList<>();
+        java.util.List<String> toReadPaths = new java.util.ArrayList<>();
         for (Map.Entry<String, String> entry : manifestEntries.entrySet()) {
             File prefetchIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), entry.getKey());
             if (!prefetchIdx.exists()) {
@@ -177,9 +178,10 @@ public class CloneCommand {
             int prefetchRev = NodeIdUtil.findRevisionByNodeId(prefetchLog, NodeIdUtil.fromHex(entry.getValue().substring(0, 40)));
             if (prefetchRev != -1) {
                 toRead.add(Map.entry(prefetchLog, prefetchRev));
+                toReadPaths.add(entry.getKey());
             }
         }
-        io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().prefetch(repo, toRead);
+        io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().prefetch(repo, toRead, toReadPaths);
 
         for (Map.Entry<String, String> entry : manifestEntries.entrySet()) {
             String path = entry.getKey();

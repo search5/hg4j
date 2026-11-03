@@ -147,6 +147,7 @@ public class UpdateCommand {
             prefetchWalk.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev)));
             prefetchWalk.reset();
             java.util.List<java.util.Map.Entry<Revlog, Integer>> toRead = new java.util.ArrayList<>();
+            java.util.List<String> toReadPaths = new java.util.ArrayList<>();
             while (prefetchWalk.next()) {
                 String prefetchPath = prefetchWalk.getPath();
                 if ((treeFilter != null && !treeFilter.accept(prefetchPath)) || !prefetchWalk.isTracked(1)) {
@@ -161,9 +162,10 @@ public class UpdateCommand {
                 int prefetchRev = NodeIdUtil.findRevisionByNodeId(prefetchLog, prefetchWalk.getNodeId(1));
                 if (prefetchRev != -1) {
                     toRead.add(java.util.Map.entry(prefetchLog, prefetchRev));
+                    toReadPaths.add(prefetchPath);
                 }
             }
-            HgLfsFactory.getInstance().prefetch(repository, toRead);
+            HgLfsFactory.getInstance().prefetch(repository, toRead, toReadPaths);
 
             TreeWalk tw = new TreeWalk();
             tw.addTree(new ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest

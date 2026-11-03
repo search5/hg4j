@@ -139,6 +139,30 @@ public class HgRepository implements Repository {
         }
     }
 
+    /**
+     * Every requirement of this repository, as listed in {@code .hg/requires} and (share-safe repositories)
+     * {@code .hg/store/requires}. The flags above only track the few requirements hg4j acts on; a server that
+     * advertises {@code streamreqs} needs the complete set.
+     */
+    public java.util.Set<String> getRequirements() {
+        java.util.Set<String> all = new java.util.TreeSet<>();
+        for (File f : new File[]{new File(hgDir, "requires"), new File(storeDir, "requires")}) {
+            if (f.isFile()) {
+                try {
+                    for (String line : Files.readAllLines(f.toPath())) {
+                        String trimmed = line.trim();
+                        if (!trimmed.isEmpty()) {
+                            all.add(trimmed);
+                        }
+                    }
+                } catch (java.io.IOException e) {
+                    throw new java.io.UncheckedIOException("cannot read " + f, e);
+                }
+            }
+        }
+        return all;
+    }
+
     /** {@code exp-changelog-v2} requirement — changelog가 revlog v2(docket 기반) 포맷임. */
     public boolean isChangelogV2() {
         return changelogV2;

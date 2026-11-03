@@ -90,6 +90,9 @@ public final class Wire1Commands {
      */
     public static String capabilitiesString(HgRepository repo) {
         String base = capabilitiesString();
+        for (String token : StreamClone.capabilityTokens(repo)) {
+            base = base + " " + token;
+        }
         File manifest = new File(repo.getHgDir(), "clonebundles.manifest");
         // real hg's clonebundles extension adds BOTH tokens when a manifest exists
         return manifest.exists() ? base + " clonebundles clonebundles_manifest" : base;
@@ -553,6 +556,7 @@ public final class Wire1Commands {
             case "getbundle" -> getbundle(repo, args);
             case "clonebundles" -> clonebundles(repo);
             case "clonebundles_manifest" -> clonebundlesManifest(repo, args);
+            case "stream_out" -> StreamClone.streamOut(repo);
             case "get_cached_bundle_inline" -> getCachedBundleInline(repo, args);
             default -> Wire1Response.oobError("unsupported command: " + cmd);
         };

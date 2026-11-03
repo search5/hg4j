@@ -268,6 +268,145 @@ public class WireServerParityInteropTest {
         assertTrue(mine.contains("clonebundles_manifest"), mine);
     }
 
+    // ───────────────────────── streaming clone ─────────────────────────
+
+    /** A parsed stream_out answer: the leading status line plus name -> file content. */
+    private record Stream(String status, String counts, java.util.Map<String, byte[]> files) {
+    }
+
+    private static Stream parseStream(byte[] raw) {
+        int pos = 0;
+        int nl = indexOf(raw, (byte) '\n', pos);
+        String status = new String(raw, pos, nl - pos, StandardCharsets.US_ASCII);
+        pos = nl + 1;
+        java.util.Map<String, byte[]> files = new java.util.TreeMap<>();
+        if (!status.equals("0")) {
+            return new Stream(status, "", files);
+        }
+        nl = indexOf(raw, (byte) '\n', pos);
+        String counts = new String(raw, pos, nl - pos, StandardCharsets.US_ASCII);
+        pos = nl + 1;
+        while (pos < raw.length) {
+            int nul = indexOf(raw, (byte) 0, pos);
+            String name = new String(raw, pos, nul - pos, StandardCharsets.ISO_8859_1);
+            int eol = indexOf(raw, (byte) '\n', nul + 1);
+            int size = Integer.parseInt(new String(raw, nul + 1, eol - nul - 1, StandardCharsets.US_ASCII));
+            files.put(name, java.util.Arrays.copyOfRange(raw, eol + 1, eol + 1 + size));
+            pos = eol + 1 + size;
+        }
+        return new Stream(status, counts, files);
+    }
+
+    private static int indexOf(byte[] b, byte v, int from) {
+        for (int i = from; i < b.length; i++) {
+            if (b[i] == v) {
+                return i;
+            }
+        }
+        throw new IllegalStateException("byte " + v + " not found after " + from);
+    }
+
+    private static java.util.Set<String> streamTokens(String capabilities) {
+        java.util.Set<String> tokens = new java.util.TreeSet<>();
+        for (String t : capabilities.replace("\\n", " ").split("\\s+")) {
+            if (t.startsWith("stream")) {
+                tokens.add(t);
+            }
+        }
+        return tokens;
+    }
+
+    private String capabilityLine(boolean real) throws Exception {
+        String shown = show(ask(real, "capabilities"));
+        return shown.substring(shown.indexOf("\\n") + 2);
+    }
+
+    @Test
+    @DisplayName("stream_out 이 원본과 같은 파일 집합과 내용을 같은 형식으로 보낸다")
+    void streamOutSendsTheSameFiles() throws Exception {
+        Stream real = parseStream(ask(true, "stream_out"));
+        Stream mine = parseStream(ask(false, "stream_out"));
+        assertEquals("0", real.status());
+        assertEquals(real.status(), mine.status());
+        assertEquals(real.counts(), mine.counts(), "file count and byte count line");
+        assertEquals(real.files().keySet(), mine.files().keySet(), "the same store files, under the same wire names");
+        for (String name : real.files().keySet()) {
+            assertArrayEquals(real.files().get(name), mine.files().get(name), name);
+        }
+    }
+
+    @Test
+    @DisplayName("stream / streamreqs capability 가 원본과 같다")
+    void streamCapabilitiesMatchTheOriginal() throws Exception {
+        java.util.Set<String> real = streamTokens(capabilityLine(true));
+        assertFalse(real.isEmpty(), "the original offers a stream for this repository");
+        assertEquals(real, streamTokens(capabilityLine(false)));
+    }
+
+    @Test
+    @DisplayName("server.uncompressed=false 면 둘 다 stream 을 광고하지 않고 1 로 응답한다, preferuncompressed 는 stream-preferred 를 더한다")
+    void serverConfigGatesStreaming() throws Exception {
+        Files.writeString(repo.resolve(".hg/hgrc"), "[server]\nuncompressed = false\n");
+        assertSameAnswer("stream_out");
+        assertEquals(java.util.Set.of(), streamTokens(capabilityLine(true)));
+        assertEquals(java.util.Set.of(), streamTokens(capabilityLine(false)));
+
+        Files.writeString(repo.resolve(".hg/hgrc"), "[server]\npreferuncompressed = true\n");
+        java.util.Set<String> real = streamTokens(capabilityLine(true));
+        assertTrue(real.contains("stream-preferred"), real.toString());
+        assertEquals(real, streamTokens(capabilityLine(false)));
+    }
+
+    @Test
+    @DisplayName("secret 변경셋이 있으면 둘 다 1 로 응답하고, uncompressedallowsecret 이면 둘 다 보낸다")
+    void secretChangesetsBlockStreamingUnlessAllowed() throws Exception {
+        LocalHg.hgIn(tmp, "server", "phase", "--secret", "--force", "-r", "tip");
+        assertSameAnswer("stream_out");
+        assertEquals("1", parseStream(ask(false, "stream_out")).status());
+        Files.writeString(repo.resolve(".hg/hgrc"), "[server]\nuncompressedallowsecret = true\n");
+        assertEquals("0", parseStream(ask(true, "stream_out")).status());
+        assertEquals("0", parseStream(ask(false, "stream_out")).status());
+    }
+
+    @Test
+    @DisplayName("지원하지 않는 저장소 형식(exp-changelog-v2)에서는 stream 을 광고하지 않고 stream_out 은 1 로 응답한다")
+    void unsupportedLayoutIsNotOffered() throws Exception {
+        Path v2 = Files.createDirectories(tmp.resolve("changelogv2-repo"));
+        LocalHg.hgIn(tmp, "changelogv2-repo", "init", ".", "--config",
+                "format.exp-use-changelog-v2=enable-unstable-format-and-corrupt-my-data");
+        Files.writeString(v2.resolve("a.txt"), "x");
+        LocalHg.hgIn(tmp, "changelogv2-repo", "add", "a.txt");
+        LocalHg.hgIn(tmp, "changelogv2-repo", "commit", "-u", "dev", "-m", "c0");
+        Path saved = repo;
+        repo = v2;
+        try {
+            // The original CAN stream this repository (it offers the stream); hg4j deliberately does not, and says so
+            // honestly instead of sending a store it has not verified. This is a documented limitation.
+            assertFalse(streamTokens(capabilityLine(true)).isEmpty());
+            assertEquals(java.util.Set.of(), streamTokens(capabilityLine(false)));
+            assertEquals("1", parseStream(ask(false, "stream_out")).status());
+        } finally {
+            repo = saved;
+        }
+    }
+
+    @Test
+    @DisplayName("실제 hg clone --stream 으로 hg4j 서버에서 클론하면 원본 서버에서처럼 hg verify 가 통과하고 이력이 같다")
+    void realClientStreamClone() throws Exception {
+        List<String> results = new ArrayList<>();
+        for (boolean real : new boolean[]{true, false}) {
+            Path dest = tmp.resolve("stream-" + real);
+            String out = client(real, tmp, "clone", "--stream", "--ssh", ssh(real).toString(), remoteUrl(), dest.toString());
+            assertTrue(out.contains("stream-cloned") || out.contains("streaming all changelog and manifest data")
+                    || out.contains("transferred"), (real ? "real: " : "hg4j: ") + out);
+            String verify = client(real, dest, "verify");
+            assertTrue(verify.contains("checked") && !verify.toLowerCase().contains("error"), verify);
+            results.add(client(real, dest, "log", "-T", "{rev}:{node|short}:{branch}:{bookmarks} ")
+                    + " | " + verify.lines().filter(l -> l.startsWith("checked")).toList());
+        }
+        assertEquals(results.get(0), results.get(1));
+    }
+
     // ───────────────────────── known gaps (red tests) ─────────────────────────
 
     @Test

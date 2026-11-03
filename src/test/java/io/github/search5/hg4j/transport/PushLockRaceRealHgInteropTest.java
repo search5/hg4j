@@ -63,6 +63,21 @@ import static org.junit.jupiter.api.Assertions.*;
 @Tag("interop")
 public class PushLockRaceRealHgInteropTest {
 
+    /**
+     * Both outcomes are correct rejections of the loser of a race, and which one a run produces depends on timing
+     * (two real {@code hg push} processes are started together): if the loser's head discovery ran before the
+     * winner landed, the server's {@code check:heads} re-validation rejects it ("changed while pushing"); if it ran
+     * after, the loser's own client sees the new remote head and refuses ("push creates new remote head", the same
+     * wording real hg prints). The test's real point -- exactly one push wins and the repository stays valid -- is
+     * asserted separately. (This test failed 3 of 6 runs on a clean checkout before 2026-11-03, because only the
+     * first wording was accepted.)
+     */
+    private static boolean readsAsALostRace(String output) {
+        String o = output.toLowerCase();
+        return o.contains("changed while pushing") || o.contains("try again") || o.contains("push failed")
+                || o.contains("push creates new remote head");
+    }
+
     @BeforeEach
     public void setUp() {
         Assumptions.assumeTrue(HgTestUtils.isHgInstalled(), "Native Mercurial (hg) is not installed. Skipping.");
@@ -351,9 +366,7 @@ public class PushLockRaceRealHgInteropTest {
                     + " | clientB exit=" + resultB.get().exitCode + " out=" + resultB.get().output);
 
             HgResult loser = resultA.get().success() ? resultB.get() : resultA.get();
-            assertTrue(loser.output.toLowerCase().contains("changed while pushing")
-                            || loser.output.toLowerCase().contains("try again")
-                            || loser.output.toLowerCase().contains("push failed"),
+            assertTrue(readsAsALostRace(loser.output),
                     "the losing side's rejection must read as a race real hg itself would produce "
                             + "the same wording for (mercurial/bundle2_part_handlers.py's "
                             + "handlecheckheads(): 'remote repository changed while pushing - "
@@ -460,9 +473,7 @@ public class PushLockRaceRealHgInteropTest {
                     + " | clientB exit=" + resultB.get().exitCode + " out=" + resultB.get().output);
 
             HgResult loser = resultA.get().success() ? resultB.get() : resultA.get();
-            assertTrue(loser.output.toLowerCase().contains("changed while pushing")
-                            || loser.output.toLowerCase().contains("try again")
-                            || loser.output.toLowerCase().contains("push failed"),
+            assertTrue(readsAsALostRace(loser.output),
                     "the losing SSH side's rejection must read as a race: " + loser.output);
 
             serverRepo.clearRevlogCache();

@@ -114,9 +114,14 @@ public final class Wire1Commands {
         return Wire1Response.bytes(body);
     }
 
+    /**
+     * Real hg's {@code heads}: the topological heads, NEWEST revision first (what {@code repo.heads()} returns).
+     * An empty repository answers with the null node, as real hg does.
+     */
     public static Wire1Response heads(HgRepository repo) throws IOException {
-        List<String> heads = new HgLocalClient(repo).getHeads();
-        String line = heads.isEmpty() ? "\n" : String.join(" ", heads) + "\n";
+        List<String> heads = new ArrayList<>(new HgLocalClient(repo).getHeads()); // ascending revision order
+        java.util.Collections.reverse(heads);
+        String line = heads.isEmpty() ? "0".repeat(40) + "\n" : String.join(" ", heads) + "\n";
         return Wire1Response.bytes(line.getBytes(StandardCharsets.US_ASCII));
     }
 
@@ -198,11 +203,12 @@ public final class Wire1Commands {
     public static Wire1Response listkeys(HgRepository repo, Map<String, String> args) throws IOException {
         String namespace = args.get("namespace");
         Map<String, String> keys = new TreeMap<>(Wire2Commands.readListKeys(repo, namespace));
-        StringBuilder sb = new StringBuilder();
+        List<String> lines = new ArrayList<>();
         for (Map.Entry<String, String> e : keys.entrySet()) {
-            sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
+            lines.add(e.getKey() + '\t' + e.getValue());
         }
-        return Wire1Response.bytes(sb.toString().getBytes(StandardCharsets.UTF_8));
+        // joined by '\n' with NO trailing newline, like pushkey.encodekeys
+        return Wire1Response.bytes(String.join("\n", lines).getBytes(StandardCharsets.UTF_8));
     }
 
     /** Real hg's response is {@code "<0-or-1>\n<output>"}; {@code output} is always empty here (no server-side hooks to capture). */
@@ -261,14 +267,19 @@ public final class Wire1Commands {
         return Wire1Response.bytes((ok ? "1\n" : "0\n").getBytes(StandardCharsets.US_ASCII));
     }
 
+    /**
+     * Real hg's {@code branchmap}: one line per named branch, {@code <url-quoted branch> <head> <head> ...}, the
+     * lines joined by {@code \n} WITHOUT a trailing newline (mercurial/wireprotoserver's
+     * {@code encodebranchcache}). Closed heads are included. Before 2026-11-03 this listed only the repository's
+     * CURRENT branch with every head of the repository, which is wrong as soon as there is a second branch.
+     */
     public static Wire1Response branchmap(HgRepository repo) throws IOException {
-        String branch = repo.getBranch();
-        if (branch == null || branch.isEmpty()) {
-            branch = "default";
+        Map<String, List<String>> byBranch = new TreeMap<>(new HgLocalClient(repo).getBranchHeads());
+        List<String> lines = new ArrayList<>();
+        for (Map.Entry<String, List<String>> e : byBranch.entrySet()) {
+            lines.add(encode(e.getKey()) + " " + String.join(" ", e.getValue()));
         }
-        List<String> heads = new HgLocalClient(repo).getHeads();
-        String line = heads.isEmpty() ? "" : encode(branch) + " " + String.join(" ", heads) + "\n";
-        return Wire1Response.bytes(line.getBytes(StandardCharsets.UTF_8));
+        return Wire1Response.bytes(String.join("\n", lines).getBytes(StandardCharsets.UTF_8));
     }
 
     /** Same wire shape as {@code getbundle}/{@code changegroupsubset} — real hg's {@code changegroup} command just fixes {@code heads} to the repo's current heads. */

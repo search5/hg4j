@@ -484,6 +484,17 @@ public final class Wire2Commands {
         return result;
     }
 
+    /** {@code phases.publish} of the repository's own {@code .hg/hgrc}; true unless set to a false value (default true, like hg). */
+    static boolean isPublishing(HgRepository repo) {
+        String raw = repo.getConfig().get("phases", "publish", "true");
+        switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "0": case "no": case "false": case "off": case "never":
+                return false;
+            default:
+                return true;
+        }
+    }
+
     public static Map<String, String> readListKeys(HgRepository repo, String namespace) throws IOException {
         Map<String, String> map = new LinkedHashMap<>();
         if ("bookmarks".equals(namespace)) {
@@ -499,14 +510,23 @@ public final class Wire2Commands {
                 }
             }
         } else if ("phases".equals(namespace)) {
+            // Real hg's phases.listphases(): the DRAFT ROOTS (not every non-public changeset), each valued "1",
+            // and, when the repository is publishing, an extra "publishing" = "True". The extra key matters:
+            // without it a client pulling from this server cannot tell it is publishing, and keeps everything
+            // it pulled as draft instead of making it public. Roots whose effective phase is higher (secret,
+            // through an ancestor) are not offered; roots this repository does not have are skipped.
             PhaseRoots phaseRoots = repo.getPhaseRoots();
             Revlog changelog = changelog(repo);
-            for (int i = 0; i < changelog.getRevisionCount(); i++) {
-                byte[] node = changelog.getIndexRecord(i).getNodeId();
-                PhaseRoots.Phase phase = phaseRoots.getPhase(new NodeId(node), changelog);
-                if (phase != PhaseRoots.Phase.PUBLIC) {
-                    map.put(NodeIdUtil.toHex(node), String.valueOf(phase.getValue()));
+            for (NodeId root : phaseRoots.getRoots(PhaseRoots.Phase.DRAFT)) {
+                if (changelog.findRevision(root.getBytes()) < 0) {
+                    continue;
                 }
+                if (phaseRoots.getPhase(root, changelog).getValue() <= PhaseRoots.Phase.DRAFT.getValue()) {
+                    map.put(NodeIdUtil.toHex(root.getBytes()), String.valueOf(PhaseRoots.Phase.DRAFT.getValue()));
+                }
+            }
+            if (isPublishing(repo)) {
+                map.put("publishing", "True");
             }
         }
         return map;

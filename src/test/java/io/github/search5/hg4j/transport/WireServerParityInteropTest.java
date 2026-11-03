@@ -141,7 +141,6 @@ public class WireServerParityInteropTest {
     // ───────────────────────── known gaps (red tests) ─────────────────────────
 
     @Test
-    @Disabled(GAPS + "B9 with several heads, heads lists them in another order")
     @DisplayName("heads 의 순서가 원본과 같다")
     void headsOrder() throws Exception {
         assertSameAnswer("heads");
@@ -164,18 +163,33 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B3 listkeys phases lacks 'publishing' and lists every changeset")
     @DisplayName("listkeys phases 가 draft 루트와 publishing 표시를 원본처럼 준다")
     void listkeysPhases() throws Exception {
         assertSameAnswer("listkeys", "namespace=phases");
     }
 
     @Test
-    @Disabled(GAPS + "B4 bookmark listing ends with a newline the original does not send")
-    @DisplayName("listkeys bookmarks / branchmap 의 줄바꿈이 원본과 같다")
-    void trailingNewlines() throws Exception {
+    @DisplayName("listkeys bookmarks 의 줄바꿈이, 그리고 브랜치가 둘인 저장소의 branchmap 이 원본과 같다")
+    void trailingNewlinesAndBranchmap() throws Exception {
         assertSameAnswer("listkeys", "namespace=bookmarks");
         assertSameAnswer("branchmap");
+    }
+
+    @Test
+    @DisplayName("빈 저장소의 heads, branchmap, listkeys 가 원본과 같다")
+    void emptyRepository() throws Exception {
+        Path empty = Files.createDirectories(tmp.resolve("empty"));
+        LocalHg.hgIn(tmp, "empty", "init", ".");
+        Path saved = repo;
+        repo = empty;
+        try {
+            assertSameAnswer("heads");
+            assertSameAnswer("branchmap");
+            assertSameAnswer("listkeys", "namespace=bookmarks");
+            assertSameAnswer("listkeys", "namespace=phases");
+        } finally {
+            repo = saved;
+        }
     }
 
     @Test
@@ -267,7 +281,6 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B3 a clone from hg4j marks every changeset draft; a publishing server makes them public")
     @DisplayName("hg4j 서버에서 clone 한 변경셋이 원본 서버에서처럼 public 이다")
     void cloneIsPublic() throws Exception {
         assertEquals(clonePhases(true, "phase"), clonePhases(false, "phase"));

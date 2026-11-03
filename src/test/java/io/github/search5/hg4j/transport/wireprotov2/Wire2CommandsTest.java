@@ -800,7 +800,7 @@ public class Wire2CommandsTest {
     }
 
     @Test
-    public void readListKeysPhasesNamespaceOnlyReportsNonPublicRevisions(@TempDir Path tempDir) throws Exception {
+    public void readListKeysPhasesReportsDraftRootsAndThePublishingFlag(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         byte[] pub = writeAndCommit(tempDir.toFile(), repo, "a.txt", "one", "c1");
         byte[] draft = writeAndCommit(tempDir.toFile(), repo, "a.txt", "two", "c2");
@@ -809,9 +809,24 @@ public class Wire2CommandsTest {
         new PhaseCommand(repo).setRevision(hex(draft)).setPhase(1).call();
         new PhaseCommand(repo).setRevision(hex(secret)).setPhase(2).setForce(true).call();
 
+        // Real hg's phases.listphases(): only the DRAFT ROOTS, valued "1", plus publishing=True for a publishing
+        // repository (the default). Public changesets and secret ones are not offered.
         Map<String, String> keys = Wire2Commands.readListKeys(repo, "phases");
-        assertFalse(keys.containsKey(hex(pub)), "public revisions are not reported as phase roots");
+        assertFalse(keys.containsKey(hex(pub)), "public revisions are not reported");
         assertEquals("1", keys.get(hex(draft)));
-        assertEquals("2", keys.get(hex(secret)));
+        assertFalse(keys.containsKey(hex(secret)), "secret changesets are never offered to a client");
+        assertEquals("True", keys.get("publishing"));
+        assertEquals(2, keys.size());
+    }
+
+    @Test
+    public void readListKeysPhasesOmitsThePublishingFlagWhenThePublishOptionIsOff(@TempDir Path tempDir) throws Exception {
+        HgRepository init = Hg.init().setDirectory(tempDir.toFile()).call();
+        writeAndCommit(tempDir.toFile(), init, "a.txt", "one", "c1");
+        java.nio.file.Files.writeString(tempDir.resolve(".hg/hgrc"), "[phases]\npublish = false\n");
+
+        Map<String, String> keys = Wire2Commands.readListKeys(new HgRepository(tempDir.toFile()), "phases");
+        assertFalse(keys.containsKey("publishing"));
+        assertEquals(1, keys.size(), "the one draft root");
     }
 }

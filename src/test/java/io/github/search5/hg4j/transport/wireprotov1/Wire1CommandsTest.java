@@ -54,9 +54,10 @@ public class Wire1CommandsTest {
     }
 
     @Test
-    public void headsOnAnEmptyRepositoryReturnsJustANewline(@TempDir Path tempDir) throws Exception {
+    public void headsOnAnEmptyRepositoryReturnsTheNullNode(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        assertEquals("\n", bytes(Wire1Commands.heads(repo)));
+        // real hg answers with the null node for an empty repository (verified against hg 7.2 in WireServerParityInteropTest)
+        assertEquals("0".repeat(40) + "\n", bytes(Wire1Commands.heads(repo)));
     }
 
     @Test
@@ -112,7 +113,8 @@ public class Wire1CommandsTest {
 
         Map<String, String> listArgs = new LinkedHashMap<>();
         listArgs.put("namespace", "bookmarks");
-        assertEquals("mybook\t" + hex + "\n", bytes(Wire1Commands.listkeys(repo, listArgs)));
+        // no trailing newline: pushkey.encodekeys joins the lines with '\n'
+        assertEquals("mybook\t" + hex, bytes(Wire1Commands.listkeys(repo, listArgs)));
     }
 
     // yona-wiki P3-21/P3-22 — pushkey's hook-aware overload is the only place hg4j can observe "a
@@ -194,7 +196,7 @@ public class Wire1CommandsTest {
 
         Map<String, String> listArgs = new LinkedHashMap<>();
         listArgs.put("namespace", "bookmarks");
-        assertEquals("main\t" + hex + "\n", bytes(Wire1Commands.listkeys(repo, listArgs)));
+        assertEquals("main\t" + hex, bytes(Wire1Commands.listkeys(repo, listArgs)));
     }
 
     // A rejected/failed applyPushkey (e.g. a real compare-and-swap mismatch on "old") must not run

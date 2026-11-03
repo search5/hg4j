@@ -86,6 +86,22 @@ public class PhaseRoots {
     }
 
     /**
+     * The nodes recorded in {@code phaseroots} with exactly this phase: the boundary changesets (a root and all
+     * its descendants are at least that phase), NOT every changeset in the phase. A recorded root may itself be
+     * of a higher phase through its ancestors, so callers that need the effective phase check it with
+     * {@link #getPhase(NodeId, Revlog)}.
+     */
+    public synchronized List<NodeId> getRoots(Phase phase) {
+        List<NodeId> roots = new java.util.ArrayList<>();
+        for (Map.Entry<NodeId, Phase> e : rootsMap.entrySet()) {
+            if (e.getValue() == phase) {
+                roots.add(e.getKey());
+            }
+        }
+        return roots;
+    }
+
+    /**
      * Checks the Phase of a specific node (functional interface based, supports FS-isolated testing).
      */
     public synchronized Phase getPhase(NodeId node, Function<NodeId, NodeId[]> parentLookup) {

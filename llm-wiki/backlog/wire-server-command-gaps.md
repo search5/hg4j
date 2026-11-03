@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-03
-status: current (감사 완료, 수정 미착수)
+status: current (B8, B3, B4, B9 수정 완료. 나머지 진행 중 - 아래 표의 상태 열 참고)
 ---
 
 # 서버 와이어 명령 점검: 원본 Mercurial 대비 누락과 차이
@@ -22,17 +22,29 @@ status: current (감사 완료, 수정 미착수)
 
 ## 결함 (실측으로 확인됨)
 
-| ID | 증상 | 실제 클라이언트에서 보이는 결과 | 원인(확인된 범위) | 우선순위 |
-|---|---|---|---|---|
-| **B8** | `getbundle`이 `heads`를 반영하지 않음. `heads=rev1`과 `heads=rev3`의 응답이 같은 크기(2157B) | `hg clone -r 1`이 리비전 0~1이 아니라 **전체 5개**를 받음 | `Wire1Commands.getbundle`은 `heads`를 `HgLocalClient.getBundle`에 넘기지만 bundle2 경로에서 효과가 없다. 정확한 지점은 미조사 | **높음** |
-| **B3** | `listkeys phases`가 모든 변경셋을 draft(1)로 나열하고 `publishing True`를 보내지 않음. 원본은 draft **루트**만 + `publishing True` | hg4j에서 `clone`한 변경셋이 **전부 `draft`**. 원본 서버에서는 전부 `public` | `Wire2Commands.readListKeys`의 phases 구현. 서버 저장소의 publishing 여부 판단이 없음 | **높음** |
-| **B1** | `lookup`이 북마크, 태그, 브랜치 이름을 풀지 못함(`1 <hex>` 대신 `0 unknown revision`). 16진수, `tip`은 정상 | `clone -r bm1`, `-r v1`, `-r default`, `-r feature` 모두 `abort: unknown revision` | `NodeIdUtil.resolveRevision`이 이름 공간(bookmark/tag/branch)을 모름 | **높음** |
-| **B2** | `listkeys namespaces`가 빈 응답. 원본은 `bookmarks`, `namespaces`, `phases` | `hg incoming -B`/`outgoing -B`가 `remote doesn't support bookmarks`. 원본 클라이언트는 `commands.py:4015`, `:4670`, `:3555`, `:7034`와 push 시 obsolete 확인(`exchange.py:775`)에서 이 목록을 본다 | `readListKeys`가 `namespaces`를 처리하지 않음 | 중간 |
-| B4 | `branchmap`, `listkeys bookmarks` 응답 끝에 개행이 하나 더 있음(원본은 없음) | 실제 클라이언트는 줄 단위로 파싱해 영향이 보이지 않음(기존 clone/pull interop 통과) | 응답 조립 방식 | 낮음 |
-| B5 | `between`이 서로 다른 두 노드에 대해 중간 노드를 주지 않음(`1\n\n`). 원본은 1, 2, 4, 8 간격의 이분 탐색 목록 | 구형 discovery 클라이언트에서만 의미(현대 클라이언트는 `heads`/`known`). 핸드셰이크용 null-null 쌍은 동일 | 소스에 "실제 이분 탐색은 구현하지 않았다"고 적혀 있음 | 낮음 |
-| B6 | `branches` 명령 없음 | 구형 discovery에서만 사용 | 미구현 | 낮음 |
-| B7 | 지원하지 않는 명령에 원본은 **빈 응답**(`0\n`)을 주고 계속하는데, hg4j는 `unsupported command: x` 텍스트를 응답 본문으로 보냄 | 광고하지 않은 명령을 호출하는 클라이언트가 오류 텍스트를 데이터로 읽음. 인자 줄도 별도 명령으로 오해해 오류가 연쇄됨 | `Wire1Response.oobError` 사용 | 중간 |
-| B9 | 헤드가 둘 이상이면 `heads` 순서가 원본과 다름(집합은 같음) | 순서에 의존하는 출력에서만 차이. 헤드가 하나면 동일 | `HgLocalClient#getHeads` 정렬 | 낮음 |
+| ID | 상태 | 증상 | 실제 클라이언트에서 보이는 결과 | 원인(확인된 범위) | 우선순위 |
+|---|---|---|---|---|---|
+| **B8** | **수정됨** (4b24d10) | `getbundle`이 `heads`를 반영하지 않음. `heads=rev1`과 `heads=rev3`의 응답이 같은 크기(2157B) | `hg clone -r 1`이 리비전 0~1이 아니라 **전체 5개**를 받음 | `Wire1Commands.getbundle`은 `heads`를 `HgLocalClient.getBundle`에 넘기지만 bundle2 경로에서 효과가 없다. 정확한 지점은 미조사 | **높음** |
+| **B3** | **수정됨** | `listkeys phases`가 모든 변경셋을 draft(1)로 나열하고 `publishing True`를 보내지 않음. 원본은 draft **루트**만 + `publishing True` | hg4j에서 `clone`한 변경셋이 **전부 `draft`**. 원본 서버에서는 전부 `public` | `Wire2Commands.readListKeys`의 phases 구현. 서버 저장소의 publishing 여부 판단이 없음 | **높음** |
+| **B1** | 미수정 | `lookup`이 북마크, 태그, 브랜치 이름을 풀지 못함(`1 <hex>` 대신 `0 unknown revision`). 16진수, `tip`은 정상 | `clone -r bm1`, `-r v1`, `-r default`, `-r feature` 모두 `abort: unknown revision` | `NodeIdUtil.resolveRevision`이 이름 공간(bookmark/tag/branch)을 모름 | **높음** |
+| **B2** | 미수정 | `listkeys namespaces`가 빈 응답. 원본은 `bookmarks`, `namespaces`, `phases` | `hg incoming -B`/`outgoing -B`가 `remote doesn't support bookmarks`. 원본 클라이언트는 `commands.py:4015`, `:4670`, `:3555`, `:7034`와 push 시 obsolete 확인(`exchange.py:775`)에서 이 목록을 본다 | `readListKeys`가 `namespaces`를 처리하지 않음 | 중간 |
+| B4 | **수정됨** | `branchmap`, `listkeys bookmarks` 응답 끝에 개행이 하나 더 있음(원본은 없음) | 실제 클라이언트는 줄 단위로 파싱해 영향이 보이지 않음(기존 clone/pull interop 통과) | 응답 조립 방식 | 낮음 |
+| B5 | 미수정 | `between`이 서로 다른 두 노드에 대해 중간 노드를 주지 않음(`1\n\n`). 원본은 1, 2, 4, 8 간격의 이분 탐색 목록 | 구형 discovery 클라이언트에서만 의미(현대 클라이언트는 `heads`/`known`). 핸드셰이크용 null-null 쌍은 동일 | 소스에 "실제 이분 탐색은 구현하지 않았다"고 적혀 있음 | 낮음 |
+| B6 | 미수정 | `branches` 명령 없음 | 구형 discovery에서만 사용 | 미구현 | 낮음 |
+| B7 | 미수정 | 지원하지 않는 명령에 원본은 **빈 응답**(`0\n`)을 주고 계속하는데, hg4j는 `unsupported command: x` 텍스트를 응답 본문으로 보냄 | 광고하지 않은 명령을 호출하는 클라이언트가 오류 텍스트를 데이터로 읽음. 인자 줄도 별도 명령으로 오해해 오류가 연쇄됨 | `Wire1Response.oobError` 사용 | 중간 |
+| B9 | **수정됨** | 헤드가 둘 이상이면 `heads` 순서가 원본과 다름(집합은 같음) | 순서에 의존하는 출력에서만 차이. 헤드가 하나면 동일 | `HgLocalClient#getHeads` 정렬 | 낮음 |
+
+### 수정하면서 추가로 드러난 것
+- **B10 (수정됨)**: `branchmap`이 **현재 브랜치 하나**에 저장소의 모든 헤드를 붙여 내보냈다(브랜치가 둘이면 틀림). 이제
+  `HgLocalClient#getBranchHeads`로 브랜치별 헤드를 내보내며 원본과 바이트까지 같다(브랜치 2개 저장소로 확인).
+- **B11 (수정됨)**: 빈 저장소의 `heads`가 널 노드(`000...0\n`) 대신 `\n`을 줬다. 원본은 널 노드를 준다.
+- **hg4j 클라이언트 쪽 한계(미수정)**: `FetchCommand`는 원격이 `publishing`이어도 가져온 변경셋을 public으로 만들지 않고
+  전부 draft로 둔다(원본 `exchange._pullphase`는 publishing이면 public). 서버가 이제 `publishing`을 보내므로 클라이언트가 그
+  키를 건너뛰도록만 방어했다(`Integer.parseInt("True")` 예외로 단계 동기화 전체가 중단되던 문제를 방지).
+- **기존 불안정 테스트**: `PushLockRaceRealHgInteropTest`는 변경 이전의 깨끗한 체크아웃에서도 6회 중 3회 실패했다. 두 실제
+  `hg push`를 동시에 출발시키므로 패자의 거부 문구가 "changed while pushing"(서버 재검증)일 수도, "push creates new remote
+  head"(클라이언트가 이미 새 head를 봄, 원본과 같은 문구)일 수도 있는데 앞의 것만 허용했기 때문이다. 둘 다 정당한 거부이므로
+  둘 다 허용하도록 고쳤다(성공은 정확히 1건, `hg verify` 통과 등 핵심 단언은 그대로).
 
 각 결함에 대응하는 **실패 테스트가 `@Disabled`로 준비**되어 있다(`WireServerParityInteropTest`). 수정할 때 해당 항목의
 `@Disabled`를 풀면 빨강 → 초록이다. 현재 통과하는 항목(`heads` 집합, `known`, `lookup`의 16진수/`tip`/없는 이름,

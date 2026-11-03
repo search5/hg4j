@@ -502,6 +502,13 @@ public class FetchCommand {
             if (remotePhases != null && !remotePhases.isEmpty()) {
                 for (Map.Entry<String, String> entry : remotePhases.entrySet()) {
                     String hexNode = entry.getKey();
+                    if (hexNode.length() != 40) {
+                        // "publishing" -> "True": data about the remote's publish option, not a changeset (real
+                        // hg's phases.analyzeremotephases ignores it the same way). This client does not yet make
+                        // what it pulled public when the remote is publishing; see
+                        // llm-wiki/backlog/wire-server-command-gaps.md.
+                        continue;
+                    }
                     int phaseVal = Integer.parseInt(entry.getValue().trim());
                     byte[] nodeBytes = NodeIdUtil.fromHex(hexNode);
                     if (localChangelog.findRevision(nodeBytes) != -1) {

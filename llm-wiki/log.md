@@ -589,3 +589,8 @@
 - 발견: 이름이 없는 명령 8개는 대부분 서버가 광고하지 않아 클라이언트가 부르지 않으므로 영향이 없다. 실제 문제는 구현은 있으나 동작이 다른 곳: `clone`한 변경셋이 전부 draft(B3), 이름으로 `clone -r` 불가(B1), `clone -r <rev>`가 전체 이력 수신(B8), `incoming -B` 불가(B2).
 - 준비: `WireServerParityInteropTest`(통과 항목 고정 + 결함마다 `@Disabled` 실패 테스트). 레지스트리에 등록([[known-bugs-registry]]).
 - 한계: wire protocol v2는 대조하지 못함(이 hg 소스에 v2 서버가 없음), HTTP 서버와 batch/pushkey/unbundle/changegroup*는 이번에 대조하지 않음.
+
+## [2026-11-03] 서버 와이어 수정: B8, 이어서 B3(+B4, B9, branchmap, 빈 저장소 heads)
+- B8: `getbundle`이 `heads`를 반영하도록 `HgLocalClient#getBundle`을 `ancestors(heads) - ancestors(common)` 집합 기반으로 재작성. `HgSshClientTransportTest`가 가짜 head("head1")에 기대고 있던 것도 수정.
+- B3: `listkeys phases`를 원본처럼 draft 루트 + `publishing True`로. hg4j 클라이언트(`FetchCommand`)가 숫자가 아닌 키를 건너뛰도록 방어. B4(`listkeys` 끝 개행), B9(`heads` 최신 우선), 그리고 `branchmap`이 브랜치 하나만 내보내던 문제와 빈 저장소 `heads`가 널 노드를 안 주던 문제를 같이 수정.
+- 기존 테스트 4개가 예전의 틀린 동작을 기대값으로 고정하고 있어 원본 동작으로 갱신. `PushLockRaceRealHgInteropTest`는 수정 이전에도 6회 중 3회 실패하는 불안정 테스트였음을 확인하고 정당한 거부 문구 두 가지를 모두 허용하도록 수정. 상세는 [[wire-server-command-gaps]].

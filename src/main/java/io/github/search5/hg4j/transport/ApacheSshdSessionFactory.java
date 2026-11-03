@@ -26,11 +26,36 @@ import java.nio.file.Paths;
  *       separate security decision.</li>
  * </ul>
  *
+ * <h2>Authentication</h2>
+ * <p>Besides an explicit password or private key, keys of a running {@code ssh-agent}
+ * ({@code SSH_AUTH_SOCK}, Unix only) are tried, and so are the default identities
+ * ({@code ~/.ssh/id_*}) that Apache SSHD loads on its own, as {@code ssh(1)} does. The JSch based factory
+ * this class replaced did neither.</p>
+ *
  * <h2>Client configuration</h2>
  * <p>If {@code ~/.ssh/config} exists it is applied ({@code HostName}, {@code User}, {@code Port},
  * {@code IdentityFile}, ...) before connecting.</p>
  */
 public class ApacheSshdSessionFactory implements SshSessionFactory {
+
+    private final Path agentSocket;
+
+    /** Uses the {@code ssh-agent} named by the {@code SSH_AUTH_SOCK} environment variable, if any. */
+    public ApacheSshdSessionFactory() {
+        this(agentSocketFromEnvironment());
+    }
+
+    /**
+     * @param agentSocket the {@code ssh-agent} socket to authenticate with, or null to use no agent
+     */
+    public ApacheSshdSessionFactory(Path agentSocket) {
+        this.agentSocket = agentSocket;
+    }
+
+    private static Path agentSocketFromEnvironment() {
+        String env = System.getenv("SSH_AUTH_SOCK");
+        return env == null || env.isBlank() ? null : Paths.get(env);
+    }
 
     @Override
     public SshSession createSession(String host, int port, String username, String password,
@@ -49,6 +74,10 @@ public class ApacheSshdSessionFactory implements SshSessionFactory {
                     new DefaultKnownHostsServerKeyVerifier(RejectAllServerKeyVerifier.INSTANCE, false, knownHosts));
         } else {
             client.setServerKeyVerifier(AcceptAllServerKeyVerifier.INSTANCE);
+        }
+
+        if (agentSocket != null) {
+            client.setAgentFactory(new UnixSocketSshAgentFactory(agentSocket));
         }
 
         Path sshConfig = sshDir.resolve("config");

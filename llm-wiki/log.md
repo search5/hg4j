@@ -565,3 +565,8 @@
 - SSH: jsch 제거, `ApacheSshdSession`/`ApacheSshdSessionFactory`/`SshAuthenticationException` 추가, `~/.ssh/config` 지원, 포트/사용자 미지정 전달. 상세와 동작 보존표는 [[ssh-apache-sshd-migration]]. 검증 중 `known_hosts` strict 모드가 664 권한 파일을 거부하는 문제를 발견해 `strict=false`로 보존(회귀 테스트 있음).
 - Docker: interop 테스트의 `hg` 오라클을 로컬 빌드로 교체 ([[interop-local-hg-instead-of-docker]]). 전체 `interopTest`는 약 63분, 일반 `test`는 약 2분. 처음 30건 실패(Worktree 테스트의 sharedpath 컨테이너 경로 변환)는 변환 제거로 해결하고 해당 클래스만 재실행해 30/30 확인. 전체 재실행은 하지 않음.
 - 미완: ssh-agent 구현(별도 커밋), 클래스 이름의 `Docker` 잔재 정리, `HgSshClient.close()`의 예외 삼킴.
+
+## [2026-11-03] ssh-agent 지원 추가
+- `UnixSocketSshAgent`/`UnixSocketSshAgentFactory` 추가(Java 유닉스 도메인 소켓, 추가 의존성 없음). SSHD 기본 agent 클라이언트는 tomcat-apr 네이티브 라이브러리가 필요해 쓰지 않음. 상세는 [[ssh-apache-sshd-migration]].
+- 알아둘 점: SSHD는 `~/.ssh/id_*` 기본 신원도 자동으로 시도한다(jsch는 명시한 키만). agent 접속 실패는 경고 후 agent 없이 계속하며 다른 방법이 없으면 인증 실패로 끝난다.
+- 확인 범위: 커버리지 게이트(전체 interopTest 필요, 약 65분)는 실행하지 않음. SSH 관련 테스트만 실행.

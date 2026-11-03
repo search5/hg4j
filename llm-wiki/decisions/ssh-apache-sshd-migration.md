@@ -39,11 +39,23 @@ status: current
 `IOException`을 삼킨다. 이 인터페이스 변경은 이번 범위를 벗어나서 손대지 않았다. `ensureConnected()`의 실패
 경로에서 원래 예외를 가리지 않아야 한다는 이유도 있다.
 
-## ssh-agent
+## ssh-agent (구현함, 별도 커밋)
 SSHD의 유닉스 소켓 agent 클라이언트(`org.apache.sshd.agent.unix.AgentClient`)는 `tomcat-apr` 네이티브
-라이브러리를 요구한다(소스 확인). jsch 시절에도 agent 연동은 `setAgentForwarding(true)` 한 줄뿐이었고 실제
-agent 인증은 없었다. 이번 커밋에는 포함하지 않았다. 계획: Java 21의 유닉스 도메인 소켓으로 추가 의존성 없이
-`SshAgent` 구현을 작성(별도 커밋).
+라이브러리를 요구한다(소스 확인). 추가 의존성 없이 Java 16+의 유닉스 도메인 소켓으로 `UnixSocketSshAgent`
+(`AbstractAgentProxy` 상속)와 `UnixSocketSshAgentFactory`를 직접 작성했다. 프레임은 표준 agent 프로토콜(4바이트
+길이 + 본문)이며 응답 길이는 256KB로 제한한다. jsch 시절에는 `setAgentForwarding(true)` 한 줄뿐이어서 실제 agent
+인증은 없었으므로 **신규 기능**이다.
+- 소켓은 `SSH_AUTH_SOCK`에서 읽는다. `new ApacheSshdSessionFactory(Path)`로 명시하거나 null로 끌 수 있다(테스트용).
+- 한계: Windows의 OpenSSH named pipe(`\\.\pipe\openssh-ssh-agent`)는 미지원. agent 포워딩 미지원.
+  `~/.ssh/config`의 `IdentityAgent`는 해석하지 않는다.
+- **의도적 선택(삼키는 예외와 관련)**: 소켓이 있는데 접속하거나 신원 목록을 읽지 못하면 경고 로그를 남기고
+  agent 없이 인증을 계속한다(`ssh(1)`과 같은 동작). 그렇지 않으면 오래된 `SSH_AUTH_SOCK` 하나 때문에 비밀번호
+  인증까지 막힌다. 성공으로 위장하지는 않는다: 다른 방법도 없으면 `SshAuthenticationException`으로 끝난다(테스트 있음).
+
+## jsch 대비 인증 동작이 늘어난 부분
+Apache SSHD 클라이언트는 `start()` 때 기본 신원(`~/.ssh/id_*`)을 스스로 불러 시도한다(`ssh(1)`과 같음). jsch
+시절에는 명시한 키만 썼다. 또 ssh-agent의 키도 시도한다. 따라서 명시 자격 증명이 틀려도 기본 키나 agent 키가 서버에
+등록되어 있으면 로그인될 수 있다. 의도한 `ssh` 호환 동작이지만 jsch와 다르므로 기록한다.
 
 ## 검증
 - 신규 `ApacheSshdSessionTest`(실제 임베디드 SSHD에 TCP로 접속, 목 없음): 비밀번호, 키, 암호문 키(맞음/틀림),
@@ -53,4 +65,6 @@ agent 인증은 없었다. 이번 커밋에는 포함하지 않았다. 계획: J
   위 `known_hosts`/키 테스트로, `JschSshSessionCoverageTest`(미연결 상태 `IllegalStateException`, 중복 connect,
   close 무예외)는 `executeBeforeConnect`/`connectTwice`/`closeWithoutConnect`/`closeTwice` 테스트로 이전.
   jsch 내부 클래스를 리플렉션으로 건드리던 `close()` 예외 삼킴 테스트는 삼킴 자체를 없앴으므로 대응 테스트가 없다.
+- agent: 실제 `ssh-agent` 프로세스를 띄워 키를 등록하고(`ssh-add`) 인증 성공/키 없음/허용되지 않은 키/접속 불가 소켓
+  (비밀번호로 계속, 다른 방법 없으면 실패)/신원 목록 읽기/비정상 길이 접두 거부를 확인.
 - 기존 `HgSshClientTest`, `HgSshClientTransportTest`, `HgSshWireServer*` 통과.

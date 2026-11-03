@@ -26,7 +26,8 @@ HTTP/SSH 와이어 프로토콜 구현. JGit의 `org.eclipse.jgit.transport`에 
   라이브러리 독립 예외 `SshAuthenticationException`으로 전파되어 `HgSshClient`가 `HgAuthException`으로
   바꾼다. 지원 범위: 비밀번호, 개인키(+암호문) 인증, `~/.ssh/known_hosts` 검증, `~/.ssh/config`의
   `HostName`/`User`/`Port`/`IdentityFile`. 포트와 사용자명이 URL에 없으면 "미지정"(0 / null)으로
-  넘겨 설정 파일이 정하고, 설정에도 없으면 22와 로컬 사용자를 쓴다. ssh-agent는 미지원(계획: 별도 커밋).
+  넘겨 설정 파일이 정하고, 설정에도 없으면 22와 로컬 사용자를 쓴다. `SSH_AUTH_SOCK`의 ssh-agent 인증은 `UnixSocketSshAgent`/`UnixSocketSshAgentFactory`가
+  유닉스 도메인 소켓으로 직접 처리한다(Windows named pipe와 포워딩은 미지원).
 - `HgLocalClient`: 로컬 파일시스템 저장소 간 클론/동기화.
 - `HgHttpWireServer`: 서버 측 HTTP 와이어 프로토콜(v1 `?cmd=` GET/POST + v2 `/api/<namespace>/
   <ro|rw>/<command>` 프레이밍) 구현체. `jakarta.servlet.http.HttpServlet`을 상속한다

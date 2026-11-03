@@ -72,7 +72,7 @@ public class ApacheSshdSessionTest {
 
     private SshSession session(String host, String user, String password, String key, String passphrase)
             throws Exception {
-        return new ApacheSshdSessionFactory().createSession(host, port, user, password, key, passphrase);
+        return new ApacheSshdSessionFactory((Path) null).createSession(host, port, user, password, key, passphrase);
     }
 
     private static String readLine(InputStream in) throws IOException {
@@ -193,7 +193,7 @@ public class ApacheSshdSessionTest {
         try (java.net.ServerSocket probe = new java.net.ServerSocket(0)) {
             closedPort = probe.getLocalPort();
         }
-        SshSession s = new ApacheSshdSessionFactory()
+        SshSession s = new ApacheSshdSessionFactory((Path) null)
                 .createSession("127.0.0.1", closedPort, "hg4juser", "hg4jpass", null, null);
         try {
             Exception ex = assertThrows(Exception.class, () -> s.connect(2_000));
@@ -380,7 +380,7 @@ public class ApacheSshdSessionTest {
     void sshConfig_unspecifiedPort_usesConfigPort() throws Exception {
         Files.writeString(Path.of(System.getProperty("user.home"), ".ssh", "config"),
                 "Host hgport\n  HostName 127.0.0.1\n  Port " + port + "\n  User hg4juser\n");
-        try (SshSession s = new ApacheSshdSessionFactory().createSession("hgport", 0, null, "hg4jpass", null, null)) {
+        try (SshSession s = new ApacheSshdSessionFactory((Path) null).createSession("hgport", 0, null, "hg4jpass", null, null)) {
             assertDoesNotThrow(() -> s.connect(TIMEOUT_MS));
         }
     }
@@ -394,7 +394,7 @@ public class ApacheSshdSessionTest {
         }
         Files.writeString(Path.of(System.getProperty("user.home"), ".ssh", "config"),
                 "Host hgport\n  HostName 127.0.0.1\n  Port " + port + "\n  User hg4juser\n");
-        SshSession s = new ApacheSshdSessionFactory()
+        SshSession s = new ApacheSshdSessionFactory((Path) null)
                 .createSession("hgport", closedPort, null, "hg4jpass", null, null);
         try {
             Exception ex = assertThrows(Exception.class, () -> s.connect(2_000));
@@ -427,6 +427,156 @@ public class ApacheSshdSessionTest {
             s.connect(TIMEOUT_MS);
         }
         assertEquals(localUser, seen.get());
+    }
+
+    // ───────────────────────── ssh-agent ─────────────────────────
+
+    private final java.util.List<Process> agents = new java.util.ArrayList<>();
+
+    @AfterEach
+    void stopAgents() throws Exception {
+        for (Process p : agents) {
+            p.destroy();
+            p.waitFor();
+        }
+        agents.clear();
+    }
+
+    private static boolean isSshAgentAvailable() {
+        try {
+            return new ProcessBuilder("ssh-agent", "-h").redirectErrorStream(true).start().waitFor() >= 0
+                    && new ProcessBuilder("ssh-add", "-h").redirectErrorStream(true).start().waitFor() >= 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Starts a real foreground ssh-agent on a fresh socket and returns the socket path. */
+    private Path startAgent() throws Exception {
+        Assumptions.assumeTrue(isSshAgentAvailable(), "ssh-agent/ssh-add are not available. Skipping.");
+        Path socket = tempDir.resolve("agent-" + System.nanoTime() + ".sock");
+        Process p = new ProcessBuilder("ssh-agent", "-D", "-a", socket.toString())
+                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+        agents.add(p);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!Files.exists(socket) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertTrue(Files.exists(socket), "ssh-agent did not create its socket");
+        return socket;
+    }
+
+    private static void addToAgent(Path socket, Path privateKey) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder("ssh-add", privateKey.toString()).redirectErrorStream(true);
+        pb.environment().put("SSH_AUTH_SOCK", socket.toString());
+        Process p = pb.start();
+        byte[] out = p.getInputStream().readAllBytes();
+        assertEquals(0, p.waitFor(), new String(out));
+    }
+
+    @Test
+    @DisplayName("ssh-agent 가 들고 있는 키로 인증된다(개인키 경로를 주지 않음)")
+    void agent_authenticatesWithKeyHeldByAgent() throws Exception {
+        Path key = generateKey("id_agent", null);
+        acceptOnlyKey(key);
+        Path socket = startAgent();
+        addToAgent(socket, key);
+        try (SshSession s = new ApacheSshdSessionFactory(socket)
+                .createSession("127.0.0.1", port, "hg4juser", null, null, null)) {
+            s.connect(TIMEOUT_MS);
+            s.executeCommand("echo", TIMEOUT_MS);
+            s.getOutputStream().write("agent-ok\n".getBytes(StandardCharsets.UTF_8));
+            s.getOutputStream().flush();
+            assertEquals("agent-ok", readLine(s.getInputStream()));
+        }
+    }
+
+    @Test
+    @DisplayName("agent 에 키가 없으면 SshAuthenticationException")
+    void agent_withoutAnyKey_failsAuthentication() throws Exception {
+        Path key = generateKey("id_not_in_agent", null);
+        acceptOnlyKey(key);
+        Path socket = startAgent();
+        try (SshSession s = new ApacheSshdSessionFactory(socket)
+                .createSession("127.0.0.1", port, "hg4juser", null, null, null)) {
+            assertThrows(SshAuthenticationException.class, () -> s.connect(TIMEOUT_MS));
+        }
+    }
+
+    @Test
+    @DisplayName("agent 에 서버가 허용하지 않는 키만 있으면 SshAuthenticationException")
+    void agent_withOnlyUnauthorizedKey_failsAuthentication() throws Exception {
+        Path authorized = generateKey("id_authorized_agent", null);
+        Path stranger = generateKey("id_stranger_agent", null);
+        acceptOnlyKey(authorized);
+        Path socket = startAgent();
+        addToAgent(socket, stranger);
+        try (SshSession s = new ApacheSshdSessionFactory(socket)
+                .createSession("127.0.0.1", port, "hg4juser", null, null, null)) {
+            assertThrows(SshAuthenticationException.class, () -> s.connect(TIMEOUT_MS));
+        }
+    }
+
+    @Test
+    @DisplayName("agent 소켓에 접속할 수 없으면 agent 없이 계속 진행해 비밀번호로 인증된다")
+    void unusableAgentSocket_fallsBackToPassword() throws Exception {
+        Path missing = tempDir.resolve("no-such-agent.sock");
+        try (SshSession s = new ApacheSshdSessionFactory(missing)
+                .createSession("127.0.0.1", port, "hg4juser", "hg4jpass", null, null)) {
+            assertDoesNotThrow(() -> s.connect(TIMEOUT_MS));
+        }
+    }
+
+    @Test
+    @DisplayName("agent 소켓에 접속할 수 없고 다른 인증도 없으면 인증 실패로 끝난다(성공으로 위장하지 않음)")
+    void unusableAgentSocket_andNoOtherCredential_stillFails() throws Exception {
+        Path missing = tempDir.resolve("no-such-agent2.sock");
+        try (SshSession s = new ApacheSshdSessionFactory(missing)
+                .createSession("127.0.0.1", port, "hg4juser", "wrong-password", null, null)) {
+            assertThrows(SshAuthenticationException.class, () -> s.connect(TIMEOUT_MS));
+        }
+    }
+
+    @Test
+    @DisplayName("UnixSocketSshAgent 는 agent 가 가진 신원 목록을 읽는다")
+    void unixSocketSshAgent_listsIdentities() throws Exception {
+        Path key = generateKey("id_listed", null);
+        Path socket = startAgent();
+        try (UnixSocketSshAgent agent = new UnixSocketSshAgent(socket)) {
+            assertFalse(agent.getIdentities().iterator().hasNext(), "fresh agent holds no identity");
+            addToAgent(socket, key);
+            int count = 0;
+            for (Object ignored : agent.getIdentities()) {
+                count++;
+            }
+            assertEquals(1, count);
+        }
+    }
+
+    @Test
+    @DisplayName("비정상적으로 큰 길이 접두를 보내는 agent 는 IOException 으로 거부된다")
+    void unixSocketSshAgent_rejectsIllogicalMessageLength() throws Exception {
+        Path socket = tempDir.resolve("evil-agent.sock");
+        try (java.nio.channels.ServerSocketChannel evil =
+                     java.nio.channels.ServerSocketChannel.open(java.net.StandardProtocolFamily.UNIX)) {
+            evil.bind(java.net.UnixDomainSocketAddress.of(socket));
+            Thread t = new Thread(() -> {
+                try (java.nio.channels.SocketChannel c = evil.accept()) {
+                    java.nio.ByteBuffer in = java.nio.ByteBuffer.allocate(64);
+                    c.read(in);
+                    c.write(java.nio.ByteBuffer.wrap(new byte[]{0x7f, (byte) 0xff, (byte) 0xff, (byte) 0xff}));
+                    Thread.sleep(500);
+                } catch (Exception ignored) {
+                    // the client side assertion below is what matters
+                }
+            }, "evil-agent");
+            t.setDaemon(true);
+            t.start();
+            try (UnixSocketSshAgent agent = new UnixSocketSshAgent(socket)) {
+                IOException ex = assertThrows(IOException.class, agent::getIdentities);
+                assertTrue(ex.getMessage().contains("Illogical"), ex.getMessage());
+            }
+        }
     }
 
     /**

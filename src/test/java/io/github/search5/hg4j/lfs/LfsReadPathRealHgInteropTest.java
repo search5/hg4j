@@ -7,6 +7,7 @@ import io.github.search5.hg4j.api.DiffCommand;
 import io.github.search5.hg4j.api.GrepCommand;
 import io.github.search5.hg4j.api.Status;
 import io.github.search5.hg4j.api.StatusCommand;
+import io.github.search5.hg4j.api.VerifyCommand;
 import io.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
@@ -124,5 +125,34 @@ class LfsReadPathRealHgInteropTest {
         Status status = new StatusCommand(open()).call();
         assertEquals(java.util.Set.of("big.txt"), new java.util.HashSet<>(status.getModified()));
         assertEquals("M big.txt", hg("status"));
+    }
+
+    @Test
+    void verifyAcceptsLfsRevisionsLikeRealHg() throws Exception {
+        assertTrue(hg("verify").contains("checked 2 changesets"), "oracle accepts the repository");
+        assertEquals(List.of(), new VerifyCommand(open()).call(), "an LFS revision's node hash covers the real content");
+    }
+
+    @Test
+    void verifyReportsAMissingOrCorruptLocalBlob() throws Exception {
+        // like real hg, a blob that is stored locally is verified against its pointer
+        File blobs = new File(dir, ".hg/store/lfs/objects");
+        File blob;
+        try (var walk = Files.walk(blobs.toPath())) {
+            blob = walk.filter(Files::isRegularFile).filter(p -> p.toFile().length() == v1.length).findFirst().orElseThrow().toFile();
+        }
+        byte[] bad = v1.clone();
+        bad[0] ^= 1;
+        Files.write(blob.toPath(), bad);
+        List<String> errors = new VerifyCommand(open()).call();
+        assertEquals(1, errors.size(), "exactly the corrupt blob is reported: " + errors);
+        assertTrue(errors.get(0).contains("big.txt") && errors.get(0).contains("corrupt lfs object"), errors.get(0));
+        String oracle;
+        try {
+            oracle = hg("verify");
+        } catch (AssertionError e) {
+            oracle = e.getMessage();
+        }
+        assertTrue(oracle.contains("big.txt"), "oracle also names the file: " + oracle);
     }
 }

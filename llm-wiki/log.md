@@ -624,3 +624,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-03] LFS Phase 2 (일부): 읽기 경로
 `HgLfsFactory#readContent`를 추가하고 `cat`, `grep`, `diff`, `archive`, `status`(stat 모호 시 내용 비교), `clone` 체크아웃, `merge`, `graft`, `rebase`, `backout`, `histedit`, `shelve`, `remove`, `bisect`가 LFS 파일의 실제 내용을 읽게 함. 발견한 결함: 변경 없는 LFS 파일이 같은 초 커밋 직후 `status`에서 수정으로 보고됨(수정함). changegroup 델타 기준을 만드는 곳(Push, Bundle, Gc, Shelve 일부)은 저장 바이트를 쓰는 것이 맞아 유지. 신규 대조 테스트 `LfsReadPathRealHgInteropTest` 6개(빨강→초록). 검증: 일반 test 전체 통과, 부분 interop 82개 클래스 1106개 실패 0(전체 interop 아님).
 미완(Phase 2 잔여): `Verify`의 blob 검사, `Annotate`/`Diff`의 `x-is-binary` 바이너리 판정, `Export`, Clone/Pull의 `prefetch` 일괄 내려받기, Merge 등의 LFS 전용 대조 테스트. [[implementation-plan-lfs]]
+
+## [2026-11-03] LFS Phase 2 마무리
+`VerifyCommand`의 LFS 검증(로컬 blob의 크기·SHA-256, 실제 내용 기준 노드 해시), `HgLfsManager#fetchObjects`(배치 한 번, 헤더 전체 전달, SHA-256 검증), `HgLfsFactory#prefetch`(Clone/Update 일괄 내려받기), `Revlog`의 changegroup 적용에서 `REVIDX_EXTSTORED` 해시 검증 생략과 플래그 보존(실제 hg LFS 저장소 clone 가능), `CloneCommand`의 `[paths] default` 기록. 테스트 `LfsCommandsRealHgInteropTest`(5개, 수정 전 코드에서 5개 모두 실패 확인), `LfsBatchFetchRealHgInteropTest`(4개), `LfsReadPathRealHgInteropTest`(8개). 결함 6건은 [[known-bugs-registry]]에 등록. 테스트가 호스트 `~/.cache/lfs`를 오염시키던 문제를 `build.gradle`의 `XDG_CACHE_HOME` 격리로 해결.
+검증: 일반 test 2346개 실패 0, 부분 interop 112개 클래스 1487개 실패 0(전체 interop 아님). 의도적 미구현: `Diff`/`Annotate`의 `x-is-binary` 최적화(hg4j에 바이너리 판정 자체가 없는 일반 공백).

@@ -103,6 +103,12 @@ test {
     maxHeapSize = "2048m"
     maxParallelForks = 1
     forkEvery = 100
+    // Keep the tests (and the real hg processes they start) away from the developer's real ~/.cache/lfs: hg4j and hg both
+    // resolve the LFS user cache from XDG_CACHE_HOME. The directory is emptied before every run so no test can pass because an
+    // earlier run left its blob behind.
+    def xdgCache = layout.buildDirectory.dir('tmp/xdg-cache')
+    environment 'XDG_CACHE_HOME', xdgCache.get().asFile.absolutePath
+    doFirst { delete xdgCache }
     // Force complete inclusion of runtime configurations to prevent JPMS/testRuntime resolution drops
     classpath = sourceSets.test.runtimeClasspath + project.configurations.testRuntimeClasspath
     finalizedBy jacocoTestReport
@@ -120,6 +126,12 @@ tasks.register('interopTest', Test) {
     maxHeapSize = "2048m"
     maxParallelForks = 1
     forkEvery = 100
+    // Keep the tests (and the real hg processes they start) away from the developer's real ~/.cache/lfs: hg4j and hg both
+    // resolve the LFS user cache from XDG_CACHE_HOME. The directory is emptied before every run so no test can pass because an
+    // earlier run left its blob behind.
+    def xdgCache = layout.buildDirectory.dir('tmp/xdg-cache')
+    environment 'XDG_CACHE_HOME', xdgCache.get().asFile.absolutePath
+    doFirst { delete xdgCache }
     classpath = sourceSets.test.runtimeClasspath + project.configurations.testRuntimeClasspath
     testClassesDirs = sourceSets.test.output.classesDirs
     binaryResultsDirectory = layout.buildDirectory.dir("interop-test-results/binary")

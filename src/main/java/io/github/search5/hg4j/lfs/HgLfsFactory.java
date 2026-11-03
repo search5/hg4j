@@ -64,4 +64,33 @@ public abstract class HgLfsFactory {
         }
         return applySmudgeFilter(repository, path, filelog.getRevisionContent(rev), filelog.isExtStored(rev));
     }
+
+    /**
+     * Fetches the blobs of every LFS revision in {@code revisions} that is not stored locally yet, with one batch request, so a
+     * checkout does not ask the server once per file (real hg's {@code fileprefetchhooks}). Does nothing when no server is
+     * configured: the later read then reports the missing object itself.
+     *
+     * @param revisions filelog to revision number pairs that are about to be read
+     */
+    public void prefetch(HgRepository repository, java.util.List<java.util.Map.Entry<Revlog, Integer>> revisions) throws IOException {
+        java.util.List<HgLfsPointer> pointers = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<Revlog, Integer> revision : revisions) {
+            if (revision.getKey().isExtStored(revision.getValue())) {
+                pointers.add(HgLfsPointer.parse(revision.getKey().getRawRevisionContent(revision.getValue())));
+            }
+        }
+        if (pointers.isEmpty()) {
+            return;
+        }
+        String url = HgLfsManager.resolveServerUrl(repository);
+        if (url == null) {
+            return;
+        }
+        try {
+            new HgLfsManager(repository.getHgDir(), repository.getConfig()).fetchObjects(pointers, url);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while fetching LFS objects", e);
+        }
+    }
 }

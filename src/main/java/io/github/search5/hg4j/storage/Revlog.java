@@ -1683,7 +1683,10 @@ public class Revlog {
         // content is replaced with a tombstone, so hash(parents, tombstone) can never equal the
         // transmitted node by design; treating that mismatch as corruption would make it
         // impossible to ever pull/clone a repository containing a censored revision.
-        if (!isCensoredText(content)) {
+        // An EXTSTORED (LFS) revision's node hash covers the REAL content, which this raw pointer text is not, and the blob may
+        // not even be here yet: real hg skips the check for it (the lfs flag processor's bypasscheckhash) and so do we.
+        boolean extStored = (entry.flags & REVIDX_EXTSTORED) != 0;
+        if (!isCensoredText(content) && !extStored) {
             byte[] expectedHash;
             try {
                 byte[] first = p1Node;
@@ -1752,6 +1755,9 @@ public class Revlog {
         // since a delta can't sensibly reconstruct a tombstone that replaced arbitrary-length
         // original content.
         int flags = isCensoredText(content) ? REVIDX_ISCENSORED : 0;
+        if (extStored) {
+            flags |= REVIDX_EXTSTORED; // the changegroup's per-entry flag, kept so the revision still reads as LFS
+        }
 
         if (!isMetadataLog && flags == 0 && rev > 0 && parent1 != -1 && chainLen < 100 && !isCensored(parent1)) {
             byte[] baseContent = getRawRevisionContent(parent1);

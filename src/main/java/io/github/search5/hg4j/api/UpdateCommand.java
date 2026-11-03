@@ -141,6 +141,30 @@ public class UpdateCommand {
                 }
             }
 
+            // one batch request for every LFS blob this update needs, instead of one request per file
+            TreeWalk prefetchWalk = new TreeWalk();
+            prefetchWalk.addTree(new ManifestTreeIterator(repository, parentRev));
+            prefetchWalk.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev)));
+            prefetchWalk.reset();
+            java.util.List<java.util.Map.Entry<Revlog, Integer>> toRead = new java.util.ArrayList<>();
+            while (prefetchWalk.next()) {
+                String prefetchPath = prefetchWalk.getPath();
+                if ((treeFilter != null && !treeFilter.accept(prefetchPath)) || !prefetchWalk.isTracked(1)) {
+                    continue;
+                }
+                File prefetchIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), prefetchPath);
+                if (!prefetchIdx.exists()) {
+                    continue; // reported by the update loop below
+                }
+                File prefetchDat = new File(prefetchIdx.getPath().substring(0, prefetchIdx.getPath().length() - 2) + ".d");
+                Revlog prefetchLog = repository.getRevlog(prefetchIdx, prefetchDat);
+                int prefetchRev = NodeIdUtil.findRevisionByNodeId(prefetchLog, prefetchWalk.getNodeId(1));
+                if (prefetchRev != -1) {
+                    toRead.add(java.util.Map.entry(prefetchLog, prefetchRev));
+                }
+            }
+            HgLfsFactory.getInstance().prefetch(repository, toRead);
+
             TreeWalk tw = new TreeWalk();
             tw.addTree(new ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest
             tw.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev))); // Tree 1: Target Commit Manifest

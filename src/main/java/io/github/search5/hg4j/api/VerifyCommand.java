@@ -1,5 +1,7 @@
 package io.github.search5.hg4j.api;
 
+import io.github.search5.hg4j.lfs.HgLfsManager;
+import io.github.search5.hg4j.lfs.HgLfsPointer;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.NodeIdUtil;
@@ -204,6 +206,27 @@ public final class VerifyCommand {
         byte[] expectedNode = rec.getNodeId();
         try {
             byte[] content = revlog.getRawRevisionContent(r);
+            if (revlog.isExtStored(r)) {
+                // LFS: the node hash covers the REAL content (plus copy metadata), not the pointer text. Like real hg's
+                // _verify_revision wrapper: a blob stored locally is verified (cheap), an absent one is skipped.
+                HgLfsPointer pointer = HgLfsPointer.parse(content);
+                HgLfsManager manager = new HgLfsManager(repository.getHgDir(), repository.getConfig());
+                if (!manager.isCached(pointer)) {
+                    return;
+                }
+                byte[] blob;
+                try {
+                    blob = manager.getCachedObject(pointer);
+                } catch (IOException corrupt) {
+                    errors.add(mismatchPrefix + ": detected corrupt lfs object: " + pointer.getOid() + " (" + corrupt.getMessage() + ")");
+                    return;
+                }
+                if (!HgLfsPointer.sha256Hex(blob).equals(pointer.getOid())) {
+                    errors.add(mismatchPrefix + ": detected corrupt lfs object: " + pointer.getOid());
+                    return;
+                }
+                content = Revlog.wrapMetadata(blob, revlog.getRevisionMetadata(r));
+            }
             byte[] p1 = (rec.getParent1() != -1) ? revlog.getIndexRecord(rec.getParent1()).getNodeId() : new byte[20];
             byte[] p2 = (rec.getParent2() != -1) ? revlog.getIndexRecord(rec.getParent2()).getNodeId() : new byte[20];
 

@@ -410,19 +410,39 @@ public final class HgLfsManager {
         if (pointer == null || lfsServerUrl == null) {
             throw new IllegalArgumentException("Pointer and server URL cannot be null");
         }
-        if (isCached(pointer)) {
-            return; // Already cached
+        fetchObjects(List.of(pointer), lfsServerUrl);
+    }
+
+    /**
+     * Downloads every not yet cached object of {@code pointers} with ONE batch request (Git LFS API v1, operation
+     * {@code download}), then one GET per object. Every header the batch answer attaches to an object's download action is
+     * sent with that GET, and each downloaded object is verified against its pointer (size and SHA-256) before it is cached.
+     *
+     * @throws io.github.search5.hg4j.lfs.errors.HgLfsException if the server refuses, an object is missing or corrupt
+     */
+    public void fetchObjects(java.util.Collection<HgLfsPointer> pointers, String lfsServerUrl)
+            throws IOException, InterruptedException {
+        if (pointers == null || lfsServerUrl == null) {
+            throw new IllegalArgumentException("Pointers and server URL cannot be null");
+        }
+        Map<String, HgLfsPointer> missing = new java.util.LinkedHashMap<>();
+        for (HgLfsPointer pointer : pointers) {
+            if (!isCached(pointer)) {
+                missing.putIfAbsent(pointer.getOid(), pointer);
+            }
+        }
+        if (missing.isEmpty()) {
+            return;
         }
 
-        // 1. Build Batch Request JSON according to Git LFS API v1 download spec
-        String batchJson = "{"
-                + "\"operation\":\"download\","
-                + "\"transfers\":[\"basic\"],"
-                + "\"objects\":[{"
-                + "\"oid\":\"" + pointer.getOid() + "\","
-                + "\"size\":" + pointer.getSize()
-                + "}]"
-                + "}";
+        StringBuilder objectsJson = new StringBuilder();
+        for (HgLfsPointer pointer : missing.values()) {
+            if (objectsJson.length() > 0) {
+                objectsJson.append(',');
+            }
+            objectsJson.append("{\"oid\":\"").append(pointer.getOid()).append("\",\"size\":").append(pointer.getSize()).append('}');
+        }
+        String batchJson = "{\"operation\":\"download\",\"transfers\":[\"basic\"],\"objects\":[" + objectsJson + "]}";
 
         HttpClient client = HttpClient.newHttpClient();
         HttpRequest batchRequest = HttpRequest.newBuilder()
@@ -439,28 +459,36 @@ public final class HgLfsManager {
         }
 
         String responseBody = batchResponse.body();
-        String downloadUrl = null;
-        String authHeaderVal = null;
-
-        // Robust LFS JSON Parsing
+        List<Object> objects;
         try {
-            MapJsonParser parser = new MapJsonParser(responseBody);
             @SuppressWarnings("unchecked")
-            Map<String, Object> resMap = (Map<String, Object>) parser.parse();
+            Map<String, Object> resMap = (Map<String, Object>) new MapJsonParser(responseBody).parse();
             @SuppressWarnings("unchecked")
-            List<Object> objects = (List<Object>) resMap.get("objects");
-            if (objects == null || objects.isEmpty()) {
-                throw new IOException("No objects in LFS batch response: " + responseBody);
+            List<Object> parsed = (List<Object>) resMap.get("objects");
+            objects = parsed;
+        } catch (IOException | RuntimeException e) {
+            throw new IOException("Failed to parse LFS batch JSON response. Body: " + responseBody, e);
+        }
+        if (objects == null || objects.isEmpty()) {
+            throw new IOException("No objects in LFS batch response: " + responseBody);
+        }
+
+        for (Object element : objects) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> objMap = (Map<String, Object>) element;
+            String oid = (String) objMap.get("oid");
+            HgLfsPointer pointer = oid == null ? null : missing.get(oid);
+            if (pointer == null) {
+                throw new IOException("LFS batch response names an object that was not requested: " + oid);
             }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> objMap = (Map<String, Object>) objects.get(0);
             if (objMap.containsKey("error")) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> errMap = (Map<String, Object>) objMap.get("error");
-                throw new IOException("LFS object download failed from batch API: " 
-                    + errMap.get("code") + " - " + errMap.get("message"));
+                Object code = errMap.get("code");
+                throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(
+                        code instanceof Number n ? n.intValue() : 0,
+                        "LFS object download failed from batch API: " + code + " - " + errMap.get("message"));
             }
-            
             @SuppressWarnings("unchecked")
             Map<String, Object> actions = (Map<String, Object>) objMap.get("actions");
             if (actions == null) {
@@ -471,36 +499,31 @@ public final class HgLfsManager {
             if (download == null) {
                 throw new IOException("No download action for LFS object: " + responseBody);
             }
-            downloadUrl = (String) download.get("href");
+            String downloadUrl = (String) download.get("href");
+            if (downloadUrl == null) {
+                throw new IOException("Failed to extract download URL from LFS batch response: " + responseBody);
+            }
+            HttpRequest.Builder getReqBuilder = HttpRequest.newBuilder().uri(URI.create(downloadUrl)).GET();
             @SuppressWarnings("unchecked")
             Map<String, Object> headers = (Map<String, Object>) download.get("header");
             if (headers != null) {
-                authHeaderVal = (String) headers.get("Authorization");
+                for (Map.Entry<String, Object> header : headers.entrySet()) {
+                    getReqBuilder.header(header.getKey(), String.valueOf(header.getValue()));
+                }
             }
-        } catch (Exception e) {
-            throw new IOException("Failed to parse LFS batch JSON response. Body: " + responseBody, e);
-        }
 
-        if (downloadUrl == null) {
-            throw new IOException("Failed to extract download URL from LFS batch response: " + responseBody);
+            HttpResponse<byte[]> getResponse = client.send(getReqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
+            if (getResponse.statusCode() != 200) {
+                throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(getResponse.statusCode(),
+                        "LFS object download failed with status: " + getResponse.statusCode() + " from: " + downloadUrl);
+            }
+            byte[] body = getResponse.body();
+            if (!HgLfsPointer.sha256Hex(body).equals(pointer.getOid())) {
+                throw new io.github.search5.hg4j.lfs.errors.HgLfsCorruptObjectException(
+                        "detected corrupt lfs object: " + pointer.getOid());
+            }
+            cacheObject(pointer, body);
         }
-
-        // 2. Download LFS object payload via HTTP GET
-        HttpRequest.Builder getReqBuilder = HttpRequest.newBuilder()
-                .uri(URI.create(downloadUrl))
-                .GET();
-        if (authHeaderVal != null) {
-            getReqBuilder.header("Authorization", authHeaderVal);
-        }
-
-        HttpResponse<byte[]> getResponse = client.send(getReqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
-        if (getResponse.statusCode() != 200) {
-            throw io.github.search5.hg4j.lfs.errors.HgLfsException.forStatus(getResponse.statusCode(),
-                    "LFS object download failed with status: " + getResponse.statusCode() + " from: " + downloadUrl);
-        }
-
-        // 3. Cache downloaded object into local store/lfs/objects/
-        cacheObject(pointer, getResponse.body());
     }
 
     public static class MapJsonParser {

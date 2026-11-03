@@ -64,6 +64,7 @@ public class CloneCommand {
 
         // 1. Initialize empty repository
         HgRepository repo = Hg.init().setDirectory(directory).call();
+        repo = recordDefaultPath(repo);
         monitor.update(1);
 
         // 2. Pull changes from remote source
@@ -93,6 +94,31 @@ public class CloneCommand {
 
         monitor.end();
         return repo;
+    }
+
+    /**
+     * Writes {@code [paths] default = <source>} into the new repository's {@code .hg/hgrc}, in the layout real {@code hg clone}
+     * uses, and reopens the repository so its configuration includes it. Later {@code pull}/{@code push} without a destination
+     * and the LFS server address (derived from the default path) depend on it. A local source is stored as an absolute path.
+     */
+    private HgRepository recordDefaultPath(HgRepository repo) throws IOException {
+        String stored = sourceUrl.contains("://") ? sourceUrl : new File(sourceUrl).getAbsolutePath();
+        String hgrc = "# example repository config (see 'hg help config' for more info)\n"
+                + "[paths]\n"
+                + "default = " + stored + "\n"
+                + "\n"
+                + "# path aliases to other clones of this repo in URLs or filesystem paths\n"
+                + "# (see 'hg help config.paths' for more info)\n"
+                + "#\n"
+                + "# default:pushurl = ssh://jdoe@example.net/hg/jdoes-fork\n"
+                + "# my-fork         = ssh://jdoe@example.net/hg/jdoes-fork\n"
+                + "# my-clone        = /home/jdoe/jdoes-clone\n"
+                + "\n"
+                + "[ui]\n"
+                + "# name and email (local to this repository, optional), e.g.\n"
+                + "# username = Jane Doe <jdoe@example.com>\n";
+        java.nio.file.Files.writeString(new File(repo.getHgDir(), "hgrc").toPath(), hgrc, StandardCharsets.UTF_8);
+        return new HgRepository(directory);
     }
 
     private void checkoutLatest(HgRepository repo) throws IOException {
@@ -138,6 +164,22 @@ public class CloneCommand {
         // Restore files to disk and record in Dirstate
         Dirstate dirstate = repo.getDirstate();
         dirstate.setParents(latestCommit, new byte[20]);
+
+        // one batch request for every LFS blob this checkout needs, instead of one request per file
+        java.util.List<Map.Entry<Revlog, Integer>> toRead = new java.util.ArrayList<>();
+        for (Map.Entry<String, String> entry : manifestEntries.entrySet()) {
+            File prefetchIdx = CommitCommand.getFilelogIndex(repo.getStoreDir(), entry.getKey());
+            if (!prefetchIdx.exists()) {
+                continue; // reported by the checkout loop below
+            }
+            File prefetchDat = new File(prefetchIdx.getPath().substring(0, prefetchIdx.getPath().length() - 2) + ".d");
+            Revlog prefetchLog = repo.getRevlog(prefetchIdx, prefetchDat);
+            int prefetchRev = NodeIdUtil.findRevisionByNodeId(prefetchLog, NodeIdUtil.fromHex(entry.getValue().substring(0, 40)));
+            if (prefetchRev != -1) {
+                toRead.add(Map.entry(prefetchLog, prefetchRev));
+            }
+        }
+        io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().prefetch(repo, toRead);
 
         for (Map.Entry<String, String> entry : manifestEntries.entrySet()) {
             String path = entry.getKey();

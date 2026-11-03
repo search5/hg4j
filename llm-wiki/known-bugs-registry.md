@@ -401,6 +401,35 @@ bookmarks`. 원본 서버에서는 모두 정상.
 **수정**: B8(2026-11-03, 4b24d10)과 B3·B4·B9·B10·B11·B1·B2·B5·B6·B7(SSH)은 같은 날 수정됨. B7의 HTTP 쪽은 HTTP 서버 점검에서 다룬다.
 **발견 이력**: 2026-11-03 Phase 3 감사(실제 hg 클라이언트 대조). 상세: [[wire-server-command-gaps]].
 
+## LFS (2026-11-03, [[implementation-plan-lfs]] Phase 2에서 실제 hg 대조로 발견)
+
+### `Revlog.appendChangeGroupEntry()`: LFS 저장소를 pull/clone하지 못함
+**증상**: 실제 `hg serve`(lfs 확장)의 저장소를 hg4j로 clone하면 `Security Integrity Error: Changegroup entry hash mismatch`.
+**근본 원인**: 실제 hg는 LFS 저장소에 changegroup 버전 3을 쓰고 엔트리마다 `REVIDX_EXTSTORED` 플래그를 보낸다. 그 리비전의 노드 해시는
+포인터 텍스트가 아니라 **실제 내용** 기준인데 포인터로 검증했다. 또 인덱스 플래그를 검열 여부로만 계산해 받은 `EXTSTORED` 플래그가 버려졌다.
+**수정**: 플래그가 있는 엔트리는 해시 검증을 건너뛰고(원본 `bypasscheckhash`) 플래그를 인덱스에 보존한다.
+**테스트**: `LfsBatchFetchRealHgInteropTest#cloneStraightFromRealServeWithoutTheProxy`.
+
+### `CloneCommand`: `[paths] default`를 기록하지 않음
+**증상**: clone한 저장소의 `.hg/hgrc`가 없어 인자 없는 pull/push가 대상을 모르고, LFS 서버 주소(기본 경로에서 유추)도 알 수 없었다.
+**수정**: 실제 `hg clone`과 같은 형식으로 `[paths] default = <원본>`을 기록하고 저장소를 다시 연다(로컬 경로는 절대 경로로).
+
+### `StatusCommand`: 변경 없는 LFS 파일이 수정으로 보고됨
+**증상**: 같은 초 안의 커밋 직후(stat 모호) 내용 비교가 포인터 텍스트와 실제 내용을 비교해 `M`으로 표시.
+**수정**: `HgLfsFactory#readContent`로 실제 내용을 비교. **테스트**: `LfsReadPathRealHgInteropTest`.
+
+### `VerifyCommand`: 모든 LFS 리비전을 손상으로 보고
+**증상**: 포인터 텍스트로 노드 해시를 재계산해 전부 `integrity mismatch`.
+**수정**: 로컬 blob이 있으면 크기와 SHA-256을 검증하고 실제 내용(+복사 메타데이터)으로 해시를 확인, 없으면 건너뜀(원본 `_verify_revision` 래퍼와 같음).
+
+### `HgLfsManager.fetchObject()`: 내려받은 blob의 SHA-256을 검증하지 않음, 헤더 일부만 전달
+**수정**: `fetchObjects`(배치 한 번)로 일반화하고 객체마다 SHA-256 검증(`HgLfsCorruptObjectException`), 다운로드 액션의 헤더 전체를 전달.
+
+### 테스트가 호스트의 `~/.cache/lfs`를 오염시킴
+**원인**: hg4j와 실제 hg가 모두 `XDG_CACHE_HOME`(없으면 `~/.cache`)에서 LFS 사용자 캐시를 정한다. 테스트가 개별로 `disableusercache`를 챙기지 않으면 호스트 캐시에 쓰고,
+다음 실행에서 "캐시에 이미 있어서" 통과하는 순서 의존이 생긴다.
+**수정**: `build.gradle`의 `test`/`interopTest`가 `XDG_CACHE_HOME`을 `build/tmp/xdg-cache`로 돌리고 실행 전에 비운다.
+
 ## 관련 문서
 - [[dirstate-v2]], [[censor]], [[symlink-handling]], [[push-and-concurrency]],
   [[backlog/branch-restore-bugs]], [[backlog/39-exhaustive-interop-matrix]] — 위

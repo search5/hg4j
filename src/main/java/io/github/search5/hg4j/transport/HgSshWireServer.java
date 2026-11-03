@@ -6,6 +6,7 @@ import io.github.search5.hg4j.transport.wireprotov1.Wire1Commands;
 import io.github.search5.hg4j.transport.wireprotov1.Wire1Response;
 
 import java.io.ByteArrayOutputStream;
+import java.io.UncheckedIOException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -58,7 +59,9 @@ public class HgSshWireServer {
             Map.entry("protocaps", "caps"),
             Map.entry("clonebundles_manifest", "*"),
             Map.entry("get_cached_bundle_inline", "path"),
-            Map.entry("stream_out", "")
+            Map.entry("stream_out", ""),
+            Map.entry("heads_buckets", "*"),
+            Map.entry("store_shape", "names *")
     );
 
     private final HgRepository repository;
@@ -209,8 +212,23 @@ public class HgSshWireServer {
     /** SSH adds {@code protocaps} to the capabilities it advertises (real hg's sshv1 protocol handler does the same). */
     private Wire1Response sshCapabilities(String cmd) {
         String caps = Wire1Commands.capabilitiesString(repository) + " protocaps";
-        String body = "hello".equals(cmd) ? "capabilities: " + caps + "\n" : caps;
-        return Wire1Response.bytes(body.getBytes(StandardCharsets.UTF_8));
+        if (!"hello".equals(cmd)) {
+            return Wire1Response.bytes(caps.getBytes(StandardCharsets.UTF_8));
+        }
+        ByteArrayOutputStream hello = new ByteArrayOutputStream();
+        hello.writeBytes(("capabilities: " + caps + "\n").getBytes(StandardCharsets.UTF_8));
+        if (caps.contains(" heads_fingerprints")) {
+            // the SSH handshake also carries the bucket fingerprints so a client can use them without a round trip
+            try {
+                byte[] line = Wire1Commands.headsBucketsHelloLine(repository);
+                if (line != null) {
+                    hello.writeBytes(line);
+                }
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+        return Wire1Response.bytes(hello.toByteArray());
     }
 
     private Map<String, String> readArgs(InputStream in, String spec) throws IOException {

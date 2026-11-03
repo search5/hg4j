@@ -6,6 +6,11 @@
 #
 # Usage:   scripts/build-local-hg.sh [install-dir]
 # Default install dir: ${HG4J_HG_HOME:-$HOME/.cache/hg4j/hg-rust-7.2.4}
+#
+# Building a DEVELOPMENT oracle from a local Mercurial checkout instead of the released sdist (for wire features that are
+# not in a release yet, e.g. heads_buckets and store_shape):
+#   HG_SOURCE_DIR=/path/to/hg-checkout scripts/build-local-hg.sh ~/.cache/hg4j/hg-rust-dev
+# The checkout is copied (without .hg) into the install dir and built there; the checkout itself is not touched.
 # Result:  <install-dir>/bin/hg  (wrapper that sets PYTHONPATH and HGMODULEPOLICY=rust+c)
 #
 # Requirements: uv, a C compiler, make, gettext (msgfmt), cargo/rustc (stable, edition 2024 capable).
@@ -29,8 +34,16 @@ fi
 PY="$DEST/venv/bin/python"
 "$PY" -m pip install --quiet --no-cache-dir docutils "setuptools>=77" "setuptools-scm>=8.1.0"
 
+if [ -n "${HG_SOURCE_DIR:-}" ]; then
+    SRC="$DEST/mercurial-src"
+    if [ ! -d "$SRC" ]; then
+        mkdir -p "$SRC"
+        (cd "$HG_SOURCE_DIR" && tar cf - --exclude=./.hg --exclude=./build --exclude='*.pyc' --exclude=__pycache__ .) | tar xf - -C "$SRC"
+    fi
+else
 SRC="$DEST/mercurial-$HG_VERSION"
-if [ ! -d "$SRC" ]; then
+fi
+if [ -z "${HG_SOURCE_DIR:-}" ] && [ ! -d "$SRC" ]; then
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' EXIT
     # --no-binary: the real sdist (no PyPI wheel bundles the Rust extension).
@@ -39,6 +52,10 @@ if [ ! -d "$SRC" ]; then
 fi
 
 cd "$SRC"
+if [ -n "${HG_SOURCE_DIR:-}" ]; then
+    # the copy has no .hg, so setuptools_scm cannot ask the repository for a version
+    export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MERCURIAL="${HG_SOURCE_VERSION:-7.2.4.dev0}"
+fi
 # `--rust` is a global setup.py option and must precede the subcommand. Build in place (see the
 # Dockerfile for why `pip install`/`setup.py install` are not used).
 "$PY" setup.py --rust build_ext --inplace

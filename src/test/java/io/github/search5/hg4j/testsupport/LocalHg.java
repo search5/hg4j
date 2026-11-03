@@ -109,6 +109,68 @@ public final class LocalHg {
         resolved = true;
     }
 
+    // ---- development oracle: an hg built from a source checkout newer than the 7.2.4 release
+
+    private static volatile Path cachedDevExecutable;
+    private static volatile boolean devResolved;
+
+    /**
+     * Whether an hg built from a DEVELOPMENT checkout is available ({@code HG_SOURCE_DIR=... scripts/build-local-hg.sh
+     * ~/.cache/hg4j/hg-rust-dev}). Only wire features that are not in a release yet (e.g. {@code heads_buckets},
+     * {@code store_shape}) are checked against it; everything else uses the 7.2.4 release oracle.
+     */
+    public static boolean isDevAvailable() {
+        resolveDev();
+        return cachedDevExecutable != null;
+    }
+
+    public static Path devExecutable() {
+        resolveDev();
+        if (cachedDevExecutable == null) {
+            throw new IllegalStateException("No development hg found. Build one with HG_SOURCE_DIR=<hg checkout>"
+                    + " scripts/build-local-hg.sh ~/.cache/hg4j/hg-rust-dev, or point HG4J_HG_DEV at it.");
+        }
+        return cachedDevExecutable;
+    }
+
+    private static synchronized void resolveDev() {
+        if (devResolved) {
+            return;
+        }
+        List<Path> candidates = new ArrayList<>();
+        String explicit = System.getenv("HG4J_HG_DEV");
+        if (explicit != null && !explicit.isBlank()) {
+            candidates.add(Paths.get(explicit));
+        }
+        candidates.add(Paths.get(System.getProperty("user.home"), ".cache", "hg4j", "hg-rust-dev", "bin", "hg"));
+        for (Path candidate : candidates) {
+            if (Files.isExecutable(candidate)) {
+                try {
+                    if (capture(null, List.of(candidate.toString(), "debuginstall"), Map.of()).contains("Rust extensions (installed)")) {
+                        cachedDevExecutable = candidate;
+                        break;
+                    }
+                } catch (Exception ignored) {
+                    // an unusable candidate is simply not used; the reason is reported by devExecutable()
+                }
+            }
+        }
+        devResolved = true;
+    }
+
+    /** Like {@link #processBuilder} but runs the development oracle. */
+    public static ProcessBuilder devProcessBuilder(Path cwd, String... args) {
+        List<String> command = new ArrayList<>();
+        command.add(devExecutable().toString());
+        command.addAll(Arrays.asList(args));
+        ProcessBuilder pb = new ProcessBuilder(command);
+        if (cwd != null) {
+            pb.directory(cwd.toFile());
+        }
+        applyEnvironment(pb, Map.of());
+        return pb;
+    }
+
     /**
      * Runs {@code hg <args>} inside {@code workDir/repoRelPath} and returns its trimmed output
      * (stdout and stderr merged). Arguments starting with {@link #CONTAINER_ROOT_ALIAS} are mapped to

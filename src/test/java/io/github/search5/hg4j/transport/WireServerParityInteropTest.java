@@ -268,6 +268,155 @@ public class WireServerParityInteropTest {
         assertTrue(mine.contains("clonebundles_manifest"), mine);
     }
 
+    // ───────────────────────── development-only commands ─────────────────────────
+    // heads_buckets and store_shape are not in the 7.2.4 release; they are compared with an oracle built from the
+    // development checkout (see LocalHg#isDevAvailable).
+
+    private byte[] askDev(String cmd, String... args) throws Exception {
+        ProcessBuilder pb = LocalHg.devProcessBuilder(repo, "-R", repo.toString(), "serve", "--stdio");
+        pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+        Process p = pb.start();
+        try (OutputStream os = p.getOutputStream()) {
+            os.write(request(cmd, args));
+        }
+        byte[] out = p.getInputStream().readAllBytes();
+        assertTrue(p.waitFor(30, TimeUnit.SECONDS));
+        return out;
+    }
+
+    private void assertSameAsDevOracle(String cmd, String... args) throws Exception {
+        assertEquals(show(askDev(cmd, args)), show(ask(false, cmd, args)), cmd + " " + String.join(" ", args));
+    }
+
+    /** Builds a repository of {@code n} linear commits, plus extra heads on top of the listed revisions. */
+    private Path buildHistory(String name, int linear, int... extraHeadsOn) throws Exception {
+        Path r = Files.createDirectories(tmp.resolve(name));
+        LocalHg.hgIn(tmp, name, "init", ".");
+        Files.writeString(r.resolve("f.txt"), "x");
+        LocalHg.hgIn(tmp, name, "add", "f.txt");
+        for (int i = 0; i < linear; i++) {
+            Files.writeString(r.resolve("f.txt"), "v" + i);
+            LocalHg.hgIn(tmp, name, "commit", "-u", "dev", "-m", "c" + i);
+        }
+        for (int base : extraHeadsOn) {
+            LocalHg.hgIn(tmp, name, "update", "-r", String.valueOf(base));
+            Files.writeString(r.resolve("f.txt"), "branch-from-" + base);
+            LocalHg.hgIn(tmp, name, "commit", "-u", "dev", "-m", "head-on-" + base);
+        }
+        return r;
+    }
+
+    @Test
+    @DisplayName("heads_buckets 가 개발판 원본과 바이트까지 같다 (빈 저장소, 1개, 짝수/홀수 개수, 여러 head)")
+    void headsBuckets() throws Exception {
+        Assumptions.assumeTrue(LocalHg.isDevAvailable(), "no development hg oracle (see LocalHg#isDevAvailable)");
+        Path saved = repo;
+        try {
+            repo = Files.createDirectories(tmp.resolve("hb-empty"));
+            LocalHg.hgIn(tmp, "hb-empty", "init", ".");
+            assertSameAsDevOracle("heads_buckets", "*");
+
+            for (int linear : new int[]{1, 2, 3, 4, 7, 8, 9, 16, 33}) {
+                repo = buildHistory("hb-linear-" + linear, linear);
+                assertSameAsDevOracle("heads_buckets", "*");
+            }
+            repo = buildHistory("hb-multi", 12, 2, 5, 9, 10);
+            assertSameAsDevOracle("heads_buckets", "*");
+        } finally {
+            repo = saved;
+        }
+    }
+
+    @Test
+    @DisplayName("heads_buckets 의 cached 인자(클라이언트가 기억하는 지문)가 보내는 head 를 줄이는 방식이 개발판 원본과 같다")
+    void headsBucketsWithCachedFingerprints() throws Exception {
+        Assumptions.assumeTrue(LocalHg.isDevAvailable(), "no development hg oracle (see LocalHg#isDevAvailable)");
+        Path saved = repo;
+        try {
+            repo = buildHistory("hb-cached", 12, 2, 5, 9);
+            byte[] first = askDev("heads_buckets", "*");
+            // the framed answer starts with "<length>\n"; the payload is: header(7) then per bucket (u32 id, i32 count, 4B fingerprint)
+            int nl = indexOf(first, (byte) '\n', 0);
+            byte[] payload = java.util.Arrays.copyOfRange(first, nl + 1, first.length);
+            int buckets = payload[0] & 0xFF;
+            List<String> cachedPieces = new ArrayList<>();
+            for (int i = 0; i < buckets; i++) {
+                int at = 7 + i * 12;
+                long id = java.nio.ByteBuffer.wrap(payload, at, 4).getInt() & 0xFFFFFFFFL;
+                StringBuilder hex = new StringBuilder();
+                for (int k = 0; k < 4; k++) {
+                    hex.append(String.format("%02x", payload[at + 8 + k]));
+                }
+                cachedPieces.add(id + ":" + hex);
+            }
+            // the client remembers nothing, the lowest bucket, a middle one, everything
+            assertSameAsDevOracle("heads_buckets", "*cached=" + cachedPieces.get(0));
+            assertSameAsDevOracle("heads_buckets", "*cached=" + cachedPieces.get(cachedPieces.size() / 2));
+            assertSameAsDevOracle("heads_buckets", "*cached=" + String.join(";", cachedPieces));
+            assertSameAsDevOracle("heads_buckets", "*cached=99:00000000");
+        } finally {
+            repo = saved;
+        }
+    }
+
+    @Test
+    @DisplayName("SSH hello 의 heads-buckets-info-v01 줄이 개발판 원본과 같다")
+    void helloCarriesTheSameBucketLine() throws Exception {
+        Assumptions.assumeTrue(LocalHg.isDevAvailable(), "no development hg oracle (see LocalHg#isDevAvailable)");
+        Path saved = repo;
+        try {
+            repo = buildHistory("hb-hello", 10, 3, 6);
+            Files.writeString(repo.resolve(".hg/hgrc"), "[experimental]\ndisco.heads-fingerprints = true\n");
+            java.util.function.Function<byte[], String> bucketLine = raw -> {
+                for (String line : new String(raw, StandardCharsets.ISO_8859_1).split("\n")) {
+                    if (line.startsWith("heads-buckets-info-v01:")) {
+                        return line;
+                    }
+                }
+                return null;
+            };
+            String expected = bucketLine.apply(askDev("hello"));
+            assertNotNull(expected, "the development server sends a bucket line when the capability is on");
+            // The order of the "<tier>:<fingerprint>" tokens is not meaningful (a client reads them into a dictionary); the
+            // Rust implementation of the original lists them in hash-map order, so the SET of tokens is compared.
+            java.util.Set<String> expectedTokens = new java.util.TreeSet<>(java.util.Arrays.asList(expected.split(" ")));
+            java.util.Set<String> actualTokens = new java.util.TreeSet<>(java.util.Arrays.asList(
+                    bucketLine.apply(ask(false, "hello")).split(" ")));
+            assertEquals(expectedTokens, actualTokens);
+        } finally {
+            repo = saved;
+        }
+    }
+
+    @Test
+    @DisplayName("store_shape 가 정의된 모양이 없을 때 개발판 원본과 같은 SHAPE_NOT_FOUND 를 준다")
+    void storeShapeWithoutShapes() throws Exception {
+        Assumptions.assumeTrue(LocalHg.isDevAvailable(), "no development hg oracle (see LocalHg#isDevAvailable)");
+        assertSameAsDevOracle("store_shape", "names=x", "*");
+        assertSameAsDevOracle("store_shape", "names=first,second", "*");
+        // names= (an empty name) is left out on purpose: the original dies without any answer there (an unhandled error),
+        // hg4j keeps answering with a well-formed SHAPE_NOT_FOUND for the empty name.
+        byte[] emptyName = ask(false, "store_shape", "names=", "*");
+        int nl = indexOf(emptyName, (byte) '\n', 0);
+        byte[] payload = java.util.Arrays.copyOfRange(emptyName, nl + 1, emptyName.length);
+        assertEquals(Integer.parseInt(new String(emptyName, 0, nl, StandardCharsets.US_ASCII)), payload.length, "framed");
+        assertEquals(2, payload[0], "code SHAPE_NOT_FOUND");
+        assertEquals(11 + 8, payload.length, "header + a block holding one empty name");
+    }
+
+    @Test
+    @DisplayName("heads_fingerprints / exp-shape-1 capability 를 광고하고, 설정으로 끌 수 있다")
+    void headsFingerprintsAndShapeCapabilities() throws Exception {
+        String on = capabilityLine(false);
+        assertTrue(on.contains(" heads_fingerprints"), on);
+        assertTrue(on.contains(" exp-shape-1"), on);
+        Files.writeString(repo.resolve(".hg/hgrc"),
+                "[experimental]\ndisco.heads-fingerprints = false\nadvertise-shapes = false\n");
+        String off = capabilityLine(false);
+        assertFalse(off.contains("heads_fingerprints"), off);
+        assertFalse(off.contains("exp-shape-1"), off);
+    }
+
     // ───────────────────────── streaming clone ─────────────────────────
 
     /** A parsed stream_out answer: the leading status line plus name -> file content. */

@@ -93,9 +93,30 @@ public final class Wire1Commands {
         for (String token : StreamClone.capabilityTokens(repo)) {
             base = base + " " + token;
         }
+        if (HeadsBuckets.advertised(repo)) {
+            base = base + " " + HeadsBuckets.CAPABILITY;
+        }
+        if (shapesAdvertised(repo)) {
+            base = base + " exp-shape-1";
+        }
         File manifest = new File(repo.getHgDir(), "clonebundles.manifest");
         // real hg's clonebundles extension adds BOTH tokens when a manifest exists
         return manifest.exists() ? base + " clonebundles clonebundles_manifest" : base;
+    }
+
+    /**
+     * Whether {@code exp-shape-1} is advertised. The original needs {@code experimental.narrow} and
+     * {@code experimental.advertise-shapes} (default off); hg4j always serves narrow and offers this by default, and honours an
+     * explicit {@code false}.
+     */
+    static boolean shapesAdvertised(HgRepository repo) {
+        String raw = repo.getConfig().get("experimental", "advertise-shapes", "true");
+        switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "0": case "no": case "false": case "off": case "never":
+                return false;
+            default:
+                return true;
+        }
     }
 
     public static Wire1Response capabilities(HgRepository repo) {
@@ -122,6 +143,36 @@ public final class Wire1Commands {
      */
     public static Wire1Response clonebundlesManifest(HgRepository repo, Map<String, String> args) throws IOException {
         return Wire1Response.bytes(ClonebundlesManifest.manifestAnswer(ClonebundlesManifest.getManifestLines(repo)));
+    }
+
+    /**
+     * {@code heads_buckets} (development tree after 7.2.4): the heads' bucket fingerprints and the heads the client does not
+     * already know, see {@link HeadsBuckets}. The optional {@code cached} argument carries the fingerprints the client
+     * remembers.
+     */
+    public static Wire1Response headsBuckets(HgRepository repo, Map<String, String> args) throws IOException {
+        return Wire1Response.bytes(HeadsBuckets.encodedBucketInfo(repo, HeadsBuckets.parseCached(args.get("cached"))));
+    }
+
+    /** The SSH {@code hello} line with the heads bucket fingerprints, or null. */
+    public static byte[] headsBucketsHelloLine(HgRepository repo) throws IOException {
+        return HeadsBuckets.encodeHello(repo);
+    }
+
+    /**
+     * {@code store_shape} (development tree after 7.2.4): information about a named narrow-clone "store shape". hg4j
+     * defines no shapes, so every name is unknown: the answer is code 2 ({@code SHAPE_NOT_FOUND}) with the first unknown name,
+     * exactly what a server with the feature enabled but no shape configured replies. Header {@code >BHII}
+     * (code, size of the unknown-names block, 0, 0), then the block: {@code u32 count, u32 length per name, the names}.
+     */
+    public static Wire1Response storeShape(HgRepository repo, Map<String, String> args) {
+        String first = args.getOrDefault("names", "").split(",", -1)[0];
+        byte[] name = first.getBytes(StandardCharsets.UTF_8);
+        java.nio.ByteBuffer block = java.nio.ByteBuffer.allocate(8 + name.length).order(java.nio.ByteOrder.BIG_ENDIAN);
+        block.putInt(1).putInt(name.length).put(name);
+        java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(11 + block.capacity()).order(java.nio.ByteOrder.BIG_ENDIAN);
+        out.put((byte) 2).putShort((short) block.capacity()).putInt(0).putInt(0).put(block.array());
+        return Wire1Response.bytes(out.array());
     }
 
     /**
@@ -557,6 +608,8 @@ public final class Wire1Commands {
             case "clonebundles" -> clonebundles(repo);
             case "clonebundles_manifest" -> clonebundlesManifest(repo, args);
             case "stream_out" -> StreamClone.streamOut(repo);
+            case "heads_buckets" -> headsBuckets(repo, args);
+            case "store_shape" -> storeShape(repo, args);
             case "get_cached_bundle_inline" -> getCachedBundleInline(repo, args);
             default -> Wire1Response.oobError("unsupported command: " + cmd);
         };

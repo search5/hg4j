@@ -147,11 +147,31 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B1 lookup cannot resolve bookmark, tag and branch names")
-    @DisplayName("lookup 이 북마크/태그/브랜치 이름을 원본처럼 푼다 (clone -r <이름> 이 실패하는 원인)")
+    @DisplayName("lookup 이 북마크/태그/브랜치 이름, 숫자, 접두사, 특수 이름을 원본처럼 푼다 (clone -r <이름> 이 실패하던 원인)")
     void lookupResolvesNames() throws Exception {
-        for (String key : List.of("bm1", "v1", "default", "feature", ".", "null", "1", n1.substring(0, 12))) {
+        for (String key : List.of("bm1", "v1", "default", "feature", ".", "null", "tip", "0", "1", "-1", "-2", "99", "01",
+                "+1", n1.substring(0, 12), n1.substring(0, 40).toUpperCase(), "tip ", "")) {
             assertSameAnswer("lookup", "key=" + key);
+        }
+        // ambiguous and unambiguous one-character prefixes: the exact wording of the error is not guessed at
+        for (char c : "0123456789abcdef".toCharArray()) {
+            assertSameAnswer("lookup", "key=" + c);
+        }
+    }
+
+    @Test
+    @DisplayName("빈 저장소의 lookup 이 원본과 같다")
+    void lookupOnAnEmptyRepository() throws Exception {
+        Path empty = Files.createDirectories(tmp.resolve("empty-lookup"));
+        LocalHg.hgIn(tmp, "empty-lookup", "init", ".");
+        Path saved = repo;
+        repo = empty;
+        try {
+            for (String key : List.of("tip", "null", ".", "0", "-1", "default", "abc")) {
+                assertSameAnswer("lookup", "key=" + key);
+            }
+        } finally {
+            repo = saved;
         }
     }
 
@@ -288,7 +308,6 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B1 clone -r <name> aborts with 'unknown revision'")
     @DisplayName("clone -r 북마크/태그/브랜치 이름이 원본 서버에서처럼 동작한다")
     void cloneByName() throws Exception {
         for (String name : List.of("bm1", "v1", "default", "feature")) {

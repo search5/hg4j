@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-03
-status: current (B8, B3, B4, B9 수정 완료. 나머지 진행 중 - 아래 표의 상태 열 참고)
+status: current (B8, B3, B1, B4, B9 수정 완료. 나머지 진행 중 - 아래 표의 상태 열 참고)
 ---
 
 # 서버 와이어 명령 점검: 원본 Mercurial 대비 누락과 차이
@@ -26,7 +26,7 @@ status: current (B8, B3, B4, B9 수정 완료. 나머지 진행 중 - 아래 표
 |---|---|---|---|---|---|
 | **B8** | **수정됨** (4b24d10) | `getbundle`이 `heads`를 반영하지 않음. `heads=rev1`과 `heads=rev3`의 응답이 같은 크기(2157B) | `hg clone -r 1`이 리비전 0~1이 아니라 **전체 5개**를 받음 | `Wire1Commands.getbundle`은 `heads`를 `HgLocalClient.getBundle`에 넘기지만 bundle2 경로에서 효과가 없다. 정확한 지점은 미조사 | **높음** |
 | **B3** | **수정됨** | `listkeys phases`가 모든 변경셋을 draft(1)로 나열하고 `publishing True`를 보내지 않음. 원본은 draft **루트**만 + `publishing True` | hg4j에서 `clone`한 변경셋이 **전부 `draft`**. 원본 서버에서는 전부 `public` | `Wire2Commands.readListKeys`의 phases 구현. 서버 저장소의 publishing 여부 판단이 없음 | **높음** |
-| **B1** | 미수정 | `lookup`이 북마크, 태그, 브랜치 이름을 풀지 못함(`1 <hex>` 대신 `0 unknown revision`). 16진수, `tip`은 정상 | `clone -r bm1`, `-r v1`, `-r default`, `-r feature` 모두 `abort: unknown revision` | `NodeIdUtil.resolveRevision`이 이름 공간(bookmark/tag/branch)을 모름 | **높음** |
+| **B1** | **수정됨** | `lookup`이 북마크, 태그, 브랜치 이름을 풀지 못함(`1 <hex>` 대신 `0 unknown revision`). 16진수, `tip`은 정상 | `clone -r bm1`, `-r v1`, `-r default`, `-r feature` 모두 `abort: unknown revision` | `NodeIdUtil.resolveRevision`이 이름 공간(bookmark/tag/branch)을 모름 | **높음** |
 | **B2** | 미수정 | `listkeys namespaces`가 빈 응답. 원본은 `bookmarks`, `namespaces`, `phases` | `hg incoming -B`/`outgoing -B`가 `remote doesn't support bookmarks`. 원본 클라이언트는 `commands.py:4015`, `:4670`, `:3555`, `:7034`와 push 시 obsolete 확인(`exchange.py:775`)에서 이 목록을 본다 | `readListKeys`가 `namespaces`를 처리하지 않음 | 중간 |
 | B4 | **수정됨** | `branchmap`, `listkeys bookmarks` 응답 끝에 개행이 하나 더 있음(원본은 없음) | 실제 클라이언트는 줄 단위로 파싱해 영향이 보이지 않음(기존 clone/pull interop 통과) | 응답 조립 방식 | 낮음 |
 | B5 | 미수정 | `between`이 서로 다른 두 노드에 대해 중간 노드를 주지 않음(`1\n\n`). 원본은 1, 2, 4, 8 간격의 이분 탐색 목록 | 구형 discovery 클라이언트에서만 의미(현대 클라이언트는 `heads`/`known`). 핸드셰이크용 null-null 쌍은 동일 | 소스에 "실제 이분 탐색은 구현하지 않았다"고 적혀 있음 | 낮음 |

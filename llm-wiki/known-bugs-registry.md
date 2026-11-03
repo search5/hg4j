@@ -398,7 +398,7 @@ treemanifest 매니페스트 작성 이후로 이동(순서 자체가 근본 원
 bookmarks`. 원본 서버에서는 모두 정상.
 **근본 원인**: `listkeys phases`에 `publishing True`가 없고 draft 루트가 아니라 모든 변경셋을 나열, `lookup`이 이름 공간을
 모름, `getbundle`이 `heads`를 반영하지 않음(bundle2 경로), `listkeys namespaces`가 빈 응답.
-**수정**: B8(2026-11-03, 4b24d10)과 B3·B4·B9·B10·B11(같은 날)은 수정됨. B1, B2, B5, B6, B7은 실패 테스트가 `WireServerParityInteropTest`에 `@Disabled`로 준비되어 있다.
+**수정**: B8(2026-11-03, 4b24d10)과 B3·B4·B9·B10·B11·B1(같은 날)은 수정됨. B2, B5, B6, B7은 실패 테스트가 `WireServerParityInteropTest`에 `@Disabled`로 준비되어 있다.
 **발견 이력**: 2026-11-03 Phase 3 감사(실제 hg 클라이언트 대조). 상세: [[wire-server-command-gaps]].
 
 ## 관련 문서

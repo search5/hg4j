@@ -182,20 +182,10 @@ public final class Wire1Commands {
      * accordingly.
      */
     public static Wire1Response lookup(HgRepository repo, Map<String, String> args) throws IOException {
-        String key = args.get("key");
-        Revlog changelog = Wire2Commands.changelog(repo);
-        byte[] node;
-        String failureMessage;
-        try {
-            node = NodeIdUtil.resolveRevision(changelog, key);
-            failureMessage = "unknown revision '" + key + "'";
-        } catch (Exception e) {
-            node = null;
-            failureMessage = e.getMessage();
-        }
-        String line = node != null
-                ? "1 " + NodeIdUtil.toHex(node) + "\n"
-                : "0 " + failureMessage + "\n";
+        RevisionLookup.Outcome outcome = RevisionLookup.resolve(repo, args.get("key"));
+        String line = outcome.node() != null
+                ? "1 " + NodeIdUtil.toHex(outcome.node()) + "\n"
+                : "0 " + outcome.message() + "\n";
         return Wire1Response.bytes(line.getBytes(StandardCharsets.UTF_8));
     }
 

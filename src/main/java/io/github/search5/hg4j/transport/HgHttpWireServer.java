@@ -231,6 +231,16 @@ public class HgHttpWireServer extends HttpServlet {
     }
 
     private void handleV1Command(HttpServletRequest request, HttpServletResponse response, String cmd, String query) throws Exception {
+        if (!Wire1Commands.isKnownCommand(cmd)) {
+            // wireprotoserver.py / hgweb: an unknown command is HTTP 400, not a protocol-level error body
+            sendPlain(response, 400, "no such method: " + cmd);
+            return;
+        }
+        if (Wire1Commands.requiresPush(cmd) && !"POST".equals(request.getMethod())) {
+            // hgweb: a command with push permission is refused unless it is a POST ("0\n" is the usual error prefix)
+            sendPlain(response, 405, "0\npush requires POST request\n");
+            return;
+        }
         Map<String, String> args = parseQueryParams(query);
         // Real hg's primary v1 arg transport for GET requests: the urlencoded arg string is split
         // across X-HgArg-1, X-HgArg-2, ... request headers (see HgRemoteClient#executeArgsCommand)
@@ -317,6 +327,15 @@ public class HgHttpWireServer extends HttpServlet {
                     out.write(body);
                 }
             }
+        }
+    }
+
+    private static void sendPlain(HttpServletResponse response, int status, String text) throws IOException {
+        byte[] body = text.getBytes(StandardCharsets.UTF_8);
+        response.setStatus(status);
+        response.setContentLength(body.length);
+        try (OutputStream out = response.getOutputStream()) {
+            out.write(body);
         }
     }
 

@@ -642,6 +642,101 @@ public class WireServerParityInteropTest {
     }
 
     @Test
+    @DisplayName("batch 가 여러 명령의 응답을 원본처럼 ';' 로 이어 준다")
+    void batchCombinesAnswers() throws Exception {
+        assertSameAnswer("batch", "cmds=heads ;lookup key=tip;known nodes=" + n0 + ";listkeys namespace=bookmarks", "*");
+        assertSameAnswer("batch", "cmds=branchmap ;between pairs=" + n2 + "-" + n0, "*");
+    }
+
+    /** Like {@link #assertSameAnswer} but for answers that are binary: names the first differing byte. */
+    private void assertSameBytes(String cmd, String... args) throws Exception {
+        byte[] expected = ask(true, cmd, args);
+        byte[] actual = ask(false, cmd, args);
+        int n = Math.min(expected.length, actual.length);
+        int at = 0;
+        while (at < n && expected[at] == actual[at]) {
+            at++;
+        }
+        if (at == n && expected.length == actual.length) {
+            return;
+        }
+        int from = Math.max(0, at - 24);
+        fail(cmd + " " + String.join(" ", args) + ": first difference at byte " + at + " (real " + expected.length
+                + " bytes, hg4j " + actual.length + " bytes)\n real: " + hex(expected, from, at + 40)
+                + "\n hg4j: " + hex(actual, from, at + 40));
+    }
+
+    private static String hex(byte[] b, int from, int to) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = from; i < Math.min(to, b.length); i++) {
+            sb.append(String.format("%02x", b[i])).append(i == from + 24 ? " | " : " ");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * A changegroup is not compared byte for byte: a delta may legitimately be encoded differently (the real server reuses the
+     * delta stored in its revlog, hg4j computes one). What must hold is that the real hg client applies both into a fresh
+     * repository, that {@code hg verify} accepts the result and that the history and the file contents are the same.
+     */
+    private void assertSameChangegroup(String name, String cmd, String... args) throws Exception {
+        String[] results = new String[2];
+        for (int k = 0; k < 2; k++) {
+            byte[] stream = ask(k == 0, cmd, args);
+            Path file = tmp.resolve(name + "-" + k + ".hg");
+            ByteArrayOutputStream bundle = new ByteArrayOutputStream();
+            bundle.writeBytes("HG10UN".getBytes(StandardCharsets.US_ASCII));
+            bundle.writeBytes(stream);
+            Files.write(file, bundle.toByteArray());
+            String dir = name + "-" + k;
+            LocalHg.hgIn(tmp, ".", "init", dir);
+            LocalHg.hgIn(tmp, dir, "unbundle", file.toString());
+            String verify = LocalHg.hgIn(tmp, dir, "verify");
+            assertTrue(verify.contains("checking files"), verify);
+            results[k] = LocalHg.hgIn(tmp, dir, "log", "-T", "{rev} {node} {branch} {p1node} {p2node}\n")
+                    + LocalHg.hgIn(tmp, dir, "debugdata", "-m", "0")
+                    + LocalHg.hgIn(tmp, dir, "manifest", "--debug");
+        }
+        assertEquals(results[0], results[1], name);
+    }
+
+    @Test
+    @DisplayName("changegroup 과 changegroupsubset 을 실제 hg 로 적용하면 원본과 같은 저장소가 된다")
+    void changegroupAppliesToTheSameRepository() throws Exception {
+        assertSameChangegroup("cg-all", "changegroup", "roots=" + "0".repeat(40));
+        assertSameChangegroup("cg-subset", "changegroupsubset", "bases=" + "0".repeat(40), "heads=" + n1);
+    }
+
+    /** pushkey changes the repository, so the bookmark file is put back between the real server and hg4j. */
+    private void assertSamePushkey(String... args) throws Exception {
+        Path file = repo.resolve(".hg/bookmarks");
+        byte[] before = Files.exists(file) ? Files.readAllBytes(file) : null;
+        byte[] expected = ask(true, "pushkey", args);
+        restore(file, before);
+        byte[] actual = ask(false, "pushkey", args);
+        restore(file, before);
+        assertEquals(show(expected), show(actual), "pushkey " + String.join(" ", args));
+    }
+
+    private static void restore(Path file, byte[] content) throws IOException {
+        if (content == null) {
+            Files.deleteIfExists(file);
+        } else {
+            Files.write(file, content);
+        }
+    }
+
+    @Test
+    @DisplayName("pushkey 가 북마크를 만들고 옮기고 잘못된 요청을 거절하는 응답이 원본과 같다")
+    void pushkeyAnswers() throws Exception {
+        assertSamePushkey("namespace=bookmarks", "key=newbm", "old=", "new=" + n1);
+        assertSamePushkey("namespace=bookmarks", "key=bm1", "old=" + n1, "new=" + n2);
+        assertSamePushkey("namespace=bookmarks", "key=bm1", "old=" + n0, "new=" + n2);
+        assertSamePushkey("namespace=bookmarks", "key=nobm", "old=" + n0, "new=");
+        assertSamePushkey("namespace=nosuchnamespace", "key=k", "old=", "new=v");
+    }
+
+    @Test
     @DisplayName("지원하지 않는 명령에는 원본처럼 빈 응답을 주고 연결을 유지한다")
     void unavailableCommandGetsEmptyAnswer() throws Exception {
         assertSameAnswer("thiscommanddoesnotexist");

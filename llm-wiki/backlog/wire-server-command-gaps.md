@@ -106,3 +106,29 @@ protocaps, stream_out) 중 **실제로 문제가 되는 것은 구형 discovery�
 - HTTP 서버(`HgHttpWireServer`)는 대조하지 않았다. 명령 디스패치가 같은 `Wire1Commands`를 쓰므로 같은 결함이 있을 것으로
   보이지만 실행해서 확인하지는 않았다.
 - `batch`, `pushkey`, `unbundle`, `changegroup*`의 응답은 이번 대조에 넣지 않았다.
+
+## [2026-11-03] 후속 대조: 개발판 명령, HTTP 서버, batch/pushkey/changegroup
+검증 기준: 7.2.4 릴리스 오라클. `heads_buckets`와 `store_shape`는 릴리스에 없어서 `../hg` 개발 소스로 별도 빌드한 오라클
+(`HG_SOURCE_DIR=<체크아웃> scripts/build-local-hg.sh ~/.cache/hg4j/hg-rust-dev`)과만 비교했다. 그 오라클이 없으면 해당 테스트는 건너뛴다.
+
+해결:
+- `heads_buckets`, `store_shape` 구현과 `heads_fingerprints`, `exp-shape-1` 광고. 응답 바이트가 개발판과 같다(SSH `hello`의 버킷 줄은 토큰 집합이 같고
+  나열 순서만 다르다). `store_shape`는 hg4j에 narrow "모양" 정의가 없어 항상 SHAPE_NOT_FOUND다. 원본은 두 광고를 설정으로 켜야 하지만(기본 꺼짐)
+  hg4j는 기본으로 광고하고 `experimental.disco.heads-fingerprints=false`, `experimental.advertise-shapes=false`로 끈다.
+- HTTP 서버(`HttpServerParityInteropTest`): 읽기 명령 13종의 상태, Content-Type, 본문이 실제 `hg serve`와 같다. 달랐던 두 가지를 고쳤다: 알 수 없는 명령은
+  HTTP 400 "no such method"(기존: 200 + hg-error), 쓰기 명령(`pushkey`, `unbundle`)의 GET은 405 + `0\npush requires POST request\n`.
+  실제 hg 클라이언트의 `clone --stream`도 HTTP로 통과.
+- `pushkey`(`applyPushkey`): 실제 `bookmarks.pushbookmark` 규칙으로 맞춤. 현재값이 old 또는 new와 같으면 성공(존재하지 않는 북마크 삭제도 성공), 목표 노드가 없으면
+  실패, `@`가 든 이름은 거부. 이전에는 old가 다르면 무조건 실패였다.
+- 이 작업에서 내가 만든 회귀 하나를 찾아 고쳤다: 빈 저장소 `heads`가 널 노드를 주게 바꾼 뒤, 실제 hg 클라이언트가 `[nullid]`를 `check:heads`로 되돌려 보내면 서버가
+  "remote repository changed while pushing"으로 거부했다(`HgHttpWireServerEmptyRepoRealHgInteropTest`). 비교에서 널 노드를 양쪽에서 제외하고 해시 경로도 빈 저장소를 `[nullid]`로 취급하도록 수정.
+- `batch`, `changegroup`, `changegroupsubset`: 응답이 같다. changegroup은 바이트가 아니라 **의미**로 비교한다. 같은 내용을 다른 delta(원본은 revlog에 저장된 delta 재사용, hg4j는 계산)로 인코딩하므로,
+  두 응답을 실제 `hg unbundle`로 새 저장소에 적용해 `hg verify`와 이력, manifest가 같음을 확인한다.
+
+남은 차이(미해결, 숨기지 않고 기록):
+- HTTP/SSH `capabilities` 토큰: 원본이 광고하고 hg4j가 광고하지 않는 것은 `unbundlehash`, `HG10BZ`, `httpmediatype`, `compression=`, 그리고 bundle2 부품 목록
+  (`bookmarks`, `checkheads`, `listkeys`, `phases`, `pushkey`, `hgtagsfnodes`, `stream=v2` 등). 반대로 hg4j는 `changegroup=04,05`를 광고한다(원본 7.2.4는 01,02,03).
+  부품별로 실제 처리 여부를 확인하지 않고 늘리면 클라이언트가 처리하지 못하는 경로로 들어오므로 이번에는 건드리지 않았다.
+- `stream_out`의 파일 나열 순서는 원본과 다르다(의미는 같고 실제 클라이언트 복제는 통과).
+- `unbundle`의 서버 응답은 실제 hg 클라이언트 push 테스트로만 확인했고, 원시 바이트 대조는 하지 않았다.
+- `store_shape`에 빈 이름(`names=`)을 주면 원본은 응답 없이 비정상 종료한다. 따라서 그 경우는 흉내 내지 않았다.

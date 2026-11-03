@@ -594,3 +594,6 @@
 - B8: `getbundle`이 `heads`를 반영하도록 `HgLocalClient#getBundle`을 `ancestors(heads) - ancestors(common)` 집합 기반으로 재작성. `HgSshClientTransportTest`가 가짜 head("head1")에 기대고 있던 것도 수정.
 - B3: `listkeys phases`를 원본처럼 draft 루트 + `publishing True`로. hg4j 클라이언트(`FetchCommand`)가 숫자가 아닌 키를 건너뛰도록 방어. B4(`listkeys` 끝 개행), B9(`heads` 최신 우선), 그리고 `branchmap`이 브랜치 하나만 내보내던 문제와 빈 저장소 `heads`가 널 노드를 안 주던 문제를 같이 수정.
 - 기존 테스트 4개가 예전의 틀린 동작을 기대값으로 고정하고 있어 원본 동작으로 갱신. `PushLockRaceRealHgInteropTest`는 수정 이전에도 6회 중 3회 실패하는 불안정 테스트였음을 확인하고 정당한 거부 문구 두 가지를 모두 허용하도록 수정. 상세는 [[wire-server-command-gaps]].
+
+## [2026-11-03] 개발판 명령과 HTTP/batch/pushkey/changegroup 대조
+`heads_buckets`, `store_shape` 구현(개발판 오라클로 검증), HTTP 서버 대조(400/405 수정), `pushkey` 규칙 정렬, 빈 저장소 `check:heads` 회귀 수정. 상세와 남은 차이는 [[wire-server-command-gaps]].

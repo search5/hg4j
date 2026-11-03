@@ -725,13 +725,19 @@ public class HgLocalClient implements HgRemoteConnection {
     private static final String PUSH_RACED_MESSAGE = "remote repository changed while pushing - please try again";
 
     private void validatePushNotRaced(List<String> expectedHeadHex) throws IOException {
+        // An empty repository's only "head" is the null node (real hg: repo.heads() == [nullid], which is also what a client
+        // sends back), so the null node is left out on both sides and "no heads" equals "[nullid]".
         TreeSet<String> expected = new TreeSet<>();
         for (String h : expectedHeadHex) {
-            expected.add(h.toLowerCase());
+            if (!NULL_NODE_HEX.equalsIgnoreCase(h)) {
+                expected.add(h.toLowerCase());
+            }
         }
         TreeSet<String> current = new TreeSet<>();
         for (String h : new HgLocalClient(remoteRepo).getHeads()) {
-            current.add(h.toLowerCase());
+            if (!NULL_NODE_HEX.equalsIgnoreCase(h)) {
+                current.add(h.toLowerCase());
+            }
         }
         if (!expected.equals(current)) {
             throw new HgPushRacedException(PUSH_RACED_MESSAGE);
@@ -740,6 +746,10 @@ public class HgLocalClient implements HgRemoteConnection {
 
     private void validatePushNotRacedHashed(String expectedDigestHex) throws IOException {
         List<String> currentHex = new ArrayList<>(new HgLocalClient(remoteRepo).getHeads());
+        if (currentHex.isEmpty()) {
+            // real hg's repo.heads() of an empty repository is [nullid], and that is what a client hashes
+            currentHex.add(NULL_NODE_HEX);
+        }
         // Hex-string order matches the underlying unsigned-byte order (each byte maps to exactly
         // two hex digits), so sorting hex strings here is equivalent to real hg's own
         // `sorted(heads)` over the raw 20-byte node ids -- no need to decode back to bytes first.

@@ -583,6 +583,22 @@ public final class Wire1Commands {
         }
     }
 
+    /** Commands this server implements in v1 (the {@link #dispatch} table plus {@code batch}, {@code unbundle}). */
+    private static final java.util.Set<String> KNOWN_COMMANDS = java.util.Set.of(
+            "capabilities", "hello", "heads", "between", "branches", "debugwireargs", "known", "lookup", "listkeys",
+            "pushkey", "branchmap", "changegroup", "changegroupsubset", "getbundle", "clonebundles",
+            "clonebundles_manifest", "stream_out", "heads_buckets", "store_shape", "get_cached_bundle_inline",
+            "batch", "unbundle");
+
+    public static boolean isKnownCommand(String cmd) {
+        return KNOWN_COMMANDS.contains(cmd);
+    }
+
+    /** Commands that change the repository: real hg's HTTP server serves them only to a POST request. */
+    public static boolean requiresPush(String cmd) {
+        return "unbundle".equals(cmd) || "pushkey".equals(cmd);
+    }
+
     /**
      * Dispatches a single named v1 command with its arguments — the shared table both direct
      * {@code ?cmd=X} routing (HTTP/SSH glue) and {@link #batch} (which dispatches each

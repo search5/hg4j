@@ -620,8 +620,13 @@ public class HgRemoteClientV2Test {
         HgRemoteClientV2 client = new HgRemoteClientV2("http://127.0.0.1:" + port);
         assertTrue(client.pushkey("bookmarks", "mybook", "", hex));
 
-        boolean ok = client.pushkey("bookmarks", "mybook", "wrong-old-value", hex);
+        // a second commit as the target: a push whose target equals the current value succeeds in real hg
+        // (bookmarks.pushbookmark accepts "existing == old or existing == new"), so the target must differ
+        Files.writeString(new File(repoDir, "a.txt").toPath(), "content 2");
+        String secondHex = NodeIdUtil.toHex(hg.commit().setMessage("c2").call()).substring(0, 40);
+        boolean ok = client.pushkey("bookmarks", "mybook", "wrong-old-value", secondHex);
         assertTrue(!ok, "실제 현재값과 다른 old 값을 넘기면 false가 반환돼야 함");
+        assertTrue(client.pushkey("bookmarks", "mybook", "", hex), "목표값이 현재값과 같으면 실제 hg 처럼 성공한다");
     }
 
     // ==================== malformed responses missing the optional parents/linknode fields ====================

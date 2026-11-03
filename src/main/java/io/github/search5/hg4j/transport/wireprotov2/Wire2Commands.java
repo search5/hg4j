@@ -548,8 +548,20 @@ public final class Wire2Commands {
         String currentVal = bookmarks.getOrDefault(key, "");
         String old = oldVal != null ? oldVal : "";
         String updated = newVal != null ? newVal : "";
-        if (!currentVal.equals(old)) {
+        // bookmarks.pushbookmark: a divergent name (contains '@') is refused, the change is accepted when the bookmark is at
+        // either the old OR the new value (so repeating a push is not an error), and a new target must exist in the repository.
+        if (key != null && key.contains("@")) {
             return false;
+        }
+        if (!currentVal.equals(old) && !currentVal.equals(updated)) {
+            return false;
+        }
+        if (!updated.isEmpty()) {
+            Revlog changelog = changelog(repo);
+            if (updated.length() != 40 || changelog.getRevisionCount() == 0
+                    || changelog.findRevision(NodeIdUtil.fromHex(updated)) == -1) {
+                return false;
+            }
         }
         if (updated.isEmpty()) {
             bookmarks.remove(key);

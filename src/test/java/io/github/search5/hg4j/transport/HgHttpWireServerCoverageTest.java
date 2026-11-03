@@ -136,14 +136,12 @@ public class HgHttpWireServerCoverageTest {
     }
 
     @Test
-    public void unsupportedV1CommandReturnsAnOobErrorNotACrash() throws Exception {
+    public void unsupportedV1CommandIsABadRequestLikeRealHg() throws Exception {
+        // Verified against a real `hg serve` 7.2.4 (HttpServerParityInteropTest#unknownCommandIsBadRequest): an unknown
+        // command is HTTP 400 "no such method", not an hg-error body with status 200.
         HttpURLConnection conn = get("/?cmd=nosuchcommand");
-        // ooberror is always sent as HTTP 200 with a dedicated content type (real hg's
-        // wireprotoserver.py._callhttp: HTTP_OK + HGERRTYPE for ooberror, regardless of the
-        // underlying condition).
-        assertEquals(200, conn.getResponseCode());
-        assertEquals("application/hg-error", conn.getHeaderField("Content-Type"));
-        assertEquals("unsupported command: nosuchcommand", bodyOf(conn));
+        assertEquals(400, conn.getResponseCode());
+        assertTrue(bodyOf(conn).contains("no such method: nosuchcommand"));
     }
 
     @Test

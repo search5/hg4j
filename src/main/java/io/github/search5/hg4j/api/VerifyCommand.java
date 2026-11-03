@@ -25,6 +25,26 @@ import java.util.stream.Stream;
  */
 public final class VerifyCommand {
     private final HgRepository repository;
+    private boolean skipLfs;
+
+    /** {@code hg verify --no-lfs}: do not read (so do not fetch) an LFS blob that is not stored locally. */
+    public VerifyCommand setSkipLfs(boolean skipLfs) {
+        this.skipLfs = skipLfs;
+        return this;
+    }
+
+    private boolean skipsLfs() {
+        if (skipLfs) {
+            return true;
+        }
+        // verify.skipflags is a bit mask of revision flags to skip; EXTSTORED is 0x2000
+        String flags = repository.getConfig().get("verify", "skipflags");
+        try {
+            return flags != null && (Integer.parseInt(flags.strip()) & io.github.search5.hg4j.storage.Revlog.REVIDX_EXTSTORED) != 0;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
 
     public VerifyCommand(HgRepository repository) {
         if (repository == null) {
@@ -212,7 +232,23 @@ public final class VerifyCommand {
                 HgLfsPointer pointer = HgLfsPointer.parse(content);
                 HgLfsManager manager = new HgLfsManager(repository.getHgDir(), repository.getConfig());
                 if (!manager.isCached(pointer)) {
-                    return;
+                    if (skipsLfs()) {
+                        return; // --no-lfs or verify.skipflags with EXTSTORED: a blob that is not here is not read
+                    }
+                    // otherwise real hg tries to read the revision, which fetches the blob; a failure is reported
+                    String where = mismatchPrefix.contains(": integrity mismatch")
+                            ? mismatchPrefix.substring(0, mismatchPrefix.indexOf(": integrity mismatch")) : mismatchPrefix;
+                    String url = HgLfsManager.resolveServerUrl(repository);
+                    try {
+                        if (url == null) {
+                            throw new io.github.search5.hg4j.lfs.errors.HgLfsException("lfs.url needs to be configured");
+                        }
+                        manager.fetchObjects(java.util.List.of(pointer), url);
+                    } catch (IOException | InterruptedException unavailable) {
+                        errors.add(where + ": unpacking " + NodeIdUtil.toHex(expectedNode).substring(0, 12) + ": "
+                                + unavailable.getMessage().lines().findFirst().orElse(""));
+                        return;
+                    }
                 }
                 byte[] blob;
                 try {

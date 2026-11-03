@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-03
-status: current (미착수. 1회성 실행 스냅샷이므로 실행이 끝나면 이 문서를 갱신하지 말고 decisions/modules를 갱신할 것)
+status: 완료 (2026-11-04, Phase 1~7 전부 구현. 결과와 의도적 차이는 modules/lfs.md, known-bugs-registry.md, log.md를 볼 것. 이 문서는 실행 전 계획의 스냅샷이다)
 audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전트)
 ---
 
@@ -248,3 +248,15 @@ JGit 본체의 연결 지점(`DirCacheCheckout`, `DiffFormatter`, `ResolveMerger
 - Phase 5 이후: 실제 hg 클라이언트가 hg4j 서버를 LFS 포함으로 push/clone합니다.
 - 일반 `./gradlew test` 전체 통과. 실행하지 않은 interop 범위는 보고에 명시합니다.
 - 알려진 차이는 숨기지 않고 `backlog/narrow-clone-and-lfs.md`에 "의도적 차이"로 기록합니다.
+
+## 6. 실행 결과 요약 (2026-11-04)
+| Phase | 커밋 | 결과 |
+|---|---|---|
+| 1 이음새와 값 객체 | eb70fd3 | `HgLfsFactory`/`BuiltinHgLfs`, 예외 계열, 포인터 메서드 |
+| 2 읽기 경로 | 0d89129, 4b82710 | 읽기 명령이 실제 내용을 읽음, `verify`, 일괄 내려받기, LFS 저장소 clone/pull 가능 |
+| 3 `lfs.track`, `.hglfs` | f92d0a5 | `MiniFileset`, `HgLfsTracker`, Histedit 재기록 |
+| 4 push·번들 업로드 | 1124f38 | `HgLfsPrePush`, 번들2 push 요청과 응답 해석 |
+| 5 LFS 서버 | 8944284 | `HgLfsProtocolHandler`, `lfs` 능력, 수신 시 `lfs` requirement |
+| 6 전송 견고성 | e2dd400 | `HgLfsClient`(문구·힌트, UA, 인증, 병렬, 재시도 실측) |
+| 7 부가 기능 | 이 문서와 같은 커밋 | `HgLfsFiles`, `LfsUploadCommand`, `verify` 마무리 |
+계획과 달리 바뀐 점: Phase 7의 `lfs()` 파일셋과 `lfs_files` 템플릿은 구문이 아니라 API(`HgLfsFiles`)로 제공했다(엔진 부재). 계획서가 "미확인"으로 둔 항목은 모두 실측으로 해소했다.

@@ -39,13 +39,18 @@ public final class HgLfsPrePush {
      */
     public static void upload(HgRepository repository, String destination, List<Map.Entry<Revlog, Integer>> revisions)
             throws IOException {
+        uploadPointers(repository, destination, extractPointers(revisions));
+    }
+
+    /** Same, for pointers that are already known (the pointers of some revisions, see {@link HgLfsFiles}). */
+    public static void uploadPointers(HgRepository repository, String destination, List<HgLfsPointer> pointers)
+            throws IOException {
         String url = HgLfsManager.resolveRemoteUrl(repository, destination);
         String scheme = url == null ? null : schemeOf(url);
         boolean usesLfs = repository.getRequirements().contains("lfs");
         if (usesLfs && scheme != null && !List.of("http", "https", "file", "null").contains(scheme)) {
             throw new io.github.search5.hg4j.lfs.errors.HgLfsException("lfs: unknown url scheme: " + scheme);
         }
-        List<HgLfsPointer> pointers = extractPointers(revisions);
         if (pointers.isEmpty() || "null".equals(scheme)) {
             return;
         }

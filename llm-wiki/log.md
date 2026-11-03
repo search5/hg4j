@@ -645,3 +645,8 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-04] LFS Phase 6: 전송 견고성
 `HgLfsClient`(JGit `LfsConnectionFactory`+전송 대응, 원본 `_gitlfsremote`): 배치 요청 본문, `_checkforservererror`와 파일 이름 포함 문구, 상태별 힌트, 접속 불가 시 `lfs.url` 힌트, `detected corrupt lfs object`, URL의 Basic 자격 증명, Basic 이외의 401 거절, `User-Agent`(`git-lfs/2.3.4 (...)`, `experimental.lfs.user-agent`), 병렬 전송(`experimental.lfs.worker-enable`), `lfs.retry`. 재시도는 실제 hg를 끊기는 프록시 뒤에 두고 실측해 규칙을 정함(끊긴 연결은 한 번 투명 재시도, 두 번째 끊김은 `LFS error` + `attempted connection to` 힌트). `prefetch`가 파일 경로를 받아 오류 문구에 사용. 힌트 표기를 원본의 `(...)` 형식으로 정렬.
 테스트: `LfsTransferRealHgInteropTest` 7개(실제 hg와 문구·요청 횟수 비교), `HgLfsTest` 문구 갱신. 검증: 일반 test 전체 통과, LFS·복제·update·pull·push 계열 interop 일부(전체 아님) 통과. 의도적 차이는 [[known-bugs-registry]]에 기록. [[implementation-plan-lfs]]
+
+## [2026-11-04] LFS Phase 7: 부가 기능, 계획서 완료
+`HgLfsFiles`(원본 `lfs()` 파일셋의 `inManifest`와 `lfs_files` 템플릿의 `changedBy`가 계산하는 값을 API로 제공, hg4j에는 파일셋·템플릿 엔진이 없음), `LfsUploadCommand`(`debuglfsupload`), `VerifyCommand` 마무리(blob이 로컬에 없으면 내려받기를 시도하고 실패를 `unpacking <노드>: ...`로 보고, `setSkipLfs`와 `verify.skipflags`로 생략).
+테스트: `LfsFilesRealHgInteropTest` 3개(`hg log --template '{lfs_files ...}'`, `hg files 'set:lfs()'`, `hg verify`와 같은 결과), `debuglfsupload` 1개. 검증: 일반 test 전체 통과, Lfs·Verify 계열 interop 14개 클래스 통과.
+**LFS 계획서 7단계 전부 완료.** 요약은 [[implementation-plan-lfs]]의 6절, 구조는 [[lfs]] 모듈 문서. 전체 interop(약 63분)은 이 계획의 어느 단계에서도 돌리지 않았고, 각 단계는 변경 영역의 일반 test 전체와 해당 interop 일부로 검증했다.

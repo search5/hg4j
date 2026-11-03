@@ -4,6 +4,7 @@ import io.github.search5.hg4j.HgTestUtils;
 import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CloneCommand;
 import io.github.search5.hg4j.api.CommitCommand;
+import io.github.search5.hg4j.api.LfsUploadCommand;
 import io.github.search5.hg4j.api.PushCommand;
 import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.lfs.errors.HgLfsCorruptObjectException;
@@ -122,6 +123,21 @@ class LfsPushRealHgInteropTest {
                 "clone", "http://127.0.0.1:" + hgPort, real.getAbsolutePath());
         byte[] content = Files.readAllBytes(new File(real, "big.bin").toPath());
         assertArrayEquals(payload, content, "real hg read the pushed LFS file back with its real content");
+    }
+
+    @Test
+    void debugLfsUploadSendsTheBlobsOfARevisionWithoutPushing() throws Exception {
+        HgRepository repo = cloneAndCommitLargeFile("client");
+        assertEquals(1, new LfsUploadCommand(repo).addRevision("tip").call(), "one blob belongs to the tip");
+
+        assertEquals(1, proxy.uploads.get(), "the blob was uploaded");
+        String oid = HgLfsPointer.sha256Hex(payload);
+        assertTrue(new File(server, ".hg/store/lfs/objects/" + oid.substring(0, 2) + "/" + oid.substring(2)).isFile());
+        assertEquals(1, HgTestUtils.hg(server, "--config", "extensions.lfs=", "log", "--template", "{node}\n").lines().count(),
+                "only the blob went, no changeset");
+
+        assertEquals(1, new LfsUploadCommand(new HgRepository(repo.getDirectory())).addRevision("tip").call());
+        assertEquals(1, proxy.uploads.get(), "a second call finds the blob on the server and sends nothing");
     }
 
     @Test

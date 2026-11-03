@@ -25,7 +25,7 @@ status: current
 >
 > **LFS 계획서 (2026-11-03)**: [implementation-plan-lfs.md](implementation-plan-lfs.md)
 > — JGit의 LFS 인터페이스(`LfsFactory`, `LfsPointer`, `LfsPrePushHook`, `lfs.server`)에 준해 읽기 경로, `lfs.track`/`.hglfs`,
-> push 업로드, LFS 서버, 전송 견고성을 채우는 7단계 계획(미착수).
+> push 업로드, LFS 서버, 전송 견고성을 채우는 7단계 계획(**완료**, 2026-11-04. 결과는 [modules/lfs.md](modules/lfs.md)).
 >
 > **실제로 작업을 시작할 때는 [implementation-plan.md](implementation-plan.md)부터
 > 보세요** — 위 두 요건을 하나로 통합해 Phase별 실행 순서/체크리스트/검증 명령까지

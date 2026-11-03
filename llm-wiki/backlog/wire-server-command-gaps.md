@@ -29,9 +29,9 @@ status: current (B8, B3, B1, B2, B4, B9 수정 완료(높음 4개 모두). 나�
 | **B1** | **수정됨** | `lookup`이 북마크, 태그, 브랜치 이름을 풀지 못함(`1 <hex>` 대신 `0 unknown revision`). 16진수, `tip`은 정상 | `clone -r bm1`, `-r v1`, `-r default`, `-r feature` 모두 `abort: unknown revision` | `NodeIdUtil.resolveRevision`이 이름 공간(bookmark/tag/branch)을 모름 | **높음** |
 | **B2** | **수정됨** | `listkeys namespaces`가 빈 응답. 원본은 `bookmarks`, `namespaces`, `phases` | `hg incoming -B`/`outgoing -B`가 `remote doesn't support bookmarks`. 원본 클라이언트는 `commands.py:4015`, `:4670`, `:3555`, `:7034`와 push 시 obsolete 확인(`exchange.py:775`)에서 이 목록을 본다 | `readListKeys`가 `namespaces`를 처리하지 않음 | 중간 |
 | B4 | **수정됨** | `branchmap`, `listkeys bookmarks` 응답 끝에 개행이 하나 더 있음(원본은 없음) | 실제 클라이언트는 줄 단위로 파싱해 영향이 보이지 않음(기존 clone/pull interop 통과) | 응답 조립 방식 | 낮음 |
-| B5 | 미수정 | `between`이 서로 다른 두 노드에 대해 중간 노드를 주지 않음(`1\n\n`). 원본은 1, 2, 4, 8 간격의 이분 탐색 목록 | 구형 discovery 클라이언트에서만 의미(현대 클라이언트는 `heads`/`known`). 핸드셰이크용 null-null 쌍은 동일 | 소스에 "실제 이분 탐색은 구현하지 않았다"고 적혀 있음 | 낮음 |
-| B6 | 미수정 | `branches` 명령 없음 | 구형 discovery에서만 사용 | 미구현 | 낮음 |
-| B7 | 미수정 | 지원하지 않는 명령에 원본은 **빈 응답**(`0\n`)을 주고 계속하는데, hg4j는 `unsupported command: x` 텍스트를 응답 본문으로 보냄 | 광고하지 않은 명령을 호출하는 클라이언트가 오류 텍스트를 데이터로 읽음. 인자 줄도 별도 명령으로 오해해 오류가 연쇄됨 | `Wire1Response.oobError` 사용 | 중간 |
+| B5 | **수정됨** | `between`이 서로 다른 두 노드에 대해 중간 노드를 주지 않음(`1\n\n`). 원본은 1, 2, 4, 8 간격의 이분 탐색 목록 | 구형 discovery 클라이언트에서만 의미(현대 클라이언트는 `heads`/`known`). 핸드셰이크용 null-null 쌍은 동일 | 소스에 "실제 이분 탐색은 구현하지 않았다"고 적혀 있음 | 낮음 |
+| B6 | **수정됨** | `branches` 명령 없음 | 구형 discovery에서만 사용 | 미구현 | 낮음 |
+| B7 | **수정됨(SSH)** | 지원하지 않는 명령에 원본은 **빈 응답**(`0\n`)을 주고 계속하는데, hg4j는 `unsupported command: x` 텍스트를 응답 본문으로 보냄 | 광고하지 않은 명령을 호출하는 클라이언트가 오류 텍스트를 데이터로 읽음. 인자 줄도 별도 명령으로 오해해 오류가 연쇄됨 | `Wire1Response.oobError` 사용 | 중간 |
 | B9 | **수정됨** | 헤드가 둘 이상이면 `heads` 순서가 원본과 다름(집합은 같음) | 순서에 의존하는 출력에서만 차이. 헤드가 하나면 동일 | `HgLocalClient#getHeads` 정렬 | 낮음 |
 
 ### 수정하면서 추가로 드러난 것
@@ -56,21 +56,21 @@ status: current (B8, B3, B1, B2, B4, B9 수정 완료(높음 4개 모두). 나�
 | batch | :207 | 구현 | 이번에 대조하지 않음(기존 테스트가 다룸) |
 | between | :253 | 구현(껍데기) | B5 |
 | branchmap | :263 | 구현 | B4 |
-| branches | :276 | **없음** | B6 |
+| branches | :276 | 구현 | B6 수정됨 (병합 이력 포함 원본과 바이트 동일) |
 | get_cached_bundle_inline | :286 | 없음 | 클라이언트는 `peer-bundle-cache://` 항목이 있을 때만 호출(`exchange.py:3148`). hg4j 매니페스트에는 없음. 영향 없음 |
 | clonebundles | :339 | 구현 | 매니페스트 없을 때 동일 |
 | clonebundles_manifest | :361 | 없음 | 클라이언트는 서버가 `clonebundles_manifest` capability를 광고할 때만 호출(`wireprotov1peer.py:361`). hg4j는 광고 안 함. 영향 없음 |
 | store_shape | :390 | 없음 | narrow shapes(Rust, experimental) capability 광고 시에만. 영향 없음 |
 | capabilities / hello | :503 / :708 | 구현 | 아래 capability 비교 |
 | changegroup / changegroupsubset | :509 / :520 | 구현 | 구형 경로. 대조하지 않음 |
-| debugwireargs | :530 | 없음 | 디버그 전용(`debugcommands.py`) |
+| debugwireargs | :530 | 구현 | 원본과 바이트 동일(`three`/`four` 선택 인자 포함). 광고할 capability는 없음 |
 | getbundle | :609 | 구현 | **B8** |
 | heads | :688 | 구현 | B9 |
 | heads_buckets | :694 | 없음 | `experimental.disco.heads-fingerprints` capability를 광고할 때만(`setdiscovery.py:438`). 영향 없음 |
 | listkeys | :739 | 구현(부분) | B2, B3, B4 |
 | lookup | :745 | 구현(부분) | **B1** |
 | known | :758 | 구현 | 동일 |
-| protocaps | :767 | 없음 | 서버는 SSH에서 광고하지만(`wireprotoserver.py:455`) 이 소스의 `sshpeer.py`/`wireprotov1peer.py`에는 호출이 없음. 영향 없음 |
+| protocaps | :767 | 구현(SSH만) | SSH capabilities에 `protocaps`를 추가해 광고. 값은 확인 응답(`OK`)만 하고 저장하지 않음 | 원래: | 서버는 SSH에서 광고하지만(`wireprotoserver.py:455`) 이 소스의 `sshpeer.py`/`wireprotov1peer.py`에는 호출이 없음. 영향 없음 |
 | pushkey | :774 | 구현 | 기존 테스트가 다룸 |
 | stream_out | :803 | 없음 | 서버가 `stream` capability를 광고할 때만 호출(`streamclone.py:273`). hg4j는 광고 안 함 → 스트리밍 클론이 없을 뿐 clone은 `getbundle`로 동작. 성능 이점만 없음 |
 | unbundle | :812 | 구현 | 기존 테스트가 다룸 |

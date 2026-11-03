@@ -145,16 +145,88 @@ public final class Wire1Commands {
      * actual discovery in every modern codepath — this command's only remaining real use is the
      * handshake probe above); every pair here just reports "no intermediate nodes found".</p>
      */
-    public static Wire1Response between(Map<String, String> args) {
+    public static Wire1Response between(HgRepository repo, Map<String, String> args) throws IOException {
         String pairsArg = args.getOrDefault("pairs", "");
-        if (pairsArg.isBlank()) {
+        if (pairsArg.isEmpty()) {
             return Wire1Response.bytes(new byte[0]);
         }
+        Revlog changelog = Wire2Commands.changelog(repo);
         StringBuilder sb = new StringBuilder();
-        for (String ignored : pairsArg.trim().split(" ")) {
-            sb.append('\n');
+        // Real hg's localrepo.between(): from `top` walk first parents towards `bottom`, keeping the nodes at
+        // distances 1, 2, 4, 8, ... (the legacy bisection discovery). One line per pair, nodes space separated.
+        for (String pair : pairsArg.split(" ", -1)) {
+            String[] ends = pair.split("-", -1);
+            int rev = ends.length == 2 && ends[0].length() == 40 ? changelog.findRevision(NodeIdUtil.fromHex(ends[0])) : -1;
+            byte[] bottom = ends.length == 2 && ends[1].length() == 40 ? NodeIdUtil.fromHex(ends[1]) : new byte[20];
+            List<String> picked = new ArrayList<>();
+            int i = 0;
+            int f = 1;
+            while (rev >= 0 && !java.util.Arrays.equals(java.util.Arrays.copyOf(changelog.getIndexRecord(rev).getNodeId(), 20), bottom)) {
+                int parent = changelog.getIndexRecord(rev).getParent1();
+                if (i == f) {
+                    picked.add(NodeIdUtil.toHex(changelog.getIndexRecord(rev).getNodeId()));
+                    f *= 2;
+                }
+                rev = parent;
+                i++;
+            }
+            sb.append(String.join(" ", picked)).append('\n');
         }
         return Wire1Response.bytes(sb.toString().getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * Real hg's legacy {@code branches}: for each requested node (default the tip) walk first parents until a
+     * merge or a root, answering {@code <start> <end> <p1 of end> <p2 of end>} per node (localrepo.branches()).
+     * Only the pre-1.x discovery protocol uses it.
+     */
+    public static Wire1Response branches(HgRepository repo, Map<String, String> args) throws IOException {
+        Revlog changelog = Wire2Commands.changelog(repo);
+        List<String> nodes = splitOrEmpty(args.get("nodes"));
+        List<Integer> starts = new ArrayList<>();
+        if (nodes.isEmpty()) {
+            if (changelog.getRevisionCount() > 0) {
+                starts.add(changelog.getRevisionCount() - 1);
+            }
+        } else {
+            for (String hex : nodes) {
+                int rev = changelog.findRevision(NodeIdUtil.fromHex(hex));
+                if (rev < 0) {
+                    throw new io.github.search5.hg4j.errors.HgRevisionNotFoundException(hex);
+                }
+                starts.add(rev);
+            }
+        }
+        String nul = "0".repeat(40);
+        StringBuilder sb = new StringBuilder();
+        for (int start : starts) {
+            int n = start;
+            while (true) {
+                Revlog.IndexRecord rec = changelog.getIndexRecord(n);
+                int p1 = rec.getParent1();
+                int p2 = rec.getParent2();
+                if (p2 != -1 || p1 == -1) {
+                    sb.append(NodeIdUtil.toHex(changelog.getIndexRecord(start).getNodeId())).append(' ')
+                            .append(NodeIdUtil.toHex(rec.getNodeId())).append(' ')
+                            .append(p1 == -1 ? nul : NodeIdUtil.toHex(changelog.getIndexRecord(p1).getNodeId())).append(' ')
+                            .append(p2 == -1 ? nul : NodeIdUtil.toHex(changelog.getIndexRecord(p2).getNodeId())).append('\n');
+                    break;
+                }
+                n = p1;
+            }
+        }
+        return Wire1Response.bytes(sb.toString().getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * Real hg's {@code debugwireargs}: echoes {@code one two three four five}, where {@code three} and {@code four}
+     * are the optional arguments and {@code five} is never sent over the wire, hence always {@code None}. Used to
+     * test argument passing.
+     */
+    public static Wire1Response debugwireargs(Map<String, String> args) {
+        String text = String.join(" ", args.getOrDefault("one", ""), args.getOrDefault("two", ""),
+                args.getOrDefault("three", "None"), args.getOrDefault("four", "None"), "None");
+        return Wire1Response.bytes(text.getBytes(StandardCharsets.UTF_8));
     }
 
     public static Wire1Response known(HgRepository repo, Map<String, String> args) throws IOException {
@@ -428,7 +500,9 @@ public final class Wire1Commands {
             case "capabilities" -> capabilities(repo);
             case "hello" -> hello(repo);
             case "heads" -> heads(repo);
-            case "between" -> between(args);
+            case "between" -> between(repo, args);
+            case "branches" -> branches(repo, args);
+            case "debugwireargs" -> debugwireargs(args);
             case "known" -> known(repo, args);
             case "lookup" -> lookup(repo, args);
             case "listkeys" -> listkeys(repo, args);

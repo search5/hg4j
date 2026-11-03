@@ -126,18 +126,21 @@ public class Wire1CommandsCoverageTest {
     // ==================== between ====================
 
     @Test
-    public void betweenWithNoPairsArgumentReturnsEmptyBytes() {
-        Wire1Response r = Wire1Commands.between(new LinkedHashMap<>());
+    public void betweenWithNoPairsArgumentReturnsEmptyBytes(@TempDir Path tempDir) throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
+        Wire1Response r = Wire1Commands.between(repo, new LinkedHashMap<>());
         assertEquals(0, r.getPayload().length);
     }
 
     @Test
-    public void betweenReturnsOneNewlinePerRequestedPair() {
-        // Real wire format (mercurial/wireprotov1server.py's between()): space-separated
-        // "hash1-hash2" pairs; this hg4j implementation only counts the space-separated tokens.
+    public void betweenReturnsOneNewlinePerRequestedPair(@TempDir Path tempDir) throws Exception {
+        // Real wire format (mercurial/wireprotov1server.py's between()): space-separated "top-bottom" pairs, one
+        // answer line per pair. Pairs with no nodes between them (here: both ends equal / unknown) give an empty
+        // line. The non-trivial bisection is compared with the real server in WireServerParityInteropTest.
+        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         Map<String, String> args = new LinkedHashMap<>();
         args.put("pairs", "0".repeat(40) + "-" + "0".repeat(40) + " " + "1".repeat(40) + "-" + "1".repeat(40));
-        Wire1Response r = Wire1Commands.between(args);
+        Wire1Response r = Wire1Commands.between(repo, args);
         assertEquals("\n\n", bytes(r));
     }
 

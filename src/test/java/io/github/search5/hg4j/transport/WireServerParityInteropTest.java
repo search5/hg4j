@@ -79,6 +79,16 @@ public class WireServerParityInteropTest {
                 sb.append("* 0\n");
                 continue;
             }
+            if (a.startsWith("*")) { // "*three=x&four=y": a star argument carrying values
+                String[] pairs = a.substring(1).split("&");
+                sb.append("* ").append(pairs.length).append('\n');
+                for (String pair : pairs) {
+                    int eq2 = pair.indexOf('=');
+                    sb.append(pair, 0, eq2).append(' ').append(pair.substring(eq2 + 1).getBytes(StandardCharsets.UTF_8).length)
+                            .append('\n').append(pair.substring(eq2 + 1));
+                }
+                continue;
+            }
             int eq = a.indexOf('=');
             String v = a.substring(eq + 1);
             sb.append(a, 0, eq).append(' ').append(v.getBytes(StandardCharsets.UTF_8).length).append('\n').append(v);
@@ -136,6 +146,73 @@ public class WireServerParityInteropTest {
         };
         assertEquals(set.apply(ask(true, "heads")), set.apply(ask(false, "heads")));
         assertEquals(2, set.apply(ask(true, "heads")).size(), "the fixture really has two heads");
+    }
+
+    @Test
+    @DisplayName("debugwireargs 와 protocaps 가 원본과 같다 (선택 인자 three/four 포함)")
+    void debugwireargsAndProtocaps() throws Exception {
+        assertSameAnswer("debugwireargs", "one=a", "two=b", "*");
+        assertSameAnswer("debugwireargs", "one=a", "two=b", "*three=x&four=y");
+        assertSameAnswer("debugwireargs", "one=a", "two=b", "*four=only4");
+        assertSameAnswer("protocaps", "caps=comp=zstd,zlib");
+    }
+
+    @Test
+    @DisplayName("긴 선형 이력에서 between 이 원본과 같은 이분 탐색 결과를 준다")
+    void betweenOnALongHistory() throws Exception {
+        Path longRepo = Files.createDirectories(tmp.resolve("long"));
+        LocalHg.hgIn(tmp, "long", "init", ".");
+        Files.writeString(longRepo.resolve("f.txt"), "x");
+        LocalHg.hgIn(tmp, "long", "add", "f.txt");
+        for (int i = 0; i < 20; i++) {
+            Files.writeString(longRepo.resolve("f.txt"), "x" + i);
+            LocalHg.hgIn(tmp, "long", "commit", "-u", "dev", "-m", "c" + i);
+        }
+        String tip = LocalHg.hgIn(tmp, "long", "log", "-r", "tip", "--template", "{node}");
+        String r3 = LocalHg.hgIn(tmp, "long", "log", "-r", "3", "--template", "{node}");
+        String r19 = LocalHg.hgIn(tmp, "long", "log", "-r", "19", "--template", "{node}");
+        Path saved = repo;
+        repo = longRepo;
+        try {
+            assertSameAnswer("between", "pairs=" + tip + "-" + "0".repeat(40));
+            assertSameAnswer("between", "pairs=" + tip + "-" + r3);
+            assertSameAnswer("between", "pairs=" + tip + "-" + r19);
+            assertSameAnswer("between", "pairs=" + tip + "-" + r3 + " " + r19 + "-" + "0".repeat(40));
+            assertSameAnswer("branches", "nodes=" + tip);
+        } finally {
+            repo = saved;
+        }
+    }
+
+    @Test
+    @DisplayName("병합이 있는 이력에서 branches 가 원본과 같다")
+    void branchesAcrossAMerge() throws Exception {
+        Path m = Files.createDirectories(tmp.resolve("merge"));
+        LocalHg.hgIn(tmp, "merge", "init", ".");
+        Files.writeString(m.resolve("a.txt"), "a\n");
+        LocalHg.hgIn(tmp, "merge", "add", "a.txt");
+        LocalHg.hgIn(tmp, "merge", "commit", "-u", "dev", "-m", "c0");
+        Files.writeString(m.resolve("a.txt"), "a1\n");
+        LocalHg.hgIn(tmp, "merge", "commit", "-u", "dev", "-m", "c1");
+        LocalHg.hgIn(tmp, "merge", "update", "-r", "0");
+        Files.writeString(m.resolve("b.txt"), "b\n");
+        LocalHg.hgIn(tmp, "merge", "add", "b.txt");
+        LocalHg.hgIn(tmp, "merge", "commit", "-u", "dev", "-m", "c2");
+        LocalHg.hgIn(tmp, "merge", "merge", "-r", "1");
+        LocalHg.hgIn(tmp, "merge", "commit", "-u", "dev", "-m", "merge");
+        Files.writeString(m.resolve("a.txt"), "a3\n");
+        LocalHg.hgIn(tmp, "merge", "commit", "-u", "dev", "-m", "c4");
+        Path saved = repo;
+        repo = m;
+        try {
+            for (String rev : List.of("0", "1", "2", "3", "4")) {
+                String node = LocalHg.hgIn(tmp, "merge", "log", "-r", rev, "--template", "{node}");
+                assertSameAnswer("branches", "nodes=" + node);
+            }
+            assertSameAnswer("branches", "nodes=");
+        } finally {
+            repo = saved;
+        }
     }
 
     // ───────────────────────── known gaps (red tests) ─────────────────────────
@@ -212,24 +289,48 @@ public class WireServerParityInteropTest {
     }
 
     @Test
-    @Disabled(GAPS + "B5 between returns no intermediate nodes for a real pair")
     @DisplayName("between 이 서로 다른 두 노드 사이를 원본처럼 이분 탐색한다")
     void betweenBisects() throws Exception {
         assertSameAnswer("between", "pairs=" + n2 + "-" + n0);
     }
 
     @Test
-    @Disabled(GAPS + "B6 branches is not implemented")
     @DisplayName("branches 명령이 원본처럼 응답한다")
     void branchesCommand() throws Exception {
         assertSameAnswer("branches", "nodes=" + n2);
     }
 
     @Test
-    @Disabled(GAPS + "B7 an unavailable command gets an error text instead of an empty answer")
-    @DisplayName("지원하지 않는 명령에는 원본처럼 빈 응답을 준다")
+    @DisplayName("지원하지 않는 명령에는 원본처럼 빈 응답을 주고 연결을 유지한다")
     void unavailableCommandGetsEmptyAnswer() throws Exception {
         assertSameAnswer("thiscommanddoesnotexist");
+        // the session goes on: a following real command is still answered (here: two commands in one session)
+        byte[] real = askTwo(true, "nosuchcommand", "heads");
+        byte[] mine = askTwo(false, "nosuchcommand", "heads");
+        assertEquals(show(real), show(mine));
+    }
+
+    private byte[] askTwo(boolean real, String first, String second) throws Exception {
+        byte[] r1 = request(first);
+        byte[] r2 = request(second);
+        // two requests, then the terminating empty line (request() already appended one: drop it from the first)
+        ByteArrayOutputStream both = new ByteArrayOutputStream();
+        both.write(r1, 0, r1.length - 1);
+        both.write(r2);
+        if (real) {
+            ProcessBuilder pb = LocalHg.processBuilder(repo, "-R", repo.toString(), "serve", "--stdio");
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+            Process p = pb.start();
+            try (OutputStream os = p.getOutputStream()) {
+                os.write(both.toByteArray());
+            }
+            byte[] out = p.getInputStream().readAllBytes();
+            assertTrue(p.waitFor(30, TimeUnit.SECONDS));
+            return out;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        new HgSshWireServer(new HgRepository(repo.toFile())).handleConnection(new ByteArrayInputStream(both.toByteArray()), out);
+        return out.toByteArray();
     }
 
     // ───────────────────────── what a real hg client sees ─────────────────────────

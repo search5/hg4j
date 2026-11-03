@@ -377,16 +377,19 @@ public class HgSshWireServerTest {
     }
 
     /** An unrecognized command name has no declared {@code ARG_SPECS} entry, so real hg's SSH
-     * peer reports it as an out-of-band error rather than trying to read argument lines for it. */
+     * peer answers it with an empty response rather than trying to read argument lines for it. */
     @Test
-    public void unsupportedCommandRespondsWithAnOobError(@TempDir Path tempDir) throws Exception {
+    public void unsupportedCommandRespondsWithAnEmptyAnswerAndTheSessionGoesOn(@TempDir Path tempDir) throws Exception {
         HgRepository repo = repoWithOneCommit(tempDir);
 
-        byte[] response = run(repo, "frobnicate\n".getBytes(StandardCharsets.US_ASCII));
+        // Real hg answers a command it does not offer with an EMPTY framed response ("0\n") and goes back to
+        // waiting for the next command (wireprotoserver.py); compared byte for byte with the real server in
+        // WireServerParityInteropTest. A following real command is still served.
+        byte[] response = run(repo, "frobnicate\nheads\n".getBytes(StandardCharsets.US_ASCII));
 
-        String expectedPayload = "unsupported command: frobnicate";
-        String expected = expectedPayload.length() + "\n" + expectedPayload;
-        assertEquals(expected, new String(response, StandardCharsets.US_ASCII));
+        String text = new String(response, StandardCharsets.US_ASCII);
+        assertTrue(text.startsWith("0\n"), text);
+        assertTrue(text.substring(2).matches("41\n[0-9a-f]{40}\n"), text);
     }
 
     /** If the connection is severed right after the command line -- before the declared argument

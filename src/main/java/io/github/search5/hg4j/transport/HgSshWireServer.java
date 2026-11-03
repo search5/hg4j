@@ -52,7 +52,10 @@ public class HgSshWireServer {
             Map.entry("getbundle", "*"),
             Map.entry("unbundle", "heads"),
             Map.entry("batch", "cmds *"),
-            Map.entry("clonebundles", "")
+            Map.entry("clonebundles", ""),
+            Map.entry("branches", "nodes"),
+            Map.entry("debugwireargs", "one two *"),
+            Map.entry("protocaps", "caps")
     );
 
     private final HgRepository repository;
@@ -171,11 +174,22 @@ public class HgSshWireServer {
     private Wire1Response dispatch(String cmd, InputStream in) throws Exception {
         String spec = ARG_SPECS.get(cmd);
         if (spec == null) {
-            // Unknown command: real hg's SSH peer has no declared arg spec to consume, so there
-            // is nothing more to read off the wire for it either -- just report the error.
-            return Wire1Response.oobError("unsupported command: " + cmd);
+            // A command this server does not offer: real hg's SSH server answers with an EMPTY framed response and
+            // goes back to waiting for the next command (wireprotoserver.py: "This command isn't available. Send
+            // an empty response and go back to waiting for a new command."). There is no declared arg spec to
+            // consume either. (hg4j used to answer with an "unsupported command: x" text, which a client probing an
+            // optional command would read as data.)
+            return Wire1Response.bytes(new byte[0]);
         }
         Map<String, String> args = readArgs(in, spec);
+        if ("protocaps".equals(cmd)) {
+            // SSH-only: the client announces what it can handle (e.g. "comp=zstd,zlib"). Nothing here depends on it
+            // yet, so it is acknowledged like real hg does and not stored.
+            return Wire1Response.bytes("OK".getBytes(StandardCharsets.US_ASCII));
+        }
+        if ("capabilities".equals(cmd) || "hello".equals(cmd)) {
+            return sshCapabilities(cmd);
+        }
 
         if ("batch".equals(cmd)) {
             return Wire1Commands.batch(repository, args);
@@ -186,6 +200,14 @@ public class HgSshWireServer {
             return Wire1Commands.pushkey(repository, args, prePushkeyHooks, postPushkeyHooks);
         }
         return Wire1Commands.dispatch(repository, cmd, args);
+    }
+
+
+    /** SSH adds {@code protocaps} to the capabilities it advertises (real hg's sshv1 protocol handler does the same). */
+    private Wire1Response sshCapabilities(String cmd) {
+        String caps = Wire1Commands.capabilitiesString(repository) + " protocaps";
+        String body = "hello".equals(cmd) ? "capabilities: " + caps + "\n" : caps;
+        return Wire1Response.bytes(body.getBytes(StandardCharsets.UTF_8));
     }
 
     private Map<String, String> readArgs(InputStream in, String spec) throws IOException {

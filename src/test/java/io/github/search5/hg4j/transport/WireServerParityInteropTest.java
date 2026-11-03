@@ -431,7 +431,7 @@ public class WireServerParityInteropTest {
         int nl = indexOf(raw, (byte) '\n', pos);
         String status = new String(raw, pos, nl - pos, StandardCharsets.US_ASCII);
         pos = nl + 1;
-        java.util.Map<String, byte[]> files = new java.util.TreeMap<>();
+        java.util.Map<String, byte[]> files = new java.util.LinkedHashMap<>(); // keeps the order the files were sent in
         if (!status.equals("0")) {
             return new Stream(status, "", files);
         }
@@ -481,10 +481,110 @@ public class WireServerParityInteropTest {
         assertEquals("0", real.status());
         assertEquals(real.status(), mine.status());
         assertEquals(real.counts(), mine.counts(), "file count and byte count line");
-        assertEquals(real.files().keySet(), mine.files().keySet(), "the same store files, under the same wire names");
+        assertEquals(new java.util.ArrayList<>(real.files().keySet()), new java.util.ArrayList<>(mine.files().keySet()),
+                "the same store files, under the same wire names, in the same order");
         for (String name : real.files().keySet()) {
             assertArrayEquals(real.files().get(name), mine.files().get(name), name);
         }
+    }
+
+    /** A repository with several files: sub-directories, upper-case and long names that the store encodes. */
+    private void addManyFiles() throws Exception {
+        for (String name : new String[]{"src/Main.java", "src/util/Helper.java", "docs/README.txt", "Zeta.txt", "alpha.txt",
+                "dir with space/file.txt", "a/very/deep/directory/structure/with/a/rather/long/file/name/to/force/encoding.txt"}) {
+            Path file = repo.resolve(name);
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, "content of " + name + "\n");
+            LocalHg.hgIn(tmp, "server", "add", name);
+        }
+        LocalHg.hgIn(tmp, "server", "commit", "-u", "dev", "-m", "many files");
+        Files.writeString(repo.resolve("src/Main.java"), "changed\n");
+        LocalHg.hgIn(tmp, "server", "commit", "-u", "dev", "-m", "second");
+    }
+
+    @Test
+    @DisplayName("stream_out 의 파일 순서가 여러 파일(하위 디렉터리, 대문자, 긴 이름) 저장소에서도 원본과 같다")
+    void streamOutOrderWithManyFiles() throws Exception {
+        addManyFiles();
+        Stream real = parseStream(ask(true, "stream_out"));
+        Stream mine = parseStream(ask(false, "stream_out"));
+        assertEquals(real.counts(), mine.counts());
+        assertEquals(new java.util.ArrayList<>(real.files().keySet()), new java.util.ArrayList<>(mine.files().keySet()));
+        for (String name : real.files().keySet()) {
+            assertArrayEquals(real.files().get(name), mine.files().get(name), name);
+        }
+    }
+
+    /** The {@code stream2} part of a getbundle answer: its parameters and the files, in order, from {@code s <uvarint> <uvarint> name data}. */
+    private record Stream2(java.util.Map<String, String> params, java.util.List<String> names, java.util.Map<String, byte[]> files) {
+    }
+
+    private Stream2 stream2(boolean real) throws Exception {
+        String bundlecaps = "HG20,bundle2=" + java.net.URLEncoder.encode(B2_BLOB + "\nstream=v2", StandardCharsets.UTF_8).replace("+", "%20");
+        byte[] raw = ask(real, "getbundle", "*heads=" + n2 + "&common=" + "0".repeat(40) + "&bundlecaps=" + bundlecaps + "&stream=True&cg=0");
+        for (io.github.search5.hg4j.bundle.Bundle2.Part part : io.github.search5.hg4j.bundle.Bundle2.read(raw)) {
+            if (!part.type.equals("stream2")) {
+                continue;
+            }
+            java.util.List<String> names = new java.util.ArrayList<>();
+            java.util.Map<String, byte[]> files = new java.util.LinkedHashMap<>();
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(part.payload);
+            while (b.hasRemaining()) {
+                char source = (char) b.get(); // 's' store, 'c' cache
+                long nameLength = uvarint(b);
+                long dataLength = uvarint(b);
+                byte[] name = new byte[(int) nameLength];
+                b.get(name);
+                byte[] data = new byte[(int) dataLength];
+                b.get(data);
+                String n = (source == 'c' ? "cache/" : "") + new String(name, StandardCharsets.ISO_8859_1);
+                names.add(n);
+                files.put(n, data);
+            }
+            return new Stream2(part.params, names, files);
+        }
+        return fail("no stream2 part in the answer");
+    }
+
+    private static long uvarint(java.nio.ByteBuffer b) {
+        long value = 0;
+        int shift = 0;
+        while (true) {
+            int next = b.get() & 0xFF;
+            value |= (long) (next & 0x7F) << shift;
+            if ((next & 0x80) == 0) {
+                return value;
+            }
+            shift += 7;
+        }
+    }
+
+    @Test
+    @DisplayName("stream2 부품의 파라미터, 파일 순서, 내용이 원본과 같다 (cache/ 파일 제외)")
+    void stream2MatchesTheOriginal() throws Exception {
+        addManyFiles();
+        Stream2 real = stream2(true);
+        Stream2 mine = stream2(false);
+        // the original also copies cache/ files (branch and tag caches); hg4j does not send them
+        real.names().removeIf(n -> n.startsWith("cache/"));
+        assertEquals(real.params().get("requirements"), mine.params().get("requirements"));
+        assertEquals(real.names(), mine.names(), "same files in the same order");
+        for (String name : real.names()) {
+            assertArrayEquals(real.files().get(name), mine.files().get(name), name);
+        }
+    }
+
+    @Test
+    @DisplayName("비게시 저장소의 stream2 가 phaseroots 를 원본과 같은 자리(데이터 파일 뒤, manifest 앞)에 보낸다")
+    void stream2WithPhaseroots() throws Exception {
+        addManyFiles();
+        Files.writeString(repo.resolve(".hg/hgrc"), "[phases]\npublish = false\n");
+        Stream2 real = stream2(true);
+        Stream2 mine = stream2(false);
+        real.names().removeIf(n -> n.startsWith("cache/"));
+        assertTrue(real.names().contains("phaseroots"), real.names().toString());
+        assertEquals(real.names(), mine.names());
+        assertArrayEquals(real.files().get("phaseroots"), mine.files().get("phaseroots"));
     }
 
     @Test
@@ -818,6 +918,181 @@ public class WireServerParityInteropTest {
         assertSamePushkey("namespace=bookmarks", "key=bm1", "old=" + n0, "new=" + n2);
         assertSamePushkey("namespace=bookmarks", "key=nobm", "old=" + n0, "new=");
         assertSamePushkey("namespace=nosuchnamespace", "key=k", "old=", "new=v");
+    }
+
+    // ───────────────────────── unbundle: a whole recorded push session ─────────────────────────
+
+    private void copyTree(Path from, Path to) throws IOException {
+        try (java.util.stream.Stream<Path> walk = Files.walk(from)) {
+            for (Path source : (Iterable<Path>) walk::iterator) {
+                Path target = to.resolve(from.relativize(source).toString());
+                if (Files.isDirectory(source)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.copy(source, target);
+                }
+            }
+        }
+    }
+
+    /**
+     * Records what a REAL hg client sends during {@code hg <clientArgs>} against a real server, then replays those exact bytes
+     * to a pristine copy of the server under both the real hg and hg4j and compares everything each of them answers
+     * (hello, discovery, listkeys, the unbundle reply, ...). {@code beforeReplay} may change both copies identically first,
+     * e.g. to make the push lose a race.
+     */
+    private void assertSameSession(String name, java.util.function.Consumer<Path> clientWork, String[] clientArgs,
+                                   java.util.function.Consumer<Path> beforeReplay) throws Exception {
+        Path recordServer = tmp.resolve(name + "-record");
+        Path realServer = tmp.resolve(name + "-real");
+        Path mineServer = tmp.resolve(name + "-mine");
+        copyTree(repo, recordServer);
+        copyTree(repo, realServer);
+        copyTree(repo, mineServer);
+        Path client = tmp.resolve(name + "-client");
+        LocalHg.hgIn(tmp, ".", "clone", repo.toString(), client.toString());
+        clientWork.accept(client);
+
+        Path capture = tmp.resolve(name + ".session");
+        Path tee = script("ssh-tee-" + name, "tee \"$CAP\" | \"" + LocalHg.executable() + "\" -R \"$SRV\" serve --stdio");
+        // `hg push --ssh` is a subcommand option, so the command name comes first
+        java.util.List<String> command = new java.util.ArrayList<>();
+        command.add(clientArgs[0]);
+        command.add("--ssh");
+        command.add(tee.toString());
+        command.addAll(java.util.List.of(clientArgs).subList(1, clientArgs.length));
+        command.add("ssh://localhost/" + recordServer.toString().substring(1));
+        ProcessBuilder pb = LocalHg.processBuilder(client, command.toArray(new String[0]));
+        pb.environment().put("CAP", capture.toString());
+        pb.environment().put("SRV", recordServer.toString());
+        pb.redirectErrorStream(true);
+        Process recorder = pb.start();
+        recorder.getInputStream().readAllBytes();
+        assertTrue(recorder.waitFor(120, TimeUnit.SECONDS));
+        assertTrue(Files.size(capture) > 0, "nothing was recorded");
+
+        beforeReplay.accept(realServer);
+        beforeReplay.accept(mineServer);
+
+        ProcessBuilder replay = LocalHg.processBuilder(realServer, "-R", realServer.toString(), "serve", "--stdio");
+        replay.redirectInput(capture.toFile());
+        replay.redirectError(ProcessBuilder.Redirect.DISCARD);
+        Process p = replay.start();
+        byte[] expected = p.getInputStream().readAllBytes();
+        assertTrue(p.waitFor(60, TimeUnit.SECONDS));
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (java.io.InputStream in = Files.newInputStream(capture)) {
+            new HgSshWireServer(new HgRepository(mineServer.toFile())).handleConnection(in, out);
+        }
+        byte[] actual = out.toByteArray();
+
+        int n = Math.min(expected.length, actual.length);
+        int at = 0;
+        while (at < n && expected[at] == actual[at]) {
+            at++;
+        }
+        if (at != n || expected.length != actual.length) {
+            fail(name + ": responses differ at byte " + at + " (real " + expected.length + " bytes, hg4j " + actual.length + " bytes)\n"
+                    + " real: " + hex(expected, Math.max(0, at - 40), at + 120) + "\n hg4j: " + hex(actual, Math.max(0, at - 40), at + 120)
+                    + "\n real text: " + show(java.util.Arrays.copyOfRange(expected, Math.max(0, at - 40), Math.min(expected.length, at + 160)))
+                    + "\n hg4j text: " + show(java.util.Arrays.copyOfRange(actual, Math.max(0, at - 40), Math.min(actual.length, at + 160))));
+        }
+        assertEquals(LocalHg.hgIn(tmp, realServer.getFileName().toString(), "log", "-T", "{node} {phase} {bookmarks}\n"),
+                LocalHg.hgIn(tmp, mineServer.getFileName().toString(), "log", "-T", "{node} {phase} {bookmarks}\n"),
+                "state of the server after the session");
+    }
+
+    private void commitOnClient(Path client, String text) {
+        try {
+            Files.writeString(client.resolve("a.txt"), text);
+            LocalHg.hgIn(tmp, client.getFileName().toString(), "commit", "-u", "dev", "-m", "client " + text.trim());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    @DisplayName("unbundle: 실제 클라이언트가 보낸 push 전체 세션의 응답 바이트가 원본과 같다")
+    void unbundleSessionOfAPlainPush() throws Exception {
+        assertSameSession("plain", client -> commitOnClient(client, "pushed\n"), new String[]{"push"}, server -> { });
+    }
+
+    @Test
+    @DisplayName("unbundle: 북마크를 함께 push 하는 세션의 응답 바이트가 원본과 같다")
+    void unbundleSessionWithABookmark() throws Exception {
+        assertSameSession("bookmark", client -> {
+            commitOnClient(client, "pushed\n");
+            try {
+                LocalHg.hgIn(tmp, client.getFileName().toString(), "bookmark", "pushedbm");
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }, new String[]{"push", "-B", "pushedbm"}, server -> { });
+    }
+
+    private void hgOn(Path client, String... args) {
+        try {
+            LocalHg.hgIn(tmp, client.getFileName().toString(), args);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    @DisplayName("unbundle: 새 head 를 강제로 만드는 push 세션의 응답 바이트가 원본과 같다")
+    void unbundleSessionCreatingANewHead() throws Exception {
+        assertSameSession("newhead", client -> {
+            hgOn(client, "update", "-r", "0");
+            commitOnClient(client, "a branch off the root\n");
+        }, new String[]{"push", "-f"}, server -> { });
+    }
+
+    @Test
+    @DisplayName("unbundle: 북마크 이동과 삭제 세션의 응답 바이트가 원본과 같다")
+    void unbundleSessionMovingAndDeletingBookmarks() throws Exception {
+        assertSameSession("movebm", client -> {
+            hgOn(client, "bookmark", "-f", "bm1", "-r", "tip");
+            hgOn(client, "bookmark", "gone", "-r", "0");
+        }, new String[]{"push", "-B", "bm1", "-B", "gone"}, server -> { });
+        assertSameSession("delbm", client -> hgOn(client, "bookmark", "-d", "bm1"), new String[]{"push", "-B", "bm1"}, server -> { });
+    }
+
+    @Test
+    @DisplayName("unbundle: 비게시 서버에서 phase 를 public 으로 올리는 push 세션의 응답 바이트가 원본과 같다")
+    void unbundleSessionPublishingPhases() throws Exception {
+        Files.writeString(repo.resolve(".hg/hgrc"), "[phases]\npublish = false\n");
+        assertSameSession("phases", client -> {
+            commitOnClient(client, "to be published\n");
+            hgOn(client, "phase", "--public", "-r", "tip");
+        }, new String[]{"push"}, server -> { });
+    }
+
+    @Test
+    @DisplayName("unbundle: head 가 줄어드는 병합 push 와 브랜치를 닫는 push 의 reply:changegroup 값이 원본과 같다")
+    void unbundleSessionsThatRemoveHeads() throws Exception {
+        assertSameSession("merge", client -> {
+            hgOn(client, "update", "-r", "feature");
+            hgOn(client, "merge", "-r", "default", "--tool", "internal:local");
+            hgOn(client, "commit", "-u", "dev", "-m", "merge");
+        }, new String[]{"push"}, server -> { });
+        assertSameSession("closebranch", client -> {
+            hgOn(client, "update", "-r", "feature");
+            hgOn(client, "commit", "-u", "dev", "--close-branch", "-m", "close feature");
+        }, new String[]{"push"}, server -> { });
+    }
+
+    @Test
+    @DisplayName("unbundle: 경합으로 거절되는 세션의 응답 바이트(error:pushraced)가 원본과 같다")
+    void unbundleSessionThatLosesARace() throws Exception {
+        assertSameSession("race", client -> commitOnClient(client, "pushed\n"), new String[]{"push"}, server -> {
+            try {
+                Files.writeString(server.resolve("a.txt"), "someone else\n");
+                LocalHg.hgIn(tmp, server.getFileName().toString(), "commit", "-u", "other", "-d", "2020-01-01 00:00 +0000", "-m", "raced");
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
     }
 
     @Test

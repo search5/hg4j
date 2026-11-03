@@ -383,8 +383,10 @@ public final class Wire1Commands {
         StringBuilder sb = new StringBuilder();
         if (!nodesArg.isBlank()) {
             for (String hex : nodesArg.trim().split("\\s+")) {
-                boolean isKnown = changelog.getRevisionCount() > 0
-                        && changelog.findRevision(NodeIdUtil.fromHex(hex)) != -1;
+                byte[] node = NodeIdUtil.fromHex(hex);
+                // localrepo.known: the null node is "known" (its revision is -1, not missing), even in an empty repository
+                boolean isKnown = NodeIdUtil.isAllZero(node)
+                        || (changelog.getRevisionCount() > 0 && changelog.findRevision(node) != -1);
                 sb.append(isKnown ? '1' : '0');
             }
         }

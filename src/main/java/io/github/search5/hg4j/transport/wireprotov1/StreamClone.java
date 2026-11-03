@@ -128,7 +128,7 @@ final class StreamClone {
             for (String wireName : storeFileNames(repo)) {
                 // store-root files (00changelog.*, 00manifest.*) are plain names; only data/ paths go through the store encoding
                 File file = new File(repo.getStoreDir(),
-                        wireName.startsWith("data/") ? NodeIdUtil.encodeFname(decodeDir(wireName)) : wireName);
+                        wireName.startsWith("data/") ? NodeIdUtil.encodeFname(wireName) : wireName);
                 long size = file.isFile() ? file.length() : 0;
                 if (size > 0) { // real hg skips empty files
                     entries.add(new Entry(wireName, file, size));
@@ -171,18 +171,18 @@ final class StreamClone {
         List<Entry> entries = new ArrayList<>();
         long total = 0;
         try (HgLock ignored = repo.lockStore()) {
-            for (String wireName : storeFileNames(repo)) {
+            List<String> names = new ArrayList<>(dataFileNames(repo));
+            if (!Wire2Commands.isPublishing(repo) && new File(repo.getStoreDir(), "phaseroots").isFile()) {
+                names.add("phaseroots"); // top_entries yields it before the manifest and the changelog
+            }
+            names.addAll(rootFileNames(repo));
+            for (String wireName : names) {
                 File file = new File(repo.getStoreDir(),
-                        wireName.startsWith("data/") ? NodeIdUtil.encodeFname(decodeDir(wireName)) : wireName);
+                        wireName.startsWith("data/") ? NodeIdUtil.encodeFname(wireName) : wireName);
                 if (file.isFile()) {
                     entries.add(new Entry(wireName, file, file.length()));
                     total += file.length();
                 }
-            }
-            File phaseroots = new File(repo.getStoreDir(), "phaseroots");
-            if (!Wire2Commands.isPublishing(repo) && phaseroots.isFile()) {
-                entries.add(new Entry("phaseroots", phaseroots, phaseroots.length()));
-                total += phaseroots.length();
             }
             if (total > MAX_BYTES) {
                 throw new IOException("the store is larger than this server streams (" + MAX_BYTES + " bytes)");
@@ -218,33 +218,80 @@ final class StreamClone {
     }
 
     /**
-     * The revlog files of the store root (found by scanning the directory, like real hg), then every {@code data/} revlog
-     * file named in {@code fncache}, each name once.
+     * The files of a stream, in the order the original sends them ({@code store.walk}): the {@code data/} revlogs, grouped by
+     * revlog and sorted by their decoded name, then the root manifest and the changelog. Inside a revlog the files go
+     * {@code .n}, {@code .nd}, {@code .d}, anything else, {@code .i} ({@code _ext_key}: the index comes last).
+     * Names are the decoded ("unencoded") store paths, as sent on the wire.
      */
     private static List<String> storeFileNames(HgRepository repo) throws IOException {
-        Set<String> names = new LinkedHashSet<>();
-        File[] root = repo.getStoreDir().listFiles();
-        if (root != null) {
-            List<String> found = new ArrayList<>();
-            for (File f : root) {
-                if (f.isFile() && ROOT_REVLOG_FILE.matcher(f.getName()).matches()) {
-                    found.add(f.getName());
-                }
-            }
-            java.util.Collections.sort(found);
-            names.addAll(found);
-        }
+        List<String> names = new ArrayList<>(dataFileNames(repo));
+        names.addAll(rootFileNames(repo));
+        return names;
+    }
+
+    /** {@code data_entries}: every {@code data/} revlog file named in {@code fncache}, grouped by revlog and sorted. */
+    private static List<String> dataFileNames(HgRepository repo) throws IOException {
+        java.util.TreeMap<String, Set<String>> byRevlog = new java.util.TreeMap<>();
         File fncache = new File(repo.getStoreDir(), "fncache");
         if (fncache.isFile()) {
             for (String line : Files.readAllLines(fncache.toPath(), StandardCharsets.ISO_8859_1)) {
-                String name = line.strip();
+                String name = decodeDir(line.strip());
                 if (name.startsWith("data/")
                         && (name.endsWith(".i") || name.endsWith(".d") || name.endsWith(".n") || name.endsWith(".nd"))) {
-                    names.add(name);
+                    byRevlog.computeIfAbsent(revlogPrefix(name), k -> new LinkedHashSet<>()).add(name);
                 }
             }
         }
-        return new ArrayList<>(names);
+        return orderedFiles(byRevlog);
+    }
+
+    /** {@code top_entries} for the revlogs of the store root: the manifest first, then the changelog. */
+    private static List<String> rootFileNames(HgRepository repo) {
+        java.util.TreeMap<String, Set<String>> manifest = new java.util.TreeMap<>();
+        java.util.TreeMap<String, Set<String>> changelog = new java.util.TreeMap<>();
+        File[] root = repo.getStoreDir().listFiles();
+        if (root != null) {
+            for (File f : root) {
+                String name = f.getName();
+                if (f.isFile() && ROOT_REVLOG_FILE.matcher(name).matches()) {
+                    (name.startsWith("00manifest") ? manifest : changelog)
+                            .computeIfAbsent(revlogPrefix(name), k -> new LinkedHashSet<>()).add(name);
+                }
+            }
+        }
+        List<String> names = new ArrayList<>(orderedFiles(manifest));
+        names.addAll(orderedFiles(changelog));
+        return names;
+    }
+
+    private static List<String> orderedFiles(java.util.TreeMap<String, Set<String>> byRevlog) {
+        List<String> out = new ArrayList<>();
+        for (Set<String> files : byRevlog.values()) {
+            List<String> sorted = new ArrayList<>(files);
+            sorted.sort(java.util.Comparator.comparingInt(StreamClone::extensionRank).thenComparing(java.util.Comparator.naturalOrder()));
+            out.addAll(sorted);
+        }
+        return out;
+    }
+
+    /** {@code _split_revlog_ext}: a nodemap data file ({@code -<id>.nd}) is separated at the dash, any other at the last dot. */
+    private static String revlogPrefix(String file) {
+        char separator = file.endsWith(".nd") || file.endsWith(".idx") || file.endsWith(".sda") ? '-' : '.';
+        return file.substring(0, file.lastIndexOf(separator));
+    }
+
+    /** {@code _ext_key}. */
+    private static int extensionRank(String file) {
+        if (file.endsWith(".n")) {
+            return 0;
+        } else if (file.endsWith(".nd")) {
+            return 10;
+        } else if (file.endsWith(".d")) {
+            return 20;
+        } else if (file.endsWith(".i")) {
+            return 50;
+        }
+        return 40;
     }
 
     /** Inverse of {@code store.encodedir}: {@code .hg.hg/} -> {@code .hg/}, {@code .i.hg/} -> {@code .i/}, {@code .d.hg/} -> {@code .d/}. */

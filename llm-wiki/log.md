@@ -602,3 +602,6 @@
 ## [2026-11-03] capability를 7.2.4와 같게 하고 bundle2 부품을 구현
 `capabilities` 토큰이 SSH/HTTP 모두 원본과 같아졌고, 광고한 bundle2 부품(pull: bookmarks, listkeys, phase-heads, hgtagsfnodes, stream2 / push: check:*, pushkey, bookmarks,
 phase-heads, remote-changegroup)과 번들1 GZ/BZ push, HTTP 0.2 압축을 구현. hg4j 전용 토큰은 제거(설정으로만). 상세와 남은 차이는 [[wire-server-command-gaps]].
+
+## [2026-11-03] 스트림 파일 순서와 unbundle 응답 바이트를 원본과 맞춤
+`stream_out`/`stream2`를 `store.walk` 순서로, `unbundle` 세션 응답을 녹화·재생으로 바이트 단위 대조(오류 부품의 필수 여부, `reply:changegroup` 반환값, `known`의 null 노드 수정). [[wire-server-command-gaps]]

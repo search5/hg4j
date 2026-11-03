@@ -57,9 +57,10 @@ final class Bundle2Push {
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("parttype", part.type);
                 if (!part.params.isEmpty()) {
-                    params.put("params", String.join(" ", part.params.keySet()));
+                    params.put("params", String.join("\0", part.params.keySet()));
                 }
-                reply.addPart("error:unsupportedcontent", false, Map.of(), params, new byte[0]);
+                // wireprotov1server.unbundle: every error part is a mandatory part with mandatory parameters
+                reply.addPart("error:unsupportedcontent", true, params, Map.of(), new byte[0]);
                 return reply.toBytes(null);
             }
         }
@@ -80,10 +81,11 @@ final class Bundle2Push {
 
             int changegroupResult = 0;
             if (changegroup != null) {
+                int countBefore = Wire2Commands.changelog(repo).getRevisionCount();
                 HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
                         bundleBytes, wireHeads, preChangegroup, postChangegroup, validator);
                 boolean added = !result.status.startsWith("no changes found");
-                changegroupResult = added ? Math.max(1, result.importedNodeHexes.size()) : 0;
+                changegroupResult = added ? changegroupReturn(repo, countBefore) : 0;
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("in-reply-to", String.valueOf(changegroup.id));
                 params.put("return", String.valueOf(changegroupResult));
@@ -94,9 +96,10 @@ final class Bundle2Push {
                     continue;
                 }
                 byte[] fetched = fetchRemoteChangegroup(remote);
+                int remoteCountBefore = Wire2Commands.changelog(repo).getRevisionCount();
                 HgLocalClient.PushResult result = new HgLocalClient(repo).pushWithHooks(
                         fetched, List.of(), preChangegroup, postChangegroup, changegroup == null ? validator : null);
-                int returned = result.status.startsWith("no changes found") ? 0 : Math.max(1, result.importedNodeHexes.size());
+                int returned = result.status.startsWith("no changes found") ? 0 : changegroupReturn(repo, remoteCountBefore);
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("in-reply-to", String.valueOf(remote.id));
                 params.put("return", String.valueOf(returned));
@@ -119,13 +122,13 @@ final class Bundle2Push {
             }
         } catch (HgPushRacedException e) {
             reply = new Bundle2.Writer();
-            reply.addPart("error:pushraced", false, Map.of(), Map.of("message", String.valueOf(e.getMessage())), new byte[0]);
+            reply.addPart("error:pushraced", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
         } catch (PushkeyFailed e) {
             reply = new Bundle2.Writer();
-            reply.addPart("error:pushkey", false, Map.of(), e.params, new byte[0]);
+            reply.addPart("error:pushkey", true, Map.of("in-reply-to", e.params.get("in-reply-to")), e.advisory(), new byte[0]);
         } catch (IOException | RuntimeException | io.github.search5.hg4j.errors.HgLockException e) {
             reply = new Bundle2.Writer();
-            reply.addPart("error:abort", false, Map.of(), Map.of("message", String.valueOf(e.getMessage())), new byte[0]);
+            reply.addPart("error:abort", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
         }
         return reply.toBytes(null);
     }
@@ -185,6 +188,61 @@ final class Bundle2Push {
             throw new IOException(url + ": not a bundle version 1.0");
         }
         return data;
+    }
+
+    /**
+     * The value {@code changegroup.apply} returns and a client reads from {@code reply:changegroup}: {@code 1} when the number of
+     * heads is unchanged, {@code 1 + n} when {@code n} heads were added, {@code -1 - n} when {@code n} were removed (a head that
+     * closes its branch does not count as added). Never 0, which means "nothing applied".
+     */
+    private static int changegroupReturn(HgRepository repo, int countBefore) throws IOException {
+        repo.clearRevlogCache();
+        Revlog changelog = Wire2Commands.changelog(repo);
+        int countAfter = changelog.getRevisionCount();
+        boolean[] hasChildBefore = new boolean[countAfter];
+        boolean[] hasChildAfter = new boolean[countAfter];
+        for (int rev = 0; rev < countAfter; rev++) {
+            Revlog.IndexRecord record = changelog.getIndexRecord(rev);
+            for (int parent : new int[]{record.getParent1(), record.getParent2()}) {
+                if (parent >= 0) {
+                    hasChildAfter[parent] = true;
+                    if (rev < countBefore) {
+                        hasChildBefore[parent] = true;
+                    }
+                }
+            }
+        }
+        int delta = 0;
+        for (int rev = 0; rev < countAfter; rev++) {
+            boolean headAfter = !hasChildAfter[rev];
+            boolean headBefore = rev < countBefore && !hasChildBefore[rev];
+            if (headAfter && !headBefore) {
+                delta += closesBranch(changelog, rev) ? 0 : 1;
+            } else if (headBefore && !headAfter) {
+                delta -= 1;
+            }
+        }
+        return delta < 0 ? delta - 1 : delta + 1;
+    }
+
+    /** Whether the changeset's extra data has {@code close=1} ({@code hg commit --close-branch}). */
+    private static boolean closesBranch(Revlog changelog, int rev) throws IOException {
+        String text = new String(changelog.getRevisionContent(rev), StandardCharsets.UTF_8);
+        String[] lines = text.split("\n", 4);
+        if (lines.length < 3) {
+            return false;
+        }
+        String dateLine = lines[2];
+        int space = dateLine.indexOf(' ', dateLine.indexOf(' ') + 1);
+        if (space < 0) {
+            return false;
+        }
+        for (String extra : dateLine.substring(space + 1).split("\0")) {
+            if (extra.equals("close:1")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Bundle2.Part first(List<Bundle2.Part> parts, String type) {
@@ -343,6 +401,13 @@ final class Bundle2Push {
                     params.put(key, part.params.get(key));
                 }
             }
+        }
+
+        /** The parameters besides {@code in-reply-to}, which are advisory. */
+        Map<String, String> advisory() {
+            Map<String, String> rest = new LinkedHashMap<>(params);
+            rest.remove("in-reply-to");
+            return rest;
         }
     }
 

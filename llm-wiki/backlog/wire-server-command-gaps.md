@@ -152,7 +152,19 @@ hg4j와 원본이 **다른** 점(숨기지 않고 기록):
 - `pushkey`/`bookmarks`/`phase-heads` 부품은 changegroup 적용과 한 트랜잭션이 아니다. 뒤 부품이 실패해도 changegroup은 이미 반영된다
   (원본은 전체 롤백). 검사 부품(`check:*`)은 락 안에서 변경 전에 실행되므로 경합 방지는 같다.
 - `bundle2` 블록의 `stream=v2`는 hg4j가 실제로 스트리밍할 수 있는 저장소에서만 광고한다(원본은 설정만 보고 광고하고 요청 시 거부).
-- `stream_out`과 `stream2`의 파일 나열 순서는 원본과 다르다(의미는 같음).
-- `unbundle`의 원시 응답 바이트는 대조하지 않았다. 실제 hg 클라이언트 push로만 확인했다.
 - `obsmarkers`, `pushback`, `stream3-exp`는 광고하지 않는다. 원본 기본값도 광고하지 않는다.
 - `store_shape`에 빈 이름(`names=`)을 주면 원본은 응답 없이 비정상 종료한다. 그 경우는 흉내 내지 않았다.
+
+## [2026-11-03] 스트림 파일 순서와 unbundle 응답 바이트를 원본과 맞춤
+- **`stream_out`, `stream2` 파일 순서**: 원본 `store.walk` 규칙으로 맞췄다. `data/`는 revlog 단위로 묶어 복원된(디코딩된) 이름의 바이트순, 한 revlog 안은
+  `.n`, `.nd`, `.d`, 그 밖, `.i`(`_ext_key`), 이어서 (비게시 저장소의 `stream2`는 `phaseroots`,) `00manifest`, `00changelog`. 이전에는 fncache에 적힌 순서였다.
+  `fncache`의 이름은 `encodedir` 형태로 저장되어 있으므로 복원해서 보낸다. 대조: 파일이 여러 개인 저장소(하위 디렉터리, 대문자, 긴 이름)에서 순서와 바이트가 같다.
+  `stream2`에서 원본이 추가로 보내는 `cache/` 파일은 비교에서 제외한다(hg4j는 보내지 않는다).
+- **`unbundle` 응답 바이트**: 실제 hg 클라이언트가 push할 때 보낸 바이트를 녹화해 같은 상태의 두 서버(실제 hg, hg4j)에 재생하고 **세션 전체의 응답**
+  (hello, 탐색, listkeys, unbundle 응답)을 바이트 단위로 비교한다(`assertSameSession`). 일치하는 시나리오: 일반 push, 북마크 push, 북마크 이동과 삭제, 새 head 강제 push,
+  비게시 서버의 phase 공개, 병합(head 감소), 브랜치 닫기, 경합 거절.
+  이 대조로 찾아 고친 차이: ① 오류 부품(`error:pushraced`, `error:abort`, `error:pushkey`, `error:unsupportedcontent`)은 **필수 부품**이고 `message` 등이 필수 파라미터
+  (이전에는 선택 부품과 선택 파라미터) ② `reply:changegroup`의 `return`은 head 증감에 따라 `1`, `1+n`, `-1-n`(이전에는 1 고정)
+  ③ `known`은 null 노드를 아는 것으로 답한다.
+- 한계: SSH 세션에서만 바이트 대조했다. HTTP는 헤더와 압축 때문에 본문 의미(실제 클라이언트 push)로 검증한다. 훅이 실패하는 등 서버 쪽 `Abort` 문구는
+  원본과 다를 수 있다(문구까지 대조한 것은 경합 거절뿐).

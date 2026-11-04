@@ -1,0 +1,70 @@
+# Changelog
+
+All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is still `1.0.0`; nothing below has been released under a new number. Items marked **BC** change behaviour that a caller may rely on.
+
+## Unreleased (2026-11)
+
+### Changed (BC)
+- **Locking follows the original.** A command takes `wlock`, then the store `lock`, for the whole command and releases them in reverse order. Locks wait up to `[ui] timeout` (600 s by default) for another holder.
+- **Taking the store lock no longer recovers an interrupted transaction.** It throws `HgAbandonedTransactionException`; run `RecoverCommand`. `recover` and `rollback` never touch the dirstate.
+- **Dirstate is written once, after the transaction**, inside `changing_files` / `changing_parents` contexts that need the working copy lock. A failed command writes nothing. `dirstate.backup` and the `dirstate` journal entry are gone (old journals that still carry the entry are read without error). Direct changes to the dirstate without `wlock` throw `IllegalStateException`.
+- `DirstateBody` (the body of a dirstate context) may throw `IOException` and `HgLockException`.
+- Behaviour taken from the original after checking it with the real `hg`:
+  - `.orig` files remain after `rebase --abort`, `unshelve --abort` and a conflicting `backout`;
+  - `rebase` without evolution strips the original changesets;
+  - reusing a branch name that exists on another line of history needs `-f`;
+  - `phase` refuses to move to a higher phase with exit status 1 (`cannot move N changesets to a higher phase, use --force`) instead of throwing;
+  - `sign` commits `.hgsigs` only, does not restore the file when the commit fails, and refuses when `.hgsigs` is changed or untracked;
+  - `unshelve` leaves no restore commit in the store.
+
+### Added
+- dirstate-v2 stored like the original: memory-mapped read, lookup in place, append-only writes, docket replaced last, rewrite when half of the data file is unreachable.
+- Lock contention tests between hg4j and the real `hg` (`RealHgLockContentionInteropTest`), each scenario with the locks on (no damage) and with hg4j's locks switched off (damage shows); `LockScopeConcurrencyTest` for the scope of the locks. `HgLock.disabledForTests` is the test hook.
+- `-PignoreTestFailures` for a full run that still produces the coverage report.
+- Documentation: refreshed manuals (English and Korean) and this file.
+
+### Fixed
+- Rebase in a changelog-v2 + sidedata repository left changesets without changed-file sidedata (`hg verify` integrity error). Re-applied changesets and in-memory commits now get it.
+- Sidedata recomputation overwrote the copy information of a changegroup 05 bundle; it now runs only for changesets that arrived without sidedata.
+- `strip` in an LFS repository lost the LFS flag of the kept changesets (hash mismatch on re-apply); it now keeps them in a changegroup 03 bundle.
+- `unshelve` left the rebased restore commit behind; `unshelve --abort` did not remove `.hg/rebasestate` and the merge state.
+- A rejected push could undo a push that arrived at the same time; concurrent `tag` commands could lose a tag. Both were scope problems of the locks.
+- Interop tests that pinned behaviour the original does not have were corrected after comparison with the real `hg`.
+
+### Known issues
+- `TransportE2EMatrixInteropTest` (real client, real server, "a push that creates a head is refused") fails now and then in full runs and passes alone; cause unknown, no hg4j code involved as far as is known.
+- Not implemented: `upgrade` (planned for the next major version with a CLI), wire protocol v2, `largefiles`, `dirstate-tracked-hint`.
+- Copy information is not derived for changesets that arrive in a changegroup without sidedata (versions 01 to 04) in a repository that keeps changed-file sidedata.
+- Only Mercurial 7.2 / 7.2.4 is tested. Older releases are expected to read repositories created with default settings but this is not verified.
+
+## 2026-11-04 and earlier in November
+
+### Added
+- Large File Storage in phases: pointers, `lfs.track` and `.hglfs`, `size()` and `lfs()` filesets, reading (`cat`, `grep`, `diff`, `archive`, `status`), `verify`, bulk download, clone and pull of LFS repositories, push with blob upload, an LFS server (Batch API), transfer robustness (messages, hints, retries, parallel transfer), progress reporting, `[web]` access rules.
+- Pattern matcher (`match` package), fileset language and 24 predicates, and the `-I` / `-X` / `set:` selection in the read and change commands.
+- Bookmark push (`-B`), `outgoing` set computation, secret changesets hidden and refused like 7.2.4.
+- Wire protocol server: `heads_buckets`, `store_shape`, `stream_out`, `clonebundles_manifest`, `get_cached_bundle_inline`, `between`, `branches`, `debugwireargs`, `protocaps`, pushkey namespaces, capabilities as 7.2.4 advertises them; bundle2 push over SSH; `[auth]` credentials sent after a 401 challenge.
+- Signing with `.hgsigs` (`sign`, `sigs`, `sigcheck`); ssh-agent authentication; SSH moved from JSch to Apache MINA SSHD with `~/.ssh/config`.
+- Sharded stream bundles and clone bundles on the client side.
+
+### Changed
+- Wire protocol v2 removed; shared helpers moved to `RepoSupport`.
+- Interop oracle is a local build of Mercurial (with the Rust extensions) instead of a Docker image.
+- Signing at commit time (`gpgsig`) was removed; `.hgsigs` is the only signing method, as in Mercurial.
+
+### Fixed
+- Server answers corrected against the real `hg`: `listkeys` (`namespaces`, `phases`, `heads`, `branchmap`), `lookup` for bookmarks, tags and branches, `getbundle` with `heads`, stream file order, `unbundle` replies, HTTP session and error texts.
+- LFS: pull and clone of LFS repositories, `[paths] default` after clone, unchanged LFS files reported as modified, `verify` reporting every LFS revision as corrupt, downloaded blobs not checked against SHA-256.
+
+## 2026-09
+
+### Added
+- Requirement matrix: 60 commands across 36 repository-format combinations, compared with the real `hg` (68 of 68 matrix targets done, including the wire matrix).
+- Narrow clone negotiation on the wire (bandwidth reduction), SVN subrepositories, revlog inline-to-split growth, treemanifest dirlogs, pushkey hooks.
+
+### Fixed
+- `DeltaCodec.decompressZstd` (found four times by independent waves), `RevlogIndex` record visibility, exec/symlink flags in dirstate-v2, symlink `lstat` mismatches in twelve places, `getBundle` returning no bytes when there was nothing to send, `DiffCommand` sentinel clash, credentials embedded in URLs, `GpgSignature` fixed to RSA, `HisteditCommand` losing the branch, stale caches in the wire servers, `.d` files missing from `fncache`, v2-docket undo and journal handling, `CensorCommand` on general-v2 filelogs. Details per class: `llm-wiki/known-bugs-registry.md`.
+
+## 2026-05 to 2026-08
+
+- First implementation: plumbing (`HgRepository`, `Dirstate` v1/v2, `Revlog`, `TreeWalk`, `RevWalk`), the porcelain facade, local, HTTP and SSH transports, journaling and rollback, Myers/LCS delta generation, and the first interop tests against the real `hg`.

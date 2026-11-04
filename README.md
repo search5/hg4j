@@ -3,10 +3,10 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 [![Java Version](https://img.shields.io/badge/java-21-blue.svg)](https://jdk.java.net/21/)
 [![Gradle Version](https://img.shields.io/badge/gradle-9.4.1-blue.svg)](https://gradle.org)
-[![Coverage Status](https://img.shields.io/badge/coverage-93.5%25%2B-brightgreen.svg)]()
+[![Coverage Gate](https://img.shields.io/badge/coverage%20gate-90%25%20per%20core%20class-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-orange.svg)](LICENSE)
 
-**hg4j** is an enterprise-grade, high-performance, pure Java implementation of the **Mercurial (hg) SCM** version control system. Modeled after the architectural philosophy of **JGit** to the Git ecosystem, `hg4j` provides complete read/write capability, robust transactional durability, and binary-level interoperability with the official Mercurial CLI (verified against SCM v7.2.2).
+**hg4j** is an enterprise-grade, high-performance, pure Java implementation of the **Mercurial (hg) SCM** version control system. Modeled after the architectural philosophy of **JGit** to the Git ecosystem, `hg4j` provides complete read/write capability, robust transactional durability, and binary-level interoperability with the official Mercurial CLI (verified against Mercurial 7.2 and 7.2.4).
 
 ---
 
@@ -30,8 +30,8 @@
 * **`push` / `pull` / `fetch`**: Synchronize repositories over HTTP and SSH wire protocols with capability negotiations.
 
 ### 3. Enterprise Durability & Performance
-* **Atomicity (Journaling & Automatic Rollback)**: Ensures database safety by logging a `journal` of transactions; triggers automatic recovery upon operation interruptions.
-* **Concurrent Lock Guards**: Utilizes OS-level physical locks (`.hg/wlock` and `.hg/store/lock`) via Java `FileChannel` to protect against write collisions in multi-user/multi-threaded deployments.
+* **Atomicity (Journaling & Recovery)**: Ensures database safety by logging a `journal` of transactions; `recover` and `rollback` repair an interrupted one. The dirstate is written once, after the transaction, and not at all when a command fails.
+* **Concurrent Lock Guards**: Takes the same lock files as Mercurial (`.hg/wlock`, then `.hg/store/lock`) in the same order and for the same scope as the original, so hg4j and the real `hg` exclude each other. Taking a lock never recovers an interrupted transaction (`HgAbandonedTransactionException`; run `RecoverCommand`).
 * **High-Throughput IO**: Zero-copy Memory-Mapped IO (`MappedByteBuffer`) limits JVM heap footprint during deep historical traversals.
 
 ---
@@ -57,7 +57,7 @@ sdk env
 ### 2. Compile and Test
 Run full compilation, unit tests, and coverage verification using the Gradle wrapper:
 ```bash
-# Compile and run E2E test suite (486+ test cases)
+# Compile and run the unit tests (about 3,000 test methods; the interop suite runs separately: ./gradlew interopTest)
 ./gradlew clean test
 ```
 
@@ -148,10 +148,17 @@ While representing the structural purity of JGit's API design (decoupling Porcel
 
 | Architectural Metric | JGit (Git 진영 업계 표준) | hg4j (Mercurial 네이티브 라이브러리) | Design Resolution |
 | :--- | :--- | :--- | :--- |
-| **Storage Structure** | Pack-file indexing and Loose Object store | Revlog-per-file system (`.i` and `.d` files) | **No Garbage Collection**: Mercurial relies on self-contained file log databases, making Git's heavy pack compaction (`GcCommand`) redundant. |
-| **History Query** | `RevFilter` graph traversers | Function-oriented `revset` engine | **Revset Engine**: Employs Mercurial's 19-function native SCM functional query language for flexible revision selections. |
-| **Submodules** | Decoupled nested submodule checkouts | Native repositories only | **Omission**: Mercurial lacks Git's traditional nested submodule structures; this complexity is bypassed to increase stability. |
+| **Storage Structure** | Pack-file indexing and Loose Object store | Revlog-per-file system (`.i` and `.d` files) | **No pack compaction**: Mercurial relies on self-contained file log databases, so there is no equivalent of Git's pack files; `GcCommand` verifies the store, checks fragmentation and rebuilds the fncache. |
+| **History Query** | `RevFilter` graph traversers | Function-oriented `revset` engine | **Revset Engine**: Employs Mercurial's native functional query language for flexible revision selections. |
+| **Submodules** | Decoupled nested submodule checkouts | Subrepositories (`.hgsub`, `.hgsubstate`: hg, git and svn) | **Native Integration**: `SubrepoCommand` and the subrepository recursion of `revert`, `update`, `commit` follow Mercurial. |
 | **Branch Traversal** | RefSpec remote branches (`refs/heads/*`) | Named branches (`.hg/branch`) & Bookmarks | **Native Integration**: Seamlessly maps physical bookmarks and native branch labels, matching the official SCM round-trip spec. |
+
+---
+
+## 📝 More
+
+* `CHANGELOG.md`: what changed, including behaviour changes (BC) and known issues.
+* `src/docs/asciidoc/{en,ko}/index.adoc`: the technical reference guide (locking rules, formats, deliberate differences from Mercurial, known issues).
 
 ---
 

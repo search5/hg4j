@@ -1,6 +1,6 @@
 = hg4j Technical Reference Guide
 Antigravity <antigravity@google.com>
-v1.0.0, 2026-05-31
+v1.0.0, 2026-11-05
 :toc: left
 :toclevels: 3
 :sectnums:
@@ -8,47 +8,141 @@ v1.0.0, 2026-05-31
 :icons: font
 
 == 1. Introduction
-`hg4j` is an enterprise-grade, pure Java implementation of the **Mercurial (hg) SCM** version control system. Inspired by the clean, modular decoupled architecture of **JGit** in the Git ecosystem, `hg4j` enables complete read/write capability, transactional crash durability, and seamless binary-level interoperability with the official Mercurial CLI (v7.2.2).
+`hg4j` is a pure Java implementation of the **Mercurial (hg) SCM**. It is modelled on the decoupled design of **JGit**: a plumbing layer that reads and writes the repository formats, and a porcelain layer of command objects on top of it.
 
-This reference manual describes the core architectural layout of the library, the storage format parsing, porcelain facades, and interop testing.
+The reference for every behaviour is the real Mercurial. The library is checked against `hg` 7.2 (pure Python), the Rust build 7.2.4 and the development build of the same line, by running the same scenario with hg4j and with the real `hg` and comparing the repositories, the output and the exit status. Older Mercurial releases are not part of the test matrix; see <<known-issues>>.
+
+This guide describes the architecture, the command surface, the locking and transaction rules, the supported repository formats, the places where hg4j deliberately differs from `hg`, and the known issues.
 
 == 2. Core Architecture
-The design of `hg4j` strictly isolates low-level storage engines (**Plumbing API**) from high-level developer convenience interfaces (**Porcelain API**).
+=== 2.1 Plumbing API
+* **`HgRepository`**: the central coordinator of the `.hg/` layout. It takes the working copy lock (`wlock`) and the store lock (`lock`), opens revlogs, owns the dirstate contexts (<<dirstate-contexts>>) and runs the work that is postponed until the locks are released (`afterLock`).
+* **`Dirstate`**: the working copy state. It reads dirstate-v1 and dirstate-v2. A v2 file is memory mapped and looked up in place; changed entries are kept as an overlay and are written by appending to the data file, as the original does (<<dirstate-storage>>).
+* **`Revlog`**: index (`.i`) and data (`.d`) files, inline and split, generaldelta, revlog-v2 (docket) and changelog-v2 with sidedata. Compression: zlib and zstd.
+* **`TreeWalk` and `RevWalk`**: traversal of manifests and of the revision graph.
+* **`match` and `fileset` packages**: the pattern matcher (`path:`, `glob:`, `re:`, `rootfilesin:` ...), the fileset language (parser, analysis, optimiser, 24 predicates) and the `-I`/`-X`/`set:` selection that the porcelain commands share.
 
-=== 2.1 Plumbing API (Internal Plumbing)
-* **`HgRepository`**: The central coordinator that governs the physical storage layout under the `.hg/` directory, handles write locks, and orchestrates transaction recovery.
-* **`Dirstate`**: Handles working copy file tracking. The engine supports standard v1 format and high-throughput v2 layout (`DirstateV2Node`) designed with zero-copy binary mappings.
-* **`Revlog` (v1)**: Parses index (`.i`) and data (`.d`) files, reconstructing file history chains natively in memory.
-* **`TreeWalk` & `RevWalk`**: Provides high-performance iterative traversals of both file trees (manifests) and revision commit graphs.
-
-=== 2.2 Porcelain API (User Facades)
-All user-facing workflows are exposed via the `Hg` class facade.
+=== 2.2 Porcelain API
+Every workflow is a command object created from the `Hg` facade or directly from its class, configured with setters and run with `call()`.
 
 [source,java]
 ----
 // Initialize a repository
 HgRepository repo = Hg.init().setDirectory(new File("/path/to/repo")).call();
 
-// Add files
+// Add files and commit
 Hg.add(repo).addFile(new File(repo.getDirectory(), "README.md")).call();
+Hg.commit(repo).setMessage("Initial commit").setAuthor("dev <dev@example.org>").call();
 
-// Commit changes
-Hg.commit(repo).setMessage("Initial commit!").call();
+// Inspect
+Status status = Hg.status(repo).call();
 ----
 
-== 3. Interoperability & Durability
-`hg4j` is meticulously certified against official Mercurial SCM:
+Commands that change the repository take the locks themselves, in the order the original takes them (<<locking>>). A caller does not have to lock anything around a command.
 
-* **Crash Durability**: An active transaction engine tracks changes in `journal` logs and backups, allowing automatic, safe, atomic rollbacks if an error occurs.
-* **OS-Level Locks**: Uses Java `FileLock` (`.hg/wlock` and `.hg/store/lock`) to ensure safety under concurrent multi-process environments.
-* **Storage Optimization**: Implements line-level Myers-diff and Longest Common Subsequence (LCS) algorithms for multi-hunk delta generation, saving extensive storage overheads.
+== 3. Command Surface
+The names below are the classes of the `api` package (suffix `Command` left out).
 
-== 4. Building and Running Documentations
-To generate this documentation website using the Asciidoctor Gradle plugin, run:
+[cols="1,3"]
+|===
+|Area |Commands
 
+|Working copy
+|`Init`, `Add`, `Addremove`, `Remove`, `Forget`, `Copy`, `Rename`, `Revert`, `Purge`, `Status`, `Diff`, `Resolve`, `Update`, `Merge`, `Summary`, `Root`, `Worktree`
+
+|History
+|`Commit`, `Amend`, `Log`, `Tip`, `Heads`, `Parents`, `Identify`, `Describe`, `Annotate`, `Grep`, `Cat`, `Files`, `Locate`, `Manifest`, `Tree`, `Revset`, `Bisect`
+
+|Rewriting
+|`Rebase`, `Graft`, `Backout`, `Histedit`, `Shelve`, `Strip`, `Phase`, `Censor`
+
+|Names
+|`Branch`, `Branches`, `Tag`, `Tags`, `Bookmark`
+
+|Exchange
+|`Clone`, `Pull`, `Push`, `Fetch`, `Incoming`, `Outgoing`, `Bundle`, `Unbundle`, `Archive`, `Clonebundles`, `NarrowClone`, `ShardedStreamBundles`, `Unshare`, `Paths`
+
+|Maintenance
+|`Verify`, `Recover`, `Rollback`, `Gc`, `AdminVerify`, `NarrowServerAdmin`
+
+|Signing and extensions
+|`Sign`, `Sigs`, `SigCheck`, `Subrepo`, `LfsUpload`
+|===
+
+Transports: local paths, HTTP(S) and SSH, with the `[auth]` configuration sent after a 401 challenge, and the server side of the wire protocol (`HgHttpWireServer`, `HgSshWireServer`). Only wire protocol version 1 is implemented; version 2 was removed.
+
+[[locking]]
+== 4. Locking and Transactions
+hg4j follows the order and the scope of the original `localrepo.wlock()` and `localrepo.lock()`. The rules are covered by tests that start two actors at once (`LockScopeConcurrencyTest`) and by tests against the real `hg` (`RealHgLockContentionInteropTest`).
+
+* A command that changes the working copy takes `wlock` first and, when it writes the store, `lock` after it. It holds them for the whole command, not only for the writes, and releases them in reverse order.
+* Taking a lock never recovers anything. If a previous transaction was interrupted, the store lock is refused with `HgAbandonedTransactionException`; run `RecoverCommand` (`hg recover`). Only the explicit commands `recover` and `rollback` repair the store, and neither touches the dirstate.
+* A lock that another process (or thread) holds is waited for up to `[ui] timeout` (600 seconds by default), then `HgLockException` is thrown. A lock is re-entrant for the thread that holds it.
+* Work that must run after the locks are released (post-commit hooks and similar) is registered with `afterLock` and runs once, after the outermost lock is closed.
+* The lock files are the ones the original uses (`.hg/wlock`, `.hg/store/lock`), so hg4j and the real `hg` exclude each other.
+
+[[dirstate-contexts]]
+=== 4.1 Dirstate contexts
+Like `dirstate.changing_files()` and `dirstate.changing_parents()` of the original:
+
+* Both need the working copy lock, are mutually exclusive, can be nested, and write the dirstate only when the outermost one ends normally. Any exception inside invalidates the whole context and nothing is written.
+* A transaction writes the dirstate after the journal is removed (the original writes it as a post-finalize file generator). A crash between the two leaves the old parents in the dirstate and a journal for `recover`. There is no dirstate backup file any more.
+* The commands that change tracked files use `changing_files`: `add`, `forget`, `remove`, `copy`/`rename`, `revert`. The commands that change the parents use `changing_parents`: `commit`, `update`, `merge`, `backout`, `graft`, `histedit`, `rebase`, `strip`, `bisect`, `pull`, `clone`, `unshelve`.
+* Code that changes the dirstate directly must hold the working copy lock; otherwise `IllegalStateException` ("trying to change the dirstate without holding the wlock") is thrown.
+
+[[dirstate-storage]]
+=== 4.2 Dirstate storage
+dirstate-v2 is stored as in Mercurial: a docket file (`dirstate`) naming a data file (`dirstate.<uid>`). New entries are appended to the data file and the docket is replaced last, so a reader sees either the old state or the new one. When the unreachable part reaches half of the data file, the file is rewritten under a new uid and the old one is removed.
+
+== 5. Repository Formats
+* Store: `store`, `fncache`, `dotencode`, `generaldelta`, `sparserevlog`, `revlogv1`, `share-safe`, shared repositories, `fileindex-v1`.
+* Revlog: revlog-v1, `exp-revlogv2.2` (docket), `exp-changelog-v2` with `exp-copies-sidedata-changeset` (the changed files of a changeset are kept in sidedata), `persistent-nodemap`, `revlog-compression-zstd`.
+* Working copy: dirstate-v1 and `dirstate-v2`.
+* Other: `treemanifest`, narrow clones with narrow patterns, shapes and shards (`exp-shape-1`), `lfs` (Large File Storage, with client and server for the Batch API).
+* Changegroups 01 to 05 (05 carries sidedata), bundle2 (`HG20`) with GZ, BZ and ZS compression, stream clone, clone bundles.
+
+`InitCommand` creates the conservative set (`revlogv1`, `store`, `fncache`, `dotencode`, `generaldelta`). Newer formats are switched on through setters, as in `hg` they are switched on through configuration. Mercurial 7.2 made dirstate-v2 and the file index stable but recommends them only together with the Rust extensions; hg4j has no such restriction.
+
+== 6. Interoperability and Testing
+* `./gradlew test` runs the unit tests. `./gradlew interopTest` runs the tests tagged `interop`, which need a real `hg` (on `PATH`, and the Rust builds under `~/.cache/hg4j/` for the dirstate-v2 and shape tests). The interop run takes about an hour and a half.
+* The **requirement matrix** runs a command across 36 combinations of repository formats, once with hg4j and once with the real `hg`, and compares the results. The **wire matrix** does the same for HTTP and SSH (hg4j or real client against hg4j or real server).
+* **Lock contention tests** run hg4j and the real `hg` on one repository at the same moment. Every scenario runs twice: with the locks (nothing may be damaged), and with hg4j's locks switched off by a test hook while the real `hg` keeps its own (the damage must show). A scenario that passes without the locks does not test them.
+* The build gates coverage: 70% for the whole bundle and 90% per class for the core classes (`jacocoTestCoverageVerification`). Unit and interop executions are merged for the report. `-PignoreTestFailures` lets a full run reach the coverage report although a test failed.
+
+== 7. Deliberate Differences from Mercurial
+* `shelve`: the shelving step has no dirstate context of its own, like the original (the commit and the revert inside it open theirs). Wrapping it would leave the parent of the temporary commit behind and break `unshelve`. `unshelve` uses `changing_parents`.
+* `status`: the stat fix-ups are written without a context, under `wlock(wait=False)`, like the original `running_status`.
+* `sign --force` works. In the original it ends with an `UnboundLocalError`.
+* `strip --soft` is refused with a clear message. In a default repository the original fails with an exception, because the archived phase needs the `internal-phase` requirement.
+* `upgrade` (`debugupgraderepo`) is not provided. It is planned for the next major version, together with a command line front end.
+* `store_shape` with an empty shard name gets no answer, as with the original (which fails).
+* Behaviour that follows the original and that a caller may notice: `.orig` files are left after `rebase --abort`, `unshelve --abort` and a conflicting `backout`; `rebase` without evolution strips the originals; reusing a branch name that exists on another line of history needs `-f`; `phase` refuses to move changesets to a higher phase with exit status 1 and the text `cannot move N changesets to a higher phase, use --force`; `sign` commits `.hgsigs` only.
+
+[[known-issues]]
+== 8. Known Issues and Remaining Work
+=== 8.1 Limits
+* **Mercurial versions**: tested against 7.2 and 7.2.4 only. A repository created with the default settings uses old requirements and is expected to open with older 7.x releases, but this was not tested. Newer formats need the Mercurial release that introduced them.
+* **Sidedata of applied changegroups**: a changegroup without sidedata (versions 01 to 04) brought into a repository that keeps changed-file sidedata gets the changed files computed from the manifests. Copy information cannot be derived that way and is not recorded. A changegroup 05 keeps its own sidedata, copies included.
+* **Not implemented**: wire protocol version 2, `largefiles`, `dirstate-tracked-hint`, and `upgrade`.
+
+=== 8.2 Open points
+* One real-client/real-server case of `TransportE2EMatrixInteropTest` ("a push that creates a head is refused") failed in two of four full runs and passed every time it was run alone. Both ends are the real `hg`, so hg4j code is not involved as far as is known. The cause has not been found.
+
+=== 8.3 Important defects found and fixed
+* Rebasing in a repository with changelog-v2 and sidedata produced changesets without changed-file sidedata, which `hg verify` reported as an integrity error. The re-applied changesets now get it.
+* Recomputing the sidedata of a bundle that already carried it (changegroup 05) dropped the copy information. The computation now runs only for changesets that arrived without sidedata.
+* `strip` in a repository with LFS revisions lost the LFS flag of the kept changesets (the temporary bundle was changegroup 01) and failed with a hash mismatch. LFS repositories use changegroup 03 for it.
+* `unshelve` left the rebased restore commit in the store, and `unshelve --abort` did not remove `.hg/rebasestate` or the merge state.
+* Locks that covered only the writes allowed a rejected push to undo a push that arrived at the same time, and allowed two tag commands to lose one of the tags. The locks now cover the whole command.
+* The dirstate was written in the middle of a command and put back from a backup file when the command failed. It is now written once, after the transaction, and not at all on failure.
+* The class-by-class list, with the cause and the fix of each defect, is kept in `llm-wiki/known-bugs-registry.md`. The state of the locking work is in `llm-wiki/lock-parity-matrix.md`.
+
+== 9. Building and Running Documentation
 [source,bash]
 ----
-./gradlew asciidoctor
+./gradlew asciidoctor     # this guide: build/docs/asciidoc/{en,ko}/index.html
+./gradlew javadoc         # API reference (en_US): build/docs/javadoc/index.html
+./gradlew javadocKo       # API reference (ko_KR): build/docs/javadoc-ko/index.html
 ----
 
-The output will be generated as HTML under: `build/docs/asciidoc/en/index.html`.
+The history of changes is in `CHANGELOG.md`.

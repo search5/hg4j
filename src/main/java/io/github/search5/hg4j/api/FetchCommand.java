@@ -52,15 +52,32 @@ public class FetchCommand {
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
     private CredentialsProvider credentialsProvider;
 
+    /**
+     * Creates a fetch command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public FetchCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the provider asked for credentials when the remote requires authentication. Default: none.
+     *
+     * @param credentialsProvider the provider; may be {@code null}
+     * @return {@code this}
+     */
     public FetchCommand setCredentialsProvider(CredentialsProvider credentialsProvider) {
         this.credentialsProvider = credentialsProvider;
         return this;
     }
 
+    /**
+     * Limits the fetch to paths accepted by the filter (narrow fetch). When left at the default accept-all filter, the repository's own narrowspec, if any, is used.
+     *
+     * @param treeFilter the path filter; {@code null} is ignored
+     * @return {@code this}
+     */
     public FetchCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -68,6 +85,12 @@ public class FetchCommand {
         return this;
     }
 
+    /**
+     * Sets a monitor that receives progress updates.
+     *
+     * @param monitor the monitor; {@code null} is ignored and the previous monitor (initially a no-op) stays
+     * @return {@code this}
+     */
     public FetchCommand setProgressMonitor(ProgressMonitor monitor) {
         if (monitor != null) {
             this.monitor = monitor;
@@ -75,6 +98,12 @@ public class FetchCommand {
         return this;
     }
 
+    /**
+     * Sets the remote repository to fetch from. Required.
+     *
+     * @param sourceUrl a URL or path accepted by the remote connection factory ({@code http}, {@code https}, {@code ssh} or a local repository path)
+     * @return {@code this}
+     */
     public FetchCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;
@@ -192,6 +221,16 @@ public class FetchCommand {
         return messages;
     }
 
+    /**
+     * Fetches the changesets, bookmarks and phases that the remote has and the local repository lacks, and stores them in the local store. The working copy and the dirstate are not updated.
+     * <p>Takes the working copy lock and the store lock for the whole operation.
+     *
+     * @return the 20-byte node ids of the changesets that were added,; empty when nothing was new
+     * @throws IllegalStateException if no source was set
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the remote cannot satisfy the request (for example an unsupported lookup or narrow request)
+     * @throws IOException if the remote connection or the local store fails
+     * @throws HgLockException if a lock cannot be acquired
+     */
     public List<byte[]> call() throws IOException, HgLockException {
         messages.clear();
         if (sourceUrl == null || sourceUrl.isEmpty()) {
@@ -730,6 +769,14 @@ public class FetchCommand {
         }
     }
 
+    /**
+     * Applies an already parsed changegroup to the local store, as {@code hg unbundle} or the second half of a pull does. Takes the store lock (and the working copy lock unless disabled with {@link #setWorkingCopyLock(boolean)}); fails at once if a lock is held elsewhere.
+     *
+     * @param bundle the parsed changegroup to apply
+     * @return the 20-byte node ids of the changesets that were added; empty when the bundle contains none
+     * @throws IOException if the store cannot be written; a failed apply is rolled back
+     * @throws HgLockException if a lock cannot be acquired
+     */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
         return applyBundle(bundle, repository.resolvePushLockTimeoutMs(), null);
     }
@@ -760,6 +807,11 @@ public class FetchCommand {
      */
     @FunctionalInterface
     public interface PostLockValidator {
+        /**
+         * Called once the locks are held, before the bundle is applied. Throw to abort the apply; nothing has been written at that point.
+         *
+         * @throws IOException to abort the apply
+         */
         void validate() throws IOException;
     }
 

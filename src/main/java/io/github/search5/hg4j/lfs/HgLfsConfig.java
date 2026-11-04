@@ -37,10 +37,6 @@ public final class HgLfsConfig {
     }
 
     /**
-     * Adds {@code lfs} to {@code .hg/requires} if it is not there yet (real hg does this on the first commit or push that brings an
-     * LFS revision: without the requirement a client without the extension would read pointers as file content).
-     */
-    /**
      * Records the {@code lfs} requirement. Like real hg's {@code checkrequireslfs} hook, which runs {@code with repo.lock()}, this
      * takes the store lock itself (re-entrant when the caller, a commit or a push, already holds it).
      */

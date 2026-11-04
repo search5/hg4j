@@ -49,10 +49,20 @@ public class ImportCommand {
     private final HgRepository repository;
     private String patchText;
 
+    /**
+     * Creates an import command for the given repository.
+     * @param repository the repository the patch is applied to and committed in
+     */
     public ImportCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the patch to import, in the unified-diff format produced by {@code hg export}. {@code # User} and {@code # Date} header lines set the commit author and date; the description is the text before the first diff.
+     * There is no default; {@link #call()} throws {@link IllegalArgumentException} if the text is {@code null} or empty.
+     * @param patchText the full text of the patch
+     * @return {@code this}
+     */
     public ImportCommand setPatchText(String patchText) {
         this.patchText = patchText;
         return this;

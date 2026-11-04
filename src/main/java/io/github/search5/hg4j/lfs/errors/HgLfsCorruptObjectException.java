@@ -5,6 +5,11 @@ package io.github.search5.hg4j.lfs.errors;
  * ("detected corrupt lfs object").
  */
 public class HgLfsCorruptObjectException extends HgLfsException {
+    /**
+     * Creates the exception.
+     *
+     * @param message description of the corrupt object, normally naming its oid
+     */
     public HgLfsCorruptObjectException(String message) {
         super(message);
     }

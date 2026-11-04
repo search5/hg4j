@@ -222,6 +222,11 @@ public class BundleCommand {
     private String baseRevision;
     private BundleType type = BundleType.NONE_V1;
 
+    /**
+     * Creates a bundle command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public BundleCommand(HgRepository repository) {
         this.repository = repository;
     }

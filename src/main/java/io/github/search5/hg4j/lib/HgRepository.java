@@ -57,6 +57,11 @@ public class HgRepository implements Repository {
     private Dirstate cachedDirstate = null;
     private final HgRcConfig config = new HgRcConfig();
 
+    /**
+     * Replaces the storage engine that opens revlogs, reads the manifest and reads and writes the dirstate.
+     * Revlogs already opened are dropped from the cache (see {@link #clearRevlogCache()}).
+     * @param storeEngine the new engine; {@code null} is ignored and changes nothing
+     */
     public synchronized void setStoreEngine(StoreEngine storeEngine) {
         if (storeEngine != null) {
             this.storeEngine = storeEngine;
@@ -64,10 +69,21 @@ public class HgRepository implements Repository {
         }
     }
 
+    /**
+     * Returns the configuration of this repository, read from {@code .hg/hgrc} when the repository object was created
+     * (a missing or unreadable file is ignored). The returned object is the live one, never {@code null}.
+     * @return the repository configuration
+     */
     public HgRcConfig getConfig() {
         return this.config;
     }
 
+    /**
+     * Opens the repository whose working copy is {@code directory}. Nothing is checked about the directory (use {@link Repository#open(File)}
+     * to require an existing {@code .hg}); the {@code .hg/sharedpath} file (shared repositories), the {@code requires} files and {@code .hg/hgrc}
+     * are read here and read errors are ignored, leaving the defaults.
+     * @param directory the working copy root, the directory that contains {@code .hg}
+     */
     public HgRepository(File directory) {
         this.directory = directory;
         this.hgDir = new File(directory, ".hg");
@@ -232,18 +248,34 @@ public class HgRepository implements Repository {
         return fileIndexV1;
     }
 
+    /**
+     * Tells whether the repository requires zstd compression of revlog data ({@code revlog-compression-zstd}).
+     * @return {@code true} if new revlog data is compressed with zstd instead of zlib
+     */
     public boolean isUseZstdCompression() {
         return useZstdCompression;
     }
 
+    /**
+     * Returns the working copy root given to the constructor.
+     * @return the working copy directory
+     */
     public File getDirectory() {
         return directory;
     }
 
+    /**
+     * Returns the {@code .hg} directory inside the working copy root.
+     * @return the {@code .hg} directory
+     */
     public File getHgDir() {
         return hgDir;
     }
 
+    /**
+     * Returns the store directory: {@code .hg/store}, or {@code store} inside the directory named by {@code .hg/sharedpath} for a shared repository.
+     * @return the store directory
+     */
     public File getStoreDir() {
         return storeDir;
     }
@@ -338,10 +370,21 @@ public class HgRepository implements Repository {
         dirstate.getCopyMap().putAll(originalCopyMap);
     }
 
+    /**
+     * Lists the files of a commit with their file nodes, through the storage engine.
+     * @param commitNodeId the 20-byte node id of the changeset
+     * @return a map from repository-relative path to the 40-digit hex file node, followed by {@code x} for an executable file or {@code l} for a symlink
+     * @throws IOException if the changeset is not found or the manifest cannot be read
+     */
     public synchronized Map<String, String> getManifestAtCommit(byte[] commitNodeId) throws IOException {
         return storeEngine.getManifestAtCommit(this, commitNodeId);
     }
 
+    /**
+     * Returns the root manifest revlog ({@code 00manifest.i} in the store), opened through {@link #getRevlog(File, File)} and so cached.
+     * @return the manifest revlog
+     * @throws IOException if it cannot be opened
+     */
     public synchronized Revlog getManifestRevlog() throws IOException {
         return storeEngine.getManifestRevlog(this);
     }
@@ -379,6 +422,14 @@ public class HgRepository implements Repository {
         }
     };
 
+    /**
+     * Returns the revlog for an index file, opening it through the storage engine the first time. Revlogs are cached by the canonical path of the
+     * index file (up to 100 are kept; the least recently used one is dropped and its caches cleared), so repeated calls return the same object.
+     * @param idxFile the index ({@code .i}) file
+     * @param datFile the data ({@code .d}) file; ignored for an inline or version 2 revlog
+     * @return the revlog
+     * @throws IOException if the file cannot be resolved or the revlog cannot be opened
+     */
     public synchronized Revlog getRevlog(File idxFile, File datFile) throws IOException {
         File canonicalIdx = idxFile.getCanonicalFile();
         if (!revlogCache.containsKey(canonicalIdx)) {
@@ -387,6 +438,10 @@ public class HgRepository implements Repository {
         return revlogCache.get(canonicalIdx);
     }
 
+    /**
+     * Clears the caches of every cached revlog and forgets them, so the next {@link #getRevlog(File, File)} reopens from the disk.
+     * Call it after the store was changed behind this object's back.
+     */
     public synchronized void clearRevlogCache() {
         for (Revlog r : revlogCache.values()) {
             r.clearCache();
@@ -400,7 +455,7 @@ public class HgRepository implements Repository {
     /**
      * Detects whether the changelog has been externally modified since the last check and, if
      * so, clears the whole revlog cache so the next read rebuilds fresh {@link Revlog}/
-     * {@link com.github.search5.hg4j.storage.RevlogIndex} instances.
+     * {@link io.github.search5.hg4j.storage.RevlogIndex} instances.
      *
      * <p>This exists for long-lived {@code HgRepository} handles -- specifically the ones
      * {@code HgHttpWireServer}/{@code HgSshWireServer} keep open for the lifetime of the server
@@ -492,6 +547,11 @@ public class HgRepository implements Repository {
         return ignoreMatcher().matches(path);
     }
 
+    /**
+     * Lists the files of the working copy, whatever the dirstate says. The ignore rules are reloaded first. Ignored files and directories,
+     * the {@code .hg} directory and the contents of subrepositories declared in {@code .hgsub} are skipped; symlinks are listed as files and not followed.
+     * @return repository-relative, slash separated paths of files and symlinks, in no particular order
+     */
     public synchronized List<String> scanWorkingCopy() {
         ignoreMatcher = null;
         List<String> result = new ArrayList<>();
@@ -635,9 +695,8 @@ public class HgRepository implements Repository {
     /**
      * Locks the working directory, waiting up to {@code timeoutMs} if it is already held before
      * giving up -- matches real hg's {@code localrepo.py} {@code wlock(wait=True)} default (backed
-     * by {@code mercurial/lock.py}'s {@code trylock()}/{@code lock()} loop). Only the push/unbundle
-     * apply path opts into this today (backlog item 38); every other caller keeps using the
-     * fail-fast {@link #lockWorkingCopy()} overload.
+     * by {@code mercurial/lock.py}'s {@code trylock()}/{@code lock()} loop). The no-argument
+     * {@link #lockWorkingCopy()} waits for the configured {@code [ui] timeout} (600 seconds by default), as every command does.
      *
      * <p>Deliberately NOT {@code synchronized} on this repository instance (unlike most other
      * mutating methods here): the underlying {@link HgLock} constructor can now genuinely block
@@ -822,28 +881,6 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * Locks the store repository database, waiting up to {@code timeoutMs} if it is already held
-     * before giving up -- matches real hg's {@code localrepo.py} {@code lock(wait=True)} default
-     * (backed by {@code mercurial/lock.py}'s {@code trylock()}/{@code lock()} loop, which itself
-     * waits up to {@code ui.timeout} -- default 600 seconds -- before raising {@code
-     * error.LockHeld}). Only the push/unbundle apply path opts into this today (backlog item 38,
-     * see {@link #resolvePushLockTimeoutMs()}); every other caller (commit, update, rebase, ...)
-     * keeps using the fail-fast {@link #lockStore()} overload -- widening the wait behavior to
-     * every command that locks the store is a separate, much larger change this backlog item does
-     * not cover.
-     *
-     * <p>Deliberately NOT {@code synchronized} -- see {@link #lockWorkingCopy(int)}'s doc for why
-     * (the exact same self-deadlock hazard applies here, and was in fact where it was first
-     * reproduced live: this is the lock the push/unbundle apply path actually contends on).
-     * {@link #checkAndPerformAutoRollback()} keeps its own independent {@code synchronized}
-     * modifier, so it is still safely serialized against itself regardless.
-     *
-     * @param timeoutMs how long to wait for contention to clear, in milliseconds; {@code 0} means
-     *                   fail immediately, matching real hg's own {@code ui.timeout=0} semantics.
-     * @return the {@link HgLock} instance
-     * @throws HgLockException if the lock could not be acquired within {@code timeoutMs}
-     */
-    /**
      * The store lock without the recovery of an interrupted transaction that {@link #lockStore(int)} performs when it takes the lock
      * anew. Real hg's {@code repo.lock()} never recovers by itself; {@code recover} and {@code verify} need to look at the journal
      * while they hold the lock.
@@ -935,6 +972,16 @@ public class HgRepository implements Repository {
         }
     }
 
+    /**
+     * Locks the store ({@code .hg/store/lock}), waiting up to {@code timeoutMs} milliseconds if another process holds it.
+     * The lock may be taken again by the thread that already holds it. This method is not {@code synchronized}, so waiting does not block other
+     * methods of this object. A leftover transaction journal is not recovered here.
+     * @param timeoutMs how long to wait, in milliseconds; 0 fails at once
+     * @return the held lock; close it to release it (see {@link #afterLock} for work that runs when the last lock is released)
+     * @throws HgLockException if the lock was not obtained within the timeout
+     * @throws io.github.search5.hg4j.errors.HgAbandonedTransactionException if {@code store/journal} exists and this thread did not already hold
+     * the lock; the lock is released again before this is thrown
+     */
     public HgLock lockStore(int timeoutMs) throws HgLockException {
         HgLock lock = track(new HgLock(new File(storeDir, "lock"), timeoutMs, true));
         // Nothing is recovered here: real hg's repo.lock() never does. A command that opens a transaction meets an interrupted one
@@ -977,6 +1024,12 @@ public class HgRepository implements Repository {
         }
     }
 
+    /**
+     * Rolls back an interrupted transaction if {@code store/journal} exists; does nothing otherwise. The journal lines are replayed: backed up files are restored,
+     * {@code fncache} is restored from its backup, and files are truncated to their recorded size (deleted when the recorded size is 0). When all
+     * lines were applied, the journal and the backup files are deleted. A failure is logged and the journal is kept for a later retry; nothing is thrown.
+     * This method does not acquire any lock; the caller should hold the store lock.
+     */
     public synchronized void checkAndPerformAutoRollback() {
         File journalFile = new File(storeDir, "journal");
         if (!journalFile.exists()) {

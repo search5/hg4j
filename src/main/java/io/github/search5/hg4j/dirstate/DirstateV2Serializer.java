@@ -45,6 +45,13 @@ public class DirstateV2Serializer {
         }
     }
 
+    /**
+     * Serializes a map of entries to the dirstate-v2 data file layout; no copy records are included.
+     * @param entries tracked paths (repository-relative, slash separated) to their entries
+     * @return the data file content (the node array followed by the path bytes); the docket is not produced here
+     * @throws HgValidationException if a path is longer than 65535 bytes
+     * @throws IOException if serialization fails
+     */
     public static byte[] serialize(Map<String, Dirstate.Entry> entries) throws IOException {
         Dirstate d = new Dirstate();
         for (Map.Entry<String, Dirstate.Entry> entry : entries.entrySet()) {

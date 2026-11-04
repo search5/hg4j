@@ -87,6 +87,14 @@ public final class ChainsawUpdateCommand {
         }
     }
 
+    /**
+     * Brings the destination repository to the target revision no matter what its state is. Destructive: removes a destination that exists but is not a repository, breaks existing store and working copy locks, recovers an interrupted transaction, pulls from the source, purges unknown (and optionally ignored) files, and force-updates. A missing repository is created first.
+     * <p>The progress lines are collected and available from {@link #getMessages()}.
+     *
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the revision, source or destination was not set
+     * @throws IOException if any step fails
+     * @throws HgLockException if the locks cannot be taken after breaking the old ones
+     */
     public void call() throws IOException, HgLockException {
         messages.clear();
         if (revision.isEmpty()) {

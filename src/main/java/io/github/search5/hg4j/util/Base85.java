@@ -22,6 +22,11 @@ public final class Base85 {
     private Base85() {
     }
 
+    /**
+     * Encodes bytes in Mercurial's base85 alphabet, four bytes to five characters, without padding (a last group of n bytes gives n+1 characters).
+     * @param data the bytes to encode; must not be {@code null}
+     * @return the encoded text, empty for an empty array
+     */
     public static String encode(byte[] data) {
         StringBuilder out = new StringBuilder();
         for (int i = 0; i < data.length; i += 4) {

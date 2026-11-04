@@ -25,6 +25,14 @@ public final class HgObsMarker {
     private final int flags;
     private final Map<String, String> metadata;
 
+    /**
+     * Creates a marker saying that {@code predecessor} was rewritten into {@code successors}.
+     * @param predecessor the node id of the obsoleted changeset, exactly 20 bytes; it is copied
+     * @param successors the node ids of the replacements; {@code null} means none (the changeset was pruned). The list is kept as given and its elements are not validated
+     * @param flags the marker flag bits as stored in the obsstore
+     * @param metadata the marker metadata (such as the user and date); {@code null} means none
+     * @throws IllegalArgumentException if {@code predecessor} is {@code null} or not 20 bytes long
+     */
     public HgObsMarker(byte[] predecessor, List<byte[]> successors, int flags, Map<String, String> metadata) {
         if (predecessor == null || predecessor.length != 20) {
             throw new IllegalArgumentException("Predecessor node must be exactly 20 bytes");
@@ -35,18 +43,34 @@ public final class HgObsMarker {
         this.metadata = metadata != null ? metadata : Map.of();
     }
 
+    /**
+     * Returns the obsoleted changeset.
+     * @return a copy of the 20-byte node id
+     */
     public byte[] getPredecessor() {
         return predecessor.clone();
     }
 
+    /**
+     * Returns the replacement changesets.
+     * @return an unmodifiable list of copies of the node ids; empty if there are none
+     */
     public List<byte[]> getSuccessors() {
         return successors.stream().map(byte[]::clone).toList();
     }
 
+    /**
+     * Returns the flag bits of this marker.
+     * @return the flags as stored in the obsstore
+     */
     public int getFlags() {
         return flags;
     }
 
+    /**
+     * Returns the metadata of this marker.
+     * @return an unmodifiable copy of the key/value pairs; empty if there are none
+     */
     public Map<String, String> getMetadata() {
         return Map.copyOf(metadata);
     }

@@ -69,7 +69,26 @@ The names below are the classes of the `api` package (suffix `Command` left out)
 |`Sign`, `Sigs`, `SigCheck`, `Subrepo`, `LfsUpload`
 |===
 
-Transports: local paths, HTTP(S) and SSH, with the `[auth]` configuration sent after a 401 challenge, and the server side of the wire protocol (`HgHttpWireServer`, `HgSshWireServer`). Only wire protocol version 1 is implemented; version 2 was removed.
+Transports: local paths, HTTP(S) and SSH, with the `[auth]` configuration sent after a 401 challenge, and the server side of the wire protocol (`HgHttpWireServer`, `HgSshWireServer`). The wire protocol is version 1; the HTTP version 2 was removed. The SSH client has an experimental upgrade to version 2 that stays off unless the JVM property `hg4j.ssh.v2.enabled=true` is set.
+
+== Command Reference
+Each command below lists its setters, its execution method, the locks it takes, and the differences from Mercurial that its source documents. Everything is taken from the source of the `api` package; a missing item means the source does not state it.
+
+=== Working copy commands
+
+include::reference/workingcopy.adoc[leveloffset=+1]
+
+=== History commands
+
+include::reference/history.adoc[leveloffset=+1]
+
+=== Rewriting and naming commands
+
+include::reference/rewriting.adoc[leveloffset=+1]
+
+include::reference/exchange.adoc[leveloffset=+1]
+
+include::reference/maintenance.adoc[leveloffset=+1]
 
 [[locking]]
 == 4. Locking and Transactions
@@ -118,12 +137,62 @@ dirstate-v2 is stored as in Mercurial: a docket file (`dirstate`) naming a data 
 * `store_shape` with an empty shard name gets no answer, as with the original (which fails).
 * Behaviour that follows the original and that a caller may notice: `.orig` files are left after `rebase --abort`, `unshelve --abort` and a conflicting `backout`; `rebase` without evolution strips the originals; reusing a branch name that exists on another line of history needs `-f`; `phase` refuses to move changesets to a higher phase with exit status 1 and the text `cannot move N changesets to a higher phase, use --force`; `sign` commits `.hgsigs` only.
 
+== API Changes for Callers
+These changes need an action from code written against the earlier API. `HgLockException` is a checked exception (`HgException` extends `Exception`), so a caller of a changed method has to catch or declare it.
+
+[cols="2,3,4"]
+|===
+|Element |Change |What to do
+
+|`BisectCommand.next()`, `BookmarkCommand.call()`, `BranchCommand.call()`, `CensorCommand.call()`, `GcCommand.call()`, `RecoverCommand.call()`, `ResolveCommand.call()`, `RollbackCommand.call()`, `VerifyCommand.call()`, `Hg.rollback()`
+|Now declare `throws HgLockException` (they take the locks themselves).
+|Catch or declare `HgLockException`. `HgAbandonedTransactionException` is a subclass: it means a journal of an interrupted transaction was found.
+
+|`HgRepository.lockStore(int)`
+|Never recovers an interrupted transaction any more; it throws `HgAbandonedTransactionException` when a journal is left by another holder.
+|Run `RecoverCommand`, then lock again. `lockStoreWithoutRecovery(int)` is the variant that `recover` and `verify` use to look at the journal while holding the lock.
+
+|`HgRepository.getDirstate()` and a direct `Dirstate` change
+|Changing the dirstate needs the working copy lock; the write is made when the dirstate context ends.
+|Use `changingFiles(...)` or `changingParents(...)` (or `openChangingFiles()` / `openChangingParents()` with try-with-resources) while holding `lockWorkingCopy()`. Without the lock an `IllegalStateException` is thrown.
+
+|`HgRepository.DirstateBody<T>`
+|New functional interface; its `run()` may throw `IOException` and `HgLockException`.
+|Pass it to `changingFiles` / `changingParents`.
+
+|`HgRepository.afterLock(AfterLockAction)`
+|New: work that runs after the outermost lock is released.
+|Use it for follow-ups that must not run under the locks.
+
+|`dirstate.backup`, `dirstate` journal entry
+|Removed. A journal that still carries the entry is read without error.
+|Tools that read the backup file have to stop doing so.
+
+|`RebaseCommand`
+|Now follows `rebase.py`: `call()` runs the rebase from revset setters (`addSourceRevset`, `addBaseRevset`, `addRevisionRevset`, `setDestination`) as well as from `setSource(byte[])` and `setTarget(byte[])`; originals are stripped unless `setKeep(true)`; `.hg/rebasestate` is the state file.
+|Replace code that expected the originals to stay readable.
+
+|`PhaseCommand.call()`
+|Refuses a move to a higher phase through the exit status (`getExitCode()` is 1) and `getMessages()`, not through an exception.
+|Check `getExitCode()`.
+
+|`SignCommand`
+|Commits `.hgsigs` only and does not restore it when the commit fails.
+|Commit other changes yourself.
+
+|`BranchCommand`
+|`setForce(boolean)` is needed to reuse a branch name that exists on another line of history.
+|Pass `true` where the original needs `-f`.
+|===
+
+New commands and options that need no migration: `AdminVerifyCommand`, `ChainsawUpdateCommand`, `GraftInMemory` (`graft --to`), `NarrowServerAdmin`, `ShardedStreamBundlesCommand`, `UnshareCommand`; `setSubrepos` on `AddCommand` and `AddremoveCommand`; `setPull`, `setStream` and `getMessages()` on `CloneCommand`, `PullCommand` and `FetchCommand`; the pattern, include, exclude and cwd setters of the file commands.
+
 [[known-issues]]
 == 8. Known Issues and Remaining Work
 === 8.1 Limits
 * **Mercurial versions**: tested against 7.2 and 7.2.4 only. A repository created with the default settings uses old requirements and is expected to open with older 7.x releases, but this was not tested. Newer formats need the Mercurial release that introduced them.
 * **Sidedata of applied changegroups**: a changegroup without sidedata (versions 01 to 04) brought into a repository that keeps changed-file sidedata gets the changed files computed from the manifests. Copy information cannot be derived that way and is not recorded. A changegroup 05 keeps its own sidedata, copies included.
-* **Not implemented**: wire protocol version 2, `largefiles`, `dirstate-tracked-hint`, and `upgrade`.
+* **Not implemented**: wire protocol version 2 over HTTP, `largefiles`, `dirstate-tracked-hint`, and `upgrade`.
 
 === 8.2 Open points
 * One real-client/real-server case of `TransportE2EMatrixInteropTest` ("a push that creates a head is refused") failed in two of four full runs and passed every time it was run alone. Both ends are the real `hg`, so hg4j code is not involved as far as is known. The cause has not been found.

@@ -90,18 +90,34 @@ public final class NodeMapFile {
         this.uid = uid;
     }
 
+    /**
+     * Returns the revision number of the tip recorded in the docket.
+     * @return the revision number
+     */
     public int getTipRev() {
         return tipRev;
     }
 
+    /**
+     * Returns the node id of the tip recorded in the docket, used to check that the nodemap is not stale.
+     * @return the node id (normally 20 bytes)
+     */
     public byte[] getTipNode() {
         return tipNode;
     }
 
+    /**
+     * Returns the length of the valid part of the nodemap data file.
+     * @return the length in bytes
+     */
     public long getDataLength() {
         return dataLength;
     }
 
+    /**
+     * Returns the number of bytes in the nodemap data file that are no longer used.
+     * @return the unused bytes
+     */
     public long getDataUnused() {
         return dataUnused;
     }

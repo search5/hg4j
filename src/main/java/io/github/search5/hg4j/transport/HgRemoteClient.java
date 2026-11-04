@@ -60,6 +60,14 @@ public class HgRemoteClient implements HgRemoteConnection {
     private List<String> compressionEngines = Collections.emptyList();
     private boolean hasNegotiated = false;
 
+    /**
+     * Creates an HTTP(S) client for a Mercurial server. No request is sent until the first command.
+     * <p>A trailing {@code /} of the URL is removed. Credentials embedded in the URL
+     * ({@code https://user:pass@host/path}) are percent-decoded, removed from the stored address and used for
+     * HTTP Basic authentication; later calls to {@link #setCredentials(String, String)} override them.
+     * Each command opens its own connection, so there is no connection to close.
+     * @param url the repository URL; must not be null
+     */
     public HgRemoteClient(String url) {
         // Real hg's own URL convention (mercurial/urlutil.py's `url` class) lets credentials be
         // embedded directly in the destination -- `https://user:pass@host/path` -- and uses them
@@ -225,6 +233,11 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Returns the maximum size, in bytes, used when splitting command arguments into HTTP headers.
+     * It is 1024 until {@link #getCapabilities()} has read an {@code httpheader=N} capability from the server,
+     * which then replaces it.
+     */
     public int getMaxHttpHeaderLimit() {
         return maxHttpHeaderLimit;
     }
@@ -271,11 +284,22 @@ public class HgRemoteClient implements HgRemoteConnection {
         return new String(bytes, StandardCharsets.UTF_8);
     }
 
+    /**
+     * Sets the timeouts of subsequent HTTP requests. The defaults are 10000 ms to connect and 30000 ms to read.
+     * @param connectTimeout the connection timeout in milliseconds, passed to {@code HttpURLConnection}
+     * @param readTimeout the read timeout in milliseconds, passed to {@code HttpURLConnection}
+     */
     public void setTimeouts(int connectTimeout, int readTimeout) {
         this.connectTimeout = connectTimeout;
         this.readTimeout = readTimeout;
     }
 
+    /**
+     * Sets the user name and password for HTTP Basic authentication. They are sent only once the server has
+     * answered a request with a 401 Basic challenge (see {@link #applyAuthConfig}), and only if both are non-null.
+     * @param username the user name, or null to clear it
+     * @param password the password, or null to clear it
+     */
     public void setCredentials(String username, String password) {
         this.username = username;
         this.password = password;
@@ -295,10 +319,19 @@ public class HgRemoteClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Sets whether plain {@code http://} addresses are refused. When true, a request to a URL that does not start
+     * with {@code https://} fails with a {@link SecurityException}. The default is false.
+     * @param forceTls true to require TLS
+     */
     public void setForceTls(boolean forceTls) {
         this.forceTls = forceTls;
     }
 
+    /**
+     * Sets the proxy used for subsequent HTTP requests. The default is {@link Proxy#NO_PROXY}.
+     * @param proxy the proxy; null is ignored and leaves the current setting unchanged
+     */
     public void setProxy(Proxy proxy) {
         if (proxy != null) {
             this.proxy = proxy;
@@ -809,14 +842,6 @@ public class HgRemoteClient implements HgRemoteConnection {
         return in;
     }
 
-    /**
-     * Pushes a changegroup bundle to the remote repository using the 'unbundle' command.
-     *
-     * @param bundleBytes the binary changegroup bundle payload
-     * @param heads the local heads being pushed
-     * @return the remote server response output string
-     * @throws IOException if network or push execution fails
-     */
     /**
      * Pushes a changegroup bundle to the remote repository using the 'unbundle' command.
      *

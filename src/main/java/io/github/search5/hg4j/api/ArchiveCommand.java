@@ -64,6 +64,11 @@ public class ArchiveCommand {
     private String type;
     private String prefix;
 
+    /**
+     * Creates an archive command for the given repository. Nothing is written until {@link #call()}.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public ArchiveCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -88,11 +93,24 @@ public class ArchiveCommand {
         return this;
     }
 
+    /**
+     * Sets the revision to archive ({@code hg archive -r}). The default is {@code tip}.
+     *
+     * @param revision a revision identifier understood by the revision resolver (number, hex node, branch, tag, ...)
+     * @return {@code this}
+     */
     public ArchiveCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Sets where the archive is written ({@code hg archive DEST}). Required: {@link #call()} throws {@link IllegalArgumentException} without it.
+     * It is a directory for the {@code files} type and an archive file for the other types.
+     *
+     * @param destination the output directory or file
+     * @return {@code this}
+     */
     public ArchiveCommand setDestination(File destination) {
         this.destination = destination;
         return this;

@@ -83,10 +83,6 @@ public final class SafeFileIO {
     /**
      * Writes raw bytes atomically by writing to a temporary file in the same directory,
      * and then renaming it via ATOMIC_MOVE.
-     */
-    /**
-     * Writes raw bytes atomically by writing to a temporary file in the same directory,
-     * and then renaming it via ATOMIC_MOVE.
      * Falls back to defensive .lock file-level exclusive locking by default for ultimate safety (L-4).
      */
     public static void writeAtomic(File file, byte[] data) throws IOException {

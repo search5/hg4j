@@ -20,10 +20,19 @@ public class WorktreeCommand {
     private final HgRepository repository;
     private File newWorktreeDir;
 
+    /**
+     * Creates the command.
+     * @param repository the repository whose store the new working copy shares; must not be {@code null}
+     */
     public WorktreeCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the directory of the new working copy.
+     * @param newWorktreeDir the directory to create; must not exist or be empty. Required before {@link #call()}
+     * @return {@code this}
+     */
     public WorktreeCommand setNewWorktreeDir(File newWorktreeDir) {
         this.newWorktreeDir = newWorktreeDir;
         return this;

@@ -34,6 +34,14 @@ public final class HgLfsPointer implements Comparable<HgLfsPointer> {
     private final long size;
     private final Map<String, String> extra;
 
+    /**
+     * Creates a pointer without extra fields.
+     *
+     * @param version the pointer spec URL, for example {@code https://git-lfs.github.com/spec/v1}; must not be {@code null}
+     * @param oid the object id as written in the pointer, for example {@code sha256:...}; must not be {@code null}
+     * @param size the content size in bytes; must not be negative
+     * @throws IllegalArgumentException if an argument is {@code null} or the size is negative
+     */
     public HgLfsPointer(String version, String oid, long size) {
         this(version, oid, size, Map.of());
     }
@@ -53,14 +61,29 @@ public final class HgLfsPointer implements Comparable<HgLfsPointer> {
         this.extra = extra == null || extra.isEmpty() ? Map.of() : Map.copyOf(extra);
     }
 
+    /**
+     * Returns the spec version line value.
+     *
+     * @return the version, never {@code null}
+     */
     public String getVersion() {
         return version;
     }
 
+    /**
+     * Returns the object id.
+     *
+     * @return the oid as written in the pointer, never {@code null}
+     */
     public String getOid() {
         return oid;
     }
 
+    /**
+     * Returns the size of the content the pointer stands for.
+     *
+     * @return the size in bytes
+     */
     public long getSize() {
         return size;
     }

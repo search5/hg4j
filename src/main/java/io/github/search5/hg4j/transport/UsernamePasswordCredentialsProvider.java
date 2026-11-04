@@ -7,15 +7,26 @@ public class UsernamePasswordCredentialsProvider implements CredentialsProvider 
     private final String username;
     private final String password;
 
+    /**
+     * Creates a provider for a user name and password.
+     * @param username the user name, or null
+     * @param password the password, or null (a null password is supplied as null to the requesting item)
+     */
     public UsernamePasswordCredentialsProvider(String username, String password) {
         this.username = username;
         this.password = password;
     }
 
+    /**
+     * Returns the user name given at construction, or null.
+     */
     public String getUsername() {
         return username;
     }
 
+    /**
+     * Returns the password given at construction, or null.
+     */
     public String getPassword() {
         return password;
     }

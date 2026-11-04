@@ -61,6 +61,15 @@ public final class ShapeWire {
         return out.toByteArray();
     }
 
+    /**
+     * Decodes the fingerprints block written by {@link #encodeFingerprints}.
+     *
+     * @param data the block: a count byte, one length byte per fingerprint, then the binary fingerprints
+     * @param kind the kind to give to every decoded fingerprint
+     * @return the fingerprints in block order
+     * @throws IllegalArgumentException if a fingerprint's digest is invalid for its version
+     * @throws ArrayIndexOutOfBoundsException if the block is truncated
+     */
     public static List<Fingerprint> decodeFingerprints(byte[] data, Fingerprint.Kind kind) {
         int count = data[0] & 0xFF;
         int cursor = 1 + count;
@@ -102,6 +111,14 @@ public final class ShapeWire {
         return out.toByteArray();
     }
 
+    /**
+     * Decodes the shards sets block written by {@link #encodeShardsSets}.
+     *
+     * @param data the block: a set-count byte, a (id length, member count) header per set, then each set's binary shard fingerprints
+     * @return one set of {@link Fingerprint.Kind#SHARD} fingerprints per encoded set, in block order
+     * @throws IllegalArgumentException if bytes remain after the last set or a fingerprint is invalid
+     * @throws ArrayIndexOutOfBoundsException if the block is truncated
+     */
     public static List<Set<Fingerprint>> decodeShardsSets(byte[] data) {
         int sets = data[0] & 0xFF;
         int cursor = 1;
@@ -139,6 +156,14 @@ public final class ShapeWire {
         return out.toByteArray();
     }
 
+    /**
+     * Decodes the unknown names block written by {@link #unknownNamesEncode}.
+     *
+     * @param data the block: a 4-byte count, a 4-byte length per name, then the UTF-8 names
+     * @return the names in block order
+     * @throws IllegalArgumentException if bytes remain after the last name
+     * @throws RuntimeException if the block is truncated or its lengths are inconsistent
+     */
     public static List<String> unknownNamesDecode(byte[] data) {
         int count = ByteBuffer.wrap(data, 0, 4).getInt();
         int cursor = 4 + 4 * count;

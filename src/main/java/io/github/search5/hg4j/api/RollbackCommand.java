@@ -20,10 +20,24 @@ public class RollbackCommand {
 
     private final HgRepository repository;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to roll back; must not be {@code null}
+     */
     public RollbackCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Rolls back the last transaction recorded in the undo files.
+     * <p>
+     * Takes the working copy lock and the store lock (waiting up to the repository's push lock timeout), truncates or
+     * restores the store files listed in {@code store/undo}, restores the dirstate and bookmarks from their undo
+     * backups, clears the active bookmark and deletes the undo files.
+     * @throws IllegalStateException if there is no {@code undo} file to roll back
+     * @throws IOException if restoring the files fails
+     * @throws io.github.search5.hg4j.errors.HgLockException if a lock cannot be acquired within the timeout
+     */
     public void call() throws IOException, io.github.search5.hg4j.errors.HgLockException {
         // Like real hg, the locks are taken before the first read of the repository state and released when the command ends.
         int lockTimeout = repository.resolvePushLockTimeoutMs();

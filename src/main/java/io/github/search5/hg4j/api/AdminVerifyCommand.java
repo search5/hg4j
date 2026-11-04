@@ -34,6 +34,11 @@ public final class AdminVerifyCommand {
     private final List<String> output = new ArrayList<>();
     private final List<String> errorOutput = new ArrayList<>();
 
+    /**
+     * Creates an {@code hg admin::verify} command for the given repository. No check runs until it is executed.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public AdminVerifyCommand(HgRepository repository) {
         this.repository = repository;
     }

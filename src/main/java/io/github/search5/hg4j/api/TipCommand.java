@@ -14,6 +14,10 @@ import java.io.IOException;
 public class TipCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to read; must not be {@code null}
+     */
     public TipCommand(HgRepository repository) {
         this.repository = repository;
     }

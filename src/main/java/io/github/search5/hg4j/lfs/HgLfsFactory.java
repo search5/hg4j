@@ -15,10 +15,21 @@ public abstract class HgLfsFactory {
 
     private static volatile HgLfsFactory instance = new BuiltinHgLfs();
 
+    /**
+     * Returns the factory in use.
+     *
+     * @return the current factory, {@link BuiltinHgLfs} unless replaced; never {@code null}
+     */
     public static HgLfsFactory getInstance() {
         return instance;
     }
 
+    /**
+     * Replaces the factory in use, for the whole JVM. The field is volatile, so the change is visible to all threads.
+     *
+     * @param factory the new factory; must not be {@code null}
+     * @throws IllegalArgumentException if {@code factory} is {@code null}
+     */
     public static void setInstance(HgLfsFactory factory) {
         if (factory == null) {
             throw new IllegalArgumentException("factory cannot be null");
@@ -36,6 +47,11 @@ public abstract class HgLfsFactory {
      * @param pointer the pointer when the content went to the LFS store, otherwise {@code null}
      */
     public record Cleaned(byte[] stored, HgLfsPointer pointer) {
+        /**
+         * Tells whether the content went to the LFS store.
+         *
+         * @return {@code true} if {@code pointer} is not {@code null}
+         */
         public boolean isLfs() {
             return pointer != null;
         }

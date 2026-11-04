@@ -33,6 +33,11 @@ public class FilesCommand {
     private String revision;
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
+    /**
+     * Creates a files command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public FilesCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -47,6 +52,12 @@ public class FilesCommand {
         return this;
     }
 
+    /**
+     * Same as {@link #setRevision(String)} with a node id.
+     *
+     * @param nodeId the changeset node; {@code null} selects the working copy
+     * @return {@code this}
+     */
     public FilesCommand setRevision(NodeId nodeId) {
         this.revision = nodeId != null ? nodeId.toHex() : null;
         return this;
@@ -117,6 +128,12 @@ public class FilesCommand {
         return this;
     }
 
+    /**
+     * Lists the tracked files of the working copy, or of the revision set with {@code setRevision}, that pass the tree filter and the pattern selection ({@code hg files}). Read-only.
+     *
+     * @return repository-relative paths with {@code /} separators
+     * @throws IOException if the dirstate, a manifest or the changelog cannot be read
+     */
     public List<String> call() throws IOException {
         List<String> paths;
 

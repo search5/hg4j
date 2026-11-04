@@ -35,6 +35,14 @@ public final class Matchers {
     /** Turns a {@code set:} pattern into a matcher (the fileset language lives elsewhere). */
     @FunctionalInterface
     public interface SetResolver {
+        /**
+         * Compiles one fileset expression.
+         *
+         * @param cwd the current directory, relative to the repository root
+         * @param expression the fileset expression
+         * @return the matcher for the expression
+         * @throws IOException if the expression is invalid or evaluating it fails
+         */
         Matcher resolve(String cwd, String expression) throws IOException;
     }
 
@@ -82,10 +90,20 @@ public final class Matchers {
         }
     };
 
+    /**
+     * Returns the matcher that selects every file.
+     *
+     * @return a shared matcher whose {@code always()} is {@code true}
+     */
     public static Matcher always() {
         return ALWAYS;
     }
 
+    /**
+     * Returns the matcher that selects no file.
+     *
+     * @return a shared matcher that matches nothing
+     */
     public static Matcher never() {
         return NEVER;
     }
@@ -123,6 +141,12 @@ public final class Matchers {
         };
     }
 
+    /**
+     * Combines matchers: a file is selected when any of them selects it.
+     *
+     * @param matchers the matchers to combine; must not be {@code null}. A single element is returned as it is; an empty list gives a matcher that selects nothing
+     * @return the combined matcher; its {@code files()} concatenates the files of all matchers and its {@code visitDir} is true if any matcher visits the directory
+     */
     public static Matcher union(List<Matcher> matchers) {
         if (matchers.size() == 1) {
             return matchers.get(0);

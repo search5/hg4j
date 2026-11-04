@@ -25,14 +25,32 @@ public class ProcessHook implements HgHook {
     private final List<String> command;
     private final File workingDir;
 
+    /**
+     * Creates a hook from a command line string.
+     * <p>
+     * The string is split on unquoted whitespace; single or double quotes group words and are removed. No shell is
+     * involved, so no expansion or redirection takes place.
+     * @param command the command line; {@code null} or blank gives an empty command that {@link #run} accepts without
+     *         running anything
+     */
     public ProcessHook(String command) {
         this(splitCommand(command), null);
     }
 
+    /**
+     * Creates a hook that runs the given command, with the working directory taken from the hook context.
+     * @param command the program and its arguments; copied, and an empty list makes {@link #run} a no-op that accepts
+     */
     public ProcessHook(List<String> command) {
         this(command, null);
     }
 
+    /**
+     * Creates a hook that runs the given command in the given directory.
+     * @param command the program and its arguments; copied, and an empty list makes {@link #run} a no-op that accepts
+     * @param workingDir the directory to run in, or {@code null} to use the directory of the repository found under
+     *         the context key {@code repository} (and, failing that, the current directory of the JVM)
+     */
     public ProcessHook(List<String> command, File workingDir) {
         this.command = new ArrayList<>(command);
         this.workingDir = workingDir;

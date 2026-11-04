@@ -30,6 +30,11 @@ public class RecoverCommand {
     private final HgRepository repository;
     private boolean verify = false;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to recover; must not be {@code null}
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public RecoverCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");

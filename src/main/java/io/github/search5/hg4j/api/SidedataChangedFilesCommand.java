@@ -33,6 +33,11 @@ public final class SidedataChangedFilesCommand {
     private final HgRepository repository;
     private int revision = -1;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to read; must not be {@code null}
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public SidedataChangedFilesCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -46,6 +51,13 @@ public final class SidedataChangedFilesCommand {
         return this;
     }
 
+    /**
+     * Reads the changed-files sidedata of the revision set with {@link #setRevision}.
+     * @return the files changed by the revision (added, removed, merged, salvaged, copied, touched, with copy
+     *         information); {@link ChangingFiles#empty()} if the revision carries no such sidedata
+     * @throws IllegalStateException if the revision was not set to a non-negative number
+     * @throws IOException if reading the changelog fails
+     */
     public ChangingFiles call() throws IOException {
         if (revision < 0) {
             throw new IllegalStateException("Revision must be set to a non-negative value before calling call()");

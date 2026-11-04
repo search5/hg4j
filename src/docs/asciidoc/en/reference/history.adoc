@@ -1,0 +1,509 @@
+// History and query commands, package io.github.search5.hg4j.api.
+// Common: every command takes an HgRepository in its constructor.
+// Read commands take no lock (none of lockWorkingCopy/lockStore/openChanging* appears in their source).
+// The FileSelection setters (setPatterns, setInclude, setExclude, setCwd) share one meaning:
+// patterns are "kind:pattern" or "set:EXPRESSION"; setCwd is the current directory relative to the repository root, against which relative patterns are read.
+
+=== Commit
+
+Commits the tracked changes of the working copy as a new changeset. Corresponds to `hg commit`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setMessage(String)` |Commit message. Required: `call()` throws `IllegalStateException` if null or empty.
+|`setAuthor(String)` |Author. Null or empty is ignored; the default is `user <user@example.com>`.
+|`setDate(long secs, int offsetSeconds)` |Forces the commit time and timezone offset.
+|`setPatterns(String...)` |`hg commit [FILE]...`: commits only the files the patterns select. The other files keep the parent's content in the new revision and stay modified, added or removed in the working copy. Not allowed for a merge.
+|`setInclude(String...)` |`hg commit -I`.
+|`setExclude(String...)` |`hg commit -X`.
+|`setCwd(String)` |Current directory relative to the repository root, for relative patterns.
+|`setExtra(String key, String value)` |Adds an extra field to the new changeset (used by rebase and graft to record their source).
+|`setCloseBranch(boolean)` |`hg commit --close-branch`: marks the new commit as closing its named branch head.
+|`setSubrepos(boolean)` |`hg commit -S`: allows a recursive commit when a subrepo declared in `.hgsub` has uncommitted changes. Without it the commit aborts.
+|`registerPreCommitHook(HgHook)` |Registers a pre-commit hook. A hook returning false rejects the commit (`HgValidationException`).
+|`registerPostCommitHook(HgHook)` |Registers a post-commit hook.
+|`setSkipLockAndJournal(boolean)` |When true, `call()` takes no locks and writes no journal (for callers that already hold them). No javadoc; meaning read from the code.
+|===
+
+Execution:: `byte[] call() throws IOException, HgLockException`. Returns the 20-byte node id of the new commit.
+Main exceptions:: `HgValidationException` (for example "nothing changed", unresolved merge conflicts, partial commit of a merge, hook rejection), `HgRevisionNotFoundException`, `HgRepositoryNotFoundException`, `IllegalStateException` (no message), `HgLockException`.
+
+Locks and dirstate::
+* Takes `repository.lockWorkingCopy()` first, then `repository.lockStore()`, then opens `repository.openChangingParents()` (the dirstate change context, the equivalent of `dirstate.changing_parents`), all in one try-with-resources. The source comment says the locks are taken before any repository state is read and released when the command ends.
+* With `setSkipLockAndJournal(true)` both locks become no-ops, and `openChangingParents()` is opened only if the working copy lock is held (`holdsWorkingCopyLock()`); otherwise no dirstate context is opened.
+* `openChangingFiles` and `changingFiles` are not called. `ChangingFiles` is only used to encode the changed-files sidedata (`SD_FILES`) of the new changeset.
+* Per the source comment, the dirstate is written when the context ends, after the store transaction closes, and is not touched when the commit fails.
+
+Differences from hg:: Not stated in the javadoc. The code comments say it mirrors hg's locking and dirstate order.
+
+[source,java]
+----
+byte[] node = new CommitCommand(repo)
+    .setAuthor("Jane <jane@example.com>")
+    .setMessage("Fix bug")
+    .call();
+----
+
+=== Amend
+
+Replaces the tip commit with a new commit and records an obsolescence marker. Corresponds to `hg commit --amend`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setAuthor(String)` |Overrides the author. When not set, the amended-away commit's author is reused.
+|`setMessage(String)` |Overrides the message. When not set, the amended-away commit's message is reused.
+|`setCloseBranch(boolean)` |`hg commit --amend --close-branch`: overrides whether the amended commit closes its branch. When not called, the old commit's close state is kept.
+|===
+
+Execution:: `byte[] call() throws IOException, HgLockException`. Returns the node id of the new amended commit. Throws `IllegalStateException` for an empty repository ("No commits exist to amend").
+
+Locks and dirstate::
+* `lockWorkingCopy(timeout)` then `lockStore(timeout)`, where the timeout is `repository.resolvePushLockTimeoutMs()`. Both are released when the command ends.
+* It then runs a `CommitCommand` inside these locks. That `CommitCommand` is not told to skip locking in the source of `AmendCommand`; whether the nested lock calls are reentrant is not confirmed in the source read.
+* `openChangingFiles`, `openChangingParents`, `changingFiles`, `changingParents` are not called directly by `AmendCommand`. The dirstate context comes from the nested `CommitCommand` (see Commit).
+* Writes the marker with `HgObsMarker.writeMarker(storeDir, oldNode, [newNode], "amend")` into `.hg/store/obsstore`.
+
+Differences from hg:: Mirrors `hg commit --amend` (`cmdutil.amend()`): the new commit is a sibling of the old one on the same parent(s) (`base = old.p1()`), not its child. Author, message and close-branch default to the old commit's values (javadoc cites verification against hg 7.2.2). It always amends the last revision of the changelog (`count - 1`).
+
+[source,java]
+----
+byte[] node = new AmendCommand(repo)
+    .setMessage("Better message")
+    .call();
+----
+
+=== Log
+
+Reads the changelog and returns commit history, newest first. Corresponds to `hg log`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setPatterns(String...)` |`hg log [FILE]...`: only the revisions that touch files matching these patterns.
+|`setInclude(String...)` |`hg log -I`.
+|`setExclude(String...)` |`hg log -X`.
+|`setCwd(String)` |Current directory relative to the repository root, for relative patterns.
+|`setTreeFilter(HgTreeFilter)` |Keeps only commits that have at least one changed file accepted by the filter. Null is ignored.
+|`setFollowAncestors(boolean)` |Restricts the log to the ancestors of the revision set by `setStartRev` (only effective when a start revision is set).
+|`setStartRev(String)` |Starting revision for `setFollowAncestors` and `setFollowPath`. Default is the tip.
+|`setFollowPath(String)` |`hg log --follow <path>`: walks back through ancestry over the revisions that touched the file, crossing rename and copy boundaries. Implies `setFollowAncestors(true)`.
+|===
+
+Execution:: `List<HgCommit> call() throws IOException`. Returns an empty list if `00changelog.i` does not exist. Commits with malformed text are skipped with a logged warning.
+
+Locks and dirstate:: No locks and no changing_files/changing_parents. `call()` only calls `repository.refreshIfChangedOnDisk()` first, to avoid serving a stale cached changelog-v2 revlog.
+
+Differences from hg:: The javadoc says `setFollowPath` crosses renames through the `copy`/`copyrev` metadata in the filelog's revision 0, the way hg does by default, not through the changelog `SD_FILES` sidedata.
+
+[source,java]
+----
+List<HgCommit> log = new LogCommand(repo)
+    .setFollowPath("src/Main.java")
+    .setStartRev("tip")
+    .call();
+----
+
+=== Tip
+
+Returns the highest-numbered changelog revision. Corresponds to `hg tip`.
+
+Setters:: None.
+
+Execution::
+* `byte[] call() throws IOException`: node id (20 bytes) of the tip, or `null` if the repository has no revisions.
+* `int getRevisionNumber() throws IOException`: revision number of the tip, or -1 if empty.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents.
+
+Differences from hg:: Tip is by revision number, not by wall clock, matching hg (javadoc).
+
+[source,java]
+----
+TipCommand tip = new TipCommand(repo);
+byte[] node = tip.call();
+int rev = tip.getRevisionNumber();
+----
+
+=== Heads
+
+Lists repository heads. Corresponds to `hg heads`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setBranch(String)` |`hg heads <branch>`: the branch's own heads (revisions with no same-branch child). An unknown branch gives an empty result instead of an exception.
+|`setIncludeClosed(boolean)` |`hg heads --closed`: also includes heads closed with `--close-branch`. No effect together with `setTopo(true)`.
+|`setTopo(boolean)` |`hg heads --topo`: pure repository-wide topological leaves (no children anywhere), ignoring branches. Default false.
+|===
+
+Execution:: `List<String> call() throws IOException`. Head node ids in hex, highest revision first. Empty list for an empty repository.
+
+Modes:: With `setBranch`, that branch's heads. Otherwise with `setTopo(true)`, topological leaves. Otherwise (default) every branch's own open heads, as plain `hg heads`.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents.
+
+Differences from hg:: Real hg aborts with `unknown revision '<name>'` for an unknown branch at the CLI layer; this API returns an empty list (javadoc). The default mode reproduces plain `hg heads` (verified against hg 7.2.2 per the javadoc).
+
+[source,java]
+----
+List<String> heads = new HeadsCommand(repo)
+    .setBranch("default")
+    .setIncludeClosed(true)
+    .call();
+----
+
+=== Parents
+
+Returns the working directory's parent revisions. Corresponds to `hg parents`.
+
+Setters:: None.
+
+Execution:: `List<String> call() throws IOException`. Parent node ids in hex, excluding the null parent. Size 1 normally, 2 during a merge, 0 for a brand-new empty repository. Reads the dirstate parents.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. Only reads `repository.getDirstate()`.
+
+Differences from hg:: Source does not state any.
+
+[source,java]
+----
+List<String> parents = new ParentsCommand(repo).call();
+----
+
+=== Identify
+
+Returns a one-line summary of a revision: id, branch, tags and bookmarks. Corresponds to `hg identify` (`hg id`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setRevision(String)` |`hg identify -r REV`: identifies a fixed revision (hex prefix, revision number or `tip`) instead of the working directory's parents. No dirty marker is added.
+|===
+
+Execution:: `String call() throws IOException`. Output of the default (no template) `hg identify`.
+
+Output rules (javadoc)::
+* Id is the 12-digit short node of the working copy parent(s), joined by `+` during a merge, plus a trailing `+` if the working copy is dirty (modified, added or removed files, or an unresolved merge). An empty repository gives `000000000000`.
+* The branch is shown in parentheses only when it is not `default`.
+* Tags and bookmarks of all parents are shown, sorted alphabetically and joined by `/`.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. Without a revision it reads the dirstate parents and runs `StatusCommand` to compute the dirty marker. Tags come from `TagsCommand`, bookmarks from `BookmarkCommand`.
+
+Differences from hg:: Javadoc says the output was verified against hg 7.2.2. With `-r` the branch is that revision's own branch, not the working directory's. An unresolvable revision is treated as the null node and shows `000000000000` (read from the code, not stated in javadoc).
+
+[source,java]
+----
+String id = new IdentifyCommand(repo)
+    .setRevision("tip")
+    .call();
+----
+
+=== Describe
+
+Describes the working directory's parent relative to the nearest ancestor tag. Corresponds to no hg command: the format is Git-describe style (`tag-distance-gShortNode`). The javadoc names no hg equivalent.
+
+Setters:: None.
+
+Execution:: `String call() throws IOException`. Returns `empty-repository` for a repository without commits, the tag name when the current revision is tagged, `tag-distance-g<12 hex>` otherwise, and `v0.0-<distance>-g<12 hex>` when no ancestor tag is found. Tags are read from `.hgtags` in the repository directory; the walk follows first parents.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. Calls `repository.refreshIfChangedOnDisk()` first (a code comment explains it fixes stale reads of a changelog-v2 revlog after an external append). Reads the dirstate parent 1.
+
+Differences from hg:: There is no hg original in the source; the format is borrowed from Git.
+
+[source,java]
+----
+String desc = new DescribeCommand(repo).call();
+----
+
+=== Annotate
+
+Line-by-line blame of a file. Corresponds to `hg annotate`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setPath(String)` |File to annotate. Required for `call()` (`IllegalStateException` if null).
+|`setRevision(int)` |Filelog revision number (not a changelog revision). Default -1 means the last filelog revision.
+|`setPatterns(String...)` |`hg annotate [FILE]...`: files to annotate, used by `callSelected`.
+|`setInclude(String...)` |`hg annotate -I`.
+|`setExclude(String...)` |`hg annotate -X`.
+|`setCwd(String)` |Current directory relative to the repository root, for relative patterns.
+|===
+
+Execution::
+* `List<BlameLine> call() throws IOException`. Each `BlameLine` has `getLineNumber()` (1-based), `getRevision()` (changelog revision that introduced the line), `getAuthor()`, `getContent()`. Returns an empty list if the revision is out of range. Throws `HgRevisionNotFoundException` if the filelog does not exist.
+* `Map<String, List<BlameLine>> callSelected(String changeset) throws IOException`: `hg annotate -r REV [FILE]...` over every file the patterns select (changeset `null` means tip). Needs at least one pattern, else `HgValidationException("invalid arguments")`; a named file missing from the revision gives `HgValidationException`; an unresolvable revision gives `HgRevisionNotFoundException`. Result is in path order.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents.
+
+Differences from hg:: Follows rename and copy boundaries by default, as hg does, through the `copy`/`copyrev` metadata of the filelog's revision 0 (not the changelog sidedata). LFS content is resolved to the real bytes before diffing. A trailing newline does not create an extra empty line, as in hg.
+
+[source,java]
+----
+List<AnnotateCommand.BlameLine> lines = new AnnotateCommand(repo)
+    .setPath("src/Main.java")
+    .call();
+----
+
+=== Grep
+
+Searches a regular expression in file contents. Corresponds to `hg grep`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setQuery(String)` |Regular expression (Java `Pattern`, matched with `find()` per line). Null or empty makes `call()` return an empty list.
+|`setCaseInsensitive(boolean)` |Case-insensitive matching. Default false.
+|`setPatterns(String...)` |`hg grep PATTERN [FILE]...`: only the files these patterns select are searched.
+|`setInclude(String...)` |`hg grep -I`.
+|`setExclude(String...)` |`hg grep -X`.
+|`setCwd(String)` |Current directory relative to the repository root, for relative patterns.
+|`setRevisions(String)` |`hg grep -r REVS`: searches the files as they are in each of the given revisions (a revision set such as `all()` or `0:2`), not the file history. Binary files are skipped. Without it, the whole history of every file is searched.
+|===
+
+Execution:: `List<GrepResult> call() throws IOException`. `GrepResult` has public fields `path`, `hexNode` (file revision node, empty string in `setRevisions` mode), `lineNumber` (1-based), `lineContent`, `linkRevision` (the changeset that introduced the file revision; in `setRevisions` mode the revision searched; -1 if unknown). An invalid regex throws the standard `PatternSyntaxException`.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents.
+
+Differences from hg:: Without `setRevisions` it scans every revision of every tracked filelog (enumerated from `fncache`, or by walking `store/data` when `fncache` is absent, for example with fileindex-v1 or general-v2 repositories). LFS content is read through `HgLfsFactory`.
+
+[source,java]
+----
+List<GrepCommand.GrepResult> hits = new GrepCommand(repo)
+    .setQuery("TODO")
+    .setCaseInsensitive(true)
+    .setRevisions("all()")
+    .call();
+----
+
+=== Cat
+
+Returns the content of a file at a revision. Corresponds to `hg cat`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setFile(String)` |Repository-relative path of the file. Required for `call()`.
+|`setRevision(String)` |Revision (as accepted by `NodeIdUtil.resolveRevision`).
+|`setRevision(NodeId)` |Revision by node id.
+|`setPatterns(String...)` |`hg cat [FILE]...`: files to print, used by `callAll`.
+|`setInclude(String...)` |`hg cat -I`.
+|`setExclude(String...)` |`hg cat -X`.
+|`setCwd(String)` |Current directory relative to the repository root, for relative patterns.
+|===
+
+Execution::
+* `byte[] call() throws IOException`: content of the file. `IllegalStateException` if no file is set; `HgRevisionNotFoundException` if the revision cannot be resolved, the file is not tracked at that revision, or the file version is not in the filelog; `HgCorruptDataException` if the filelog is missing.
+* `Map<String, byte[]> callAll() throws IOException`: path to content for every file of the revision that the patterns select, in path order. Without any pattern it throws `HgValidationException("invalid arguments")`.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. `call()` starts with `repository.clearRevlogCache()`.
+
+Differences from hg:: Content is read through `HgLfsFactory`, so LFS files return the real bytes. With no revision set, `NodeIdUtil.resolveRevision(changelog, null)` decides the default; the source of `CatCommand` does not state what it is.
+
+[source,java]
+----
+byte[] data = new CatCommand(repo)
+    .setFile("README.md")
+    .setRevision("tip")
+    .call();
+----
+
+=== Files
+
+Lists tracked files. Corresponds to `hg files`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setRevision(String)` |Revision to list (number, hex id or prefix, `tip`). When unset, the working copy's tracked set from the dirstate is listed.
+|`setRevision(NodeId)` |Revision by node id.
+|`setTreeFilter(HgTreeFilter)` |Explicit tree filter on paths. Null resets to `HgTreeFilter.ALL`.
+|`setPattern(String...)` |Glob patterns with directory-prefix semantics (through `SparsePathFilter`). A single `set:EXPR` argument is treated as a fileset.
+|`setFileset(String)` |`hg files "set:EXPR"`: fileset expression (`MiniFileset` syntax plus `lfs()`).
+|`setPatterns(String...)` |`hg files [FILE]...`: patterns (`relpath` by default), `kind:pattern` and `set:EXPRESSION`.
+|`setInclude(String...)` |`hg files -I`.
+|`setExclude(String...)` |`hg files -X`.
+|`setCwd(String)` |Current directory relative to the repository root, for relative patterns.
+|===
+
+Execution:: `List<String> call() throws IOException`. Forward-slash paths sorted with `NodeIdUtil.UTF8_STRING_COMPARATOR`. `HgRevisionNotFoundException` if the revision cannot be resolved; an empty list for a repository without commits.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. Without a revision it reads the dirstate entries and excludes state `r` (removed); added files are included.
+
+Differences from hg:: The javadoc says the default describes the working copy, not the tip commit, as real `hg files` does.
+
+[source,java]
+----
+List<String> files = new FilesCommand(repo)
+    .setRevision("tip")
+    .setPattern("src/**")
+    .call();
+----
+
+=== Locate
+
+Lists files under version control whose names match a pattern. Corresponds to `hg locate`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setPattern(String)` |Single `relglob` pattern: an unrooted glob matched in any directory. Supports `*`, `**` and `?` only. Null or empty means no filtering.
+|`setPatterns(String...)` |`hg locate [PATTERN]...`: patterns of any kind; a bare pattern is `relglob`.
+|`setInclude(String...)` |`hg locate -I`.
+|`setExclude(String...)` |`hg locate -X`.
+|`setCwd(String)` |Current directory relative to the repository root, for relative patterns.
+|`setRevision(String)` |Revision whose manifest is searched. When unset or empty, the dirstate is searched.
+|===
+
+Execution:: `List<String> call() throws IOException`. Sorted with `NodeIdUtil.UTF8_STRING_COMPARATOR`. `HgRevisionNotFoundException` if the revision cannot be resolved.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. Starts with `repository.clearRevlogCache()`. Without a revision it reads all dirstate entries.
+
+Differences from hg:: Documented in the javadoc: unlike `hg files`, the working copy search includes files in state `r` (removed but not committed), as hg's `locate` does. `[...]` character classes and `{a,b}` alternation are not translated and are treated as literal characters.
+
+[source,java]
+----
+List<String> found = new LocateCommand(repo)
+    .setPattern("*.txt")
+    .setRevision("tip")
+    .call();
+----
+
+=== Manifest
+
+Lists the files of a revision's manifest with node ids and flags. Corresponds to `hg manifest`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setRevision(String)` |Revision (number, hex id or prefix, `tip`). When unset or empty, the working directory's first parent is used.
+|`setDebug(boolean)` |Advisory flag for `--debug` style rendering. It does not change what `call()` returns. `isDebug()` reads it back.
+|===
+
+Execution:: `List<ManifestEntry> call() throws IOException`. Each `ManifestEntry` has `getPath()`, `getNodeHex()` (40 hex), `isExecutable()`, `isSymlink()`. Empty list for a repository with no commits or with no checked-out revision.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. Without a revision it reads dirstate parent 1. Reads through `ManifestTreeIterator`.
+
+Differences from hg:: Returns data instead of pre-formatted text; `--debug` rendering is left to the caller. An empty repository gives an empty result, never an error, as in hg (javadoc).
+
+[source,java]
+----
+List<ManifestCommand.ManifestEntry> entries = new ManifestCommand(repo)
+    .setRevision("0")
+    .call();
+----
+
+=== Tree
+
+Lists all files of a revision with node ids and mode. Corresponds to no hg command: the javadoc says only that it lists the file structure at a revision.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setRevision(int)` |Changelog revision number. Default -1 means the tip.
+|`setNodeId(byte[])` |Revision by node id. Takes precedence over `setRevision`.
+|`setNodeId(NodeId)` |Same, with a `NodeId`.
+|===
+
+Execution:: `List<TreeEntry> call() throws IOException`. Each `TreeEntry` has `getPath()`, `getNodeId()` (hex), `getNode()`, `getMode()` (`0644` normal, `0755` executable, `0120000` symlink). Returns an empty list if there is no changelog, or the revision is out of range.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents.
+
+Differences from hg:: No hg original is named in the source.
+
+[source,java]
+----
+List<TreeCommand.TreeEntry> tree = new TreeCommand(repo)
+    .setRevision(0)
+    .call();
+----
+
+=== Revset
+
+Evaluates a revset expression and returns matching changesets. The javadoc names no specific hg command; it mirrors hg's revset queries (for example `hg log -r`), which is an inference, not stated in the source.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setExpression(String)` |Revset expression, for example `all()` or `parents(tip)`. Required: `call()` throws `IllegalArgumentException` if null or empty.
+|===
+
+Execution:: `List<String> call() throws IOException`. Node ids in hex. `all()`/`all` and `tip` are handled directly; for `parents(X)` the symbolic X is first resolved to a node; anything else goes to `HgRevsetEngine.query`. If the engine throws, the expression is tried as a single revision identifier, and an empty list results if it does not resolve.
+
+Locks and dirstate:: No locks, no changing_files/changing_parents. Calls `repository.refreshIfChangedOnDisk()` first.
+
+Differences from hg:: The engine failure fallback to a single revision lookup is specific to this class. The supported revset language is that of `HgRevsetEngine`, which was not read for this reference.
+
+[source,java]
+----
+List<String> hexes = new RevsetCommand(repo)
+    .setExpression("parents(tip)")
+    .call();
+----
+
+=== Bisect
+
+Binary search over history: picks the next revision to test between a good and a bad revision and checks it out. Corresponds to `hg bisect`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setGood(byte[])` |Node id of the known good revision. Required.
+|`setBad(byte[])` |Node id of the known bad revision. Required.
+|===
+
+Execution:: `byte[] next() throws IOException, HgLockException`. Returns the node id of the next candidate. Throws `IllegalStateException` if good or bad is unset; `IOException` ("Bisect error: ...") if a node is not in the changelog, good equals bad, or no topological path exists.
+
+Locks and dirstate::
+* Takes `repository.lockWorkingCopy(timeout)` only (no store lock), with `timeout = repository.resolvePushLockTimeoutMs()`, before the first repository read; released when the command ends.
+* Then calls `refreshIfChangedOnDisk()`, writes the candidate's files into the working directory, and sets the dirstate parents with `repository.changingParents(() -> ...)` (parent 1 = candidate, parent 2 = null), followed by `repository.setBranch(...)` and `clearRevlogCache()`.
+* `changingFiles` and `openChangingFiles` are not called.
+
+Differences from hg:: Candidate selection mirrors `hbisect.bisect()` (best split of the remaining DAG, with the root-side endpoint excluded). The javadoc says hg's "poisoning" optimization is omitted because it never changes the result. Only `next()` exists; the source of this class has no good/bad/skip/reset state handling.
+
+[source,java]
+----
+byte[] next = new BisectCommand(repo)
+    .setGood(goodNode)
+    .setBad(badNode)
+    .next();
+----
+
+=== SidedataChangedFiles
+
+Reads the stored changed-files sidedata record of a committed changeset. Corresponds to `hg debugchangedfiles REV` (without `--compute`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setRevision(int)` |Changelog revision number to inspect (0-based). Required; the default -1 makes `call()` throw `IllegalStateException`.
+|===
+
+Execution:: `ChangingFiles call() throws IOException`. Decodes the `SD_FILES` sidedata of the revision. `IllegalArgumentException` if the revision does not exist. Returns `ChangingFiles.empty()` when the repository has no copies-sidedata (plain v1 changelog, or v2 without the requirement), as hg does.
+
+Locks and dirstate:: No locks. This is the committed-history counterpart of `CopyCommand` and uses neither the dirstate nor changing_files/changing_parents. Calls `repository.refreshIfChangedOnDisk()` first.
+
+Differences from hg:: Works only on repositories whose changelog was written with copies-sidedata support (changelog-v2 and the `exp-copies-sidedata-changeset` requirement). Reads stored data only and never recomputes.
+
+[source,java]
+----
+ChangingFiles files = new SidedataChangedFilesCommand(repo)
+    .setRevision(3)
+    .call();
+----

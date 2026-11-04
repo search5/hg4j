@@ -67,25 +67,59 @@ public class BackoutCommand {
     private String message;
     private String author = "hg4j";
 
+    /**
+     * Creates a backout command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public BackoutCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision to back out ({@code hg backout -r REV}). Required.
+     *
+     * @param revision a revision identifier understood by the revision resolver
+     * @return {@code this}
+     */
     public BackoutCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Sets the commit message of the backout commit ({@code hg backout -m}). When {@code null} or empty the message is {@code Backed out changeset} followed by the 12-digit short hash of the backed-out revision.
+     *
+     * @param message the commit message; may be {@code null}
+     * @return {@code this}
+     */
     public BackoutCommand setMessage(String message) {
         this.message = message;
         return this;
     }
 
+    /**
+     * Sets the author of the backout commit ({@code hg backout -u}). The default is {@code hg4j}.
+     *
+     * @param author the user string
+     * @return {@code this}
+     */
     public BackoutCommand setAuthor(String author) {
         this.author = author;
         return this;
     }
 
+    /**
+     * Backs out the revision set with {@link #setRevision(String)}: applies the inverse of its change to the working copy and commits the result as a new changeset.
+     * <p>Takes the working copy lock and the store lock, updates the working copy files and dirstate, then commits through {@link CommitCommand}.
+     *
+     * @return the node id (20 bytes) of the new backout changeset
+     * @throws IllegalStateException if no revision was set
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the revision is unknown, is a merge or a root changeset, is not an ancestor of the working copy parent, or the working copy has uncommitted changes or an uncommitted merge
+     * @throws HgMergeConflictException if the inverse change conflicts with later changes; nothing is committed and the conflict state is left for {@link ResolveCommand}
+     * @throws IOException if reading or writing the repository fails
+     * @throws HgLockException if a lock cannot be acquired
+     */
     public byte[] call() throws IOException, HgLockException, HgMergeConflictException {
         if (revision == null || revision.isEmpty()) {
             throw new IllegalStateException("Revision to back out must be specified.");

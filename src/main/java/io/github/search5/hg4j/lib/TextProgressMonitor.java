@@ -14,6 +14,10 @@ public class TextProgressMonitor implements ProgressMonitor {
     private int completed = 0;
     private boolean cancelled = false;
 
+    /**
+     * Creates a monitor that prints one line per event to {@code writer}, flushing after each line. The writer is not closed by this class.
+     * @param writer where the progress lines go; must not be {@code null}
+     */
     public TextProgressMonitor(Writer writer) {
         this.out = new PrintWriter(writer);
     }
@@ -61,6 +65,10 @@ public class TextProgressMonitor implements ProgressMonitor {
         return cancelled;
     }
 
+    /**
+     * Requests cancellation: {@link #isCancelled()} returns {@code true} from now on, until the next {@link #start(String, int)}.
+     * Safe to call from another thread than the one doing the work.
+     */
     public synchronized void cancel() {
         this.cancelled = true;
     }

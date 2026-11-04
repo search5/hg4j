@@ -37,15 +37,29 @@ public class BranchesCommand {
     private final HgRepository repository;
     private boolean includeClosed = false;
 
+    /**
+     * Creates a branches command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public BranchesCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * {@code hg branches -c}: also list branches whose heads are all closed. Default {@code false}.
+     *
+     * @param includeClosed {@code true} to include closed branches
+     * @return {@code this}
+     */
     public BranchesCommand setIncludeClosed(boolean includeClosed) {
         this.includeClosed = includeClosed;
         return this;
     }
 
+    /**
+     * One entry of the branch listing: a branch with its reported head. Immutable; instances are created by {@link BranchesCommand#call()}.
+     */
     public static class BranchHead {
         private final String branch;
         private final byte[] node;
@@ -61,18 +75,24 @@ public class BranchesCommand {
             this.active = active;
         }
 
+        /** @return the branch name */
         public String getBranch() {
             return branch;
         }
 
+        /**
+         * @return the 20-byte binary node id of the branch head (the highest-numbered open head, or the highest closed head if all are closed)
+         */
         public byte[] getNode() {
             return node;
         }
 
+        /** @return the changelog revision number of the branch head */
         public int getRev() {
             return rev;
         }
 
+        /** @return {@code true} if every head of the branch closes it */
         public boolean isClosed() {
             return closed;
         }
@@ -87,6 +107,12 @@ public class BranchesCommand {
         }
     }
 
+    /**
+     * Lists the named branches of the repository ({@code hg branches}). Takes no lock and writes nothing.
+     *
+     * @return one entry per branch, sorted as {@code hg branches} sorts: active branches first, then by descending head revision, then by descending name; empty for an empty repository. Branches with only closed heads appear only after {@link #setIncludeClosed(boolean)}.
+     * @throws IOException if the changelog cannot be read
+     */
     public List<BranchHead> call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

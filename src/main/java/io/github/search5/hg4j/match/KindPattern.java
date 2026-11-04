@@ -6,6 +6,12 @@ package io.github.search5.hg4j.match;
  */
 public record KindPattern(String kind, String pattern, String source) {
 
+    /**
+     * Creates a pattern given directly, not read from a pattern file.
+     *
+     * @param kind the pattern kind, for example {@code glob} or {@code re}
+     * @param pattern the pattern text without the kind prefix
+     */
     public KindPattern(String kind, String pattern) {
         this(kind, pattern, "");
     }

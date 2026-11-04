@@ -9,10 +9,21 @@ import java.io.IOException;
 public class HgValidationException extends IOException {
     private static final long serialVersionUID = 1L;
 
+    /**
+     * Creates the exception with a message.
+     *
+     * @param message description of the failed check
+     */
     public HgValidationException(String message) {
         super(message);
     }
 
+    /**
+     * Creates the exception with a message and an underlying cause.
+     *
+     * @param message description of the failed check
+     * @param cause the underlying failure; may be {@code null}
+     */
     public HgValidationException(String message, Throwable cause) {
         super(message, cause);
     }

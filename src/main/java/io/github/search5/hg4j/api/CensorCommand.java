@@ -47,6 +47,12 @@ public final class CensorCommand {
     private String tombstone = "";
     private boolean checkHeads = true;
 
+    /**
+     * Creates a censor command for the given repository.
+     *
+     * @param repository the repository whose filelog is rewritten
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public CensorCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -54,11 +60,23 @@ public final class CensorCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the file whose revision is censored. Required.
+     *
+     * @param path repository-relative path of the tracked file
+     * @return {@code this}
+     */
     public CensorCommand setFile(String path) {
         this.path = path;
         return this;
     }
 
+    /**
+     * Sets the file revision to censor, identified by its filelog node (not by a changeset revision). Required.
+     *
+     * @param nodeHex the full 40-digit hex node id of the file revision in the file's filelog
+     * @return {@code this}
+     */
     public CensorCommand setRevision(String nodeHex) {
         this.nodeHex = nodeHex;
         return this;
@@ -82,6 +100,16 @@ public final class CensorCommand {
         return this;
     }
 
+    /**
+     * Replaces the selected file revision in its filelog with a censor tombstone. This rewrites the filelog in place and clears the revlog cache.
+     * <p>Takes the working copy lock and the store lock. Unless disabled with {@link #setCheckHeads(boolean)}, refuses to censor a revision that is still the live content of the file at a repository head or at a working directory parent.
+     *
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the file or the revision was not set, or the revision is live at a head or in the working directory
+     * @throws HgRepositoryNotFoundException if the file has no filelog
+     * @throws HgRevisionNotFoundException if the revision is not in the filelog
+     * @throws IOException if the filelog cannot be read or rewritten
+     * @throws io.github.search5.hg4j.errors.HgLockException if a lock cannot be acquired
+     */
     public void call() throws IOException, io.github.search5.hg4j.errors.HgLockException {
         if (path == null || path.isEmpty()) {
             throw new HgValidationException("File path is required for censor");

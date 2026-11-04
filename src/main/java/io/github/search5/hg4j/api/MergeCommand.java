@@ -47,24 +47,43 @@ public class MergeCommand {
     private final List<HgHook> postMergeHooks = new ArrayList<>();
 
 
+    /**
+     * Outcome of {@link MergeCommand#call()}.
+     */
     public static class MergeResult {
         private final boolean conflicted;
         private final List<String> conflicts;
 
+        /**
+         * Creates a merge result.
+         * @param conflicted whether at least one file has unresolved conflicts
+         * @param conflicts repository-relative paths of the conflicted files
+         */
         public MergeResult(boolean conflicted, List<String> conflicts) {
             this.conflicted = conflicted;
             this.conflicts = conflicts;
         }
 
+        /**
+         * Tells whether the merge left unresolved conflicts.
+         * @return {@code true} if there are conflicted files; their working copy contents then contain conflict markers
+         */
         public boolean isConflicted() {
             return conflicted;
         }
 
+        /**
+         * Returns the conflicted files.
+         * @return repository-relative paths of the files that could not be merged cleanly; empty when the merge was clean
+         */
         public List<String> getConflicts() {
             return conflicts;
         }
     }
 
+    /**
+     * The common ancestor used for a three-way merge: either an existing revision, or a virtual base synthesized by merging several common-ancestor candidates (criss-cross merge). The type is intended for internal use by the merge engine; its fields and methods are not accessible outside the package.
+     */
     public static class MergeBase {
         final int rev; // -1 if virtual
         final Map<String, String> manifest;
@@ -95,10 +114,21 @@ public class MergeCommand {
         }
     }
 
+    /**
+     * Creates a merge command for the given repository.
+     * @param repository the repository whose working copy is merged into
+     */
     public MergeCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Registers a hook that runs before the merge touches the working copy, with the working copy lock held.
+     * <p>The hook receives a context map with the keys {@code "repository"}, {@code "targetRev"} (the revision number set, or {@code -1}) and {@code "targetNodeId"} (the node id bytes set, or {@code null}).
+     * If the hook returns {@code false} the merge is aborted with an {@link io.github.search5.hg4j.errors.HgValidationException}.</p>
+     * @param hook the hook to add; {@code null} is ignored
+     * @return {@code this}
+     */
     public MergeCommand registerPreMergeHook(HgHook hook) {
         if (hook != null) {
             preMergeHooks.add(hook);
@@ -106,6 +136,13 @@ public class MergeCommand {
         return this;
     }
 
+    /**
+     * Registers a hook that runs after the merge has been performed (while the dirstate is still being updated).
+     * <p>The hook receives a context map with the keys {@code "conflicted"} ({@link Boolean}), {@code "conflicts"} (a list of paths) and {@code "repository"}.
+     * Its return value is ignored and an exception it throws is logged as a warning, not propagated.</p>
+     * @param hook the hook to add; {@code null} is ignored
+     * @return {@code this}
+     */
     public MergeCommand registerPostMergeHook(HgHook hook) {
         if (hook != null) {
             postMergeHooks.add(hook);
@@ -113,16 +150,31 @@ public class MergeCommand {
         return this;
     }
 
+    /**
+     * Sets the revision to merge, by node id. It takes precedence over {@link #setRevision(int)}.
+     * @param targetNodeId the 20-byte binary node id of the changeset to merge in, or {@code null} to clear it
+     * @return {@code this}
+     */
     public MergeCommand setNodeId(byte[] targetNodeId) {
         this.targetNodeId = targetNodeId;
         return this;
     }
 
+    /**
+     * Sets the revision to merge, by node id. It takes precedence over {@link #setRevision(int)}.
+     * @param targetNodeId the node id of the changeset to merge in, or {@code null} to clear it
+     * @return {@code this}
+     */
     public MergeCommand setNodeId(NodeId targetNodeId) {
         this.targetNodeId = targetNodeId != null ? targetNodeId.getBytes() : null;
         return this;
     }
 
+    /**
+     * Sets the revision to merge, by local revision number. It is used only when no node id was set. The default is {@code -1} (not set).
+     * @param targetRev the changelog revision number to merge in
+     * @return {@code this}
+     */
     public MergeCommand setRevision(int targetRev) {
         this.targetRev = targetRev;
         return this;
@@ -228,6 +280,18 @@ public class MergeCommand {
         return new MergeBase(virtualManifest, virtualFileContents);
     }
 
+    /**
+     * Merges the target revision into the working copy parent, with the working copy lock held.
+     * <p>If the target is the current parent, or an ancestor of it, nothing changes. If the current parent is an ancestor of the target, the working copy is advanced to the target. Otherwise a three-way merge is done file by file against the common ancestor; conflicting files are written with conflict markers and recorded in {@code .hg/merge/state2}, and the dirstate gets the target as its second parent.</p>
+     * <p>Conflicts are reported in the result, not as an exception. Pre-merge hooks run first and post-merge hooks last.</p>
+     * @return the merge outcome
+     * @throws io.github.search5.hg4j.errors.HgValidationException if a pre-merge hook rejects the merge
+     * @throws IllegalStateException if the repository has no commits
+     * @throws IllegalArgumentException if neither a node id nor a valid revision number was set
+     * @throws io.github.search5.hg4j.errors.HgRevisionNotFoundException if the target or the current parent is not in the changelog, or no common ancestor exists
+     * @throws IOException if reading the repository or writing the working copy fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public MergeResult call() throws IOException, HgLockException {
         // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
         try (HgLock wlock = repository.lockWorkingCopy()) {
@@ -502,6 +566,14 @@ public class MergeCommand {
         return messages;
     }
 
+    /**
+     * Aborts the merge in progress and restores the working copy and dirstate to the first parent ({@code hg merge --abort}). The messages printed are available from {@link #getMessages()}.
+     * @throws io.github.search5.hg4j.errors.HgValidationException if no merge is in progress (the dirstate has no second parent)
+     * @throws IllegalStateException if the repository has no first parent
+     * @throws io.github.search5.hg4j.errors.HgRevisionNotFoundException if the revision to go back to is not in the changelog
+     * @throws IOException if reading or writing the repository fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public void abort() throws IOException, HgLockException {
         messages.clear();
         repository.clearRevlogCache();

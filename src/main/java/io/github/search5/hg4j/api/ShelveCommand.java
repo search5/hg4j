@@ -58,10 +58,20 @@ public class ShelveCommand {
     private String name = "default";
     private boolean unshelve = false;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to shelve in; must not be {@code null}
+     */
     public ShelveCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the name of the shelf to create or restore.
+     * @param name the shelf name; {@code null} or empty is ignored, leaving the current value (default
+     *         {@code default})
+     * @return {@code this}
+     */
     public ShelveCommand setName(String name) {
         if (name != null && !name.isEmpty()) {
             this.name = name;
@@ -69,6 +79,12 @@ public class ShelveCommand {
         return this;
     }
 
+    /**
+     * Selects unshelving instead of shelving.
+     * @param unshelve {@code true} to restore the shelf (like {@code hg unshelve}); default {@code false} shelves the
+     *         pending changes
+     * @return {@code this}
+     */
     public ShelveCommand setUnshelve(boolean unshelve) {
         this.unshelve = unshelve;
         return this;
@@ -202,6 +218,21 @@ public class ShelveCommand {
         }
     }
 
+    /**
+     * Runs the configured operation.
+     * <p>
+     * With {@link #setDelete} or {@link #setCleanup} the named shelves (or all of them) are moved to the backup
+     * directory. Otherwise, with {@link #setUnshelve} the shelf called {@link #setName} (default {@code default}) is
+     * restored into the working copy, and without it the pending changes are shelved under that name. Shelve files
+     * live in {@code .hg/shelved}. Locks: the working copy lock, plus the store lock where the repository history is
+     * touched.
+     * @throws IOException if reading or writing repository or shelf files fails, or an operation is refused
+     *         (for example a shelf that does not exist, no shelf names given to delete, or an unshelve onto a working
+     *         copy with pending changes or an unresolved merge)
+     * @throws HgLockException if a lock cannot be acquired
+     * @throws HgMergeConflictException if unshelving conflicts with the working copy; the unshelve is left in
+     *         progress and can be finished or abandoned with {@code unshelveContinue()} or {@code unshelveAbort()}
+     */
     public void call() throws IOException, HgLockException, HgMergeConflictException {
         if (delete || cleanup) {
             deleteOrCleanup();

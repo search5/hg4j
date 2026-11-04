@@ -37,6 +37,12 @@ public final class AmendCommand {
     private String message;
     private Boolean closeBranch;
 
+    /**
+     * Creates an amend command for the given repository.
+     *
+     * @param repository the repository whose tip commit is amended
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public AmendCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -44,11 +50,23 @@ public final class AmendCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the author of the amended commit ({@code hg commit --amend -u}). When not set, the amended-away commit's author is reused.
+     *
+     * @param author the user string, for example {@code Name <mail>}; {@code null} keeps the original author
+     * @return {@code this}
+     */
     public AmendCommand setAuthor(String author) {
         this.author = author;
         return this;
     }
 
+    /**
+     * Sets the commit message of the amended commit ({@code hg commit --amend -m}). When not set, the amended-away commit's message is reused.
+     *
+     * @param message the new message; {@code null} keeps the original message
+     * @return {@code this}
+     */
     public AmendCommand setMessage(String message) {
         this.message = message;
         return this;

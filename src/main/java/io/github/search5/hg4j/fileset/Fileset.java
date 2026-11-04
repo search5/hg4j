@@ -24,6 +24,15 @@ public final class Fileset {
     /** A fileset predicate such as {@code size(...)}: builds a matcher from its argument tree. */
     @FunctionalInterface
     public interface PredicateImpl {
+        /**
+         * Builds the matcher of one predicate call.
+         *
+         * @param mctx the match context the predicate is evaluated in
+         * @param argument the argument tree of the call, a {@link Tree}, a {@link String} or {@code null} when the predicate was written without arguments
+         * @return the matcher for the predicate
+         * @throws IOException if reading the context fails
+         * @throws FilesetParseException if the arguments are not valid for the predicate
+         */
         Matcher apply(MatchContext mctx, Object argument) throws IOException;
     }
 
@@ -98,10 +107,20 @@ public final class Fileset {
             return new MatchContext(newBase, newCtx, cwd, narrowedBy, Set.of());
         }
 
+        /**
+         * Returns the context whose files the subtree is evaluated over.
+         *
+         * @return the context, never {@code null}
+         */
         public FilesetContext ctx() {
             return ctx;
         }
 
+        /**
+         * Returns the current directory patterns are resolved against.
+         *
+         * @return the directory relative to the repository root, {@code ""} for the root
+         */
         public String cwd() {
             return cwd;
         }

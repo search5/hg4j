@@ -24,12 +24,34 @@ import java.util.Map;
 public class SummaryCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to summarize; must not be {@code null}
+     */
     public SummaryCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * One parent of the working directory.
+     * @param revision the local revision number, or -1 if the changelog is missing or the node is unknown
+     * @param node the 40-character hex node id
+     * @param description the full commit message, or an empty string if it cannot be read
+     */
     public record ParentInfo(int revision, String node, String description) {}
 
+    /**
+     * The overview returned by {@link #call()}.
+     * @param parents the working directory parents (none, one, or two during a merge)
+     * @param branch the current branch name
+     * @param activeBookmark the active bookmark, or {@code null} if none
+     * @param modified the number of modified files
+     * @param added the number of added files
+     * @param removed the number of removed files
+     * @param unknown the number of untracked files
+     * @param mergeInProgress {@code true} if there are two parents
+     * @param currentPhase the phase of the first parent ({@code PUBLIC} if there is none)
+     */
     public record SummaryInfo(
             List<ParentInfo> parents,
             String branch,
@@ -41,6 +63,14 @@ public class SummaryCommand {
             boolean mergeInProgress,
             PhaseRoots.Phase currentPhase) {}
 
+    /**
+     * Collects the summary of the working copy.
+     * <p>
+     * No lock is taken. Counts come from {@link StatusCommand}; the phase is that of the first parent, or public if it
+     * cannot be determined or there is no parent.
+     * @return the summary; never {@code null}
+     * @throws IOException if reading the repository fails
+     */
     public SummaryInfo call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

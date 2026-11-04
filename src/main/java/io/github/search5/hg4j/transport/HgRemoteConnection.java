@@ -67,7 +67,13 @@ public interface HgRemoteConnection extends Closeable {
      * io.github.search5.hg4j.treewalk.HgTreeFilter.NarrowPattern#toSpecString()}.
      */
     final class NarrowScope {
+        /**
+         * Include patterns in {@code kind:path} form; never null (an empty list when none were given).
+         */
         public final List<String> includePatterns;
+        /**
+         * Exclude patterns in {@code kind:path} form; never null (an empty list when none were given).
+         */
         public final List<String> excludePatterns;
 
         /**
@@ -77,10 +83,21 @@ public interface HgRemoteConnection extends Closeable {
          */
         public final String storeShapeWithFingerprint;
 
+        /**
+         * Creates a scope without a store shape.
+         * @param includePatterns include patterns in {@code kind:path} form; null is treated as empty
+         * @param excludePatterns exclude patterns in {@code kind:path} form; null is treated as empty
+         */
         public NarrowScope(List<String> includePatterns, List<String> excludePatterns) {
             this(includePatterns, excludePatterns, null);
         }
 
+        /**
+         * Creates a scope.
+         * @param includePatterns include patterns in {@code kind:path} form; null is treated as empty
+         * @param excludePatterns exclude patterns in {@code kind:path} form; null is treated as empty
+         * @param storeShapeWithFingerprint {@code names:fingerprint} of a store shape, or null for an ordinary narrow request
+         */
         public NarrowScope(List<String> includePatterns, List<String> excludePatterns, String storeShapeWithFingerprint) {
             this.includePatterns = includePatterns != null ? includePatterns : Collections.emptyList();
             this.excludePatterns = excludePatterns != null ? excludePatterns : Collections.emptyList();

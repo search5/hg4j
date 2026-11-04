@@ -69,6 +69,12 @@ public class DiffCommand {
         return this;
     }
 
+    /**
+     * Restricts the diff to paths accepted by the filter, in addition to any pattern selection.
+     *
+     * @param treeFilter the path filter; {@code null} is ignored and the previous filter (initially accept-all) stays
+     * @return {@code this}
+     */
     public DiffCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -76,35 +82,64 @@ public class DiffCommand {
         return this;
     }
 
+    /** How a file differs between the two compared revisions. */
     public enum ChangeType {
         ADD, MODIFY, DELETE
     }
 
+    /** The diff of one file between the two compared revisions. Immutable. */
     public static class DiffEntry {
         private final String path;
         private final ChangeType changeType;
         private final String diffContent;
 
+        /**
+         * Creates a diff entry.
+         *
+         * @param path repository-relative path of the file
+         * @param changeType how the file changed
+         * @param diffContent the diff text of the file
+         */
         public DiffEntry(String path, ChangeType changeType, String diffContent) {
             this.path = path;
             this.changeType = changeType;
             this.diffContent = diffContent;
         }
 
+        /** @return the repository-relative path of the file */
         public String getPath() { return path; }
+        /** @return whether the file was added, modified or deleted */
         public ChangeType getChangeType() { return changeType; }
+        /** @return the diff text of the file */
         public String getDiffContent() { return diffContent; }
     }
 
+    /**
+     * Creates a diff command for the given repository. Without further settings, {@link #call()} diffs the tip against its first parent.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public DiffCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the older side of the comparison ({@code hg diff -r OLD:NEW}) by changelog revision number. When not set, the first parent of the new revision is used.
+     *
+     * @param oldRevision changelog revision number; {@code -1} compares against an empty manifest
+     * @return {@code this}
+     */
     public DiffCommand setOldRevision(int oldRevision) {
         this.oldRevision = oldRevision;
         return this;
     }
 
+    /**
+     * Sets the older side of the comparison by node id. When {@code null}, the first parent of the new revision is used.
+     *
+     * @param oldRevisionNode the changeset node; if it is not found in the changelog, the old side is treated as an empty manifest
+     * @return {@code this}
+     */
     public DiffCommand setOldRevision(NodeId oldRevisionNode) {
         if (oldRevisionNode == null) {
             this.oldRevision = -2;
@@ -121,11 +156,23 @@ public class DiffCommand {
         return this;
     }
 
+    /**
+     * Sets the newer side of the comparison by changelog revision number. When not set, the tip is used.
+     *
+     * @param newRevision changelog revision number; {@code -1} compares against an empty manifest
+     * @return {@code this}
+     */
     public DiffCommand setNewRevision(int newRevision) {
         this.newRevision = newRevision;
         return this;
     }
 
+    /**
+     * Sets the newer side of the comparison by node id. When {@code null}, the tip is used.
+     *
+     * @param newRevisionNode the changeset node; if it is not found in the changelog, the new side is treated as an empty manifest
+     * @return {@code this}
+     */
     public DiffCommand setNewRevision(NodeId newRevisionNode) {
         if (newRevisionNode == null) {
             this.newRevision = NOT_SET;
@@ -142,6 +189,12 @@ public class DiffCommand {
         return this;
     }
 
+    /**
+     * Compares the manifests of two committed revisions and returns one entry per differing file that passes the tree filter and the pattern selection. The working copy is not compared. Takes no lock and writes nothing.
+     *
+     * @return the differing files; empty when the repository has no changesets
+     * @throws IOException if the changelog, a manifest or a filelog cannot be read
+     */
     public List<DiffEntry> call() throws IOException {
         // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
         // changelog-v2 revlog after an external process appended a revision -- see

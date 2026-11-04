@@ -10,6 +10,13 @@ import java.util.regex.Pattern;
 public class SparsePathFilter implements PathFilter {
     private final List<Pattern> patterns = new ArrayList<>();
 
+    /**
+     * Creates a filter from glob patterns. Null or empty patterns are ignored.
+     * <p>{@code *} matches within one path segment, {@code **} matches across segments, and {@code ?}
+     * matches any single character including {@code /}. A pattern that does not end in {@code *} also
+     * matches everything below it, so it can name a directory.
+     * @param globPatterns the patterns, or null; if no usable pattern remains the filter accepts every path
+     */
     public SparsePathFilter(String... globPatterns) {
         if (globPatterns != null) {
             for (String glob : globPatterns) {
@@ -20,6 +27,11 @@ public class SparsePathFilter implements PathFilter {
         }
     }
 
+    /**
+     * Creates a filter from glob patterns, with the same semantics as {@link #SparsePathFilter(String...)}.
+     * @param globPatterns the patterns, or null; null or empty elements are ignored. If no usable pattern
+     *        remains the filter accepts every path
+     */
     public SparsePathFilter(List<String> globPatterns) {
         if (globPatterns != null) {
             for (String glob : globPatterns) {

@@ -1,0 +1,496 @@
+== Transports
+
+Commands that talk to another repository open a connection through `HgRemoteConnectionFactory.createConnection(url, config)`. The factory picks the first registered `TransportProtocol` that can handle the address. Custom protocols added with `HgRemoteConnectionFactory.register(...)` are tried first.
+
+[cols="2,5"]
+|===
+|Address form |Client class and behavior
+
+|`ssh://...`
+|`HgSshClient`: Mercurial SSH wire protocol. `user[:pass]@host[:port]` is parsed from the address (default port 22). Key or password credentials come from a `CredentialsProvider` (`SshKeyCredentialsProvider` for key path and passphrase, `UsernamePasswordCredentialsProvider` for user and password). SSH wire protocol v2 is off unless the JVM property `hg4j.ssh.v2.enabled=true` is set.
+
+|`file://...` or a path of an existing local directory
+|`HgLocalClient`: reads and writes the other repository directly in Java, without running an `hg` process.
+
+|`http://...` or `https://...`
+|`HgRemoteClient`: HTTP wire protocol v1. Credentials may be embedded as `https://user:pass@host/path`.
+
+|anything else
+|Falls back to `HgRemoteClient`.
+|===
+
+=== Authentication for HTTP(S)
+
+* Credentials in the address, or set through `setCredentialsProvider(...)` on a command that offers it, are used for HTTP Basic authentication. As in Mercurial, they are sent only after the server answered 401 with a Basic challenge, and then on later requests at once.
+* When the address carries no password, the `[auth]` section is consulted (`HgAuthConfig`). Entries are `<group>.<setting> = value` with the settings `prefix`, `username`, `password` and `schemes` (default `https`). The group with the longest matching prefix wins, a group that names a user must match the user of the address, and `*` as a prefix matches every host. `cert` and `key` are not used.
+* The `[auth]` section is read from the user level files first (`HGRCPATH` if set, otherwise `/etc/mercurial/hgrc`, `~/.hgrc` and `~/.config/hg/hgrc`) and then from the repository configuration, which overrides it.
+* Only commands that call `createConnection(url, repository.getConfig())` apply `[auth]`. This holds for Fetch, Pull, Push, Incoming and Outgoing. The command classes below that expose `setCredentialsProvider` are Fetch and Pull. Commands without that setter rely on credentials in the address or on `[auth]`.
+
+Locking terms used below: `lockWorkingCopy()` is the working copy lock (`wlock`), `lockStore()` is the store lock (`lock`). `changingParents(...)` / `openChangingParents` is the dirstate `changing_parents` context.
+
+=== Clone
+
+Clones a repository into a new directory. Corresponds to `hg clone`.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setSource(String)`
+|Source address (required).
+
+|`setDirectory(File)`
+|Destination directory (required, must be empty or absent).
+
+|`setStream(Boolean)`
+|`hg clone --stream` / `--no-stream`. `null` follows the remote's `stream-preferred`.
+
+|`setPull(boolean)`
+|`hg clone --pull`: always pull the changesets, even from a local source. Without it a local source is cloned by copying its store, hard linked where possible.
+
+|`setProgressMonitor(ProgressMonitor)`
+|Progress receiver; a `null` argument is ignored.
+|===
+
+Also public: `getMessages()` returns what the clone reported (for example `streaming all changes`).
+
+Execution: `HgRepository call() throws IOException, HgLockException`. Returns the new repository. Throws `IllegalStateException` when source or directory is missing, and `HgValidationException` when the destination directory is not empty. It returns early, without a checkout, when the pulled store has no revisions.
+
+Locks and dirstate: the destination working copy lock is taken right after `init` and held until the last update (`destrepo.wlock()`). For a local source copy, the source store lock is only tried (`lockStore(0)`); if it is busy the copy is given up and the changesets are pulled instead. A source with secret changesets is never copied. The destination store lock is taken for the copy. The checkout runs inside `changingParents(...)`, which sets the dirstate parents and writes the entries. Subrepositories declared in `.hgsub` are checked out afterwards (`UpdateCommand.recursiveSubrepoCheckout`).
+
+Differences from hg: the source is written to `.hg/hgrc` as `[paths] default` (a local path as an absolute path). The javadoc describes this as the layout real `hg clone` uses.
+
+[source,java]
+----
+HgRepository repo = new CloneCommand()
+    .setSource("https://example.org/repo")
+    .setDirectory(new File("work"))
+    .setStream(null)
+    .call();
+----
+
+=== Pull
+
+Pulls changesets from a remote repository into the local one. Corresponds to `hg pull`. It delegates the transfer to `FetchCommand` and then moves an empty dirstate parent to the newest pulled head.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setSource(String)`
+|Source address or `[paths]` alias. When unset or empty, `paths.default` is used. `IllegalStateException` if neither exists.
+
+|`setRevisions(List<String>)`
+|`hg pull -r REV`: only these revisions and their ancestors.
+
+|`setStream(Boolean)`
+|`--stream` / `--no-stream`. `null` follows the remote's `stream-preferred`.
+
+|`setTreeFilter(HgTreeFilter)`
+|Restricts what is stored. Only forwarded when it is not `HgTreeFilter.ALL`, so a narrow clone's own narrowspec is still honored.
+
+|`setProgressMonitor(ProgressMonitor)`
+|Progress receiver; a `null` argument is ignored.
+
+|`setCredentialsProvider(CredentialsProvider)`
+|Credentials for the connection.
+
+|`setStoreFingerprints(List<String>)`
+|Shape fingerprints (text) the clone asks for; they pick the clone bundles (`store_fingerprints`).
+
+|`setShardsSets(List<Set<String>>)`
+|Sets of shard fingerprints (text) that make a usable group of sharded clone bundles (`shards_sets`).
+|===
+
+Also public: `getMessages()`, and `applyBundle(ChangegroupParser.ChangegroupBundle)` plus the overloads `(bundle, int lockTimeoutMs)` and `(bundle, int lockTimeoutMs, FetchCommand.PostLockValidator)`, which apply an already parsed bundle.
+
+Execution: `List<byte[]> call() throws IOException, HgLockException`. Returns the result list of `FetchCommand.call()` (node ids as `byte[]`). `applyBundle(...)` has the same return and throws.
+
+Locks and dirstate: `call()` takes `lockWorkingCopy()` and then runs `FetchCommand.call()`, which itself takes the working copy lock and then the store lock (see Fetch). If the result is not empty, it runs `changingParents(...)` and, when the dirstate's first parent is all zero, sets it to the last element of the result. `applyBundle(...)` takes `lockWorkingCopy(lockTimeoutMs)` (default timeout `repository.resolvePushLockTimeoutMs()`) and uses the same `changingParents` step. Bookmark merging happens inside `FetchCommand` (`BookmarkCommand.mergeFromRemote()`).
+
+[source,java]
+----
+List<byte[]> pulled = new PullCommand(repo)
+    .setSource("default")
+    .setRevisions(List.of("tip"))
+    .call();
+----
+
+=== Push
+
+Pushes local changesets to a remote repository. Corresponds to `hg push`.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setDestination(String)`
+|Destination address or `[paths]` alias. When unset, `paths.default-push` is used, then `paths.default`. `IllegalStateException` if none is found.
+
+|`setForce(boolean)`
+|`hg push --force`: skips the "creates new remote head" check.
+
+|`setAllowNewBranch(boolean)`
+|`hg push --new-branch`: permits pushing a named branch the remote lacks. Without it the push aborts with "push creates new remote branches".
+
+|`setBookmarks(String...)`
+|`hg push -B NAME ...`: pushes, moves or (when absent locally) deletes the named bookmarks on the remote, and only the ancestors of these bookmarks are pushed.
+
+|`registerPrePushHook(HgHook)`
+|Hook run before the push. If it returns false the push fails with `HgValidationException`.
+
+|`registerPostPushHook(HgHook)`
+|Hook run after the push.
+
+|`setProgressMonitor(ProgressMonitor)`
+|Receives LFS upload progress and the lines Mercurial prints about it.
+|===
+
+Also public: `getBookmarkResult()` (0 fine, 1 a bookmark update failed, 2 a bookmark was refused) and `getMessages()` (for example `cannot lock source repo, skipping local public phase update`).
+
+Execution: `String call() throws IOException, HgLockException`. Returns a status text. For an empty local repository it returns `No changesets to push (empty local repository)`. Other result texts are not listed here: the exact success text is not stated in the javadoc. Failures include `HgValidationException` with messages such as `abort: repository is unrelated`, `abort: push creates new remote branches: ...`, `abort: push creates new remote head ...`, and the LFS requirement message `required features are not supported in the destination: lfs`.
+
+Locks and dirstate: the connection is opened first, then `lockSourceRepository()` runs. It takes `lockStore(resolvePushLockTimeoutMs())` and, only when `experimental.bundle2.pushback` is true, `lockWorkingCopy(...)` before it. The lock is held through changesets, phases and bookmarks. If the source cannot be locked the push continues and only the local public phase update is skipped (a message is added); an abandoned transaction still aborts. No `changingParents` use was found.
+
+Differences from hg: no `setCredentialsProvider` exists; `[auth]` and address credentials apply.
+
+[source,java]
+----
+PushCommand push = new PushCommand(repo)
+    .setDestination("default")
+    .setAllowNewBranch(true);
+String result = push.call();
+----
+
+=== Fetch
+
+Low level network sync that downloads changesets into the store. Javadoc: updates the revlog store, bookmarks and phases atomically but does not modify the working copy dirstate. `PullCommand` is built on it.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setSource(String)`
+|Source address (required, `IllegalStateException` otherwise). No `[paths]` resolution happens here.
+
+|`setRevisions(List<String>)`
+|Only these revisions and their ancestors. Each is looked up on the remote, so a node prefix, bookmark, tag or branch name works; the remote must support `lookup`.
+
+|`setStream(Boolean)`
+|`--stream` / `--no-stream`; `null` follows `stream-preferred`.
+
+|`setTreeFilter(HgTreeFilter)`
+|Path filter. When left at `ALL`, the repository's own narrowspec is loaded.
+
+|`setProgressMonitor(ProgressMonitor)`
+|Progress receiver; a `null` argument is ignored.
+
+|`setCredentialsProvider(CredentialsProvider)`
+|Credentials for the connection.
+
+|`setWorkingCopyLock(boolean)`
+|Whether `applyBundle` also takes the working copy lock. `true` by default (pull); `false` for unbundle.
+
+|`setStoreFingerprints(List<String>)`
+|Shape fingerprints for a shaped clone.
+
+|`setShardsSets(List<Set<String>>)`
+|Shard fingerprint sets for sharded clone bundles.
+|===
+
+Also public: `getMessages()`, `applyBundle(bundle)`, `applyBundle(bundle, int lockTimeoutMs)`, `applyBundle(bundle, int lockTimeoutMs, PostLockValidator)` and the functional interface `PostLockValidator`, whose `validate()` runs after the locks are held and before anything is applied (for push race re-validation).
+
+Execution: `List<byte[]> call() throws IOException, HgLockException`. `applyBundle(...)` returns the imported commits as `List<byte[]>`; an empty bundle returns an empty list.
+
+Locks and dirstate: `call()` takes `lockWorkingCopy()` and then `lockStore()` before reading repository state. `applyBundle(...)` takes `lockWorkingCopy(lockTimeoutMs)` (a no-op lock when `setWorkingCopyLock(false)`) and then `lockStore(lockTimeoutMs)`. It backs up dirstate and fncache after the locks are held, and rolls back a failed apply while the locks are still held. No `changingParents` use was found in this class.
+
+[source,java]
+----
+List<byte[]> nodes = new FetchCommand(repo)
+    .setSource("ssh://hg@example.org/repo")
+    .setRevisions(List.of("default"))
+    .call();
+----
+
+=== Incoming
+
+Lists changesets that exist on the remote but not locally. Corresponds to `hg incoming` (the output has the form of the plain log lines `changeset:`, `user:` and `summary:`).
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setSource(String)`
+|Source address (required). No `[paths]` alias or default resolution; `IllegalArgumentException` when unset.
+|===
+
+Execution: `List<String> call() throws IOException`. Returns lines: three per incoming changeset (`changeset:   <12 hex>`, `user:        ...`, `summary:     ...`), or the single line `no incoming changes found`. A failed first connection throws `IOException("Remote connection failed for ...")`. If fetching the changegroup details fails, the result falls back to the missing head ids with a failure text instead of throwing.
+
+Locks and dirstate: none taken; no `changingParents`.
+
+[source,java]
+----
+List<String> lines = new IncomingCommand(repo)
+    .setSource("https://example.org/repo")
+    .call();
+----
+
+=== Outgoing
+
+Lists local changesets the remote does not have. Corresponds to `hg outgoing`.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setDestination(String)`
+|Destination address (required; `IllegalArgumentException` when unset). No alias or default resolution.
+|===
+
+Execution: `List<String> call() throws IOException`. Returns lines `changeset:   <rev>:<12 hex>`, `user:        ...`, `summary:     ...` for each changeset the remote heads do not cover, or `no outgoing changes found`. Connection failure throws `IOException("Remote connection failed for ...")`.
+
+Locks and dirstate: none taken; no `changingParents`.
+
+[source,java]
+----
+List<String> lines = new OutgoingCommand(repo)
+    .setDestination("default-push-url")
+    .call();
+----
+
+=== Bundle
+
+Writes changesets to a local bundle file. Corresponds to `hg bundle`.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setOutputFile(File)`
+|Bundle file to write (required).
+
+|`setBaseRevision(String)`
+|`hg bundle --base REV`: this revision and its ancestors are excluded. `"null"` (case-insensitive), `""` or `"-1"` bundles everything (`-a`). Required: `IllegalStateException` if unset, because destination inference is not implemented.
+
+|`setRevision(String)`
+|`hg bundle -r REV`: restrict to this revision and its ancestors. Unset means all revisions.
+
+|`setType(BundleType)` / `setType(String)`
+|`--type`. Values: `none-v1` (default), `gzip-v1`, `bzip2-v1`, `none-v3`, `gzip-v3`, `bzip2-v3`. The string form is case-insensitive and throws `IllegalArgumentException` for unknown names.
+|===
+
+Execution: `int call() throws IOException, HgLockException`. Returns the number of changesets written. When the selected set is empty (or the repository is empty) no file is written and `0` is returned. A revision that cannot be found throws `IOException`. A treemanifest or LFS repository with a `-v1` type throws `IllegalStateException("abort: repository does not support bundle version 01 ...")`.
+
+Locks and dirstate: none ("like real hg, `bundle` only reads: no lock"); no `changingParents`.
+
+Differences from hg (from the javadoc): no implicit destination is resolved from `paths.default-push` or `paths.default`, so a base is always required. The `-v3` family produces an `HG20` bundle2 envelope with a cg3 changegroup. Sidedata (cg5) is deliberately not negotiated, which the javadoc describes as a limitation of the real `hg bundle` as well. The blobs of bundled LFS revisions are uploaded first to the LFS store of the default path or `[lfs] url`.
+
+[source,java]
+----
+int n = new BundleCommand(repo)
+    .setOutputFile(new File("all.hg"))
+    .setBaseRevision("null")
+    .setType("gzip-v1")
+    .call();
+----
+
+=== Unbundle
+
+Applies a local bundle file to the repository. Corresponds to `hg unbundle`. Reads `HG10UN`, `HG10GZ`, `HG10BZ` and `HG20` (bundle2) files.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setBundleFile(File)`
+|The bundle file to apply (required, must exist; `IllegalStateException` otherwise).
+|===
+
+Execution: `List<byte[]> call() throws IOException, HgLockException`. Returns the imported commits from `FetchCommand.applyBundle`. An unknown header or unsupported bundle1 compression throws `HgCorruptDataException`.
+
+Locks and dirstate: calls `FetchCommand.setWorkingCopyLock(false)` ("real hg: `unbundle` holds only the store lock"), so only `lockStore(...)` is taken and the dirstate is left alone. No `changingParents`.
+
+[source,java]
+----
+List<byte[]> imported = new UnbundleCommand(repo)
+    .setBundleFile(new File("all.hg"))
+    .call();
+----
+
+=== Archive
+
+Extracts an unversioned snapshot of a revision. Corresponds to `hg archive`.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setDestination(File)`
+|Output directory or archive file (required, `IllegalArgumentException` otherwise).
+
+|`setRevision(String)`
+|Revision to archive; default `tip`. `IOException` when not found.
+
+|`setType(String)`
+|`files`, `zip`, `uzip`, `tar`, `tgz` or `tbz2`. Unset: detected from the destination extension (`.tbz2`/`.tar.bz2`, `.tgz`/`.tar.gz`, `.tar`, `.zip`, otherwise `files`). Unknown names throw `IllegalArgumentException`.
+
+|`setPrefix(String)`
+|Directory prefix for every member of a zip or tar archive. Ignored for `files`. Default is the destination basename with its type suffix removed.
+
+|`setInclude(String...)`
+|`hg archive -I`: only files matching these patterns (globs by default).
+
+|`setExclude(String...)`
+|`hg archive -X`: skip files matching these patterns.
+
+|`setCwd(String)`
+|Current directory relative to the repository root, against which relative patterns are read.
+|===
+
+Execution: `void call() throws IOException`. If include/exclude patterns match no file, it throws `HgValidationException("no files match the archive pattern")`.
+
+Locks and dirstate: none taken; no `changingParents`.
+
+Differences from hg (from the javadoc): `txz` (lzma) is deliberately not implemented. A `.hg_archival.txt` member is written, zip and tar members get the directory prefix, executable bits and symlinks are kept, and tree manifests are read through `HgRepository.getManifestAtCommit`.
+
+[source,java]
+----
+new ArchiveCommand(repo)
+    .setRevision("tip")
+    .setDestination(new File("snapshot.tar.gz"))
+    .call();
+----
+
+=== Clonebundles
+
+Downloads a clone bundle from a URL and applies it. This is the client half of Mercurial's clone bundles mechanism. It is a final class with a private constructor and two static methods, so there are no setters.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`downloadAndApply(HgRepository, String url)`
+|Downloads the bundle at `url` with a plain HTTP(S) GET (no wire protocol framing, timeouts 10 s connect and 60 s read) and applies it through `UnbundleCommand`.
+
+|`applyEntries(HgRepository, HgRemoteConnection peer, List<ClonebundleSelection.Entry> entries, List<String> messages)`
+|Applies the bundles chosen by `best_clonebundles`. Each is fetched over HTTP or, for a `peer-bundle-cache://` entry, from the server's cache through `peer`; checked against its `DIGEST` (sha256 first, then sha512); and applied as a stream (a `stream2` part) or as a changegroup bundle. Progress lines are appended to `messages`.
+|===
+
+Return and throws: both return `List<byte[]>` (commits a changegroup bundle imported; empty when only stream bundles were applied) and throw `IOException, HgLockException`. A non-200 response throws `HgProtocolException`. A fetch error or a digest mismatch becomes `HgValidationException` (`applyEntries` reports `error applying bundle` and points to `ui.clonebundles=false`).
+
+Locks and dirstate: both methods hold `lockStore()` for the whole download and apply. No working copy lock and no `changingParents` in this class (the inner `UnbundleCommand` takes the store lock again through `FetchCommand.applyBundle`).
+
+Differences from hg: it never falls back to a normal pull when the download fails; any failure propagates. The caller must do the final incremental pull itself.
+
+[source,java]
+----
+List<byte[]> imported = ClonebundlesCommand
+    .downloadAndApply(repo, "https://cdn.example.org/bundle.hg");
+----
+
+=== NarrowClone
+
+Clones only part of a repository using include and exclude patterns, or a store shape. Corresponds to `hg clone` with the narrow extension (`--include`, `--exclude`) and `--shape`.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`NarrowCloneCommand()`
+|Constructor takes no repository; the destination is created by `call()`.
+
+|`setSource(String)`
+|Source address (required).
+
+|`setDirectory(File)`
+|Destination directory (required).
+
+|`addIncludePath(String)`
+|Adds an include pattern; `null` is ignored. Patterns are normalized like `narrowspec.normalizepattern()`: default kind `path:`, trailing `/` stripped, `.`, `..` and empty components rejected.
+
+|`addExcludePath(String)`
+|Adds an exclude pattern, same rules. If only excludes are given, `path:.` is included.
+
+|`setShape(String)`
+|`hg clone --shape NAMES`: comma separated store shape names of a server that advertises `exp-shape-1`. The shape's patterns become the narrowspec and the names are kept in `store-shape`.
+|===
+
+Also public: `getMessages()`.
+
+Execution: `Hg call() throws IOException, HgLockException`. Returns an `Hg` facade of the new repository. `IllegalStateException` if source or directory is missing; `HgValidationException` when `--shape` is used against a remote without `exp-shape-1`. The shape is requested before anything is created, so a refusal leaves no repository.
+
+Locks and dirstate: holds `lockWorkingCopy()` on the new repository from after `init` to the end. Inside it, writes `.hg/requires` (adds `narrowhg-experimental`), then writes `.hg/store/narrowspec` under a short `lockStore()` scope, and `.hg/narrowspec.dirstate`. For a shape, `store-shape` is also written under `lockStore()`. After that it runs `PullCommand` with the narrow filter, clears the revlog cache, and runs `UpdateCommand` with the same filter. No direct `changingParents` call in this class.
+
+[source,java]
+----
+Hg hg = new NarrowCloneCommand()
+    .setSource("https://example.org/repo")
+    .setDirectory(new File("narrow"))
+    .addIncludePath("src")
+    .addExcludePath("src/gen")
+    .call();
+----
+
+=== ShardedStreamBundles
+
+Writes one streaming bundle for every shard of the store. Corresponds to `hg debug::sharded-stream-bundles`. The bundles go to `server.peer-bundle-cache-root` (relative to `.hg`, `bundle-cache` by default) as `hg-sharded-<group>-<shard fingerprint>.hg`. It is a final class.
+
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setGroupId(String)`
+|Group id (eight hex digits). A fresh random id is used when unset; all bundles of one run share it.
+|===
+
+Execution: `List<File> call() throws IOException, HgLockException`. Returns the files written, shard by shard in the order of their names. Throws `HgValidationException("server does not support narrow stream clones")` unless `experimental.server.stream-narrow-clones` is `true` or `1`.
+
+Locks and dirstate: takes `lockWorkingCopy()` and then `lockStore()` and holds both for the whole run, so every shard is taken in lockstep from one state of the repository. No `changingParents`.
+
+[source,java]
+----
+List<File> files = new ShardedStreamBundlesCommand(repo)
+    .setGroupId("0a1b2c3d")
+    .call();
+----
+
+=== Paths
+
+Lists the `[paths]` aliases of the repository configuration. Corresponds to `hg paths`.
+
+Setters: none.
+
+Execution: `Map<String, String> call()`. Returns alias to URL, sorted alphabetically by alias, empty and never `null` when no `[paths]` section exists. It declares no checked exceptions.
+
+Locks and dirstate: none.
+
+Differences from hg (from the javadoc): per-path sub-options such as `default:pushurl` are out of scope; only the base `name = url` entries are exposed.
+
+[source,java]
+----
+Map<String, String> paths = new PathsCommand(repo).call();
+String url = paths.get("default");
+----
+
+=== LfsUpload
+
+Uploads the LFS blobs that given revisions introduced. Corresponds to `hg debuglfsupload -r REV`. The target is the LFS store of the default path or `[lfs] url`, the same upload a push or bundle does.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`addRevision(String)`
+|Adds a revision whose blobs are uploaded. With none added, the first dirstate parent is used.
+|===
+
+Execution: `int call() throws IOException`. Returns the number of distinct blobs considered (the server skips those it already has). A revision that cannot be found throws `IOException("Revision not found: ...")`.
+
+Locks and dirstate: none taken; it only reads the dirstate parent when no revision is given. No `changingParents`.
+
+[source,java]
+----
+int blobs = new LfsUploadCommand(repo)
+    .addRevision("tip")
+    .call();
+----

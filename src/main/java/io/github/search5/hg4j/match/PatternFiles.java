@@ -20,6 +20,16 @@ public final class PatternFiles {
     private PatternFiles() {
     }
 
+    /**
+     * Reads a pattern file.
+     *
+     * <p>The file is read as ISO-8859-1. Comments ({@code #} not preceded by an odd number of backslashes) and trailing whitespace are removed, empty lines are skipped, and {@code syntax:} lines change the default kind of the lines that follow (the initial kind is {@code relre:}). A line that starts with a known kind keeps that kind.
+     *
+     * @param file the pattern file to read; must not be {@code null}
+     * @param warn receives a warning message for each {@code syntax:} line with an unknown syntax (which is ignored); may be {@code null} to drop warnings
+     * @return the entries in file order, each written as the kind prefix followed by the pattern text (for {@code include} and {@code subinclude} the prefix is the word itself without a colon)
+     * @throws IOException if the file cannot be read
+     */
     public static List<String> read(File file, Consumer<String> warn) throws IOException {
         String[][] syntaxes = {{"re", "relre:"}, {"regexp", "relre:"}, {"glob", "relglob:"}, {"rootglob", "rootglob:"},
                 {"include", "include"}, {"subinclude", "subinclude"}};

@@ -29,6 +29,11 @@ public class UnixSocketSshAgentFactory implements SshAgentFactory {
 
     private final Path socketPath;
 
+    /**
+     * Creates a factory for the agent listening on the given Unix domain socket. The agent is contacted when an
+     * SSH session asks for it, not at construction.
+     * @param socketPath the path of the agent socket (the value of {@code SSH_AUTH_SOCK}); must not be null
+     */
     public UnixSocketSshAgentFactory(Path socketPath) {
         this.socketPath = socketPath;
     }

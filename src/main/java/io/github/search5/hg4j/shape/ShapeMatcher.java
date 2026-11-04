@@ -14,6 +14,7 @@ public final class ShapeMatcher implements Matcher {
 
     /** What {@code visit_children_set} answers: {@code RECURSIVE}, {@code EMPTY}, or {@code SET} of the children worth visiting. */
     public record Visit(Kind kind, Set<String> children) {
+        /** The kind of answer: {@code EMPTY} nothing under the directory needs visiting, {@code SET} only the listed children, {@code RECURSIVE} everything below. */
         public enum Kind { EMPTY, SET, RECURSIVE }
     }
 
@@ -22,6 +23,11 @@ public final class ShapeMatcher implements Matcher {
 
     private final ShardTreeNode tree;
 
+    /**
+     * Creates a matcher over a tree.
+     *
+     * @param tree the root node of the shape's tree; must not be {@code null}
+     */
     public ShapeMatcher(ShardTreeNode tree) {
         this.tree = tree;
     }

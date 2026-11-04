@@ -36,22 +36,59 @@ public class Dirstate {
     private Map<String, String> baseCopies = new LinkedHashMap<>();
     private File baseDocket;
 
+    /**
+     * Returns the live map of copy and rename records, from destination path to source path.
+     * Both are repository-relative, slash separated paths.
+     * <p>The returned map is the internal one, never {@code null}. Changing it changes only this in-memory object;
+     * nothing reaches the disk until {@link #write(File)} (normally through {@code HgRepository.writeDirstate}) is called.
+     * The map is not cleared by {@link #read(byte[])}; records found in the data read are added to it.
+     * @return the mutable copy map
+     */
     public Map<String, String> getCopyMap() {
         return copyMap;
     }
 
+    /**
+     * Records that {@code dest} was copied or renamed from {@code src}, replacing any earlier record for {@code dest}.
+     * Equivalent to {@code getCopyMap().put(dest, src)}. In memory only until the dirstate is written; no argument is validated.
+     * @param dest repository-relative destination path
+     * @param src repository-relative source path
+     */
     public void addCopy(String dest, String src) {
         copyMap.put(dest, src);
     }
 
+    /**
+     * Tells whether this dirstate is written in the dirstate-v2 format (a docket file plus a separate data file) rather than the
+     * classic v1 format.
+     * <p>It is {@code true} after {@link #read(File)} has read a v2 docket, or after {@link #setV2(boolean)} was called with {@code true}.
+     * @return {@code true} if {@link #write(File)} will use the v2 format
+     */
     public boolean isV2() {
         return isV2;
     }
 
+    /**
+     * Chooses the on-disk format used by the next {@link #write(File)}.
+     * <p>This only sets a flag; nothing is converted or written. {@code HgRepository.writeDirstate} sets it from the repository's
+     * {@code dirstate-v2} requirement on every write.
+     * @param v2 {@code true} for dirstate-v2, {@code false} for the v1 format
+     */
     public void setV2(boolean v2) {
         this.isV2 = v2;
     }
 
+    /**
+     * One dirstate entry: what the dirstate remembers about a single tracked path.
+     * <p>The mtime is limited to the unsigned 32-bit range because the v1 format stores it that way; the compact constructor
+     * throws {@link IllegalArgumentException} for a {@code time} below 0 or above {@code 0xFFFFFFFF}.
+     * Instances are immutable.
+     * @param state the state character: {@code 'n'} normal, {@code 'a'} added, {@code 'r'} removed, {@code 'm'} merged
+     * @param mode the Unix file mode (for example {@code 0100644}, {@code 0100755} or {@code 0120000} for a symlink)
+     * @param size the file size in bytes; a negative value means "unknown, compare the content" (see {@link #isStatAmbiguous()})
+     * @param time the modification time in seconds since the epoch, 0 to {@code 0xFFFFFFFF}, or {@link #AMBIGUOUS_TIME}
+     * @param nanos the nanosecond part of the modification time; only the v2 format stores it, so it is 0 for entries read from a v1 file
+     */
     public record Entry(char state, int mode, int size, long time, int nanos) {
         /**
          * Real Mercurial's 32-bit "-1" sentinel for an entry's mtime (0xFFFFFFFF), written
@@ -72,26 +109,54 @@ public class Dirstate {
             }
         }
 
+        /**
+         * Creates an entry with no nanosecond part (the same as passing 0 as {@code nanos}).
+         * @param state the state character, see {@link Entry}
+         * @param mode the Unix file mode
+         * @param size the file size in bytes, or a negative value if unknown
+         * @param time the modification time in seconds since the epoch, 0 to {@code 0xFFFFFFFF}
+         * @throws IllegalArgumentException if {@code time} is outside the unsigned 32-bit range
+         */
         public Entry(char state, int mode, int size, long time) {
             this(state, mode, size, time, 0);
         }
 
+        /**
+         * Returns the state character of this entry.
+         * @return {@code 'n'}, {@code 'a'}, {@code 'r'} or {@code 'm'} for entries written by Mercurial
+         */
         public char getState() {
             return state;
         }
 
+        /**
+         * Returns the Unix file mode recorded for this entry.
+         * @return the mode, for example {@code 0100644}
+         */
         public int getMode() {
             return mode;
         }
 
+        /**
+         * Returns the recorded file size.
+         * @return the size in bytes, or a negative value if it is unknown
+         */
         public int getSize() {
             return size;
         }
 
+        /**
+         * Returns the recorded modification time.
+         * @return seconds since the epoch (0 to {@code 0xFFFFFFFF}), or {@link #AMBIGUOUS_TIME} if it cannot be trusted
+         */
         public long getTime() {
             return time;
         }
 
+        /**
+         * Returns the nanosecond part of the recorded modification time.
+         * @return the nanoseconds, 0 if the format did not store them
+         */
         public int getNanos() {
             return nanos;
         }
@@ -113,22 +178,44 @@ public class Dirstate {
         }
     }
 
+    /**
+     * Returns the first parent of the working directory.
+     * @return a new 20-byte array holding the node id; all zero bytes when there is no parent
+     */
     public byte[] getParent1() {
         return parent1.getBytes();
     }
 
+    /**
+     * Returns the second parent of the working directory, which is set only while a merge is in progress.
+     * @return a new 20-byte array holding the node id; all zero bytes when there is no second parent
+     */
     public byte[] getParent2() {
         return parent2.getBytes();
     }
 
+    /**
+     * Returns the first parent of the working directory as a {@link NodeId}.
+     * @return the parent; {@link NodeId#NULL} when there is none, never {@code null}
+     */
     public NodeId getParent1Node() {
         return parent1;
     }
 
+    /**
+     * Returns the second parent of the working directory as a {@link NodeId}.
+     * @return the parent; {@link NodeId#NULL} when there is no merge in progress, never {@code null}
+     */
     public NodeId getParent2Node() {
         return parent2;
     }
 
+    /**
+     * Sets both working directory parents. In memory only until the dirstate is written.
+     * @param p1 the first parent; use {@link NodeId#NULL} for none, must not be {@code null}
+     * @param p2 the second parent; use {@link NodeId#NULL} for none, must not be {@code null}
+     * @throws IllegalArgumentException if either argument is {@code null}
+     */
     public void setParents(NodeId p1, NodeId p2) {
         if (p1 == null || p2 == null) {
             throw new IllegalArgumentException("Parents cannot be null");
@@ -137,22 +224,54 @@ public class Dirstate {
         this.parent2 = p2;
     }
 
+    /**
+     * Sets both working directory parents from raw node ids. In memory only until the dirstate is written.
+     * @param p1 the first parent, exactly 20 bytes (all zero for none)
+     * @param p2 the second parent, exactly 20 bytes (all zero for none)
+     * @throws IllegalArgumentException if either array is {@code null} or not exactly 20 bytes long
+     */
     public void setParents(byte[] p1, byte[] p2) {
         setParents(new NodeId(p1), new NodeId(p2));
     }
 
+    /**
+     * Returns the live map of tracked paths to their entries; keys are repository-relative, slash separated paths.
+     * <p>For a dirstate read from a v2 file the map reads entries lazily from the data file and keeps only the changes made since in memory;
+     * a lookup can then throw {@link java.io.UncheckedIOException} if the data file cannot be read.
+     * Changes made through the map are in memory only, exactly like {@link #addEntry} and {@link #removeEntry}, until the dirstate is written.
+     * @return the mutable entry map, never {@code null}
+     */
     public Map<String, Entry> getEntries() {
         return entries;
     }
 
+    /**
+     * Adds the entry for {@code path}, replacing an existing one. In memory only until the dirstate is written;
+     * the copy map is not touched.
+     * @param path repository-relative, slash separated path
+     * @param entry the entry to store
+     */
     public void addEntry(String path, Entry entry) {
         entries.put(path, entry);
     }
 
+    /**
+     * Removes the entry for {@code path} if there is one. In memory only until the dirstate is written.
+     * A copy record for the path in {@link #getCopyMap()} is left in place.
+     * @param path repository-relative, slash separated path
+     */
     public void removeEntry(String path) {
         entries.remove(path);
     }
 
+    /**
+     * Parses the content of a classic v1 dirstate file: two 20-byte parents followed by the entries, each a 17-byte header
+     * (state, mode, size, unsigned 32-bit mtime, path length) and the path; a copy source follows the path after a NUL byte.
+     * <p>The parents and entries are replaced by the parsed ones. Copy records found are added to the copy map, which is not cleared first.
+     * Nothing is read from or written to the disk and no lock is involved. A v2 docket cannot be parsed by this method; use {@link #read(File)}.
+     * @param bytes the complete content of a v1 dirstate file
+     * @throws HgCorruptDataException if {@code bytes} is {@code null}, shorter than 40 bytes or truncated in an entry
+     */
     public void read(byte[] bytes) throws IOException {
         if (bytes == null) {
             throw new HgCorruptDataException("Invalid dirstate file: content cannot be null");
@@ -200,6 +319,19 @@ public class Dirstate {
         }
     }
 
+    /**
+     * Reads the dirstate from a file, usually {@code .hg/dirstate}. A file that starts with the {@code dirstate-v2} magic is read as a docket:
+     * the parents and the tree description are taken from it and the data file {@code dirstate.<uid>} next to it is mapped read-only and used
+     * in place (entries are not loaded up front); {@link #isV2()} then returns {@code true}. Any other file is parsed as v1 through
+     * {@link #read(byte[])}.
+     * <p>The docket and data file named in it are remembered so that a later {@link #write(File)} to the same file can append to the data file.
+     * This method takes no lock; to get a consistent view while other processes may write, the caller must hold the working copy lock
+     * ({@code HgRepository.lockWorkingCopy()}). Reading a dirstate through {@code HgRepository.getDirstate()} reads the file every time it is called
+     * (except inside an open changing context).
+     * @param file the dirstate file; must exist
+     * @throws IOException if {@code file} is {@code null} or does not exist, or cannot be read
+     * @throws HgCorruptDataException if the v2 data file is missing or shorter than the docket says, or the v1 content is malformed
+     */
     public void read(File file) throws IOException {
         if (file == null || !file.exists()) {
             throw new IOException("Dirstate file does not exist");
@@ -281,6 +413,12 @@ public class Dirstate {
         read(bytes);
     }
 
+    /**
+     * Returns this dirstate in the classic v1 format, whatever {@link #isV2()} says: the two parents, then each entry with a 17-byte header
+     * and its path, followed by NUL and the copy source for a copied path. The nanosecond part of the entries is not stored.
+     * Nothing is written to the disk.
+     * @return the v1 file content
+     */
     public byte[] serialize() {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
@@ -380,6 +518,20 @@ public class Dirstate {
         return true;
     }
 
+    /**
+     * Writes this dirstate to {@code file}, usually {@code .hg/dirstate}.
+     * <p>For v1 the file is replaced atomically (temporary file and rename) with the result of {@link #serialize()}.
+     * For v2 ({@link #isV2()}) the changes made since the dirstate was read are appended to the existing data file and the docket is then replaced
+     * atomically (the docket holds the valid length, so a crash in between leaves the old state intact); if the file on disk is no longer the one that was
+     * read, or at least half of the data file is unreachable, a new data file {@code dirstate.<uid>} is written first, then the docket, and the old data file
+     * is deleted. Afterwards the v2 dirstate is attached to the file just written, so it can be written again.
+     * <p>This method does not acquire any Mercurial lock. It is meant to run while the caller holds the working copy lock
+     * ({@code HgRepository.lockWorkingCopy()}); inside {@code HgRepository.changingFiles} or {@code changingParents} the repository calls it
+     * once, when the outermost context ends without an exception.
+     * @param file the dirstate file to write; its directory receives the v2 data file
+     * @throws IllegalArgumentException if {@code file} is {@code null}
+     * @throws IOException if writing fails
+     */
     public void write(File file) throws IOException {
         if (file == null) {
             throw new IllegalArgumentException("Target file cannot be null");

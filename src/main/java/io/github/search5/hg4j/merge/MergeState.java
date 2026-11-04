@@ -39,11 +39,26 @@ public final class MergeState {
     private static final char RECORD_PATH_CONFLICT = 'P';
     private static final char RECORD_OVERRIDE = 't';
 
+    /**
+     * State value ({@code "u"}) of a file with a content conflict that has not been resolved yet.
+     */
     public static final String UNRESOLVED = "u";
+    /**
+     * State value ({@code "r"}) of a file with a content conflict that has been resolved.
+     */
     public static final String RESOLVED = "r";
+    /**
+     * State value ({@code "pu"}) of an unresolved path conflict.
+     */
     public static final String UNRESOLVED_PATH = "pu";
+    /**
+     * State value ({@code "pr"}) of a resolved path conflict.
+     */
     public static final String RESOLVED_PATH = "pr";
 
+    /**
+     * The null node as 40 hexadecimal zeros, used where a merge record has no file.
+     */
     public static final String NULL_HEX = "0000000000000000000000000000000000000000";
 
     /** Local parent's changeset node (dirstate p1 at merge start). */
@@ -67,6 +82,18 @@ public final class MergeState {
     /** Optional merge tool labels (local/other/base), written verbatim if non-empty. */
     public final List<String> labels = new ArrayList<>();
 
+    /**
+     * Records {@code path} as a conflicted file in the state {@link #UNRESOLVED}, replacing an earlier record for the same path.
+     * The fields are stored in the order of real hg's merge state. Nothing is validated and nothing is written until {@link #write(File)} is called.
+     * @param path repository-relative path of the file
+     * @param localKey the key of the pre-merge backup of the local content under {@code .hg/merge}, see {@link #getLocalKey(String)}
+     * @param localFile the path of the file in the local parent
+     * @param ancestorFile the path of the file in the ancestor
+     * @param ancestorNodeHex the hex file node of the ancestor version
+     * @param otherFile the path of the file in the other parent
+     * @param otherNodeHex the hex file node of the other version
+     * @param flags the file flags such as {@code "x"} or {@code "l"}; {@code null} is stored as an empty string
+     */
     public void addMergedFile(String path, String localKey, String localFile, String ancestorFile,
                                String ancestorNodeHex, String otherFile, String otherNodeHex, String flags) {
         List<String> fields = new ArrayList<>();
@@ -81,10 +108,20 @@ public final class MergeState {
         state.put(path, fields);
     }
 
+    /**
+     * Marks the file as resolved ({@code "pr"} for a path conflict, {@code "r"} otherwise). Does nothing if {@code path} has no record.
+     * In memory only until {@link #write(File)} is called.
+     * @param path repository-relative path of the file
+     */
     public void markResolved(String path) {
         setResolutionState(path, true);
     }
 
+    /**
+     * Marks the file as unresolved ({@code "pu"} for a path conflict, {@code "u"} otherwise). Does nothing if {@code path} has no record.
+     * In memory only until {@link #write(File)} is called.
+     * @param path repository-relative path of the file
+     */
     public void markUnresolved(String path) {
         setResolutionState(path, false);
     }
@@ -110,10 +147,18 @@ public final class MergeState {
         return local != null && other != null;
     }
 
+    /**
+     * Tells whether no file is recorded in this state.
+     * @return {@code true} if there are no per-file records
+     */
     public boolean isEmpty() {
         return state.isEmpty();
     }
 
+    /**
+     * Lists the files that still have an unresolved content or path conflict, in the order they were recorded.
+     * @return a new list of paths, empty if everything is resolved
+     */
     public List<String> unresolvedFiles() {
         List<String> result = new ArrayList<>();
         for (Map.Entry<String, List<String>> e : state.entrySet()) {
@@ -141,6 +186,12 @@ public final class MergeState {
         }
     }
 
+    /**
+     * Reads a {@code .hg/merge/state2} file. Records of unknown types are skipped silently. This method takes no lock.
+     * @param stateFile the file to read; may be {@code null} or not exist
+     * @return the parsed state; when the file is {@code null} or missing, an empty state whose {@link #isActive()} is {@code false}
+     * @throws IOException if the file cannot be read
+     */
     public static MergeState read(File stateFile) throws IOException {
         MergeState ms = new MergeState();
         if (stateFile == null || !stateFile.exists()) {
@@ -202,6 +253,13 @@ public final class MergeState {
         return ms;
     }
 
+    /**
+     * Writes this state in the {@code state2} format, creating the parent directory if needed and overwriting the file in place (no temporary file is used).
+     * The caller is expected to hold the working copy lock while a merge state is changed.
+     * @param stateFile the file to write, usually {@code .hg/merge/state2}
+     * @throws IllegalStateException if {@link #local} or {@link #other} is not set
+     * @throws IOException if writing fails
+     */
     public void write(File stateFile) throws IOException {
         if (local == null || other == null) {
             throw new IllegalStateException("MergeState.local and .other must be set before writing");
@@ -259,6 +317,11 @@ public final class MergeState {
         Files.write(stateFile.toPath(), out.toByteArray());
     }
 
+    /**
+     * Deletes the state file; does nothing if it does not exist.
+     * @param stateFile the file to delete
+     * @throws IOException if the file exists and cannot be deleted
+     */
     public static void clean(File stateFile) throws IOException {
         Files.deleteIfExists(stateFile.toPath());
     }

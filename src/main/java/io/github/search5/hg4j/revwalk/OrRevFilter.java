@@ -10,10 +10,22 @@ import java.util.List;
 public class OrRevFilter implements RevFilter {
     private final List<RevFilter> filters;
 
+    /**
+     * Creates a filter that includes a revision if at least one given filter includes it. Filters are
+     * evaluated in iteration order and evaluation stops at the first one that accepts. With no filters
+     * no revision is included.
+     * @param filters the filters to combine; the collection is copied and neither it nor its elements may be null
+     */
     public OrRevFilter(Collection<RevFilter> filters) {
         this.filters = List.copyOf(filters);
     }
 
+    /**
+     * Creates a filter that includes a revision if at least one given filter includes it. Filters are
+     * evaluated in order and evaluation stops at the first one that accepts. With no filters no
+     * revision is included.
+     * @param filters the filters to combine; neither the array nor its elements may be null
+     */
     public OrRevFilter(RevFilter... filters) {
         this.filters = List.of(filters);
     }

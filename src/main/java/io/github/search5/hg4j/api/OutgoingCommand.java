@@ -24,10 +24,19 @@ public class OutgoingCommand {
     private final HgRepository repository;
     private String destinationUrl;
 
+    /**
+     * Creates an outgoing command for the given repository.
+     * @param repository the local repository to compare against the remote
+     */
     public OutgoingCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the remote repository to compare with. There is no default; {@link #call()} throws {@link IllegalArgumentException} if it is {@code null} or empty.
+     * @param destinationUrl URL of the remote repository
+     * @return {@code this}
+     */
     public OutgoingCommand setDestination(String destinationUrl) {
         this.destinationUrl = destinationUrl;
         return this;

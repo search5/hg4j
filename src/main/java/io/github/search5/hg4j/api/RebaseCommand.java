@@ -43,16 +43,18 @@ import java.nio.channels.FileChannel;
 /**
  * Porcelain command to rebase revisions on top of another base revision.
  *
- * <p>Performs linear revision cherry-picking with clean manifest integration and dirstate
- * updating. Since 2026-09-04 this is <b>evolution-only</b>: a cherry-picked original revision is
- * never physically stripped from the changelog/manifest/filelogs -- it stays fully readable
- * forever, and only an obsolescence marker (predecessor -&gt; successor, via {@link HgObsMarker})
- * records that it has been superseded. This matches real hg's own two mutually-exclusive rebase
- * strategies (plain strip with no marker, or evolution's marker with no strip -- never both,
- * unlike this class's pre-2026-09-04 behavior) and specifically fixes {@code hg log --hidden}
- * reporting "unknown revision" for a rebased-away commit instead of showing it as hidden.
+ * <p>Follows {@code hg rebase} ({@code rebase.py}): the revisions are chosen with source, base or revision revsets, copied onto the
+ * destination one at a time, and the state is kept in {@code .hg/rebasestate} so that a stop on a conflict can be continued with
+ * {@link #continueRebase()} or undone with {@link #abort()}. When the rebase is finished the original changesets are removed
+ * (stripped, as {@code repair.delayedstrip} does; the removed changesets are kept in a backup bundle under
+ * {@code .hg/strip-backup}) unless {@link #setKeep(boolean) keep} is set. No obsolescence markers are written, because evolution is
+ * not supported: like the original without evolution, a rebase of changesets that have descendants outside the rebased set is
+ * refused unless {@code keep} is set.
  *
- * <p>The cherry-pick path also now performs a real 3-way merge (via {@link Merge3}, the same
+ * <p>The locks are taken like the original: the working copy lock, then the store lock, for the whole command. The dirstate is
+ * changed inside a {@code changing_parents} context.
+ *
+ * <p>The cherry-pick path performs a real 3-way merge (via {@link Merge3}, the same
  * engine {@link MergeCommand} uses) whenever the destination and the revision being cherry-picked
  * have both changed the same file differently since the revision's own parent. A genuine conflict
  * writes standard {@code <<<<<<< dest ... ======= ... >>>>>>> source} markers into the working
@@ -100,10 +102,22 @@ public class RebaseCommand {
         }
     }
 
+    /**
+     * Creates the command.
+     * @param repository the repository to rebase in; must not be {@code null}
+     */
     public RebaseCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Registers a hook run before the rebase starts changing anything.
+     * <p>
+     * The hook gets a context map with {@code repository}, {@code sourceNode} and {@code targetNode}. If it returns
+     * {@code false} the rebase fails with a validation error.
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public RebaseCommand registerPreRebaseHook(HgHook hook) {
         if (hook != null) {
             preRebaseHooks.add(hook);
@@ -111,6 +125,15 @@ public class RebaseCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run after a rebase has completed.
+     * <p>
+     * The hook gets a context map with {@code sourceNode}, {@code targetNode}, {@code rebasedTipNode} (hex of the last
+     * new changeset, or {@code null}) and {@code repository}. Its return value is ignored and exceptions it throws
+     * are logged and swallowed.
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public RebaseCommand registerPostRebaseHook(HgHook hook) {
         if (hook != null) {
             postRebaseHooks.add(hook);
@@ -118,11 +141,26 @@ public class RebaseCommand {
         return this;
     }
 
+    /**
+     * Sets the changeset to rebase for the node-style form (together with {@link #setTarget(byte[])}).
+     * <p>
+     * When both source and target nodes are set, the source changeset and its descendants are rebased onto the target
+     * (like {@code hg rebase -s SRC -d DEST}); both must exist in the changelog.
+     * @param sourceNode the 20-byte node id of the source changeset; {@code null} (the default) means the sources
+     *         come from the revset options instead
+     * @return {@code this}
+     */
     public RebaseCommand setSource(byte[] sourceNode) {
         this.sourceNode = sourceNode;
         return this;
     }
 
+    /**
+     * Sets the destination for the node-style form of the rebase (together with {@link #setSource(byte[])}).
+     * @param targetNode the 20-byte node id of the destination changeset; {@code null} (the default) means the
+     *         destination comes from the destination option instead
+     * @return {@code this}
+     */
     public RebaseCommand setTarget(byte[] targetNode) {
         this.targetNode = targetNode;
         return this;

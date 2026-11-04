@@ -25,6 +25,10 @@ public class RemoveCommand {
     private String file;
     private boolean force = false;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to remove files from; must not be {@code null}
+     */
     public RemoveCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -147,17 +151,42 @@ public class RemoveCommand {
         }
     }
 
+    /**
+     * Sets the single file for {@link #call()}.
+     * @param file the repository-relative path with {@code /} separators; must be set (non-empty) before
+     *         {@link #call()}
+     * @return {@code this}
+     */
     public RemoveCommand setFile(String file) {
         this.file = file;
         return this;
     }
 
+    /**
+     * Sets whether files with uncommitted changes are removed anyway.
+     * @param force {@code true} to remove added or modified files (like {@code hg remove -f}); the default
+     *         {@code false} refuses them
+     * @return {@code this}
+     */
     public RemoveCommand setForce(boolean force) {
         this.force = force;
         return this;
     }
 
 
+    /**
+     * Removes the single file set by {@link #setFile}.
+     * <p>
+     * Takes the working copy lock and runs inside a dirstate files-changing context. A file added but not committed
+     * is only forgotten (its disk file is kept); any other tracked file is deleted from disk and marked removed
+     * ({@code r}) in the dirstate. Without {@link #setForce}, files that are added or modified are refused.
+     * @return {@code true} when the file was removed
+     * @throws IllegalStateException if no file was set
+     * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if the file is not tracked,
+     *         or, without force, has uncommitted changes (added or modified)
+     * @throws IOException if reading or writing the dirstate or deleting the file fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public boolean call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");

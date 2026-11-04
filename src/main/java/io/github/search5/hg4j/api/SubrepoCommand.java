@@ -22,25 +22,52 @@ public class SubrepoCommand {
     private String subrepoUrl;
     private String revision;
 
+    /**
+     * Creates the command.
+     * @param repository the repository whose subrepositories are managed; must not be {@code null}
+     */
     public SubrepoCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Selects what {@link #call()} does.
+     * @param action {@code add} (append an entry to {@code .hgsub} and {@code .hgsubstate}), or {@code init} or
+     *         {@code update} (clone or update every subrepository listed in {@code .hgsub} to the revision in
+     *         {@code .hgsubstate}); case-insensitive, must be set before {@link #call()}
+     * @return {@code this}
+     */
     public SubrepoCommand setAction(String action) {
         this.action = action;
         return this;
     }
 
+    /**
+     * Sets the subrepository path for the {@code add} action.
+     * @param subrepoPath the path relative to the repository root written to {@code .hgsub}; required for {@code add}
+     * @return {@code this}
+     */
     public SubrepoCommand setSubrepoPath(String subrepoPath) {
         this.subrepoPath = subrepoPath;
         return this;
     }
 
+    /**
+     * Sets the subrepository source for the {@code add} action.
+     * @param subrepoUrl the source written to {@code .hgsub}; required for {@code add}
+     * @return {@code this}
+     */
     public SubrepoCommand setSubrepoUrl(String subrepoUrl) {
         this.subrepoUrl = subrepoUrl;
         return this;
     }
 
+    /**
+     * Sets the revision recorded for {@code add}.
+     * @param revision the revision string written to {@code .hgsubstate}; {@code null} (the default) records the
+     *         all-zero node. Not used by {@code init} or {@code update}, which read the revision from {@code .hgsubstate}
+     * @return {@code this}
+     */
     public SubrepoCommand setRevision(String revision) {
         this.revision = revision;
         return this;

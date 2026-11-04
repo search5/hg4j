@@ -20,18 +20,48 @@ import java.nio.file.Files;
  */
 public class GrepCommand {
     
+    /**
+     * One matching line found by {@link GrepCommand}.
+     */
     public static class GrepResult {
+        /**
+         * Repository-relative path (forward slashes) of the file that contains the match.
+         */
         public final String path;
+        /**
+         * Hex node id of the file revision containing the match when the whole file history is searched; an empty string when searching specific revisions with {@link GrepCommand#setRevisions(String)}.
+         */
         public final String hexNode;
+        /**
+         * One-based line number of the match within the file revision.
+         */
         public final int lineNumber;
+        /**
+         * Text of the matching line, without the line terminator.
+         */
         public final String lineContent;
         /** The changeset that introduced this file revision ({@code fctx.linkrev()}); -1 if unknown. */
         public final int linkRevision;
 
+        /**
+         * Creates a result with an unknown link revision ({@code -1}).
+         * @param path repository-relative path of the file
+         * @param hexNode hex node id of the file revision
+         * @param lineNumber one-based line number of the match
+         * @param lineContent text of the matching line
+         */
         public GrepResult(String path, String hexNode, int lineNumber, String lineContent) {
             this(path, hexNode, lineNumber, lineContent, -1);
         }
 
+        /**
+         * Creates a result.
+         * @param path repository-relative path of the file
+         * @param hexNode hex node id of the file revision
+         * @param lineNumber one-based line number of the match
+         * @param lineContent text of the matching line
+         * @param linkRevision the changeset revision number associated with the match, or {@code -1} if unknown
+         */
         public GrepResult(String path, String hexNode, int lineNumber, String lineContent, int linkRevision) {
             this.linkRevision = linkRevision;
             this.path = path;
@@ -45,10 +75,20 @@ public class GrepCommand {
     private String query;
     private boolean caseInsensitive = false;
 
+    /**
+     * Creates a grep command for the given repository.
+     * @param repository the repository to search
+     */
     public GrepCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the search expression, a Java regular expression ({@link java.util.regex.Pattern}) that is searched for within each line ({@code find()} semantics, not a full-line match).
+     * If the query is {@code null} or empty, {@link #call()} returns an empty list. There is no default.
+     * @param query the regular expression
+     * @return {@code this}
+     */
     public GrepCommand setQuery(String query) {
         this.query = query;
         return this;
@@ -131,6 +171,11 @@ public class GrepCommand {
         return results;
     }
 
+    /**
+     * Sets whether the query is matched case-insensitively (the {@code hg grep -i} option). The default is {@code false}.
+     * @param caseInsensitive {@code true} to ignore case
+     * @return {@code this}
+     */
     public GrepCommand setCaseInsensitive(boolean caseInsensitive) {
         this.caseInsensitive = caseInsensitive;
         return this;

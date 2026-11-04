@@ -81,14 +81,35 @@ public class ChangegroupParser {
      * Structure representing a single delta/revision entry in a changegroup.
      */
     public static class ChangeGroupEntry {
+        /**
+         * The 20-byte node hash of this revision.
+         */
         public byte[] node;
+        /**
+         * The 20-byte node hash of the first parent (all zero if none).
+         */
         public byte[] p1;
+        /**
+         * The 20-byte node hash of the second parent (all zero if none).
+         */
         public byte[] p2;
+        /**
+         * The 20-byte node hash of the changeset this revision is linked to (its link node).
+         */
         public byte[] cs;
+        /**
+         * The 20-byte node hash the delta applies against; null for cg1, which carries no delta base (see {@link #impliedDeltaBase}).
+         */
         public byte[] deltabase;
         /** cg1 only (it has no delta base field): the previous chunk of the same group, or p1 for the first one. */
         public byte[] impliedDeltaBase; // null if cg1, 20-bytes if cg2/cg3/cg4/cg5
+        /**
+         * The revlog flags of the revision; 0 for versions that carry none.
+         */
         public int flags;        // 0 if not cg3/cg4/cg5 (cg4: REVIDX_DELTA_INFO_FLAGS already masked off)
+        /**
+         * The delta against the delta base, or the full text when {@link #fullText} is true.
+         */
         public byte[] delta;     // bdiff-encoded delta against deltabase, UNLESS fullText is true
 
         // cg4-only (실제 스펙: mercurial/changegroup.py의 _CHANGEGROUPV4_DELTA_HEADER 실측).
@@ -333,20 +354,53 @@ public class ChangegroupParser {
         return valid;
     }
 
+    /**
+     * The manifest entries of one directory in a treemanifest-capable changegroup (cg3 and later).
+     */
     public static class ManifestGroup {
+        /**
+         * The directory path the group belongs to.
+         */
         public String path;
+        /**
+         * The revisions of the group, in stream order.
+         */
         public List<ChangeGroupEntry> entries;
     }
 
+    /**
+     * The revisions of one file in a changegroup.
+     */
     public static class FileGroup {
+        /**
+         * The repository-relative path of the file.
+         */
         public String path;
+        /**
+         * The revisions of the file, in stream order.
+         */
         public List<ChangeGroupEntry> entries;
     }
 
+    /**
+     * A fully parsed changegroup: changelog, manifest and file groups.
+     */
     public static class ChangegroupBundle {
+        /**
+         * The changelog revisions, in stream order.
+         */
         public List<ChangeGroupEntry> changelogEntries;
+        /**
+         * The manifest revisions; null for changegroup versions 3, 4 and 5, which use {@link #manifestGroups} instead.
+         */
         public List<ChangeGroupEntry> manifestEntries; // null if cg3/cg4/cg5
+        /**
+         * The manifest groups per directory; used by changegroup versions 3, 4 and 5.
+         */
         public List<ManifestGroup> manifestGroups;     // cg3/cg4/cg5 treemanifest-capable envelope
+        /**
+         * The file groups, in stream order.
+         */
         public List<FileGroup> fileGroups;
     }
 

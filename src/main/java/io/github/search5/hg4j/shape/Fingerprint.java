@@ -28,6 +28,11 @@ public final class Fingerprint {
             this.prefix = prefix;
         }
 
+        /**
+         * Returns the word the text form of this kind starts with.
+         *
+         * @return {@code "shape"} or {@code "shard"}
+         */
         public String prefix() {
             return prefix;
         }
@@ -42,6 +47,14 @@ public final class Fingerprint {
     private final int version;
     private final byte[] digest;
 
+    /**
+     * Creates a fingerprint.
+     *
+     * @param kind what the fingerprint identifies
+     * @param version the version of the computation that produced the digest; version 0 requires a 32-byte digest, other versions accept any non-empty digest
+     * @param digest the digest bytes, copied; must not be {@code null}
+     * @throws IllegalArgumentException if the digest is empty or has the wrong size for a known version
+     */
     public Fingerprint(Kind kind, int version, byte[] digest) {
         Integer expected = DIGEST_SIZES.get(version);
         if (digest.length == 0 || expected != null && digest.length != expected) {
@@ -52,14 +65,29 @@ public final class Fingerprint {
         this.digest = digest.clone();
     }
 
+    /**
+     * Returns what this fingerprint identifies.
+     *
+     * @return the kind
+     */
     public Kind kind() {
         return kind;
     }
 
+    /**
+     * Returns the version of the computation that produced the digest.
+     *
+     * @return the version
+     */
     public int version() {
         return version;
     }
 
+    /**
+     * Returns the digest.
+     *
+     * @return a copy of the digest bytes
+     */
     public byte[] digest() {
         return digest.clone();
     }

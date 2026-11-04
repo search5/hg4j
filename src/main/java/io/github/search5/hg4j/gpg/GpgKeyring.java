@@ -162,10 +162,20 @@ public final class GpgKeyring {
         return publicKeys.getPublicKeyRing(keyId);
     }
 
+    /**
+     * Returns the number of public key rings loaded.
+     *
+     * @return the count of public key rings
+     */
     public int publicKeyRingCount() {
         return publicKeys.size();
     }
 
+    /**
+     * Returns the number of secret key rings loaded.
+     *
+     * @return the count of secret key rings
+     */
     public int secretKeyRingCount() {
         return secretKeys.size();
     }

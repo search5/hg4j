@@ -6,9 +6,17 @@ import java.util.Arrays;
  * Mercurial의 20바이트 노드 식별자(SHA-1 해시)를 표현하는 불변 값 객체(Value Object).
  */
 public final class NodeId implements Comparable<NodeId> {
+    /**
+     * The null node id: 20 zero bytes, the parent of a root revision.
+     */
     public static final NodeId NULL = new NodeId(new byte[20]);
     private final byte[] bytes;
 
+    /**
+     * Creates a node id from its binary form.
+     * @param bytes exactly 20 bytes; the array is copied
+     * @throws IllegalArgumentException if {@code bytes} is {@code null} or not 20 bytes long
+     */
     public NodeId(byte[] bytes) {
         if (bytes == null || bytes.length != 20) {
             throw new IllegalArgumentException("NodeId must be exactly 20 bytes");
@@ -16,6 +24,12 @@ public final class NodeId implements Comparable<NodeId> {
         this.bytes = Arrays.copyOf(bytes, 20);
     }
 
+    /**
+     * Creates a node id from its hexadecimal form.
+     * @param hex exactly 40 hexadecimal digits
+     * @return the node id
+     * @throws IllegalArgumentException if {@code hex} is {@code null}, not 40 characters long or not hexadecimal
+     */
     public static NodeId fromHex(String hex) {
         if (hex == null || hex.length() != 40) {
             throw new IllegalArgumentException("Hex string must be exactly 40 characters");
@@ -33,10 +47,18 @@ public final class NodeId implements Comparable<NodeId> {
         return new NodeId(raw);
     }
 
+    /**
+     * Returns the binary form.
+     * @return a new 20-byte array
+     */
     public byte[] getBytes() {
         return Arrays.copyOf(bytes, 20);
     }
 
+    /**
+     * Returns the hexadecimal form.
+     * @return 40 lower case hexadecimal digits
+     */
     public String toHex() {
         StringBuilder sb = new StringBuilder(40);
         for (byte b : bytes) {
@@ -45,6 +67,10 @@ public final class NodeId implements Comparable<NodeId> {
         return sb.toString();
     }
 
+    /**
+     * Tells whether this is the null node.
+     * @return {@code true} if all 20 bytes are zero
+     */
     public boolean isNull() {
         return Arrays.equals(this.bytes, NULL.bytes);
     }

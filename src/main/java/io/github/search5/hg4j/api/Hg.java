@@ -173,14 +173,25 @@ public class Hg implements AutoCloseable {
         return new CloneCommand();
     }
 
+    /**
+     * Returns the underlying repository handle this facade wraps.
+     * @return the repository; never {@code null}
+     */
     public HgRepository getRepository() {
         return this.repository;
     }
 
+    /**
+     * Creates a new {@link AddCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public AddCommand add() {
         return new AddCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link CommitCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     * <p>Hooks registered on this facade for {@link HgHookType#PRE_COMMIT} and {@link HgHookType#POST_COMMIT} are attached to the returned command.</p>
+     */
     public CommitCommand commit() {
         CommitCommand command = new CommitCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_COMMIT)) {
@@ -192,14 +203,23 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
+    /**
+     * Creates a new {@link StatusCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public StatusCommand status() {
         return new StatusCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link LogCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public LogCommand log() {
         return new LogCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link BranchCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public BranchCommand branch() {
         return new BranchCommand(this.repository);
     }
@@ -219,6 +239,10 @@ public class Hg implements AutoCloseable {
         return new SigCheckCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link TagCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     * <p>Hooks registered on this facade for {@link HgHookType#PRE_TAG} and {@link HgHookType#POST_TAG} are attached to the returned command.</p>
+     */
     public TagCommand tag() {
         TagCommand command = new TagCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_TAG)) {
@@ -231,10 +255,17 @@ public class Hg implements AutoCloseable {
     }
 
 
+    /**
+     * Creates a new {@link BookmarkCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public BookmarkCommand bookmark() {
         return new BookmarkCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link MergeCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     * <p>Hooks registered on this facade for {@link HgHookType#PRE_MERGE} and {@link HgHookType#POST_MERGE} are attached to the returned command.</p>
+     */
     public MergeCommand merge() {
         MergeCommand command = new MergeCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_MERGE)) {
@@ -246,22 +277,38 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
+    /**
+     * Creates a new {@link PullCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public PullCommand pull() {
         return new PullCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link FetchCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public FetchCommand fetch() {
         return new FetchCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link WorktreeCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public WorktreeCommand worktree() {
         return new WorktreeCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ShelveCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ShelveCommand shelve() {
         return new ShelveCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link RebaseCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     * <p>Hooks registered on this facade for {@link HgHookType#PRE_REBASE} and {@link HgHookType#POST_REBASE} are attached to the returned command.</p>
+     */
     public RebaseCommand rebase() {
         RebaseCommand command = new RebaseCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_REBASE)) {
@@ -273,6 +320,10 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
+    /**
+     * Creates a new {@link UpdateCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     * <p>Hooks registered on this facade for {@link HgHookType#PRE_UPDATE} and {@link HgHookType#POST_UPDATE} are attached to the returned command.</p>
+     */
     public UpdateCommand update() {
         UpdateCommand command = new UpdateCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_UPDATE)) {
@@ -285,6 +336,10 @@ public class Hg implements AutoCloseable {
     }
 
 
+    /**
+     * Creates a new {@link PushCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     * <p>Hooks registered on this facade for {@link HgHookType#PRE_PUSH} and {@link HgHookType#POST_PUSH} are attached to the returned command.</p>
+     */
     public PushCommand push() {
         PushCommand command = new PushCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.PRE_PUSH)) {
@@ -296,66 +351,119 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
+    /**
+     * Rolls back the last transaction using the repository's undo information (the equivalent of {@code hg rollback}). It runs a {@link RollbackCommand} on this repository.
+     * <p>It takes the working copy lock and the store lock.</p>
+     * @throws IOException if the undo information cannot be read or applied
+     * @throws io.github.search5.hg4j.errors.HgLockException if a lock cannot be acquired
+     * @throws IllegalStateException if no rollback information is available
+     */
     public void rollback() throws IOException, io.github.search5.hg4j.errors.HgLockException {
         new RollbackCommand(this.repository).call();
     }
 
+    /**
+     * Creates a new {@link CatCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public CatCommand cat() {
         return new CatCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link RevertCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public RevertCommand revert() {
         return new RevertCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link RemoveCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public RemoveCommand remove() {
         return new RemoveCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link DiffCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public DiffCommand diff() {
         return new DiffCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link TreeCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public TreeCommand tree() {
         return new TreeCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link RenameCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public RenameCommand rename() {
         return new RenameCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link AnnotateCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public AnnotateCommand annotate() {
         return new AnnotateCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ResolveCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ResolveCommand resolve() {
         return new ResolveCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link AmendCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public AmendCommand amend() {
         return new AmendCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link BisectCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public BisectCommand bisect() {
         return new BisectCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link GrepCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public GrepCommand grep() {
         return new GrepCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link HisteditCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public HisteditCommand histedit() {
         return new HisteditCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ExportCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ExportCommand export() {
         return new ExportCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ImportCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ImportCommand importPatch() {
         return new ImportCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link GraftCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     * <p>Hooks registered on this facade for {@link HgHookType#POST_GRAFT} are attached to the returned command.</p>
+     */
     public GraftCommand graft() {
         GraftCommand command = new GraftCommand(this.repository);
         for (HgHook hook : getHooks(HgHookType.POST_GRAFT)) {
@@ -364,130 +472,226 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
+    /**
+     * Creates a new {@link PurgeCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public PurgeCommand purge() {
         return new PurgeCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ArchiveCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ArchiveCommand archive() {
         return new ArchiveCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link GcCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public GcCommand gc() {
         return new GcCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link SubrepoCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public SubrepoCommand subrepo() {
         return new SubrepoCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link IncomingCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public IncomingCommand incoming() {
         return new IncomingCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link OutgoingCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public OutgoingCommand outgoing() {
         return new OutgoingCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link DescribeCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public DescribeCommand describe() {
         return new DescribeCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link PhaseCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public PhaseCommand phase() {
         return new PhaseCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link RevsetCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public RevsetCommand revset() {
         return new RevsetCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link HeadsCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public HeadsCommand heads() {
         return new HeadsCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link IdentifyCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public IdentifyCommand identify() {
         return new IdentifyCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link StripCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public StripCommand strip() {
         return new StripCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link VerifyCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public VerifyCommand verify() {
         return new VerifyCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link RootCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public RootCommand root() {
         return new RootCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link TipCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public TipCommand tip() {
         return new TipCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ParentsCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ParentsCommand parents() {
         return new ParentsCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link SummaryCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public SummaryCommand summary() {
         return new SummaryCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ForgetCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ForgetCommand forget() {
         return new ForgetCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link AddremoveCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public AddremoveCommand addremove() {
         return new AddremoveCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link BackoutCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public BackoutCommand backout() {
         return new BackoutCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link UnbundleCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public UnbundleCommand unbundle() {
         return new UnbundleCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link BranchesCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public BranchesCommand branches() {
         return new BranchesCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link TreeMergeCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public TreeMergeCommand treeMerge() {
         return new TreeMergeCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link CensorCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public CensorCommand censor() {
         return new CensorCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link TagsCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public TagsCommand tags() {
         return new TagsCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link PathsCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public PathsCommand paths() {
         return new PathsCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link FilesCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public FilesCommand files() {
         return new FilesCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link LocateCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public LocateCommand locate() {
         return new LocateCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link ManifestCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public ManifestCommand manifest() {
         return new ManifestCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link CopyCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public CopyCommand copy() {
         return new CopyCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link BundleCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public BundleCommand bundle() {
         return new BundleCommand(this.repository);
     }
 
+    /**
+     * Creates a new {@link RecoverCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
+     */
     public RecoverCommand recover() {
         return new RecoverCommand(this.repository);
     }
@@ -556,6 +760,10 @@ public class Hg implements AutoCloseable {
         return cfg;
     }
 
+    /**
+     * Creates a new {@link NarrowCloneCommand} for cloning a repository with a narrowed set of paths. It is not tied to an existing repository.
+     * @return a new narrow-clone command
+     */
     public static NarrowCloneCommand narrowClone() {
         return new NarrowCloneCommand();
     }
@@ -588,10 +796,19 @@ public class Hg implements AutoCloseable {
         return tree().setNodeId(revision).call();
     }
 
+    /**
+     * Creates a walker over the manifest of the given revision.
+     * @param revision the revision identifier whose manifest is walked
+     * @return a new {@link ManifestWalk} bound to this repository
+     */
     public ManifestWalk walkManifest(String revision) {
         return new ManifestWalk(this.repository, revision);
     }
 
+    /**
+     * Creates a walker over the files of the working directory.
+     * @return a new {@link WorkingDirWalk} bound to this repository
+     */
     public WorkingDirWalk walkWorkingDir() {
         return new WorkingDirWalk(this.repository);
     }

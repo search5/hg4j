@@ -94,6 +94,16 @@ public class HgRemoteConnectionFactory {
         return connection;
     }
 
+    /**
+     * Creates a connection for the URL using the first registered protocol that accepts it (custom protocols
+     * registered with {@link #register(TransportProtocol)} come first). If none accepts the URL, an
+     * {@link HgRemoteClient} (HTTP) is returned. No authentication is performed here; the connection should be
+     * closed by the caller.
+     * @param url the repository URL or local path; must not be null or empty
+     * @return a new connection
+     * @throws IllegalArgumentException if {@code url} is null or empty
+     * @throws IOException if the selected protocol fails to open the connection
+     */
     public static HgRemoteConnection createConnection(String url) throws IOException {
         if (url == null || url.isEmpty()) {
             throw new IllegalArgumentException("Connection URL cannot be null or empty.");

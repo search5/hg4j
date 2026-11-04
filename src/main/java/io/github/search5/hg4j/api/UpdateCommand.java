@@ -46,10 +46,19 @@ public class UpdateCommand {
     private final List<HgHook> preUpdateHooks = new ArrayList<>();
     private final List<HgHook> postUpdateHooks = new ArrayList<>();
 
+    /**
+     * Creates the command.
+     * @param repository the repository to update; must not be {@code null}
+     */
     public UpdateCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Registers a hook run before the update; if it returns {@code false} the update fails.
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public UpdateCommand registerPreUpdateHook(HgHook hook) {
         if (hook != null) {
             preUpdateHooks.add(hook);
@@ -57,6 +66,11 @@ public class UpdateCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run after the update.
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public UpdateCommand registerPostUpdateHook(HgHook hook) {
         if (hook != null) {
             postUpdateHooks.add(hook);
@@ -64,6 +78,12 @@ public class UpdateCommand {
         return this;
     }
 
+    /**
+     * Sets a filter limiting which paths are checked out (narrow support).
+     * @param treeFilter the filter; {@code null} is ignored. The default {@code HgTreeFilter.ALL} lets the update use
+     *         the repository's own narrowspec
+     * @return {@code this}
+     */
     public UpdateCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -71,11 +91,23 @@ public class UpdateCommand {
         return this;
     }
 
+    /**
+     * Sets the revision to update to.
+     * @param targetRevision a revision identifier (revision number, node hex or prefix, symbolic name) or a named
+     *         branch, which selects the highest-numbered revision on it; must be set before {@link #call()}
+     * @return {@code this}
+     */
     public UpdateCommand setRevision(String targetRevision) {
         this.targetRevision = targetRevision;
         return this;
     }
 
+    /**
+     * Sets whether uncommitted changes may be overwritten.
+     * @param force {@code true} to update even with uncommitted changes (like {@code hg update -C}); default
+     *         {@code false}
+     * @return {@code this}
+     */
     public UpdateCommand setForce(boolean force) {
         this.force = force;
         return this;
@@ -89,6 +121,22 @@ public class UpdateCommand {
 
     private io.github.search5.hg4j.lib.ProgressMonitor monitor;
 
+    /**
+     * Updates the working copy to the revision set with {@link #setRevision}.
+     * <p>
+     * Takes the working copy lock and runs inside a dirstate parent-changing context. Pre-update hooks run first
+     * (context keys {@code repository}, {@code targetRevision}, {@code force}) and can veto. Unless forced, the update is
+     * refused when the working copy has added, modified or removed files. After the checkout, post-update hooks run
+     * (context keys {@code targetNode}, {@code repository}); their failures are logged and ignored. If no tree filter
+     * was set, the repository's narrowspec is used.
+     * @return the 20-byte node id of the revision that is now checked out
+     * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if the repository is
+     *         empty, a pre-update hook returns {@code false}, or there are uncommitted changes and force is off
+     * @throws io.github.search5.hg4j.errors.HgRevisionNotFoundException (an {@link IOException}) if the revision
+     *         cannot be resolved or is ambiguous
+     * @throws IOException if reading history or writing the working copy fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public byte[] call() throws IOException, HgLockException {
         try (io.github.search5.hg4j.lfs.HgLfsProgress bound = io.github.search5.hg4j.lfs.HgLfsProgress.bind(monitor)) {
             return callUpdate();

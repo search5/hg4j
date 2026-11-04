@@ -34,6 +34,9 @@ public final class ClonebundlesManifest {
     private ClonebundlesManifest() {
     }
 
+    /**
+     * One line of a clonebundles manifest: a URL and its attributes. Instances are immutable apart from the map returned by {@link #getAttributes()}.
+     */
     public static final class Entry {
         private final String url;
         private final Map<String, String> attributes;
@@ -43,14 +46,24 @@ public final class ClonebundlesManifest {
             this.attributes = attributes;
         }
 
+        /**
+         * Returns the bundle URL.
+         */
         public String getUrl() {
             return url;
         }
 
+        /**
+         * Returns the attributes of the line (keys such as {@code BUNDLESPEC}) as stored, not copied.
+         */
         public Map<String, String> getAttributes() {
             return attributes;
         }
 
+        /**
+         * Returns the {@code BUNDLESPEC} attribute.
+         * @return the value, or null if the line has none
+         */
         public String getBundlespec() {
             return attributes.get("BUNDLESPEC");
         }
@@ -88,7 +101,7 @@ public final class ClonebundlesManifest {
 
     /**
      * Keeps only entries whose {@code BUNDLESPEC} (if present) names a format hg4j's own {@link
-     * UnbundleCommand}/{@link Bundle2Parser} can actually decode — real hg does the same
+     * io.github.search5.hg4j.api.UnbundleCommand}/{@link Bundle2Parser} can actually decode — real hg does the same
      * client-side filtering so it never attempts to download a bundle it can't apply. An entry
      * with no {@code BUNDLESPEC} at all is kept as-is (matching real hg: it can't be pre-filtered
      * without the hint, so real hg just attempts it). {@code REQUIRESNI}/{@code REQUIREDRAM}

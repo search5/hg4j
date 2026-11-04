@@ -31,6 +31,13 @@ public final class HgLfsTracker {
         return matcher.matches(path, size);
     }
 
+    /**
+     * Builds the tracker for a repository from its {@code .hglfs} file or its configuration.
+     *
+     * @param repository the repository whose working directory and configuration are read; must not be {@code null}
+     * @return the tracker, never {@code null}
+     * @throws IOException if {@code .hglfs} cannot be read; an invalid {@code lfs.track} or {@code .hglfs} expression raises an {@link HgValidationException}
+     */
     public static HgLfsTracker forRepository(HgRepository repository) throws IOException {
         File hglfs = new File(repository.getDirectory(), ".hglfs");
         if (!hglfs.exists()) {

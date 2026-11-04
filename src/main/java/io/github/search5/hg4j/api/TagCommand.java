@@ -39,20 +39,41 @@ public class TagCommand {
     private final List<HgHook> preTagHooks = new ArrayList<>();
     private final List<HgHook> postTagHooks = new ArrayList<>();
 
+    /**
+     * Creates the command.
+     * @param repository the repository to tag in; must not be {@code null}
+     */
     public TagCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the name of the tag to create, move or remove.
+     * @param tagName the tag name; {@code null} or empty (the default) makes {@link #call()} list tags instead
+     * @return {@code this}
+     */
     public TagCommand setTagName(String tagName) {
         this.tagName = tagName;
         return this;
     }
 
+    /**
+     * Sets the changeset to tag.
+     * @param nodeId the node id (at least 20 bytes; the first 40 hex digits of it are used); required when creating a
+     *         tag, ignored when {@link #setRemove} is set
+     * @return {@code this}
+     */
     public TagCommand setNodeId(byte[] nodeId) {
         this.nodeId = nodeId;
         return this;
     }
 
+    /**
+     * Sets whether a global tag is committed right after {@code .hgtags} is updated.
+     * @param commit {@code true} (the default) to commit; {@code false} leaves {@code .hgtags} changed but
+     *         uncommitted. Has no effect for {@link #setLocal local} tags, which are never committed
+     * @return {@code this}
+     */
     public TagCommand setCommit(boolean commit) {
         this.commit = commit;
         return this;
@@ -90,6 +111,11 @@ public class TagCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run before the tag is written; if it returns {@code false} the call fails.
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public TagCommand registerPreTagHook(HgHook hook) {
         if (hook != null) {
             this.preTagHooks.add(hook);
@@ -97,6 +123,11 @@ public class TagCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run after the tag was written (and committed).
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public TagCommand registerPostTagHook(HgHook hook) {
         if (hook != null) {
             this.postTagHooks.add(hook);
@@ -104,6 +135,24 @@ public class TagCommand {
         return this;
     }
 
+    /**
+     * Creates, moves or removes a tag, or lists the tags of {@code .hgtags} when no tag name is set.
+     * <p>
+     * Takes the working copy lock and the store lock (waiting up to the repository's push lock timeout). With a tag
+     * name, a line is appended to {@code .hgtags} (or to {@code .hg/localtags} with {@link #setLocal}); for a global tag
+     * the file is added to the dirstate and, if {@link #setCommit} is on, committed with author
+     * {@code hg4j <hg4j@google.com>} and message {@code Added tag NAME for changeset SHORT} (or
+     * {@code Removed tag NAME}). Pre-tag hooks run before anything is written and can veto; post-tag hooks run last, and
+     * exceptions from them propagate. The hook context holds {@code repository}, {@code tag} and {@code node}.
+     * @return when a tag name was set, a single entry of tag name to the 40-character hex node written (all zeros for
+     *         a removal); otherwise the tag name to hex node pairs of {@code .hgtags} in file order, with later lines
+     *         replacing earlier ones, and an empty map if the file does not exist
+     * @throws IllegalArgumentException if a tag is to be created and no node id of at least 20 bytes was set
+     * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if the tag already exists
+     *         and neither force nor remove is set, or a pre-tag hook returns {@code false}
+     * @throws IOException if reading or writing the tag files, or committing, fails
+     * @throws HgLockException if a lock cannot be acquired within the timeout
+     */
     public Map<String, String> call() throws IOException, HgLockException {
         // Like real hg, the locks are taken before the first read of the repository state and released when the command ends.
         int lockTimeout = repository.resolvePushLockTimeoutMs();

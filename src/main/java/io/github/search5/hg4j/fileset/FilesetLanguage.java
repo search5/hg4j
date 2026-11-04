@@ -16,8 +16,11 @@ public final class FilesetLanguage {
 
     /** The weights {@code filesetlang} gives predicates for static optimization. */
     public static final double WEIGHT_CHECK_FILENAME = 0.5;
+    /** Weight of a predicate that reads file contents. */
     public static final double WEIGHT_READ_CONTENTS = 30;
+    /** Weight of a predicate that needs the status of the working directory or revision. */
     public static final double WEIGHT_STATUS = 10;
+    /** Weight of a predicate that needs the status including unknown or ignored files. */
     public static final double WEIGHT_STATUS_THOROUGH = 50;
 
     /** What the language needs to know about a predicate: how heavy it is and whether it reads the status. */

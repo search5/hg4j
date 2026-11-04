@@ -1,0 +1,421 @@
+// Maintenance, signing, subrepo and merge-preview commands; facade, hooks and exceptions.
+// All classes are in io.github.search5.hg4j.api unless noted. Everything below is taken from the source.
+
+== Maintenance and integrity commands
+
+=== VerifyCommand
+
+Checks the integrity of the repository store. Corresponds to `hg verify`. The javadoc calls it a "simplified verifier": it checks node id hash consistency of the changelog, the manifest, treemanifest submanifests under `meta/` and every filelog, and it does not cross-check changelog, manifest and filelog linkage.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`VerifyCommand(HgRepository)` |Constructor. A null repository raises `IllegalArgumentException`.
+|`setSkipLfs(boolean)` |`hg verify --no-lfs`: do not read (so do not fetch) an LFS blob that is not stored locally. The config `verify.skipflags` with the EXTSTORED bit (0x2000) has the same effect.
+|===
+
+Execution:: `List<String> call() throws HgLockException`. Returns the error messages; an empty list means the checks found nothing. Read failures inside the check are reported as the message `critical repository read failure: ...` and are not thrown. A failure while releasing the lock is rethrown as `HgLockException`. A repository without `00changelog.i` counts as an empty changelog (0 revisions), as in real hg. A missing `00manifest.i` is an error only when the changelog has revisions. Filelogs are discovered from `fncache` plus a walk of `data/`; an `fncache` entry whose index file is missing is reported.
+
+Locking:: The store lock only, via `lockStoreWithoutRecovery`, held around the whole check ("Like real hg (verify.verify)"). No working copy lock. dirstate is not touched.
+
+Differences from hg:: Simplified verifier as described above (no linkage cross-checks). Otherwise not stated in the source.
+
+[source,java]
+----
+try (Hg hg = Hg.open("/path/to/repo")) {
+    List<String> errors = hg.verify().setSkipLfs(true).call();
+    if (!errors.isEmpty()) errors.forEach(System.err::println);
+}
+----
+
+=== RecoverCommand
+
+Rolls back an interrupted transaction (a leftover `.hg/store/journal`). Corresponds to `hg recover` (and `hg recover --verify`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`RecoverCommand(HgRepository)` |Constructor. A null repository raises `IllegalArgumentException`.
+|`setVerify(boolean)` |`hg recover --verify`: only when an interrupted transaction was found and rolled back, additionally run `VerifyCommand` and report its errors on the result.
+|===
+
+Execution:: `RecoverResult call() throws HgLockException`. The result has `wasInterrupted()` (a journal was found; false is real hg's "no interrupted transaction available"), `isSuccess()` (nothing to recover, or rolled back; false means the rollback could not complete and the journal is kept for a retry) and `getVerifyErrors()` (null unless verify ran; an empty list means verify found nothing). "Nothing to recover" is returned as a result, not thrown.
+
+Locking:: The store lock only, via `lockStoreWithoutRecovery` (the lock does not recover by itself). No working copy lock is taken. The rollback is delegated to `HgRepository.checkAndPerformAutoRollback()`; whether that touches dirstate is not visible in this class, so it is "not confirmed in this class's source". When `setVerify(true)` applies, `VerifyCommand.call()` runs under the same held lock (re-entrant use is not stated in this class).
+
+Differences from hg:: Returns a `RecoverResult` instead of an exit code or message. Nothing else is stated.
+
+[source,java]
+----
+RecoverCommand.RecoverResult r = hg.recover().setVerify(true).call();
+if (r.wasInterrupted() && !r.isSuccess()) {
+    System.err.println("journal kept for retry");
+}
+----
+
+=== RollbackCommand
+
+Undoes the last transaction using the `undo*` files. Corresponds to `hg rollback`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`RollbackCommand(HgRepository)` |Constructor. There are no setters.
+|===
+
+Execution:: `void call() throws IOException, HgLockException`. Also reachable as `Hg.rollback()`. Throws `IllegalStateException("No rollback information available (undo file not found)")` when `store/undo` does not exist. Steps: (1) read `undo` and truncate or delete store files (`trunc` lines truncate only, `backup` lines restore full file bytes for v2 docket revlogs, plain lines truncate to the recorded size or delete on size 0); (2) restore `.hg/dirstate` from `.hg/undo.backup.dirstate` (or delete `dirstate` when no backup exists), and restore the dirstate-v2 data file from `.hg/undo.backup.dirstate.data` when the docket's uid file is missing; (3) restore `.hg/bookmarks` from `.hg/undo.backup.bookmarks` (or delete it) and delete `.hg/bookmarks.current`; (4) in a `finally`, delete all `undo*` info files and the consumed docket backups, and clear the revlog cache.
+
+Locking:: `lockWorkingCopy(timeout)` first, then `lockStore(timeout)` (the version that, per `HgRepository.lockStore`, refuses with `HgAbandonedTransactionException` when a journal exists and the lock is not re-entrant), both taken before the first read and released at the end. Rollback does modify dirstate and bookmarks.
+
+Differences from hg:: Not stated beyond the conformance note in the class javadoc to the `undo.*` layout.
+
+[source,java]
+----
+hg.rollback();
+// or
+new RollbackCommand(hg.getRepository()).call();
+----
+
+=== GcCommand
+
+Store compaction and cleanup. No exact hg command; the source says the nearest real operations are `debugupgraderepo` and `debugrebuildfncache`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`GcCommand(HgRepository)` |Constructor. There are no setters.
+|===
+
+Execution:: `String call() throws IOException, HgLockException`. Returns a summary string of the form `GC / Compaction complete: defragmented and re-delta optimized N store revlogs, cleaned M orphaned temp files.` Throws `IOException` when the store directory does not exist (checked first, because taking a lock would create it). Steps: clear the revlog cache; delete `*.backup`, `*.tmp` and `journal` files in the store root; rewrite the changelog, the manifest and every `.i` revlog under `data/` and `meta/` revision by revision into temp files and swap them in atomically (empty revlogs and v2/docket revlogs are skipped and left untouched); rebuild `fncache` with atomic IO (entries for `data/` and `meta/` revlogs only, plus `.d` entries for split revlogs), skipped for `fileindex-v1` repositories or when nothing was found; call `System.gc()`.
+
+Locking:: `lockWorkingCopy(timeout)` first, then `lockStoreWithoutRecovery(timeout)`, because the command removes leftovers including a stale journal itself and counts them.
+
+Differences from hg:: No direct counterpart. v2/docket revlogs (`changelog-v2`, `general-v2`) are never rewritten because the source says real hg has no compaction for them and rewriting would be destructive.
+
+[source,java]
+----
+String summary = hg.gc().call();
+System.out.println(summary);
+----
+
+=== AdminVerifyCommand
+
+Runs named repository checks. Corresponds to `hg admin::verify` (`admin/verify.py`). Mercurial 7.2 registers one check here, `working-copy.dirstate` (alias `dirstate`), which compares the dirstate with the manifests of its parents.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`AdminVerifyCommand(HgRepository)` |Constructor.
+|`addCheck(String)` |`-c/--check`: a check to run. A name is a qualified name, an alias, a prefix of a qualified name (`working-copy` runs everything below it) or `full`. With none, the call fails.
+|`addOption(String)` |`-o/--option`: `check:option=value`. The check has to accept the option; the only registered check accepts none.
+|`getOutput()` |The lines `ui.status` printed.
+|`getWarnings()` |The lines `ui.warn` printed: findings, and the warning `abandoned transaction found - run hg recover` when a journal exists.
+|===
+
+Execution:: `Map<String, Integer> call() throws IOException`. Returns the number of errors per check (qualified name) for each check that found some. Throws `HgValidationException` (an `IOException`) for an unknown check, an invalid option, an option for an unselected check, an option the check does not have, and when no check was selected (`` `checks` required ``).
+
+Locking:: None. The class javadoc says "Nothing is locked: it only reads."
+
+Differences from hg:: Not stated beyond the single registered check.
+
+[source,java]
+----
+AdminVerifyCommand v = new AdminVerifyCommand(hg.getRepository()).addCheck("dirstate");
+Map<String, Integer> found = v.call();
+v.getWarnings().forEach(System.err::print);
+----
+
+=== NarrowServerAdmin
+
+Administration of the shards and shapes of a server repository. Corresponds to `hg admin::narrow-server` and `admin::narrow-client` (`--store-fingerprint`). The class is final and has no `call()`; each option is its own method. The source points to `llm-wiki/concepts/store-shapes.md` sections 10 and 11 for the analysis.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`NarrowServerAdmin(HgRepository)` |Constructor.
+|`getWarnings()` |What the last call warned about (`ui.warn`), for example a store shapes update in progress.
+|`shapeFingerprints()` |`--shape-fingerprints`: `<fingerprint> <names>` for every shape.
+|`storeShardsListing()` |`--store-shards`: the id of every shard, then `read-write-access=a,b` when it has some.
+|`shapePatterns(String names)` |`--shape-patterns NAMES`: `inc:/path` and `exc:/path` lines in zero path order.
+|`shapeNarrowPatterns(String names)` |`--shape-narrow-patterns NAMES`: the legacy `[include]` and `[exclude]` sections without the root.
+|`shapeFiles(String names, boolean hiddenOnly)` |`--shape-files` / `--shape-files-hidden`: sorted filelogs of the store covered by the shape; with `hiddenOnly`, only those not in the working copy.
+|`shapeUpdate(byte[] newContents, UpdateOptions options)` |`--shape-update`: replaces the `server-shapes` file after validation. A header comment is prepended when missing.
+|`shapeClearPrevious()` |`--shape-clear-previous`: removes the saved previous configs; returns `cleared N saved server-shapes`.
+|`static storeFingerprint(Set<String> includes, Set<String> excludes)` |`admin::narrow-client --store-fingerprint`: the fingerprint of a narrow clone's store narrowspec, with a trailing newline.
+|`UpdateOptions(overrideReshapeAndReshardCheck, overrideFingerprintChangeCheck, overrideSavedConfigsCheck)` |Record of the three `override-*` flags of `--shape-update`; `UpdateOptions.strict()` has all false.
+|===
+
+Execution:: Listing methods return `List<String>` and throw `IOException`. `shapeUpdate` returns void and throws `IOException, HgLockException`. `shapeClearPrevious` returns `String` and throws `IOException, HgLockException`. Every instance method first throws `HgValidationException("repo is narrowed, this is a server command")` when `narrowhg-experimental` is in `.hg/requires` or `store/requires`. An unknown shape name gives `HgValidationException("shape '...' not found")`. `shapeUpdate` validation (`HgValidationException`) refuses redefining the fingerprint of an existing shape, reshaping and resharding in one update, and reshaping while previous configs are still saved, each unless its override flag is set.
+
+Locking:: Listing methods take no lock and only warn when an update is in progress. `shapeUpdate`: the store shapes lock without waiting (`lockStoreShapes(0)`), read the old config, parse and validate the new one (a bad document aborts before anything is written), then the store lock (`lockStoreWithoutRecovery`) only for the write, saving the old config first when shards changed, then an atomic write. `shapeClearPrevious`: shapes lock then store lock together. No working copy lock.
+
+Differences from hg:: Not stated.
+
+[source,java]
+----
+NarrowServerAdmin admin = new NarrowServerAdmin(hg.getRepository());
+admin.shapeFingerprints().forEach(System.out::println);
+admin.shapeUpdate(Files.readAllBytes(Path.of("server-shapes")), NarrowServerAdmin.UpdateOptions.strict());
+----
+
+=== ChainsawUpdateCommand
+
+Pulls and updates to a revision no matter what. Corresponds to `hg admin::chainsaw-update` (`mercurial/admin/chainsaw.py`). The javadoc marks it DANGEROUS: a non-repository directory at the destination is removed, locks left by anybody are broken, local changes and unknown files are thrown away. Intended for unattended use with exclusive access.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setRevision(String)` |`--rev`: the target revision. Required.
+|`setSource(String)` |`--source`: where to pull from. Required.
+|`setDestination(String)` |`--dest`: the repository to update; it is cloned (created) when it does not exist. Required.
+|`setPurgeUnknown(boolean)` |`--purge-unknown`, default on.
+|`setPurgeIgnored(boolean)` |`--purge-ignored`, default on.
+|`setInitialCloneMinimal(boolean)` |`--initial-clone-minimal`: pull only the revision when the repository is created (so no clone bundle is used).
+|`getMessages()` |What the command told the user, line by line as hg prints it.
+|===
+
+Execution:: `void call() throws IOException, HgLockException`. Throws `HgValidationException` when revision, source or destination is empty. If `<dest>/.hg` exists the repository is loaded; otherwise whatever is at the destination is deleted, a repository is created with `Hg.init()` and the repository is pulled in full unless `setInitialCloneMinimal(true)`. Then: break the locks, recover, pull, purge, force update.
+
+Locking:: As in the original, in this order: the lock files `store/lock` and `.hg/wlock` are deleted without taking anything (messages `had to break store lock` and `had to break working copy lock`); then `lockWorkingCopy()` and `lockStoreWithoutRecovery(timeout)` are taken together for recovery (`RecoverCommand`), pull, purge (`PurgeCommand` with directories, files = purge unknown, ignored = purge ignored) and update (`UpdateCommand` with force). The pull and the update take the same locks again (re-entrant); purge takes none of its own.
+
+Differences from hg:: Not stated beyond the danger notice above.
+
+[source,java]
+----
+ChainsawUpdateCommand c = new ChainsawUpdateCommand()
+    .setSource("https://example.org/repo").setDestination("/srv/checkout").setRevision("default");
+c.call();
+c.getMessages().forEach(System.out::print);
+----
+
+== Signing commands
+
+These use the `gpg` extension format (`hgext/gpg.py`). All three need a `GpgKeyring` (set with `setKeyring`).
+
+=== SignCommand
+
+Signs changesets with a GPG key. Corresponds to `hg sign`. The signature is recorded in `.hgsigs` (committed) or, with `setLocal`, in `.hg/localsigs` (never committed). The format and signed text are those of the `gpg` extension, so `hg sigcheck` accepts what is written.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setNodeId(byte[])` |The changeset to sign (20-byte node). Default: the working directory's parent.
+|`setKeyring(GpgKeyring)` |The keys to sign with; must contain a secret key (`GpgKeyring.withSecretKeys`). Required.
+|`setKeySpec(String)` |`hg sign --key`: part of a user id, or a key id / fingerprint (suffix).
+|`setPassphrase(char[])` |The key's passphrase; null or empty for an unprotected key.
+|`setLocal(boolean)` |`--local`: write `.hg/localsigs`, which is not versioned and never committed.
+|`setCommit(boolean)` |`--no-commit` is `setCommit(false)`: write and track `.hgsigs` but do not commit. Default true.
+|`setForce(boolean)` |`--force`: sign even though `.hgsigs` has uncommitted changes.
+|`setMessage(String)` |The commit message; default is one line `Added signature for changeset <short>` per signed changeset.
+|`setAuthor(String)` |Commit author. Default `hg4j <hg4j@google.com>`.
+|`setSigningTime(Instant)` |The signature creation time; default now.
+|===
+
+Execution:: `List<HgSigEntry> call() throws IOException, HgLockException`; returns the signature lines that were recorded. Throws `IllegalStateException` without a keyring; `HgValidationException` for no usable signing key, an uncommitted merge, a repository with no changeset, or a changed or untracked `.hgsigs` (unless forced); `HgRevisionNotFoundException` for an unknown node. All checks that can refuse run before `.hgsigs` is written.
+
+Locking:: The working copy lock only, `lockWorkingCopy()`, for the whole command. The commit (`CommitCommand` with `match=.hgsigs`) takes the store lock itself and releases it. Signing, the write of `.hgsigs` and the add happen under the working copy lock alone.
+
+Differences from hg:: `hg sign --force` crashes in the original with `UnboundLocalError`; `setForce` works here. Like the original, a failure after `.hgsigs` was written leaves the file as it is. The commit holds `.hgsigs` only; other changes stay uncommitted.
+
+[source,java]
+----
+List<HgSigEntry> entries = hg.sign()
+    .setKeyring(keyring).setKeySpec("alice@example.org")
+    .setPassphrase("secret".toCharArray()).setCommit(true).call();
+----
+
+=== SigsCommand
+
+Lists signed changesets, newest revision first, with each valid signer. Corresponds to `hg sigs`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setKeyring(GpgKeyring)` |The keyring to verify against. Required.
+|`setNow(Instant)` |The time expiry is judged against; default now.
+|===
+
+Execution:: `Result call() throws IOException`. `Result` is a record `(List<Signed> signatures, List<String> warnings)`; `Signed` is a record `(int revision, String nodeHex, HgSigResult signature, String source)`. Signatures are sorted highest revision first. Invalid signatures are not listed; their reasons are collected in `warnings` with the same wording and the `<file>:<line>` prefix hg would have printed (keyring notes stay in `GpgKeyring.getNotes()`). A signature of a node that does not exist gives the warning `node does not exist`. A line that is not a signature line at all is an `IOException` (`HgSigFormatException`). Throws `IllegalStateException` without a keyring.
+
+Locking:: None taken; it calls `refreshIfChangedOnDisk()` and reads.
+
+Differences from hg:: Warnings are returned instead of printed; a malformed line is an exception instead of being skipped.
+
+[source,java]
+----
+SigsCommand.Result r = hg.sigs().setKeyring(keyring).call();
+r.signatures().forEach(s -> System.out.println(s.revision() + " " + s.nodeHex()));
+r.warnings().forEach(System.err::println);
+----
+
+=== SigCheckCommand
+
+Verifies every signature recorded for one changeset. Corresponds to `hg sigcheck REV`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setNodeId(byte[])` |The changeset to check (20-byte node). Required.
+|`setKeyring(GpgKeyring)` |The keyring to verify against. Required.
+|`setNow(Instant)` |The time expiry is judged against; default now.
+|===
+
+Execution:: `Result call() throws IOException`. `Result` is a record `(String nodeHex, List<HgSigResult> validSignatures, List<String> warnings)` with `isSigned()`. An empty `validSignatures()` is what real hg reports as `no valid signature for <short>`. Throws `IllegalStateException` when the node or keyring is missing, and `HgRevisionNotFoundException` for an unknown node.
+
+Locking:: None taken; it calls `refreshIfChangedOnDisk()` and reads.
+
+Differences from hg:: Warnings are returned instead of printed.
+
+[source,java]
+----
+SigCheckCommand.Result r = hg.sigcheck().setNodeId(nodeBytes).setKeyring(keyring).call();
+System.out.println(r.isSigned() ? "signed" : "no valid signature");
+----
+
+== Subrepo and merge preview
+
+=== SubrepoCommand
+
+Adds, initializes or updates subrepositories through `.hgsub` and `.hgsubstate`. The javadoc names it "submoduleAdd / Init / Update". No single hg command; `update` and `init` do what `hg update -S` does for each entry, per the comments in the source.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setAction(String)` |`add`, `init` or `update` (case-insensitive). Required; null raises `IllegalArgumentException`.
+|`setSubrepoPath(String)` |Subrepo path. Required for `add`.
+|`setSubrepoUrl(String)` |Subrepo source URL. Required for `add`.
+|`setRevision(String)` |Pinned revision recorded by `add`; default 40 zeros.
+|===
+
+Execution:: `void call() throws IOException, HgLockException`. `add` appends `path = url` to `.hgsub` and `<rev> path` to `.hgsubstate` (no commit). `init` and `update` behave the same: for each `.hgsub` entry, find the pinned revision in `.hgsubstate`, then for a plain hg subrepo clone it when absent (with a forced update to the pin), or when it already is a checkout pull the source if the pin is not present locally (best effort) and force-update to the pin; an existing non-hg directory is left untouched. `[git]` and `[svn]` prefixed entries use the git and svn helpers (`GitSubrepoUtil`, `SvnSubrepoUtil`). If `.hgsub` is missing, `init` and `update` return silently. Throws `IOException` when a subrepo URL is empty for a path that must be cloned.
+
+Locking:: This class takes no lock itself (no `lockWorkingCopy` or `lockStore` call). Locks taken by the nested clone, pull and `UpdateCommand` calls are not described in this class.
+
+Differences from hg:: Not stated.
+
+[source,java]
+----
+hg.subrepo().setAction("add").setSubrepoPath("libs/core")
+    .setSubrepoUrl("https://example.org/core").call();
+hg.subrepo().setAction("update").call();
+----
+
+=== TreeMergeCommand
+
+A working-copy-free 3-way merge computation (the javadoc says JGit `ThreeWayMerger` parity). Takes two commit nodes and returns the merge as data. It does not write to disk or touch dirstate or the working directory. `MergeCommand` stays the porcelain command for real `hg merge`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setOurs(byte[])` |The "ours" commit node. Required.
+|`setTheirs(byte[])` |The "theirs" commit node. Required.
+|`setBase(byte[])` |The ancestor to merge against instead of the common ancestor; `graft` uses the parent of the grafted changeset. `null` or the null node means an empty ancestor.
+|===
+
+Execution:: `TreeMergeResult call() throws IOException`. `TreeMergeResult` has `isConflicted()`, `getConflicts()` (paths whose merged content still has conflict markers), `getChangedFiles()` (path to final content, relative to "ours"), `getChangedModes()` (path to POSIX mode: 0644, 0755, 0120000) and `getRemovedFiles()`. Throws `HgRevisionNotFoundException` when ours, theirs or a given base is not in the changelog.
+
+Locking:: None. Pure reads of the changelog, manifest and filelogs; `MergeCommand.call()` is never invoked.
+
+Differences from hg:: It is a computation, not a working copy merge. For a path merged by content, the mode is taken from "ours" when both sides have it, following the convention of the rebase merge logic.
+
+[source,java]
+----
+TreeMergeCommand.TreeMergeResult r = hg.treeMerge().setOurs(a).setTheirs(b).call();
+if (r.isConflicted()) System.out.println(r.getConflicts());
+r.getChangedFiles().forEach((path, bytes) -> apply(path, bytes));
+----
+
+== Facade, hooks and exceptions
+
+=== Hg (facade)
+
+`Hg` is the porcelain entry point, similar to JGit's `Git`. It implements `AutoCloseable`. The javadoc states that instances are thread-safe for concurrent reads and writes, and that `runTransaction` gives process-level atomicity for a sequence of operations.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`static Hg open(String path)` / `static Hg open(File directory)` |Opens an existing repository. Throws `IOException`; `HgRepositoryNotFoundException` when `.hg` is missing. Validates `requires` against a list of supported requirements.
+|`static Hg wrap(HgRepository)` |Wraps an existing repository. A null raises `IllegalArgumentException`.
+|`static InitCommand init()` |Command to initialize a repository.
+|`static CloneCommand cloneRepository()` |Command to clone a repository.
+|`static NarrowCloneCommand narrowClone()` |Command to make a narrow clone.
+|`Hg registerHook(HgHookType, HgHook)` |Registers a Java hook for a phase; returns this. Null type or hook is ignored.
+|`List<HgHook> getHooks(HgHookType)` |The hooks registered for a phase.
+|`void runTransaction(Runnable)` |Runs an action holding `lockWorkingCopy()` then `lockStore()`.
+|`HgRepository getRepository()` |The wrapped repository.
+|`HgRcConfig config()` |Config with system hgrc, user hgrc, then `.hg/hgrc` priority.
+|`List<byte[]> clonebundle(String url)` |Downloads and applies a clone bundle (`ClonebundlesCommand`).
+|`SparseConfig sparseConfig(int changelogRev)` |Resolved sparse rules for a revision.
+|`getDiff(int, int)` / `getDiff(NodeId, NodeId)` |Diff entries between two revisions.
+|`getTree(int)` / `getTree(NodeId)` |File tree of a revision.
+|`walkManifest(String)`, `walkWorkingDir()`, `walkTree()` |Tree walk helpers.
+|`void rollback()` |Runs `RollbackCommand`.
+|`close()` |Closes the facade.
+|===
+
+Command factories (each returns a new command bound to the repository; those marked with hooks also attach the registered hooks): `add()`, `commit()` (PRE_COMMIT, POST_COMMIT), `status()`, `log()`, `branch()`, `sign()`, `sigs()`, `sigcheck()`, `tag()` (PRE_TAG, POST_TAG), `bookmark()`, `merge()` (PRE_MERGE, POST_MERGE), `pull()`, `fetch()`, `worktree()`, `shelve()`, `rebase()` (PRE_REBASE, POST_REBASE), `update()` (PRE_UPDATE, POST_UPDATE), `push()` (PRE_PUSH, POST_PUSH), `cat()`, `revert()`, `remove()`, `diff()`, `tree()`, `rename()`, `annotate()`, `resolve()`, `amend()`, `bisect()`, `grep()`, `histedit()`, `export()`, `importPatch()`, `graft()` (POST_GRAFT), `purge()`, `archive()`, `gc()`, `subrepo()`, `incoming()`, `outgoing()`, `describe()`, `phase()`, `revset()`, `heads()`, `identify()`, `strip()`, `verify()`, `root()`, `tip()`, `parents()`, `summary()`, `forget()`, `addremove()`, `backout()`, `unbundle()`, `branches()`, `treeMerge()`, `censor()`, `tags()`, `paths()`, `files()`, `locate()`, `manifest()`, `copy()`, `bundle()`, `recover()`. There are no factories for `AdminVerifyCommand`, `NarrowServerAdmin` or `ChainsawUpdateCommand` in `Hg`; construct them directly.
+
+=== HgHook and HgHookType
+
+`HgHook` is a `@FunctionalInterface`: `boolean run(Map<String, Object> context) throws IOException`. Returning true allows the operation; returning false blocks it and aborts. The javadoc lists example context keys `author`, `message`, `commitNode`, `repository`. In `CommitCommand` the pre-commit context contains `author`, `message` and `repository`, and a false result throws `HgValidationException("Pre-commit hook execution rejected the commit txn")`.
+
+Register with `hg.registerHook(HgHookType.PRE_COMMIT, ctx -> ...)`; the hook is attached to a command when it is created through the `Hg` factory method for that command. A command built with `new XCommand(repo)` does not receive the registered hooks. `ProcessHook` (class in the same package) is an `HgHook` that runs an external process and maps context entries to environment variables named `HG_<KEY>`.
+
+[cols="2,5"]
+|===
+|`HgHookType` |Meaning (from the javadoc) and wiring
+
+|`PRE_COMMIT` |Before a commit transaction; aborting cancels the commit. Wired by `Hg.commit()`.
+|`POST_COMMIT` |After a commit. Wired by `Hg.commit()`.
+|`PRE_PUSH` |Before a remote push; aborting cancels it. Wired by `Hg.push()`.
+|`POST_PUSH` |After a push. Wired by `Hg.push()`.
+|`POST_GRAFT` |After a graft. Wired by `Hg.graft()`.
+|`POST_REBASE` |After a rebase. Wired by `Hg.rebase()`.
+|`POST_MERGE` |After a merge. Wired by `Hg.merge()`.
+|`POST_UPDATE` |After an update (checkout). Wired by `Hg.update()`.
+|`PRE_MERGE` |Before a merge, can be rejected. Wired by `Hg.merge()`.
+|`PRE_UPDATE` |Before an update, can be rejected. Wired by `Hg.update()`.
+|`PRE_REBASE` |Before a rebase, can be rejected. Wired by `Hg.rebase()`.
+|`POST_STRIP` |After a strip. No wiring found in `Hg.java`.
+|`POST_AMEND` |After an amend. No wiring found in `Hg.java`.
+|`PRE_TAG` |Before tag creation, can be rejected. Wired by `Hg.tag()`.
+|`POST_TAG` |After tag creation. Wired by `Hg.tag()`.
+|`CHANGEGROUP` |After a changegroup is received. No wiring found in `Hg.java`.
+|===
+
+=== Exceptions (package io.github.search5.hg4j.errors)
+
+[cols="2,5"]
+|===
+|Class and parent |When thrown (from the javadoc)
+
+|`HgException` extends `Exception` |Checked base class for Mercurial domain and operational exceptions.
+|`HgLockException` extends `HgException` |Repository lock acquisition fails or there is lock contention; `getLockName()`.
+|`HgAbandonedTransactionException` extends `HgLockException` |An interrupted transaction (`store/journal`) is waiting: `abandoned transaction found`, hint to run `hg recover`. Nothing is recovered implicitly; run `RecoverCommand`. Thrown by `HgRepository.lockStore(int)` when a journal exists and the lock is not re-entrant.
+|`HgMergeConflictException` extends `HgException` |Unresolved conflicts in a 3-way merge (`MergeCommand`, and the cherry-pick path of `RebaseCommand`); `getConflictPath()`, `getConflictPaths()`.
+|`HgValidationException` extends `IOException` |Failures in repository state, working directory integrity or validation checks.
+|`HgPushRacedException` extends `HgValidationException` |Server-side push/unbundle apply when the heads changed between the client's computation and the store lock (a lost concurrent push race); callers can catch it to retry.
+|`HgCorruptDataException` extends `IOException` |Data integrity errors such as a revlog checksum mismatch or corrupted delta restoration.
+|`HgCensoredContentException` extends `IOException` |Reading the content of a censored revision (mirrors `error.CensoredNodeError`); `getTombstone()`.
+|`HgHookRejectedException` extends `IOException` |A hook refused the operation; `isRolledBack()` is true when it ran after the changes were made (`pretxnchangegroup`) and they were undone.
+|`HgRepositoryNotFoundException` extends `IOException` |A repository cannot be found because of an invalid path or corruption; `getPath()`.
+|`HgRevisionNotFoundException` extends `IOException` |A revision is not found by node id or revision number.
+|`HgTransportException` extends `IOException` |Base of network and wire protocol errors in the HTTP/SSH transport layer; `getRemoteUrl()`.
+|`HgAuthException` extends `HgTransportException` |SSH or HTTP credential authentication failure; `getUsername()`.
+|`HgProtocolException` extends `HgTransportException` |Protocol errors such as capability negotiation failure or wire protocol violations.
+|===
+
+Note: `HgException` and `HgLockException` are checked exceptions that do not extend `IOException`; most others extend `IOException`.

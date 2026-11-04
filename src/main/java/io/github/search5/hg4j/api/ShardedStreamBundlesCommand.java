@@ -30,6 +30,10 @@ public final class ShardedStreamBundlesCommand {
     private final HgRepository repository;
     private String groupId;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to write bundles for; must not be {@code null}
+     */
     public ShardedStreamBundlesCommand(HgRepository repository) {
         this.repository = repository;
     }

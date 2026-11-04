@@ -43,11 +43,22 @@ public class RepositoryFilesetContext implements FilesetContext {
     private Set<String> tracked;
     private Integer revNumber;
 
+    /**
+     * Creates a context over a repository.
+     *
+     * @param repository the repository to read from
+     * @param revision a revision identifier, {@link #NULL_REVISION} for the empty context before the first changeset, or {@code null} for the working directory
+     */
     public RepositoryFilesetContext(HgRepository repository, String revision) {
         this.repository = repository;
         this.revision = revision;
     }
 
+    /**
+     * Returns the repository this context reads from.
+     *
+     * @return the repository
+     */
     public HgRepository repository() {
         return repository;
     }

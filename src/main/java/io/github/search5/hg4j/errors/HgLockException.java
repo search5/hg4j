@@ -3,7 +3,7 @@ package io.github.search5.hg4j.errors;
 /**
  * Exception thrown when repository lock acquisition fails or lock contention occurs.
  * <p>
- * Domain exception layer wrapper corresponding to the existing {@link io.github.search5.hg4j.lib.HgLockException}.
+ * Domain exception layer wrapper corresponding to the existing {@code HgLockException}.
  */
 public class HgLockException extends HgException {
     private static final long serialVersionUID = 1L;

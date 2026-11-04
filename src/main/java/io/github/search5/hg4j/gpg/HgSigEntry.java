@@ -31,10 +31,20 @@ public final class HgSigEntry {
         this.signature = Objects.requireNonNull(signature, "signature").clone();
     }
 
+    /**
+     * Returns the signed changeset's node.
+     *
+     * @return 40 hex digits, never {@code null}
+     */
     public String getNodeHex() {
         return nodeHex;
     }
 
+    /**
+     * Returns the signature version.
+     *
+     * @return the version, normally {@link #VERSION_0}; never {@code null}
+     */
     public String getVersion() {
         return version;
     }

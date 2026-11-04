@@ -39,12 +39,20 @@ public class HgSshClient implements HgRemoteConnection {
 
     private static SshSessionFactory sshSessionFactory = new ApacheSshdSessionFactory();
 
+    /**
+     * Sets the factory used by all {@code HgSshClient} instances to create SSH sessions. The setting is global
+     * (static) and not synchronized.
+     * @param factory the factory; null is ignored and the current one is kept
+     */
     public static void setSshSessionFactory(SshSessionFactory factory) {
         if (factory != null) {
             sshSessionFactory = factory;
         }
     }
 
+    /**
+     * Returns the factory used to create SSH sessions; by default an {@link ApacheSshdSessionFactory}.
+     */
     public static SshSessionFactory getSshSessionFactory() {
         return sshSessionFactory;
     }
@@ -56,6 +64,13 @@ public class HgSshClient implements HgRemoteConnection {
     private boolean connected = false;
     private int protocolVersion = 1;
 
+    /**
+     * Creates a client for an {@code ssh://[user[:password]@]host[:port]/path} address. No connection is made until
+     * the first command; it is then opened lazily and kept until {@link #close()}. The port defaults to 22 and the
+     * user, when not given, may be taken from the SSH configuration or defaults to the local user.
+     * @param sshUrl the repository address; must not be null
+     * @throws IllegalArgumentException if the address does not start with {@code ssh://} or has no repository path
+     */
     public HgSshClient(String sshUrl) {
         this.sshUrl = sshUrl;
         parseSshUrl(sshUrl);
@@ -107,10 +122,21 @@ public class HgSshClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Sets the password used to authenticate on the next connection. It has no effect on a connection that is
+     * already open.
+     * @param password the password, or null for none
+     */
     public void setPassword(String password) {
         this.password = password;
     }
 
+    /**
+     * Sets the private key used to authenticate on the next connection. It has no effect on a connection
+     * that is already open.
+     * @param privateKeyPath the path of the private key file, or null for none
+     * @param passphrase the key passphrase, or null if the key is not protected
+     */
     public void setPrivateKey(String privateKeyPath, String passphrase) {
         this.privateKeyPath = privateKeyPath;
         this.passphrase = passphrase;
@@ -406,6 +432,11 @@ public class HgSshClient implements HgRemoteConnection {
         }
     }
 
+    /**
+     * Returns the SSH wire protocol generation in use: 1, or 2 when the connection was upgraded to
+     * {@code exp-ssh-v2-0003}. The upgrade is only attempted when the system property
+     * {@code hg4j.ssh.v2.enabled} is true, so this is 1 before the connection has been opened.
+     */
     public int getProtocolVersion() {
         return protocolVersion;
     }

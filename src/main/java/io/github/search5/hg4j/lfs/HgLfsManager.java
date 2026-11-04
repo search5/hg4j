@@ -81,6 +81,11 @@ public final class HgLfsManager {
         this.userCacheDir = config == null ? null : resolveUserCacheDir(config);
     }
 
+    /**
+     * Returns the directory of the repository-local LFS object store.
+     *
+     * @return {@code store/lfs/objects} under the metadata directory
+     */
     public File getLfsObjectsDir() {
         return lfsObjectsDir;
     }
@@ -510,14 +515,26 @@ public final class HgLfsManager {
         new HgLfsClient(this, config, lfsServerUrl).upload(pointers);
     }
 
+    /** A minimal JSON parser for LFS server answers. It yields {@link java.util.Map}, {@link java.util.List}, {@link String}, {@link Long} or {@link Double}, {@link Boolean} and {@code null}. An instance parses one document and is not thread-safe. */
     public static class MapJsonParser {
         private final String src;
         private int ptr = 0;
         
+        /**
+         * Creates a parser.
+         *
+         * @param src the JSON text to parse; must not be {@code null}
+         */
         public MapJsonParser(String src) {
             this.src = src;
         }
         
+        /**
+         * Parses the value at the current position; the parser then stands after it.
+         *
+         * @return a {@link java.util.Map} for an object, a {@link java.util.List} for an array, otherwise a {@link String}, number, {@link Boolean} or {@code null}
+         * @throws IOException if the text ends early or is not valid JSON
+         */
         public Object parse() throws IOException {
             skipWhitespace();
             if (ptr >= src.length()) throw new IOException("Unexpected end of JSON");

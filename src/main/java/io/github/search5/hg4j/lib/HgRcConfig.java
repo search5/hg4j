@@ -17,6 +17,9 @@ import java.util.Collections;
 public final class HgRcConfig {
     private final Map<String, Map<String, String>> sections = new LinkedHashMap<>();
 
+    /**
+     * Creates an empty configuration with no sections. Use {@link #load(File)} to read a file into it.
+     */
     public HgRcConfig() {}
 
     /**

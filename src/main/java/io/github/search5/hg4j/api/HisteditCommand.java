@@ -33,12 +33,35 @@ import java.util.TreeSet;
  * Supports rule-based PICK, DROP, FOLD, and ROLL actions to modify history.
  */
 public class HisteditCommand implements AutoCloseable {
+    /**
+     * Action applied to a changeset by a histedit {@link Rule}.
+     * <ul>
+     * <li>{@code PICK}: start a new rewritten commit that reuses the changeset's message and author.</li>
+     * <li>{@code FOLD}: merge the changeset's changes into the preceding rewritten commit and append its message to that commit's message.</li>
+     * <li>{@code ROLL}: like {@code FOLD}, but the changeset's message is discarded.</li>
+     * <li>{@code DROP}: omit the changeset from the rewritten history (it is marked pruned with an obsolescence marker, not physically removed).</li>
+     * </ul>
+     */
     public enum Action { PICK, DROP, FOLD, ROLL }
 
+    /**
+     * One histedit instruction: an {@link Action} applied to one changeset. Rules are applied in the order they were added.
+     */
     public static class Rule {
+        /**
+         * The action to perform.
+         */
         public final Action action;
+        /**
+         * Full 40-character hex node id of the changeset the action applies to.
+         */
         public final String hexNode;
 
+        /**
+         * Creates a rule.
+         * @param action the action to perform
+         * @param hexNode full 40-character hex node id of the target changeset
+         */
         public Rule(Action action, String hexNode) {
             this.action = action;
             this.hexNode = hexNode;
@@ -48,10 +71,20 @@ public class HisteditCommand implements AutoCloseable {
     private final HgRepository repository;
     private final List<Rule> rules = new ArrayList<>();
 
+    /**
+     * Creates a histedit command for the given repository.
+     * @param repository the repository whose history is rewritten
+     */
     public HisteditCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Appends a rule to the edit plan. The rules, in the order added, describe the contiguous range of history to rewrite, oldest first.
+     * @param action the action; if {@code null} the rule is ignored
+     * @param hexNode full 40-character hex node id of the changeset; if {@code null} or empty the rule is ignored
+     * @return {@code this}
+     */
     public HisteditCommand addRule(Action action, String hexNode) {
         if (action != null && hexNode != null && !hexNode.isEmpty()) {
             rules.add(new Rule(action, hexNode));
@@ -59,6 +92,13 @@ public class HisteditCommand implements AutoCloseable {
         return this;
     }
 
+    /**
+     * Rewrites history according to the rules added with {@link #addRule(Action, String)}. Does nothing if no rule was added.
+     * <p>The range is rebuilt on top of the first parent of the first rule's changeset. Folded changesets are merged into the preceding commit, and dropped ones are marked pruned with an obsolescence marker. Afterwards the working copy and dirstate are moved to the last rewritten commit and the working branch is set to that commit's branch.</p>
+     * <p>The working copy lock and the store lock are held for the whole operation. If an error occurs, the revlogs and dirstate are restored to their previous state.</p>
+     * @throws IOException if a rule's changeset is not found in the changelog, or reading or writing the repository fails
+     * @throws HgLockException if a lock cannot be acquired
+     */
     public void call() throws IOException, HgLockException {
         if (rules.isEmpty()) {
             return;

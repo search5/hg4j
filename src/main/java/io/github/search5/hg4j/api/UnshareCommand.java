@@ -26,6 +26,10 @@ import java.util.List;
 public class UnshareCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates the command.
+     * @param repository the shared repository to convert; must not be {@code null}
+     */
     public UnshareCommand(HgRepository repository) {
         this.repository = repository;
     }

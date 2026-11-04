@@ -23,6 +23,13 @@ public class HgMergeConflictException extends HgException {
         this.conflictPaths = List.of(conflictPath);
     }
 
+    /**
+     * Creates the exception for a conflict in one file, with an underlying cause.
+     *
+     * @param conflictPath file path where the conflict occurred
+     * @param message description of the conflict
+     * @param cause the underlying failure; may be {@code null}
+     */
     public HgMergeConflictException(String conflictPath, String message, Throwable cause) {
         super("Merge conflict in '" + conflictPath + "': " + message, cause);
         this.conflictPath = conflictPath;

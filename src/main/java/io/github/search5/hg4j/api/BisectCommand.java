@@ -25,15 +25,32 @@ public class BisectCommand {
     private byte[] goodNode;
     private byte[] badNode;
 
+    /**
+     * Creates a bisect command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public BisectCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision known to be good (not yet showing the regression). Required before {@link #next()}.
+     *
+     * @param goodNode the 20-byte binary node id of the good changeset
+     * @return {@code this}
+     */
     public BisectCommand setGood(byte[] goodNode) {
         this.goodNode = goodNode;
         return this;
     }
 
+    /**
+     * Sets the revision known to be bad (showing the regression). Required before {@link #next()}.
+     *
+     * @param badNode the 20-byte binary node id of the bad changeset
+     * @return {@code this}
+     */
     public BisectCommand setBad(byte[] badNode) {
         this.badNode = badNode;
         return this;

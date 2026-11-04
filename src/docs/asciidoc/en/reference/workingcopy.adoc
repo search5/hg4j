@@ -1,0 +1,717 @@
+=== Init
+
+Creates a new repository (`hg init`). Writes `.hg/requires`, creates `.hg/store` and the legacy `.hg/00changelog.i` guard file, and returns an `HgRepository`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setDirectory(File)`
+|Repository root. Created (with `mkdirs`) if missing. Required.
+
+|`setDirstateV2(boolean)`
+|Adds the `dirstate-v2` requirement.
+
+|`setUseZstd(boolean)`
+|Adds the `revlog-compression-zstd` requirement.
+
+|`setChangelogV2(boolean)`
+|`format.exp-use-changelog-v2`: adds `exp-changelog-v2`.
+
+|`setSidedataCopies(boolean)`
+|`format.exp-use-copies-side-data-changeset`: adds `exp-copies-sidedata-changeset`. Implies `setChangelogV2`.
+
+|`setTreemanifest(boolean)`
+|`experimental.treemanifest`: adds `treemanifest`.
+
+|`setPersistentNodemap(boolean)`
+|`format.use-persistent-nodemap`: adds `persistent-nodemap`.
+
+|`setFileIndexV1(boolean)`
+|`format.use-fileindex-v1`: adds `fileindex-v1` and drops `fncache`/`dotencode`. Implies `setPersistentNodemap`.
+
+|`setGeneralV2(boolean)`
+|`experimental.revlogv2`: adds `exp-revlogv2.2` and drops `revlogv1`. Implies `setFileIndexV1` and `setPersistentNodemap`.
+|===
+
+Execution: `HgRepository call() throws IOException`. Throws `IllegalStateException` if no directory is set; `HgRepositoryNotFoundException` if a directory cannot be created, a path is not a directory, or `.hg/requires`/`.hg/00changelog.i` cannot be written; `HgValidationException` for `treemanifest` combined with `fileindex-v1` or `general-v2`.
+
+Locks and dirstate: no lock is taken; no `changing_files`/`changing_parents` context.
+
+Differences from hg: the single-file, non-`share-safe` `.hg/requires` layout is always used (no `.hg/store/requires` split); the javadoc states that real hg accepts this layout. The implication rules and the treemanifest abort message mirror real hg.
+
+[source,java]
+----
+HgRepository repo = new InitCommand()
+        .setDirectory(new File("/work/proj"))
+        .setDirstateV2(true)
+        .call();
+----
+
+=== Add
+
+Starts tracking files (`hg add`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`addFile(String)`
+|Adds one explicit path (backslashes become `/`). When any `addFile` path is given, the selection below is not used for choosing files.
+
+|`setPatterns(String...)`
+|`hg add [FILE]...`: patterns (`kind:pattern`, `set:EXPRESSION`).
+
+|`setInclude(String...)`
+|`hg add -I`.
+
+|`setExclude(String...)`
+|`hg add -X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root, used to read relative patterns.
+
+|`setSubrepos(boolean)`
+|`hg add -S`: also add unknown files of hg subrepositories. Without it only files named exactly reach into a subrepository.
+
+|`getSubrepoMessages()`
+|Messages about subrepositories (for example `skipping missing subrepository`).
+|===
+
+Execution: `void call() throws IOException, HgLockException`. Throws `HgValidationException` when an explicit path is not a regular file or symlink. With no `addFile` paths and no selection, every untracked file from `scanWorkingCopy()` is added. With a selection: unknown files that match, removed files that are back on disk, and ignored files only when named exactly.
+
+Locks and dirstate: `lockWorkingCopy()`, then `changingFiles(...)` around adding the files and the subrepository pass. Each subrepository is added under its own working copy lock while the parent lock is held.
+
+Differences from hg: none noted in the source beyond mirroring `commands.add`. A path that already has a dirstate entry that is not state `a` is restored to state `n` with an ambiguous stat (as real hg's normallookup); an entry already in state `a` is left alone.
+
+[source,java]
+----
+new AddCommand(repo)
+        .setPatterns("src/**.java")
+        .setExclude("glob:**/Test*.java")
+        .call();
+----
+
+=== Addremove
+
+Adds all untracked files and marks all missing tracked files as removed (`hg addremove`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setSubrepos(boolean)`
+|`hg addremove -S`: also add and remove in hg subrepositories. A subrepository always recurses into its own subrepositories.
+
+|`getMessages()`
+|What the last call said besides the changed files (for example `skipping missing subrepository`).
+|===
+
+Execution: `List<String> call() throws IOException, HgLockException`. Returns status-style lines such as `A path/new.txt` and `R path/gone.txt`.
+
+Locks and dirstate: `lockWorkingCopy(timeout)` with the timeout from `resolvePushLockTimeoutMs()`, taken before any repository state is read. With subrepositories enabled, they are processed first, each under its own lock. The additions and removals are delegated to `AddCommand.call()` and `RemoveCommand.call()` (forced), which take the same lock again and use their own `changing_files` context. `AddremoveCommand` itself does not open `changing_files`.
+
+Differences from hg: no pattern, include, exclude, similarity or dry-run options are present in the source.
+
+[source,java]
+----
+List<String> changes = new AddremoveCommand(repo).call();
+----
+
+=== Remove
+
+Untracks files and deletes them from the working directory (`hg remove`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setFile(String)`
+|Single path used by `call()`.
+
+|`setForce(boolean)`
+|Remove even when the file is added or modified.
+
+|`setPatterns(String...)`
+|Patterns for `callSelected()`.
+
+|`setInclude(String...)`
+|`-I`.
+
+|`setExclude(String...)`
+|`-X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root.
+
+|`setSubrepos(boolean)`
+|`-S`: also remove in every hg subrepository the patterns reach. Without it only named subrepositories are entered.
+
+|`getWarnings()`
+|What the last `callSelected()` left undone, in Mercurial's words.
+|===
+
+Execution:
+
+* `boolean call() throws IOException, HgLockException`: removes the single file. Throws `IllegalStateException` without a file, `HgValidationException` if the file is not tracked, or (without force) is added or modified.
+* `List<String> callSelected() throws IOException, HgLockException`: removes the tracked files the patterns select and returns the removed paths. Throws `HgValidationException("no files specified")` without patterns. Files that cannot be removed safely are skipped and reported in `getWarnings()`.
+
+Locks and dirstate: `lockWorkingCopy()` then `changingFiles(...)` in both methods. Subrepositories take their own working copy lock. A file removed with force while in state `a` is only forgotten and stays on disk; other files are deleted from disk and marked `r`.
+
+Differences from hg: none noted beyond the above.
+
+[source,java]
+----
+new RemoveCommand(repo)
+        .setPatterns("old/*.txt")
+        .callSelected();
+----
+
+=== Forget
+
+Stops tracking files without touching the working copy (`hg forget`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setFile(String)`
+|Single path used by `call()`.
+
+|`setPatterns(String...)`
+|Patterns for `callSelected()`.
+
+|`setInclude(String...)`
+|`-I`.
+
+|`setExclude(String...)`
+|`-X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root.
+
+|`getWarnings()`
+|What the last `callSelected()` left undone.
+|===
+
+Execution:
+
+* `void call() throws IOException, HgLockException`: forgets one file. Throws `IllegalStateException` without a file, `HgValidationException("File is not tracked: ...")`.
+* `List<String> callSelected() throws IOException, HgLockException`: forgets the selected files and returns them. Throws `HgValidationException("no files specified")` without patterns. A file in state `a` becomes unknown; a committed one is marked `r`.
+
+Locks and dirstate: `lockWorkingCopy()` then `changingFiles(...)`. Subrepositories forget only files the parent's matcher names inside them, each under its own lock; a missing subrepository is skipped with a warning.
+
+Differences from hg: none noted.
+
+[source,java]
+----
+List<String> gone = new ForgetCommand(repo)
+        .setPatterns("build/**")
+        .callSelected();
+----
+
+=== Copy
+
+Copies a tracked file and records the copy source (`hg copy`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setSource(String)`
+|Source path for `call()`.
+
+|`setDestination(String)`
+|Destination path for `call()`.
+
+|`setForce(boolean)`
+|Overwrite an existing destination (`--force`). Default false.
+
+|`setPatterns(String...)`
+|`SOURCE... DEST` for `callPatterns()`; the destination must be an existing directory with several sources.
+
+|`setAfter(boolean)`
+|`--after`: record a copy that already happened on disk.
+
+|`setDryRun(boolean)`
+|`--dry-run`: only report.
+
+|`setForget(boolean)`
+|`--forget`: unmark the destinations as copies; files stay.
+
+|`setAtRev(String)`
+|`--at-rev REV`: record (or with forget, remove) the copy in changeset REV, which is replaced by a changed copy. Needs `setAfter` or `setForget`; REV must be a draft without children.
+
+|`setInclude(String...)`
+|`-I`.
+
+|`setExclude(String...)`
+|`-X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root.
+|===
+
+Execution:
+
+* `void call() throws IOException, HgLockException`: single copy. Throws `IllegalStateException` without source and destination, `HgRepositoryNotFoundException` if the source is missing, `HgValidationException` if the destination exists without force or the source is not tracked (or is state `r`).
+* `PatternResult callPatterns() throws IOException, HgLockException`: returns `record PatternResult(boolean failed, List<String> warnings, List<String> status)`. Like real hg it warns and continues on files it cannot handle; `failed()` mirrors exit status 1.
+
+Locks and dirstate: `call()` takes `lockWorkingCopy()` only, backs up the dirstate bytes and restores them on failure, and does not use `changingFiles`. `callPatterns()` (through `CopyEngine`) takes `lockWorkingCopy()` and then `changingFiles(...)`, writing the dirstate unless dry run. With `atRev` it takes the working copy lock but no dirstate changing context.
+
+Differences from hg: the class javadoc lists verified behavior: a copy chain collapses to the earlier source only while the immediate source is an uncommitted add (state `a`); copying a freshly added file that was never a copy stores no copy metadata; symlinks are copied as links.
+
+[source,java]
+----
+new CopyCommand(repo)
+        .setSource("a.txt")
+        .setDestination("b.txt")
+        .call();
+----
+
+=== Rename
+
+Moves a file and records the rename (`hg rename` / `hg mv`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setSource(String)`
+|Source path for `call()`.
+
+|`setTarget(String)`
+|Target path for `call()`.
+
+|`setPatterns(String...)`
+|`SOURCE... DEST` for `callPatterns()`.
+
+|`setForce(boolean)`
+|Overwrite an existing destination (only for `callPatterns()`).
+
+|`setAfter(boolean)`
+|`--after`: record a rename that already happened on disk.
+
+|`setDryRun(boolean)`
+|`--dry-run`.
+
+|`setForget(boolean)`
+|`--forget`: unmark the destinations as copies.
+
+|`setAtRev(String)`
+|`--at-rev REV`: same semantics as in `CopyCommand`.
+
+|`setInclude(String...)`
+|`-I`.
+
+|`setExclude(String...)`
+|`-X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root.
+|===
+
+Execution:
+
+* `void call() throws IOException, HgLockException`: single rename. Throws `IllegalStateException` without source and target, `HgRepositoryNotFoundException` if the source does not exist. Moves the file (replacing an existing target), marks the source `r`, the target `a`, and records the copy.
+* `PatternResult callPatterns() throws IOException, HgLockException`: same `PatternResult` record as `CopyCommand`.
+
+Locks and dirstate: same as `CopyCommand`. `call()` takes `lockWorkingCopy()`, restores the dirstate bytes on failure, and does not use `changingFiles`. `callPatterns()` uses `CopyEngine` with `lockWorkingCopy()` and `changingFiles(...)`.
+
+Differences from hg: `call()` does not check whether the source is tracked, and replaces an existing target; `callPatterns()` is the option-complete path. Source does not state this as a deliberate difference.
+
+[source,java]
+----
+new RenameCommand(repo)
+        .setSource("old.txt")
+        .setTarget("new.txt")
+        .call();
+----
+
+=== Revert
+
+Restores files to a revision (`hg revert`). Default target is the first parent.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setFile(String)`
+|Single path for `call()`.
+
+|`setRevision(String)`
+|Target revision (`-r`). Default is parent 1.
+
+|`setPatterns(String...)`
+|Patterns for `callSelected()`.
+
+|`setInclude(String...)`
+|`-I`.
+
+|`setExclude(String...)`
+|`-X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root.
+
+|`setAll(boolean)`
+|`--all`: every changed file.
+
+|`getWarnings()`
+|What the last `callSelected()` left undone.
+
+|`getSubrepoMessages()`
+|Subrepository messages (`reverting subrepo NAME`).
+|===
+
+Execution:
+
+* `boolean call() throws IOException, HgLockException`: reverts one file. Throws `IllegalStateException` without a file; `HgValidationException` when the parent is zero and the file is not an added file.
+* `List<String> callSelected() throws IOException, HgLockException`: reverts modified, added, removed and deleted files that match; returns the reverted paths. Throws `HgValidationException` when no files, patterns or `setAll` are given (with a hint), or with an uncommitted merge and no revision; `HgRevisionNotFoundException` for an unknown revision.
+
+Locks and dirstate: `call()` takes `lockWorkingCopy()` then `changingFiles(...)`. `callSelected()` reads parents and resolves the revision before the lock, then holds `lockWorkingCopy()` for the status read and for the per-file `call()` invocations (which re-enter the lock and their own `changingFiles`). Subrepositories matched by the selection are reverted and then updated to the recorded revision.
+
+Differences from hg (class javadoc): a modified file is backed up to `<file>.orig` before overwrite, a clean file is not; reverting an added, never committed file only untracks it and leaves it on disk; a file absent from the target revision is deleted and marked `r`.
+
+[source,java]
+----
+new RevertCommand(repo)
+        .setPatterns("a.txt")
+        .setRevision("tip")
+        .callSelected();
+----
+
+=== Purge
+
+Deletes untracked, non-ignored files and empty directories (`hg purge`, `hg clean`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setPurgeIgnored(boolean)`
+|`--all`: ignored files and the directories they leave empty are removed too.
+
+|`setPurgeFiles(boolean)`
+|`--files`, on by default. When false, files stay and only empty directories can be removed.
+
+|`setPurgeDirectories(boolean)`
+|Remove empty untracked directories. Default true.
+|===
+
+Execution: `void call() throws IOException`.
+
+Locks and dirstate: no lock is taken; the dirstate is only read and not written; no `changing_files`/`changing_parents` context.
+
+Differences from hg (class javadoc): a directory symlink is treated as one opaque entry and never traversed; dangling symlinks are deleted; declared subrepository paths and `.hg` are never entered. The default removes empty directories, as real hg does.
+
+[source,java]
+----
+new PurgeCommand(repo)
+        .setPurgeIgnored(true)
+        .call();
+----
+
+=== Status
+
+Compares the working directory with the dirstate and the parent commit (`hg status`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setTreeFilter(HgTreeFilter)`
+|Restricts the tree (null is ignored). Default `HgTreeFilter.ALL`.
+
+|`setPatterns(String...)`
+|Files to report (patterns, `kind:pattern`, `set:EXPRESSION`).
+
+|`setInclude(String...)`
+|`-I`.
+
+|`setExclude(String...)`
+|`-X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root.
+|===
+
+Execution: `Status call() throws IOException`. `Status` has `getAdded()`, `getModified()`, `getRemoved()`, `getClean()` and `getUntracked()`, each a `Set<String>`.
+
+Locks and dirstate: the status itself takes no lock. When it finds entries whose stat can be refreshed, it applies them with `lockWorkingCopy(0)` (does not wait; the fixes are dropped if the lock is unavailable), following `_poststatusfixup`. No `changing_files`/`changing_parents` context.
+
+Differences from hg: none stated.
+
+[source,java]
+----
+Status s = new StatusCommand(repo)
+        .setPatterns("src")
+        .call();
+Set<String> modified = s.getModified();
+----
+
+=== Diff
+
+Computes per-file unified diffs between two revisions (`hg diff -r OLD -r NEW`). The working directory is not compared in this class.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setOldRevision(int)`
+|Old revision number. Default is the parent of the new revision.
+
+|`setOldRevision(NodeId)`
+|Old revision by node (null restores the default; a lookup failure gives -1).
+
+|`setNewRevision(int)`
+|New revision number. Default is tip; -1 means an empty manifest.
+
+|`setNewRevision(NodeId)`
+|New revision by node (null restores the default).
+
+|`setTreeFilter(HgTreeFilter)`
+|Restricts the tree.
+
+|`setPatterns(String...)`
+|Files to diff (patterns).
+
+|`setInclude(String...)`
+|`-I`.
+
+|`setExclude(String...)`
+|`-X`.
+
+|`setCwd(String)`
+|Current directory relative to the repository root.
+|===
+
+Execution: `List<DiffEntry> call() throws IOException`. Each `DiffEntry` has `getPath()`, `getChangeType()` (`ADD`, `MODIFY`, `DELETE`) and `getDiffContent()` (unified diff text). Returns an empty list when there is no changelog or no revision.
+
+Locks and dirstate: none. It calls `refreshIfChangedOnDisk()` first; no dirstate context.
+
+Differences from hg: the javadoc notes that an explicit -1 new revision means an empty manifest rather than tip (sentinel `NOT_SET`).
+
+[source,java]
+----
+List<DiffCommand.DiffEntry> d = new DiffCommand(repo)
+        .setOldRevision(1)
+        .setNewRevision(2)
+        .call();
+----
+
+=== Resolve
+
+Reads and updates merge conflict state (`hg resolve`), the counterpart of `MergeCommand`. Works on `.hg/merge/state2`.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setFile(String)`
+|Path to mark.
+
+|`markResolved(boolean)`
+|Mark the file resolved (`resolve -m`).
+
+|`markUnresolved(boolean)`
+|Mark the file unresolved (`resolve -u`).
+
+|`list(boolean)`
+|Return the whole state (`resolve -l`) even when marking.
+|===
+
+Execution: `Map<String, Boolean> call() throws IOException, HgLockException`. The map goes from path to resolved (true) or unresolved (false). When marking without `list`, only the marked file is returned. Throws `HgValidationException` when marking outside a merge ("resolve command not applicable when not merging") or for a path not in the merge.
+
+Locks and dirstate: `lockWorkingCopy(timeout)` with `resolvePushLockTimeoutMs()`, taken before the merge state is read. No `changing_files`/`changing_parents` context.
+
+Differences from hg: none stated. Re-running merge tools is not present in this class (source does not show it).
+
+[source,java]
+----
+Map<String, Boolean> m = new ResolveCommand(repo)
+        .setFile("a.txt")
+        .markResolved(true)
+        .call();
+----
+
+=== Update
+
+Checks out a revision into the working copy (`hg update`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setRevision(String)`
+|Target revision: revision identifier or named branch (branch head). Unresolvable values throw.
+
+|`setForce(boolean)`
+|Update even with uncommitted changes (without it, uncommitted changes make the update fail).
+
+|`setTreeFilter(HgTreeFilter)`
+|Restricts the tree. If left at `ALL`, the repository's narrowspec is used.
+
+|`registerPreUpdateHook(HgHook)`
+|Hook run before the update; returning false rejects it.
+
+|`registerPostUpdateHook(HgHook)`
+|Hook run after the update; failures are logged as warnings.
+
+|`setProgressMonitor(ProgressMonitor)`
+|Receives LFS download progress.
+|===
+
+Execution: `byte[] call() throws IOException, HgLockException`. Returns the node id of the target revision. Throws `HgValidationException` ("Working directory has uncommitted changes. Use force to update.", "Repository is empty, cannot update.", "Update rejected by PRE_UPDATE hook"), `HgRevisionNotFoundException`, `HgRepositoryNotFoundException`.
+
+Locks and dirstate: `lockWorkingCopy()`, then `changingParents(...)` around the whole update (dirstate written when it ends well). After checkout it recurses into subrepositories and updates the active bookmark.
+
+Differences from hg: none stated in comments beyond hook support, which is an hg4j addition.
+
+[source,java]
+----
+byte[] node = new UpdateCommand(repo)
+        .setRevision("default")
+        .setForce(false)
+        .call();
+----
+
+=== Merge
+
+Merges a target revision into the working copy (`hg merge`), and aborts an unfinished merge (`hg merge --abort`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setNodeId(byte[])`
+|Target by node id.
+
+|`setNodeId(NodeId)`
+|Target by node id (null clears).
+
+|`setRevision(int)`
+|Target by revision number.
+
+|`registerPreMergeHook(HgHook)`
+|Hook run before the merge; returning false rejects it.
+
+|`registerPostMergeHook(HgHook)`
+|Post-merge hook registration.
+
+|`getMessages()`
+|What `abort()` printed (`aborting the merge, updating back to ...`).
+|===
+
+Execution:
+
+* `MergeResult call() throws IOException, HgLockException`. `MergeResult` has `isConflicted()` and `getConflicts()` (list of paths). Throws `HgValidationException` ("Merge rejected by PRE_MERGE hook"), `IllegalStateException` in an empty repository, `HgRevisionNotFoundException` for unknown revisions or no common ancestor. Returns a non-conflicted result when the target is already merged or the merge is a fast-forward.
+* `void abort() throws IOException, HgLockException`. Throws `HgValidationException("no merge in progress")` and `IllegalStateException` in an empty repository. Restores the working copy to p1 (or the local side recorded in the merge state), resets to a single parent and clears `.hg/merge/state2`.
+
+Locks and dirstate: `call()` takes `lockWorkingCopy()`, clears the revlog cache, then `changingParents(...)` around the merge. `abort()` reads the dirstate and merge state before the lock, then takes `lockWorkingCopy()` and `changingParents(...)`. Subrepository state in `.hgsubstate` is merged or checked out when it changes.
+
+Differences from hg (abort javadoc): abort rewrites every path against p1's manifest instead of a manifest diff, because after `call()` the dirstate parent 1 already is p1.
+
+[source,java]
+----
+MergeCommand.MergeResult r = new MergeCommand(repo)
+        .setRevision(5)
+        .call();
+boolean conflicts = r.isConflicted();
+----
+
+=== Summary
+
+Condensed overview of the working copy (`hg summary`). Returns a structured record instead of text.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|(none)
+|Only the constructor `SummaryCommand(HgRepository)`; there are no public setters.
+|===
+
+Execution: `SummaryInfo call() throws IOException`. `SummaryInfo` is a record: `parents` (list of `ParentInfo(revision, node, description)`), `branch`, `activeBookmark`, `modified`, `added`, `removed`, `unknown`, `mergeInProgress` (more than one parent), `currentPhase` (`PhaseRoots.Phase` of the first parent).
+
+Locks and dirstate: takes no lock itself; it uses `ParentsCommand`, `BookmarkCommand.getActiveBookmark()` and `StatusCommand`, so the status fix-up lock behavior described under Status applies.
+
+Differences from hg: a structured record instead of terminal text (javadoc).
+
+[source,java]
+----
+SummaryCommand.SummaryInfo s = new SummaryCommand(repo).call();
+String branch = s.branch();
+int dirty = s.modified() + s.added() + s.removed();
+----
+
+=== Root
+
+Returns the repository root (`hg root`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|(none)
+|Only the constructor `RootCommand(HgRepository)`; there are no public setters.
+|===
+
+Execution: `String call()`. Returns the absolute path of the working directory. No checked exceptions.
+
+Locks and dirstate: none.
+
+Differences from hg: none.
+
+[source,java]
+----
+String root = new RootCommand(repo).call();
+----
+
+=== Worktree
+
+Creates a new working copy that shares the store of the main repository (`hg share`, described in the javadoc as Git-like worktree).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setNewWorktreeDir(File)`
+|Directory of the new working copy. Must be empty or missing. Required.
+|===
+
+Execution: `HgRepository call() throws IOException, HgLockException`. Throws `IllegalStateException` without a directory, `IOException` if the directory is not empty. Writes `.hg/sharedpath` (canonical path of the source `.hg`), copies `requires` and adds `shared`, then returns the new `HgRepository`.
+
+Locks and dirstate: `lockWorkingCopy()` of the new working copy during the checkout. When the store has revisions it runs `UpdateCommand` (`setForce(true)`, revision `tip`), which itself uses `lockWorkingCopy()` and `changingParents(...)`. For an empty store it writes a 40-byte parent stub dirstate. `changing_files` is not used here.
+
+Differences from hg: the javadoc says the checkout of tip mirrors real hg's `hg share`; the empty-store stub dirstate is kept for existing test expectations.
+
+[source,java]
+----
+HgRepository wt = new WorktreeCommand(repo)
+        .setNewWorktreeDir(new File("/work/proj-wt"))
+        .call();
+----
+
+=== Unshare
+
+Turns a shared repository into a normal one by copying the shared store into it (`hg unshare`).
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|(none)
+|Only the constructor `UnshareCommand(HgRepository)`; there are no public setters.
+|===
+
+Execution: `HgRepository call() throws IOException, HgLockException`. Returns a new repository object; the one passed in must not be used afterward. Throws `HgValidationException("this is not a shared repo")` when `.hg/sharedpath` is absent. Moves `sharedpath` to `sharedpath.old`, removes `shared`/`relshared` from `requires`, prepends the source `hgrc` for share-safe repositories, then unshares shared subrepositories.
+
+Locks and dirstate: holds the shared store lock (`lockStoreWithoutRecovery(timeout)`) for the whole operation, plus the lock of the new store (returned by `StoreCopy.copyStore`) while the share is cut off. Does not take the working copy lock and does not use `changing_files`/`changing_parents`.
+
+Differences from hg: the javadoc says it follows `cmd_impls.clone.unshare`; no deviation is stated.
+
+[source,java]
+----
+HgRepository normal = new UnshareCommand(sharedRepo).call();
+----

@@ -14,6 +14,10 @@ import java.util.List;
 public class ParentsCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates the command.
+     * @param repository the repository whose dirstate parents are read; must not be {@code null}
+     */
     public ParentsCommand(HgRepository repository) {
         this.repository = repository;
     }

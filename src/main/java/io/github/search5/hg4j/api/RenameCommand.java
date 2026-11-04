@@ -23,6 +23,11 @@ public final class RenameCommand {
     private String sourcePath;
     private String targetPath;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to rename in; must not be {@code null}
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public RenameCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -30,21 +35,27 @@ public final class RenameCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the source path for {@link #call()}.
+     * @param sourcePath the repository-relative path with {@code /} separators of an existing file or symbolic link
+     *         (a dangling symbolic link is allowed); must be set before {@link #call()}
+     * @return {@code this}
+     */
     public RenameCommand setSource(String sourcePath) {
         this.sourcePath = sourcePath;
         return this;
     }
 
+    /**
+     * Sets the destination path for {@link #call()}.
+     * @param targetPath the repository-relative path with {@code /} separators; must be set before {@link #call()}
+     * @return {@code this}
+     */
     public RenameCommand setTarget(String targetPath) {
         this.targetPath = targetPath;
         return this;
     }
 
-    /**
-     * Executes the file rename and SCM copy history registration.
-     *
-     * @throws IOException if physical file move or dirstate write fails
-     */
     private final java.util.List<String> patterns = new java.util.ArrayList<>();
     private boolean force;
     private boolean after;
@@ -132,6 +143,18 @@ public final class RenameCommand {
         return new PatternResult(result.failed(), result.warnings(), result.status());
     }
 
+    /**
+     * Renames the single file set by {@link #setSource} to {@link #setTarget}.
+     * <p>
+     * Under the working copy lock, moves the file on disk (replacing an existing target and creating parent
+     * directories), marks the source removed ({@code r}) and the target added ({@code a}) in the dirstate and records
+     * the copy source. If anything fails the previous dirstate file is restored.
+     * @throws IllegalStateException if the source or target was not set
+     * @throws io.github.search5.hg4j.errors.HgRepositoryNotFoundException (an {@link IOException}) if the source
+     *         does not exist
+     * @throws IOException if moving the file or writing the dirstate fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public void call() throws IOException, HgLockException {
         if (sourcePath == null || targetPath == null) {
             throw new IllegalStateException("Source and target paths must be specified.");

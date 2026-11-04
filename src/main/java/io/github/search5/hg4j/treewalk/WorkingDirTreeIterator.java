@@ -28,6 +28,12 @@ public class WorkingDirTreeIterator implements TreeIterator {
         }
     }
 
+    /**
+     * Creates an iterator over the working copy. Nothing is read until {@link #reset()}.
+     * <p>After a reset the entries are every file found on disk plus every path in the dirstate, sorted by
+     * UTF-8 path order. Paths unknown to the dirstate have state {@code '?'}; no node hashes are provided.
+     * @param repository the repository whose working copy is scanned; must not be null
+     */
     public WorkingDirTreeIterator(HgRepository repository) {
         this.repository = repository;
     }

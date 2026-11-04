@@ -40,11 +40,23 @@ public final class Bundle2 {
 
     /** One part of a bundle. {@code type} is lower case; {@code mandatory} says whether it was written in upper case. */
     public static final class Part {
+        /**
+         * Part type in lower case.
+         */
         public final String type;
+        /**
+         * Part id, as assigned by the writer of the bundle.
+         */
         public final int id;
+        /**
+         * True if the type was written in upper case, so a reader that does not know the type must refuse the bundle.
+         */
         public final boolean mandatory;
         /** Mandatory parameters first, then the advisory ones, in the order they were written. */
         public final Map<String, String> params;
+        /**
+         * The payload bytes of the part, with the chunk framing removed. May be empty.
+         */
         public final byte[] payload;
         /** How many of {@link #params}, from the front, were mandatory parameters. */
         final int mandatoryParamCount;
@@ -58,6 +70,11 @@ public final class Bundle2 {
             this.payload = payload;
         }
 
+        /**
+         * Returns the value of a part parameter, mandatory or advisory.
+         * @param key the parameter name
+         * @return the value, or null if the part has no such parameter
+         */
         public String param(String key) {
             return params.get(key);
         }
@@ -193,6 +210,9 @@ public final class Bundle2 {
         private final ByteArrayOutputStream parts = new ByteArrayOutputStream();
         private int nextId;
 
+        /**
+         * Creates a writer whose first part gets id 0.
+         */
         public Writer() {
         }
 
@@ -252,6 +272,15 @@ public final class Bundle2 {
             }
         }
 
+        /**
+         * Adds a mandatory part with only mandatory parameters; same as the five-argument overload with
+         * {@code mandatory} true and no advisory parameters.
+         * @param type the part type; written in upper case
+         * @param params the mandatory parameters; written as ISO-8859-1; must not be null
+         * @param payload the payload bytes; must not be null (use an empty array for none)
+         * @return the id given to the part
+         * @throws IllegalStateException if writing fails
+         */
         public int addPart(String type, Map<String, String> params, byte[] payload) {
             return addPart(type, true, params, Map.of(), payload);
         }

@@ -46,6 +46,11 @@ public final class VerifyCommand {
         }
     }
 
+    /**
+     * Creates the command.
+     * @param repository the repository to verify; must not be {@code null}
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public VerifyCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");

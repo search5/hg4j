@@ -22,13 +22,26 @@ public final class NarrowCloneCommand {
     private final List<String> includePaths = new ArrayList<>();
     private final List<String> excludePaths = new ArrayList<>();
 
+    /**
+     * Creates a narrow-clone command. The source and the target directory must be set before {@link #call()}.
+     */
     public NarrowCloneCommand() {}
 
+    /**
+     * Sets the URL of the repository to clone. There is no default; {@link #call()} throws {@link IllegalStateException} if it is not set.
+     * @param sourceUrl URL of the source repository
+     * @return {@code this}
+     */
     public NarrowCloneCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;
     }
 
+    /**
+     * Sets the directory in which the new repository is created. There is no default; {@link #call()} throws {@link IllegalStateException} if it is not set.
+     * @param directory the working directory of the new repository
+     * @return {@code this}
+     */
     public NarrowCloneCommand setDirectory(File directory) {
         this.directory = directory;
         return this;
@@ -49,6 +62,12 @@ public final class NarrowCloneCommand {
         return this;
     }
 
+    /**
+     * Adds a path pattern to the narrowspec includes ({@code hg clone --include}). A pattern without a kind prefix is a {@code path:} pattern. Patterns are normalized and validated when {@link #call()} runs, which rejects unsupported kinds and invalid components.
+     * <p>When a shape is set with {@link #setShape(String)}, the includes and excludes added here are replaced by the shape's patterns.</p>
+     * @param prefix the pattern to include; {@code null} is ignored
+     * @return {@code this}
+     */
     public NarrowCloneCommand addIncludePath(String prefix) {
         if (prefix != null) {
             includePaths.add(prefix);
@@ -56,6 +75,11 @@ public final class NarrowCloneCommand {
         return this;
     }
 
+    /**
+     * Adds a path pattern to the narrowspec excludes ({@code hg clone --exclude}). Normalization and validation are the same as for {@link #addIncludePath(String)}.
+     * @param prefix the pattern to exclude; {@code null} is ignored
+     * @return {@code this}
+     */
     public NarrowCloneCommand addExcludePath(String prefix) {
         if (prefix != null) {
             excludePaths.add(prefix);

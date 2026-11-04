@@ -102,6 +102,14 @@ public class PushCommand {
         return bookmarkResult;
     }
 
+    /**
+     * Registers a hook run before anything is pushed.
+     * <p>
+     * The hook gets a context map with {@code destinationUrl} (the resolved URL) and {@code repository}. If any
+     * hook returns {@code false}, {@link #call()} fails with a validation error.
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public PushCommand registerPrePushHook(HgHook hook) {
         if (hook != null) {
             prePushHooks.add(hook);
@@ -109,6 +117,14 @@ public class PushCommand {
         return this;
     }
 
+    /**
+     * Registers a hook run after a successful push of changesets.
+     * <p>
+     * The hook gets a context map with {@code destinationUrl}, {@code response} and {@code repository}. Its return
+     * value is ignored and exceptions it throws are swallowed.
+     * @param hook the hook; {@code null} is ignored
+     * @return {@code this}
+     */
     public PushCommand registerPostPushHook(HgHook hook) {
         if (hook != null) {
             postPushHooks.add(hook);
@@ -116,10 +132,20 @@ public class PushCommand {
         return this;
     }
 
+    /**
+     * Creates the command.
+     * @param repository the repository to push from; must not be {@code null}
+     */
     public PushCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets where to push to.
+     * @param destinationUrl a URL or a name of a {@code [paths]} entry; {@code null} or empty (the default) means
+     *         {@code default-push}, falling back to {@code default}
+     * @return {@code this}
+     */
     public PushCommand setDestination(String destinationUrl) {
         this.destinationUrl = destinationUrl;
         return this;
@@ -341,6 +367,24 @@ public class PushCommand {
         }
     }
 
+    /**
+     * Pushes changesets, phases and bookmarks to the destination.
+     * <p>
+     * The destination is {@link #setDestination}, or, when that is {@code null} or empty, the {@code default-push}
+     * path and then the {@code default} path. A destination without {@code ://} that names a {@code [paths]} entry is
+     * replaced by that entry's URL. Pre-push hooks run first and may veto the push. The store lock of the local
+     * repository is held from after the connection is made until the end; post-push hooks run after the locks are
+     * released. {@link #getMessages()} is reset at the start.
+     * @return a status text: the remote's response after sending changesets, or a line starting with
+     *         {@code No changesets to push} (plus bookmark lines, if any) when there is nothing to send
+     * @throws IOException if the connection or transfer fails
+     * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if a pre-push hook
+     *         returns {@code false}, the repositories are unrelated, the push would create new remote heads or branches,
+     *         or an LFS repository is pushed to a remote without LFS support
+     * @throws HgLockException if the store lock cannot be acquired
+     * @throws IllegalStateException if no destination was set and neither {@code default-push} nor {@code default}
+     *         is configured
+     */
     public String call() throws IOException, HgLockException {
         messages.clear();
         try (io.github.search5.hg4j.lfs.HgLfsProgress bound = io.github.search5.hg4j.lfs.HgLfsProgress.bind(monitor)) {
@@ -726,7 +770,7 @@ public class PushCommand {
                 // 1c. Pack Filelogs
                 // 같은 규칙: 각 파일은 자기만의 별도 cg1 그룹이므로, 이 파일에서 이번 push로
                 // 새로 패킹되는 "첫" 리비전은 그 리비전 자신의 실제 filelog p1 콘텐츠를
-                // 베이스로 삼아야 한다("linkRev < startRev 중 가장 최근 것"은 틀린 근사치였다
+                // 베이스로 삼아야 한다("linkRev &lt; startRev 중 가장 최근 것"은 틀린 근사치였다
                 // -- 그 리비전이 첫 신규 리비전의 진짜 부모가 아닐 수 있다. 예: 같은 파일이
                 // 서로 다른 head에서 각각 수정된 경우). 이후 리비전은 직전에 패킹된 리비전을
                 // 베이스로 삼는다 -- packRevlogRange()로 일반화(§1b의 treemanifest dirlog
@@ -1357,7 +1401,7 @@ public class PushCommand {
      * dirlog packing (backlog #39, 2026-09-05: these were two independent, near-identical
      * hand-copies of the same rule before being unified here). Each new entry's delta basis is
      * its own real parent's content for the first packed revision, and the previously-packed
-     * revision for the rest ("linkRev < startRev 중 가장 최근 것" is NOT used as the first
+     * revision for the rest ("linkRev &lt; startRev 중 가장 최근 것" is NOT used as the first
      * entry's base -- that revision may not actually be this entry's real parent, e.g. the same
      * file/directory modified independently on two different heads). Content is always read via
      * {@link Revlog#getRawRevisionContent} (never the decoded {@code getRevisionContent}) so a

@@ -32,7 +32,7 @@ import java.nio.file.Files;
  * <p>Most of the actual repository-query/bundle-building logic here is <b>not</b> reimplemented —
  * it delegates to {@link HgLocalClient} (heads/getbundle/changegroup/listkeys/pushkey/push), which
  * already implements exactly this logic for the {@code file://} peer role and is already covered
- * by existing tests, and to {@link Wire2Commands}'s small shared helpers ({@code readListKeys}/
+ * by existing tests, and to {@code Wire2Commands}'s small shared helpers ({@code readListKeys}/
  * {@code applyPushkey}/{@code changelog}) rather than duplicating them a third time.</p>
  */
 public final class Wire1Commands {
@@ -171,6 +171,12 @@ public final class Wire1Commands {
         return boolConfig(repo, "experimental", "narrow", false) && boolConfig(repo, "experimental", "advertise-shapes", false);
     }
 
+    /**
+     * Answers the {@code capabilities} command: the space-separated capability tokens of the repository, without
+     * the HTTP-only tokens (see {@link #capabilitiesHttp(HgRepository)}).
+     * @param repo the served repository; must not be null
+     * @return a bytes response
+     */
     public static Wire1Response capabilities(HgRepository repo) {
         return Wire1Response.bytes(capabilitiesString(repo).getBytes(StandardCharsets.UTF_8));
     }
@@ -397,6 +403,14 @@ public final class Wire1Commands {
         return Wire1Response.bytes(text.getBytes(StandardCharsets.UTF_8));
     }
 
+    /**
+     * Answers the {@code known} command: one character per requested node, {@code '1'} if the repository has the
+     * node and it is visible in the served view (the null node always counts as known) and {@code '0'} otherwise.
+     * @param repo the served repository; must not be null
+     * @param args the command arguments; {@code nodes} holds the space-separated hex nodes (missing means none)
+     * @return a bytes response with the digit string
+     * @throws IOException if the changelog cannot be read
+     */
     public static Wire1Response known(HgRepository repo, Map<String, String> args) throws IOException {
         Revlog changelog = RepoSupport.changelog(repo);
         String nodesArg = args.getOrDefault("nodes", "");
@@ -567,6 +581,14 @@ public final class Wire1Commands {
         return Wire1Response.stream(bundle);
     }
 
+    /**
+     * Answers the {@code changegroupsubset} command with a changegroup stream of the changesets between the given bases
+     * and heads.
+     * @param repo the served repository; must not be null
+     * @param args the command arguments; {@code bases} and {@code heads} hold space-separated hex nodes (missing means none)
+     * @return a stream response without the standalone-file bundle prefix
+     * @throws IOException if the changegroup cannot be built
+     */
     public static Wire1Response changegroupsubset(HgRepository repo, Map<String, String> args) throws IOException {
         List<String> bases = splitOrEmpty(args.get("bases"));
         List<String> heads = splitOrEmpty(args.get("heads"));
@@ -803,6 +825,11 @@ public final class Wire1Commands {
             "clonebundles_manifest", "stream_out", "heads_buckets", "store_shape", "get_cached_bundle_inline",
             "batch", "unbundle");
 
+    /**
+     * Tells whether the command is implemented by this server in protocol v1.
+     * @param cmd the command name
+     * @return true if the command is implemented
+     */
     public static boolean isKnownCommand(String cmd) {
         return KNOWN_COMMANDS.contains(cmd);
     }

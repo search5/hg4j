@@ -59,6 +59,13 @@ public class ManifestCommand {
         private final boolean executable;
         private final boolean symlink;
 
+        /**
+         * Creates a manifest entry.
+         * @param path repository-relative path of the file
+         * @param nodeHex full 40-character hex node id of the file's content
+         * @param executable whether the file has the executable flag
+         * @param symlink whether the file is a symbolic link
+         */
         public ManifestEntry(String path, String nodeHex, boolean executable, boolean symlink) {
             this.path = path;
             this.nodeHex = nodeHex;
@@ -66,23 +73,43 @@ public class ManifestCommand {
             this.symlink = symlink;
         }
 
+        /**
+         * Returns the repository-relative path of the file.
+         * @return the path
+         */
         public String getPath() {
             return path;
         }
 
+        /**
+         * Returns the node id of the file's content at this revision.
+         * @return the 40-character hex node id
+         */
         public String getNodeHex() {
             return nodeHex;
         }
 
+        /**
+         * Tells whether the file carries the executable flag.
+         * @return {@code true} if executable
+         */
         public boolean isExecutable() {
             return executable;
         }
 
+        /**
+         * Tells whether the file is a symbolic link.
+         * @return {@code true} if a symlink
+         */
         public boolean isSymlink() {
             return symlink;
         }
     }
 
+    /**
+     * Creates a manifest command for the given repository.
+     * @param repository the repository to read
+     */
     public ManifestCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -108,10 +135,19 @@ public class ManifestCommand {
         return this;
     }
 
+    /**
+     * Returns the advisory flag set with {@link #setDebug(boolean)}.
+     * @return {@code true} if debug-style rendering was requested; the default is {@code false}
+     */
     public boolean isDebug() {
         return debug;
     }
 
+    /**
+     * Lists the files tracked in the selected manifest.
+     * @return the entries as produced by the manifest iteration, sorted by path; empty if the repository has no commits or no revision is checked out
+     * @throws IOException if the manifest cannot be read
+     */
     public List<ManifestEntry> call() throws IOException {
         String effectiveRevision = revision;
         if (effectiveRevision == null || effectiveRevision.isEmpty()) {

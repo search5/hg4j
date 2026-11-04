@@ -20,6 +20,10 @@ public class ManifestTreeIterator implements TreeIterator {
     private final List<Entry> entries = new ArrayList<>();
     private int index = -1;
 
+    /**
+     * One parsed manifest line: a path, its node hash and its file flags.
+     * <p>Instances are produced by {@link #parseManifestContent(byte[])}; the fields are read through the accessors.
+     */
     public static class Entry {
         final String path;
         final byte[] nodeId;
@@ -51,6 +55,11 @@ public class ManifestTreeIterator implements TreeIterator {
             this.treeDir = treeDir;
         }
 
+        /**
+         * Returns whether this entry is a treemanifest subdirectory pointer (flag {@code t}) rather than a file.
+         * <p>Such entries only appear in the result of {@link #parseManifestContent(byte[])}; they are expanded
+         * and never exposed while iterating.
+         */
         public boolean isTreeDir() {
             return treeDir;
         }
@@ -71,12 +80,24 @@ public class ManifestTreeIterator implements TreeIterator {
         }
     }
 
+    /**
+     * Creates an iterator over the manifest of the given changeset. Nothing is read until {@link #reset()}.
+     * @param repository the repository to read from; must not be null
+     * @param revision a changeset identifier resolved against the changelog; {@code null}, an empty string,
+     *        {@code "-1"} or {@code "null"} yield an empty iteration
+     */
     public ManifestTreeIterator(HgRepository repository, String revision) {
         this.repository = repository;
         this.revision = revision;
         this.directManifestNode = null;
     }
 
+    /**
+     * Creates an iterator over the manifest identified directly by its manifest node hash.
+     * Nothing is read until {@link #reset()}.
+     * @param repository the repository to read from; must not be null
+     * @param manifestNode the 20-byte node hash of the manifest revision (not of the changeset)
+     */
     public ManifestTreeIterator(HgRepository repository, byte[] manifestNode) {
         this.repository = repository;
         this.revision = null;
@@ -90,6 +111,14 @@ public class ManifestTreeIterator implements TreeIterator {
         loadEntries();
     }
 
+    /**
+     * Parses the raw text of one manifest revision into entries, in the order the lines appear.
+     * <p>Each line has the form {@code path NUL hash flags}, where the hash is 40 hex characters or 20 raw
+     * bytes. Lines that do not match this form are skipped silently. Subdirectory pointers of a treemanifest
+     * are returned as entries for which {@link Entry#isTreeDir()} is true; they are not expanded here.
+     * @param mfContent the uncompressed manifest bytes; must not be null
+     * @return a new modifiable list of entries; empty if no line could be parsed
+     */
     public static List<Entry> parseManifestContent(byte[] mfContent) {
         List<Entry> result = new ArrayList<>();
         int start = 0;
@@ -309,6 +338,11 @@ public class ManifestTreeIterator implements TreeIterator {
         return false;
     }
 
+    /**
+     * Returns whether the current entry is a symbolic link.
+     * @return true if the cursor is on an entry carrying the symlink flag, false otherwise (including when
+     *         there is no current entry)
+     */
     public boolean isSymlink() {
         if (index >= 0 && index < entries.size()) {
             return entries.get(index).symlink;

@@ -98,7 +98,13 @@ public abstract class HgTreeFilter implements PathFilter {
      * path with any trailing {@code "/"} stripped.
      */
     public static final class NarrowPattern {
+        /**
+         * Pattern kind; either {@code "path"} or {@code "rootfilesin"}.
+         */
         public final String kind;
+        /**
+         * POSIX-style path with any trailing {@code "/"} removed.
+         */
         public final String path;
 
         private NarrowPattern(String kind, String path) {

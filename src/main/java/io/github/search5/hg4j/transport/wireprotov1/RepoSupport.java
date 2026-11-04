@@ -34,6 +34,15 @@ public final class RepoSupport {
         }
     }
 
+    /**
+     * Implements {@code listkeys} for a namespace: {@code bookmarks} (name to hex node, hiding bookmarks of secret
+     * changesets), {@code namespaces}, {@code phases} (draft roots plus {@code publishing} when the repository is
+     * publishing) and {@code obsolete} (markers, only when obsolescence exchange is enabled).
+     * @param repo the served repository; must not be null
+     * @param namespace the pushkey namespace name
+     * @return a new ordered map of keys to values; empty for an unknown namespace
+     * @throws IOException if the repository data cannot be read
+     */
     public static Map<String, String> readListKeys(HgRepository repo, String namespace) throws IOException {
         Map<String, String> map = new LinkedHashMap<>();
         if ("bookmarks".equals(namespace)) {
@@ -95,6 +104,16 @@ public final class RepoSupport {
         return map;
     }
 
+    /**
+     * Applies a {@code pushkey} update to the repository.
+     * @param repo the served repository; must not be null
+     * @param namespace the pushkey namespace
+     * @param key the key to update
+     * @param oldVal the value the caller expects the key to have currently
+     * @param newVal the new value
+     * @return true if the update was accepted and applied, false if it was refused
+     * @throws IOException if the repository cannot be read or written
+     */
     public static boolean applyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal) throws IOException {
         return applyPushkey(repo, namespace, key, oldVal, newVal, false);
     }
@@ -196,6 +215,12 @@ public final class RepoSupport {
         return current == newPhase;
     }
 
+    /**
+     * Opens the changelog revlog of the repository.
+     * @param repo the repository; must not be null
+     * @return the changelog revlog
+     * @throws IOException if the revlog cannot be opened
+     */
     public static Revlog changelog(HgRepository repo) throws IOException {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");

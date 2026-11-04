@@ -22,10 +22,22 @@ public class AddCommand {
     private final HgRepository repository;
     private final List<String> files = new ArrayList<>();
 
+    /**
+     * Creates an add command for the given repository. Nothing is read or written until {@link #call()}.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public AddCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Queues one exact path to add. Backslashes are converted to {@code /}; a {@code null} or empty path is silently ignored.
+     * When at least one path was queued with this method, {@link #call()} adds exactly these paths and ignores the pattern selection.
+     *
+     * @param file repository-relative path of an existing file or symlink; may be {@code null} (ignored)
+     * @return {@code this}
+     */
     public AddCommand addFile(String file) {
         if (file != null && !file.isEmpty()) {
             files.add(file.replace('\\', '/'));
@@ -110,6 +122,16 @@ public class AddCommand {
         return selected;
     }
 
+    /**
+     * Adds the queued paths, or the files chosen by the pattern selection, or (with neither) every untracked file of the working copy,
+     * to the dirstate as added ({@code hg add}). Then, for each hg subrepository, adds inside it too (see {@link #setSubrepos(boolean)}).
+     * <p>Takes the working copy lock for the whole operation and rewrites the dirstate. A path that already has a dirstate entry is not
+     * added again: if it was in the removed state it is restored as a normal entry, if it was already added it is left untouched.
+     *
+     * @throws IOException if the working copy cannot be scanned or the dirstate cannot be written
+     * @throws io.github.search5.hg4j.errors.HgValidationException if a queued path does not exist or is neither a regular file nor a symlink
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public void call() throws IOException, HgLockException {
         try (HgLock wlock = repository.lockWorkingCopy()) {
             // commands.add: `with repo.wlock(), repo.dirstate.changing_files(repo)`

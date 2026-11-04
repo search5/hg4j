@@ -46,6 +46,10 @@ import java.util.Map;
 public class TagsCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates the command.
+     * @param repository the repository whose tags are listed; must not be {@code null}
+     */
     public TagsCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -64,14 +68,26 @@ public class TagsCommand {
             this.local = local;
         }
 
+        /**
+         * Returns the tag name.
+         * @return the tag name, never {@code null}
+         */
         public String getName() {
             return name;
         }
 
+        /**
+         * Returns the node id.
+         * @return the 20-byte node id of the tagged changeset (all zeros for {@code tip} of an empty repository)
+         */
         public byte[] getNode() {
             return node;
         }
 
+        /**
+         * Returns the local revision number.
+         * @return the revision number of the tagged changeset, or -1 for {@code tip} of an empty repository
+         */
         public int getRev() {
             return rev;
         }
@@ -82,6 +98,14 @@ public class TagsCommand {
         }
     }
 
+    /**
+     * Lists the tags of the repository.
+     * <p>
+     * Reads {@code .hgtags} from the working copy and {@code .hg/localtags}, and always adds the pseudo tag
+     * {@code tip}. See the class description for precedence, removed tags and ordering.
+     * @return the tags, highest revision first; never {@code null}
+     * @throws IOException if reading the tag files or the changelog fails
+     */
     public List<Tag> call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

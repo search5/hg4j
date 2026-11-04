@@ -24,6 +24,10 @@ import java.util.TreeMap;
 public class PathsCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates the command.
+     * @param repository the repository whose configuration is read; must not be {@code null}
+     */
     public PathsCommand(HgRepository repository) {
         this.repository = repository;
     }

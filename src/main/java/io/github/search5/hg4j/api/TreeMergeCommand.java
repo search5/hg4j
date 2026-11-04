@@ -33,15 +33,30 @@ public class TreeMergeCommand {
     private byte[] ours;
     private byte[] theirs;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to read; must not be {@code null}
+     */
     public TreeMergeCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the "ours" side of the merge.
+     * @param ours the 20-byte node id of the changeset the result is expressed relative to; must be set before
+     *         {@link #call()}
+     * @return {@code this}
+     */
     public TreeMergeCommand setOurs(byte[] ours) {
         this.ours = ours;
         return this;
     }
 
+    /**
+     * Sets the "theirs" side of the merge.
+     * @param theirs the 20-byte node id of the changeset to merge in; must be set before {@link #call()}
+     * @return {@code this}
+     */
     public TreeMergeCommand setTheirs(byte[] theirs) {
         this.theirs = theirs;
         return this;
@@ -60,6 +75,7 @@ public class TreeMergeCommand {
         return this;
     }
 
+    /** The result of a {@link TreeMergeCommand}: the changes to apply on top of "ours" to get the merged tree. */
     public static class TreeMergeResult {
         private final boolean conflicted;
         private final List<String> conflicts;
@@ -76,6 +92,10 @@ public class TreeMergeCommand {
             this.removedFiles = removedFiles;
         }
 
+        /**
+         * Tells whether any file ended up with unresolved conflicts.
+         * @return {@code true} if {@link #getConflicts()} is not empty
+         */
         public boolean isConflicted() {
             return conflicted;
         }
@@ -111,6 +131,13 @@ public class TreeMergeCommand {
         }
     }
 
+    /**
+     * Computes the merge of {@code ours} and {@code theirs} without touching the working copy, dirstate or store.
+     * @return the merge result; never {@code null}
+     * @throws io.github.search5.hg4j.errors.HgRevisionNotFoundException (an {@link IOException}) if ours, theirs or a
+     *         given base is not in the changelog
+     * @throws IOException if reading the store fails
+     */
     public TreeMergeResult call() throws IOException {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

@@ -24,6 +24,11 @@ public final class ResolveCommand {
     private boolean markUnresolved = false;
     private boolean list = false;
 
+    /**
+     * Creates the command.
+     * @param repository the repository whose merge state is used; must not be {@code null}
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public ResolveCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -31,21 +36,45 @@ public final class ResolveCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the file to mark.
+     * @param path the repository-relative path of a file in the current merge state; {@code null} (the default)
+     *         marks nothing. It only has an effect together with {@link #markResolved} or {@link #markUnresolved}
+     * @return {@code this}
+     */
     public ResolveCommand setFile(String path) {
         this.fileToMark = path;
         return this;
     }
 
+    /**
+     * Requests that the file set with {@link #setFile} be marked resolved.
+     * @param resolved {@code true} to mark it (like {@code hg resolve --mark}); default {@code false}
+     * @return {@code this}
+     */
     public ResolveCommand markResolved(boolean resolved) {
         this.markResolved = resolved;
         return this;
     }
 
+    /**
+     * Requests that the file set with {@link #setFile} be marked unresolved.
+     * @param unresolved {@code true} to mark it (like {@code hg resolve --unmark}); default {@code false}. Ignored
+     *         if {@link #markResolved} is also {@code true}
+     * @return {@code this}
+     */
     public ResolveCommand markUnresolved(boolean unresolved) {
         this.markUnresolved = unresolved;
         return this;
     }
 
+    /**
+     * Sets whether the state of all conflicted files is returned even when a single file was marked.
+     * @param list {@code true} to return every file of the merge state (like {@code hg resolve --list}); the default
+     *         {@code false} returns only the marked file when one was marked. Without a marking, all files are returned
+     *         either way
+     * @return {@code this}
+     */
     public ResolveCommand list(boolean list) {
         this.list = list;
         return this;

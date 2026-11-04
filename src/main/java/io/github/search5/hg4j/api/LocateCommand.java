@@ -52,6 +52,10 @@ public class LocateCommand {
     private String pattern;
     private String revision;
 
+    /**
+     * Creates a locate command for the given repository.
+     * @param repository the repository to search
+     */
     public LocateCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -82,16 +86,32 @@ public class LocateCommand {
         return this;
     }
 
+    /**
+     * Sets a single {@code relglob} pattern (an unrooted glob matched against any directory level). A path must match it and also any patterns set with {@link #setPatterns(String...)}. If {@code null} or empty, no pattern filtering is done. See the class documentation for the supported glob syntax.
+     * @param pattern the glob pattern, or {@code null}
+     * @return {@code this}
+     */
     public LocateCommand setPattern(String pattern) {
         this.pattern = pattern;
         return this;
     }
 
+    /**
+     * Sets the revision whose manifest is searched ({@code hg locate -r REV}). If {@code null} or empty, the working copy (dirstate) is searched instead.
+     * @param revision the revision identifier, or {@code null}
+     * @return {@code this}
+     */
     public LocateCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Returns the paths of the files matching the configured pattern, patterns and revision.
+     * @return repository-relative paths, sorted by their UTF-8 byte order; never {@code null}
+     * @throws io.github.search5.hg4j.errors.HgRevisionNotFoundException if the revision set with {@link #setRevision(String)} cannot be resolved
+     * @throws IOException if the repository cannot be read
+     */
     public List<String> call() throws IOException {
         repository.clearRevlogCache();
 

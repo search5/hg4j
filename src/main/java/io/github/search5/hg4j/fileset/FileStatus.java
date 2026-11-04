@@ -6,5 +6,6 @@ import java.util.Set;
 public record FileStatus(Set<String> modified, Set<String> added, Set<String> removed, Set<String> deleted, Set<String> unknown,
                          Set<String> ignored, Set<String> clean) {
 
+    /** A status in which every set is empty. */
     public static final FileStatus EMPTY = new FileStatus(Set.of(), Set.of(), Set.of(), Set.of(), Set.of(), Set.of(), Set.of());
 }

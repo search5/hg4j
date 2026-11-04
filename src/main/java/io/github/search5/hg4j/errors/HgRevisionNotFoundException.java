@@ -26,6 +26,12 @@ public class HgRevisionNotFoundException extends IOException {
         super("Revision not found for revision number: " + revNumber);
     }
 
+    /**
+     * Creates the exception with a free-form message and an underlying cause.
+     *
+     * @param message the detail message
+     * @param cause the underlying failure; may be {@code null}
+     */
     public HgRevisionNotFoundException(String message, Throwable cause) {
         super(message, cause);
     }

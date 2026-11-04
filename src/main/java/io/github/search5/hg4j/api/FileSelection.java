@@ -37,6 +37,12 @@ public final class FileSelection {
         return selection;
     }
 
+    /**
+     * Sets the file arguments of the command ({@code hg CMD [FILE]...}), replacing any earlier ones. Each is a name relative to the current directory, a {@code kind:pattern} or a {@code set:EXPRESSION}.
+     *
+     * @param patterns the patterns; {@code null} clears them
+     * @return {@code this}
+     */
     public FileSelection patterns(String... patterns) {
         this.patterns.clear();
         if (patterns != null) {
@@ -45,6 +51,12 @@ public final class FileSelection {
         return this;
     }
 
+    /**
+     * Sets the {@code -I} patterns, replacing any earlier ones. A pattern without a kind prefix is a glob.
+     *
+     * @param patterns the include patterns; {@code null} clears them
+     * @return {@code this}
+     */
     public FileSelection include(String... patterns) {
         this.include.clear();
         if (patterns != null) {
@@ -53,6 +65,12 @@ public final class FileSelection {
         return this;
     }
 
+    /**
+     * Sets the {@code -X} patterns, replacing any earlier ones. A pattern without a kind prefix is a glob.
+     *
+     * @param patterns the exclude patterns; {@code null} clears them
+     * @return {@code this}
+     */
     public FileSelection exclude(String... patterns) {
         this.exclude.clear();
         if (patterns != null) {

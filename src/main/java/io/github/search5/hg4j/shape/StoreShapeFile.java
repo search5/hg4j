@@ -20,6 +20,7 @@ import java.util.List;
  */
 public final class StoreShapeFile {
 
+    /** Name of the file inside the repository metadata directory that records the shape names. */
     public static final String FILENAME = "store-shape";
 
     private StoreShapeFile() {

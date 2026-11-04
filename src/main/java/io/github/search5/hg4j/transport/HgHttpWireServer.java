@@ -49,6 +49,12 @@ public class HgHttpWireServer extends HttpServlet {
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
+    /**
+     * Creates a servlet serving the given repository over wire protocol v1. Web access rules are not
+     * enforced unless {@link #setEnforceWebPermissions(boolean)} is called. Register hooks before the
+     * servlet starts serving requests; the hook lists are not synchronized.
+     * @param repository the repository to serve; must not be null
+     */
     public HgHttpWireServer(HgRepository repository) {
         this.repository = repository;
     }
@@ -60,7 +66,6 @@ public class HgHttpWireServer extends HttpServlet {
         return this;
     }
 
-    /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
     /**
      * Registers a hook run AFTER the incoming changegroup has been applied, abort-capable: returning {@code false} undoes the push, real hg's
      * {@code pretxnchangegroup} (the hook seen by {@link #registerPreChangegroupHook} runs before anything is written, like {@code prechangegroup}).
@@ -70,6 +75,12 @@ public class HgHttpWireServer extends HttpServlet {
         return this;
     }
 
+    /**
+     * Registers a notification-only hook run after an incoming push has been applied, like real hg's
+     * {@code changegroup} hook.
+     * @param hook the hook to add; must not be null
+     * @return this server
+     */
     public HgHttpWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
         return this;

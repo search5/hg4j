@@ -16,6 +16,11 @@ public class ForgetCommand {
     private final HgRepository repository;
     private String file;
 
+    /**
+     * Creates a forget command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public ForgetCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -123,11 +128,25 @@ public class ForgetCommand {
         }
     }
 
+    /**
+     * Sets the single file for {@link #call()}. Required there.
+     *
+     * @param file repository-relative path of the tracked file
+     * @return {@code this}
+     */
     public ForgetCommand setFile(String file) {
         this.file = file;
         return this;
     }
 
+    /**
+     * Stops tracking the single file set with {@link #setFile(String)} ({@code hg forget}). A file that was only added is dropped from the dirstate; a committed file is marked removed for the next commit. The file on disk is never touched. Takes the working copy lock and writes the dirstate.
+     *
+     * @throws IllegalStateException if no file was set
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the file is not tracked
+     * @throws IOException if the dirstate cannot be written
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public void call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");

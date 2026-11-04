@@ -58,6 +58,12 @@ public final class CopyCommand {
     private String destinationPath;
     private boolean force;
 
+    /**
+     * Creates a copy command for the given repository.
+     *
+     * @param repository the repository whose working copy is changed
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public CopyCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -65,11 +71,23 @@ public final class CopyCommand {
         this.repository = repository;
     }
 
+    /**
+     * Sets the tracked file to copy for {@link #call()}. Required there.
+     *
+     * @param sourcePath repository-relative path of the source
+     * @return {@code this}
+     */
     public CopyCommand setSource(String sourcePath) {
         this.sourcePath = sourcePath;
         return this;
     }
 
+    /**
+     * Sets the path to copy to for {@link #call()}. Required there.
+     *
+     * @param destinationPath repository-relative path of the destination
+     * @return {@code this}
+     */
     public CopyCommand setDestination(String destinationPath) {
         this.destinationPath = destinationPath;
         return this;
@@ -172,6 +190,15 @@ public final class CopyCommand {
         return new PatternResult(result.failed(), result.warnings(), result.status());
     }
 
+    /**
+     * Copies the single source file to the destination and marks the destination as added in the dirstate, recording the copy source when real hg would ({@code hg copy SOURCE DEST}). The source is left unchanged. Takes the working copy lock and writes the dirstate.
+     *
+     * @throws IllegalStateException if the source or the destination was not set
+     * @throws HgRepositoryNotFoundException if the source does not exist on disk
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the destination exists and {@link #setForce(boolean)} is not set, or the source is not tracked
+     * @throws IOException if copying or writing the dirstate fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public void call() throws IOException, HgLockException {
         if (sourcePath == null || destinationPath == null) {
             throw new IllegalStateException("Source and destination paths must be specified.");

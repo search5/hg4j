@@ -68,15 +68,36 @@ public final class GitSubrepoUtil {
         }
     }
 
+    /**
+     * Runs {@code git clone -q}. The parent directory is created first if needed.
+     *
+     * @param parentDir the directory the git process runs in; created (with parents) if missing
+     * @param sourceUrl the repository to clone
+     * @param targetDir the directory to clone into
+     * @throws IOException if the {@code git} process cannot be started, is interrupted, or exits non-zero (the message holds git's output)
+     */
     public static void clone(File parentDir, String sourceUrl, File targetDir) throws IOException {
         parentDir.mkdirs();
         run(parentDir, Collections.emptyMap(), "clone", "-q", sourceUrl, targetDir.getAbsolutePath());
     }
 
+    /**
+     * Runs {@code git fetch -q} in a checkout.
+     *
+     * @param gitDir the existing checkout directory the git process runs in
+     * @throws IOException if the {@code git} process cannot be started, is interrupted, or exits non-zero
+     */
     public static void fetch(File gitDir) throws IOException {
         run(gitDir, Collections.emptyMap(), "fetch", "-q");
     }
 
+    /**
+     * Runs {@code git checkout -q} of a commit, giving a detached HEAD.
+     *
+     * @param gitDir the existing checkout directory the git process runs in
+     * @param sha the commit to check out
+     * @throws IOException if the {@code git} process cannot be started, is interrupted, or exits non-zero
+     */
     public static void checkout(File gitDir, String sha) throws IOException {
         run(gitDir, Collections.emptyMap(), "checkout", "-q", sha);
     }

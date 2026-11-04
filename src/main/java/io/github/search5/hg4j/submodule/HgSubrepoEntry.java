@@ -19,6 +19,15 @@ public final class HgSubrepoEntry {
     private final String revision;
     private final Type type;
 
+    /**
+     * Creates an entry of kind {@link Type#GIT} or {@link Type#HG}.
+     *
+     * @param path the subrepo path relative to the parent repository; must not be {@code null}
+     * @param sourceUrl the source location; {@code null} is stored as the empty string
+     * @param revision the pinned revision; {@code null} is stored as the empty string
+     * @param isGit {@code true} for a git subrepo, {@code false} for a Mercurial one
+     * @throws IllegalArgumentException if {@code path} is {@code null}
+     */
     public HgSubrepoEntry(String path, String sourceUrl, String revision, boolean isGit) {
         this(path, sourceUrl, revision, isGit ? Type.GIT : Type.HG);
     }
@@ -29,6 +38,15 @@ public final class HgSubrepoEntry {
         this(path, sourceUrl, revision, isSvn ? Type.SVN : (isGit ? Type.GIT : Type.HG));
     }
 
+    /**
+     * Creates an entry.
+     *
+     * @param path the subrepo path relative to the parent repository; must not be {@code null}
+     * @param sourceUrl the source location; {@code null} is stored as the empty string
+     * @param revision the pinned revision; {@code null} is stored as the empty string
+     * @param type the subrepo kind; {@code null} is stored as {@link Type#HG}
+     * @throws IllegalArgumentException if {@code path} is {@code null}
+     */
     public HgSubrepoEntry(String path, String sourceUrl, String revision, Type type) {
         if (path == null) {
             throw new IllegalArgumentException("Subrepo path cannot be null");
@@ -39,18 +57,38 @@ public final class HgSubrepoEntry {
         this.type = type != null ? type : Type.HG;
     }
 
+    /**
+     * Returns the subrepo path.
+     *
+     * @return the path relative to the parent repository, never {@code null}
+     */
     public String getPath() {
         return path;
     }
 
+    /**
+     * Returns the source location.
+     *
+     * @return the source, never {@code null} (empty if none was given)
+     */
     public String getSourceUrl() {
         return sourceUrl;
     }
 
+    /**
+     * Returns the pinned revision.
+     *
+     * @return the revision, never {@code null} (empty if none was given)
+     */
     public String getRevision() {
         return revision;
     }
 
+    /**
+     * Tells whether this is a git subrepo.
+     *
+     * @return {@code true} if the type is {@link Type#GIT}
+     */
     public boolean isGit() {
         return type == Type.GIT;
     }
@@ -60,6 +98,11 @@ public final class HgSubrepoEntry {
         return type == Type.SVN;
     }
 
+    /**
+     * Returns the subrepo kind.
+     *
+     * @return the type, never {@code null}
+     */
     public Type getType() {
         return type;
     }

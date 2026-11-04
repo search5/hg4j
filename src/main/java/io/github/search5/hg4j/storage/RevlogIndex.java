@@ -81,6 +81,11 @@ public class RevlogIndex {
     private NodeMapFile persistentNodeMap;
     private boolean nodeMapDeferred = false;
 
+    /**
+     * Opens the index in {@code idxFile} without a persistent nodemap, as version 1 if the file does not exist. An existing file is read at once.
+     * @param idxFile the index file; must not be {@code null}
+     * @throws IOException if the file cannot be read or is corrupt
+     */
     public RevlogIndex(File idxFile) throws IOException {
         this(idxFile, false, null);
     }
@@ -99,10 +104,23 @@ public class RevlogIndex {
         this(idxFile, createAsGeneralV2, null);
     }
 
+    /**
+     * Opens the index in {@code idxFile} with an optional persistent nodemap to speed up node lookups.
+     * @param idxFile the index file; must not be {@code null}
+     * @param persistentNodeMap the nodemap, or {@code null}; it is used only if it covers the index exactly
+     * @throws IOException if the file cannot be read or is corrupt
+     */
     public RevlogIndex(File idxFile, NodeMapFile persistentNodeMap) throws IOException {
         this(idxFile, false, persistentNodeMap);
     }
 
+    /**
+     * Opens the index in {@code idxFile}, see {@link #RevlogIndex(File, boolean)}, with an optional persistent nodemap.
+     * @param idxFile the index file; must not be {@code null}
+     * @param createAsGeneralV2 if the file does not exist, create a new general version 2 docket in it
+     * @param persistentNodeMap the nodemap, or {@code null}
+     * @throws IOException if the file cannot be read, is corrupt, or the new docket cannot be written
+     */
     public RevlogIndex(File idxFile, boolean createAsGeneralV2, NodeMapFile persistentNodeMap) throws IOException {
         this(idxFile, createAsGeneralV2, false, persistentNodeMap);
     }
@@ -246,34 +264,66 @@ public class RevlogIndex {
         return sb.toString();
     }
 
+    /**
+     * Tells whether the index is a version 2 docket (changelog-v2 or general revlog-v2) rather than a version 1 index.
+     * @return {@code true} for a docket
+     */
     public boolean isV2() {
         return isV2;
     }
 
+    /**
+     * Tells whether the index is a changelog-v2 docket.
+     * @return {@code true} for changelog-v2
+     */
     public boolean isChangelogV2() {
         return isChangelogV2;
     }
 
+    /**
+     * Tells whether deltas may be stored against any earlier revision.
+     * @return {@code true} for a version 2 index or a version 1 index with the generaldelta flag
+     */
     public boolean isGeneralDelta() {
         return isV2 || generalDelta;
     }
 
+    /**
+     * Returns the 4-byte version header of a version 2 docket (the low 16 bits are the magic, {@code 0xDEAD} general or {@code 0xD34D} changelog-v2).
+     * @return the header, 0 if the index is not a docket
+     */
     public int getVersionHeader() {
         return versionHeader;
     }
 
+    /**
+     * Returns the length of the valid part of the index file that the docket records.
+     * @return the length in bytes, 0 for a version 1 index
+     */
     public long getDocketIndexEnd() {
         return docketIndexEnd;
     }
 
+    /**
+     * Returns the length of the valid part of the data file that the docket records.
+     * @return the length in bytes, 0 for a version 1 index
+     */
     public long getDocketDataEnd() {
         return docketDataEnd;
     }
 
+    /**
+     * Returns the length of the valid part of the sidedata file that the docket records.
+     * @return the length in bytes, 0 for a version 1 index
+     */
     public long getDocketSidedataEnd() {
         return docketSidedataEnd;
     }
 
+    /**
+     * Returns the docket's default compression header byte (an opening parenthesis for zstd, {@code x} for zlib).
+     * @return the byte, 0 for a version 1 index
+     */
     public byte getDocketCompression() {
         return docketDefaultCompression;
     }
@@ -721,11 +771,21 @@ public class RevlogIndex {
         }
     }
 
+    /**
+     * Returns the number of revisions. The index file is checked for changes made by other writers first.
+     * @return the revision count
+     */
     public synchronized int getRevisionCount() {
         checkAndUpdate();
         return revisionCount;
     }
 
+    /**
+     * Returns the record of a revision, reading it from the index file if it is not in the cache.
+     * @param rev the revision number
+     * @return the record
+     * @throws IndexOutOfBoundsException if {@code rev} is negative or not smaller than {@link #getRevisionCount()}
+     */
     public synchronized Revlog.IndexRecord getIndexRecord(int rev) {
         checkAndUpdate();
         int maxCount = getRevisionCount();
@@ -843,6 +903,13 @@ public class RevlogIndex {
                 sidedataOffset, sidedataCompLen, sidedataCompressionMode, rank);
     }
 
+    /**
+     * Returns where the record of a revision starts in the index file ({@code rev * 64} for a non-inline version 1 index, {@code rev * 96} for a docket,
+     * and after the data of the earlier revisions for an inline index).
+     * @param rev the revision number
+     * @return the offset in bytes
+     * @throws IndexOutOfBoundsException if {@code rev} is negative or not smaller than {@link #getRevisionCount()}
+     */
     public synchronized long getFileOffset(int rev) {
         checkAndUpdate();
         int maxCount = getRevisionCount();
@@ -865,6 +932,11 @@ public class RevlogIndex {
         return !addedRecords.isEmpty();
     }
 
+    /**
+     * Finds a revision by node id, using the persistent nodemap when there is one.
+     * @param nodeId the node id; only its first 20 bytes are used. {@code null} gives -1
+     * @return the revision number, or -1 if not found
+     */
     public synchronized int findRevision(byte[] nodeId) {
         checkAndUpdate();
         if (nodeId == null) return -1;
@@ -894,6 +966,10 @@ public class RevlogIndex {
         return -1;
     }
 
+    /**
+     * Tells whether the revision data is stored inside the index file.
+     * @return {@code true} for an inline version 1 index; always {@code false} for a new or empty one
+     */
     public boolean isInline() {
         return inline;
     }
@@ -923,6 +999,11 @@ public class RevlogIndex {
         this.persistentNodeMap = persistentNodeMap;
     }
 
+    /**
+     * Adds a record that has just been written to the files, to the in-memory index. This only updates memory; writing the files is the caller's job
+     * ({@code Revlog} does both in its append methods).
+     * @param record the record of the new revision; its revision number should be the next one
+     */
     public synchronized void addRecord(Revlog.IndexRecord record) {
         checkAndUpdate();
         int rev = record.getRevision();

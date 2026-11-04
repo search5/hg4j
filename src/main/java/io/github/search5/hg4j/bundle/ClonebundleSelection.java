@@ -21,10 +21,25 @@ import java.util.regex.Pattern;
  */
 public final class ClonebundleSelection {
 
+    /**
+     * Name of the bundlespec parameter naming the shard a bundle holds.
+     */
     public static final String SHARD_ID = "shard-id";
+    /**
+     * Name of the bundlespec parameter holding the fingerprint of the store shape of a bundle.
+     */
     public static final String STORE_FINGERPRINT = "store-fingerprint";
+    /**
+     * Name of the bundlespec parameter identifying the group of sharded bundles a bundle belongs to.
+     */
     public static final String BUNDLE_GROUP_ID = "bundle-group-id";
+    /**
+     * Name of the bundlespec parameter marking the bundle of a group that holds the top level files.
+     */
     public static final String BUNDLE_GROUP_TOP_LEVEL = "bundle-group-top-level";
+    /**
+     * Name of the bundlespec parameter listing the delta compression methods of a bundle.
+     */
     public static final String DELTA_COMPRESSION = "delta-compression";
 
     private static final List<String> SCHEMES = List.of("http://", "https://", "largefile://", "peer-bundle-cache://");
@@ -69,10 +84,17 @@ public final class ClonebundleSelection {
             this.stream = stream;
         }
 
+        /**
+         * Returns the bundle URL.
+         * @return the value of the {@code URL} attribute
+         */
         public String url() {
             return attrs.get("URL");
         }
 
+        /**
+         * Returns the manifest attributes of the line, including {@code URL}. The map is returned as stored, not copied.
+         */
         public Map<String, String> attrs() {
             return attrs;
         }
@@ -83,6 +105,9 @@ public final class ClonebundleSelection {
             return v == null || v.isEmpty() ? null : v;
         }
 
+        /**
+         * Returns whether the entry's bundlespec describes a stream clone bundle.
+         */
         public boolean isStreamClone() {
             return stream;
         }

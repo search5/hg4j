@@ -27,6 +27,12 @@ import java.util.TreeSet;
 public final class HgRevsetEngine {
     private final HgRepository repository;
 
+    /**
+     * Creates an engine for a repository.
+     *
+     * @param repository the repository whose changelog the expressions are evaluated against
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public HgRevsetEngine(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");

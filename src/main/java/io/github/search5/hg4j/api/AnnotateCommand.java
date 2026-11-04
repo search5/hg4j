@@ -38,12 +38,23 @@ public final class AnnotateCommand {
     private String path;
     private int revision = -1;
 
+    /**
+     * One annotated line: its 1-based number, the changelog revision that introduced it, that revision's author, and its text. Immutable.
+     */
     public static final class BlameLine {
         private final int lineNumber;
         private final int revision;
         private final String author;
         private final String content;
 
+        /**
+         * Creates a blame record.
+         *
+         * @param lineNumber 1-based line number within the annotated file revision
+         * @param revision changelog revision number that introduced the line
+         * @param author author string of that revision, or {@code unknown} when it could not be read
+         * @param content the text of the line
+         */
         public BlameLine(int lineNumber, int revision, String author, String content) {
             this.lineNumber = lineNumber;
             this.revision = revision;
@@ -51,12 +62,22 @@ public final class AnnotateCommand {
             this.content = content;
         }
 
+        /** @return the 1-based line number within the annotated file revision */
         public int getLineNumber() { return lineNumber; }
+        /** @return the changelog revision number that introduced the line */
         public int getRevision() { return revision; }
+        /** @return the author string of the introducing revision, or {@code unknown} when it could not be read */
         public String getAuthor() { return author; }
+        /** @return the text of the line */
         public String getContent() { return content; }
     }
 
+    /**
+     * Creates an annotate command for the given repository.
+     *
+     * @param repository the repository to read
+     * @throws IllegalArgumentException if {@code repository} is {@code null}
+     */
     public AnnotateCommand(HgRepository repository) {
         if (repository == null) {
             throw new IllegalArgumentException("Repository cannot be null");
@@ -137,11 +158,24 @@ public final class AnnotateCommand {
         return result;
     }
 
+    /**
+     * Sets the file to annotate for {@link #call()}. Required.
+     *
+     * @param path repository-relative path of the file, using {@code /} separators
+     * @return {@code this}
+     */
     public AnnotateCommand setPath(String path) {
         this.path = path;
         return this;
     }
 
+    /**
+     * Sets the filelog revision of the file to annotate for {@link #call()}. This is a revision number of the file's own revlog, not a changelog revision.
+     * The default {@code -1} means the file's latest revision.
+     *
+     * @param revision filelog revision number, or {@code -1} for the latest
+     * @return {@code this}
+     */
     public AnnotateCommand setRevision(int revision) {
         this.revision = revision;
         return this;

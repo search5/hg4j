@@ -54,6 +54,10 @@ public class PurgeCommand {
     private final HgRepository repository;
     private boolean purgeDirectories = true;
 
+    /**
+     * Creates the command.
+     * @param repository the repository whose working copy is purged; must not be {@code null}
+     */
     public PurgeCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -73,15 +77,26 @@ public class PurgeCommand {
         return this;
     }
 
+    /**
+     * Sets whether untracked empty directories are removed.
+     * @param purgeDirectories {@code true} (the default) to remove untracked directories that end up empty;
+     *         {@code false} to leave them (restricting the purge like {@code hg purge --files})
+     * @return {@code this}
+     */
     public PurgeCommand setPurgeDirectories(boolean purgeDirectories) {
         this.purgeDirectories = purgeDirectories;
         return this;
     }
 
     /**
-     * Executes the purge operation by scanning workspace and physically deleting untracked entities.
-     *
-     * @throws IOException if workspace scanning or deletion fails
+     * Deletes the untracked entries of the working copy.
+     * <p>
+     * Every entry under the repository root that is not in the dirstate is a candidate. The {@code .hg} directory and
+     * declared subrepo paths are never entered. Symbolic links (also dangling ones) are treated as single files and
+     * never followed. Ignored paths are kept unless {@link #setPurgeIgnored} is set. Files are deleted if
+     * {@link #setPurgeFiles} is on; untracked directories that are empty after that are deleted if
+     * {@link #setPurgeDirectories} is on. No lock is taken.
+     * @throws IOException if scanning or deleting fails
      */
     public void call() throws IOException {
         Dirstate dirstate = repository.getDirstate();

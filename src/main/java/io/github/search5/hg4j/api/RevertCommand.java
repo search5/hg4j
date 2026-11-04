@@ -47,6 +47,10 @@ public class RevertCommand {
     private String file;
     private String revision;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to revert in; must not be {@code null}
+     */
     public RevertCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -97,13 +101,6 @@ public class RevertCommand {
         return this;
     }
 
-    /**
-     * {@code hg revert [FILE]...}: restores the files the patterns select that differ from the revision (the first parent by
-     * default): modified, removed and deleted files get their content back, an added file is forgotten. Needs a pattern or
-     * {@link #setAll}.
-     *
-     * @return the reverted files
-     */
     /** The hint `commands.revert` gives when nothing says which files to revert: it depends on the merge, the revision and local changes. */
     private String noFilesHint() throws IOException {
         Dirstate dirstate = repository.getDirstate();
@@ -131,6 +128,22 @@ public class RevertCommand {
         return dirty ? "uncommitted changes, use --all to discard all changes" : "use --all to revert all files";
     }
 
+    /**
+     * Reverts all files selected by the patterns, options and revision set on this command.
+     * <p>
+     * Without patterns, include options or {@link #setAll}, nothing is selected and the call fails. Takes the working
+     * copy lock, reverts every modified, added, removed or deleted file that matches (see {@link #call()} for the
+     * per-file behavior), and then reverts the subrepositories whose path matches. {@link #getWarnings()} and
+     * {@link #getSubrepoMessages()} are reset at the start.
+     * @return the repository-relative paths that were reverted, sorted
+     * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if nothing selects any
+     *         file, if the working directory has an uncommitted merge and no revision was set, or if a matching
+     *         subrepository does not exist in the target revision
+     * @throws io.github.search5.hg4j.errors.HgRevisionNotFoundException (an {@link IOException}) if the revision
+     *         cannot be resolved
+     * @throws IOException if reading or writing fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public java.util.List<String> callSelected() throws IOException, HgLockException {
         if (selection.patternCount() == 0 && !all && selection.isEmpty()) {
             throw new HgValidationException("no files or directories specified\n(" + noFilesHint() + ")");
@@ -218,16 +231,41 @@ public class RevertCommand {
         }
     }
 
+    /**
+     * Sets the single file for {@link #call()}.
+     * @param file the repository-relative path with {@code /} separators; must be non-empty before {@link #call()}
+     * @return {@code this}
+     */
     public RevertCommand setFile(String file) {
         this.file = file;
         return this;
     }
 
+    /**
+     * Sets the revision to revert to.
+     * @param revision a revision identifier resolved against the changelog (hg's {@code -r}); {@code null} or empty
+     *         (the default) means the first parent of the working directory
+     * @return {@code this}
+     */
     public RevertCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Reverts the single file set by {@link #setFile} to its state in the target revision.
+     * <p>
+     * The target is the revision set by {@link #setRevision}, or the first dirstate parent when unset. Runs under the
+     * working copy lock inside a dirstate files-changing context. A file that exists in the target is rewritten (a
+     * modified file is first backed up to {@code <file>.orig}); a file added but never committed is only untracked and
+     * kept on disk; a file missing from the target but committed earlier is deleted and marked removed.
+     * @return {@code true} when the file was reverted
+     * @throws IllegalStateException if no file was set
+     * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if the repository has no
+     *         parent commit and the file is not an added file
+     * @throws IOException if reading history or writing the file or dirstate fails
+     * @throws HgLockException if the working copy lock cannot be acquired
+     */
     public boolean call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");

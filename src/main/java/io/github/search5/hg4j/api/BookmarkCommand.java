@@ -33,20 +33,43 @@ public class BookmarkCommand {
     private boolean active = false;
     private boolean force = false;
 
+    /**
+     * Creates a bookmark command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public BookmarkCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the bookmark to create, move, delete or activate. Without a name (and without delete or active) {@link #call()} only lists the bookmarks.
+     *
+     * @param bookmarkName the bookmark name
+     * @return {@code this}
+     */
     public BookmarkCommand setBookmarkName(String bookmarkName) {
         this.bookmarkName = bookmarkName;
         return this;
     }
 
+    /**
+     * Sets the changeset the bookmark points to ({@code hg bookmark -r REV}). When not set, the first parent of the working copy is used and the new bookmark also becomes the active one; an explicit target does not activate it.
+     *
+     * @param nodeId the binary node id of the target changeset, or {@code null} for the working copy parent
+     * @return {@code this}
+     */
     public BookmarkCommand setNodeId(byte[] nodeId) {
         this.nodeId = nodeId;
         return this;
     }
 
+    /**
+     * Same as {@link #setNodeId(byte[])} but takes the target as a full 40-digit hex node id. A {@code null} or empty string leaves the target unchanged.
+     *
+     * @param revision the full hex node id of the target changeset; other revision spellings are not resolved here
+     * @return {@code this}
+     */
     public BookmarkCommand setRevision(String revision) {
         if (revision != null && !revision.isEmpty()) {
             this.nodeId = NodeIdUtil.fromHex(revision);
@@ -54,6 +77,12 @@ public class BookmarkCommand {
         return this;
     }
 
+    /**
+     * {@code hg bookmark -d}: when {@code true}, {@link #call()} removes the bookmark named by {@link #setBookmarkName(String)} (and deactivates it if it was the active one). Default {@code false}.
+     *
+     * @param delete {@code true} to delete the bookmark
+     * @return {@code this}
+     */
     public BookmarkCommand setDelete(boolean delete) {
         this.delete = delete;
         return this;
@@ -71,6 +100,12 @@ public class BookmarkCommand {
         return this;
     }
 
+    /**
+     * When {@code true}, {@link #call()} activates the existing bookmark named by {@link #setBookmarkName(String)}, or deactivates the current bookmark when no name is set ({@code hg bookmark -i}). Default {@code false}.
+     *
+     * @param active {@code true} to switch the active bookmark instead of creating or moving one
+     * @return {@code this}
+     */
     public BookmarkCommand setActive(boolean active) {
         this.active = active;
         return this;
@@ -276,6 +311,11 @@ public class BookmarkCommand {
         }
     }
 
+    /**
+     * Reads the active bookmark from {@code .hg/bookmarks.current}.
+     *
+     * @return the active bookmark name, or {@code null} when there is none or the file cannot be read
+     */
     public String getActiveBookmark() {
         File curBkFile = new File(repository.getHgDir(), "bookmarks.current");
         if (curBkFile.exists()) {

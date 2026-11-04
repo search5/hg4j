@@ -14,10 +14,19 @@ public class SshAuthenticationException extends IOException {
 
     private static final long serialVersionUID = 1L;
 
+    /**
+     * Creates the exception.
+     * @param message the detail message
+     */
     public SshAuthenticationException(String message) {
         super(message);
     }
 
+    /**
+     * Creates the exception.
+     * @param message the detail message
+     * @param cause the underlying cause, such as an exception of the SSH library
+     */
     public SshAuthenticationException(String message, Throwable cause) {
         super(message, cause);
     }

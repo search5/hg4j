@@ -45,6 +45,12 @@ public class HgLocalClient implements HgRemoteConnection {
     private final File repoDir;
     private final HgRepository remoteRepo;
 
+    /**
+     * Opens the repository at a local path for use as a transport. No authentication is involved and the
+     * connection holds no resources beyond the opened repository.
+     * @param path a directory path, optionally prefixed with {@code file://}; must not be null
+     * @throws IOException if the repository cannot be opened
+     */
     public HgLocalClient(String path) throws IOException {
         String cleanPath = path.startsWith("file://") ? path.substring(7) : path;
         this.repoDir = new File(cleanPath);
@@ -587,17 +593,38 @@ public class HgLocalClient implements HgRemoteConnection {
     /** Result of {@link #pushWithHooks}, reported back so wireprotocol server glue can tell an
      * empty/rejected push apart from a genuine import when firing hooks or building the pushres line. */
     public static class PushResult {
+        /**
+         * Human-readable outcome of the push; {@code "no changes found"} when the bundle was empty.
+         */
         public final String status;
+        /**
+         * Hex node ids of the changesets that were imported, in the list order produced by the import.
+         */
         public final List<String> importedNodeHexes;
 
         /** File revisions added by the changegroup and the number of distinct files they belong to (for the "added ..." summary). */
         public final int fileRevisions;
+        /**
+         * Number of distinct files the added file revisions belong to.
+         */
         public final int files;
 
+        /**
+         * Creates a result with zero file revisions and files.
+         * @param status the outcome text
+         * @param importedNodeHexes hex node ids of the imported changesets
+         */
         public PushResult(String status, List<String> importedNodeHexes) {
             this(status, importedNodeHexes, 0, 0);
         }
 
+        /**
+         * Creates a result.
+         * @param status the outcome text
+         * @param importedNodeHexes hex node ids of the imported changesets
+         * @param fileRevisions number of file revisions added
+         * @param files number of distinct files those revisions belong to
+         */
         public PushResult(String status, List<String> importedNodeHexes, int fileRevisions, int files) {
             this.status = status;
             this.importedNodeHexes = importedNodeHexes;
@@ -634,7 +661,7 @@ public class HgLocalClient implements HgRemoteConnection {
 
     /**
      * Same, with {@code preTxnHooks}: Mercurial's {@code pretxnchangegroup}. They run after the changegroup has been applied (and see
-     * the nodes it added); if one returns {@code false} everything is undone with {@link RollbackCommand} and the push fails with
+     * the nodes it added); if one returns {@code false} everything is undone with {@link io.github.search5.hg4j.api.RollbackCommand} and the push fails with
      * {@link io.github.search5.hg4j.errors.HgHookRejectedException} ({@code pretxnchangegroup hook failed}).
      */
     public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,

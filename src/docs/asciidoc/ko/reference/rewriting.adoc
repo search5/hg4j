@@ -1,0 +1,690 @@
+=== Rebase
+
+변경 집합을 다른 대상 위로 체리픽으로 옮깁니다(`hg rebase`). 리베이스가 끝나면 원본 변경 집합을 제거(strip)하고 백업 번들을 `.hg/strip-backup`에 남깁니다. `setKeep(true)`이면 제거하지 않습니다. evolution을 지원하지 않으므로 폐기 마커는 쓰지 않습니다. 체리픽 경로는 실제 3-way 병합(`Merge3`, `MergeCommand`와 같은 엔진)을 수행합니다. 연관 클래스는 `RebasePlanner`, `RebaseState`(상태 파일 `.hg/rebasestate`)입니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setSource(byte[])` / `setTarget(byte[])`
+|노드 방식의 소스와 타깃입니다. 리비전셋 대신 쓸 수 있으며 `call()`에는 둘 다 필요합니다.
+
+|`addSourceRevset(String)`
+|`-s REV`: 해당 변경 집합과 그 자손입니다(여러 번 지정 가능).
+
+|`addBaseRevset(String)`
+|`-b REV`: 해당 변경 집합을 포함하는 브랜치입니다(여러 번 지정 가능).
+
+|`addRevisionRevset(String)`
+|`-r REV`: 정확히 해당 변경 집합만입니다(여러 번 지정 가능).
+
+|`setDestination(String)`
+|`-d REV`: 대상입니다. `SRC`와 `ALLSRC`를 쓸 수 있습니다. 생략하면 대상을 계산합니다(`destutil.destmerge`).
+
+|`setCollapse(boolean)`
+|`--collapse`: 리베이스된 변경 집합을 하나로 합칩니다.
+
+|`setMessage(String)`
+|`-m`: 합쳐진 변경 집합의 메시지입니다(기본값은 `Collapsed revision`과 변경 집합별 한 줄).
+
+|`setEdit(boolean)`
+|`-e/--edit`: 커밋하기 전에 각 새 메시지를 편집기에 통과시킵니다.
+
+|`setMessageEditor(UnaryOperator<String>)`
+|커밋 메시지 편집기입니다. 빈 결과는 `empty commit message`로 중단합니다. `-m` 없는 collapse는 항상 실행합니다. 편집기가 없으면 제안된 메시지를 그대로 씁니다.
+
+|`setKeep(boolean)`
+|`--keep`: 원본 변경 집합을 유지합니다.
+
+|`setKeepBranches(boolean)`
+|`--keepbranches`: 새 변경 집합이 원본의 브랜치를 유지합니다.
+
+|`setSingleTransaction(boolean)`
+|`rebase.singletransaction`: 모든 커밋을 하나의 트랜잭션으로 처리합니다. 기본값은 `hgrc` 설정, 없으면 꺼짐입니다.
+
+|`setDryRun(boolean)`
+|`-n/--dry-run`: 메모리에서 수행한 뒤 되돌립니다. 저장소와 작업 디렉터리는 그대로입니다.
+
+|`setConfirm(BooleanSupplier)`
+|`--confirm`: 먼저 메모리에서 수행하고, supplier의 답에 따라 실제 적용 여부를 정합니다.
+
+|`registerPreRebaseHook(HgHook)` / `registerPostRebaseHook(HgHook)`
+|훅을 등록합니다. 호출 시점은 javadoc에 설명이 없습니다(소스에서 확인되지 않음).
+
+|`getMessages()`
+|명령이 출력한 내용(`rebasing ...`, 안내)을 순서대로 돌려줍니다.
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`byte[]`: 마지막으로 리베이스된 변경 집합의 새 노드이며, 리베이스할 것이 없으면 `null`입니다. `IOException`, `HgLockException`, `HgMergeConflictException`을 던집니다. 노드 방식 소스/타깃도 리비전셋도 없으면 `IllegalStateException`, 검증 실패는 `HgValidationException`입니다.
+
+|`continueRebase()`
+|`byte[]`, 던지는 예외는 `call()`과 같습니다. `.hg/rebasestate`를 읽고, 멈춘 변경 집합을 작업 디렉터리에서 커밋한 뒤 이어서 진행합니다. 진행 중인 리베이스가 없거나 `.hg/merge/state2`에 미해결 파일이 있으면 `HgValidationException`입니다.
+
+|`stop()`
+|`void`, `IOException`, `HgLockException`. `--keep`(`setKeep(true)`)일 때만 가능하며 collapse에서는 불가합니다. 원래 부모로 되돌리고 지금까지 한 만큼으로 마무리합니다.
+
+|`abort()`
+|`void`, `IOException`, `HgLockException`. 리베이스된 변경 집합을 strip하고(하나가 public이거나 외부 자손이 있으면 하지 않음) 작업 디렉터리를 원래 부모로 되돌리며 상태 파일을 지웁니다.
+|===
+
+충돌이 나면 `call()`은 `HgMergeConflictException`을 던지고 리베이스를 일시 중지 상태로 둡니다(파일에 충돌 마커, 기록은 `.hg/merge/state2`). 파일을 해결한 뒤(예: `ResolveCommand`) `continueRebase()`로 이어 가거나 `abort()`로 취소합니다.
+
+.잠금과 dirstate
+* `call()`, `continueRebase()`, `stop()`, `abort()`: `lockWorkingCopy()` 다음 `lockStore()`를 명령 전체에 한 번 잡고 끝나면 풉니다.
+* dirstate: 내부에서 `repository.changingParents(...)`를 사용합니다(리비전 병합, 리베이스 마무리, 작업 디렉터리 복원). 이 클래스에서 `openChangingParents`, `openChangingFiles`, `changingFiles`는 쓰이지 않습니다(그 이상은 소스에서 확인되지 않음).
+
+.hg 원본과 다른 점
+* evolution이 꺼진 원본처럼 동작합니다. `setKeep(true)`가 아니면 원본을 strip하고, 폐기 마커는 쓰지 않습니다.
+* 폐기 마커가 없으면 제거 시 리베이스되지 않은 자손이 고아가 되므로 `stop()`은 `--keep`이 필요합니다.
+* 병합 충돌의 일시 중지/계속/중단 프로토콜은 hg4j 전용입니다. 최종 상태(`.hg/merge/state2`)만 실제 hg가 읽을 수 있게 합니다.
+
+.사용 예
+[source,java]
+----
+byte[] last = new RebaseCommand(repo)
+        .addSourceRevset("feature-start")
+        .setDestination("default")
+        .setKeepBranches(true)
+        .call();
+----
+
+=== Graft
+
+한 리비전의 변경을 현재 작업 디렉터리 부모 위에 복사합니다(`hg graft`, git cherry-pick과 유사). 양쪽이 같은 파일을 바꿨으면 `RebaseCommand#attemptThreeWayMerge`로 실제 3-way 병합을 합니다. 폐기 마커는 쓰지 않습니다(graft는 복사입니다). 연관 클래스 `GraftInMemory`는 자세히 읽지 않아 여기서 다루지 않습니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setSource(String)`
+|graft할 리비전입니다. 필수이며 null이거나 비어 있으면 `call()`이 `IllegalArgumentException`을 던집니다.
+
+|`registerPostGraftHook(HgHook)`
+|graft 이후 훅을 등록합니다(호출 상세는 문서화되어 있지 않음).
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`String`: 새로 graft된 커밋의 16진 노드입니다. `IOException`, `HgLockException`, `HgMergeConflictException`(대상과 소스가 같은 파일에서 갈라져 깔끔히 병합되지 않은 경우)을 던집니다.
+
+|`continueGraft()`
+|`String`: graft된 커밋의 16진 노드입니다. `IOException`, `HgLockException`. 진행 중인 graft가 없거나 미해결 파일이 있으면 `HgValidationException`입니다.
+
+|`abort()`
+|`void`, `IOException`, `HgLockException`. 작업 디렉터리와 dirstate를 graft 이전 상태로 복원합니다. 저장소에는 아무것도 추가되지 않은 상태입니다. 진행 중인 graft가 없으면 `HgValidationException`(`no graft in progress`)입니다.
+|===
+
+충돌 시 파일을 해결하고 스테이징한 뒤 `continueGraft()`를 호출하거나 `abort()`로 취소합니다.
+
+.잠금과 dirstate
+* `call()`: 작업 디렉터리 갱신 동안 `lockWorkingCopy()`와 `openChangingParents()`를 잡습니다(이 컨텍스트는 커밋 단계 전에 끝나며 dirstate를 기록합니다). 커밋 단계(`commitGraftedRevision`)는 `lockStore()`를 잡습니다. `CommitCommand`에 `setSkipLockAndJournal(true)`로 위임하고, 충돌 안전성을 위해 자체 저널/백업을 씁니다.
+* `continueGraft()`, `abort()`: 확인한 코드에서는 `lockWorkingCopy()`만 잡습니다. `continueGraft()`의 커밋은 같은 저장소 잠금 단계를 거칩니다.
+* `changingFiles`는 쓰이지 않습니다.
+
+.hg 원본과 다른 점
+* 일시 중지/계속/중단 프로토콜은 hg4j 전용이며 실제 `hg graft --continue` 기록과의 상호 운용은 목표가 아닙니다.
+* 실제 hg 7.2와 같이 폐기 마커를 쓰지 않습니다.
+
+.사용 예
+[source,java]
+----
+String node = new GraftCommand(repo)
+        .setSource("3f2a1b")
+        .call();
+----
+
+=== Backout
+
+이력을 바꾸지 않고 한 리비전을 되돌리는 새 변경 집합을 만듭니다(`hg backout REV`). 부모가 하나인 변경 집합과 `--merge`가 아닌 모드만 지원합니다. 작업 디렉터리는 깨끗해야 하고 REV는 작업 디렉터리 부모의 조상이어야 합니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(String)`
+|되돌릴 리비전입니다. 필수입니다(null이거나 비면 `IllegalStateException`).
+
+|`setMessage(String)`
+|backout 변경 집합의 커밋 메시지입니다.
+
+|`setAuthor(String)`
+|backout 변경 집합의 작성자입니다(기본값 `hg4j`).
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`byte[]`: 새 backout 변경 집합의 노드입니다. `IOException`, `HgLockException`, `HgMergeConflictException`, `HgValidationException`(예: `Unknown revision`)을 던집니다.
+|===
+
+REV가 작업 디렉터리 부모이면 그 diff를 그대로 적용합니다(충돌 불가). REV가 더 오래된 조상이면 3-way 병합(조상은 REV, local은 작업 디렉터리, other는 REV의 부모)을 수행합니다. 충돌 시 `HgMergeConflictException`을 던지고 커밋하지 않으며, 충돌 상태는 `.hg/merge/state2`에 기록됩니다. `--continue`는 없습니다. `ResolveCommand`(또는 실제 `hg resolve`)로 해결한 뒤 평소처럼 커밋합니다.
+
+.잠금과 dirstate
+* `call()`: `lockWorkingCopy()`, `lockStore()`, `openChangingParents()` 순서로 잡습니다. 작업 디렉터리 갱신은 커밋 전에 끝나며(dirstate 기록), 커밋은 자체 컨텍스트를 엽니다.
+* `changingFiles`는 쓰이지 않습니다.
+
+.hg 원본과 다른 점
+* `--parent`(병합 되돌리기)와 `--merge`는 노출되지 않습니다.
+* 충돌이 나도 dirstate 부모는 하나로 유지됩니다(두 부모 병합 상태가 아님).
+
+.사용 예
+[source,java]
+----
+byte[] node = new BackoutCommand(repo)
+        .setRevision("tip")
+        .setMessage("Back out bad change")
+        .call();
+----
+
+=== Histedit
+
+규칙 기반으로 이력을 편집합니다(`hg histedit`). 동작은 `PICK`, `DROP`, `FOLD`, `ROLL`입니다. 클래스는 `AutoCloseable`을 구현합니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`addRule(Action, String hexNode)`
+|규칙을 추가합니다(`HisteditCommand.Action`: `PICK`, `DROP`, `FOLD`, `ROLL`). 동작이나 노드가 null이거나 비어 있으면 무시합니다.
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`void`. 규칙이 없으면 바로 돌아옵니다. `IOException`(예: `Histedit failed: Revision not found for node ...`)과 `HgLockException`을 던집니다.
+|===
+
+continue와 abort 메서드는 소스에 없습니다(해당 public 메서드를 찾지 못함). 충돌 처리는 소스에서 확인되지 않음.
+
+.잠금과 dirstate
+* `call()`: `lockWorkingCopy()`, `lockStore()`, `openChangingParents()` 순서로 잡습니다. 정상 종료 시 dirstate를 기록하고, 실패하면 디스크의 파일은 그대로 둡니다.
+* `changingFiles`는 쓰이지 않습니다.
+
+.hg 원본과 다른 점
+javadoc에 설명이 없습니다(소스에서 확인되지 않음).
+
+.사용 예
+[source,java]
+----
+try (HisteditCommand h = new HisteditCommand(repo)) {
+    h.addRule(HisteditCommand.Action.PICK, hexA)
+     .addRule(HisteditCommand.Action.FOLD, hexB)
+     .call();
+}
+----
+
+=== Shelve
+
+작업 디렉터리 변경을 보관하고 되돌립니다(`hg shelve`, `hg unshelve`, `--delete`, `--cleanup`). unshelve는 hg의 `_dounshelve()`를 따릅니다. 보관된 changegroup을 임시 커밋으로 복원하고 `RebaseCommand`로 현재 부모 위로 리베이스한 뒤 작업 디렉터리에 uncommit하며, 임시 커밋은 완전히 strip합니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setName(String)`
+|보관 이름입니다(기본값 `default`, null이나 빈 값은 무시).
+
+|`setUnshelve(boolean)`
+|shelve 대신 unshelve를 수행합니다.
+
+|`setDelete(boolean)`
+|`--delete NAME...`: 지정한 보관본을 `.hg/shelve-backup`으로 옮깁니다.
+
+|`setNames(String...)`
+|`--delete`가 지우는 보관본입니다(비어 있으면 `no shelved changes specified!` 오류).
+
+|`setCleanup(boolean)`
+|`--cleanup`: 모든 보관본을 `.hg/shelve-backup`으로 옮깁니다(최신 `shelve.maxbackups`, 10개 유지).
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`void`, `IOException`, `HgLockException`, `HgMergeConflictException`(unshelve 리베이스 충돌). delete/cleanup, unshelve, shelve로 분기합니다.
+
+|`unshelveContinue()`
+|`void`, `IOException`, `HgLockException`, `HgMergeConflictException`. `RebaseCommand#continueRebase()`를 실행하고 uncommit과 정리를 마칩니다. 진행 중인 unshelve가 없거나 미해결 파일이 있으면 `HgValidationException`입니다.
+
+|`unshelveAbort()`
+|`void`, `IOException`, `HgLockException`. 임시 커밋을 버리고 unshelve 이전 상태로 복원하며 보관본은 남깁니다. 진행 중인 unshelve가 없으면 `HgValidationException`입니다.
+|===
+
+unshelve 충돌 시 파일을 해결한 뒤 `unshelveContinue()`를 호출하거나 `unshelveAbort()`로 취소합니다.
+
+.잠금과 dirstate
+* delete/cleanup: `lockWorkingCopy()`만 잡습니다.
+* shelve: `lockWorkingCopy()` 다음 `lockStore()`(작업 디렉터리를 읽은 뒤, 보관할 것이 없는지 판단하기 전에 잡음).
+* unshelve(`performUnshelve`): `lockWorkingCopy()`, `lockStore()`, `openChangingParents()`.
+* `unshelveContinue()`, `unshelveAbort()`: `lockWorkingCopy()` 다음 `lockStore()`(중첩).
+* `changingFiles`는 쓰이지 않으며 dirstate는 `writeDirstate`로 기록합니다.
+
+.hg 원본과 다른 점
+* unshelve는 임시 커밋을 폐기된 리비전으로 남기지 않고 완전히 strip합니다(hg의 중단된 트랜잭션과 같은 결과).
+* hg4j는 보관본별 `.state` 파일과 전용 unshelve 상태 파일(`.hg/rebasestate-hg4j`로 구동되는 리베이스)을 추가로 씁니다.
+
+.사용 예
+[source,java]
+----
+new ShelveCommand(repo).setName("wip").call();           // shelve
+new ShelveCommand(repo).setName("wip").setUnshelve(true).call();
+----
+
+=== Strip
+
+변경 집합과 그 자손을 저장소에서 제거합니다(`hg strip`). 잘라낸 지점 위의 다른 리비전은 번들에 저장했다가 다시 추가합니다. 백업 번들은 `.hg/strip-backup/`에 저장됩니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(String)`
+|strip할 리비전입니다.
+
+|`addRevision(String)`
+|추가 리비전입니다(`hg strip REV REV ...`). 리비전셋 표현식은 집합으로 읽습니다.
+
+|`addBookmark(String)`
+|`-B BOOKMARK`: 그 북마크만 닿는 변경 집합을 strip하고 북마크를 삭제합니다.
+
+|`setBackup(boolean)`
+|false면 `--no-backup`입니다(기본값 true).
+
+|`setTopic(String)`
+|백업 번들 이름의 마지막 단어입니다(기본값 `backup`).
+
+|`setForce(boolean)`
+|`--force`: 커밋되지 않은 변경을 거부하지 않고 버립니다.
+
+|`setKeep(boolean)`
+|`--keep`: 작업 디렉터리 파일은 두고 부모만 strip을 따라갑니다.
+
+|`setSoft(boolean)`
+|`--soft`: 지원하지 않습니다. archived phase가 없어 `call()`이 `HgValidationException`을 던집니다.
+
+|`setPermitEmptyRevset(boolean)`
+|빈 리비전 집합을 중단이 아니라 성공으로 처리합니다.
+
+|`getMessages()`, `getBackupBundle()`
+|출력된 메시지, 저장된 번들 파일(없으면 `null`)입니다.
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`void`, `IOException`(예: `Strip target revision not found`), `HgLockException`. 리비전도 북마크도 없으면 `IllegalArgumentException`, `HgValidationException`(`empty revision set`, 알 수 없는 북마크)입니다.
+|===
+
+.잠금과 dirstate
+* `call()`: `lockWorkingCopy()`를 잡고, `stripRevisions` 안에서 `lockWorkingCopy()`를 다시 잡으며 `lockStore()`를 함께 잡습니다(hg `strip()`의 `with repo.wlock(), repo.lock()`과 같음). strip할 것 없이 북마크만 지우는 경우에는 작업 디렉터리 잠금 아래에서 `lockStore()`만 잡습니다.
+* dirstate: 작업 디렉터리 부모가 strip될 때 `repository.changingParents(...)`를 씁니다(`--keep`이면 dirstate 부모만 재설정). `changingFiles`는 쓰이지 않습니다.
+
+.hg 원본과 다른 점
+* `--soft`는 지원하지 않습니다.
+* 잘라내는 지점은 요청된 가장 낮은 리비전이며, 그 뒤의 strip 대상이 아닌 리비전은 번들에 담았다가 다시 추가합니다(`repair.strip`과 같음).
+
+.사용 예
+[source,java]
+----
+StripCommand s = new StripCommand(repo).setRevision("tip").setBackup(false);
+s.call();
+----
+
+=== Phase
+
+리비전의 phase를 보거나 바꿉니다(`hg phase`). phase는 `.hg/store/phaseroots`에 최소 루트 형식으로 저장됩니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(String)`
+|조회하거나 옮길 리비전입니다(해석되지 않으면 `IOException`).
+
+|`setPhase(int)`
+|목표 phase입니다. 0은 public, 1은 draft, 2는 secret입니다. 지정하지 않으면 조회만 합니다.
+
+|`setForce(boolean)`
+|`--force`: 더 높은 phase 번호(더 secret)로 옮기는 것을 허용합니다. 없으면 `cannot move N changesets to a higher phase, use --force`로 거부됩니다.
+
+|`getNotes()`, `getMessages()`, `getExitCode()`
+|상세 안내, 그 밖의 출력 메시지, `ret`입니다(`--force` 없이 옮기지 못한 변경 집합이 있으면 1).
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`int`: phase 값입니다(0 public, 1 draft, 2 secret). `IOException`을 던집니다(리비전 없음, I/O 실패. 잠금 실패는 `IOException`으로 감쌈).
+|===
+
+public 쪽으로 옮기면 해당 리비전과 모든 조상에, secret 쪽으로 옮기면 해당 리비전과 모든 자손에 영향을 줍니다. 루트는 매번 처음부터 다시 계산합니다.
+
+.잠금과 dirstate
+* 조회는 잠금이 없습니다. 변경은 `lockStore()`만 잡습니다. 작업 디렉터리 잠금과 dirstate 컨텍스트는 없습니다.
+
+.hg 원본과 다른 점
+줄 순서와 최소 루트 형식은 hg와 같으며, 이전의 노드별 기록 방식은 교체되었습니다.
+
+.사용 예
+[source,java]
+----
+int p = new PhaseCommand(repo)
+        .setRevision("tip")
+        .setPhase(0)
+        .call();
+----
+
+=== Censor
+
+파일 리비전의 내용을 그 자리에서 지우고 tombstone으로 바꿉니다(`hg censor`). 노드, 부모, linkrev는 유지됩니다.
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setFile(String)`
+|파일 경로입니다(필수, 없으면 `HgValidationException`).
+
+|`setRevision(String)`
+|censor할 리비전의 filelog 노드 16진 문자열입니다(필수).
+
+|`setTombstone(String)`
+|tombstone에 저장되는 자유 형식 사유입니다(기본값 빈 문자열).
+
+|`setCheckHeads(boolean)`
+|`--check-heads`(기본값 true). true이면 head나 작업 디렉터리 부모에서 아직 유효한 리비전의 censor를 거부합니다. `false`는 `--no-check-heads`입니다.
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`void`, `IOException`, `HgLockException`, `HgValidationException`, `HgRepositoryNotFoundException`(filelog 없음), `HgRevisionNotFoundException`.
+|===
+
+.잠금과 dirstate
+* `lockWorkingCopy()` 다음 `lockStore()`를 잡습니다. dirstate 컨텍스트는 없습니다.
+
+.hg 원본과 다른 점
+* 변경 집합 리비전(`-r`)이 아니라 filelog 노드를 대상으로 하므로, head 검사는 filenode를 각 head와 부모의 매니페스트 항목과 비교합니다.
+
+.사용 예
+[source,java]
+----
+new CensorCommand(repo)
+        .setFile("secret.txt")
+        .setRevision(fileNodeHex)
+        .setTombstone("removed by request")
+        .call();
+----
+
+=== Branch
+
+작업 디렉터리의 브랜치를 보거나 설정하고, 초기화하거나, 변경 집합의 브랜치를 바꿉니다(`hg branch`).
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setBranchName(String)`
+|브랜치 이름입니다(공백 제거 후 `scmutil.checknewlabel`처럼 검사). 비어 있는(null 아님) 이름은 `IllegalArgumentException`입니다.
+
+|`setClean(boolean)`
+|`--clean`: 첫 번째 부모의 브랜치로 되돌립니다.
+
+|`setForce(boolean)`
+|`--force`: 이미 있는 브랜치 이름의 재사용을 허용합니다.
+
+|`setRevisions(String...)`
+|`--rev REV... NAME`: 각 변경 집합을 새 브랜치 위의 복사본으로 교체합니다(head로 끝나는 선형 draft 스택, 깨끗한 작업 디렉터리 필요).
+
+|`getChangedChangesets()`, `getBackupBundles()`
+|교체된 변경 집합 수, 저장된 번들입니다.
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`String`: 이후(조회 시에는 현재)의 작업 디렉터리 브랜치입니다. `IOException`, `HgLockException`, `HgValidationException`(예: `a branch of the same name already exists`)을 던집니다.
+|===
+
+.잠금과 dirstate
+* 조회는 잠금이 없습니다. 설정이나 clean은 `lockWorkingCopy()`입니다. `--rev`는 `changeBranch` 안에서 `lockStore()`를 추가로 잡고 이전 변경 집합이 사라질 때까지 유지합니다. 이 클래스에서 changing_parents나 changing_files 컨텍스트는 쓰이지 않습니다.
+
+.hg 원본과 다른 점
+javadoc에 설명이 없습니다(소스에서 확인되지 않음).
+
+.사용 예
+[source,java]
+----
+String b = new BranchCommand(repo).setBranchName("stable").call();
+----
+
+=== Branches
+
+이름 있는 브랜치와 현재 head를 나열합니다(`hg branches`).
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setIncludeClosed(boolean)`
+|`--closed`: 모든 head가 닫힌 브랜치도 포함합니다(기본값은 숨김).
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`List<BranchesCommand.BranchHead>`이며 `getBranch()`, `getNode()`, `getRev()`, `isClosed()`, `isActive()`를 제공합니다. `IOException`을 던집니다.
+|===
+
+보고되는 head는 리비전이 가장 높은 열린 head이고, 없으면 가장 높은 닫힌 head입니다. 정렬은 활성 브랜치가 먼저(리비전 내림차순), 그다음 비활성, 동률은 이름 역순과 열림 우선입니다. `isActive()`는 head가 저장소 전체의 위상적 head라는 뜻입니다.
+
+.잠금과 dirstate
+* 잠금도 dirstate 컨텍스트도 없습니다(읽기 전용).
+
+.hg 원본과 다른 점
+정렬과 head 선택은 hg 7.2.2로 검증되었다고 javadoc에 적혀 있으며, 알려진 차이는 적혀 있지 않습니다.
+
+.사용 예
+[source,java]
+----
+for (var h : new BranchesCommand(repo).setIncludeClosed(true).call()) {
+    System.out.println(h.getBranch() + " " + h.getRev() + (h.isActive() ? "" : " (inactive)"));
+}
+----
+
+=== Tag
+
+태그를 만들거나 옮기거나 제거합니다(`hg tag`).
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setTagName(String)`
+|태그 이름입니다.
+
+|`setNodeId(byte[])`
+|대상 노드입니다(20바이트 이상). `setRemove(true)`가 아니면 필수입니다.
+
+|`setCommit(boolean)`
+|`.hgtags` 변경을 커밋합니다(기본값 true). 로컬 태그는 절대 커밋하지 않습니다.
+
+|`setLocal(boolean)`
+|`--local`: `.hg/localtags`에 씁니다(추적 안 됨, 커밋 없음).
+
+|`setRemove(boolean)`
+|`--remove`: nullid 항목(0 40개)을 추가합니다. 노드가 필요 없습니다.
+
+|`setForce(boolean)`
+|`-f`: 이미 있는 태그의 이동을 허용합니다. 없으면 `tag '<name>' already exists (use -f to force)`입니다.
+
+|`registerPreTagHook(HgHook)` / `registerPostTagHook(HgHook)`
+|훅입니다. pre 훅이 false를 반환하면 `HgValidationException`(`Tag creation rejected by PRE_TAG hook`)이 발생합니다.
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`Map<String,String>`이며, 항목의 의미는 읽은 범위의 소스에서 확인되지 않음. `IOException`, `HgLockException`, `HgValidationException`, `IllegalArgumentException`(유효한 노드 없음)을 던집니다.
+|===
+
+.잠금과 dirstate
+* 저장소 상태를 처음 읽기 전에 `lockWorkingCopy()` 다음 `lockStore()`를 잡습니다. 커밋은 `CommitCommand`를 거칩니다. 이 클래스 자체는 `changingParents`/`changingFiles`를 호출하지 않습니다.
+
+.hg 원본과 다른 점
+* 기존 태그 검사는 로컬과 전역 태그를 합쳐서 합니다(hg 7.2.2로 검증).
+* 태그 상태는 작업 디렉터리의 `.hgtags`에서 읽는 단순화된 단일 파일 모델입니다(`TagsCommand` javadoc 기준).
+
+.사용 예
+[source,java]
+----
+new TagCommand(repo)
+        .setTagName("v1.0")
+        .setNodeId(nodeBytes)
+        .call();
+----
+
+=== Tags
+
+태그를 나열합니다(`hg tags`).
+
+.설정자
+없습니다(생성자만 있음).
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|`List<TagsCommand.Tag>`이며 `getName()`, `getNode()`, `getRev()`, `isLocal()`을 제공합니다. `IOException`을 던집니다.
+|===
+
+규칙: `.hg/localtags`가 `.hgtags`보다 우선하고, 마지막 줄이 이깁니다. nullid는 삭제를 뜻하고, 알 수 없는 노드의 태그는 제외합니다. `tip`은 항상 실제 tip을 가리키며, 정렬은 높은 리비전 우선 후 이름 역순입니다.
+
+.잠금과 dirstate
+* 잠금도 dirstate 컨텍스트도 없습니다.
+
+.hg 원본과 다른 점
+* 전역 태그는 작업 디렉터리의 `.hgtags`만 읽으며 hg의 head별 매니페스트 병합은 하지 않습니다.
+
+.사용 예
+[source,java]
+----
+for (var t : new TagsCommand(repo).call()) {
+    System.out.println(t.getName() + " " + t.getRev() + (t.isLocal() ? " local" : ""));
+}
+----
+
+=== Bookmark
+
+북마크를 나열, 생성, 이동, 삭제, 활성화합니다(`hg bookmarks`, `hg bookmark`).
+
+.설정자
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setBookmarkName(String)`
+|북마크 이름입니다.
+
+|`setNodeId(byte[])`
+|대상 노드입니다.
+
+|`setRevision(String)`
+|40자리 16진 노드 문자열로 대상을 지정합니다(`NodeIdUtil.fromHex`로 변환). null이나 빈 값은 무시합니다.
+
+|`setDelete(boolean)`
+|북마크를 삭제합니다.
+
+|`setActive(boolean)`
+|북마크를 활성화(또는 비활성화)합니다. `hg bookmark -i`에 해당합니다.
+
+|`setCurrentOnly(boolean)`
+|`hg update`가 쓰는 내부 스위치입니다. `setActive`와 함께 쓰면 작업 디렉터리 잠금 아래에서 `bookmarks.current`만 바꿉니다.
+
+|`setForce(boolean)`
+|`-f`: 자손이 아닌 대상으로의 이동을 허용합니다. 없으면 `bookmark '<name>' already exists (use -f to force)`입니다. 앞으로 가는 이동(폐기 후속 노드를 건너는 경우 포함)은 없어도 허용됩니다.
+|===
+
+.실행
+[cols="2,5"]
+|===
+|메서드 |반환값 / 예외
+
+|`call()`
+|북마크와 대상의 `Map<String,String>`입니다. `IOException`, `HgLockException`을 던집니다.
+
+|`list()`
+|`Map<String,String>`, 읽기 전용이며 잠금이 없습니다.
+
+|`getActiveBookmark()`
+|활성 북마크(`String`)입니다. 반환값의 세부 동작은 자세히 읽지 않았습니다.
+
+|`mergeFromRemote(HgRepository, Map, String)` (static)
+|pull/fetch 시 원격 북마크를 병합합니다(신규, 동일, fast-forward, 로컬 유지, 그 외는 분기 `name@suffix`).
+|===
+
+.잠금과 dirstate
+* 조회는 잠금이 없습니다. 변경은 `lockWorkingCopy()` 다음 `lockStore()`를 둘 다 기다리며 잡습니다. `setCurrentOnly(true)`와 `setActive(true)`(삭제 아님)이면 `lockWorkingCopy()`만 잡습니다. dirstate 컨텍스트는 없습니다.
+
+.hg 원본과 다른 점
+* 새 북마크는 이름을 명시적으로 지정한 경우에만 활성화됩니다(코드 주석 기준).
+* `mergeFromRemote`는 hg의 `comparebookmarks`/`validdest`를 단순화했습니다.
+
+.사용 예
+[source,java]
+----
+Map<String,String> all = new BookmarkCommand(repo)
+        .setBookmarkName("feature")
+        .setRevision(nodeHex)
+        .call();
+----

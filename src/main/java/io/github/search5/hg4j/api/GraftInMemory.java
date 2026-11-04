@@ -38,6 +38,10 @@ public final class GraftInMemory {
     private String date;
     private final List<String> messages = new ArrayList<>();
 
+    /**
+     * Creates an in-memory graft command for the given repository.
+     * @param repository the repository to graft in
+     */
     public GraftInMemory(HgRepository repository) {
         this.repository = repository;
     }

@@ -27,6 +27,9 @@ public final class HgWebPermissions {
             this.status = status;
         }
 
+        /**
+         * Returns the HTTP status code to answer the refused request with (401, 403 or 405).
+         */
         public int status() {
             return status;
         }

@@ -21,10 +21,21 @@ public class CatCommand {
     private String file;
     private String revision;
 
+    /**
+     * Creates a cat command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public CatCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the file for {@link #call()}. Required there.
+     *
+     * @param file repository-relative path of the tracked file, using {@code /} separators
+     * @return {@code this}
+     */
     public CatCommand setFile(String file) {
         this.file = file;
         return this;
@@ -71,16 +82,37 @@ public class CatCommand {
         return contents;
     }
 
+    /**
+     * Sets the revision to read the file from ({@code hg cat -r}). When {@code null} or empty the tip is used.
+     *
+     * @param revision a revision identifier (number, hex node or prefix, {@code tip}, ...); may be {@code null}
+     * @return {@code this}
+     */
     public CatCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Same as {@link #setRevision(String)} with a node id.
+     *
+     * @param nodeId the changeset node; {@code null} selects the tip
+     * @return {@code this}
+     */
     public CatCommand setRevision(NodeId nodeId) {
         this.revision = nodeId != null ? nodeId.toHex() : null;
         return this;
     }
 
+    /**
+     * Returns the content of the file set with {@link #setFile(String)} as of the chosen revision ({@code hg cat}). Large-file (LFS) pointers are resolved to the real content. Read-only; takes no lock.
+     *
+     * @return the file content
+     * @throws IllegalStateException if no file was set
+     * @throws HgRevisionNotFoundException if the revision cannot be resolved or the file is not tracked at that revision
+     * @throws io.github.search5.hg4j.errors.HgCorruptDataException if the file's filelog is missing
+     * @throws IOException if the repository cannot be read
+     */
     public byte[] call() throws IOException {
         repository.clearRevlogCache();
         if (file == null || file.isEmpty()) {

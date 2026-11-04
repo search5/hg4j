@@ -14,22 +14,45 @@ public class ChangesetGraph {
     private RevFilter revFilter = RevFilter.ALL;
     private SortOrder sortOrder = SortOrder.DEFAULT;
 
+    /**
+     * Creates a graph over the given changelog.
+     * <p>The instance caches ancestor queries and its settings are not synchronized.
+     *
+     * @param changelog the changelog whose index supplies parent links when no custom parent lookup is
+     *        passed; if null, the default lookup reports no parents. It is also handed to the revision filter
+     */
     public ChangesetGraph(Revlog changelog) {
         this.changelog = changelog;
     }
 
+    /**
+     * Sets the order used by {@link #lazyAncestors(int)}.
+     * @param sortOrder the order; null selects {@link SortOrder#DEFAULT}
+     */
     public void setSortOrder(SortOrder sortOrder) {
         this.sortOrder = sortOrder != null ? sortOrder : SortOrder.DEFAULT;
     }
 
+    /**
+     * Returns the current traversal order.
+     * @return the order; never null
+     */
     public SortOrder getSortOrder() {
         return this.sortOrder;
     }
 
+    /**
+     * Sets the filter applied by {@link #lazyAncestors(int)}. It does not affect the other queries.
+     * @param revFilter the filter; null selects {@link RevFilter#ALL}
+     */
     public void setRevFilter(RevFilter revFilter) {
         this.revFilter = revFilter != null ? revFilter : RevFilter.ALL;
     }
 
+    /**
+     * Returns the current revision filter.
+     * @return the filter; never null
+     */
     public RevFilter getRevFilter() {
         return this.revFilter;
     }
@@ -41,6 +64,13 @@ public class ChangesetGraph {
         return getAllAncestors(startRev, getRevlogLookup());
     }
 
+    /**
+     * Returns the given revision and all of its ancestors, ignoring the revision filter.
+     * @param startRev the revision to start from; {@code -1} (the null revision) yields an empty set
+     * @param parentLookup maps a revision number to its parent revision numbers, using {@code -1} for a
+     *        missing parent; it may return null for a revision without parents. Must not be null
+     * @return a new set containing {@code startRev} and its ancestors, in breadth-first discovery order
+     */
     public Set<Integer> getAllAncestors(int startRev, Function<Integer, int[]> parentLookup) {
         Set<Integer> ancestors = new LinkedHashSet<>();
         Queue<Integer> queue = new ArrayDeque<>();
@@ -73,6 +103,17 @@ public class ChangesetGraph {
         return lazyAncestors(startRev, getRevlogLookup());
     }
 
+    /**
+     * Returns an iterator over the given revision and its ancestors that pass the revision filter.
+     * <p>With {@link SortOrder#DEFAULT} the order is breadth-first from {@code startRev} and revisions are
+     * produced lazily. With {@link SortOrder#TOPO} the whole ancestry is computed up front and every
+     * revision precedes all of its parents. Each revision appears once. The iterator is single-use and
+     * not thread-safe.
+     * @param startRev the revision to start from; {@code -1} yields nothing
+     * @param parentLookup maps a revision number to its parent revision numbers, using {@code -1} for a
+     *        missing parent; it may return null for a revision without parents. Must not be null
+     * @return a new iterator of revision numbers
+     */
     public Iterator<Integer> lazyAncestors(int startRev, Function<Integer, int[]> parentLookup) {
         if (sortOrder == SortOrder.TOPO) {
             List<Integer> result = new ArrayList<>();
@@ -152,10 +193,28 @@ public class ChangesetGraph {
         result.add(u);
     }
 
+    /**
+     * Tells whether one revision is an ancestor of another, using the changelog's parent links. A revision
+     * is considered an ancestor of itself.
+     * @param ancestor the candidate ancestor revision number
+     * @param descendant the candidate descendant revision number
+     * @return true if {@code ancestor} equals {@code descendant} or is reachable from it through parent links
+     */
     public boolean isAncestor(int ancestor, int descendant) {
         return isAncestor(ancestor, descendant, getRevlogLookup());
     }
 
+    /**
+     * Tells whether one revision is an ancestor of another, using the given parent lookup. A revision is
+     * considered an ancestor of itself.
+     * <p>Results are cached per pair of revisions in this instance, independent of the lookup function
+     * passed, so use one lookup consistently. The cache access is synchronized.
+     * @param ancestor the candidate ancestor revision number
+     * @param descendant the candidate descendant revision number
+     * @param parentLookup maps a revision number to its parent revision numbers, using {@code -1} for a
+     *        missing parent; it may return null for a revision without parents. Must not be null
+     * @return true if {@code ancestor} equals {@code descendant} or is reachable from it through parent links
+     */
     public boolean isAncestor(int ancestor, int descendant, Function<Integer, int[]> parentLookup) {
         if (ancestor == descendant) {
             return true;
@@ -203,10 +262,27 @@ public class ChangesetGraph {
         return result;
     }
 
+    /**
+     * Computes the least common ancestor candidates of two revisions using the changelog's parent links.
+     * See {@link #getLcaCandidates(int, int, Function)}.
+     * @param revA the first revision number
+     * @param revB the second revision number
+     * @return a new set of candidate revision numbers
+     */
     public Set<Integer> getLcaCandidates(int revA, int revB) {
         return getLcaCandidates(revA, revB, getRevlogLookup());
     }
 
+    /**
+     * Computes the least common ancestor candidates of two revisions: the common ancestors (a revision
+     * counts as its own ancestor) that are not ancestors of another candidate. There can be more than one
+     * after criss-cross merges.
+     * @param revA the first revision number
+     * @param revB the second revision number
+     * @param parentLookup maps a revision number to its parent revision numbers, using {@code -1} for a
+     *        missing parent; it may return null for a revision without parents. Must not be null
+     * @return a new set of candidate revision numbers; contains just {@code revA} when both are equal
+     */
     public Set<Integer> getLcaCandidates(int revA, int revB, Function<Integer, int[]> parentLookup) {
         if (revA == revB) {
             return Set.of(revA);

@@ -249,6 +249,10 @@ task javadocKo(type: Javadoc) {
 // 1번: Asciidoctor 다국어 문서화 태스크 설정
 asciidoctor {
     sourceDir  file('src/docs/asciidoc')
+    // `include::reference/...[]` in the guides is relative to the file that includes it
+    baseDirFollowsSourceFile()
+    // the included reference files are inputs too, although only index.adoc is converted
+    inputs.dir('src/docs/asciidoc')
     sources {
         include '**/index.adoc'
     }

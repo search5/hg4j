@@ -39,10 +39,20 @@ public class StatusCommand {
     // 2026-09-04), which left the paired size=-1 sentinel unguarded and looking permanently
     // "modified" on its own.
 
+    /**
+     * Creates the command.
+     * @param repository the repository to inspect; must not be {@code null}
+     */
     public StatusCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets a filter limiting which paths are examined (narrow support).
+     * @param treeFilter the filter; {@code null} is ignored. The default {@code HgTreeFilter.ALL} uses the faster
+     *         dirstate-based scan
+     * @return {@code this}
+     */
     public StatusCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -76,6 +86,15 @@ public class StatusCommand {
         return this;
     }
 
+    /**
+     * Computes the status of the working copy against its first parent.
+     * <p>
+     * If patterns, include or exclude options were set, only matching paths are reported. A tracked file whose cached
+     * stat in the dirstate was uncertain but is found unchanged may get its stat refreshed in the dirstate; this is done
+     * only if the working copy lock is free at that moment (it is never waited for).
+     * @return the status; never {@code null}
+     * @throws IOException if reading the dirstate, the working copy or the history fails
+     */
     public Status call() throws IOException {
         Status all = callAll();
         if (selection.isEmpty()) {

@@ -51,15 +51,31 @@ public class PhaseCommand {
     private int forcePhase = -1; // 0=public, 1=draft, 2=secret
     private boolean force = false;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public PhaseCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision whose phase is shown or changed.
+     * @param revision the revision identifier resolved against the changelog (as hg's revision argument); must be
+     *         set before {@link #call()}, which fails with an {@link IOException} if it cannot be resolved
+     * @return {@code this}
+     */
     public PhaseCommand setRevision(String revision) {
         this.revision = revision;
         return this;
     }
 
+    /**
+     * Sets the phase to move the revision to; if never called the command only reports the phase.
+     * @param phase the target phase: 0 = public, 1 = draft, 2 = secret; the default {@code -1} means query only
+     *         (hg phase without a phase option)
+     * @return {@code this}
+     */
     public PhaseCommand setPhase(int phase) {
         this.forcePhase = phase;
         return this;
@@ -74,14 +90,6 @@ public class PhaseCommand {
         return this;
     }
 
-    /**
-     * Executes phase query or phase modification.
-     * Synchronizes updates to the '.hg/store/phaseroots' file standard.
-     *
-     * @return SCM phase value (0=public, 1=draft, 2=secret)
-     * @throws IOException if phase IO fails, the revision cannot be resolved, or (absent {@link
-     *     #setForce}) the requested move would raise the phase of an already-registered revision
-     */
     private final List<String> messages = new ArrayList<>();
     private int exitCode;
     private final List<String> notes = new ArrayList<>();
@@ -101,6 +109,20 @@ public class PhaseCommand {
         return exitCode;
     }
 
+    /**
+     * Shows or changes the phase of the revision set by {@link #setRevision}.
+     * <p>
+     * If no phase was set with {@link #setPhase}, the phase of the revision is only read and no lock is taken.
+     * Otherwise the store lock is held (using the push lock timeout of the repository) while {@code .hg/store/phaseroots}
+     * is rewritten. Requesting the phase a revision already has changes nothing. Moving to a higher
+     * (more secret) phase without {@link #setForce} is not an error: nothing is changed, {@link #getExitCode()}
+     * becomes 1 and a message is added to {@link #getMessages()}. The notes and messages of an earlier call are cleared
+     * at the start of each call.
+     * @return the effective phase of the revision after the call (0 = public, 1 = draft, 2 = secret); when a move to a
+     *         higher phase was refused, the unchanged current phase
+     * @throws IOException if the revision cannot be resolved, the lock cannot be acquired, or reading or writing
+     *         the phase roots fails
+     */
     public int call() throws IOException {
         messages.clear();
         notes.clear();

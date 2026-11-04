@@ -44,6 +44,10 @@ public class IdentifyCommand {
     private final HgRepository repository;
     private String revision;
 
+    /**
+     * Creates an identify command for the given repository.
+     * @param repository the repository to identify
+     */
     public IdentifyCommand(HgRepository repository) {
         this.repository = repository;
     }

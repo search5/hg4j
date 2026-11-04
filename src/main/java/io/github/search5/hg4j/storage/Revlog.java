@@ -105,15 +105,55 @@ public class Revlog {
                     nodeId, 0L, 0, 0, -1);
         }
 
+        /**
+         * Returns the revision number of this record, counted from 0.
+         * @return the revision number of this record, counted from 0
+         */
         public int getRevision() { return revision; }
+        /**
+         * Returns the offset of this revision's compressed data within the data section (the {@code .d} file; for an inline revlog the sum of the earlier data lengths, without the index records).
+         * @return the offset of this revision's compressed data within the data section (the {@code .d} file; for an inline revlog the sum of the earlier data lengths, without the index records)
+         */
         public long getOffset() { return offset; }
+        /**
+         * Returns the revision flag bits, such as {@link Revlog#REVIDX_ISCENSORED} and {@link Revlog#REVIDX_EXTSTORED}.
+         * @return the revision flag bits, such as {@link Revlog#REVIDX_ISCENSORED} and {@link Revlog#REVIDX_EXTSTORED}
+         */
         public int getFlags() { return flags; }
+        /**
+         * Returns the length in bytes of the stored (compressed) data.
+         * @return the length in bytes of the stored (compressed) data
+         */
         public int getCompLen() { return compLen; }
+        /**
+         * Returns the length in bytes of the full text of the revision.
+         * @return the length in bytes of the full text of the revision
+         */
         public int getUncompLen() { return uncompLen; }
+        /**
+         * Returns the revision this one is stored against: its own number if the data is a full text, otherwise the revision the stored delta applies to.
+         * @return the revision this one is stored against: its own number if the data is a full text, otherwise the revision the stored delta applies to
+         */
         public int getBaseRev() { return baseRev; }
+        /**
+         * Returns the changelog revision this revision belongs to.
+         * @return the changelog revision this revision belongs to
+         */
         public int getLinkRev() { return linkRev; }
+        /**
+         * Returns the revision number of the first parent, -1 if none.
+         * @return the revision number of the first parent, -1 if none
+         */
         public int getParent1() { return parent1; }
+        /**
+         * Returns the revision number of the second parent, -1 if none.
+         * @return the revision number of the second parent, -1 if none
+         */
         public int getParent2() { return parent2; }
+        /**
+         * Returns the node id, at most 20 bytes; the array is the record's own, do not modify it.
+         * @return the node id, at most 20 bytes; the array is the record's own, do not modify it
+         */
         public byte[] getNodeId() { return nodeId; }
         /** Byte offset of this revision's sidedata chunk in the resolved {@code .sda} file (v2 only). */
         public long getSidedataOffset() { return sidedataOffset; }
@@ -130,10 +170,24 @@ public class Revlog {
         public int getRank() { return rank; }
     }
 
+    /**
+     * Opens a revlog with zlib compression for new data, no persistent nodemap and, for a missing index, a version 1 layout.
+     * The index is read at once.
+     * @param idxFile the index ({@code .i}) file; must not be {@code null}. It need not exist yet
+     * @param datFile the data ({@code .d}) file; ignored for an inline or version 2 revlog. A new revlog is inline unless the name of {@code idxFile} contains {@code 00changelog}
+     * @throws IOException if the index cannot be read or is corrupt
+     */
     public Revlog(File idxFile, File datFile) throws IOException {
         this(idxFile, datFile, false);
     }
 
+    /**
+     * Opens a revlog like {@link #Revlog(File, File)}, choosing the compression for new data.
+     * @param idxFile the index ({@code .i}) file; must not be {@code null}. It need not exist yet
+     * @param datFile the data ({@code .d}) file; ignored for an inline or version 2 revlog
+     * @param useZstd {@code true} to compress new data with zstd instead of zlib
+     * @throws IOException if the index cannot be read or is corrupt
+     */
     public Revlog(File idxFile, File datFile, boolean useZstd) throws IOException {
         this(idxFile, datFile, useZstd, false, false);
     }
@@ -202,6 +256,10 @@ public class Revlog {
         this.useZstd = useZstd;
     }
 
+    /**
+     * Returns the index of this revlog.
+     * @return the live index object, shared with this revlog
+     */
     public synchronized RevlogIndex getIndex() {
         return index;
     }
@@ -228,10 +286,20 @@ public class Revlog {
         index.setPersistentNodeMap(updated);
     }
 
+    /**
+     * Returns the number of revisions. The index file is checked for changes made by other writers first.
+     * @return the revision count; the tip is {@code count - 1}
+     */
     public synchronized int getRevisionCount() {
         return index.getRevisionCount();
     }
 
+    /**
+     * Returns the index record of a revision.
+     * @param rev the revision number, 0 to {@code getRevisionCount() - 1}
+     * @return the record
+     * @throws IndexOutOfBoundsException if {@code rev} is out of range
+     */
     public synchronized IndexRecord getIndexRecord(int rev) {
         return index.getIndexRecord(rev);
     }
@@ -329,6 +397,14 @@ public class Revlog {
         return docket;
     }
 
+    /**
+     * Works out the size each file would have after {@link #truncate(int)}, without changing anything. Used to journal a strip.
+     * For a version 2 revlog these are the companion index and data files (the sidedata file keeps its size), otherwise the index file and, when it is not
+     * inline, the data file. If a file of a version 1 revlog does not exist it is not listed.
+     * @param keepCount the number of leading revisions to keep, 0 to {@code getRevisionCount()}
+     * @return the files in the order they are listed, mapped to their size in bytes after the cut
+     * @throws IOException if a file cannot be read
+     */
     public synchronized java.util.Map<File, Long> truncatedSizes(int keepCount) throws IOException {
         java.util.Map<File, Long> sizes = new java.util.LinkedHashMap<>();
         if (index.isV2()) {
@@ -368,6 +444,14 @@ public class Revlog {
         return sizes;
     }
 
+    /**
+     * Cuts the revlog so that only the first {@code keepCount} revisions remain, by shortening the files. For a version 1 revlog, keeping 0 revisions deletes the
+     * index (and data) file; for a version 2 revlog the docket is updated.
+     * <p>The method takes no lock and does not call {@link #clearCache()}. Callers (such as strip) are expected to hold the store lock,
+     * to have the cut journaled, and to treat revision numbers at or above {@code keepCount} as gone afterwards.
+     * @param keepCount the number of leading revisions to keep, 0 to {@code getRevisionCount()}
+     * @throws IOException if a file cannot be changed
+     */
     public synchronized void truncate(int keepCount) throws IOException {
         if (index.isV2()) {
             File resolvedIdx = index.getResolvedIndexFile();
@@ -492,10 +576,22 @@ public class Revlog {
      */
     public static final int REVIDX_EXTSTORED = 0x2000;
 
+    /**
+     * Tells whether a revision was censored.
+     * @param rev the revision number
+     * @return {@code true} if its {@link #REVIDX_ISCENSORED} flag is set
+     * @throws IndexOutOfBoundsException if {@code rev} is out of range
+     */
     public synchronized boolean isCensored(int rev) {
         return (getIndexRecord(rev).getFlags() & REVIDX_ISCENSORED) != 0;
     }
 
+    /**
+     * Tells whether a revision's stored text is an external storage pointer (such as an LFS pointer) and not the file content.
+     * @param rev the revision number
+     * @return {@code true} if its {@link #REVIDX_EXTSTORED} flag is set
+     * @throws IndexOutOfBoundsException if {@code rev} is out of range
+     */
     public synchronized boolean isExtStored(int rev) {
         return (getIndexRecord(rev).getFlags() & REVIDX_EXTSTORED) != 0;
     }
@@ -772,6 +868,15 @@ public class Revlog {
         clearCache();
     }
 
+    /**
+     * Returns the stored text of a revision, with its delta chain applied, exactly as written: a metadata block ({@code \x01\n ... \x01\n}) is still
+     * there and a censored revision gives its tombstone text. The result is not cached.
+     * @param rev the revision number; -1 gives an empty array
+     * @return the text
+     * @throws HgRevisionNotFoundException if {@code rev} is below -1 or not smaller than {@link #getRevisionCount()}
+     * @throws HgCorruptDataException if the delta chain loops or the data file is missing or too short
+     * @throws IOException if reading fails
+     */
     public synchronized byte[] getRawRevisionContent(int rev) throws IOException {
         if (rev == -1) {
             return new byte[0];
@@ -864,6 +969,16 @@ public class Revlog {
         return DeltaEngine.createDelta(getRawRevisionContent(base), getRawRevisionContent(rev));
     }
 
+    /**
+     * Returns the content of a revision: the stored text without the leading metadata block (copy and rename information). For an externally stored
+     * revision this is the pointer text. Results are kept in a cache of the 100 most recently used revisions and a copy is returned.
+     * @param rev the revision number; -1 gives an empty array
+     * @return the content
+     * @throws HgRevisionNotFoundException if {@code rev} is below -1 or not smaller than {@link #getRevisionCount()}
+     * @throws HgCensoredContentException if the revision was censored (the exception carries the tombstone text)
+     * @throws HgCorruptDataException if the stored data is damaged
+     * @throws IOException if reading fails
+     */
     public synchronized byte[] getRevisionContent(int rev) throws IOException {
         if (rev == -1) {
             return new byte[0];
@@ -1028,6 +1143,17 @@ public class Revlog {
     }
 
 
+    /**
+     * Appends a revision without metadata. See {@link #appendRevision(byte[], Map, int, int, byte[], byte[], int)}.
+     * @param content the file content
+     * @param parent1 the revision number of the first parent, -1 if none
+     * @param parent2 the revision number of the second parent, -1 if none
+     * @param p1Node the 20-byte node id of the first parent (zero bytes for none)
+     * @param p2Node the 20-byte node id of the second parent (zero bytes for none)
+     * @param linkRev the changelog revision this revision belongs to
+     * @return the 20-byte node id of the revision
+     * @throws IOException if writing fails
+     */
     public synchronized byte[] appendRevision(byte[] content, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         return appendRevision(content, null, parent1, parent2, p1Node, p2Node, linkRev);
@@ -1450,6 +1576,25 @@ public class Revlog {
         return rank < 0 ? 0 : rank;
     }
 
+    /**
+     * Appends a revision to the end of the revlog. The node id is the SHA-1 of the two parent node ids (in ascending order) and the stored text, which is
+     * {@code content} preceded by the metadata block when {@code metadata} is not empty. If a revision with that node id exists already, nothing is written
+     * and the existing node id is returned.
+     * <p>A revision of an ordinary file log is stored as a delta against {@code parent1} when that is smaller and the chain is shorter than 100; revisions of
+     * the manifest and the changelog, and the first revision, are stored as full text. Data is compressed, written and synced to disk, the in-memory index is updated, an inline revlog is split
+     * into index and data files at 131072 bytes, and a persistent nodemap is updated if the revlog has one. A version 2 revlog is written in its docket format.
+     * <p>The method is {@code synchronized} per instance but takes no repository lock: the caller must hold the store lock
+     * ({@code HgRepository.lockStore()}) while writing.
+     * @param content the file content, without metadata; must not be {@code null}
+     * @param metadata key/value pairs such as {@code copy} and {@code copyrev} written as a metadata block before the content; {@code null} or empty for none
+     * @param parent1 the revision number of the first parent, -1 if none
+     * @param parent2 the revision number of the second parent, -1 if none
+     * @param p1Node the 20-byte node id of the first parent (zero bytes for none); must not be {@code null}
+     * @param p2Node the 20-byte node id of the second parent (zero bytes for none); must not be {@code null}
+     * @param linkRev the changelog revision this revision belongs to
+     * @return the 20-byte node id of the revision
+     * @throws IOException if writing fails
+     */
     public synchronized byte[] appendRevision(byte[] content, Map<String, String> metadata, int parent1, int parent2,
                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         return appendRevision(content, metadata, parent1, parent2, p1Node, p2Node, linkRev, null);
@@ -1962,6 +2107,11 @@ public class Revlog {
         return false;
     }
 
+    /**
+     * Finds a revision by node id.
+     * @param nodeId the node id; only its first 20 bytes are used. {@code null} gives -1
+     * @return the revision number, or -1 if there is no such revision
+     */
     public synchronized int findRevision(byte[] nodeId) {
         return index.findRevision(nodeId);
     }
@@ -1985,6 +2135,20 @@ public class Revlog {
         return a.length - b.length;
     }
 
+    /**
+     * Appends a revision from already prepared bytes, keeping the node id the caller gives. The bytes are compressed and stored as a full text (never a delta)
+     * and a version 1 index record is written (inline or not, as this revlog is); there is no version 2 handling, no duplicate check and no check that
+     * {@code node} matches the content. Used to restore a revlog from a backup. The caller must hold the store lock.
+     * @param rawToWrite the complete stored text, including a metadata block if there is one
+     * @param node the node id to record; at least 20 bytes, the first 20 are used
+     * @param parent1 the revision number of the first parent, -1 if none
+     * @param parent2 the revision number of the second parent, -1 if none
+     * @param p1Node not used
+     * @param p2Node not used
+     * @param linkRev the changelog revision this revision belongs to
+     * @return {@code node}
+     * @throws IOException if writing fails
+     */
     public synchronized byte[] appendRawRevision(byte[] rawToWrite, byte[] node, int parent1, int parent2,
                                                  byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         int rev = index.getRevisionCount();
@@ -2078,6 +2242,20 @@ public class Revlog {
         return node;
     }
 
+    /**
+     * Appends a revision whose text and node id are already known, storing it as a delta against {@code parent1} when that is smaller (not for manifest
+     * and changelog revlogs, and only for chains shorter than 100), otherwise as a full text. A version 1 index record is written; there is no version 2
+     * handling, no duplicate check and no check that {@code nodeId} matches the content. The caches of this revlog are cleared afterwards.
+     * The caller must hold the store lock.
+     * @param processedContent the complete stored text, including a metadata block if there is one
+     * @param nodeId the node id to record, at most 32 bytes (normally 20)
+     * @param parent1 the revision number of the first parent, -1 if none
+     * @param parent2 the revision number of the second parent, -1 if none
+     * @param p1Node not used
+     * @param p2Node not used
+     * @param linkRev the changelog revision this revision belongs to
+     * @throws IOException if writing fails
+     */
     public synchronized void appendOptimizedRevision(byte[] processedContent, byte[] nodeId, int parent1, int parent2,
                                                      byte[] p1Node, byte[] p2Node, int linkRev) throws IOException {
         int rev = index.getRevisionCount();

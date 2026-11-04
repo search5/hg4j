@@ -12,6 +12,13 @@ public class HgCensoredContentException extends IOException {
 
     private final byte[] tombstone;
 
+    /**
+     * Creates the exception for a censored revision.
+     *
+     * @param path the name of the revlog index file whose revision is censored (as passed by the caller, not a repository-relative file path)
+     * @param rev the revision number within that revlog
+     * @param tombstone the tombstone bytes stored in place of the censored content; may be {@code null} if none was set
+     */
     public HgCensoredContentException(String path, int rev, byte[] tombstone) {
         super("censored node: " + path + "@" + rev);
         this.tombstone = tombstone;

@@ -29,6 +29,10 @@ public class LogCommand {
     private String followPath = null;
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
+    /**
+     * Creates a log command for the given repository.
+     * @param repository the repository whose changelog is read
+     */
     public LogCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -59,6 +63,11 @@ public class LogCommand {
         return this;
     }
 
+    /**
+     * Restricts the result to changesets that changed at least one file accepted by the filter. The default is {@link HgTreeFilter#ALL}, which applies no restriction.
+     * @param treeFilter the filter; {@code null} is ignored (the previous value is kept)
+     * @return {@code this}
+     */
     public LogCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -66,11 +75,21 @@ public class LogCommand {
         return this;
     }
 
+    /**
+     * Restricts the result to the start revision and its ancestors. It only has an effect when a start revision is set with {@link #setStartRev(String)}. The default is {@code false}.
+     * @param follow {@code true} to limit the log to ancestors of the start revision
+     * @return {@code this}
+     */
     public LogCommand setFollowAncestors(boolean follow) {
         this.followAncestors = follow;
         return this;
     }
 
+    /**
+     * Sets the revision from which ancestors are followed. It is used only together with {@link #setFollowAncestors(boolean)} or {@link #setFollowPath(String)}; otherwise it is ignored. The default is {@code null} (the tip).
+     * @param startRev the revision identifier, resolved against the changelog when {@link #call()} runs; {@code null} for the default
+     * @return {@code this}
+     */
     public LogCommand setStartRev(String startRev) {
         this.startRev = startRev;
         return this;
@@ -100,6 +119,13 @@ public class LogCommand {
         return this;
     }
 
+    /**
+     * Reads the changelog and returns the matching changesets, newest revision first.
+     * <p>Returns an empty list if the repository has no changelog. Changelog entries whose text is malformed are skipped with a warning.
+     * The result is restricted by the follow options, the tree filter and the file patterns, when set.</p>
+     * @return the changesets, highest revision number first; never {@code null}
+     * @throws IOException if the changelog cannot be read
+     */
     public List<HgCommit> call() throws IOException {
         // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
         // changelog-v2 revlog after an external process appended a revision -- see

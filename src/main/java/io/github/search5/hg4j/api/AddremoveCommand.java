@@ -21,6 +21,11 @@ public class AddremoveCommand {
     private boolean subrepos;
     private final List<String> messages = new ArrayList<>();
 
+    /**
+     * Creates an addremove command for the given repository. Nothing is read or written until {@link #call()}.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public AddremoveCommand(HgRepository repository) {
         this.repository = repository;
     }

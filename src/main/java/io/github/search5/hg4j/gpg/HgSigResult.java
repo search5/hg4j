@@ -7,6 +7,7 @@ package io.github.search5.hg4j.gpg;
  */
 public final class HgSigResult {
 
+    /** The kind of result of verifying one signature; {@link #isValid()} tells whether Mercurial counts it as valid. */
     public enum Status {
         /** valid signature of a valid key (gpg: GOODSIG) */
         GOOD(true),
@@ -47,10 +48,20 @@ public final class HgSigResult {
         this.detail = detail;
     }
 
+    /**
+     * Returns the verification status.
+     *
+     * @return the status, never {@code null}
+     */
     public Status getStatus() {
         return status;
     }
 
+    /**
+     * Tells whether Mercurial counts this result as a valid signature.
+     *
+     * @return {@code true} for {@link Status#GOOD}, {@link Status#EXPIRED_SIGNATURE} and {@link Status#EXPIRED_KEY}
+     */
     public boolean isValid() {
         return status.isValid();
     }

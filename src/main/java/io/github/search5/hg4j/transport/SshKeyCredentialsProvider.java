@@ -7,19 +7,34 @@ public class SshKeyCredentialsProvider implements CredentialsProvider {
     private final String privateKeyPath;
     private final String passphrase;
 
+    /**
+     * Creates a provider for a private key without a passphrase.
+     * @param privateKeyPath the private key file path
+     */
     public SshKeyCredentialsProvider(String privateKeyPath) {
         this(privateKeyPath, null);
     }
 
+    /**
+     * Creates a provider for a private key.
+     * @param privateKeyPath the private key file path
+     * @param passphrase the key passphrase, or null if the key is not protected
+     */
     public SshKeyCredentialsProvider(String privateKeyPath, String passphrase) {
         this.privateKeyPath = privateKeyPath;
         this.passphrase = passphrase;
     }
 
+    /**
+     * Returns the private key file path given at construction.
+     */
     public String getPrivateKeyPath() {
         return privateKeyPath;
     }
 
+    /**
+     * Returns the passphrase given at construction, or null if there is none.
+     */
     public String getPassphrase() {
         return passphrase;
     }

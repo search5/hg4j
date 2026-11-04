@@ -177,6 +177,12 @@ public class CommitCommand {
         return this;
     }
 
+    /**
+     * Registers a hook that runs inside the commit, before anything is written. If the hook's {@code run} returns {@code false} the commit is aborted with an {@link io.github.search5.hg4j.errors.HgValidationException}. The hook receives a map with the keys {@code author}, {@code message} and {@code repository}.
+     *
+     * @param hook the hook to run; {@code null} is ignored
+     * @return {@code this}
+     */
     public CommitCommand registerPreCommitHook(HgHook hook) {
         if (hook != null) {
             preCommitHooks.add(hook);
@@ -184,6 +190,12 @@ public class CommitCommand {
         return this;
     }
 
+    /**
+     * Registers a hook that runs after a successful commit, once the repository locks are released. The hook receives a map with the keys {@code author}, {@code message}, {@code commitNode} (the new 20-byte node id) and {@code repository}. A hook that throws is logged and does not fail the commit.
+     *
+     * @param hook the hook to run; {@code null} is ignored
+     * @return {@code this}
+     */
     public CommitCommand registerPostCommitHook(HgHook hook) {
         if (hook != null) {
             postCommitHooks.add(hook);
@@ -197,15 +209,32 @@ public class CommitCommand {
         return this;
     }
 
+    /**
+     * Makes {@link #call()} skip taking the working copy and store locks and skip writing its own crash journal, for callers that already hold the locks and manage rollback themselves. Default {@code false}.
+     *
+     * @param skip {@code true} to skip the locks and the journal
+     * @return {@code this}
+     */
     public CommitCommand setSkipLockAndJournal(boolean skip) {
         this.skipLockAndJournal = skip;
         return this;
     }
 
+    /**
+     * Creates a commit command for the given repository. The default author is {@code user <user@example.com>}; set a real one with {@link #setAuthor(String)}.
+     *
+     * @param repository the repository to commit to; must not be {@code null}
+     */
     public CommitCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the author recorded in the changeset ({@code hg commit -u}). The default is {@code user <user@example.com>}.
+     *
+     * @param author the user string, for example {@code Name <mail>}; {@code null} or empty keeps the current value
+     * @return {@code this}
+     */
     public CommitCommand setAuthor(String author) {
         if (author != null && !author.isEmpty()) {
             this.author = author;
@@ -213,17 +242,40 @@ public class CommitCommand {
         return this;
     }
 
+    /**
+     * Sets the commit date ({@code hg commit -d}). When not set, the current time and the default time zone are used.
+     *
+     * @param secs seconds since the Unix epoch (UTC)
+     * @param offsetSeconds time zone offset in seconds, in Mercurial's convention: positive west of UTC, so UTC+9 is {@code -32400}
+     * @return {@code this}
+     */
     public CommitCommand setDate(long secs, int offsetSeconds) {
         this.forcedTime = secs;
         this.forcedOffset = offsetSeconds;
         return this;
     }
 
+    /**
+     * Sets the commit message ({@code hg commit -m}). Required: {@link #call()} fails without a non-empty message.
+     *
+     * @param message the commit message, written as given
+     * @return {@code this}
+     */
     public CommitCommand setMessage(String message) {
         this.message = message;
         return this;
     }
 
+    /**
+     * Commits the working copy changes (or only the files selected with the pattern methods) as a new changeset on the current branch ({@code hg commit}). It writes filelog, manifest and changelog revisions, updates the dirstate, advances the active bookmark and records undo information for rollback.
+     * <p>Takes the working copy lock and the store lock (unless {@link #setSkipLockAndJournal(boolean)} was set). If the commit fails, the store files are restored to their previous state.
+     *
+     * @return the 20-byte node id of the new changeset
+     * @throws IllegalStateException if no message was set
+     * @throws io.github.search5.hg4j.errors.HgValidationException if there is nothing to commit ({@code nothing changed}), a pre-commit hook rejects the commit, or the working copy is in a state that cannot be committed
+     * @throws IOException if reading or writing the repository fails
+     * @throws HgLockException if a lock cannot be acquired
+     */
     public byte[] call() throws IOException, HgLockException {
         if (message == null || message.isEmpty()) {
             throw new IllegalStateException("Commit message must be specified.");
@@ -1707,6 +1759,13 @@ public class CommitCommand {
         return mfNode != null ? mfNode : new byte[20];
     }
 
+    /**
+     * Returns the index file of a tracked path's filelog in the store, using Mercurial's filename encoding. The file need not exist. The matching data file has the same name with {@code .d} in place of {@code .i}.
+     *
+     * @param storeDir the {@code .hg/store} directory
+     * @param relPath repository-relative path of the tracked file, with {@code /} separators
+     * @return the {@code .i} file for that path
+     */
     public static File getFilelogIndex(File storeDir, String relPath) {
         String encoded = NodeIdUtil.encodeFname(relPath + ".i");
         return new File(storeDir, encoded);
@@ -1758,6 +1817,12 @@ public class CommitCommand {
         return clSb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
+    /**
+     * Reverses {@link #encodeExtraKey(String)}: turns the escape sequences {@code \\}, {@code \n}, {@code \r} and {@code \0} back into the characters they stand for. Any other backslash is kept as is.
+     *
+     * @param s an escaped changelog extra key or value; {@code null} gives an empty string
+     * @return the decoded text
+     */
     public static String decodeExtraKey(String s) {
         if (s == null) return "";
         StringBuilder sb = new StringBuilder();
@@ -1941,6 +2006,14 @@ public class CommitCommand {
         f.delete();
     }
 
+    /**
+     * Writes the files that {@code hg rollback} needs to undo the transaction that has just completed: {@code undo} and {@code undo.backup.files} in the store, and {@code .hg/undo.backup.dirstate} and {@code .hg/undo.backup.bookmarks}. Existing undo files are deleted first.
+     *
+     * @param repository the repository that was changed
+     * @param fileSizes store files to the size they had before the transaction, so rollback can truncate them back
+     * @param dirstateBackup the dirstate bytes from before the transaction, or {@code null} if there was no dirstate
+     * @throws IOException if an undo file cannot be written
+     */
     public static void writeUndoInfo(HgRepository repository, Map<File, Long> fileSizes, byte[] dirstateBackup) throws IOException {
         writeUndoInfo(repository, fileSizes, dirstateBackup, Collections.emptyMap());
     }

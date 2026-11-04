@@ -25,6 +25,11 @@ public final class ShapeException extends HgValidationException {
         this.subject = subject;
     }
 
+    /**
+     * Returns the kind of error.
+     *
+     * @return the kind, never {@code null}
+     */
     public Kind kind() {
         return kind;
     }

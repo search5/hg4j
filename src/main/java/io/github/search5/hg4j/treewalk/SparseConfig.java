@@ -28,8 +28,17 @@ import java.util.logging.Logger;
 public final class SparseConfig {
     private static final Logger LOGGER = Logger.getLogger(SparseConfig.class.getName());
 
+    /**
+     * Patterns listed under {@code [include]}, in file order without duplicates.
+     */
     public final Set<String> includes;
+    /**
+     * Patterns listed under {@code [exclude]}, in file order without duplicates.
+     */
     public final Set<String> excludes;
+    /**
+     * Profile paths named by {@code %include} lines, in file order without duplicates.
+     */
     public final Set<String> profiles;
 
     private SparseConfig(Set<String> includes, Set<String> excludes, Set<String> profiles) {

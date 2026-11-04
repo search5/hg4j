@@ -18,6 +18,11 @@ import java.util.Map;
 public class DescribeCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a describe command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public DescribeCommand(HgRepository repository) {
         this.repository = repository;
     }

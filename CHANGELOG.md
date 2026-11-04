@@ -9,6 +9,7 @@ All notable changes to hg4j are listed here, newest first. The reference for beh
 - **Taking the store lock no longer recovers an interrupted transaction.** It throws `HgAbandonedTransactionException`; run `RecoverCommand`. `recover` and `rollback` never touch the dirstate.
 - **Dirstate is written once, after the transaction**, inside `changing_files` / `changing_parents` contexts that need the working copy lock. A failed command writes nothing. `dirstate.backup` and the `dirstate` journal entry are gone (old journals that still carry the entry are read without error). Direct changes to the dirstate without `wlock` throw `IllegalStateException`.
 - `DirstateBody` (the body of a dirstate context) may throw `IOException` and `HgLockException`.
+- Methods that now declare the checked `HgLockException`: `BisectCommand.next()`, `BookmarkCommand.call()`, `BranchCommand.call()`, `CensorCommand.call()`, `GcCommand.call()`, `RecoverCommand.call()`, `ResolveCommand.call()`, `RollbackCommand.call()`, `VerifyCommand.call()`, `Hg.rollback()`. The migration table is in the manual ("API Changes for Callers").
 - Behaviour taken from the original after checking it with the real `hg`:
   - `.orig` files remain after `rebase --abort`, `unshelve --abort` and a conflicting `backout`;
   - `rebase` without evolution strips the original changesets;
@@ -21,7 +22,7 @@ All notable changes to hg4j are listed here, newest first. The reference for beh
 - dirstate-v2 stored like the original: memory-mapped read, lookup in place, append-only writes, docket replaced last, rewrite when half of the data file is unreachable.
 - Lock contention tests between hg4j and the real `hg` (`RealHgLockContentionInteropTest`), each scenario with the locks on (no damage) and with hg4j's locks switched off (damage shows); `LockScopeConcurrencyTest` for the scope of the locks. `HgLock.disabledForTests` is the test hook.
 - `-PignoreTestFailures` for a full run that still produces the coverage report.
-- Documentation: refreshed manuals (English and Korean) and this file.
+- Documentation: refreshed manuals (English and Korean) with a command reference, this file, and English Javadoc for about 750 public members that had none.
 
 ### Fixed
 - Rebase in a changelog-v2 + sidedata repository left changesets without changed-file sidedata (`hg verify` integrity error). Re-applied changesets and in-memory commits now get it.

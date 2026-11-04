@@ -16,6 +16,9 @@ import java.util.function.Function;
  */
 public class PhaseRoots {
 
+    /**
+     * The phase of a changeset, ordered from the least to the most private; the number is what the {@code phaseroots} file uses.
+     */
     public enum Phase {
         PUBLIC(0),
         DRAFT(1),
@@ -27,10 +30,19 @@ public class PhaseRoots {
             this.value = value;
         }
 
+        /**
+         * Returns the number used for this phase in the {@code phaseroots} file.
+         * @return 0 for {@link #PUBLIC}, 1 for {@link #DRAFT}, 2 for {@link #SECRET}
+         */
         public int getValue() {
             return value;
         }
 
+        /**
+         * Returns the phase with the given number.
+         * @param value the number as stored in the {@code phaseroots} file
+         * @return the matching phase; {@link #PUBLIC} for an unknown number
+         */
         public static Phase fromValue(int value) {
             for (Phase p : values()) {
                 if (p.value == value) {
@@ -44,6 +56,12 @@ public class PhaseRoots {
     private final File phaserootsFile;
     private final Map<NodeId, Phase> rootsMap = new HashMap<>();
 
+    /**
+     * Opens the phase roots stored in {@code phaserootsFile}. If the file exists it is read now; lines that cannot be parsed are skipped.
+     * Every line has the form {@code <phase number> <40 hex digits>}. The file is not created here; it is written by {@code setPhase}.
+     * @param phaserootsFile the file, usually {@code .hg/store/phaseroots}; must not be {@code null}
+     * @throws IOException if the file exists but cannot be read
+     */
     public PhaseRoots(File phaserootsFile) throws IOException {
         this.phaserootsFile = phaserootsFile;
         if (phaserootsFile.exists()) {
@@ -203,26 +221,65 @@ public class PhaseRoots {
         setPhase(node, phase, (Function<NodeId, NodeId[]>) null);
     }
 
+    /**
+     * Tells whether the changeset is in the public phase, as computed by {@link #getPhase(NodeId, Function)}.
+     * @param node the changeset; {@code null} or the null node counts as public
+     * @param parentLookup returns the parents of a node (an empty array or {@code null} for none); used to walk the ancestors
+     * @return {@code true} if the phase is {@link Phase#PUBLIC}
+     */
     public boolean isPublic(NodeId node, Function<NodeId, NodeId[]> parentLookup) {
         return getPhase(node, parentLookup) == Phase.PUBLIC;
     }
 
+    /**
+     * Tells whether the changeset is in the draft phase, as computed by {@link #getPhase(NodeId, Function)}.
+     * @param node the changeset; {@code null} or the null node counts as public
+     * @param parentLookup returns the parents of a node (an empty array or {@code null} for none); used to walk the ancestors
+     * @return {@code true} if the phase is {@link Phase#DRAFT}
+     */
     public boolean isDraft(NodeId node, Function<NodeId, NodeId[]> parentLookup) {
         return getPhase(node, parentLookup) == Phase.DRAFT;
     }
 
+    /**
+     * Tells whether the changeset is in the secret phase, as computed by {@link #getPhase(NodeId, Function)}.
+     * @param node the changeset; {@code null} or the null node counts as public
+     * @param parentLookup returns the parents of a node (an empty array or {@code null} for none); used to walk the ancestors
+     * @return {@code true} if the phase is {@link Phase#SECRET}
+     */
     public boolean isSecret(NodeId node, Function<NodeId, NodeId[]> parentLookup) {
         return getPhase(node, parentLookup) == Phase.SECRET;
     }
 
+    /**
+     * Tells whether the changeset is in the public phase, as computed by {@link #getPhase(NodeId, Revlog)}.
+     * @param node the changeset; {@code null} or the null node counts as public
+     * @param changelog the changelog used to look up parents
+     * @return {@code true} if the phase is {@link Phase#PUBLIC}
+     * @throws IOException if the changelog cannot be read
+     */
     public boolean isPublic(NodeId node, Revlog changelog) throws IOException {
         return getPhase(node, changelog) == Phase.PUBLIC;
     }
 
+    /**
+     * Tells whether the changeset is in the draft phase, as computed by {@link #getPhase(NodeId, Revlog)}.
+     * @param node the changeset; {@code null} or the null node counts as public
+     * @param changelog the changelog used to look up parents
+     * @return {@code true} if the phase is {@link Phase#DRAFT}
+     * @throws IOException if the changelog cannot be read
+     */
     public boolean isDraft(NodeId node, Revlog changelog) throws IOException {
         return getPhase(node, changelog) == Phase.DRAFT;
     }
 
+    /**
+     * Tells whether the changeset is in the secret phase, as computed by {@link #getPhase(NodeId, Revlog)}.
+     * @param node the changeset; {@code null} or the null node counts as public
+     * @param changelog the changelog used to look up parents
+     * @return {@code true} if the phase is {@link Phase#SECRET}
+     * @throws IOException if the changelog cannot be read
+     */
     public boolean isSecret(NodeId node, Revlog changelog) throws IOException {
         return getPhase(node, changelog) == Phase.SECRET;
     }

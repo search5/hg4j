@@ -29,7 +29,13 @@ public class Bundle2Parser {
      * Structure representing the result of bundle2 extraction.
      */
     public static class ExtractedBundle2 {
+        /**
+         * The raw changegroup payload taken from the bundle's {@code CHANGEGROUP} part.
+         */
         public byte[] changegroupBytes;
+        /**
+         * The changegroup version of that part (for example {@code "01"} or {@code "02"}); {@code "01"} when the part names none.
+         */
         public String cgVersion = "01"; // Default to cg1 if not specified
         /** The wire part id (real hg's {@code partid}, a small sequential integer the SENDER
          * assigned) of the {@code CHANGEGROUP} part this was extracted from -- needed by a
@@ -268,18 +274,17 @@ public class Bundle2Parser {
         return "HG20," + buildBundle2CapsToken(changegroupVersionsCsv);
     }
 
-    /**
-     * Like {@link #buildChangegroupBundleCaps} but returns only the {@code "bundle2=<blob>"}
-     * token by itself — for a caller (e.g. {@code FetchCommand}) that builds its {@code
-     * bundleCaps} as a {@code List<String>} of separate tokens and wants to add the bare {@code
-     * "HG20"} token as its own list element (matching real hg's own client's exact 2-token shape,
-     * captured 2026-09-03) rather than pre-joined into one string.
-     */
     /** The {@code bundlecaps} a stream clone through bundle2 asks with: bundle2 itself and {@code stream=v2}. */
     public static String buildStreamBundleCaps() {
         return "HG20,bundle2=" + pythonQuote("HG20\nstream=v2");
     }
 
+    /**
+     * Builds the {@code bundle2=...} bundle capability token announcing the changegroup versions a client accepts. The
+     * blob {@code HG20\nchangegroup=<versions>} is percent-quoted.
+     * @param changegroupVersionsCsv the comma-separated changegroup versions, for example {@code "01,02"}; must not be null
+     * @return the token, beginning with {@code "bundle2="}
+     */
     public static String buildBundle2CapsToken(String changegroupVersionsCsv) {
         String blob = "HG20\nchangegroup=" + changegroupVersionsCsv;
         return "bundle2=" + pythonQuote(blob);

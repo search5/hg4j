@@ -24,6 +24,10 @@ public class LfsUploadCommand {
     private final HgRepository repository;
     private final List<String> revisions = new ArrayList<>();
 
+    /**
+     * Creates an LFS upload command for the given repository.
+     * @param repository the repository whose LFS blobs are uploaded
+     */
     public LfsUploadCommand(HgRepository repository) {
         this.repository = repository;
     }

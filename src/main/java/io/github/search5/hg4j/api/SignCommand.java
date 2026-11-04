@@ -50,6 +50,10 @@ public class SignCommand {
     private String author = "hg4j <hg4j@google.com>";
     private Instant now;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to sign in; must not be {@code null}
+     */
     public SignCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -102,6 +106,12 @@ public class SignCommand {
         return this;
     }
 
+    /**
+     * Sets the author recorded for the commit of {@code .hgsigs}.
+     * @param author the author string, normally {@code Name <email>}; default {@code hg4j <hg4j@google.com>}.
+     *         Unused with {@link #setLocal} or when {@link #setCommit} is {@code false}
+     * @return {@code this}
+     */
     public SignCommand setAuthor(String author) {
         this.author = author;
         return this;

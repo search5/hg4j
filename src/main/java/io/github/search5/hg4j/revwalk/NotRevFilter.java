@@ -8,6 +8,11 @@ import io.github.search5.hg4j.storage.Revlog;
 public class NotRevFilter implements RevFilter {
     private final RevFilter filter;
 
+    /**
+     * Creates a filter that includes exactly the revisions the given filter excludes.
+     * @param filter the filter to negate; must not be null
+     * @throws IllegalArgumentException if {@code filter} is null
+     */
     public NotRevFilter(RevFilter filter) {
         if (filter == null) {
             throw new IllegalArgumentException("Filter cannot be null");

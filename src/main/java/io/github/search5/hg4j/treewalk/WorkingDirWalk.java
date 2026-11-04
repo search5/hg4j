@@ -10,6 +10,12 @@ import java.util.NoSuchElementException;
 import java.util.AbstractList;
 import java.util.Iterator;
 
+/**
+ * Walks the working copy: every file on disk and every path in the dirstate, in ascending UTF-8 path order,
+ * with size and modification time read from disk.
+ * <p>Like {@link ManifestWalk}, it offers a cursor over cached entries and a lazy streaming view that share
+ * one underlying reader, so do not interleave them. Instances are not thread-safe.
+ */
 public class WorkingDirWalk {
 
     private final WorkingDirTreeIterator iterator;
@@ -17,6 +23,9 @@ public class WorkingDirWalk {
     private final List<Entry> cachedEntries = new ArrayList<>();
     private int cachedIndex = -1;
 
+    /**
+     * Immutable description of one working copy path.
+     */
     public static class Entry {
         private final String path;
         private final File file;
@@ -25,6 +34,15 @@ public class WorkingDirWalk {
         private final long size;
         private final long lastModified;
 
+        /**
+         * Creates an entry.
+         * @param path the repository-relative path using {@code /} separators
+         * @param file the file on disk
+         * @param state the dirstate state character, or {@code '?'} for an untracked file
+         * @param executable whether the file is executable on disk
+         * @param size the file length in bytes, 0 if the file does not exist
+         * @param lastModified the modification time in whole seconds since the epoch, 0 if the file does not exist
+         */
         public Entry(String path, File file, char state, boolean executable, long size, long lastModified) {
             this.path = path;
             this.file = file;
@@ -34,36 +52,62 @@ public class WorkingDirWalk {
             this.lastModified = lastModified;
         }
 
+        /**
+         * Returns the repository-relative path using {@code /} separators.
+         */
         public String getPath() {
             return path;
         }
 
+        /**
+         * Returns the file on disk (which may not exist, for example for a removed path).
+         */
         public File getFile() {
             return file;
         }
 
+        /**
+         * Returns the dirstate state character, or {@code '?'} for an untracked file.
+         */
         public char getState() {
             return state;
         }
 
+        /**
+         * Returns whether the file is executable on disk.
+         */
         public boolean isExecutable() {
             return executable;
         }
 
+        /**
+         * Returns the file length in bytes, 0 if the file does not exist.
+         */
         public long getSize() {
             return size;
         }
 
+        /**
+         * Returns the modification time in whole seconds since the epoch, 0 if the file does not exist.
+         */
         public long getLastModified() {
             return lastModified;
         }
     }
 
+    /**
+     * Creates a walk over the working copy of the repository. No I/O happens until the first traversal.
+     * @param repository the repository whose working copy is scanned; must not be null
+     */
     public WorkingDirWalk(HgRepository repository) {
         this.repository = repository;
         this.iterator = new WorkingDirTreeIterator(repository);
     }
 
+    /**
+     * Rewinds the cursor used by {@link #next()} so that the next call returns the first entry again.
+     * The entries already loaded are kept and not re-scanned.
+     */
     public void reset() throws IOException {
         cachedIndex = -1;
     }
@@ -86,6 +130,11 @@ public class WorkingDirWalk {
         }
     }
 
+    /**
+     * Advances the cursor to the next entry. The first call scans the working copy and caches all entries.
+     * @return true if the cursor now points at an entry, false if there are no more entries
+     * @throws IOException if the working copy or dirstate cannot be read
+     */
     public boolean next() throws IOException {
         loadAll();
         if (cachedIndex < cachedEntries.size() - 1) {
@@ -95,6 +144,12 @@ public class WorkingDirWalk {
         return false;
     }
 
+    /**
+     * Returns the entry the cursor currently points at.
+     * @return the current entry
+     * @throws NoSuchElementException if {@link #next()} has not been called since construction or the last
+     *         {@link #reset()}
+     */
     public Entry getEntry() {
         if (cachedIndex < 0 || cachedIndex >= cachedEntries.size()) {
             throw new NoSuchElementException("No current entry");
@@ -102,6 +157,14 @@ public class WorkingDirWalk {
         return cachedEntries.get(cachedIndex);
     }
 
+    /**
+     * Returns a read-only list view of all entries in path order, filled lazily from {@link #lazyEntries()}
+     * as it is accessed. Calling {@code size()} scans the whole working copy.
+     * <p>The list drives the shared underlying reader, so do not use it together with {@link #next()}.
+     * Read errors surfaced while populating the list are treated as the end of the data.
+     * @return a new list view; never null
+     * @throws IOException declared for I/O failures; the view itself performs its reads lazily
+     */
     public List<Entry> getEntries() throws IOException {
         return new AbstractList<Entry>() {
             private final List<Entry> cache = new ArrayList<>();

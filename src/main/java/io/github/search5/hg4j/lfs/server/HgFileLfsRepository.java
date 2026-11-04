@@ -16,6 +16,11 @@ public final class HgFileLfsRepository implements HgLargeFileRepository {
 
     private final HgLfsManager manager;
 
+    /**
+     * Creates the store view for a repository.
+     *
+     * @param repository the repository whose {@code store/lfs/objects} directory and configuration are used; must not be {@code null}
+     */
     public HgFileLfsRepository(HgRepository repository) {
         this.manager = new HgLfsManager(repository.getHgDir(), repository.getConfig());
     }

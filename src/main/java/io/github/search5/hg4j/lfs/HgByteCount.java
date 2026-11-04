@@ -16,6 +16,12 @@ public final class HgByteCount {
     private HgByteCount() {
     }
 
+    /**
+     * Formats a byte count the way Mercurial does, with unit GB, MB or KB and 0 to 2 decimals depending on magnitude, or plain bytes below 1 KB (for example {@code 600 bytes}, {@code 1.46 KB}, {@code 10.0 MB}).
+     *
+     * @param bytes the count in bytes; a value below 1024 (including a negative one) is shown as {@code N bytes}
+     * @return the formatted text, never {@code null}
+     */
     public static String format(long bytes) {
         for (int i = 0; i < TABLE.length; i++) {
             long multiplier = TABLE[i][0];

@@ -35,6 +35,10 @@ public class HeadsCommand {
     private boolean includeClosed = false;
     private boolean topo = false;
 
+    /**
+     * Creates a heads command for the given repository.
+     * @param repository the repository to inspect
+     */
     public HeadsCommand(HgRepository repository) {
         this.repository = repository;
     }

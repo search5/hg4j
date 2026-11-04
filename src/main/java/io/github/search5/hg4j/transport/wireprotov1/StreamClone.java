@@ -188,6 +188,16 @@ public final class StreamClone {
         return name;
     }
 
+    /**
+     * Builds the content of a bundle2 {@code stream2} part from the store of the repository, taken under the store lock.
+     * <p>The part holds, per file, a source marker, the name length and data length as unsigned varints, the name and the
+     * data. Store files are included, and so are the root revlogs, the phase roots and cache files for the top level shard.
+     * @param repo the served repository; must not be null
+     * @param shard restricts the files to those of one shard, or null for the whole store
+     * @return the encoded payload with file count, total byte count and requirements
+     * @throws IOException if streaming is not allowed for the repository, the store is larger than the server streams,
+     *         the store lock cannot be taken, or files cannot be read
+     */
     public static Stream2 stream2(HgRepository repo, ShardSelection shard) throws IOException {
         if (!allowServerGeneration(repo)) {
             throw new IOException("stream data requested but server does not allow this feature");

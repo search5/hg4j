@@ -1,0 +1,509 @@
+// 이력 및 조회 명령, 패키지 io.github.search5.hg4j.api.
+// 공통: 모든 명령은 생성자에서 HgRepository를 받습니다.
+// 읽기 명령은 잠금을 잡지 않습니다(소스에 lockWorkingCopy/lockStore/openChanging* 호출이 없습니다).
+// FileSelection 설정자(setPatterns, setInclude, setExclude, setCwd)는 의미가 같습니다.
+// 패턴은 "kind:pattern" 또는 "set:EXPRESSION" 형식이고, setCwd는 저장소 루트 기준 현재 디렉터리이며 상대 패턴을 이 기준으로 해석합니다.
+
+=== Commit
+
+작업 사본의 추적 중인 변경을 새 체인지셋으로 커밋합니다. `hg commit`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setMessage(String)` |커밋 메시지입니다. 필수이며, null이거나 비어 있으면 `call()`이 `IllegalStateException`을 던집니다.
+|`setAuthor(String)` |작성자입니다. null이나 빈 문자열은 무시되고, 기본값은 `user <user@example.com>`입니다.
+|`setDate(long secs, int offsetSeconds)` |커밋 시각과 시간대 오프셋을 강제로 지정합니다.
+|`setPatterns(String...)` |`hg commit [FILE]...`: 패턴이 고른 파일의 변경만 커밋합니다. 나머지 파일은 새 리비전에서 부모의 내용을 유지하고 작업 사본에서는 수정, 추가, 삭제 상태로 남습니다. 병합 커밋에는 쓸 수 없습니다.
+|`setInclude(String...)` |`hg commit -I`입니다.
+|`setExclude(String...)` |`hg commit -X`입니다.
+|`setCwd(String)` |저장소 루트 기준 현재 디렉터리이며 상대 패턴에 쓰입니다.
+|`setExtra(String key, String value)` |새 체인지셋에 extra 필드를 추가합니다(rebase와 graft가 원본을 기록할 때 씁니다).
+|`setCloseBranch(boolean)` |`hg commit --close-branch`: 새 커밋이 이름 있는 브랜치 헤드를 닫는다고 표시합니다.
+|`setSubrepos(boolean)` |`hg commit -S`: `.hgsub`에 선언된 서브저장소에 커밋되지 않은 변경이 있을 때 재귀 커밋을 허용합니다. 없으면 커밋이 중단됩니다.
+|`registerPreCommitHook(HgHook)` |커밋 전 훅을 등록합니다. 훅이 false를 반환하면 커밋이 거부됩니다(`HgValidationException`).
+|`registerPostCommitHook(HgHook)` |커밋 후 훅을 등록합니다.
+|`setSkipLockAndJournal(boolean)` |true이면 `call()`이 잠금을 잡지 않고 저널도 쓰지 않습니다(이미 잠금을 가진 호출자용). javadoc은 없고 코드에서 확인한 의미입니다.
+|===
+
+실행 메서드:: `byte[] call() throws IOException, HgLockException`. 새 커밋의 20바이트 노드 id를 반환합니다.
+주요 예외:: `HgValidationException`(예: "nothing changed", 해결되지 않은 병합 충돌, 병합의 부분 커밋, 훅 거부), `HgRevisionNotFoundException`, `HgRepositoryNotFoundException`, `IllegalStateException`(메시지 없음), `HgLockException`.
+
+잠금과 dirstate::
+* `repository.lockWorkingCopy()`를 먼저, 그다음 `repository.lockStore()`를 잡고, 이어서 `repository.openChangingParents()`(`dirstate.changing_parents`에 해당하는 dirstate 변경 컨텍스트)를 하나의 try-with-resources에서 엽니다. 소스 주석에 따르면 잠금은 저장소 상태를 읽기 전에 잡고 명령이 끝날 때 풉니다.
+* `setSkipLockAndJournal(true)`이면 두 잠금은 no-op이 되고, `openChangingParents()`는 작업 사본 잠금을 이미 가진 경우(`holdsWorkingCopyLock()`)에만 열립니다. 그렇지 않으면 dirstate 컨텍스트를 열지 않습니다.
+* `openChangingFiles`와 `changingFiles`는 호출하지 않습니다. `ChangingFiles`는 새 체인지셋의 변경 파일 사이드데이터(`SD_FILES`)를 인코딩하는 데만 쓰입니다.
+* 소스 주석에 따르면 dirstate는 컨텍스트가 끝날 때, 즉 저장소 트랜잭션이 닫힌 뒤에 기록되고, 커밋이 실패하면 건드리지 않습니다.
+
+hg 원본과 다른 점:: javadoc에는 적혀 있지 않습니다. 코드 주석은 hg의 잠금과 dirstate 순서를 따른다고 설명합니다.
+
+[source,java]
+----
+byte[] node = new CommitCommand(repo)
+    .setAuthor("Jane <jane@example.com>")
+    .setMessage("Fix bug")
+    .call();
+----
+
+=== Amend
+
+팁 커밋을 새 커밋으로 교체하고 폐기 마커(obsolescence marker)를 기록합니다. `hg commit --amend`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setAuthor(String)` |작성자를 덮어씁니다. 지정하지 않으면 교체되는 커밋의 작성자를 재사용합니다.
+|`setMessage(String)` |메시지를 덮어씁니다. 지정하지 않으면 교체되는 커밋의 메시지를 재사용합니다.
+|`setCloseBranch(boolean)` |`hg commit --amend --close-branch`: 수정된 커밋이 브랜치를 닫을지 덮어씁니다. 호출하지 않으면 이전 커밋의 닫힘 상태를 유지합니다.
+|===
+
+실행 메서드:: `byte[] call() throws IOException, HgLockException`. 새로 수정된 커밋의 노드 id를 반환합니다. 빈 저장소이면 `IllegalStateException`("No commits exist to amend")을 던집니다.
+
+잠금과 dirstate::
+* `lockWorkingCopy(timeout)`을 먼저, 그다음 `lockStore(timeout)`을 잡습니다. timeout은 `repository.resolvePushLockTimeoutMs()`이며 명령이 끝날 때 둘 다 풉니다.
+* 이 잠금 안에서 `CommitCommand`를 실행합니다. `AmendCommand` 소스에서는 그 `CommitCommand`에 잠금 생략을 지시하지 않으며, 중첩 잠금 호출이 재진입 가능한지는 읽은 소스에서 확인되지 않았습니다.
+* `openChangingFiles`, `openChangingParents`, `changingFiles`, `changingParents`는 `AmendCommand`가 직접 호출하지 않습니다. dirstate 컨텍스트는 중첩된 `CommitCommand`에서 나옵니다(Commit 참고).
+* `HgObsMarker.writeMarker(storeDir, oldNode, [newNode], "amend")`로 `.hg/store/obsstore`에 마커를 씁니다.
+
+hg 원본과 다른 점:: `hg commit --amend`(`cmdutil.amend()`)를 따릅니다. 새 커밋은 이전 커밋의 자식이 아니라 같은 부모를 가진 형제가 됩니다(`base = old.p1()`). 작성자, 메시지, 브랜치 닫힘 여부의 기본값은 이전 커밋의 값입니다(javadoc은 hg 7.2.2로 검증했다고 적습니다). 항상 changelog의 마지막 리비전(`count - 1`)을 수정합니다.
+
+[source,java]
+----
+byte[] node = new AmendCommand(repo)
+    .setMessage("Better message")
+    .call();
+----
+
+=== Log
+
+changelog를 읽어 커밋 이력을 최신순으로 반환합니다. `hg log`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setPatterns(String...)` |`hg log [FILE]...`: 이 패턴에 맞는 파일을 건드린 리비전만 남깁니다.
+|`setInclude(String...)` |`hg log -I`입니다.
+|`setExclude(String...)` |`hg log -X`입니다.
+|`setCwd(String)` |저장소 루트 기준 현재 디렉터리이며 상대 패턴에 쓰입니다.
+|`setTreeFilter(HgTreeFilter)` |필터가 받아들이는 변경 파일이 하나 이상 있는 커밋만 남깁니다. null은 무시됩니다.
+|`setFollowAncestors(boolean)` |`setStartRev`로 지정한 리비전의 조상으로 로그를 제한합니다(시작 리비전이 있을 때만 효과가 있습니다).
+|`setStartRev(String)` |`setFollowAncestors`와 `setFollowPath`의 시작 리비전입니다. 기본값은 팁입니다.
+|`setFollowPath(String)` |`hg log --follow <path>`: 파일을 건드린 리비전만 따라 조상을 거슬러 올라가며 이름 변경과 복사 경계를 넘습니다. `setFollowAncestors(true)`를 함께 적용합니다.
+|===
+
+실행 메서드:: `List<HgCommit> call() throws IOException`. `00changelog.i`가 없으면 빈 리스트를 반환합니다. 형식이 잘못된 커밋은 경고 로그를 남기고 건너뜁니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. `call()`은 먼저 `repository.refreshIfChangedOnDisk()`만 호출하여 오래된 changelog-v2 revlog 캐시를 쓰지 않도록 합니다.
+
+hg 원본과 다른 점:: javadoc에 따르면 `setFollowPath`는 hg의 기본 동작처럼 changelog `SD_FILES` 사이드데이터가 아니라 filelog 리비전 0의 `copy`/`copyrev` 메타데이터로 이름 변경을 넘습니다.
+
+[source,java]
+----
+List<HgCommit> log = new LogCommand(repo)
+    .setFollowPath("src/Main.java")
+    .setStartRev("tip")
+    .call();
+----
+
+=== Tip
+
+changelog에서 번호가 가장 큰 리비전을 반환합니다. `hg tip`에 대응합니다.
+
+설정자:: 없습니다.
+
+실행 메서드::
+* `byte[] call() throws IOException`: 팁의 노드 id(20바이트)입니다. 리비전이 없으면 `null`입니다.
+* `int getRevisionNumber() throws IOException`: 팁의 리비전 번호이며 비어 있으면 -1입니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다.
+
+hg 원본과 다른 점:: 팁은 시계 시간이 아니라 리비전 번호 기준이며 hg와 같습니다(javadoc).
+
+[source,java]
+----
+TipCommand tip = new TipCommand(repo);
+byte[] node = tip.call();
+int rev = tip.getRevisionNumber();
+----
+
+=== Heads
+
+저장소의 헤드를 나열합니다. `hg heads`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setBranch(String)` |`hg heads <branch>`: 해당 브랜치의 헤드(같은 브랜치 자식이 없는 리비전)입니다. 알 수 없는 브랜치는 예외 없이 빈 결과가 됩니다.
+|`setIncludeClosed(boolean)` |`hg heads --closed`: `--close-branch`로 닫힌 헤드도 포함합니다. `setTopo(true)`와 함께 쓰면 효과가 없습니다.
+|`setTopo(boolean)` |`hg heads --topo`: 브랜치를 무시하고 저장소 전체에서 자식이 없는 위상적 리프만 반환합니다. 기본값은 false입니다.
+|===
+
+실행 메서드:: `List<String> call() throws IOException`. 헤드 노드 id를 16진수로, 리비전이 높은 순으로 반환합니다. 빈 저장소이면 빈 리스트입니다.
+
+동작 모드:: `setBranch`가 있으면 그 브랜치의 헤드입니다. 없고 `setTopo(true)`이면 위상적 리프이며, 둘 다 아니면(기본) 일반 `hg heads`처럼 모든 브랜치의 열린 헤드입니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다.
+
+hg 원본과 다른 점:: 알 수 없는 브랜치에 대해 실제 hg는 CLI 계층에서 `unknown revision '<name>'`으로 중단하지만 이 API는 빈 리스트를 반환합니다(javadoc). 기본 모드는 일반 `hg heads`를 재현합니다(javadoc에 따르면 hg 7.2.2로 검증).
+
+[source,java]
+----
+List<String> heads = new HeadsCommand(repo)
+    .setBranch("default")
+    .setIncludeClosed(true)
+    .call();
+----
+
+=== Parents
+
+작업 디렉터리의 부모 리비전을 반환합니다. `hg parents`에 대응합니다.
+
+설정자:: 없습니다.
+
+실행 메서드:: `List<String> call() throws IOException`. null 부모를 제외한 부모 노드 id(16진수)입니다. 보통 1개, 병합 중에는 2개, 새로 만든 빈 저장소에서는 0개입니다. dirstate의 부모를 읽습니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. `repository.getDirstate()`만 읽습니다.
+
+hg 원본과 다른 점:: 소스에 적혀 있지 않습니다.
+
+[source,java]
+----
+List<String> parents = new ParentsCommand(repo).call();
+----
+
+=== Identify
+
+리비전의 한 줄 요약(id, 브랜치, 태그, 북마크)을 반환합니다. `hg identify`(`hg id`)에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(String)` |`hg identify -r REV`: 작업 디렉터리의 부모 대신 고정된 리비전(16진수 접두사, 리비전 번호, `tip`)을 식별합니다. 변경 표시(dirty marker)는 붙지 않습니다.
+|===
+
+실행 메서드:: `String call() throws IOException`. 템플릿 없는 기본 `hg identify`의 출력입니다.
+
+출력 규칙(javadoc)::
+* id는 작업 사본 부모의 12자리 짧은 노드이며 병합 중에는 `+`로 잇고, 작업 사본이 변경된 상태(수정, 추가, 삭제 파일 또는 미해결 병합)이면 끝에 `+`를 붙입니다. 빈 저장소는 `000000000000`입니다.
+* 브랜치는 `default`가 아닐 때만 괄호 안에 표시합니다.
+* 모든 부모의 태그와 북마크를 알파벳순으로 정렬하여 `/`로 잇습니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. 리비전을 주지 않으면 dirstate 부모를 읽고 `StatusCommand`를 실행하여 변경 표시를 계산합니다. 태그는 `TagsCommand`, 북마크는 `BookmarkCommand`에서 가져옵니다.
+
+hg 원본과 다른 점:: javadoc은 출력을 hg 7.2.2로 검증했다고 적습니다. `-r`을 쓰면 브랜치는 작업 디렉터리가 아니라 그 리비전 자체의 브랜치입니다. 해석되지 않는 리비전은 null 노드로 취급되어 `000000000000`으로 표시됩니다(javadoc이 아니라 코드에서 확인).
+
+[source,java]
+----
+String id = new IdentifyCommand(repo)
+    .setRevision("tip")
+    .call();
+----
+
+=== Describe
+
+작업 디렉터리의 부모를 가장 가까운 조상 태그 기준으로 설명합니다. 대응하는 hg 명령은 없습니다. 출력 형식은 Git describe 방식(`tag-distance-gShortNode`)이며 javadoc은 대응 hg 명령을 밝히지 않습니다.
+
+설정자:: 없습니다.
+
+실행 메서드:: `String call() throws IOException`. 커밋이 없으면 `empty-repository`, 현재 리비전에 태그가 있으면 태그 이름, 그 외에는 `tag-distance-g<12자리 16진수>`, 조상 태그를 찾지 못하면 `v0.0-<distance>-g<12자리 16진수>`를 반환합니다. 태그는 저장소 디렉터리의 `.hgtags`에서 읽고 첫 번째 부모를 따라 거슬러 올라갑니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. 먼저 `repository.refreshIfChangedOnDisk()`를 호출합니다(코드 주석은 외부에서 리비전이 추가된 뒤 changelog-v2 revlog를 오래된 상태로 읽는 문제를 막기 위해서라고 설명합니다). dirstate의 부모 1을 읽습니다.
+
+hg 원본과 다른 점:: 소스에 hg 원본은 없으며 형식은 Git에서 가져왔습니다.
+
+[source,java]
+----
+String desc = new DescribeCommand(repo).call();
+----
+
+=== Annotate
+
+파일의 줄 단위 blame을 계산합니다. `hg annotate`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setPath(String)` |주석을 달 파일입니다. `call()`에 필수이며 null이면 `IllegalStateException`입니다.
+|`setRevision(int)` |filelog 리비전 번호입니다(changelog 리비전이 아닙니다). 기본값 -1은 filelog의 마지막 리비전입니다.
+|`setPatterns(String...)` |`hg annotate [FILE]...`: 주석을 달 파일이며 `callSelected`가 사용합니다.
+|`setInclude(String...)` |`hg annotate -I`입니다.
+|`setExclude(String...)` |`hg annotate -X`입니다.
+|`setCwd(String)` |저장소 루트 기준 현재 디렉터리이며 상대 패턴에 쓰입니다.
+|===
+
+실행 메서드::
+* `List<BlameLine> call() throws IOException`. 각 `BlameLine`은 `getLineNumber()`(1부터 시작), `getRevision()`(그 줄을 도입한 changelog 리비전), `getAuthor()`, `getContent()`를 가집니다. 리비전이 범위를 벗어나면 빈 리스트를 반환하고, filelog가 없으면 `HgRevisionNotFoundException`을 던집니다.
+* `Map<String, List<BlameLine>> callSelected(String changeset) throws IOException`: 패턴이 고른 모든 파일에 대한 `hg annotate -r REV [FILE]...`입니다(changeset이 `null`이면 팁). 패턴이 하나 이상 필요하며 없으면 `HgValidationException("invalid arguments")`, 지정한 파일이 그 리비전에 없으면 `HgValidationException`, 리비전을 해석할 수 없으면 `HgRevisionNotFoundException`을 던집니다. 결과는 경로순입니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다.
+
+hg 원본과 다른 점:: hg처럼 기본적으로 이름 변경과 복사 경계를 넘어 추적하며, changelog 사이드데이터가 아니라 filelog 리비전 0의 `copy`/`copyrev` 메타데이터를 사용합니다. LFS 내용은 diff 전에 실제 바이트로 풀어 줍니다. hg와 같이 끝의 개행이 빈 줄을 추가로 만들지 않습니다.
+
+[source,java]
+----
+List<AnnotateCommand.BlameLine> lines = new AnnotateCommand(repo)
+    .setPath("src/Main.java")
+    .call();
+----
+
+=== Grep
+
+파일 내용에서 정규식을 검색합니다. `hg grep`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setQuery(String)` |정규식입니다(Java `Pattern`, 줄마다 `find()`로 비교). null이나 빈 문자열이면 `call()`은 빈 리스트를 반환합니다.
+|`setCaseInsensitive(boolean)` |대소문자를 구분하지 않습니다. 기본값은 false입니다.
+|`setPatterns(String...)` |`hg grep PATTERN [FILE]...`: 이 패턴이 고른 파일만 검색합니다.
+|`setInclude(String...)` |`hg grep -I`입니다.
+|`setExclude(String...)` |`hg grep -X`입니다.
+|`setCwd(String)` |저장소 루트 기준 현재 디렉터리이며 상대 패턴에 쓰입니다.
+|`setRevisions(String)` |`hg grep -r REVS`: 파일의 이력이 아니라 주어진 리비전(`all()`, `0:2` 같은 리비전 집합) 각각에 있는 파일 상태를 검색합니다. 바이너리 파일은 건너뜁니다. 지정하지 않으면 모든 파일의 전체 이력을 검색합니다.
+|===
+
+실행 메서드:: `List<GrepResult> call() throws IOException`. `GrepResult`의 공개 필드는 `path`, `hexNode`(파일 리비전 노드이며 `setRevisions` 모드에서는 빈 문자열), `lineNumber`(1부터 시작), `lineContent`, `linkRevision`(파일 리비전을 도입한 체인지셋이며 `setRevisions` 모드에서는 검색한 리비전, 알 수 없으면 -1)입니다. 잘못된 정규식은 표준 `PatternSyntaxException`을 던집니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다.
+
+hg 원본과 다른 점:: `setRevisions` 없이 쓰면 추적 중인 모든 filelog의 모든 리비전을 훑습니다(`fncache`로 열거하고, `fncache`가 없는 fileindex-v1 또는 general-v2 저장소에서는 `store/data`를 직접 순회합니다). LFS 내용은 `HgLfsFactory`로 읽습니다.
+
+[source,java]
+----
+List<GrepCommand.GrepResult> hits = new GrepCommand(repo)
+    .setQuery("TODO")
+    .setCaseInsensitive(true)
+    .setRevisions("all()")
+    .call();
+----
+
+=== Cat
+
+리비전의 파일 내용을 반환합니다. `hg cat`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setFile(String)` |파일의 저장소 상대 경로입니다. `call()`에 필수입니다.
+|`setRevision(String)` |리비전입니다(`NodeIdUtil.resolveRevision`이 받는 형식).
+|`setRevision(NodeId)` |노드 id로 리비전을 지정합니다.
+|`setPatterns(String...)` |`hg cat [FILE]...`: 출력할 파일이며 `callAll`이 사용합니다.
+|`setInclude(String...)` |`hg cat -I`입니다.
+|`setExclude(String...)` |`hg cat -X`입니다.
+|`setCwd(String)` |저장소 루트 기준 현재 디렉터리이며 상대 패턴에 쓰입니다.
+|===
+
+실행 메서드::
+* `byte[] call() throws IOException`: 파일 내용입니다. 파일이 지정되지 않으면 `IllegalStateException`, 리비전을 해석할 수 없거나 그 리비전에서 파일이 추적되지 않거나 filelog에 그 파일 버전이 없으면 `HgRevisionNotFoundException`, filelog가 없으면 `HgCorruptDataException`을 던집니다.
+* `Map<String, byte[]> callAll() throws IOException`: 패턴이 고른 리비전의 모든 파일에 대해 경로와 내용을 경로순으로 반환합니다. 패턴이 없으면 `HgValidationException("invalid arguments")`를 던집니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. `call()`은 `repository.clearRevlogCache()`로 시작합니다.
+
+hg 원본과 다른 점:: 내용을 `HgLfsFactory`로 읽으므로 LFS 파일은 실제 바이트를 반환합니다. 리비전을 지정하지 않았을 때의 기본값은 `NodeIdUtil.resolveRevision(changelog, null)`이 정하며, `CatCommand` 소스에는 그 기본값이 적혀 있지 않습니다.
+
+[source,java]
+----
+byte[] data = new CatCommand(repo)
+    .setFile("README.md")
+    .setRevision("tip")
+    .call();
+----
+
+=== Files
+
+추적 중인 파일을 나열합니다. `hg files`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(String)` |나열할 리비전입니다(번호, 16진수 id 또는 접두사, `tip`). 지정하지 않으면 dirstate의 작업 사본 추적 목록을 나열합니다.
+|`setRevision(NodeId)` |노드 id로 리비전을 지정합니다.
+|`setTreeFilter(HgTreeFilter)` |경로에 대한 명시적 트리 필터입니다. null이면 `HgTreeFilter.ALL`로 되돌립니다.
+|`setPattern(String...)` |디렉터리 접두사 의미를 가진 glob 패턴입니다(`SparsePathFilter` 사용). 인자가 `set:EXPR` 하나이면 fileset으로 취급합니다.
+|`setFileset(String)` |`hg files "set:EXPR"`: fileset 표현식입니다(`MiniFileset` 문법과 `lfs()`).
+|`setPatterns(String...)` |`hg files [FILE]...`: 패턴입니다(기본 `relpath`), `kind:pattern`과 `set:EXPRESSION`도 받습니다.
+|`setInclude(String...)` |`hg files -I`입니다.
+|`setExclude(String...)` |`hg files -X`입니다.
+|`setCwd(String)` |저장소 루트 기준 현재 디렉터리이며 상대 패턴에 쓰입니다.
+|===
+
+실행 메서드:: `List<String> call() throws IOException`. `NodeIdUtil.UTF8_STRING_COMPARATOR`로 정렬한 슬래시 구분 경로입니다. 리비전을 해석할 수 없으면 `HgRevisionNotFoundException`을 던지고, 커밋이 없는 저장소는 빈 리스트를 반환합니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. 리비전을 주지 않으면 dirstate 항목을 읽고 상태 `r`(삭제됨)은 제외하며, 추가된 파일은 포함합니다.
+
+hg 원본과 다른 점:: javadoc에 따르면 기본값은 팁 커밋이 아니라 작업 사본을 기술하며, 이는 실제 `hg files`와 같습니다.
+
+[source,java]
+----
+List<String> files = new FilesCommand(repo)
+    .setRevision("tip")
+    .setPattern("src/**")
+    .call();
+----
+
+=== Locate
+
+패턴에 이름이 맞는 버전 관리 대상 파일을 나열합니다. `hg locate`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setPattern(String)` |`relglob` 패턴 하나입니다. 어느 디렉터리에서나 맞는 루트 없는 glob이며 `*`, `**`, `?`만 지원합니다. null이나 빈 문자열이면 필터링하지 않습니다.
+|`setPatterns(String...)` |`hg locate [PATTERN]...`: 모든 종류의 패턴을 받으며 종류를 붙이지 않은 패턴은 `relglob`입니다.
+|`setInclude(String...)` |`hg locate -I`입니다.
+|`setExclude(String...)` |`hg locate -X`입니다.
+|`setCwd(String)` |저장소 루트 기준 현재 디렉터리이며 상대 패턴에 쓰입니다.
+|`setRevision(String)` |매니페스트를 검색할 리비전입니다. 지정하지 않거나 비어 있으면 dirstate를 검색합니다.
+|===
+
+실행 메서드:: `List<String> call() throws IOException`. `NodeIdUtil.UTF8_STRING_COMPARATOR`로 정렬합니다. 리비전을 해석할 수 없으면 `HgRevisionNotFoundException`을 던집니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. `repository.clearRevlogCache()`로 시작합니다. 리비전을 주지 않으면 dirstate의 모든 항목을 읽습니다.
+
+hg 원본과 다른 점:: javadoc에 적혀 있습니다. `hg files`와 달리 작업 사본 검색은 상태 `r`(삭제했지만 아직 커밋하지 않은) 파일도 포함하며, hg의 `locate`가 그렇게 동작합니다. `[...]` 문자 클래스와 `{a,b}` 대안은 변환되지 않고 문자 그대로 취급됩니다.
+
+[source,java]
+----
+List<String> found = new LocateCommand(repo)
+    .setPattern("*.txt")
+    .setRevision("tip")
+    .call();
+----
+
+=== Manifest
+
+리비전의 매니페스트 파일을 노드 id와 플래그와 함께 나열합니다. `hg manifest`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(String)` |리비전입니다(번호, 16진수 id 또는 접두사, `tip`). 지정하지 않거나 비어 있으면 작업 디렉터리의 첫 번째 부모를 씁니다.
+|`setDebug(boolean)` |`--debug` 형식 출력 여부를 기억해 두는 참고용 플래그입니다. `call()`의 반환값은 바뀌지 않습니다. `isDebug()`로 읽습니다.
+|===
+
+실행 메서드:: `List<ManifestEntry> call() throws IOException`. 각 `ManifestEntry`는 `getPath()`, `getNodeHex()`(40자리 16진수), `isExecutable()`, `isSymlink()`를 가집니다. 커밋이 없거나 체크아웃된 리비전이 없으면 빈 리스트입니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. 리비전을 주지 않으면 dirstate 부모 1을 읽습니다. `ManifestTreeIterator`로 읽습니다.
+
+hg 원본과 다른 점:: 서식을 입힌 텍스트가 아니라 데이터를 반환하며 `--debug` 형식 출력은 호출자에게 맡깁니다. hg와 같이 빈 저장소는 오류가 아니라 빈 결과입니다(javadoc).
+
+[source,java]
+----
+List<ManifestCommand.ManifestEntry> entries = new ManifestCommand(repo)
+    .setRevision("0")
+    .call();
+----
+
+=== Tree
+
+리비전의 모든 파일을 노드 id와 모드와 함께 나열합니다. 대응하는 hg 명령은 없습니다. javadoc은 리비전의 파일 구조를 나열한다고만 적습니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(int)` |changelog 리비전 번호입니다. 기본값 -1은 팁입니다.
+|`setNodeId(byte[])` |노드 id로 리비전을 지정합니다. `setRevision`보다 우선합니다.
+|`setNodeId(NodeId)` |같은 기능이며 `NodeId`를 받습니다.
+|===
+
+실행 메서드:: `List<TreeEntry> call() throws IOException`. 각 `TreeEntry`는 `getPath()`, `getNodeId()`(16진수), `getNode()`, `getMode()`(일반 `0644`, 실행 `0755`, 심볼릭 링크 `0120000`)를 가집니다. changelog가 없거나 리비전이 범위를 벗어나면 빈 리스트를 반환합니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다.
+
+hg 원본과 다른 점:: 소스에 hg 원본이 명시되어 있지 않습니다.
+
+[source,java]
+----
+List<TreeCommand.TreeEntry> tree = new TreeCommand(repo)
+    .setRevision(0)
+    .call();
+----
+
+=== Revset
+
+revset 표현식을 평가하여 일치하는 체인지셋을 반환합니다. javadoc은 특정 hg 명령을 밝히지 않으며, hg의 revset 조회(예: `hg log -r`)를 따른다는 것은 소스에 적힌 내용이 아니라 추정입니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setExpression(String)` |revset 표현식이며 예를 들어 `all()`이나 `parents(tip)`입니다. 필수이며 null이거나 비어 있으면 `call()`이 `IllegalArgumentException`을 던집니다.
+|===
+
+실행 메서드:: `List<String> call() throws IOException`. 16진수 노드 id입니다. `all()`/`all`과 `tip`은 직접 처리하고, `parents(X)`는 상징 표현 X를 먼저 노드로 해석하며, 그 밖의 표현식은 `HgRevsetEngine.query`가 처리합니다. 엔진이 예외를 던지면 표현식을 단일 리비전 식별자로 다시 시도하고, 해석되지 않으면 빈 리스트가 됩니다.
+
+잠금과 dirstate:: 잠금이 없고 changing_files/changing_parents도 쓰지 않습니다. 먼저 `repository.refreshIfChangedOnDisk()`를 호출합니다.
+
+hg 원본과 다른 점:: 엔진 실패 시 단일 리비전 조회로 대체하는 동작은 이 클래스 고유입니다. 지원하는 revset 언어는 `HgRevsetEngine`의 것이며 이 레퍼런스를 위해 읽지 않았습니다.
+
+[source,java]
+----
+List<String> hexes = new RevsetCommand(repo)
+    .setExpression("parents(tip)")
+    .call();
+----
+
+=== Bisect
+
+이력에서 이진 탐색을 수행합니다. 좋은 리비전과 나쁜 리비전 사이에서 다음에 테스트할 리비전을 고르고 체크아웃합니다. `hg bisect`에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setGood(byte[])` |좋은 것으로 알려진 리비전의 노드 id입니다. 필수입니다.
+|`setBad(byte[])` |나쁜 것으로 알려진 리비전의 노드 id입니다. 필수입니다.
+|===
+
+실행 메서드:: `byte[] next() throws IOException, HgLockException`. 다음 후보의 노드 id를 반환합니다. good이나 bad가 없으면 `IllegalStateException`을 던지고, 노드가 changelog에 없거나 good과 bad가 같거나 둘 사이에 위상적 경로가 없으면 `IOException`("Bisect error: ...")을 던집니다.
+
+잠금과 dirstate::
+* `repository.lockWorkingCopy(timeout)`만 잡습니다(저장소 잠금은 없음). timeout은 `repository.resolvePushLockTimeoutMs()`이며 저장소를 처음 읽기 전에 잡고 명령이 끝날 때 풉니다.
+* 이후 `refreshIfChangedOnDisk()`를 호출하고 후보의 파일을 작업 디렉터리에 쓴 다음, `repository.changingParents(() -> ...)`로 dirstate 부모를 설정합니다(부모 1은 후보, 부모 2는 null). 마지막으로 `repository.setBranch(...)`와 `clearRevlogCache()`를 호출합니다.
+* `changingFiles`와 `openChangingFiles`는 호출하지 않습니다.
+
+hg 원본과 다른 점:: 후보 선택은 `hbisect.bisect()`를 따릅니다(남은 DAG를 가장 잘 반으로 나누는 후보를 고르고 루트 쪽 끝점은 제외). javadoc에 따르면 hg의 "poisoning" 최적화는 결과를 바꾸지 않으므로 생략했습니다. `next()`만 존재하며, 이 클래스 소스에는 good/bad/skip/reset 상태 관리가 없습니다.
+
+[source,java]
+----
+byte[] next = new BisectCommand(repo)
+    .setGood(goodNode)
+    .setBad(badNode)
+    .next();
+----
+
+=== SidedataChangedFiles
+
+커밋된 체인지셋에 저장된 변경 파일 사이드데이터 기록을 읽습니다. `hg debugchangedfiles REV`(`--compute` 없이)에 대응합니다.
+
+[cols="2,5"]
+|===
+|메서드 |의미
+
+|`setRevision(int)` |조회할 changelog 리비전 번호입니다(0부터 시작). 필수이며 기본값 -1이면 `call()`이 `IllegalStateException`을 던집니다.
+|===
+
+실행 메서드:: `ChangingFiles call() throws IOException`. 리비전의 `SD_FILES` 사이드데이터를 디코딩합니다. 리비전이 없으면 `IllegalArgumentException`을 던집니다. 저장소에 copies-sidedata가 없으면(일반 v1 changelog, 또는 해당 요구 사항이 없는 v2) hg와 같이 `ChangingFiles.empty()`를 반환합니다.
+
+잠금과 dirstate:: 잠금이 없습니다. `CopyCommand`의 커밋된 이력 쪽 짝이며 dirstate도 changing_files/changing_parents도 쓰지 않습니다. 먼저 `repository.refreshIfChangedOnDisk()`를 호출합니다.
+
+hg 원본과 다른 점:: copies-sidedata 지원으로 changelog를 쓴 저장소(changelog-v2와 `exp-copies-sidedata-changeset` 요구 사항)에서만 동작합니다. 저장된 데이터만 읽고 다시 계산하지 않습니다.
+
+[source,java]
+----
+ChangingFiles files = new SidedataChangedFilesCommand(repo)
+    .setRevision(3)
+    .call();
+----

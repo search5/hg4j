@@ -29,10 +29,19 @@ public class StripCommand {
     private final HgRepository repository;
     private String revision;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to strip; must not be {@code null}
+     */
     public StripCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision to strip; it and all its descendants are removed.
+     * @param revision a revision identifier or revset; use {@link #addRevision} for more of them
+     * @return {@code this}
+     */
     public StripCommand setRevision(String revision) {
         this.revision = revision;
         return this;
@@ -79,12 +88,6 @@ public class StripCommand {
         return this;
     }
 
-    /**
-     * Executes SCM strip/rollback operation by physically truncating `.i` and `.d` revlogs
-     * at target revision offset and resetting working copy parents.
-     *
-     * @throws IOException if truncation or workspace restoration fails
-     */
     private final List<String> moreRevisions = new ArrayList<>();
     private final Set<String> bookmarkNames = new java.util.TreeSet<>();
     private boolean soft;

@@ -185,9 +185,29 @@ public final class ChangingFiles {
 
     /** Every path this revision touched (added/removed/merged/salvaged/touched), NOT including untouched copy sources. */
     public Set<String> getTouched() { return touched; }
+    /**
+     * Paths this revision added. The returned set is unmodifiable.
+     *
+     * @return the added paths
+     */
     public Set<String> getAdded() { return added; }
+    /**
+     * Paths this revision removed. The returned set is unmodifiable.
+     *
+     * @return the removed paths
+     */
     public Set<String> getRemoved() { return removed; }
+    /**
+     * Paths this revision recorded as merged (their content was merged from both parents). The returned set is unmodifiable.
+     *
+     * @return the merged paths
+     */
     public Set<String> getMerged() { return merged; }
+    /**
+     * Paths this revision recorded as salvaged (kept although one side removed them). The returned set is unmodifiable.
+     *
+     * @return the salvaged paths
+     */
     public Set<String> getSalvaged() { return salvaged; }
     /** Destination path -&gt; source path, for destinations copied from the first parent (p1). */
     public Map<String, String> getCopiedFromP1() { return copiedFromP1; }

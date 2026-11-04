@@ -20,12 +20,26 @@ public final class MiniFileset {
     /** A compiled expression: does a file of this path and size match? */
     @FunctionalInterface
     public interface Matcher {
+        /**
+         * Tells whether a file matches the expression.
+         *
+         * @param path the repository-relative path of the file
+         * @param size the size of the file content in bytes
+         * @return {@code true} if the file matches
+         */
         boolean matches(String path, long size);
     }
 
     private MiniFileset() {
     }
 
+    /**
+     * Compiles an expression; {@code lfs()} is an unknown identifier.
+     *
+     * @param text the expression, for example {@code size(">10MB") or **.psd}
+     * @return the compiled matcher
+     * @throws HgValidationException if the expression is not valid in this subset of the fileset language
+     */
     public static Matcher compile(String text) throws HgValidationException {
         return compile(text, null);
     }

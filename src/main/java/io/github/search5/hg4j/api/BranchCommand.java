@@ -32,10 +32,21 @@ public class BranchCommand {
     private int changedChangesets;
     private final java.util.List<File> backupBundles = new java.util.ArrayList<>();
 
+    /**
+     * Creates a branch command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public BranchCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the name of the branch to switch the working directory to ({@code hg branch NAME}). The name is stripped of surrounding whitespace. Without a name, {@link #call()} only reports the current branch.
+     *
+     * @param branchName the new branch name
+     * @return {@code this}
+     */
     public BranchCommand setBranchName(String branchName) {
         this.branchName = branchName;
         return this;

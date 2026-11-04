@@ -287,7 +287,7 @@ public final class NodeIdUtil {
      * path (e.g. {@code "dir/b.txt"}).
      *
      * <p>Added 2026-09-05 (backlog #39, requirement-matrix expansion to
-     * Cat/Files/Locate/Grep/Annotate/Manifest) as the counterpart {@link GrepCommand} needs to
+     * Cat/Files/Locate/Grep/Annotate/Manifest) as the counterpart {@link io.github.search5.hg4j.api.GrepCommand} needs to
      * enumerate tracked files without {@code fncache} -- verified against a real {@code
      * hg-rust-7.2.4} {@code format.use-fileindex-v1=yes} repository, whose {@code store/requires}
      * lists {@code store} but neither {@code fncache} nor {@code dotencode}: it has no {@code
@@ -357,6 +357,10 @@ public final class NodeIdUtil {
         return out.toByteArray();
     }
 
+    /**
+     * Orders strings by the unsigned values of their UTF-8 bytes, like Mercurial orders file names; a string that is a prefix of another sorts first.
+     * The result of {@code compare} is the difference of the first differing bytes (or of the lengths), not just -1, 0 or 1. Neither argument may be {@code null}.
+     */
     public static final Comparator<String> UTF8_STRING_COMPARATOR = (s1, s2) -> {
         byte[] b1 = s1.getBytes(StandardCharsets.UTF_8);
         byte[] b2 = s2.getBytes(StandardCharsets.UTF_8);
@@ -371,6 +375,14 @@ public final class NodeIdUtil {
         return b1.length - b2.length;
     };
 
+    /**
+     * Resolves a revision identifier against a changelog. {@code null}, an empty string or {@code "tip"} (any case) mean the last revision;
+     * a decimal number inside the revision range is a revision number; anything else is looked up as a hexadecimal node prefix.
+     * @param changelog the changelog to search
+     * @param revStr the identifier
+     * @return the node id of the revision (as stored in the index record), or {@code null} if the changelog is empty (for tip) or nothing matches
+     * @throws IOException if the prefix matches more than one revision (message "Ambiguous revision identifier") or the index cannot be read
+     */
     public static byte[] resolveRevision(Revlog changelog, String revStr) throws IOException {
         if (revStr == null || revStr.isEmpty() || "tip".equalsIgnoreCase(revStr)) {
             int count = changelog.getRevisionCount();
@@ -394,6 +406,13 @@ public final class NodeIdUtil {
         return matches.get(0);
     }
 
+    /**
+     * Computes a revlog node id: SHA-1 over the two parent node ids in ascending byte order followed by the content.
+     * @param content the stored text of the revision
+     * @param p1 the first parent node id; {@code null} means the null node; only the first 20 bytes are used
+     * @param p2 the second parent node id; {@code null} means the null node; only the first 20 bytes are used
+     * @return a new 32-byte array, the size of the node field of a revlog index record: the first 20 bytes are the hash, the other 12 are zero
+     */
     public static byte[] computeNodeId(byte[] content, byte[] p1, byte[] p2) {
         byte[] p1Node = new byte[20];
         if (p1 != null) {

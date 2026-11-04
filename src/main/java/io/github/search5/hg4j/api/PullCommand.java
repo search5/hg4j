@@ -40,15 +40,30 @@ public class PullCommand {
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
     private CredentialsProvider credentialsProvider;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to pull into; must not be {@code null}
+     */
     public PullCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the credentials used to authenticate to the remote.
+     * @param credentialsProvider the provider, or {@code null} (the default) to not set one on the connection
+     * @return {@code this}
+     */
     public PullCommand setCredentialsProvider(CredentialsProvider credentialsProvider) {
         this.credentialsProvider = credentialsProvider;
         return this;
     }
 
+    /**
+     * Sets the tree filter limiting which paths are pulled (narrow clone support).
+     * @param treeFilter the filter; {@code null} is ignored. By default (and when set to {@code HgTreeFilter.ALL}) the
+     *         underlying fetch uses the repository's own narrowspec if it has one
+     * @return {@code this}
+     */
     public PullCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -56,6 +71,11 @@ public class PullCommand {
         return this;
     }
 
+    /**
+     * Sets the progress monitor.
+     * @param monitor the monitor to notify; {@code null} is ignored and leaves the current one (initially a no-op monitor)
+     * @return {@code this}
+     */
     public PullCommand setProgressMonitor(ProgressMonitor monitor) {
         if (monitor != null) {
             this.monitor = monitor;
@@ -63,6 +83,12 @@ public class PullCommand {
         return this;
     }
 
+    /**
+     * Sets where to pull from.
+     * @param sourceUrl a URL or a name of a {@code [paths]} entry; {@code null} or empty (the default) means the
+     *         {@code default} path of the repository configuration
+     * @return {@code this}
+     */
     public PullCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;
@@ -110,6 +136,20 @@ public class PullCommand {
         return messages;
     }
 
+    /**
+     * Pulls changesets from the source into this repository.
+     * <p>
+     * The source is the value of {@link #setSource}, or, when that is {@code null} or empty, the {@code default} entry
+     * of {@code [paths]}. A source without {@code ://} that names a {@code [paths]} entry is replaced by that entry's
+     * URL. The working copy lock is held for the whole call (the store lock is taken by the underlying fetch). The work is
+     * delegated to {@link FetchCommand}. Afterwards, if changesets were imported and the first dirstate parent is the
+     * null revision, the dirstate parent is set to the last imported changeset; working copy files are not updated.
+     * {@link #getMessages()} is reset at the start and filled during the call.
+     * @return the node ids (20 bytes each) of the imported changesets, possibly empty
+     * @throws IOException if the connection, the transfer or writing the repository fails
+     * @throws HgLockException if a lock cannot be acquired
+     * @throws IllegalStateException if no source was set and no {@code default} path is configured
+     */
     public List<byte[]> call() throws IOException, HgLockException {
         // 실제 hg 스펙(hg help urls): 소스를 안 주면 paths.default를 쓴다 — 가장 흔한
         // 실사용 형태("그냥 hg pull")인데 2026-09-01 이전에는 여기서 무조건 예외를
@@ -182,6 +222,16 @@ public class PullCommand {
         }
     }
 
+    /**
+     * Applies an already parsed changegroup bundle, waiting for locks as long as the push lock timeout of the repository.
+     * <p>
+     * Equivalent to {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}
+     * with the repository's push lock timeout and no validator.
+     * @param bundle the parsed changegroup bundle to apply
+     * @return the node ids (20 bytes each) of the imported changesets
+     * @throws IOException if reading the bundle or writing the repository fails
+     * @throws HgLockException if a lock cannot be acquired within the timeout
+     */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle) throws IOException, HgLockException {
         return applyBundle(bundle, repository.resolvePushLockTimeoutMs(), null);
     }
@@ -203,6 +253,21 @@ public class PullCommand {
      * post-lock, pre-apply validator to {@link
      * FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}
      * -- see that method's doc (backlog item 38, push-race re-validation).
+     */
+    /**
+     * Applies an already parsed changegroup bundle with a lock timeout and a validator, then sets the dirstate parent.
+     * <p>
+     * Takes the working copy lock (waiting up to {@code lockTimeoutMs}), delegates to
+     * {@link FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)} and,
+     * if changesets were imported and the first dirstate parent is the null revision, moves the dirstate parent to the
+     * last imported changeset. The working copy files are not updated.
+     * @param bundle the parsed changegroup bundle to apply
+     * @param lockTimeoutMs how long to wait for the locks, in milliseconds; {@code 0} fails immediately on contention
+     * @param postLockValidator a check run right after the locks are taken and before anything is written, or
+     *         {@code null} for none; an exception it throws aborts the apply with the repository unchanged
+     * @return the node ids (20 bytes each) of the imported changesets
+     * @throws IOException if reading the bundle or writing the repository fails, or the validator fails
+     * @throws HgLockException if a lock cannot be acquired within the timeout
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
                                      FetchCommand.PostLockValidator postLockValidator) throws IOException, HgLockException {

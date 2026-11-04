@@ -72,15 +72,33 @@ public class GraftCommand {
     private String sourceRevision;
     private final List<HgHook> postGraftHooks = new ArrayList<>();
 
+    /**
+     * Creates a graft command for the given repository.
+     * @param repository the repository whose working copy the graft is applied to
+     */
     public GraftCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revision to graft (the {@code REV} of {@code hg graft REV}). It is resolved against the changelog when {@link #call()} runs.
+     * There is no default; {@link #call()} throws {@link IllegalArgumentException} if no source was set or it is empty.
+     * @param sourceRevision the revision identifier to graft (a revision number, node hex prefix or other form accepted by the changelog lookup)
+     * @return {@code this}
+     */
     public GraftCommand setSource(String sourceRevision) {
         this.sourceRevision = sourceRevision;
         return this;
     }
 
+    /**
+     * Registers a hook that runs after the grafted changeset has been committed. A {@code null} hook is ignored.
+     * <p>The hook receives a context map with the keys {@code "sourceRevision"} (hex node of the graft source),
+     * {@code "graftedNode"} (hex node of the new commit) and {@code "repository"} (the {@link HgRepository}).
+     * Its return value is ignored and an exception thrown by a hook is logged as a warning, not propagated, so a post-graft hook cannot abort the graft.</p>
+     * @param hook the hook to add; {@code null} is ignored
+     * @return {@code this}
+     */
     public GraftCommand registerPostGraftHook(HgHook hook) {
         if (hook != null) {
             postGraftHooks.add(hook);

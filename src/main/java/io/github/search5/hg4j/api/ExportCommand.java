@@ -16,10 +16,21 @@ public class ExportCommand {
     private final HgRepository repository;
     private String revision;
 
+    /**
+     * Creates an export command for the given repository.
+     *
+     * @param repository the repository to operate on; must not be {@code null}
+     */
     public ExportCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the changeset to export ({@code hg export -r}). Required.
+     *
+     * @param revision a revision identifier understood by the revision resolver
+     * @return {@code this}
+     */
     public ExportCommand setRevision(String revision) {
         this.revision = revision;
         return this;

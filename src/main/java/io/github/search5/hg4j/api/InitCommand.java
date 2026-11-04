@@ -56,16 +56,31 @@ public class InitCommand {
     private boolean fileIndexV1 = false;
     private boolean generalV2 = false;
 
+    /**
+     * Sets the directory in which the repository is created (the {@code .hg} directory is created inside it). The directory is created, with parents, if it does not exist. There is no default; {@link #call()} fails if it is not set.
+     * @param directory the working directory of the new repository
+     * @return {@code this}
+     */
     public InitCommand setDirectory(File directory) {
         this.directory = directory;
         return this;
     }
 
+    /**
+     * Sets whether the {@code dirstate-v2} requirement is written ({@code format.use-dirstate-v2}). The default is {@code false}.
+     * @param dirstateV2 {@code true} to use the dirstate-v2 format
+     * @return {@code this}
+     */
     public InitCommand setDirstateV2(boolean dirstateV2) {
         this.dirstateV2 = dirstateV2;
         return this;
     }
 
+    /**
+     * Sets whether the {@code revlog-compression-zstd} requirement is written ({@code format.revlog-compression=zstd}). The default is {@code false}.
+     * @param useZstd {@code true} to record zstd as the revlog compression
+     * @return {@code this}
+     */
     public InitCommand setUseZstd(boolean useZstd) {
         this.useZstd = useZstd;
         return this;
@@ -117,6 +132,14 @@ public class InitCommand {
         return this;
     }
 
+    /**
+     * Creates the repository: the directory, {@code .hg/store}, the {@code .hg/requires} file reflecting the selected options, and the legacy {@code .hg/00changelog.i} guard file.
+     * @return the newly created repository
+     * @throws IllegalStateException if no directory was set
+     * @throws HgValidationException if treemanifest is combined with fileindex-v1 or general-v2
+     * @throws io.github.search5.hg4j.errors.HgRepositoryNotFoundException if a directory or file required for the repository cannot be created or conflicts with an existing non-directory
+     * @throws IOException if writing fails
+     */
     public HgRepository call() throws IOException {
         if (directory == null) {
             throw new IllegalStateException("Repository directory must be specified.");

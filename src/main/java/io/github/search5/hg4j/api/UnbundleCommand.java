@@ -25,15 +25,36 @@ public class UnbundleCommand {
     private final HgRepository repository;
     private File bundleFile;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to apply the bundle to; must not be {@code null}
+     */
     public UnbundleCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the bundle file to apply.
+     * @param bundleFile an existing bundle file; must be set before {@link #call()}
+     * @return {@code this}
+     */
     public UnbundleCommand setBundleFile(File bundleFile) {
         this.bundleFile = bundleFile;
         return this;
     }
 
+    /**
+     * Applies the bundle file to the repository.
+     * <p>
+     * Supports HG10UN, HG10GZ, HG10BZ and HG20 (bundle2) files. Only the store lock is held (waiting up to the
+     * repository's push lock timeout), the working copy is not updated.
+     * @return the node ids (20 bytes each) of the imported changesets
+     * @throws IllegalStateException if no bundle file was set or it does not exist
+     * @throws io.github.search5.hg4j.errors.HgCorruptDataException (an {@link IOException}) if the file header or the
+     *         compression format is not recognized
+     * @throws IOException if reading the file or writing the repository fails
+     * @throws HgLockException if the store lock cannot be acquired
+     */
     public List<byte[]> call() throws IOException, HgLockException {
         if (bundleFile == null || !bundleFile.exists()) {
             throw new IllegalStateException("Bundle file must exist: " + bundleFile);

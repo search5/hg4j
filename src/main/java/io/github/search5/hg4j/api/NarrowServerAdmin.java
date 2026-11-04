@@ -35,6 +35,10 @@ public final class NarrowServerAdmin {
 
     /** The three {@code override-*} checks of {@code --shape-update}. */
     public record UpdateOptions(boolean overrideReshapeAndReshardCheck, boolean overrideFingerprintChangeCheck, boolean overrideSavedConfigsCheck) {
+        /**
+         * Returns options with all three override checks disabled, the default behaviour of {@code --shape-update}.
+         * @return options with every override set to {@code false}
+         */
         public static UpdateOptions strict() {
             return new UpdateOptions(false, false, false);
         }
@@ -48,6 +52,10 @@ public final class NarrowServerAdmin {
     private final HgRepository repository;
     private final List<String> warnings = new ArrayList<>();
 
+    /**
+     * Creates the administration commands for the given server repository.
+     * @param repository the server repository; its commands throw {@link io.github.search5.hg4j.errors.HgValidationException} if it is narrowed
+     */
     public NarrowServerAdmin(HgRepository repository) {
         this.repository = repository;
     }

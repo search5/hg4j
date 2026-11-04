@@ -55,6 +55,12 @@ public class CloneCommand {
         return this;
     }
 
+    /**
+     * Sets a monitor that receives progress updates and is polled for cancellation.
+     *
+     * @param monitor the monitor; {@code null} is ignored and the previous monitor (initially a no-op) stays
+     * @return {@code this}
+     */
     public CloneCommand setProgressMonitor(ProgressMonitor monitor) {
         if (monitor != null) {
             this.monitor = monitor;
@@ -62,16 +68,37 @@ public class CloneCommand {
         return this;
     }
 
+    /**
+     * Sets the repository to clone from. Required.
+     *
+     * @param sourceUrl a local path or a remote URL accepted by {@link PullCommand}
+     * @return {@code this}
+     */
     public CloneCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;
     }
 
+    /**
+     * Sets the destination directory. Required. It is created if missing and must be empty if it exists.
+     *
+     * @param directory the directory to create the repository in
+     * @return {@code this}
+     */
     public CloneCommand setDirectory(File directory) {
         this.directory = directory;
         return this;
     }
 
+    /**
+     * Clones the source into the destination directory ({@code hg clone}): initializes a repository there, records the source as the {@code default} path, brings in the changesets (by copying the store of a local source, or by pulling), checks out the tip into the working copy and recursively clones hg subrepositories declared there. Holds the destination working copy lock throughout.
+     *
+     * @return the new repository; the caller must close it. When the source has no changesets the repository is returned empty, without a checkout.
+     * @throws IllegalStateException if the source or the directory was not set
+     * @throws io.github.search5.hg4j.errors.HgValidationException if the destination directory exists and is not empty
+     * @throws IOException if pulling or the checkout fails
+     * @throws HgLockException if the destination lock cannot be acquired
+     */
     public HgRepository call() throws IOException, HgLockException {
         if (sourceUrl == null || sourceUrl.isEmpty()) {
             throw new IllegalStateException("Remote source URL must be specified.");

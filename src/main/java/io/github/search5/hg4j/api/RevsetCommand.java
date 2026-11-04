@@ -17,10 +17,20 @@ public class RevsetCommand {
     private final HgRepository repository;
     private String expression;
 
+    /**
+     * Creates the command.
+     * @param repository the repository to query; must not be {@code null}
+     */
     public RevsetCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the revset expression.
+     * @param expression the revset (for example {@code all()}, {@code tip} or {@code parents(tip)}); must be non-null
+     *         and non-empty before {@link #call()}
+     * @return {@code this}
+     */
     public RevsetCommand setExpression(String expression) {
         this.expression = expression;
         return this;

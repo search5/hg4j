@@ -32,14 +32,30 @@ public final class Shape {
         return names;
     }
 
+    /**
+     * Returns the normalized include/exclude tree of this shape.
+     *
+     * @return the root node, never {@code null}
+     */
     public ShardTreeNode tree() {
         return tree;
     }
 
+    /**
+     * Creates a matcher over this shape's tree.
+     *
+     * @return a new matcher that selects the files the shape includes
+     */
     public ShapeMatcher matcher() {
         return new ShapeMatcher(tree);
     }
 
+    /**
+     * Computes the fingerprint that identifies this shape's set of files.
+     *
+     * @return the {@link Fingerprint.Kind#SHAPE} fingerprint of the shape's tree
+     * @throws HgValidationException if the tree's patterns block cannot be built (a path of 32768 bytes or more)
+     */
     public Fingerprint storeFingerprint() throws HgValidationException {
         return tree.fingerprint();
     }
@@ -49,6 +65,11 @@ public final class Shape {
         return tree.serializePatterns();
     }
 
+    /**
+     * Flattens this shape into plain include and exclude path sets.
+     *
+     * @return the include and exclude paths of the tree
+     */
     public ShardTreeNode.Patterns patterns() {
         return tree.flat();
     }

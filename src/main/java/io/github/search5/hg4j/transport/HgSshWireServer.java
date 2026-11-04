@@ -72,6 +72,12 @@ public class HgSshWireServer {
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
+    /**
+     * Creates a server for the given repository. It holds no connection state, so it can serve several
+     * sessions through {@link #handleConnection(InputStream, OutputStream)}. Register hooks before
+     * serving; the hook lists are not synchronized.
+     * @param repository the repository to serve; must not be null
+     */
     public HgSshWireServer(HgRepository repository) {
         this.repository = repository;
     }
@@ -83,7 +89,6 @@ public class HgSshWireServer {
         return this;
     }
 
-    /** Registers a notification-only hook run after an incoming push has been applied — real hg's {@code changegroup}. */
     /**
      * Registers a hook run AFTER the incoming changegroup has been applied, abort-capable: returning {@code false} undoes the push, real hg's
      * {@code pretxnchangegroup} (the hook seen by {@link #registerPreChangegroupHook} runs before anything is written, like {@code prechangegroup}).
@@ -93,6 +98,12 @@ public class HgSshWireServer {
         return this;
     }
 
+    /**
+     * Registers a notification-only hook run after an incoming push has been applied, like real hg's
+     * {@code changegroup} hook.
+     * @param hook the hook to add; must not be null
+     * @return this server
+     */
     public HgSshWireServer registerPostChangegroupHook(HgHook hook) {
         postChangegroupHooks.add(hook);
         return this;

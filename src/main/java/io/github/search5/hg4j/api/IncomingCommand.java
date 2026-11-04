@@ -22,10 +22,19 @@ public class IncomingCommand {
     private final HgRepository repository;
     private String sourceUrl;
 
+    /**
+     * Creates an incoming command for the given repository.
+     * @param repository the local repository to compare against the remote
+     */
     public IncomingCommand(HgRepository repository) {
         this.repository = repository;
     }
 
+    /**
+     * Sets the remote repository to compare with. There is no default; {@link #call()} throws {@link IllegalArgumentException} if it is {@code null} or empty.
+     * @param sourceUrl URL of the remote repository
+     * @return {@code this}
+     */
     public IncomingCommand setSource(String sourceUrl) {
         this.sourceUrl = sourceUrl;
         return this;

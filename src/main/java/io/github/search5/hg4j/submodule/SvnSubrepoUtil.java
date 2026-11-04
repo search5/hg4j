@@ -95,8 +95,11 @@ public final class SvnSubrepoUtil {
     /** Outcome of {@code svn status --xml}, mirroring real hg's {@code svnsubrepo._wcchanged()}
      * return tuple {@code (changes, extchanges, missing)}. */
     public static final class WcStatus {
+        /** Whether the working copy has any change, including one under an external. */
         public final boolean changed;
+        /** Whether a change lies in or under a path reported as an external. */
         public final boolean externalChanged;
+        /** Whether any entry is reported as missing. */
         public final boolean missing;
 
         WcStatus(boolean changed, boolean externalChanged, boolean missing) {

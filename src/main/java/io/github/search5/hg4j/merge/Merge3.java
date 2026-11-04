@@ -10,19 +10,35 @@ import java.util.Arrays;
  */
 public class Merge3 {
 
+    /**
+     * The outcome of a 3-way merge: the merged lines and whether any block conflicted. Instances are plain holders and are not modified by this class afterwards.
+     */
     public static class MergeResult {
         private final boolean conflicted;
         private final List<String> mergedLines;
 
+        /**
+         * Creates a result.
+         * @param conflicted {@code true} if the merged lines contain conflict markers
+         * @param mergedLines the merged lines; the list is kept as given, not copied
+         */
         public MergeResult(boolean conflicted, List<String> mergedLines) {
             this.conflicted = conflicted;
             this.mergedLines = mergedLines;
         }
 
+        /**
+         * Tells whether the merge could not be completed automatically.
+         * @return {@code true} if {@link #getMergedLines()} contains conflict markers
+         */
         public boolean isConflicted() {
             return conflicted;
         }
 
+        /**
+         * Returns the lines of the merge result, including conflict markers for blocks that conflicted.
+         * @return the merged lines, as passed to the constructor
+         */
         public List<String> getMergedLines() {
             return mergedLines;
         }

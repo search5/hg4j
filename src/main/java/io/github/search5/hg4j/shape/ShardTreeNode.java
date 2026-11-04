@@ -37,14 +37,29 @@ public final class ShardTreeNode {
         this.children = children;
     }
 
+    /**
+     * Returns the node's path.
+     *
+     * @return the repository-relative path, {@code /} separated; the empty string for the root
+     */
     public String path() {
         return path;
     }
 
+    /**
+     * Tells whether the files under this node's path are included.
+     *
+     * @return {@code true} if included, {@code false} if excluded
+     */
     public boolean included() {
         return included;
     }
 
+    /**
+     * Returns the nested nodes.
+     *
+     * @return the immutable list of child nodes in tree order; empty for a leaf
+     */
     public List<ShardTreeNode> children() {
         return children;
     }

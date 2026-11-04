@@ -54,6 +54,11 @@ public final class StoreShards {
             return topLevel;
         }
 
+        /**
+         * Creates a matcher over the shard's own paths.
+         *
+         * @return a new matcher
+         */
         public ShapeMatcher matcher() {
             return fake.matcher();
         }
@@ -63,6 +68,11 @@ public final class StoreShards {
             return fake.storeFingerprint().asShard();
         }
 
+        /**
+         * Returns the shard's name.
+         *
+         * @return the shard name
+         */
         public String name() {
             return fake.names().get(0);
         }
@@ -353,6 +363,11 @@ public final class StoreShards {
 
     // ---------------------------------------------------------------- shapes
 
+    /**
+     * Returns the validated shards.
+     *
+     * @return an unmodifiable snapshot of the shards by name, sorted by name
+     */
     public Map<String, Shard> shards() {
         return java.util.Collections.unmodifiableMap(new TreeMap<>(shards));
     }

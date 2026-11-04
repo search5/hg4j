@@ -19,6 +19,11 @@ import java.util.Set;
 public class GcCommand {
     private final HgRepository repository;
 
+    /**
+     * Creates a garbage-collection command for the given repository.
+     * <p>Nothing is read or modified until {@link #call()} is invoked.</p>
+     * @param repository the repository whose store is to be compacted
+     */
     public GcCommand(HgRepository repository) {
         this.repository = repository;
     }

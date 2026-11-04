@@ -69,7 +69,26 @@ Status status = Hg.status(repo).call();
 |`Sign`, `Sigs`, `SigCheck`, `Subrepo`, `LfsUpload`
 |===
 
-전송은 로컬 경로, HTTP(S), SSH를 지원합니다. `[auth]` 설정은 401 응답을 받은 뒤에 보내고, 와이어 프로토콜의 서버 쪽(`HgHttpWireServer`, `HgSshWireServer`)도 제공합니다. 와이어 프로토콜은 버전 1만 구현되어 있고 버전 2는 제거했습니다.
+전송은 로컬 경로, HTTP(S), SSH를 지원합니다. `[auth]` 설정은 401 응답을 받은 뒤에 보내고, 와이어 프로토콜의 서버 쪽(`HgHttpWireServer`, `HgSshWireServer`)도 제공합니다. 와이어 프로토콜은 버전 1이며 HTTP의 버전 2는 제거했습니다. SSH 클라이언트에는 버전 2로 올리는 실험적 경로가 있지만, JVM 속성 `hg4j.ssh.v2.enabled=true`를 주지 않으면 꺼져 있습니다.
+
+== 명령 레퍼런스
+아래 각 명령은 설정자, 실행 메서드, 잡는 잠금, 소스에 적힌 Mercurial과의 차이를 설명합니다. 모든 내용은 `api` 패키지 소스에서 가져왔으며, 항목이 없으면 소스에 적혀 있지 않다는 뜻입니다.
+
+=== 작업 사본 명령
+
+include::reference/workingcopy.adoc[leveloffset=+1]
+
+=== 이력 명령
+
+include::reference/history.adoc[leveloffset=+1]
+
+=== 이력 재작성과 이름 명령
+
+include::reference/rewriting.adoc[leveloffset=+1]
+
+include::reference/exchange.adoc[leveloffset=+1]
+
+include::reference/maintenance.adoc[leveloffset=+1]
 
 [[locking]]
 == 4. 잠금과 트랜잭션
@@ -118,12 +137,62 @@ dirstate-v2는 Mercurial과 같게 저장합니다. docket 파일(`dirstate`)이
 * 빈 shard 이름으로 `store_shape`를 요청하면 원본처럼 응답이 없습니다(원본은 실패합니다).
 * 원본을 따라서 호출하는 쪽이 알아챌 수 있는 동작: `rebase --abort`, `unshelve --abort`, 충돌한 `backout` 뒤에 `.orig` 파일이 남습니다. evolution이 꺼진 `rebase`는 원본 변경집합을 제거합니다. 다른 이력 계통에 있는 브랜치 이름을 다시 쓰려면 `-f`가 필요합니다. `phase`가 더 높은 단계로의 이동을 거부하면 종료 코드 1과 `cannot move N changesets to a higher phase, use --force` 메시지를 냅니다. `sign`은 `.hgsigs`만 커밋합니다.
 
+== 호출하는 쪽에 필요한 API 변경
+아래 변경은 이전 API로 작성한 코드에서 조치가 필요합니다. `HgLockException`은 검사 예외(`HgException`이 `Exception`을 상속)이므로, 바뀐 메서드를 호출하는 쪽은 잡거나 선언해야 합니다.
+
+[cols="2,3,4"]
+|===
+|대상 |변경 |조치
+
+|`BisectCommand.next()`, `BookmarkCommand.call()`, `BranchCommand.call()`, `CensorCommand.call()`, `GcCommand.call()`, `RecoverCommand.call()`, `ResolveCommand.call()`, `RollbackCommand.call()`, `VerifyCommand.call()`, `Hg.rollback()`
+|`throws HgLockException`을 선언합니다(잠금을 스스로 잡습니다).
+|`HgLockException`을 잡거나 선언합니다. 하위 클래스 `HgAbandonedTransactionException`은 중단된 트랜잭션의 저널이 발견되었다는 뜻입니다.
+
+|`HgRepository.lockStore(int)`
+|중단된 트랜잭션을 더 이상 복구하지 않습니다. 다른 잠금 보유자가 남긴 저널이 있으면 `HgAbandonedTransactionException`을 던집니다.
+|`RecoverCommand`를 실행한 뒤 다시 잠급니다. `lockStoreWithoutRecovery(int)`는 `recover`와 `verify`가 잠금을 쥔 채 저널을 살펴보려고 쓰는 변형입니다.
+
+|`HgRepository.getDirstate()`와 `Dirstate` 직접 변경
+|dirstate를 바꾸려면 작업 사본 잠금이 필요하며, 쓰기는 dirstate 컨텍스트가 끝날 때 일어납니다.
+|`lockWorkingCopy()`를 쥔 상태에서 `changingFiles(...)` 또는 `changingParents(...)`(또는 try-with-resources로 `openChangingFiles()`, `openChangingParents()`)를 씁니다. 잠금이 없으면 `IllegalStateException`이 발생합니다.
+
+|`HgRepository.DirstateBody<T>`
+|새 함수형 인터페이스이며 `run()`은 `IOException`과 `HgLockException`을 던질 수 있습니다.
+|`changingFiles`, `changingParents`에 넘깁니다.
+
+|`HgRepository.afterLock(AfterLockAction)`
+|새 기능입니다. 가장 바깥 잠금이 풀린 뒤 실행할 작업을 등록합니다.
+|잠금 안에서 실행하면 안 되는 후속 작업에 씁니다.
+
+|`dirstate.backup`, `dirstate` 저널 항목
+|제거했습니다. 이 항목이 남은 이전 저널도 오류 없이 읽습니다.
+|백업 파일을 읽는 도구는 더 이상 읽지 않도록 고쳐야 합니다.
+
+|`RebaseCommand`
+|`rebase.py`를 따릅니다. `call()`은 `setSource(byte[])`, `setTarget(byte[])`뿐 아니라 revset 설정자(`addSourceRevset`, `addBaseRevset`, `addRevisionRevset`, `setDestination`)로도 실행합니다. `setKeep(true)`가 아니면 원본을 strip하며, 상태 파일은 `.hg/rebasestate`입니다.
+|원본이 계속 읽힐 것으로 기대한 코드를 고칩니다.
+
+|`PhaseCommand.call()`
+|더 높은 단계로의 이동 거부를 예외가 아니라 종료 코드(`getExitCode()`가 1)와 `getMessages()`로 알립니다.
+|`getExitCode()`를 확인합니다.
+
+|`SignCommand`
+|`.hgsigs`만 커밋하며, 커밋이 실패해도 파일을 복원하지 않습니다.
+|다른 변경은 직접 커밋합니다.
+
+|`BranchCommand`
+|다른 이력 계통에 있는 브랜치 이름을 다시 쓰려면 `setForce(boolean)`이 필요합니다.
+|원본에서 `-f`가 필요한 곳에서 `true`를 넘깁니다.
+|===
+
+이전 코드에서 옮길 필요가 없는 새 명령과 옵션: `AdminVerifyCommand`, `ChainsawUpdateCommand`, `GraftInMemory`(`graft --to`), `NarrowServerAdmin`, `ShardedStreamBundlesCommand`, `UnshareCommand`. `AddCommand`와 `AddremoveCommand`의 `setSubrepos`. `CloneCommand`, `PullCommand`, `FetchCommand`의 `setPull`, `setStream`, `getMessages()`. 파일 명령의 패턴, include, exclude, cwd 설정자.
+
 [[known-issues]]
 == 8. 알려진 문제와 남은 과제
 === 8.1 한계
 * **Mercurial 버전**: 7.2와 7.2.4에서만 검증했습니다. 기본 설정으로 만든 저장소는 오래된 요구사항만 쓰므로 이전 7.x 릴리스에서도 열릴 것으로 예상하지만 검증하지 않았습니다. 새 형식은 그것을 도입한 Mercurial 릴리스가 필요합니다.
 * **적용한 changegroup의 sidedata**: sidedata가 없는 changegroup(버전 01~04)을 변경 파일 sidedata를 유지하는 저장소에 적용하면 변경 파일을 매니페스트에서 계산합니다. 복사 정보는 이렇게 유도할 수 없어서 기록하지 않습니다. changegroup 05는 복사 정보를 포함한 자체 sidedata를 그대로 유지합니다.
-* **미구현**: 와이어 프로토콜 버전 2, `largefiles`, `dirstate-tracked-hint`, `upgrade`.
+* **미구현**: HTTP 와이어 프로토콜 버전 2, `largefiles`, `dirstate-tracked-hint`, `upgrade`.
 
 === 8.2 미해결 사항
 * `TransportE2EMatrixInteropTest`의 실제 클라이언트와 실제 서버 조합("head를 만드는 push는 거부된다")이 전체 실행 4회 중 2회 실패했고, 단독 실행에서는 매번 통과했습니다. 양쪽이 모두 실제 `hg`여서 알려진 범위에서는 hg4j 코드와 무관하지만 원인은 찾지 못했습니다.

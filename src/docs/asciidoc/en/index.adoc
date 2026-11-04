@@ -19,8 +19,130 @@ This guide describes the architecture, the command surface, the locking and tran
 * **`HgRepository`**: the central coordinator of the `.hg/` layout. It takes the working copy lock (`wlock`) and the store lock (`lock`), opens revlogs, owns the dirstate contexts (<<dirstate-contexts>>) and runs the work that is postponed until the locks are released (`afterLock`).
 * **`Dirstate`**: the working copy state. It reads dirstate-v1 and dirstate-v2. A v2 file is memory mapped and looked up in place; changed entries are kept as an overlay and are written by appending to the data file, as the original does (<<dirstate-storage>>).
 * **`Revlog`**: index (`.i`) and data (`.d`) files, inline and split, generaldelta, revlog-v2 (docket) and changelog-v2 with sidedata. Compression: zlib and zstd.
-* **`TreeWalk` and `RevWalk`**: traversal of manifests and of the revision graph.
+* **`TreeWalk` and `ChangesetGraph`**: traversal of manifests and working copies (package `treewalk`) and of the revision graph (package `revwalk`). There is no class named `RevWalk`; the revision graph is walked with `ChangesetGraph`, `RevFilter` and `SortOrder`.
 * **`match` and `fileset` packages**: the pattern matcher (`path:`, `glob:`, `re:`, `rootfilesin:` ...), the fileset language (parser, analysis, optimiser, 24 predicates) and the `-I`/`-X`/`set:` selection that the porcelain commands share.
+
+[[plumbing-contracts]]
+==== Contracts by class
+Each item states what the Javadoc promises. "Lock" means the lock the caller must already hold; the plumbing classes check it only where it says so.
+
+`Repository` and `HgRepository` (package `lib`)::
+* `Repository.open(File)` returns an `HgRepository` and throws `HgRepositoryNotFoundException` when there is no `.hg` directory. `new HgRepository(File)` reads `requires` and ignores read errors, leaving the defaults.
+* Thread safety: the class Javadoc calls it thread-safe for parallel reads; most methods are `synchronized`. The lock methods `lockWorkingCopy` and `lockStore` deliberately are not, so that a thread waiting for a lock does not block the other methods of the object.
+* `getDirstate()` takes no lock and reads the file on every call, unless a changing context is open on the current thread; then the context's instance is returned. `writeDirstate(Dirstate)` writes at once when no context is open, otherwise it only marks the context's dirstate to be written when the outermost context ends normally. The caller is expected to hold `wlock`.
+* `getRevlog(idx, dat)` caches revlogs by the canonical path of the index file (100 at most, least recently used dropped), so repeated calls return the same object. After the store was changed behind the object's back, call `clearRevlogCache()`; `refreshIfChangedOnDisk()` does this for long-lived handles when `00changelog.i` changed and the cached changelog has not written locally.
+* `getPhaseRoots()` returns a new `PhaseRoots` that has read `.hg/store/phaseroots` at that moment.
+* `getRequirements()` returns the union of `.hg/requires` and `.hg/store/requires`.
+
+`HgLock` (package `lib`)::
+* A lock file taken atomically (a symlink on POSIX systems, a newly created file elsewhere), tracked per JVM by path, so it excludes both other threads and the real `hg`. `close()` releases it; a second `close()` of the same instance does nothing.
+* Taking a lock again on the thread that already holds it succeeds (`isReentrant()` is then `true`) and counts one more level; the file is removed when the last level closes. `HgLock(File)` fails at once; `HgLock(File, timeoutMs)` waits that long.
+* `afterLock` actions of `HgRepository` run once, when the last lock this thread holds on that repository is closed, or at once when none is held. A failing action is logged, never thrown.
+* `HgLock.noOp()` is a lock that does nothing.
+
+`NodeId` (package `lib`)::
+* An immutable 20-byte node id. The constructor and `getBytes()` copy the array; `NodeId.NULL` is 20 zero bytes; `fromHex` needs exactly 40 hex digits. `toString()` is the first 12 hex digits only; use `toHex()` for the full id.
+
+`ProgressMonitor` (package `lib`)::
+* `start(title, totalWork)` (`UNKNOWN` = -1), then `update(completed)` with the work done since the previous call (not a running total), then `end()`. Long operations poll `isCancelled()` and stop early. `message(String)` is ignored unless overridden.
+
+`Dirstate` (package `dirstate`)::
+* Lock: reading and writing take none; hold `wlock` (inside `changingFiles` or `changingParents`, `HgRepository` calls `write` once at the end).
+* `addEntry`, `removeEntry`, `addCopy`, `setParents`, `setV2` and every change through `getEntries()` or `getCopyMap()` (both return the live maps) are in memory only until `write(File)`.
+* `read(File)` maps a v2 data file read-only and uses it in place; a lookup through `getEntries()` can throw `UncheckedIOException` when that file cannot be read. `read(byte[])` parses v1 only and does not clear the copy map first.
+* `write(File)` for v1 replaces the file atomically. For v2 it appends the changes to the data file and then replaces the docket atomically; it writes a new data file (new uid) and deletes the old one when the file on disk is no longer the one that was read or at least half of the data file is unreachable.
+* `serialize()` always gives the v1 form and does not store the nanosecond part. `DirstateV2Serializer.serialize` produces only the data file (no docket, no copy records); `Dirstate.write` is the way to get a complete v2 dirstate. `DirstateV2Node` is the fixed 44-byte node layout over a `ByteBuffer`; `LazyEntryMap` is package private, reached only through `getEntries()`.
+* `Dirstate.Entry` is an immutable record; `time` must be 0 to `0xFFFFFFFF` (`AMBIGUOUS_TIME` marks an untrusted mtime) and a negative `size` means "compare the content" (`isStatAmbiguous()`).
+* No thread safety is stated for `Dirstate`; the changing contexts of `HgRepository` are per thread.
+
+`Revlog` and `RevlogIndex` (package `storage`)::
+* Thread safety: the public methods are `synchronized` per instance. They take no repository lock.
+* Reading needs no lock. `getRevisionContent(rev)` strips the leading metadata block (copy information), keeps the 100 most recently used results and returns a copy; `getRawRevisionContent(rev)` returns the stored text as written. `rev` = -1 gives an empty array; a revision number out of range throws `HgRevisionNotFoundException`; a censored revision throws `HgCensoredContentException` from `getRevisionContent`.
+* Writing needs the store lock (`HgRepository.lockStore()`): `appendRevision(...)` and its overloads, `appendRawRevision`, `appendOptimizedRevision`, `truncate`. The methods do not take it and do not check it.
+* `appendRevision` writes and syncs the files, updates the in-memory index and the persistent nodemap, and splits an inline revlog into index and data files at 131072 bytes. Revisions are stored as a delta against `parent1` when that is smaller and the chain is shorter than 100; the first revision and manifest and changelog revisions are stored whole.
+* Node id rule: SHA-1 over the two parent node ids in ascending byte order, then the stored text (the content preceded by the metadata block when there is metadata). When a revision with that node id exists, nothing is written and the existing node id is returned. For an externally stored (LFS) revision the hash can be computed over other bytes (`hashBasisOverride`).
+* `appendRawRevision` and `appendOptimizedRevision` keep the node id the caller gives, write a version 1 record (no version 2 handling), do not check that the node matches the content and do not look for duplicates. They exist for restoring and rewriting revlogs.
+* `truncate(keepCount)` shortens the files. Call it on a `Revlog` loaded from the untruncated files, once per instance; the instance is stale afterwards, so clear the repository's revlog cache before reopening. The caller holds the store lock and journals the cut.
+* Index records are numbered from 0; `getRevisionCount()` re-checks the index file for changes made by other writers. `findRevision(byte[])` uses the first 20 bytes and returns -1 when the node is unknown. The node field of an `IndexRecord` is a 32-byte field whose first 20 bytes are the node id.
+
+`TreeWalk`, `TreeIterator`, `ManifestWalk`, `WorkingDirWalk` (package `treewalk`)::
+* None of them is thread-safe and none takes a lock. All of them hand out paths in ascending UTF-8 order.
+* `TreeWalk` visits the union of its trees once per path; `addTree` resets the tree at once and the index of a tree is the order of adding. `getNodeId(i)` is `null` for a tree without node ids (the working copy); `isSymlink(i)` is `true` only for a `ManifestTreeIterator`.
+* `ManifestWalk` and `WorkingDirWalk` read nothing until the first traversal. The first `next()` loads the whole manifest (or scans the whole working copy) and caches it, so the walk is a snapshot taken at that moment; `reset()` rewinds the cursor and does not re-read. The cursor (`next()`, `getEntry()`) and the lazy view (`lazyEntries()`, `getEntries()`) share one reader: use one style per instance.
+* Treemanifest subdirectories are expanded by `ManifestWalk`, so only files come out. A null, empty, `-1` or `null` revision gives an empty walk.
+* `WorkingDirTreeIterator` reports files on disk plus every path of the dirstate; paths unknown to the dirstate have state `?`.
+
+`ChangesetGraph`, `RevFilter`, `SortOrder` (package `revwalk`)::
+* A `ChangesetGraph` reads parent links from the changelog index. Its settings are not synchronized and the instance caches ancestor answers per pair of revisions (cache access is synchronized), so use one parent lookup consistently and one instance per thread.
+* `lazyAncestors(rev)` returns a single-use iterator that is not thread-safe. With `SortOrder.DEFAULT` it is breadth first and lazy; with `SortOrder.TOPO` the whole ancestry is computed first and every revision comes before its parents. A revision is `-1` for "no parent". `getAllAncestors`, `isAncestor` and `getLcaCandidates` ignore the filter; a revision is its own ancestor.
+* `MaxCountRevFilter` is stateful: use a new instance (or `reset()`) for each traversal.
+
+`Merge3` and `MergeState` (package `merge`)::
+* `Merge3.merge(base, yours, theirs)` is a pure function on lists of lines; a conflicting block gets conflict markers and `isConflicted()` is `true`.
+* `MergeState` reads and writes `.hg/merge/state2` in the format the real `hg resolve` uses. `read` takes no lock and gives an inactive state for a missing file. `write` overwrites in place without a temporary file; hold `wlock` while a merge state changes. Changes by `addMergedFile`, `markResolved` and `markUnresolved` are in memory until `write`.
+
+`PhaseRoots` (package `phase`)::
+* `new PhaseRoots(File)` reads the file once. `setPhase` changes the roots and writes the file at once; no lock is taken. The file lives in `.hg/store/phaseroots`, so hold the store lock when another process may write.
+* `getRoots(phase)` returns the recorded boundary nodes, not every changeset in that phase; `getPhase` computes the effective phase through the ancestors, using a parent lookup function or a changelog. A null node or the null node is public.
+
+`ObsStore`, `HgObsMarker`, `HgObsolescenceParser` (package `obsolete`)::
+* `ObsStore.read` understands both obsstore versions (0 and 1); `HgObsolescenceParser.parse` understands version 1 only. `HgObsMarker` is an immutable marker with defensive copies.
+* `ObsStore.pushMarker` takes the store lock itself. `HgObsMarker.writeMarker(storeDir, ...)` appends a version 1 marker to `obsstore` and takes no lock.
+
+==== Examples
+Change the dirstate while holding the working copy lock. The lock is taken first; the dirstate is written once when the outermost context ends without an exception. A change reaches the disk only if `writeDirstate` is called inside the context.
+
+[source,java]
+----
+import io.github.search5.hg4j.dirstate.Dirstate;
+import io.github.search5.hg4j.lib.HgLock;
+import io.github.search5.hg4j.lib.HgRepository;
+import java.io.File;
+
+HgRepository repo = new HgRepository(new File("/path/to/repo"));
+try (HgLock wlock = repo.lockWorkingCopy()) {
+    repo.changingFiles(() -> {
+        Dirstate dirstate = repo.getDirstate();       // the context's instance
+        dirstate.addEntry("docs/new.txt",
+                new Dirstate.Entry('a', 0100644, -1, Dirstate.Entry.AMBIGUOUS_TIME));
+        repo.writeDirstate(dirstate);                  // deferred until the context ends
+        return null;
+    });                                                // the dirstate is written here
+}
+----
+
+Read the history with `Revlog` and `ChangesetGraph`. No lock is needed for reading.
+
+[source,java]
+----
+import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.lib.NodeId;
+import io.github.search5.hg4j.revwalk.ChangesetGraph;
+import io.github.search5.hg4j.revwalk.MaxCountRevFilter;
+import io.github.search5.hg4j.revwalk.SortOrder;
+import io.github.search5.hg4j.storage.Revlog;
+import java.io.File;
+import java.util.Arrays;
+import java.util.Iterator;
+
+HgRepository repo = new HgRepository(new File("/path/to/repo"));
+Revlog changelog = repo.getRevlog(
+        new File(repo.getStoreDir(), "00changelog.i"),
+        new File(repo.getStoreDir(), "00changelog.d"));
+int tip = changelog.getRevisionCount() - 1;
+
+ChangesetGraph graph = new ChangesetGraph(changelog);
+graph.setSortOrder(SortOrder.TOPO);
+graph.setRevFilter(new MaxCountRevFilter(10));          // a new filter for every traversal
+for (Iterator<Integer> it = graph.lazyAncestors(tip); it.hasNext(); ) {
+    int rev = it.next();
+    Revlog.IndexRecord rec = changelog.getIndexRecord(rev);
+    String node = new NodeId(Arrays.copyOf(rec.getNodeId(), 20)).toHex();
+    byte[] text = changelog.getRevisionContent(rev);
+    System.out.println(rev + " " + node + " parents " + rec.getParent1() + "," + rec.getParent2()
+            + " (" + text.length + " bytes)");
+}
+----
 
 === 2.2 Porcelain API
 Every workflow is a command object created from the `Hg` facade or directly from its class, configured with setters and run with `call()`.
@@ -94,31 +216,40 @@ include::reference/maintenance.adoc[leveloffset=+1]
 == 4. Locking and Transactions
 hg4j follows the order and the scope of the original `localrepo.wlock()` and `localrepo.lock()`. The rules are covered by tests that start two actors at once (`LockScopeConcurrencyTest`) and by tests against the real `hg` (`RealHgLockContentionInteropTest`).
 
-* A command that changes the working copy takes `wlock` first and, when it writes the store, `lock` after it. It holds them for the whole command, not only for the writes, and releases them in reverse order.
-* Taking a lock never recovers anything. If a previous transaction was interrupted, the store lock is refused with `HgAbandonedTransactionException`; run `RecoverCommand` (`hg recover`). Only the explicit commands `recover` and `rollback` repair the store, and neither touches the dirstate.
-* A lock that another process (or thread) holds is waited for up to `[ui] timeout` (600 seconds by default), then `HgLockException` is thrown. A lock is re-entrant for the thread that holds it.
-* Work that must run after the locks are released (post-commit hooks and similar) is registered with `afterLock` and runs once, after the outermost lock is closed.
-* The lock files are the ones the original uses (`.hg/wlock`, `.hg/store/lock`), so hg4j and the real `hg` exclude each other.
+* A command that changes the working copy takes `wlock` first and, when it writes the store, `lock` after it. It holds them for the whole command, not only for the writes, and releases them in reverse order. The plumbing does not enforce this order; a caller that uses `lockWorkingCopy()` and `lockStore()` itself must follow it.
+* `lockWorkingCopy()` never recovers anything. `lockStore()` and `lockStore(int)` refuse with `HgAbandonedTransactionException` when `store/journal` exists and the thread did not already hold the lock; the lock is released again before the exception is thrown. Run `RecoverCommand` (`hg recover`). `lockStoreWithoutRecovery(int)` takes the store lock without that check, for `recover` and `verify`, which must look at the journal while they hold the lock. Only the explicit commands `recover` and `rollback` repair the store, and neither touches the dirstate.
+* A lock that another process (or thread) holds is waited for up to `[ui] timeout` (600 seconds by default), then `HgLockException` is thrown. `ui.timeout = 0` fails at once. The system property `hg4j.ui.timeout` changes only the default; an explicit `[ui] timeout` always wins. `lockWorkingCopy(int)` and `lockStore(int)` take the wait in milliseconds. A lock is re-entrant for the thread that holds it.
+* Work that must run after the locks are released (post-commit hooks and similar) is registered with `afterLock` and runs once, after the last lock the thread holds on that repository is closed (or at once when it holds none). A failure in such an action is logged and does not fail the operation.
+* The lock files are the ones the original uses (`.hg/wlock`, `.hg/store/lock`), so hg4j and the real `hg` exclude each other. A server-shapes update uses a third file, `.hg/store/store-shapes-lock` (`lockStoreShapes(int)`), taken before the store lock.
+* Which lock an operation needs: reading revlogs, manifests and the dirstate needs none; `Revlog` appends and `truncate` need the store lock; changing the dirstate and the merge state needs the working copy lock; the phase roots and the obsolescence markers live in the store (see <<plumbing-contracts>>).
 
 [[dirstate-contexts]]
 === 4.1 Dirstate contexts
-Like `dirstate.changing_files()` and `dirstate.changing_parents()` of the original:
+Like `dirstate.changing_files()` and `dirstate.changing_parents()` of the original. They are used as `repo.changingFiles(body)` and `repo.changingParents(body)` or, when the body cannot be a lambda, as `repo.openChangingFiles()` and `repo.openChangingParents()`, which return a `DirstateChange` to close.
 
-* Both need the working copy lock, are mutually exclusive, can be nested, and write the dirstate only when the outermost one ends normally. Any exception inside invalidates the whole context and nothing is written.
-* A transaction writes the dirstate after the journal is removed (the original writes it as a post-finalize file generator). A crash between the two leaves the old parents in the dirstate and a journal for `recover`. There is no dirstate backup file any more.
+* Both need the working copy lock and are mutually exclusive: opening one kind while the other is open throws `IllegalStateException`. They can be nested (the kind must be the same) and are per thread.
+* The dirstate is written once, when the outermost context ends normally, and only if `writeDirstate` was called inside it. `getDirstate()` returns the same instance for the whole context.
+* Any exception inside `changingFiles` or `changingParents` invalidates the whole context and nothing is written; the next read goes back to the disk. With `openChanging...()` you must call `DirstateChange.failed()` before `close()` when the work failed; a plain `close()` writes the dirstate, even from a try-with-resources block that is left because of an exception.
+* The dirstate is not journaled: a command that changes it in memory writes it once at the end. A command that opens a store transaction (for example `commit`) writes it after the transaction is closed, as the original does with a post-finalize file generator, and writes nothing when the command fails.
 * The commands that change tracked files use `changing_files`: `add`, `forget`, `remove`, `copy`/`rename`, `revert`. The commands that change the parents use `changing_parents`: `commit`, `update`, `merge`, `backout`, `graft`, `histedit`, `rebase`, `strip`, `bisect`, `pull`, `clone`, `unshelve`.
-* Code that changes the dirstate directly must hold the working copy lock; otherwise `IllegalStateException` ("trying to change the dirstate without holding the wlock") is thrown.
+* Code that changes the dirstate directly must hold the working copy lock; opening a context without it throws `IllegalStateException` ("trying to change the dirstate without holding the wlock"). Calling `Dirstate.write` yourself, outside a context, takes no lock and checks nothing.
 
 [[dirstate-storage]]
 === 4.2 Dirstate storage
-dirstate-v2 is stored as in Mercurial: a docket file (`dirstate`) naming a data file (`dirstate.<uid>`). New entries are appended to the data file and the docket is replaced last, so a reader sees either the old state or the new one. When the unreachable part reaches half of the data file, the file is rewritten under a new uid and the old one is removed.
+dirstate-v2 is stored as in Mercurial: a docket file (`dirstate`) naming a data file (`dirstate.<uid>`). `Dirstate.write` appends new entries to the data file and replaces the docket last (atomically), so a reader sees either the old state or the new one. When the file on disk is no longer the one that was read, or at least half of the data file is unreachable, a new data file is written under a new uid, the docket is replaced and the old data file is removed. A v1 dirstate is replaced atomically as a whole. `HgRepository.writeDirstate` chooses the format from the repository's `dirstate-v2` requirement on every write.
 
 == 5. Repository Formats
-* Store: `store`, `fncache`, `dotencode`, `generaldelta`, `sparserevlog`, `revlogv1`, `share-safe`, shared repositories, `fileindex-v1`.
+Every requirement name below was checked with a search of the code (the names that `HgRepository`, `InitCommand`, `Hg.open` and `NarrowCloneCommand` read or write).
+
+* Store: `store`, `fncache`, `dotencode`, `generaldelta`, `revlogv1`, `share-safe`, shared repositories (`shared`, `relshared`, `sharedpath`), `fileindex-v1`. `sparserevlog` is accepted by `Hg.open` and by clone bundle selection, but `InitCommand` does not write it and no hg4j code acts on it.
 * Revlog: revlog-v1, `exp-revlogv2.2` (docket), `exp-changelog-v2` with `exp-copies-sidedata-changeset` (the changed files of a changeset are kept in sidedata), `persistent-nodemap`, `revlog-compression-zstd`.
 * Working copy: dirstate-v1 and `dirstate-v2`.
-* Other: `treemanifest`, narrow clones with narrow patterns, shapes and shards (`exp-shape-1`), `lfs` (Large File Storage, with client and server for the Batch API).
+* Other: `treemanifest`; narrow clones, which write the requirement `narrowhg-experimental` and the files `narrowspec` and `narrowspec.dirstate`; shapes and shards, which are not a requirement but the wire capability `exp-shape-1`; `lfs`, which hg4j only reads (`getRequirements().contains("lfs")`) and never writes.
 * Changegroups 01 to 05 (05 carries sidedata), bundle2 (`HG20`) with GZ, BZ and ZS compression, stream clone, clone bundles.
+
+Not implemented: `internal-phase` (so `strip --soft` is refused, see the deliberate differences) and `dirstate-tracked-hint-v1` (it is only tolerated in the clone bundle requirement lists).
+
+`Hg.open(File)` checks every line of `.hg/requires` and `.hg/store/requires` against an allowlist and throws `HgValidationException` ("unsupported repository requirement") for any other name. The list is: `dotencode`, `fncache`, `generaldelta`, `revlogv1`, `store`, `dirstate-v2`, `share-safe`, `sparserevlog`, `revlog-compression-zstd`, `exp-changelog-v2`, `exp-revlogv2.2`, `persistent-nodemap`, `fileindex-v1`, `treemanifest`, `exp-copies-sidedata-changeset`, `narrowhg-experimental`, `lfs`, `shared`, `relshared`. `Repository.open` and `new HgRepository(File)` do not apply this check.
 
 `InitCommand` creates the conservative set (`revlogv1`, `store`, `fncache`, `dotencode`, `generaldelta`). Newer formats are switched on through setters, as in `hg` they are switched on through configuration. Mercurial 7.2 made dirstate-v2 and the file index stable but recommends them only together with the Rust extensions; hg4j has no such restriction.
 

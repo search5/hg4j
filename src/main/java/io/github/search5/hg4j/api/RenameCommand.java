@@ -148,7 +148,7 @@ public final class RenameCommand {
      * <p>
      * Under the working copy lock, moves the file on disk (replacing an existing target and creating parent
      * directories), marks the source removed ({@code r}) and the target added ({@code a}) in the dirstate and records
-     * the copy source. If anything fails the previous dirstate file is restored.
+     * the copy source. The dirstate is changed inside a {@code changing_files} context: it is written once at the end and not at all if anything fails (the moved file is not moved back).
      * @throws IllegalStateException if the source or target was not set
      * @throws io.github.search5.hg4j.errors.HgRepositoryNotFoundException (an {@link IOException}) if the source
      *         does not exist
@@ -172,53 +172,35 @@ public final class RenameCommand {
                 throw new HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
             }
 
-            // 1. Lock repository for working directory changes
-            File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-            byte[] dirstateBackup = null; // read once the lock is held
+            // `dirstate.changing_files`: the dirstate is written once, when the context ends normally; a failure writes nothing
+            repository.changingFiles(() -> {
+                // 1. Perform physical move
+                destFile.getParentFile().mkdirs();
+                Files.move(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
-            {
-                dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+                // 2. Update dirstate copy map and state entries
+                Dirstate dirstate = repository.getDirstate();
 
-                try {
-                    // 2. Perform physical move
-                    destFile.getParentFile().mkdirs();
-                    Files.move(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                // Source: marked as removed ('r')
+                dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
 
-                    // 3. Update dirstate copy map and state entries
-                    Dirstate dirstate = repository.getDirstate();
-                
-                    // Source: marked as removed ('r')
-                    dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
-                
-                    // Target: marked as added ('a'). A symlink's dirstate mode/size must reflect the
-                    // link itself (lstat semantics) -- File#canExecute()/length() both follow the
-                    // link to whatever it points at, matching what AddCommand/CopyCommand already do.
-                    boolean destIsSymlink = Files.isSymbolicLink(destFile.toPath());
-                    int mode = destIsSymlink ? 0120000 : (destFile.canExecute() ? 0755 : 0644);
-                    int size = destIsSymlink
-                            ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
-                            : (int) destFile.length();
-                    long time = SafeFileIO.lastModifiedSeconds(destFile);
-                    dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, size, time));
-                
-                    // Register Copy-rename linkage in copyMap
-                    dirstate.addCopy(targetPath, sourcePath);
+                // Target: marked as added ('a'). A symlink's dirstate mode/size must reflect the
+                // link itself (lstat semantics) -- File#canExecute()/length() both follow the
+                // link to whatever it points at, matching what AddCommand/CopyCommand already do.
+                boolean destIsSymlink = Files.isSymbolicLink(destFile.toPath());
+                int mode = destIsSymlink ? 0120000 : (destFile.canExecute() ? 0755 : 0644);
+                int size = destIsSymlink
+                        ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                        : (int) destFile.length();
+                long time = SafeFileIO.lastModifiedSeconds(destFile);
+                dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, size, time));
 
-                    repository.writeDirstate(dirstate);
+                // Register Copy-rename linkage in copyMap
+                dirstate.addCopy(targetPath, sourcePath);
 
-                    // Clean up crash backups on success
-                } catch (Exception e) {
-                    // Restore dirstate on failure
-                    if (dirstateBackup != null) {
-                        try {
-                            SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-                        } catch (Exception ignored) {}
-                    }
-                    try {
-                    } catch (Exception ignored) {}
-                    throw e;
-                }
-            }
+                repository.writeDirstate(dirstate);
+                return null;
+            });
         }
     }
 

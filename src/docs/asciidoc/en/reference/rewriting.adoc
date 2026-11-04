@@ -1,6 +1,6 @@
 === Rebase
 
-Moves changesets onto another destination by cherry-picking them (`hg rebase`). When the rebase is finished the original changesets are removed (stripped, with a backup bundle under `.hg/strip-backup`) unless `setKeep(true)` is set; no obsolescence markers are written, because evolution is not supported. The cherry-pick path does a real 3-way merge (`Merge3`, the engine of `MergeCommand`). Related classes: `RebasePlanner`, `RebaseState` (state file `.hg/rebasestate`).
+Moves changesets onto another destination by cherry-picking them (`hg rebase`). When the rebase is finished the original changesets are removed (stripped, with a backup bundle under `.hg/strip-backup`) unless `setKeep(true)` is set; no obsolescence markers are written, because evolution is not supported. The cherry-pick path does a real 3-way merge (`Merge3`, the engine of `MergeCommand`). A rebase of changesets that have descendants outside the rebased set is refused (with the hint `use --keep to keep original changesets`) unless `setKeep(true)` is set. Related classes: `RebasePlanner`, `RebaseState` (state file `.hg/rebasestate`).
 
 .Setters
 [cols="2,5"]
@@ -8,7 +8,7 @@ Moves changesets onto another destination by cherry-picking them (`hg rebase`). 
 |Method |Meaning
 
 |`setSource(byte[])` / `setTarget(byte[])`
-|Node-style source and target. `call()` accepts them (both required) instead of revsets.
+|Node-style source and target (20-byte node ids; `null` is the default and means the revset options are used). When both are set, the source changeset and its descendants are rebased onto the target (like `hg rebase -s SRC -d DEST`); both must exist in the changelog, else `HgRevisionNotFoundException`.
 
 |`addSourceRevset(String)`
 |`-s REV`: the changesets and their descendants (repeatable).
@@ -50,7 +50,7 @@ Moves changesets onto another destination by cherry-picking them (`hg rebase`). 
 |`--confirm`: done in memory first; the supplier's answer decides whether it is applied for real.
 
 |`registerPreRebaseHook(HgHook)` / `registerPostRebaseHook(HgHook)`
-|Register hooks. Their invocation points are not described in the javadoc (source not confirmed).
+|Register hooks; `null` is ignored. A pre hook runs before the rebase changes anything and gets a context map with `repository`, `sourceNode` and `targetNode`; if it returns false `call()` fails with `HgValidationException` (`Rebase rejected by PRE_REBASE hook`). A post hook runs after a rebase has completed and gets `sourceNode`, `targetNode`, `rebasedTipNode` (hex of the last new changeset, or `null`) and `repository`; its return value is ignored and exceptions it throws are logged and swallowed.
 
 |`getMessages()`
 |What the command printed (`rebasing ...`, notes), in order.
@@ -62,16 +62,16 @@ Moves changesets onto another destination by cherry-picking them (`hg rebase`). 
 |Method |Returns / throws
 
 |`call()`
-|`byte[]`: new node of the last rebased changeset, `null` when there was nothing to rebase. Throws `IOException`, `HgLockException`, `HgMergeConflictException`. `IllegalStateException` when neither node-style source/target nor any revset is given. `HgValidationException` for validation failures.
+|`byte[]`: new node of the last rebased changeset, `null` when there was nothing to rebase. As in Mercurial, the working copy lock and then the store lock are taken once for the whole command; each changeset is merged in the working copy and committed in a transaction of its own, and the state is written to `.hg/rebasestate` before the first changeset and after each one. Throws `IOException`, `HgLockException`, `HgMergeConflictException`. `IllegalStateException` when neither node-style source/target nor any revset is given. `HgValidationException` for validation failures, for example `uncommitted changes`, `outstanding uncommitted merge`, `rebase in progress` (use `--continue` or `--abort`), `you must specify a destination`, `empty revision set`, `source is ancestor of destination`, `empty commit message`, a rejecting pre hook, or originals with descendants outside the rebased set without `setKeep(true)`.
 
 |`continueRebase()`
-|`byte[]`, same throws as `call()`. Reads `.hg/rebasestate`, commits the stopped changeset from the working copy, then continues. `HgValidationException` `no rebase in progress` or when `.hg/merge/state2` still has unresolved files.
+|`byte[]`, same throws as `call()`. Takes the locks first, then reads `.hg/rebasestate` under them. Commits the stopped changeset from the working copy (the one still to do whose destination is the working copy parent), then goes on with the rest. `HgValidationException` `no rebase in progress` or when `.hg/merge/state2` still has unresolved files.
 
 |`stop()`
-|`void`; `IOException`, `HgLockException`. Only allowed with `--keep` (`setKeep(true)`) and not with collapse; restores the original parent and finishes with what was done.
+|`void`; `IOException`, `HgLockException`. Only allowed with `--keep` (`setKeep(true)`) and not with collapse; restores the original parent (clearing the interrupted merge) and finishes the rebase with what was done so far. Otherwise `HgValidationException`: `no rebase in progress`, `cannot stop in --collapse session`, or `cannot remove original changesets with unrebased descendants`.
 
 |`abort()`
-|`void`; `IOException`, `HgLockException`. Strips the rebased changesets (not when one is public or has foreign descendants), returns the working copy to the original parent, removes state files.
+|`void`; `IOException`, `HgLockException`. Strips the rebased changesets (not when one of them is public or has gained descendants that are not part of the rebase), returns the working copy to the original parent, removes state files. `HgValidationException` `no rebase in progress`.
 |===
 
 On conflict, `call()` throws `HgMergeConflictException` and leaves the rebase paused (conflict markers in the file, bookkeeping in `.hg/merge/state2`). Resolve the files (for example with `ResolveCommand`), then call `continueRebase()`, or `abort()`.
@@ -97,7 +97,7 @@ byte[] last = new RebaseCommand(repo)
 
 === Graft
 
-Copies changes of a revision onto the current working copy parent (`hg graft`, similar to git cherry-pick). Performs a real 3-way merge through `RebaseCommand#attemptThreeWayMerge` when both sides changed the same file. No obsolescence marker is written (graft is a copy). Related class: `GraftInMemory` (source not read in detail, not described here).
+Copies changes of a revision onto the current working copy parent (`hg graft`, similar to git cherry-pick). Performs a real 3-way merge through `RebaseCommand#attemptThreeWayMerge` when both sides changed the same file. No obsolescence marker is written (graft is a copy). Related class: `GraftInMemory` is a separate command, `hg graft --to REV` (experimental): the changesets are grafted onto REV in memory without touching the working copy or dirstate, under the store lock only, and a conflict aborts everything.
 
 .Setters
 [cols="2,5"]
@@ -105,10 +105,10 @@ Copies changes of a revision onto the current working copy parent (`hg graft`, s
 |Method |Meaning
 
 |`setSource(String)`
-|Revision to graft. Required: `call()` throws `IllegalArgumentException` when null or empty.
+|Revision to graft (the `REV` of `hg graft REV`: a revision number, node hex prefix or other form the changelog lookup accepts), resolved when `call()` runs. No default. Required: `call()` throws `IllegalArgumentException` when null or empty.
 
 |`registerPostGraftHook(HgHook)`
-|Register a post-graft hook (invocation details not documented).
+|Register a hook that runs after the grafted changeset has been committed; `null` is ignored. Its context map holds `sourceRevision` (hex node of the graft source), `graftedNode` (hex node of the new commit) and `repository`. Its return value is ignored and an exception it throws is logged as a warning, not propagated, so a post-graft hook cannot abort the graft.
 |===
 
 .Execution
@@ -120,10 +120,10 @@ Copies changes of a revision onto the current working copy parent (`hg graft`, s
 |`String`: hex node of the new grafted commit. Throws `IOException`, `HgLockException`, `HgMergeConflictException` (destination and source diverged on a file and the merge was not clean).
 
 |`continueGraft()`
-|`String`: hex node of the grafted commit. `IOException`, `HgLockException`. `HgValidationException` when no graft is in progress or unresolved files remain.
+|`String`: hex node of the grafted commit. Resumes a graft paused on a conflict, after every unresolved file was resolved and the resolution staged on disk (as with `hg resolve --mark`); completes the paused revision's commit. `IOException`, `HgLockException`. `HgValidationException` when no graft is in progress or unresolved files remain.
 
 |`abort()`
-|`void`; `IOException`, `HgLockException`. Restores working copy and dirstate to the pre-graft state; nothing had been appended to the store. `HgValidationException` `no graft in progress`.
+|`void`; `IOException`, `HgLockException`. Discards every working copy and dirstate change the paused attempt staged and restores both to what was checked out before `call()` started; nothing had been appended to the changelog, manifest or filelogs for a paused graft. `HgValidationException` `no graft in progress`.
 |===
 
 On conflict, call `continueGraft()` after resolving and staging the files, or `abort()`.
@@ -155,13 +155,13 @@ Creates a new changeset that undoes a revision without altering history (`hg bac
 |Method |Meaning
 
 |`setRevision(String)`
-|Revision to back out. Required (`IllegalStateException` when null or empty).
+|Revision to back out (`hg backout -r REV`), any identifier the revision resolver understands. Required: `call()` throws `IllegalStateException` when it was not set.
 
 |`setMessage(String)`
-|Commit message of the backout changeset.
+|Commit message of the backout changeset (`hg backout -m`). When null or empty the message is `Backed out changeset` followed by the 12-digit short hash of the backed-out revision.
 
 |`setAuthor(String)`
-|Author of the backout changeset (default `hg4j`).
+|Author of the backout changeset (`hg backout -u`); default `hg4j`.
 |===
 
 .Execution
@@ -170,7 +170,7 @@ Creates a new changeset that undoes a revision without altering history (`hg bac
 |Method |Returns / throws
 
 |`call()`
-|`byte[]`: node of the new backout changeset. Throws `IOException`, `HgLockException`, `HgMergeConflictException`, and `HgValidationException` (for example `Unknown revision`).
+|`byte[]`: the 20-byte node of the new backout changeset. Applies the inverse of the change to the working copy and commits it through `CommitCommand`. Throws `IllegalStateException` if no revision was set; `HgValidationException` if the revision is unknown, is a merge or a root changeset, is not an ancestor of the working copy parent, or the working copy has uncommitted changes or an uncommitted merge; `HgMergeConflictException` if the inverse change conflicts with later changes (nothing is committed); `IOException` when reading or writing the repository fails; `HgLockException` when a lock cannot be acquired.
 |===
 
 If REV is the working copy parent, its diff is applied directly (cannot conflict). If REV is an older ancestor, a 3-way merge runs (ancestor = REV, local = working copy, other = REV's parent). On conflict it throws `HgMergeConflictException` and does not commit; conflict state is written to `.hg/merge/state2`. There is no `--continue`: resolve with `ResolveCommand` (or real `hg resolve`), then commit normally.
@@ -194,7 +194,14 @@ byte[] node = new BackoutCommand(repo)
 
 === Histedit
 
-Rule-based history editing (`hg histedit`) with actions `PICK`, `DROP`, `FOLD`, `ROLL`. The class implements `AutoCloseable`.
+Rule-based history editing (`hg histedit`) with actions `PICK`, `DROP`, `FOLD`, `ROLL`. The class implements `AutoCloseable` (`close()` holds no resources and does nothing). The rules, in the order added, describe the contiguous range of history to rewrite, oldest first; the range is rebuilt on top of the first parent of the first rule's changeset.
+
+* `PICK`: start a new rewritten commit that reuses the changeset's message and author.
+* `FOLD`: merge the changeset's changes into the preceding rewritten commit and append its message to that commit's message.
+* `ROLL`: like `FOLD`, but the changeset's message is discarded.
+* `DROP`: omit the changeset from the rewritten history. It is marked pruned with an obsolescence marker, not physically removed.
+
+The author and branch of a rewritten commit stay those of the group's first changeset (the pick). Every original changeset folded into a rewritten commit gets a `histedit` obsolescence marker pointing to it.
 
 .Setters
 [cols="2,5"]
@@ -202,7 +209,7 @@ Rule-based history editing (`hg histedit`) with actions `PICK`, `DROP`, `FOLD`, 
 |Method |Meaning
 
 |`addRule(Action, String hexNode)`
-|Append a rule (`HisteditCommand.Action`: `PICK`, `DROP`, `FOLD`, `ROLL`). Ignored when the action or the node is null or empty.
+|Append a rule (`HisteditCommand.Action`: `PICK`, `DROP`, `FOLD`, `ROLL`) for the changeset with this full 40-character hex node id. Ignored when the action is null or the node is null or empty. Rules are also available as `HisteditCommand.Rule(action, hexNode)` with public final fields.
 |===
 
 .Execution
@@ -211,17 +218,18 @@ Rule-based history editing (`hg histedit`) with actions `PICK`, `DROP`, `FOLD`, 
 |Method |Returns / throws
 
 |`call()`
-|`void`. Returns immediately when no rule was added. Throws `IOException` (for example `Histedit failed: Revision not found for node ...`) and `HgLockException`.
+|`void`. Does nothing when no rule was added. Rewrites the history, then moves the working copy and dirstate to the last rewritten commit and sets the working branch to that commit's branch; files of dropped commits disappear from the working directory and the dirstate. If an error occurs, the revlogs and dirstate are restored to their previous state. Throws `IOException` when a rule's changeset is not in the changelog (`Histedit failed: Revision not found for node ...`) or reading or writing the repository fails, and `HgLockException` when a lock cannot be acquired.
 |===
 
-Continue and abort methods: not present in the source (no such public methods found). Conflict handling: source not confirmed.
+There are no continue or abort methods: the class has no paused state. It recommits the content of the listed changesets cleanly, and the javadoc and code describe no conflict handling; a failure restores the repository as described above.
 
 .Locks and dirstate
-* `call()`: `lockWorkingCopy()`, `lockStore()`, `openChangingParents()` in this order. The dirstate is written when the context ends well; a failure leaves the file on disk alone.
+* `call()`: the working copy lock and the store lock are held for the whole operation (`lockWorkingCopy()`, `lockStore()`, `openChangingParents()` in this order). The dirstate is written when the context ends well; a failure restores the revlogs and leaves the dirstate file on disk alone.
 * `changingFiles` is not used.
 
 .Differences from hg
-Not described in the javadoc (source not confirmed).
+* Unlike `RebaseCommand`, histedit never strips: dropped and replaced changesets are hidden by obsolescence markers (`prune` for `DROP`, `histedit` for the rewritten ones), matching real hg under `experimental.evolution`.
+* Rules take full hex node ids only; there is no interactive editor or `--continue` protocol.
 
 .Example
 [source,java]
@@ -243,16 +251,16 @@ Shelves and unshelves working copy changes (`hg shelve`, `hg unshelve`, `--delet
 |Method |Meaning
 
 |`setName(String)`
-|Shelf name (default `default`; null or empty is ignored).
+|Shelf name to create or restore (default `default`; null or empty is ignored and leaves the current value).
 
 |`setUnshelve(boolean)`
-|Run unshelve instead of shelve.
+|Run unshelve (restore the shelf, like `hg unshelve`) instead of shelve. Default `false` shelves the pending changes.
 
 |`setDelete(boolean)`
 |`--delete NAME...`: move the named shelves to `.hg/shelve-backup`.
 
 |`setNames(String...)`
-|Shelves removed by `--delete` (error `no shelved changes specified!` when empty).
+|Shelves removed by `--delete` (real hg takes them as the command's arguments). An empty list gives `HgValidationException` `no shelved changes specified!`; an unknown name gives `shelved change '<name>' not found`.
 
 |`setCleanup(boolean)`
 |`--cleanup`: move every shelf to `.hg/shelve-backup` (keeps the newest `shelve.maxbackups`, 10).
@@ -264,13 +272,13 @@ Shelves and unshelves working copy changes (`hg shelve`, `hg unshelve`, `--delet
 |Method |Returns / throws
 
 |`call()`
-|`void`; `IOException`, `HgLockException`, `HgMergeConflictException` (unshelve rebase conflict). Dispatches to delete/cleanup, unshelve, or shelve.
+|`void`; `IOException`, `HgLockException`, `HgMergeConflictException`. Dispatches to delete/cleanup, unshelve, or shelve; shelf files live in `.hg/shelved`. `IOException` also covers refusals: a shelf that does not exist, no shelf names given to delete, or an unshelve onto a working copy with pending changes or an unresolved merge (`HgValidationException`). `HgMergeConflictException` means the unshelve rebase conflicted; the unshelve is left in progress and can be finished or abandoned (below).
 
 |`unshelveContinue()`
-|`void`; `IOException`, `HgLockException`, `HgMergeConflictException`. Runs `RebaseCommand#continueRebase()`, then finishes the uncommit and cleanup. `HgValidationException` `no unshelve in progress` or unresolved files.
+|`void`; `IOException`, `HgLockException`, `HgMergeConflictException`. Runs `RebaseCommand#continueRebase()`, then finishes the uncommit and cleanup. `HgValidationException` `no unshelve in progress` or unresolved files remain. The resume is driven only by `.hg/rebasestate-hg4j`, using a fresh `RebaseCommand`.
 
 |`unshelveAbort()`
-|`void`; `IOException`, `HgLockException`. Discards the throwaway commits, restores the pre-unshelve state, keeps the shelf. `HgValidationException` `no unshelve in progress`.
+|`void`; `IOException`, `HgLockException`. Discards the throwaway restore and rebase commits this attempt created, restores the working copy and dirstate to exactly their pre-unshelve state, and (unlike a completed unshelve) leaves the shelf untouched so a later unshelve can still use it. `HgValidationException` `no unshelve in progress`.
 |===
 
 On an unshelve conflict, resolve the files and call `unshelveContinue()`, or `unshelveAbort()`.
@@ -295,7 +303,7 @@ new ShelveCommand(repo).setName("wip").setUnshelve(true).call();
 
 === Strip
 
-Removes changesets and their descendants from the repository (`hg strip`). Other revisions above the cut are saved in a bundle and re-added. A backup bundle goes to `.hg/strip-backup/`.
+Removes changesets and their descendants completely from the repository revlogs (`hg strip`). Other revisions above the cut are saved in a bundle and re-added. A backup bundle goes to `.hg/strip-backup/`.
 
 .Setters
 [cols="2,5"]
@@ -303,19 +311,19 @@ Removes changesets and their descendants from the repository (`hg strip`). Other
 |Method |Meaning
 
 |`setRevision(String)`
-|Revision to strip.
+|Revision to strip; it and all its descendants are removed. A revision identifier or revset.
 
 |`addRevision(String)`
-|Another revision (`hg strip REV REV ...`); revset expressions are read as sets.
+|Another revision to strip (`hg strip REV REV ...`); a revset expression is read like a revision set.
 
 |`addBookmark(String)`
 |`-B BOOKMARK`: strip changesets only that bookmark reaches, then delete the bookmark.
 
 |`setBackup(boolean)`
-|`--no-backup` when false (default true).
+|`--no-backup` when false: no bundle of the removed changesets is saved (default true, a bundle is saved).
 
 |`setTopic(String)`
-|Last word of the backup bundle name (default `backup`).
+|The word at the end of the backup bundle's name (`backup` for `strip`, `copy`, `rebase`, ...; default `backup`).
 
 |`setForce(boolean)`
 |`--force`: discard uncommitted changes instead of refusing.
@@ -324,13 +332,13 @@ Removes changesets and their descendants from the repository (`hg strip`). Other
 |`--keep`: leave working copy files alone; only the parent follows the strip.
 
 |`setSoft(boolean)`
-|`--soft`: not available; `call()` throws `HgValidationException` because the archived phase is missing.
+|`--soft`: not available. `call()` throws `HgValidationException` (`strip --soft needs the archived phase (a repository with the internal-phase requirement), which this repository does not have`).
 
 |`setPermitEmptyRevset(boolean)`
 |An empty revision set is a success instead of an abort.
 
 |`getMessages()`, `getBackupBundle()`
-|Printed messages; the saved bundle file (or `null`).
+|Printed messages (`saved backup bundle to ...` and the warnings of a failed strip); the bundle file that `call()` saved (or `null`).
 |===
 
 .Execution
@@ -339,7 +347,7 @@ Removes changesets and their descendants from the repository (`hg strip`). Other
 |Method |Returns / throws
 
 |`call()`
-|`void`; `IOException` (for example `Strip target revision not found`), `HgLockException`, `IllegalArgumentException` when no revision or bookmark is given, `HgValidationException` (`empty revision set`, unknown bookmark).
+|`void`; `IOException` (for example `Strip target revision not found`), `HgLockException`, `IllegalArgumentException` when no revision or bookmark is given, `HgValidationException` (`empty revision set`, unknown bookmark, the `--soft` refusal, and, when a working copy parent would be stripped without `setForce(true)`, `outstanding uncommitted merge` or `uncommitted changes`). Under the working copy lock the revision set is worked out (`-B` names included); a bookmark that is not the only one on its node is only deleted, then `strip()` takes the store lock and does the work.
 |===
 
 .Locks and dirstate
@@ -367,10 +375,10 @@ Shows or changes the phase of a revision (`hg phase`), stored as minimal roots i
 |Method |Meaning
 
 |`setRevision(String)`
-|Revision to query or move (must resolve, else `IOException`).
+|Revision to query or move, resolved against the changelog as hg's revision argument. Must be set before `call()`, which fails with `IOException` if it cannot be resolved.
 
 |`setPhase(int)`
-|Target phase: 0 public, 1 draft, 2 secret. Not set means query only.
+|Target phase: 0 public, 1 draft, 2 secret. The default `-1` means query only (`hg phase` without a phase option).
 
 |`setForce(boolean)`
 |`--force`: allow moving to a higher phase number (more secret). Without it such a move is refused (`cannot move N changesets to a higher phase, use --force`).
@@ -385,13 +393,13 @@ Shows or changes the phase of a revision (`hg phase`), stored as minimal roots i
 |Method |Returns / throws
 
 |`call()`
-|`int`: phase value (0 public, 1 draft, 2 secret). Throws `IOException` (revision not found, I/O failure; a lock failure is wrapped in `IOException`).
+|`int`: the effective phase of the revision after the call (0 public, 1 draft, 2 secret); when a move to a higher phase was refused, the unchanged current phase. Requesting the phase a revision already has changes nothing. A refused move is not an exception: nothing is changed, `getExitCode()` becomes 1 and a message is added to `getMessages()`. Notes and messages of an earlier call are cleared at the start of each call. Throws `IOException` (revision cannot be resolved, I/O failure; the lock cannot be acquired).
 |===
 
 Moving toward public affects the revision and all ancestors; moving toward secret affects it and all descendants. Roots are recomputed from scratch after each move.
 
 .Locks and dirstate
-* Query: no lock. Change: `lockStore()` only. No working copy lock, no dirstate context.
+* Query: no lock. Change: `lockStore()` only, with the repository's push lock timeout, while `.hg/store/phaseroots` is rewritten. No working copy lock, no dirstate context.
 
 .Differences from hg
 Line order and minimal-roots format match hg; the older per-node format was replaced.
@@ -415,13 +423,13 @@ Erases a file revision's content in place and replaces it with a tombstone (`hg 
 |Method |Meaning
 
 |`setFile(String)`
-|File path (required, else `HgValidationException`).
+|Repository-relative path of the tracked file (required, else `HgValidationException`).
 
 |`setRevision(String)`
-|Filelog node hex of the revision to censor (required).
+|Full 40-digit hex node id of the file revision in the file's filelog (not a changeset revision). Required, else `HgValidationException`.
 
 |`setTombstone(String)`
-|Free-text reason stored in the tombstone (default empty).
+|Free-text reason stored in the tombstone (default empty, as in real hg). The tombstone is the `\x01\ncensored: <message>\n\x01\n` metadata header.
 
 |`setCheckHeads(boolean)`
 |`--check-heads` (default true). When true, refuses to censor a revision still live at a head or a working directory parent. `false` is `--no-check-heads`.
@@ -433,7 +441,7 @@ Erases a file revision's content in place and replaces it with a tombstone (`hg 
 |Method |Returns / throws
 
 |`call()`
-|`void`; `IOException`, `HgLockException`, `HgValidationException`, `HgRepositoryNotFoundException` (no filelog), `HgRevisionNotFoundException`.
+|`void`. Replaces the selected file revision in its filelog with the tombstone (marking it `REVIDX_ISCENSORED`), rewriting the filelog in place and clearing the revlog cache. Throws `HgValidationException` if the file or the revision was not set, or the revision is live at a head or in the working directory (`cannot censor file in heads`, `cannot censor working directory`), `HgRepositoryNotFoundException` if the file has no filelog, `HgRevisionNotFoundException` if the revision is not in the filelog, `IOException` if the filelog cannot be read or rewritten, and `HgLockException` if a lock cannot be acquired.
 |===
 
 .Locks and dirstate
@@ -462,7 +470,7 @@ Shows or sets the working directory branch, resets it, or renames the branch of 
 |Method |Meaning
 
 |`setBranchName(String)`
-|Branch name (stripped; checked like `scmutil.checknewlabel`). Empty (non-null) is `IllegalArgumentException`.
+|Branch name to switch the working directory to (`hg branch NAME`); surrounding whitespace is stripped and the label is checked like `scmutil.checknewlabel` (reserved names, integers and invalid characters give `HgValidationException`). Empty (non-null) is `IllegalArgumentException`. Without a name `call()` only reports the current branch.
 
 |`setClean(boolean)`
 |`--clean`: go back to the branch of the first parent.
@@ -474,7 +482,7 @@ Shows or sets the working directory branch, resets it, or renames the branch of 
 |`--rev REV... NAME`: replace each changeset with a copy on the new branch (linear draft stack ending in a head, clean working directory).
 
 |`getChangedChangesets()`, `getBackupBundles()`
-|Count of replaced changesets; saved bundles.
+|How many changesets `--rev` replaced (`changed branch on N changesets`); the bundles of the replaced changesets that `--rev` saved.
 |===
 
 .Execution
@@ -483,14 +491,14 @@ Shows or sets the working directory branch, resets it, or renames the branch of 
 |Method |Returns / throws
 
 |`call()`
-|`String`: the branch of the working directory afterwards (or now, when showing). Throws `IOException`, `HgLockException`, `HgValidationException` (for example `a branch of the same name already exists`).
+|`String`: the branch of the working directory afterwards (or now, when only showing, or with `clean` and no name). Throws `IOException`, `HgLockException`, `HgValidationException` (for example `a branch of the same name already exists`; for `--rev` also `no branch name specified for the revisions`, `outstanding uncommitted merge`, `uncommitted changes`, `empty revision set`, `cannot change branch of non-linear revisions`, `cannot change branch in middle of a stack`, and `--rev is not supported for treemanifest or changeset-centric copy repositories`).
 |===
 
 .Locks and dirstate
 * Showing: no lock. Setting or clean: `lockWorkingCopy()`. `--rev`: additionally `lockStore()` taken inside `changeBranch`, kept until the old changesets are gone. No changing_parents or changing_files context is used in this class.
 
 .Differences from hg
-Not described in the javadoc (source not confirmed).
+* Follows `commands.branch`: the name check and the test for a branch of the same name happen under the working copy lock. `--rev` follows `cmdutil.changebranch`. No difference from hg is listed in the javadoc.
 
 .Example
 [source,java]
@@ -508,7 +516,7 @@ Lists named branches with their current head (`hg branches`).
 |Method |Meaning
 
 |`setIncludeClosed(boolean)`
-|`--closed`: include branches whose heads are all closed (hidden by default).
+|`hg branches -c`/`--closed`: also list branches whose heads are all closed (hidden by default, default `false`).
 |===
 
 .Execution
@@ -517,7 +525,7 @@ Lists named branches with their current head (`hg branches`).
 |Method |Returns / throws
 
 |`call()`
-|`List<BranchesCommand.BranchHead>` with `getBranch()`, `getNode()`, `getRev()`, `isClosed()`, `isActive()`. Throws `IOException`.
+|`List<BranchesCommand.BranchHead>`, one entry per named branch; empty for an empty repository. Each entry has `getBranch()`, `getNode()` (20-byte node of the reported head), `getRev()` (changelog revision of the head), `isClosed()` (every head of the branch closes it), `isActive()`. Takes no lock and writes nothing. Throws `IOException` if the changelog cannot be read.
 |===
 
 Reported head: highest-revision open head, else highest closed. Order: active branches first (descending revision), then inactive, ties by reverse name and open before closed. `isActive()` means the head is a repository-wide topological head.
@@ -526,7 +534,7 @@ Reported head: highest-revision open head, else highest closed. Order: active br
 * No lock, no dirstate context (read only).
 
 .Differences from hg
-Ordering and head selection verified against hg 7.2.2 (per javadoc); no known differences listed.
+Ordering and head selection were verified against hg 7.2.2 (`branchmap.branches_info`, `commands.branches`); sorting by revision alone, as an earlier version did, diverged from hg and was fixed. No known differences are listed.
 
 .Example
 [source,java]
@@ -546,13 +554,13 @@ Creates, moves, or removes a tag (`hg tag`).
 |Method |Meaning
 
 |`setTagName(String)`
-|Tag name.
+|Name of the tag to create, move or remove. Null or empty (the default) makes `call()` list the tags instead.
 
 |`setNodeId(byte[])`
-|Target node (at least 20 bytes). Required unless `setRemove(true)`.
+|Target node (at least 20 bytes; the first 40 hex digits of it are used). Required when creating a tag, ignored when `setRemove(true)`.
 
 |`setCommit(boolean)`
-|Commit the `.hgtags` change (default true). Never commits for local tags.
+|Commit the `.hgtags` change right after it is updated (default true); false leaves `.hgtags` changed but uncommitted. No effect for local tags, which are never committed.
 
 |`setLocal(boolean)`
 |`--local`: write `.hg/localtags` (untracked, no commit).
@@ -561,10 +569,10 @@ Creates, moves, or removes a tag (`hg tag`).
 |`--remove`: append a nullid entry (40 zeros); no node needed.
 
 |`setForce(boolean)`
-|`-f`: allow moving an existing tag. Otherwise `tag '<name>' already exists (use -f to force)`.
+|`-f`: allow moving a tag name that already resolves to a non-null revision. Otherwise `tag '<name>' already exists (use -f to force)`, for both global and local tags. Irrelevant with `setRemove(true)`: an existing tag can always be removed.
 
 |`registerPreTagHook(HgHook)` / `registerPostTagHook(HgHook)`
-|Hooks; a false result of a pre hook raises `HgValidationException` (`Tag creation rejected by PRE_TAG hook`).
+|Hooks; `null` is ignored. A pre hook runs before anything is written and can veto: a false result raises `HgValidationException` (`Tag creation rejected by PRE_TAG hook`). A post hook runs last, after the tag was written (and committed), and exceptions from it propagate. The context map holds `repository`, `tag` and `node`.
 |===
 
 .Execution
@@ -573,11 +581,11 @@ Creates, moves, or removes a tag (`hg tag`).
 |Method |Returns / throws
 
 |`call()`
-|`Map<String,String>`; meaning of the entries: source not confirmed in the parts read. Throws `IOException`, `HgLockException`, `HgValidationException`, `IllegalArgumentException` (no valid node).
+|`Map<String,String>`. When a tag name was set: a single entry, tag name to the 40-character hex node written (all zeros for a removal). Otherwise (listing): the tag name to hex node pairs of `.hgtags` in file order, later lines replacing earlier ones, and an empty map if the file does not exist. A global tag adds `.hgtags` to the dirstate and, with `setCommit(true)`, commits it with author `hg4j <hg4j@google.com>` and message `Added tag NAME for changeset SHORT` (or `Removed tag NAME`). Throws `IllegalArgumentException` if a tag is to be created and no node of at least 20 bytes was set, `HgValidationException` (an `IOException`) if the tag already exists and neither force nor remove is set or a pre hook returns false, `IOException` if reading or writing the tag files or committing fails, and `HgLockException` if a lock cannot be acquired within the push lock timeout.
 |===
 
 .Locks and dirstate
-* `lockWorkingCopy()` then `lockStore()` before the first read. The commit goes through `CommitCommand`. `changingParents`/`changingFiles` are not called in this class itself.
+* `lockWorkingCopy()` then `lockStore()` (waiting up to the repository's push lock timeout) before the first read. The commit goes through `CommitCommand`. `changingParents`/`changingFiles` are not called in this class itself.
 
 .Differences from hg
 * The existing-tag check spans local and global tags together (verified against hg 7.2.2).
@@ -605,7 +613,7 @@ None (constructor only).
 |Method |Returns / throws
 
 |`call()`
-|`List<TagsCommand.Tag>` with `getName()`, `getNode()`, `getRev()`, `isLocal()`. Throws `IOException`.
+|`List<TagsCommand.Tag>`, never null. Each `Tag` has `getName()` (never null), `getNode()` (20-byte node; all zeros for `tip` of an empty repository), `getRev()` (revision number; -1 for `tip` of an empty repository) and `isLocal()` (defined in `.hg/localtags` rather than `.hgtags`). Reads `.hgtags` from the working copy and `.hg/localtags`, and always adds the pseudo tag `tip`. Throws `IOException` if reading the tag files or the changelog fails.
 |===
 
 Rules: `.hg/localtags` wins over `.hgtags`; last line wins; nullid means deleted; tags with unknown nodes are omitted; `tip` always names the real tip; order is highest revision first, then reverse alphabetical.
@@ -634,25 +642,25 @@ Lists, creates, moves, deletes, activates bookmarks (`hg bookmarks`, `hg bookmar
 |Method |Meaning
 
 |`setBookmarkName(String)`
-|Bookmark name.
+|The bookmark to create, move, delete or activate. Without a name (and without delete or active) `call()` only lists the bookmarks.
 
 |`setNodeId(byte[])`
-|Target node.
+|Target changeset (`hg bookmark -r REV`) as a binary node id. When not set (or null) the first parent of the working copy is used and a new bookmark also becomes the active one; an explicit target does not activate it.
 
 |`setRevision(String)`
-|Target as a 40-hex node string (converted with `NodeIdUtil.fromHex`); null or empty is ignored.
+|Same as `setNodeId` but takes the full 40-digit hex node id (converted with `NodeIdUtil.fromHex`); null or empty leaves the target unchanged, other revision spellings are not resolved here.
 
 |`setDelete(boolean)`
-|Delete the bookmark.
+|`hg bookmark -d`: remove the bookmark named by `setBookmarkName` (and deactivate it if it was the active one). Default false.
 
 |`setActive(boolean)`
-|Activate (or deactivate) the bookmark, as `hg bookmark -i`.
+|Activate the existing bookmark named by `setBookmarkName`, or deactivate the current bookmark when no name is set (`hg bookmark -i`). Default false.
 
 |`setCurrentOnly(boolean)`
-|Internal switch used by `hg update`: with `setActive`, changes only `bookmarks.current` under the working copy lock.
+|Marks `setActive` as the internal switch of the active bookmark that `hg update` performs: changes only `bookmarks.current` and needs just the working copy lock. Without it, activating or deactivating is the `hg bookmark -i` command, which takes both locks and a transaction.
 
 |`setForce(boolean)`
-|`-f`: allow moving to a non-descendant target. Otherwise `bookmark '<name>' already exists (use -f to force)`. A forward move (including across an obsolescence successor) is allowed without it.
+|`-f`: allow moving an existing bookmark to a revision that is not a descendant of its current target (a backward or divergent move). Otherwise `bookmark '<name>' already exists (use -f to force)`. A forward move (new target a descendant of the current one, including across an obsolescence successor) is allowed without it, like a new name. Irrelevant to delete and to `setActive`.
 |===
 
 .Execution
@@ -661,23 +669,23 @@ Lists, creates, moves, deletes, activates bookmarks (`hg bookmarks`, `hg bookmar
 |Method |Returns / throws
 
 |`call()`
-|`Map<String,String>` of bookmarks and their targets. Throws `IOException`, `HgLockException`.
+|`Map<String,String>` of bookmarks and their targets. Listing needs no lock. Every change (add, move, delete, activate, deactivate) reads `.hg/bookmarks`, decides and writes it again while holding the locks (see below), so that two writers cannot silently drop each other's change. Throws `IOException`, `HgLockException`.
 
 |`list()`
 |`Map<String,String>`; read only, no lock.
 
 |`getActiveBookmark()`
-|Active bookmark (`String`); the source of the return value was not read in detail.
+|The active bookmark name read from `.hg/bookmarks.current`, or `null` when there is none or the file cannot be read.
 
 |`mergeFromRemote(HgRepository, Map, String)` (static)
-|Merges remote bookmarks on pull/fetch (new, equal, fast-forward, keep local, else divergent `name@suffix`).
+|Merges remote bookmarks on pull/fetch (new, equal, fast-forward, keep local when it is ahead, else a divergent `name@remotePathName`). `remotePathName` is the suffix, for example the remote path alias; `null` uses `1` (like hg's `name@1` fallback). Returns nothing when the remote map is null or empty. Throws `IOException`, `HgLockException`.
 |===
 
 .Locks and dirstate
 * Listing: no lock. Changes: `lockWorkingCopy()` then `lockStore()`, waiting for both. With `setCurrentOnly(true)` and `setActive(true)` (not delete): `lockWorkingCopy()` only. No dirstate context.
 
 .Differences from hg
-* A new bookmark becomes active only when the name is given explicitly (per code comment).
+* A new bookmark with no explicit target (`setNodeId`/`setRevision`) points to the working copy parent and becomes active; an explicit target does not activate it.
 * `mergeFromRemote` simplifies hg's `comparebookmarks`/`validdest`.
 
 .Example

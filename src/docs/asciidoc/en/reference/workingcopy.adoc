@@ -1,13 +1,13 @@
 === Init
 
-Creates a new repository (`hg init`). Writes `.hg/requires`, creates `.hg/store` and the legacy `.hg/00changelog.i` guard file, and returns an `HgRepository`.
+Creates a new repository (`hg init`). Writes `.hg/requires`, creates `.hg/store` and the legacy `.hg/00changelog.i` guard file, and returns an `HgRepository`. The baseline requirements `dotencode`, `fncache`, `generaldelta`, `revlogv1` and `store` are always written; the setters below add to them. Every setter defaults to `false`.
 
 [cols="2,5"]
 |===
 |Method |Meaning
 
 |`setDirectory(File)`
-|Repository root. Created (with `mkdirs`) if missing. Required.
+|Directory in which the repository is created (`.hg` is created inside it). Created with its parents if missing. No default; `call()` fails if it is not set.
 
 |`setDirstateV2(boolean)`
 |Adds the `dirstate-v2` requirement.
@@ -16,22 +16,22 @@ Creates a new repository (`hg init`). Writes `.hg/requires`, creates `.hg/store`
 |Adds the `revlog-compression-zstd` requirement.
 
 |`setChangelogV2(boolean)`
-|`format.exp-use-changelog-v2`: adds `exp-changelog-v2`.
+|`format.exp-use-changelog-v2`: adds `exp-changelog-v2` (the changelog uses the docket-based revlog v2 format).
 
 |`setSidedataCopies(boolean)`
-|`format.exp-use-copies-side-data-changeset`: adds `exp-copies-sidedata-changeset`. Implies `setChangelogV2`.
+|`format.exp-use-copies-side-data-changeset`: adds `exp-copies-sidedata-changeset` (commits carry a `SD_FILES` sidedata record). Implies `setChangelogV2`.
 
 |`setTreemanifest(boolean)`
-|`experimental.treemanifest`: adds `treemanifest`.
+|`experimental.treemanifest`: adds `treemanifest` (manifests are split recursively per directory).
 
 |`setPersistentNodemap(boolean)`
-|`format.use-persistent-nodemap`: adds `persistent-nodemap`.
+|`format.use-persistent-nodemap`: adds `persistent-nodemap` (a `<radix>.n` nodemap trie is maintained).
 
 |`setFileIndexV1(boolean)`
-|`format.use-fileindex-v1`: adds `fileindex-v1` and drops `fncache`/`dotencode`. Implies `setPersistentNodemap`.
+|`format.use-fileindex-v1`: adds `fileindex-v1` (a radix-trie file index replaces the fncache store layout) and drops `fncache`/`dotencode`. Implies `setPersistentNodemap`.
 
 |`setGeneralV2(boolean)`
-|`experimental.revlogv2`: adds `exp-revlogv2.2` and drops `revlogv1`. Implies `setFileIndexV1` and `setPersistentNodemap`.
+|`experimental.revlogv2`: adds `exp-revlogv2.2` (manifests and filelogs use the general revlog v2 format) and drops `revlogv1`. Implies `setFileIndexV1` and `setPersistentNodemap`.
 |===
 
 Execution: `HgRepository call() throws IOException`. Throws `IllegalStateException` if no directory is set; `HgRepositoryNotFoundException` if a directory cannot be created, a path is not a directory, or `.hg/requires`/`.hg/00changelog.i` cannot be written; `HgValidationException` for `treemanifest` combined with `fileindex-v1` or `general-v2`.
@@ -57,7 +57,7 @@ Starts tracking files (`hg add`).
 |Method |Meaning
 
 |`addFile(String)`
-|Adds one explicit path (backslashes become `/`). When any `addFile` path is given, the selection below is not used for choosing files.
+|Queues one exact repository-relative path of an existing file or symlink (backslashes become `/`; `null` or empty is ignored). When any `addFile` path is given, `call()` adds exactly these paths and the pattern selection is not used.
 
 |`setPatterns(String...)`
 |`hg add [FILE]...`: patterns (`kind:pattern`, `set:EXPRESSION`).
@@ -78,7 +78,7 @@ Starts tracking files (`hg add`).
 |Messages about subrepositories (for example `skipping missing subrepository`).
 |===
 
-Execution: `void call() throws IOException, HgLockException`. Throws `HgValidationException` when an explicit path is not a regular file or symlink. With no `addFile` paths and no selection, every untracked file from `scanWorkingCopy()` is added. With a selection: unknown files that match, removed files that are back on disk, and ignored files only when named exactly.
+Execution: `void call() throws IOException, HgLockException`. Throws `HgValidationException` when an explicit path does not exist or is neither a regular file nor a symlink (a dangling symlink is accepted). With no `addFile` paths and no selection, every untracked file from `scanWorkingCopy()` is added. With a selection: unknown files that match, removed files that are back on disk, and ignored files only when named exactly.
 
 Locks and dirstate: `lockWorkingCopy()`, then `changingFiles(...)` around adding the files and the subrepository pass. Each subrepository is added under its own working copy lock while the parent lock is held.
 
@@ -130,19 +130,19 @@ Untracks files and deletes them from the working directory (`hg remove`).
 |Single path used by `call()`.
 
 |`setForce(boolean)`
-|Remove even when the file is added or modified.
+|Remove files with uncommitted changes (added or modified) anyway, like `hg remove -f`. Default false, which refuses them.
 
 |`setPatterns(String...)`
 |Patterns for `callSelected()`.
 
 |`setInclude(String...)`
-|`-I`.
+|`-I`: only files matching these patterns (globs by default).
 
 |`setExclude(String...)`
-|`-X`.
+|`-X`: not the files matching these patterns (globs by default).
 
 |`setCwd(String)`
-|Current directory relative to the repository root.
+|Current directory relative to the repository root, against which relative patterns are read.
 
 |`setSubrepos(boolean)`
 |`-S`: also remove in every hg subrepository the patterns reach. Without it only named subrepositories are entered.
@@ -153,8 +153,8 @@ Untracks files and deletes them from the working directory (`hg remove`).
 
 Execution:
 
-* `boolean call() throws IOException, HgLockException`: removes the single file. Throws `IllegalStateException` without a file, `HgValidationException` if the file is not tracked, or (without force) is added or modified.
-* `List<String> callSelected() throws IOException, HgLockException`: removes the tracked files the patterns select and returns the removed paths. Throws `HgValidationException("no files specified")` without patterns. Files that cannot be removed safely are skipped and reported in `getWarnings()`.
+* `boolean call() throws IOException, HgLockException`: removes the single file and returns `true` when it was removed. Throws `IllegalStateException` without a file, `HgValidationException` if the file is not tracked, or (without force) is added or modified.
+* `List<String> callSelected() throws IOException, HgLockException`: removes the tracked files the patterns select and returns the removed paths. Throws `HgValidationException("no files specified")` without patterns. Files that cannot be removed safely (marked for add, modified) are left and reported in `getWarnings()` unless forced; the others are removed.
 
 Locks and dirstate: `lockWorkingCopy()` then `changingFiles(...)` in both methods. Subrepositories take their own working copy lock. A file removed with force while in state `a` is only forgotten and stays on disk; other files are deleted from disk and marked `r`.
 
@@ -196,10 +196,10 @@ Stops tracking files without touching the working copy (`hg forget`).
 
 Execution:
 
-* `void call() throws IOException, HgLockException`: forgets one file. Throws `IllegalStateException` without a file, `HgValidationException("File is not tracked: ...")`.
+* `void call() throws IOException, HgLockException`: forgets one file (`setFile` is required). A file that was only added is dropped from the dirstate; a committed file is marked removed for the next commit. The file on disk is never touched. Throws `IllegalStateException` without a file, `HgValidationException("File is not tracked: ...")`.
 * `List<String> callSelected() throws IOException, HgLockException`: forgets the selected files and returns them. Throws `HgValidationException("no files specified")` without patterns. A file in state `a` becomes unknown; a committed one is marked `r`.
 
-Locks and dirstate: `lockWorkingCopy()` then `changingFiles(...)`. Subrepositories forget only files the parent's matcher names inside them, each under its own lock; a missing subrepository is skipped with a warning.
+Locks and dirstate: `lockWorkingCopy()` then `changingFiles(...)`. Subrepositories forget only files the parent's matcher names inside them, each under its own lock; what a subrepository forgot is reported with its path in front, and a missing subrepository is skipped with a warning.
 
 Differences from hg: none noted.
 
@@ -219,22 +219,22 @@ Copies a tracked file and records the copy source (`hg copy`).
 |Method |Meaning
 
 |`setSource(String)`
-|Source path for `call()`.
+|Repository-relative path of the tracked source for `call()`. Required there.
 
 |`setDestination(String)`
-|Destination path for `call()`.
+|Repository-relative destination path for `call()`. Required there.
 
 |`setForce(boolean)`
 |Overwrite an existing destination (`--force`). Default false.
 
 |`setPatterns(String...)`
-|`SOURCE... DEST` for `callPatterns()`; the destination must be an existing directory with several sources.
+|`SOURCE... DEST` for `callPatterns()`, as on the command line. Each is a pattern (`kind:pattern`; plain names are relative to `setCwd`); the destination must be an existing directory with several sources.
 
 |`setAfter(boolean)`
 |`--after`: record a copy that already happened on disk.
 
 |`setDryRun(boolean)`
-|`--dry-run`: only report.
+|`--dry-run`: only report what would be done.
 
 |`setForget(boolean)`
 |`--forget`: unmark the destinations as copies; files stay.
@@ -254,10 +254,10 @@ Copies a tracked file and records the copy source (`hg copy`).
 
 Execution:
 
-* `void call() throws IOException, HgLockException`: single copy. Throws `IllegalStateException` without source and destination, `HgRepositoryNotFoundException` if the source is missing, `HgValidationException` if the destination exists without force or the source is not tracked (or is state `r`).
-* `PatternResult callPatterns() throws IOException, HgLockException`: returns `record PatternResult(boolean failed, List<String> warnings, List<String> status)`. Like real hg it warns and continues on files it cannot handle; `failed()` mirrors exit status 1.
+* `void call() throws IOException, HgLockException`: single copy. Copies the source to the destination, marks the destination as added and records the copy source when real hg would; the source is left unchanged. Throws `IllegalStateException` without source and destination, `HgRepositoryNotFoundException` if the source does not exist on disk, `HgValidationException` if the destination exists without force or the source is not tracked (or is state `r`). The constructor throws `IllegalArgumentException` for a `null` repository.
+* `PatternResult callPatterns() throws IOException, HgLockException`: returns `record PatternResult(boolean failed, List<String> warnings, List<String> status)`. Takes all of the options above. Like real hg it warns and continues on files it cannot handle; `warnings` and `status` are the lines real hg prints, and `failed()` is true when a file was not handled (exit status 1).
 
-Locks and dirstate: `call()` takes `lockWorkingCopy()` only, backs up the dirstate bytes and restores them on failure, and does not use `changingFiles`. `callPatterns()` (through `CopyEngine`) takes `lockWorkingCopy()` and then `changingFiles(...)`, writing the dirstate unless dry run. With `atRev` it takes the working copy lock but no dirstate changing context.
+Locks and dirstate: `call()` takes `lockWorkingCopy()` then `changingFiles(...)`; the dirstate is written once when the context ends and not at all on failure. `callPatterns()` (through `CopyEngine`) takes `lockWorkingCopy()` and then `changingFiles(...)`, writing the dirstate unless dry run. With `atRev` it takes the working copy lock but no dirstate changing context.
 
 Differences from hg: the class javadoc lists verified behavior: a copy chain collapses to the earlier source only while the immediate source is an uncommitted add (state `a`); copying a freshly added file that was never a copy stores no copy metadata; symlinks are copied as links.
 
@@ -278,28 +278,28 @@ Moves a file and records the rename (`hg rename` / `hg mv`).
 |Method |Meaning
 
 |`setSource(String)`
-|Source path for `call()`.
+|Repository-relative path of an existing file or symlink (a dangling symlink is allowed) for `call()`. Required there.
 
 |`setTarget(String)`
-|Target path for `call()`.
+|Repository-relative target path for `call()`. Required there.
 
 |`setPatterns(String...)`
-|`SOURCE... DEST` for `callPatterns()`.
+|`SOURCE... DEST` for `callPatterns()`, as on the command line. Each is a pattern (`kind:pattern`; plain names are relative to `setCwd`); the destination must be an existing directory with several sources.
 
 |`setForce(boolean)`
-|Overwrite an existing destination (only for `callPatterns()`).
+|`-f`/`--force`: overwrite an existing destination (only for `callPatterns()`).
 
 |`setAfter(boolean)`
 |`--after`: record a rename that already happened on disk.
 
 |`setDryRun(boolean)`
-|`--dry-run`.
+|`--dry-run`: only report what would be done.
 
 |`setForget(boolean)`
-|`--forget`: unmark the destinations as copies.
+|`--forget`: unmark the destinations as copies (the files stay).
 
 |`setAtRev(String)`
-|`--at-rev REV`: same semantics as in `CopyCommand`.
+|`--at-rev REV`: the rename is recorded in (or, with `setForget`, removed from) the changeset REV, which is replaced by a changed copy of itself. Needs `setAfter` or `setForget`; REV must be a draft without children.
 
 |`setInclude(String...)`
 |`-I`.
@@ -313,10 +313,10 @@ Moves a file and records the rename (`hg rename` / `hg mv`).
 
 Execution:
 
-* `void call() throws IOException, HgLockException`: single rename. Throws `IllegalStateException` without source and target, `HgRepositoryNotFoundException` if the source does not exist. Moves the file (replacing an existing target), marks the source `r`, the target `a`, and records the copy.
-* `PatternResult callPatterns() throws IOException, HgLockException`: same `PatternResult` record as `CopyCommand`.
+* `void call() throws IOException, HgLockException`: single rename. Throws `IllegalStateException` without source and target, `HgRepositoryNotFoundException` if the source does not exist. Moves the file (replacing an existing target and creating parent directories), marks the source `r`, the target `a`, and records the copy. The dirstate is written once at the end and not at all if anything fails (the moved file is not moved back).
+* `PatternResult callPatterns() throws IOException, HgLockException`: `hg rename [OPTION]... SOURCE... DEST` with all of the options. Returns the same `PatternResult` record as `CopyCommand` (real hg warns and goes on for a file it cannot handle; `failed()` says so).
 
-Locks and dirstate: same as `CopyCommand`. `call()` takes `lockWorkingCopy()`, restores the dirstate bytes on failure, and does not use `changingFiles`. `callPatterns()` uses `CopyEngine` with `lockWorkingCopy()` and `changingFiles(...)`.
+Locks and dirstate: same as `CopyCommand`. `call()` takes `lockWorkingCopy()` then `changingFiles(...)`; it does not use `changingFiles`. `callPatterns()` uses `CopyEngine` with `lockWorkingCopy()` and `changingFiles(...)`.
 
 Differences from hg: `call()` does not check whether the source is tracked, and replaces an existing target; `callPatterns()` is the option-complete path. Source does not state this as a deliberate difference.
 
@@ -340,19 +340,19 @@ Restores files to a revision (`hg revert`). Default target is the first parent.
 |Single path for `call()`.
 
 |`setRevision(String)`
-|Target revision (`-r`). Default is parent 1.
+|Revision to revert to (`-r`), resolved against the changelog. `null` or empty (the default) means the first parent of the working directory.
 
 |`setPatterns(String...)`
-|Patterns for `callSelected()`.
+|Patterns for `callSelected()` (`kind:pattern`, `set:EXPRESSION`; a bare name is relative to the current directory).
 
 |`setInclude(String...)`
-|`-I`.
+|`-I`: only files matching these patterns (globs by default).
 
 |`setExclude(String...)`
-|`-X`.
+|`-X`: not the files matching these patterns (globs by default).
 
 |`setCwd(String)`
-|Current directory relative to the repository root.
+|Current directory relative to the repository root, against which relative patterns are read.
 
 |`setAll(boolean)`
 |`--all`: every changed file.
@@ -366,8 +366,8 @@ Restores files to a revision (`hg revert`). Default target is the first parent.
 
 Execution:
 
-* `boolean call() throws IOException, HgLockException`: reverts one file. Throws `IllegalStateException` without a file; `HgValidationException` when the parent is zero and the file is not an added file.
-* `List<String> callSelected() throws IOException, HgLockException`: reverts modified, added, removed and deleted files that match; returns the reverted paths. Throws `HgValidationException` when no files, patterns or `setAll` are given (with a hint), or with an uncommitted merge and no revision; `HgRevisionNotFoundException` for an unknown revision.
+* `boolean call() throws IOException, HgLockException`: reverts one file to its state in the target revision and returns `true` when it was reverted. Throws `IllegalStateException` without a file; `HgValidationException` when the repository has no parent commit and the file is not an added file.
+* `List<String> callSelected() throws IOException, HgLockException`: reverts modified, added, removed and deleted files that match; returns the reverted paths, sorted. `getWarnings()` and `getSubrepoMessages()` are reset at the start of each call. Throws `HgValidationException` when no files, patterns or `setAll` are given (with a hint), with an uncommitted merge and no revision, or when a matching subrepository does not exist in the target revision; `HgRevisionNotFoundException` when the revision cannot be resolved.
 
 Locks and dirstate: `call()` takes `lockWorkingCopy()` then `changingFiles(...)`. `callSelected()` reads parents and resolves the revision before the lock, then holds `lockWorkingCopy()` for the status read and for the per-file `call()` invocations (which re-enter the lock and their own `changingFiles`). Subrepositories matched by the selection are reverted and then updated to the recorded revision.
 
@@ -396,10 +396,10 @@ Deletes untracked, non-ignored files and empty directories (`hg purge`, `hg clea
 |`--files`, on by default. When false, files stay and only empty directories can be removed.
 
 |`setPurgeDirectories(boolean)`
-|Remove empty untracked directories. Default true.
+|Remove untracked directories that end up empty. Default true; false leaves them (restricting the purge like `hg purge --files`).
 |===
 
-Execution: `void call() throws IOException`.
+Execution: `void call() throws IOException`. Every entry under the repository root that is not in the dirstate is a candidate; ignored paths are kept unless `setPurgeIgnored` is set. Files are deleted if `setPurgeFiles` is on, then untracked directories that are empty are deleted if `setPurgeDirectories` is on.
 
 Locks and dirstate: no lock is taken; the dirstate is only read and not written; no `changing_files`/`changing_parents` context.
 
@@ -421,7 +421,7 @@ Compares the working directory with the dirstate and the parent commit (`hg stat
 |Method |Meaning
 
 |`setTreeFilter(HgTreeFilter)`
-|Restricts the tree (null is ignored). Default `HgTreeFilter.ALL`.
+|Restricts the paths examined (narrow support); `null` is ignored. The default `HgTreeFilter.ALL` uses the faster dirstate-based scan.
 
 |`setPatterns(String...)`
 |Files to report (patterns, `kind:pattern`, `set:EXPRESSION`).
@@ -436,9 +436,9 @@ Compares the working directory with the dirstate and the parent commit (`hg stat
 |Current directory relative to the repository root.
 |===
 
-Execution: `Status call() throws IOException`. `Status` has `getAdded()`, `getModified()`, `getRemoved()`, `getClean()` and `getUntracked()`, each a `Set<String>`.
+Execution: `Status call() throws IOException`. Computes the status against the first parent; only paths matching the patterns, include and exclude options are reported. Never returns `null`. `Status` has `getAdded()`, `getModified()`, `getRemoved()`, `getClean()` and `getUntracked()`, each a `Set<String>`.
 
-Locks and dirstate: the status itself takes no lock. When it finds entries whose stat can be refreshed, it applies them with `lockWorkingCopy(0)` (does not wait; the fixes are dropped if the lock is unavailable), following `_poststatusfixup`. No `changing_files`/`changing_parents` context.
+Locks and dirstate: the status itself takes no lock. When it finds entries whose stat can be refreshed, it applies them with `lockWorkingCopy(0)` (never waited for; the fixes are dropped if the lock is not free at that moment), following `_poststatusfixup`. No `changing_files`/`changing_parents` context.
 
 Differences from hg: none stated.
 
@@ -459,22 +459,22 @@ Computes per-file unified diffs between two revisions (`hg diff -r OLD -r NEW`).
 |Method |Meaning
 
 |`setOldRevision(int)`
-|Old revision number. Default is the parent of the new revision.
+|Old revision number (`hg diff -r OLD:NEW`). Default is the first parent of the new revision; -1 compares against an empty manifest.
 
 |`setOldRevision(NodeId)`
-|Old revision by node (null restores the default; a lookup failure gives -1).
+|Old revision by node. `null` restores the default (first parent of the new revision); a node not found in the changelog is treated as an empty manifest.
 
 |`setNewRevision(int)`
-|New revision number. Default is tip; -1 means an empty manifest.
+|New revision number. Default is tip; -1 compares against an empty manifest.
 
 |`setNewRevision(NodeId)`
-|New revision by node (null restores the default).
+|New revision by node. `null` restores the default (tip); a node not found in the changelog is treated as an empty manifest.
 
 |`setTreeFilter(HgTreeFilter)`
-|Restricts the tree.
+|Restricts the diff to paths the filter accepts, in addition to any pattern selection. `null` is ignored and the previous filter (initially accept-all) stays.
 
 |`setPatterns(String...)`
-|Files to diff (patterns).
+|Files to diff (`kind:pattern`, `set:EXPRESSION`).
 
 |`setInclude(String...)`
 |`-I`.
@@ -486,9 +486,9 @@ Computes per-file unified diffs between two revisions (`hg diff -r OLD -r NEW`).
 |Current directory relative to the repository root.
 |===
 
-Execution: `List<DiffEntry> call() throws IOException`. Each `DiffEntry` has `getPath()`, `getChangeType()` (`ADD`, `MODIFY`, `DELETE`) and `getDiffContent()` (unified diff text). Returns an empty list when there is no changelog or no revision.
+Execution: `List<DiffEntry> call() throws IOException`. Each `DiffEntry` has `getPath()`, `getChangeType()` (`ADD`, `MODIFY`, `DELETE`) and `getDiffContent()` (unified diff text). One entry is returned per differing file that passes the tree filter and the pattern selection. Without further settings it diffs the tip against its first parent. Returns an empty list when the repository has no changesets.
 
-Locks and dirstate: none. It calls `refreshIfChangedOnDisk()` first; no dirstate context.
+Locks and dirstate: none; it writes nothing and uses no dirstate context. It calls `refreshIfChangedOnDisk()` first.
 
 Differences from hg: the javadoc notes that an explicit -1 new revision means an empty manifest rather than tip (sentinel `NOT_SET`).
 
@@ -509,19 +509,19 @@ Reads and updates merge conflict state (`hg resolve`), the counterpart of `Merge
 |Method |Meaning
 
 |`setFile(String)`
-|Path to mark.
+|Repository-relative path of a file in the current merge state to mark. `null` (the default) marks nothing; it only has an effect together with `markResolved` or `markUnresolved`.
 
 |`markResolved(boolean)`
-|Mark the file resolved (`resolve -m`).
+|Mark the file resolved (`hg resolve --mark`). Default false.
 
 |`markUnresolved(boolean)`
-|Mark the file unresolved (`resolve -u`).
+|Mark the file unresolved (`hg resolve --unmark`). Default false; ignored if `markResolved` is also true.
 
 |`list(boolean)`
-|Return the whole state (`resolve -l`) even when marking.
+|Return the state of every file of the merge state (`hg resolve --list`) even when a file was marked. Default false. Without a marking, all files are returned either way.
 |===
 
-Execution: `Map<String, Boolean> call() throws IOException, HgLockException`. The map goes from path to resolved (true) or unresolved (false). When marking without `list`, only the marked file is returned. Throws `HgValidationException` when marking outside a merge ("resolve command not applicable when not merging") or for a path not in the merge.
+Execution: `Map<String, Boolean> call() throws IOException, HgLockException`. The map goes from path to resolved (true) or unresolved (false). When marking without `list`, only the marked file is returned. Throws `HgValidationException` when marking outside a merge ("resolve command not applicable when not merging") or for a path not in the merge. The constructor throws `IllegalArgumentException` for a `null` repository.
 
 Locks and dirstate: `lockWorkingCopy(timeout)` with `resolvePushLockTimeoutMs()`, taken before the merge state is read. No `changing_files`/`changing_parents` context.
 
@@ -544,25 +544,25 @@ Checks out a revision into the working copy (`hg update`).
 |Method |Meaning
 
 |`setRevision(String)`
-|Target revision: revision identifier or named branch (branch head). Unresolvable values throw.
+|Target revision, required before `call()`: a revision identifier (revision number, node hex or prefix, symbolic name) or a named branch, which selects the highest-numbered revision on it. Unresolvable or ambiguous values throw.
 
 |`setForce(boolean)`
-|Update even with uncommitted changes (without it, uncommitted changes make the update fail).
+|Update even with uncommitted changes, like `hg update -C`. Default false: added, modified or removed files make the update fail.
 
 |`setTreeFilter(HgTreeFilter)`
-|Restricts the tree. If left at `ALL`, the repository's narrowspec is used.
+|Restricts which paths are checked out (narrow support); `null` is ignored. If left at the default `ALL`, the repository's narrowspec is used.
 
 |`registerPreUpdateHook(HgHook)`
-|Hook run before the update; returning false rejects it.
+|Hook run before the update (context keys `repository`, `targetRevision`, `force`); returning false rejects it. `null` is ignored.
 
 |`registerPostUpdateHook(HgHook)`
-|Hook run after the update; failures are logged as warnings.
+|Hook run after the update (context keys `targetNode`, `repository`); failures are logged and ignored. `null` is ignored.
 
 |`setProgressMonitor(ProgressMonitor)`
-|Receives LFS download progress.
+|Receives the progress of LFS downloads and the lines Mercurial prints about them.
 |===
 
-Execution: `byte[] call() throws IOException, HgLockException`. Returns the node id of the target revision. Throws `HgValidationException` ("Working directory has uncommitted changes. Use force to update.", "Repository is empty, cannot update.", "Update rejected by PRE_UPDATE hook"), `HgRevisionNotFoundException`, `HgRepositoryNotFoundException`.
+Execution: `byte[] call() throws IOException, HgLockException`. Returns the 20-byte node id of the revision that is now checked out. Throws `HgValidationException` ("Working directory has uncommitted changes. Use force to update.", "Repository is empty, cannot update.", "Update rejected by PRE_UPDATE hook"), `HgRevisionNotFoundException` (revision cannot be resolved or is ambiguous), `HgRepositoryNotFoundException` (a filelog index is missing for a tracked file).
 
 Locks and dirstate: `lockWorkingCopy()`, then `changingParents(...)` around the whole update (dirstate written when it ends well). After checkout it recurses into subrepositories and updates the active bookmark.
 
@@ -585,19 +585,19 @@ Merges a target revision into the working copy (`hg merge`), and aborts an unfin
 |Method |Meaning
 
 |`setNodeId(byte[])`
-|Target by node id.
+|Target by 20-byte node id. Takes precedence over `setRevision`. `null` clears it.
 
 |`setNodeId(NodeId)`
-|Target by node id (null clears).
+|Target by node id. Takes precedence over `setRevision`. `null` clears it.
 
 |`setRevision(int)`
-|Target by revision number.
+|Target by changelog revision number. Used only when no node id was set. Default -1 (not set).
 
 |`registerPreMergeHook(HgHook)`
-|Hook run before the merge; returning false rejects it.
+|Hook run before the merge touches the working copy, with the working copy lock held (context keys `repository`, `targetRev`, `targetNodeId`). Returning false aborts the merge. `null` is ignored.
 
 |`registerPostMergeHook(HgHook)`
-|Post-merge hook registration.
+|Hook run after the merge, while the dirstate is still being updated (context keys `conflicted`, `conflicts`, `repository`). Its return value is ignored and an exception it throws is logged as a warning. `null` is ignored.
 
 |`getMessages()`
 |What `abort()` printed (`aborting the merge, updating back to ...`).
@@ -605,8 +605,8 @@ Merges a target revision into the working copy (`hg merge`), and aborts an unfin
 
 Execution:
 
-* `MergeResult call() throws IOException, HgLockException`. `MergeResult` has `isConflicted()` and `getConflicts()` (list of paths). Throws `HgValidationException` ("Merge rejected by PRE_MERGE hook"), `IllegalStateException` in an empty repository, `HgRevisionNotFoundException` for unknown revisions or no common ancestor. Returns a non-conflicted result when the target is already merged or the merge is a fast-forward.
-* `void abort() throws IOException, HgLockException`. Throws `HgValidationException("no merge in progress")` and `IllegalStateException` in an empty repository. Restores the working copy to p1 (or the local side recorded in the merge state), resets to a single parent and clears `.hg/merge/state2`.
+* `MergeResult call() throws IOException, HgLockException`. `MergeResult` has `isConflicted()` (true when files have unresolved conflicts; their contents then contain conflict markers) and `getConflicts()` (repository-relative paths, empty when clean). Conflicts are reported in the result, not as an exception. If the target is the current parent or an ancestor of it, nothing changes; if the current parent is an ancestor of the target, the working copy is advanced to the target (fast-forward); otherwise a three-way merge is done file by file. Throws `HgValidationException` ("Merge rejected by PRE_MERGE hook"), `IllegalStateException` in an empty repository, `IllegalArgumentException` if neither a node id nor a valid revision number was set, `HgRevisionNotFoundException` if the target or the current parent is not in the changelog or no common ancestor exists.
+* `void abort() throws IOException, HgLockException`. Throws `HgValidationException("no merge in progress")` when the dirstate has no second parent, `IllegalStateException` when the repository has no first parent, and `HgRevisionNotFoundException` when the revision to go back to is not in the changelog. Restores the working copy to p1 (or the local side recorded in the merge state), resets to a single parent and clears `.hg/merge/state2`.
 
 Locks and dirstate: `call()` takes `lockWorkingCopy()`, clears the revlog cache, then `changingParents(...)` around the merge. `abort()` reads the dirstate and merge state before the lock, then takes `lockWorkingCopy()` and `changingParents(...)`. Subrepository state in `.hgsubstate` is merged or checked out when it changes.
 
@@ -632,7 +632,7 @@ Condensed overview of the working copy (`hg summary`). Returns a structured reco
 |Only the constructor `SummaryCommand(HgRepository)`; there are no public setters.
 |===
 
-Execution: `SummaryInfo call() throws IOException`. `SummaryInfo` is a record: `parents` (list of `ParentInfo(revision, node, description)`), `branch`, `activeBookmark`, `modified`, `added`, `removed`, `unknown`, `mergeInProgress` (more than one parent), `currentPhase` (`PhaseRoots.Phase` of the first parent).
+Execution: `SummaryInfo call() throws IOException`. Never returns `null`. `SummaryInfo` is a record: `parents` (none, one, or two during a merge; each `ParentInfo(revision, node, description)` with the local revision number or -1 if the changelog is missing or the node is unknown, the 40-character hex node id, and the full commit message or an empty string if it cannot be read), `branch` (current branch name), `activeBookmark` (`null` if none), `modified`, `added`, `removed`, `unknown` (counts of files), `mergeInProgress` (true if there are two parents), `currentPhase` (`PhaseRoots.Phase` of the first parent; public if it cannot be determined or there is no parent).
 
 Locks and dirstate: takes no lock itself; it uses `ParentsCommand`, `BookmarkCommand.getActiveBookmark()` and `StatusCommand`, so the status fix-up lock behavior described under Status applies.
 
@@ -677,10 +677,10 @@ Creates a new working copy that shares the store of the main repository (`hg sha
 |Method |Meaning
 
 |`setNewWorktreeDir(File)`
-|Directory of the new working copy. Must be empty or missing. Required.
+|Directory of the new working copy. Must not exist or be empty. Required before `call()`.
 |===
 
-Execution: `HgRepository call() throws IOException, HgLockException`. Throws `IllegalStateException` without a directory, `IOException` if the directory is not empty. Writes `.hg/sharedpath` (canonical path of the source `.hg`), copies `requires` and adds `shared`, then returns the new `HgRepository`.
+Execution: `HgRepository call() throws IOException, HgLockException`. Throws `IllegalStateException` without a directory, `IOException` if the directory is not empty or if directory creation, linking or the post-share checkout fails, and `HgLockException` if the post-share checkout cannot acquire the locks. Writes `.hg/sharedpath` (canonical path of the source `.hg`), copies `requires` and adds `shared`, then returns the new `HgRepository`.
 
 Locks and dirstate: `lockWorkingCopy()` of the new working copy during the checkout. When the store has revisions it runs `UpdateCommand` (`setForce(true)`, revision `tip`), which itself uses `lockWorkingCopy()` and `changingParents(...)`. For an empty store it writes a 40-byte parent stub dirstate. `changing_files` is not used here.
 

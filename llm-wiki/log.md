@@ -802,3 +802,10 @@ hg 소스를 읽어 하나씩 대조했다. 고친 것: `FetchCommand.applyBundl
 - 전체 실행에서 나온 실패 7건 중 코드 결함 3건을 고침: 번들 적용 뒤 sidedata 재작성이 cg5의 복사 정보를 덮어씀(번들에 sidedata가 있으면 재작성 생략), unshelve가 리베이스 결과 리비전을 남김(원본 strip 뒤에도 결과를 지움)과 abort가 `.hg/rebasestate`·merge 상태를 정리하지 않음, LFS 저장소의 strip이 cg1 임시 번들로 플래그를 잃음(cg3 사용).
 - 테스트가 옛 동작을 고정한 3건은 실제 hg로 확인하고 고침: unshelve --abort 뒤 `.orig` 잔류, sign은 `.hgsigs`만 커밋, store_shape 빈 이름은 응답 없음.
 - `lib/RealHgLockContentionInteropTest` 추가: 실제 hg와 hg4j가 동시에 쓰는 3가지 시나리오를 잠금을 켠 채(손상 없음)와 hg4j 잠금을 끈 채(손상이 드러남, `HgLock.disabledForTests`)로 각각 실행한다.
+
+## 2026-11-05 Javadoc 보강과 매뉴얼 갱신
+
+- 공개 메서드 Javadoc(영어) 58%에서 약 100%로 보강, 매뉴얼(영문, 국문)에 명령 레퍼런스와 API 변경 절 추가, `CHANGELOG.md` 신설.
+- 문서를 코드로 대조하다 발견해 고친 결함: `Hg.open`이 hg4j가 직접 만드는 `lfs`, `shared` 요구사항을 거부함(허용 목록에 `lfs`, `shared`, `relshared` 추가, `HgOpenWrittenRequirementsTest`), `CopyCommand.call()`/`RenameCommand.call()`(단일 파일)이 아직 `changing_files` 없이 dirstate 파일을 직접 백업·복원하던 것을 `changingFiles`로 이전.
+- 낡은 주석 정정: `RebaseCommand`의 "evolution 전용", 잠금 대기, 중복·오배치된 Javadoc.
+- 남은 확인 사항: `RenameCommand.call()`이 원본 추적 여부를 확인하지 않음(실제 hg와의 차이 여부 미확인).

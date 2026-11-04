@@ -881,9 +881,10 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * The store lock without the recovery of an interrupted transaction that {@link #lockStore(int)} performs when it takes the lock
-     * anew. Real hg's {@code repo.lock()} never recovers by itself; {@code recover} and {@code verify} need to look at the journal
-     * while they hold the lock.
+     * The store lock without the check for an interrupted transaction that {@link #lockStore(int)} makes when it takes the lock
+     * anew ({@code lockStore} refuses with {@link io.github.search5.hg4j.errors.HgAbandonedTransactionException} when a journal is
+     * left; neither method recovers anything, as real hg's {@code repo.lock()} does not). {@code recover} and {@code verify} take the
+     * lock this way because they need to look at the journal while they hold it.
      */
     public HgLock lockStoreWithoutRecovery(int timeoutMs) throws HgLockException {
         return track(new HgLock(new File(storeDir, "lock"), timeoutMs, true));

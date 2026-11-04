@@ -218,79 +218,59 @@ public final class CopyCommand {
                         "Destination file already exists: " + destinationPath + " (use setForce(true) to overwrite)");
             }
 
-            // 1. Lock repository for working directory changes
-            File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-            byte[] dirstateBackup = null; // read once the lock is held
+            // `dirstate.changing_files`: the dirstate is written once, when the context ends normally; a failure writes nothing
+            repository.changingFiles(() -> {
+            Dirstate dirstate = repository.getDirstate();
 
-            {
-                dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+            // 2. Source must be tracked (and not already scheduled for removal) to be copyable.
+            Dirstate.Entry sourceEntry = dirstate.getEntries().get(sourcePath);
+            if (sourceEntry == null || sourceEntry.getState() == 'r') {
+                throw new HgValidationException("Source file is not tracked: " + sourcePath);
+            }
 
-                try {
-                    Dirstate dirstate = repository.getDirstate();
-
-                    // 2. Source must be tracked (and not already scheduled for removal) to be copyable.
-                    Dirstate.Entry sourceEntry = dirstate.getEntries().get(sourcePath);
-                    if (sourceEntry == null || sourceEntry.getState() == 'r') {
-                        throw new HgValidationException("Source file is not tracked: " + sourcePath);
-                    }
-
-                    // 3. Resolve the copy-source chain the way real hg's dirstate does: only chase
-                    // through to an earlier recorded copy source while the immediate source is
-                    // itself still an uncommitted addition (state 'a'). Once a step is committed,
-                    // its state becomes 'n'/'m' and the chain naturally stops there.
-                    String originalSource = sourcePath;
-                    if (sourceEntry.getState() == 'a') {
-                        String chained = dirstate.getCopyMap().get(sourcePath);
-                        if (chained != null) {
-                            originalSource = chained;
-                        }
-                    }
-                    // Real hg stores no copy metadata at all when the source is a freshly added
-                    // file that was never itself a copy of anything (origsrc == src and src is
-                    // still 'added').
-                    boolean storeCopyMetadata = !(originalSource.equals(sourcePath) && sourceEntry.getState() == 'a');
-
-                    // 4. Perform physical copy. NOFOLLOW_LINKS ensures a symlink source is copied
-                    // as a new symlink (the link itself), not dereferenced into its target's content.
-                    destFile.getParentFile().mkdirs();
-                    CopyOption[] options = force
-                            ? new CopyOption[]{StandardCopyOption.REPLACE_EXISTING, LinkOption.NOFOLLOW_LINKS}
-                            : new CopyOption[]{LinkOption.NOFOLLOW_LINKS};
-                    Files.copy(srcFile.toPath(), destFile.toPath(), options);
-
-                    // 5. Register destination as newly added, mirroring AddCommand's lstat-aware
-                    // handling of symlinks (tracked size is the target path string length, not the
-                    // dereferenced file length).
-                    boolean isSymlink = Files.isSymbolicLink(destFile.toPath());
-                    boolean executable = !isSymlink && destFile.canExecute();
-                    int mode = executable ? 0755 : 0644;
-                    int size = isSymlink
-                            ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
-                            : (int) destFile.length();
-                    long time = SafeFileIO.lastModifiedSeconds(destFile);
-                    dirstate.addEntry(destinationPath, new Dirstate.Entry('a', mode, size, time));
-
-                    if (storeCopyMetadata) {
-                        dirstate.addCopy(destinationPath, originalSource);
-                    }
-
-                    repository.writeDirstate(dirstate);
-
-                    // Clean up crash backups on success
-                } catch (Exception e) {
-                    // Restore dirstate on failure
-                    if (dirstateBackup != null) {
-                        try {
-                            SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-                        } catch (Exception ignored) {
-                        }
-                    }
-                    try {
-                    } catch (Exception ignored) {
-                    }
-                    throw e;
+            // 3. Resolve the copy-source chain the way real hg's dirstate does: only chase
+            // through to an earlier recorded copy source while the immediate source is
+            // itself still an uncommitted addition (state 'a'). Once a step is committed,
+            // its state becomes 'n'/'m' and the chain naturally stops there.
+            String originalSource = sourcePath;
+            if (sourceEntry.getState() == 'a') {
+                String chained = dirstate.getCopyMap().get(sourcePath);
+                if (chained != null) {
+                    originalSource = chained;
                 }
             }
+            // Real hg stores no copy metadata at all when the source is a freshly added
+            // file that was never itself a copy of anything (origsrc == src and src is
+            // still 'added').
+            boolean storeCopyMetadata = !(originalSource.equals(sourcePath) && sourceEntry.getState() == 'a');
+
+            // 4. Perform physical copy. NOFOLLOW_LINKS ensures a symlink source is copied
+            // as a new symlink (the link itself), not dereferenced into its target's content.
+            destFile.getParentFile().mkdirs();
+            CopyOption[] options = force
+                    ? new CopyOption[]{StandardCopyOption.REPLACE_EXISTING, LinkOption.NOFOLLOW_LINKS}
+                    : new CopyOption[]{LinkOption.NOFOLLOW_LINKS};
+            Files.copy(srcFile.toPath(), destFile.toPath(), options);
+
+            // 5. Register destination as newly added, mirroring AddCommand's lstat-aware
+            // handling of symlinks (tracked size is the target path string length, not the
+            // dereferenced file length).
+            boolean isSymlink = Files.isSymbolicLink(destFile.toPath());
+            boolean executable = !isSymlink && destFile.canExecute();
+            int mode = executable ? 0755 : 0644;
+            int size = isSymlink
+                    ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                    : (int) destFile.length();
+            long time = SafeFileIO.lastModifiedSeconds(destFile);
+            dirstate.addEntry(destinationPath, new Dirstate.Entry('a', mode, size, time));
+
+            if (storeCopyMetadata) {
+                dirstate.addCopy(destinationPath, originalSource);
+            }
+
+            repository.writeDirstate(dirstate);
+                return null;
+            });
         }
     }
 

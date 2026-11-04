@@ -131,7 +131,10 @@ public class Hg implements AutoCloseable {
             // The real narrow-clone requirement token (NarrowCloneCommand writes exactly this) --
             // "narrowspec" (the old value here) is actually the on-disk *filename* of the
             // narrowspec data file, not a requirement string; never a valid entry in requires.
-            "narrowhg-experimental"
+            "narrowhg-experimental",
+            // Written by hg4j itself: `lfs` once an LFS revision arrives (HgLfsConfig.addRequirement), `shared` by
+            // WorktreeCommand, and `relshared` by real hg's `share --relative`.
+            "lfs", "shared", "relshared"
         );
 
         File[] requiresFiles = {

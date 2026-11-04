@@ -249,13 +249,9 @@ public class PullCommand {
     }
 
     /**
-     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int)}, but forwards a
-     * post-lock, pre-apply validator to {@link
-     * FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}
-     * -- see that method's doc (backlog item 38, push-race re-validation).
-     */
-    /**
      * Applies an already parsed changegroup bundle with a lock timeout and a validator, then sets the dirstate parent.
+     * The validator runs after the lock is held and before anything is applied, so a push can be re-validated against the state it
+     * actually lands on (see {@link FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}).
      * <p>
      * Takes the working copy lock (waiting up to {@code lockTimeoutMs}), delegates to
      * {@link FetchCommand#applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)} and,

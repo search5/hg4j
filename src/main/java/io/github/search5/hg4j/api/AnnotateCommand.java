@@ -288,17 +288,6 @@ public final class AnnotateCommand {
     }
 
     /**
-     * Computes {@code path}'s filelog revision {@code targetRev}'s content lines and, per line,
-     * the changelog revision it was introduced in -- following a rename/copy boundary back into
-     * the copy source (recursively) whenever {@code path}'s own filelog revision 0 carries
-     * {@code copy}/{@code copyrev} metadata. See the class-level doc for which storage layer this
-     * reads and why.
-     *
-     * @param visitingPaths cycle guard against a pathological copy chain that revisits a path
-     *                       already on the current recursion stack (ordinary repository history
-     *                       cannot produce this, but a corrupt one could).
-     */
-    /**
      * Backlog 42: {@code filelog}'s revision {@code rev} may be LFS-flagged ({@code
      * REVIDX_EXTSTORED}), in which case its raw filelog content is the LFS pointer text, not the
      * real file bytes -- resolve it the same way {@code UpdateCommand}'s checkout path does
@@ -311,6 +300,17 @@ public final class AnnotateCommand {
         return HgLfsFactory.getInstance().applySmudgeFilter(repository, path, filelog.getRevisionContent(rev), filelog.isExtStored(rev));
     }
 
+    /**
+     * Computes {@code path}'s filelog revision {@code targetRev}'s content lines and, per line,
+     * the changelog revision it was introduced in -- following a rename/copy boundary back into
+     * the copy source (recursively) whenever {@code path}'s own filelog revision 0 carries
+     * {@code copy}/{@code copyrev} metadata. See the class-level doc for which storage layer this
+     * reads and why.
+     *
+     * @param visitingPaths cycle guard against a pathological copy chain that revisits a path
+     *                       already on the current recursion stack (ordinary repository history
+     *                       cannot produce this, but a corrupt one could).
+     */
     private TraceResult traceLines(String path, int targetRev, Set<String> visitingPaths) throws IOException {
         File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
         if (!flIdx.exists() || !visitingPaths.add(path)) {

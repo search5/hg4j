@@ -327,47 +327,6 @@ public class Revlog {
         return index.getFileOffset(rev);
     }
 
-    /**
-     * Truncates this revlog in place so only revisions {@code [0, keepCount)} survive, handling
-     * all three on-disk layouts uniformly -- used by {@code StripCommand}. Must be called on a
-     * {@code Revlog} instance loaded from the still-untruncated files (its own {@code
-     * getIndexRecord}/{@code getFileOffset} reads must reflect the PRE-truncation state to compute
-     * the correct cut points), and only once per instance (its own view of the revlog is stale
-     * afterwards -- callers must {@code clearRevlogCache()} the owning repository before reopening
-     * it).
-     *
-     * <ol>
-     *   <li><b>v2 / docket-based</b> (changelog-v2 or general-v2, {@link RevlogIndex#isV2()}):
-     *   the physical index/data companion files are resolved via the docket's UUIDs (not {@code
-     *   idxFile}/{@code datFile} literally), records are a fixed {@value RevlogIndex#V2_RECORD_SIZE}
-     *   bytes each, and the docket header's own {@code index_end}/{@code data_end} fields (plus
-     *   their {@code pending} twins) must be rewritten to match or a later reopen sees stale
-     *   lengths and real hg rejects the revlog as corrupt ({@link
-     *   RevlogIndex#updateV2DocketSizes(long, long)}).
-     *   <li><b>inline v1</b> ({@link #isInline()}): data is interleaved with each 64-byte header
-     *   directly inside {@code idxFile}, no separate data file exists at all -- only {@code
-     *   idxFile} is truncated, to {@link #getFileOffset} of the first discarded revision (which
-     *   already accounts for every preceding revision's interleaved bytes).
-     *   <li><b>non-inline v1</b>: the original fixed-64-bytes-per-record {@code idxFile} truncation
-     *   plus an exact-byte-offset {@code datFile} truncation (never the old "assume every revision
-     *   is the same size" estimate -- see the {@code StripCommand} history this replaced).
-     * </ol>
-     *
-     * <p>Found and fixed 2026-09-05 (backlog #39, requirement-matrix expansion to {@code
-     * StripCommand}): the pre-existing {@code StripCommand.truncateRevlog} private helper this
-     * replaces handled ONLY the non-inline-v1 case, silently corrupting every inline-v1 manifest/
-     * filelog it stripped (real hg then aborts outright with "index 00manifest is corrupted" --
-     * this was the actual root cause of {@code StripRealHgInteropTest}'s two long-standing,
-     * previously-undiagnosed pre-existing failures) and every v2/docket-based changelog it
-     * stripped (real hg's {@code verify} then reports "changeset refers to unknown revision",
-     * since the stale docket end-pointers kept advertising revisions whose bytes had just been
-     * cut off the companion files).
-     */
-    /**
-     * The sizes the files of a v1 revlog have once {@link #truncate(int)} has cut it to {@code keepCount} revisions ({@code 0} when the
-     * file goes), worked out without touching anything: what a transaction writes to its journal before a strip, so that recovering it
-     * completes the cut. For a v2 (docket) revlog these are the companion files, and {@link #truncatedDocket(int)} gives the docket.
-     */
     /** The index file (for a version 2 revlog, its docket). */
     public File getIndexFile() {
         return idxFile;
@@ -447,6 +406,17 @@ public class Revlog {
     /**
      * Cuts the revlog so that only the first {@code keepCount} revisions remain, by shortening the files. For a version 1 revlog, keeping 0 revisions deletes the
      * index (and data) file; for a version 2 revlog the docket is updated.
+     * <p>It must be called on a {@code Revlog} loaded from the still-untruncated files (the cut points are computed from the
+     * pre-truncation index) and only once per instance; the instance's own view is stale afterwards, so the caller has to clear the
+     * repository's revlog cache before reopening it. The three on-disk layouts are handled alike:
+     * <ol>
+     *   <li><b>version 2 (docket)</b>: the companion files named by the docket are cut ({@value RevlogIndex#V2_RECORD_SIZE} bytes per
+     *   index record) and the docket's index and data end fields are rewritten, or a later open would see stale lengths.
+     *   <li><b>inline version 1</b>: only the index file is cut, at the file offset of the first discarded revision (the data is
+     *   interleaved with the record headers).
+     *   <li><b>split version 1</b>: the index file is cut at 64 bytes per record and the data file at the exact offset of the first
+     *   discarded revision.
+     * </ol>
      * <p>The method takes no lock and does not call {@link #clearCache()}. Callers (such as strip) are expected to hold the store lock,
      * to have the cut journaled, and to treat revision numbers at or above {@code keepCount} as gone afterwards.
      * @param keepCount the number of leading revisions to keep, 0 to {@code getRevisionCount()}

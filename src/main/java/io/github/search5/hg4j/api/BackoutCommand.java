@@ -90,88 +90,103 @@ public class BackoutCommand {
         if (revision == null || revision.isEmpty()) {
             throw new IllegalStateException("Revision to back out must be specified.");
         }
-        repository.clearRevlogCache();
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
+        // the working copy update is a changing_parents context that ends (and writes the dirstate) before the commit, which opens its
+        // own; a conflict is a result that keeps the update, not a failure
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore();
+             HgRepository.DirstateChange change = repository.openChangingParents()) {
+          try {
+            repository.clearRevlogCache();
 
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        byte[] targetNode = NodeIdUtil.resolveRevision(changelog, revision);
-        if (targetNode == null) {
-            throw new HgValidationException("Unknown revision: " + revision);
-        }
-        int targetRev = changelog.findRevision(targetNode);
-        Revlog.IndexRecord targetRec = changelog.getIndexRecord(targetRev);
-        if (targetRec.getParent2() != -1) {
-            throw new HgValidationException(
-                    "cannot backout a merge changeset -- --parent selection is not supported yet");
-        }
-        int parentRev = targetRec.getParent1();
-        if (parentRev == -1) {
-            throw new HgValidationException("cannot backout a change with no parents");
-        }
-        byte[] parentNode = changelog.getIndexRecord(parentRev).getNodeId();
-
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
-
-            Dirstate dirstate = repository.getDirstate();
-            byte[] op1 = dirstate.getParent1();
-            byte[] op2 = dirstate.getParent2();
-            if (op1 == null || NodeIdUtil.isAllZero(op1)) {
-                throw new HgValidationException("cannot backout in an empty repository");
+            byte[] targetNode = NodeIdUtil.resolveRevision(changelog, revision);
+            if (targetNode == null) {
+                throw new HgValidationException("Unknown revision: " + revision);
             }
-            if (op2 != null && !NodeIdUtil.isAllZero(op2)) {
-                // Matches real hg's scmutil.bail_if_changed: "outstanding uncommitted merge".
-                throw new HgValidationException("outstanding uncommitted merge");
+            int targetRev = changelog.findRevision(targetNode);
+            Revlog.IndexRecord targetRec = changelog.getIndexRecord(targetRev);
+            if (targetRec.getParent2() != -1) {
+                throw new HgValidationException(
+                        "cannot backout a merge changeset -- --parent selection is not supported yet");
             }
-
-            Status status = new StatusCommand(repository).call();
-            if (!status.getModified().isEmpty() || !status.getAdded().isEmpty() || !status.getRemoved().isEmpty()) {
-                // Matches real hg's scmutil.bail_if_changed: "uncommitted changes".
-                throw new HgValidationException("uncommitted changes");
+            int parentRev = targetRec.getParent1();
+            if (parentRev == -1) {
+                throw new HgValidationException("cannot backout a change with no parents");
             }
+            byte[] parentNode = changelog.getIndexRecord(parentRev).getNodeId();
 
-            int op1Rev = changelog.findRevision(op1);
-            if (op1Rev == -1) {
-                throw new HgRevisionNotFoundException(NodeIdUtil.toHex(op1));
-            }
-            ChangesetGraph graph = new ChangesetGraph(changelog);
-            if (!graph.isAncestor(targetRev, op1Rev)) {
-                throw new HgValidationException("cannot backout change that is not an ancestor");
-            }
+            {
 
-            Map<String, String> targetManifest = repository.getManifestAtCommit(targetNode);
-            Map<String, String> parentManifest = repository.getManifestAtCommit(parentNode);
-
-            if (op1Rev == targetRev) {
-                // The common case: REV is the working copy's own parent. The working copy
-                // already exactly matches REV, so applying REV-vs-its-parent's diff directly can
-                // never conflict.
-                applyDirectRevert(targetManifest, parentManifest, dirstate);
-            } else {
-                Map<String, String> localManifest = repository.getManifestAtCommit(op1);
-                List<String> conflicts = applyThreeWayBackout(targetManifest, localManifest, parentManifest,
-                        dirstate, op1, parentNode, targetNode);
-                if (!conflicts.isEmpty()) {
-                    repository.writeDirstate(dirstate);
-                    throw new HgMergeConflictException(conflicts,
-                            "backout halted: " + conflicts.size()
-                                    + " conflicting file(s) require resolution (see 'hg resolve --list')");
+                Dirstate dirstate = repository.getDirstate();
+                byte[] op1 = dirstate.getParent1();
+                byte[] op2 = dirstate.getParent2();
+                if (op1 == null || NodeIdUtil.isAllZero(op1)) {
+                    throw new HgValidationException("cannot backout in an empty repository");
                 }
+                if (op2 != null && !NodeIdUtil.isAllZero(op2)) {
+                    // Matches real hg's scmutil.bail_if_changed: "outstanding uncommitted merge".
+                    throw new HgValidationException("outstanding uncommitted merge");
+                }
+
+                Status status = new StatusCommand(repository).call();
+                if (!status.getModified().isEmpty() || !status.getAdded().isEmpty() || !status.getRemoved().isEmpty()) {
+                    // Matches real hg's scmutil.bail_if_changed: "uncommitted changes".
+                    throw new HgValidationException("uncommitted changes");
+                }
+
+                int op1Rev = changelog.findRevision(op1);
+                if (op1Rev == -1) {
+                    throw new HgRevisionNotFoundException(NodeIdUtil.toHex(op1));
+                }
+                ChangesetGraph graph = new ChangesetGraph(changelog);
+                if (!graph.isAncestor(targetRev, op1Rev)) {
+                    throw new HgValidationException("cannot backout change that is not an ancestor");
+                }
+
+                Map<String, String> targetManifest = repository.getManifestAtCommit(targetNode);
+                Map<String, String> parentManifest = repository.getManifestAtCommit(parentNode);
+
+                if (op1Rev == targetRev) {
+                    // The common case: REV is the working copy's own parent. The working copy
+                    // already exactly matches REV, so applying REV-vs-its-parent's diff directly can
+                    // never conflict.
+                    applyDirectRevert(targetManifest, parentManifest, dirstate);
+                } else {
+                    Map<String, String> localManifest = repository.getManifestAtCommit(op1);
+                    List<String> conflicts = applyThreeWayBackout(targetManifest, localManifest, parentManifest,
+                            dirstate, op1, parentNode, targetNode);
+                    if (!conflicts.isEmpty()) {
+                        repository.writeDirstate(dirstate);
+                        change.close();
+                        throw new HgMergeConflictException(conflicts,
+                                "backout halted: " + conflicts.size()
+                                        + " conflicting file(s) require resolution (see 'hg resolve --list')");
+                    }
+                }
+
+                repository.writeDirstate(dirstate);
+                change.close();
+
+                String shortHex = NodeIdUtil.toHex(targetNode).substring(0, 12);
+                String commitMessage = (message != null && !message.isEmpty())
+                        ? message
+                        : "Backed out changeset " + shortHex;
+
+                return new CommitCommand(repository)
+                        .setAuthor(author)
+                        .setMessage(commitMessage)
+                        .call();
             }
-
-            repository.writeDirstate(dirstate);
-
-            String shortHex = NodeIdUtil.toHex(targetNode).substring(0, 12);
-            String commitMessage = (message != null && !message.isEmpty())
-                    ? message
-                    : "Backed out changeset " + shortHex;
-
-            return new CommitCommand(repository)
-                    .setAuthor(author)
-                    .setMessage(commitMessage)
-                    .call();
+          } catch (HgMergeConflictException conflict) {
+            throw conflict;
+          } catch (Throwable failure) {
+            change.failed();
+            throw failure;
+          }
         }
     }
 

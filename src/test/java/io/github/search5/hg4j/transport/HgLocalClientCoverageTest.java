@@ -523,7 +523,8 @@ public class HgLocalClientCoverageTest {
     public void pushkeyReturnsFalseForAnUnsupportedNamespace(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.resolve("repo").toFile()).call();
         try (HgLocalClient client = new HgLocalClient(repo)) {
-            assertFalse(client.pushkey("phases", "somekey", null, "1"));
+            assertFalse(client.pushkey("nosuchnamespace", "somekey", null, "1"));
+            assertFalse(client.pushkey("phases", "somekey", null, "1"), "phases need an old and a new phase");
         }
     }
 

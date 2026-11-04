@@ -82,86 +82,142 @@ public class PhaseCommand {
      * @throws IOException if phase IO fails, the revision cannot be resolved, or (absent {@link
      *     #setForce}) the requested move would raise the phase of an already-registered revision
      */
+    private final List<String> messages = new ArrayList<>();
+    private int exitCode;
+    private final List<String> notes = new ArrayList<>();
+
+    /** The notes of the command ({@code phase changed for N changesets}), which Mercurial prints with {@code --verbose}. */
+    public List<String> getNotes() {
+        return notes;
+    }
+
+    /** What the command printed besides the phase ({@code cannot move N changesets to a higher phase, use --force}). */
+    public List<String> getMessages() {
+        return messages;
+    }
+
+    /** {@code ret} of {@code commands.phase}: 1 when a changeset could not be moved to a higher phase without {@code --force}. */
+    public int getExitCode() {
+        return exitCode;
+    }
+
     public int call() throws IOException {
-        File storeDir = repository.getStoreDir();
-        File phaseRootsFile = new File(storeDir, "phaseroots");
-        Revlog changelog = repository.getRevlog(new File(storeDir, "00changelog.i"), new File(storeDir, "00changelog.d"));
-
-        byte[] nodeBytes = NodeIdUtil.resolveRevision(changelog, revision);
-        if (nodeBytes == null) {
+        messages.clear();
+        notes.clear();
+        exitCode = 0;
+        File storeDir0 = repository.getStoreDir();
+        Revlog changelog0 = repository.getRevlog(new File(storeDir0, "00changelog.i"), new File(storeDir0, "00changelog.d"));
+        // commands.phase resolves the revisions before it locks anything
+        if (NodeIdUtil.resolveRevision(changelog0, revision) == null) {
             throw new IOException("Phase error: Revision not found in repository: " + revision);
         }
-        int targetRev = changelog.findRevision(nodeBytes);
-        if (targetRev < 0) {
-            throw new IOException("Phase error: Revision not found in repository: " + revision);
-        }
-
-        int count = changelog.getRevisionCount();
-        // Load current roots as revision numbers, skipping any line whose node is not a known
-        // revision -- real hg's own _readroots() silently drops ("removing unknown node ...")
-        // any phaseroots entry that no longer (or never did) resolve in the changelog.
-        List<int[]> rawRootsByPhase = new ArrayList<>(); // [phase, rev] pairs, level 1 and 2 only
-        if (phaseRootsFile.exists()) {
-            for (String line : Files.readAllLines(phaseRootsFile.toPath(), StandardCharsets.UTF_8)) {
-                line = line.trim();
-                if (line.isEmpty()) continue;
-                String[] parts = line.split("\\s+");
-                if (parts.length < 2) continue;
-                int ph;
-                try {
-                    ph = Integer.parseInt(parts[0]);
-                } catch (NumberFormatException e) {
-                    continue;
-                }
-                if (ph != 1 && ph != 2) continue;
-                byte[] rootNodeBytes;
-                try {
-                    rootNodeBytes = NodeIdUtil.fromHex(parts[1]);
-                } catch (RuntimeException e) {
-                    continue;
-                }
-                int rootRev = changelog.findRevision(rootNodeBytes);
-                if (rootRev < 0) continue;
-                rawRootsByPhase.add(new int[]{ph, rootRev});
-            }
-        }
-
-        int[] phaseOf = computePhases(count, rawRootsByPhase, changelog);
-
         if (forcePhase == -1) {
-            return phaseOf[targetRev];
+            // showing the phase takes no lock at all: the display branch only reads
+            return run();
         }
+        // `with repo.lock(), repo.transaction("phase")`: only the store lock, and only when the phase is to be changed
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore(lockTimeout)) {
+            return run();
+        } catch (io.github.search5.hg4j.errors.HgLockException e) {
+            // phases are changed from many places that only know IOException (the wire server among them)
+            throw new IOException(e.getMessage(), e);
+        }
+    }
 
-        int current = phaseOf[targetRev];
-        if (forcePhase == current) {
-            // Matches real hg's "no phases changed": no-op, file untouched.
-            return current;
-        }
-        if (forcePhase > current && !force) {
-            throw new IOException("cannot move 1 changesets to a higher phase, use --force");
-        }
+    private int run() throws IOException {
+        {
+            File storeDir = repository.getStoreDir();
+            File phaseRootsFile = new File(storeDir, "phaseroots");
+            Revlog changelog = repository.getRevlog(new File(storeDir, "00changelog.i"), new File(storeDir, "00changelog.d"));
 
-        int[] newPhaseOf = phaseOf.clone();
-        if (forcePhase < current) {
-            // Advance towards public: affects the target and ALL of its ancestors.
-            boolean[] anc = ancestorsOrSelf(targetRev, changelog);
-            for (int r = 0; r < count; r++) {
-                if (anc[r] && newPhaseOf[r] > forcePhase) {
-                    newPhaseOf[r] = forcePhase;
+            byte[] nodeBytes = NodeIdUtil.resolveRevision(changelog, revision);
+            if (nodeBytes == null) {
+                throw new IOException("Phase error: Revision not found in repository: " + revision);
+            }
+            int targetRev = changelog.findRevision(nodeBytes);
+            if (targetRev < 0) {
+                throw new IOException("Phase error: Revision not found in repository: " + revision);
+            }
+
+            int count = changelog.getRevisionCount();
+            // Load current roots as revision numbers, skipping any line whose node is not a known
+            // revision -- real hg's own _readroots() silently drops ("removing unknown node ...")
+            // any phaseroots entry that no longer (or never did) resolve in the changelog.
+            List<int[]> rawRootsByPhase = new ArrayList<>(); // [phase, rev] pairs, level 1 and 2 only
+            if (phaseRootsFile.exists()) {
+                for (String line : Files.readAllLines(phaseRootsFile.toPath(), StandardCharsets.UTF_8)) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    String[] parts = line.split("\\s+");
+                    if (parts.length < 2) continue;
+                    int ph;
+                    try {
+                        ph = Integer.parseInt(parts[0]);
+                    } catch (NumberFormatException e) {
+                        continue;
+                    }
+                    if (ph != 1 && ph != 2) continue;
+                    byte[] rootNodeBytes;
+                    try {
+                        rootNodeBytes = NodeIdUtil.fromHex(parts[1]);
+                    } catch (RuntimeException e) {
+                        continue;
+                    }
+                    int rootRev = changelog.findRevision(rootNodeBytes);
+                    if (rootRev < 0) continue;
+                    rawRootsByPhase.add(new int[]{ph, rootRev});
                 }
             }
-        } else {
-            // Retract towards secret: affects the target and ALL of its descendants.
-            boolean[] desc = descendantsOrSelf(targetRev, changelog);
-            for (int r = 0; r < count; r++) {
-                if (desc[r] && newPhaseOf[r] < forcePhase) {
-                    newPhaseOf[r] = forcePhase;
+
+            int[] phaseOf = computePhases(count, rawRootsByPhase, changelog);
+
+            if (forcePhase == -1) {
+                return phaseOf[targetRev];
+            }
+
+            int current = phaseOf[targetRev];
+            if (forcePhase == current) {
+                // Matches real hg's "no phases changed": no-op, file untouched.
+                return current;
+            }
+            if (forcePhase > current && !force) {
+                // commands.phase: not an abort; the changesets that could not be moved are counted in a warning and the exit code is 1
+                messages.add("cannot move 1 changesets to a higher phase, use --force\n");
+                exitCode = 1;
+                return current;
+            }
+
+            int[] newPhaseOf = phaseOf.clone();
+            if (forcePhase < current) {
+                // Advance towards public: affects the target and ALL of its ancestors.
+                boolean[] anc = ancestorsOrSelf(targetRev, changelog);
+                for (int r = 0; r < count; r++) {
+                    if (anc[r] && newPhaseOf[r] > forcePhase) {
+                        newPhaseOf[r] = forcePhase;
+                    }
+                }
+            } else {
+                // Retract towards secret: affects the target and ALL of its descendants.
+                boolean[] desc = descendantsOrSelf(targetRev, changelog);
+                for (int r = 0; r < count; r++) {
+                    if (desc[r] && newPhaseOf[r] < forcePhase) {
+                        newPhaseOf[r] = forcePhase;
+                    }
                 }
             }
-        }
 
-        writeRoots(phaseRootsFile, changelog, count, newPhaseOf);
-        return forcePhase;
+            writeRoots(phaseRootsFile, changelog, count, newPhaseOf);
+            int changes = 0;
+            for (int r = 0; r < count; r++) {
+                changes += newPhaseOf[r] != phaseOf[r] ? 1 : 0;
+            }
+            if (changes > 0) {
+                // `ui.note` (shown with --verbose); a status line when something could not be moved
+                notes.add("phase changed for " + changes + " changesets\n");
+            }
+            return forcePhase;
+        }
     }
 
     /**

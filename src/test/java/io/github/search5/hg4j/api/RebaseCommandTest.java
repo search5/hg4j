@@ -227,11 +227,8 @@ public class RebaseCommandTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        // Evolution-only rebase (2026-09-04): the 3 original chain commits (c2,c3,c4) are never
-        // physically stripped -- they remain fully readable (merely hidden via an obsolescence
-        // marker), so the post-rebase changelog holds all 5 original revisions (c0,c1,c2,c3,c4)
-        // PLUS the 3 freshly cherry-picked ones (c2',c3',c4') = 8, not the pre-2026-09-04 5.
-        assertEquals(8, cl.getRevisionCount(), "c0,c1,c2,c3,c4 (kept, now hidden) + 3 rebased chain commits");
+        // Like Mercurial without obsolescence markers: the originals (c2,c3,c4) are stripped once their copies exist.
+        assertEquals(5, cl.getRevisionCount(), "c0,c1 + the 3 rebased chain commits");
 
         int tipRev = NodeIdUtil.findRevisionByNodeId(cl, rebasedTip);
         assertTrue(new String(cl.getRevisionContent(tipRev), StandardCharsets.UTF_8).contains("chain tip"));
@@ -303,7 +300,7 @@ public class RebaseCommandTest {
         new AddCommand(repo).call();
         byte[] c2 = new CommitCommand(repo).setAuthor("t").setMessage("c2 on feature-branch").call();
 
-        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
+        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1).setKeepBranches(true);
         byte[] rebasedTip = rebaseCmd.call();
         assertNotNull(rebasedTip);
 
@@ -356,10 +353,8 @@ public class RebaseCommandTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        // Evolution-only rebase (2026-09-04): c2 is never physically stripped (only hidden via an
-        // obsolescence marker), so all 6 original revisions (c0..c5) remain, plus the freshly
-        // cherry-picked c2' = 7, not the pre-2026-09-04 6.
-        assertEquals(7, cl.getRevisionCount(), "c0,c1,c2 (kept, now hidden),c3,c4,c5, and rebased c2'");
+        // c2 is stripped once its copy exists
+        assertEquals(6, cl.getRevisionCount(), "c0,c1,c3,c4,c5, and rebased c2'");
 
         int restoredMergeRev = NodeIdUtil.findRevisionByNodeId(cl, c5);
         assertTrue(restoredMergeRev != -1, "merge commit must be restored preserving its original node id");

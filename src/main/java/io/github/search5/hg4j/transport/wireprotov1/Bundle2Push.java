@@ -78,6 +78,11 @@ final class Bundle2Push {
             }
         }
 
+        // Like real hg, the whole request runs inside one lock hold: the snapshot below, every part and the undo after a failure see
+        // the repository as this request left it. Locks taken and released per part would let a second push land in between, and a
+        // failure here would then restore files over its bookmarks and phases or roll back its changegroup instead of ours.
+        int lockTimeout = repo.resolvePushLockTimeoutMs();
+        try (HgLock requestWlock = repo.lockWorkingCopy(lockTimeout); HgLock requestLock = repo.lockStore(lockTimeout)) {
         // What the repository looked like before; the push is undone to this if it fails after something was changed
         Snapshot snapshot = Snapshot.take(repo);
         boolean changegroupApplied = false;
@@ -225,6 +230,14 @@ final class Bundle2Push {
             }
         }
         return reply.toBytes(null);
+        } catch (io.github.search5.hg4j.errors.HgLockException e) {
+            Bundle2.Writer failed = new Bundle2.Writer();
+            if (captureOutput) {
+                failed.addPart("output", false, Map.of(), Map.of(), new byte[0]);
+            }
+            failed.addPart("error:abort", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
+            return failed.toBytes(null);
+        }
     }
 
     /**

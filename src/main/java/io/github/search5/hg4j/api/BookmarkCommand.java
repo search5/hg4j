@@ -59,6 +59,18 @@ public class BookmarkCommand {
         return this;
     }
 
+    private boolean currentOnly;
+
+    /**
+     * Marks {@link #setActive} as the internal switch of the active bookmark that {@code hg update} performs, which changes only
+     * {@code bookmarks.current} and needs just the working copy lock. Without it, activating or deactivating a bookmark is the
+     * {@code hg bookmark -i} command, which takes the working copy lock, the store lock and a transaction.
+     */
+    public BookmarkCommand setCurrentOnly(boolean currentOnly) {
+        this.currentOnly = currentOnly;
+        return this;
+    }
+
     public BookmarkCommand setActive(boolean active) {
         this.active = active;
         return this;
@@ -78,7 +90,37 @@ public class BookmarkCommand {
         return this;
     }
 
-    public Map<String, String> call() throws IOException {
+    /**
+     * Listing needs no lock. Every change (add, move, delete, activate, deactivate) reads {@code .hg/bookmarks}, decides and writes it
+     * again while holding the working copy lock and then the store lock, in that order and waiting for them like real hg's
+     * {@code with repo.wlock(), repo.lock(), repo.transaction(b'bookmark')}: without them two writers each read the same file and
+     * the later one silently drops the change of the earlier one.
+     */
+    public Map<String, String> call() throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        boolean changes = delete || active || (bookmarkName != null && !bookmarkName.isEmpty());
+        if (!changes) {
+            return execute();
+        }
+        int timeout = repository.resolvePushLockTimeoutMs();
+        if (currentOnly && active && !delete) {
+            // what `hg update` does (bookmarks.activate / bookmarks.deactivate): only bookmarks.current changes, and the caller
+            // already runs under the working copy lock, which is the only lock real hg's update takes
+            try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(timeout)) {
+                return execute();
+            }
+        }
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(timeout);
+             io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore(timeout)) {
+            return execute();
+        }
+    }
+
+    /** {@code hg bookmarks}: the bookmarks and their targets. Reads only, so it takes no lock and cannot fail on one. */
+    public Map<String, String> list() throws IOException {
+        return new BookmarkCommand(repository).execute();
+    }
+
+    private Map<String, String> execute() throws IOException {
         File bkFile = new File(repository.getHgDir(), "bookmarks");
         File curBkFile = new File(repository.getHgDir(), "bookmarks.current");
 
@@ -178,11 +220,11 @@ public class BookmarkCommand {
      *                       {@code name@1} 폴백과 동일한 형태).
      */
     public static void mergeFromRemote(HgRepository repository, Map<String, String> remoteBookmarks,
-                                        String remotePathName) throws IOException {
+                                        String remotePathName) throws IOException, io.github.search5.hg4j.errors.HgLockException {
         if (remoteBookmarks == null || remoteBookmarks.isEmpty()) {
             return;
         }
-        Map<String, String> localBookmarks = new BookmarkCommand(repository).call();
+        Map<String, String> localBookmarks = new BookmarkCommand(repository).list();
 
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");

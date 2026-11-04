@@ -58,6 +58,21 @@ public class PurgeCommand {
         this.repository = repository;
     }
 
+    private boolean purgeIgnored;
+    private boolean purgeFiles = true;
+
+    /** {@code hg purge --all}: ignored files and the directories they leave empty are removed too. */
+    public PurgeCommand setPurgeIgnored(boolean purgeIgnored) {
+        this.purgeIgnored = purgeIgnored;
+        return this;
+    }
+
+    /** {@code hg purge --files} (on by default): without it, files stay and only empty directories can be removed. */
+    public PurgeCommand setPurgeFiles(boolean purgeFiles) {
+        this.purgeFiles = purgeFiles;
+        return this;
+    }
+
     public PurgeCommand setPurgeDirectories(boolean purgeDirectories) {
         this.purgeDirectories = purgeDirectories;
         return this;
@@ -112,7 +127,7 @@ public class PurgeCommand {
             }
             // Check if directory is untracked and empty, and if we should purge directories
             if (purgeDirectories && !path.equals(repository.getDirectory().toPath())) {
-                if (!rel.isEmpty() && !trackedFiles.contains(rel) && !repository.isIgnored(rel)) {
+                if (!rel.isEmpty() && !trackedFiles.contains(rel) && (purgeIgnored || !repository.isIgnored(rel))) {
                     try (Stream<Path> stream = Files.list(path)) {
                         if (stream.findAny().isEmpty()) {
                             Files.delete(path);
@@ -124,7 +139,7 @@ public class PurgeCommand {
             // File node (or a symlink to anything, or a dangling symlink) -- deleting a symlink
             // path removes the link itself, not whatever it points at (Files.delete's documented
             // POSIX-unlink-like semantics for symbolic links).
-            if (!trackedFiles.contains(rel) && !repository.isIgnored(rel)) {
+            if (purgeFiles && !trackedFiles.contains(rel) && (purgeIgnored || !repository.isIgnored(rel))) {
                 Files.delete(path);
             }
         }

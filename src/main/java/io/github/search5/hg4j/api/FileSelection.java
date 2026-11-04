@@ -25,6 +25,17 @@ public final class FileSelection {
     private String cwd = "";
     private String defaultKind = "relpath";
     private Consumer<String> warn;
+    private Matcher fixed;
+
+    /**
+     * A selection that is exactly this matcher (what {@code subdirmatcher} gives a subrepository: the parent's matcher seen from
+     * inside the subrepository). It is never empty, and patterns, {@code -I} and {@code -X} are not consulted.
+     */
+    public static FileSelection of(Matcher matcher) {
+        FileSelection selection = new FileSelection();
+        selection.fixed = matcher;
+        return selection;
+    }
 
     public FileSelection patterns(String... patterns) {
         this.patterns.clear();
@@ -70,12 +81,12 @@ public final class FileSelection {
 
     /** How many patterns were given as arguments (not counting {@code -I} and {@code -X}). */
     public int patternCount() {
-        return patterns.size();
+        return fixed != null ? Math.max(1, fixed.files().size()) : patterns.size();
     }
 
     /** True if nothing narrows the selection (every file is selected). */
     public boolean isEmpty() {
-        return patterns.isEmpty() && include.isEmpty() && exclude.isEmpty();
+        return fixed == null && patterns.isEmpty() && include.isEmpty() && exclude.isEmpty();
     }
 
     /**
@@ -83,6 +94,9 @@ public final class FileSelection {
      * directory).
      */
     public Matcher matcher(HgRepository repository, String revision) throws IOException {
+        if (fixed != null) {
+            return fixed;
+        }
         RepositoryFilesetContext ctx = new RepositoryFilesetContext(repository, revision);
         return Matchers.match(repository.getDirectory(), cwd, patterns, include, exclude, defaultKind,
                 (dir, expression) -> Fileset.compile(ctx, dir, expression), warn);

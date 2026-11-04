@@ -30,107 +30,114 @@ public class GcCommand {
      * @return GC optimization summary
      * @throws IOException if repository store is corrupted
      */
-    public String call() throws IOException {
-        repository.clearRevlogCache();
-
-        File storeDir = repository.getStoreDir();
-        if (!storeDir.exists()) {
-            throw new IOException("Repository store directory does not exist: " + storeDir);
+    public String call() throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        // The nearest real hg operations (debugupgraderepo, debugrebuildfncache) hold wlock and lock; this one rewrites revlogs and the fncache, and deletes leftovers.
+        // taking a lock would create a missing store directory, and real hg's repo.lock() fails on a repository without one
+        if (!repository.getStoreDir().exists()) {
+            throw new IOException("Repository store directory does not exist: " + repository.getStoreDir());
         }
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        // no recovery on locking: this command removes the leftovers (including a stale journal) itself and counts them
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeout);
+             io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStoreWithoutRecovery(lockTimeout)) {
+            repository.clearRevlogCache();
 
-        // 1. Delete orphaned temporary and backup files (.backup, .tmp, journal)
-        int deletedBackups = 0;
-        File[] storeFiles = storeDir.listFiles();
-        if (storeFiles != null) {
-            for (File file : storeFiles) {
-                if (file.isFile()) {
-                    String name = file.getName();
-                    if (name.endsWith(".backup") || name.endsWith(".tmp") || name.equals("journal")) {
-                        if (file.delete()) {
-                            deletedBackups++;
+            File storeDir = repository.getStoreDir();
+
+            // 1. Delete orphaned temporary and backup files (.backup, .tmp, journal)
+            int deletedBackups = 0;
+            File[] storeFiles = storeDir.listFiles();
+            if (storeFiles != null) {
+                for (File file : storeFiles) {
+                    if (file.isFile()) {
+                        String name = file.getName();
+                        if (name.endsWith(".backup") || name.endsWith(".tmp") || name.equals("journal")) {
+                            if (file.delete()) {
+                                deletedBackups++;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // 2. Perform Pack GC: Compress and defragment all revlogs (.i and .d) in the store.
-        // "fncachePaths" (data/*.i, meta/*.i only -- never the two fixed root revlogs, see
-        // below) drives the fncache rebuild in step 3; "compactedCount" is a separate tally of
-        // how many revlogs were ACTUALLY rewritten (some are legitimately skipped -- see
-        // compressRevlog's javadoc), used only for the summary string.
-        int compactedCount = 0;
+            // 2. Perform Pack GC: Compress and defragment all revlogs (.i and .d) in the store.
+            // "fncachePaths" (data/*.i, meta/*.i only -- never the two fixed root revlogs, see
+            // below) drives the fncache rebuild in step 3; "compactedCount" is a separate tally of
+            // how many revlogs were ACTUALLY rewritten (some are legitimately skipped -- see
+            // compressRevlog's javadoc), used only for the summary string.
+            int compactedCount = 0;
 
-        File clIdx = new File(storeDir, "00changelog.i");
-        File clDat = new File(storeDir, "00changelog.d");
-        if (compressRevlog(clIdx, clDat)) {
-            compactedCount++;
-        }
-
-        File mfIdx = new File(storeDir, "00manifest.i");
-        File mfDat = new File(storeDir, "00manifest.d");
-        if (compressRevlog(mfIdx, mfDat)) {
-            compactedCount++;
-        }
-
-        // Recursively find and compress meta and data store logs. Unlike the two root revlogs
-        // above, real hg DOES track every one of these individually in fncache -- verified live
-        // against real hg 7.2 (2026-09-05): a fresh repository's own fncache never lists
-        // "00changelog.i"/"00manifest.i" themselves, only "data/<path>.i"/"meta/<dir>/00manifest.i"
-        // entries. The previous version of this method incorrectly folded the two root paths into
-        // the same set used to rebuild fncache, writing entries real hg's own fncache never
-        // contains -- found live 2026-09-05 (backlog #39 requirement-matrix expansion to
-        // GcCommand), even in the plain default combo (not something limited to any exotic
-        // storage-extension).
-        Set<String> fncachePaths = new LinkedHashSet<>();
-        File dataDir = new File(storeDir, "data");
-        if (dataDir.exists() && dataDir.isDirectory()) {
-            scanForIndexFiles(dataDir, fncachePaths);
-        }
-        File metaDir = new File(storeDir, "meta");
-        if (metaDir.exists() && metaDir.isDirectory()) {
-            scanForIndexFiles(metaDir, fncachePaths);
-        }
-
-        // Non-inline (split) revlogs get BOTH their ".i" and ".d" path listed in fncache -- unlike
-        // the root-revlog exclusion above, this is NOT limited to any particular combo: verified
-        // live against plain native hg 7.2 (2026-09-05) with an ordinary >128KB file, whose own
-        // fncache lists both "data/big.txt.i" AND "data/big.txt.d". The previous version of this
-        // set only ever contained ".i" paths (from scanForIndexFiles, which only looks for ".i"
-        // files), so GC's rebuilt fncache was silently missing every split revlog's ".d" entry --
-        // caught live via real hg's own "warning: revlog '...' not in fncache!" on `hg verify`
-        // after GC ran against a repository containing exactly such a file.
-        List<String> dPaths = new ArrayList<>();
-        for (String relPath : fncachePaths) {
-            File idxFile = new File(storeDir, relPath);
-            String datRelPath = relPath.substring(0, relPath.length() - 2) + ".d";
-            File datFile = new File(storeDir, datRelPath);
-            if (compressRevlog(idxFile, datFile)) {
+            File clIdx = new File(storeDir, "00changelog.i");
+            File clDat = new File(storeDir, "00changelog.d");
+            if (compressRevlog(clIdx, clDat)) {
                 compactedCount++;
             }
-            if (datFile.exists()) {
-                dPaths.add(datRelPath);
+
+            File mfIdx = new File(storeDir, "00manifest.i");
+            File mfDat = new File(storeDir, "00manifest.d");
+            if (compressRevlog(mfIdx, mfDat)) {
+                compactedCount++;
             }
+
+            // Recursively find and compress meta and data store logs. Unlike the two root revlogs
+            // above, real hg DOES track every one of these individually in fncache -- verified live
+            // against real hg 7.2 (2026-09-05): a fresh repository's own fncache never lists
+            // "00changelog.i"/"00manifest.i" themselves, only "data/<path>.i"/"meta/<dir>/00manifest.i"
+            // entries. The previous version of this method incorrectly folded the two root paths into
+            // the same set used to rebuild fncache, writing entries real hg's own fncache never
+            // contains -- found live 2026-09-05 (backlog #39 requirement-matrix expansion to
+            // GcCommand), even in the plain default combo (not something limited to any exotic
+            // storage-extension).
+            Set<String> fncachePaths = new LinkedHashSet<>();
+            File dataDir = new File(storeDir, "data");
+            if (dataDir.exists() && dataDir.isDirectory()) {
+                scanForIndexFiles(dataDir, fncachePaths);
+            }
+            File metaDir = new File(storeDir, "meta");
+            if (metaDir.exists() && metaDir.isDirectory()) {
+                scanForIndexFiles(metaDir, fncachePaths);
+            }
+
+            // Non-inline (split) revlogs get BOTH their ".i" and ".d" path listed in fncache -- unlike
+            // the root-revlog exclusion above, this is NOT limited to any particular combo: verified
+            // live against plain native hg 7.2 (2026-09-05) with an ordinary >128KB file, whose own
+            // fncache lists both "data/big.txt.i" AND "data/big.txt.d". The previous version of this
+            // set only ever contained ".i" paths (from scanForIndexFiles, which only looks for ".i"
+            // files), so GC's rebuilt fncache was silently missing every split revlog's ".d" entry --
+            // caught live via real hg's own "warning: revlog '...' not in fncache!" on `hg verify`
+            // after GC ran against a repository containing exactly such a file.
+            List<String> dPaths = new ArrayList<>();
+            for (String relPath : fncachePaths) {
+                File idxFile = new File(storeDir, relPath);
+                String datRelPath = relPath.substring(0, relPath.length() - 2) + ".d";
+                File datFile = new File(storeDir, datRelPath);
+                if (compressRevlog(idxFile, datFile)) {
+                    compactedCount++;
+                }
+                if (datFile.exists()) {
+                    dPaths.add(datRelPath);
+                }
+            }
+            fncachePaths.addAll(dPaths);
+
+            // 3. Rebuild fncache with atomic file IO -- but only for repositories that actually use
+            // one. `fileindex-v1` (and `general-v2`, which always implies it) requirements drop
+            // fncache/dotencode entirely in favor of the fileindex/fileindex-tree.*/fileindex-meta.*/
+            // fileindex-list.* files -- verified live against hg-rust-7.2.4 (2026-09-05): such a
+            // repository's `.hg/store/requires` never lists `fncache`, and its store never contains an
+            // actual fncache file. Writing one anyway (the previous, unconditional behavior) would
+            // create a file real hg does not expect for that combo.
+            File fncacheFile = new File(storeDir, "fncache");
+            if (!repository.isFileIndexV1() && !fncachePaths.isEmpty()) {
+                SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
+            }
+
+            // 4. Request JVM level defragmentation
+            System.gc();
+
+            return "GC / Compaction complete: defragmented and re-delta optimized " + compactedCount
+                    + " store revlogs, cleaned " + deletedBackups + " orphaned temp files.";
         }
-        fncachePaths.addAll(dPaths);
-
-        // 3. Rebuild fncache with atomic file IO -- but only for repositories that actually use
-        // one. `fileindex-v1` (and `general-v2`, which always implies it) requirements drop
-        // fncache/dotencode entirely in favor of the fileindex/fileindex-tree.*/fileindex-meta.*/
-        // fileindex-list.* files -- verified live against hg-rust-7.2.4 (2026-09-05): such a
-        // repository's `.hg/store/requires` never lists `fncache`, and its store never contains an
-        // actual fncache file. Writing one anyway (the previous, unconditional behavior) would
-        // create a file real hg does not expect for that combo.
-        File fncacheFile = new File(storeDir, "fncache");
-        if (!repository.isFileIndexV1() && !fncachePaths.isEmpty()) {
-            SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
-        }
-
-        // 4. Request JVM level defragmentation
-        System.gc();
-
-        return "GC / Compaction complete: defragmented and re-delta optimized " + compactedCount
-                + " store revlogs, cleaned " + deletedBackups + " orphaned temp files.";
     }
 
     /**

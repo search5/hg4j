@@ -19,6 +19,47 @@ import java.util.concurrent.TimeUnit;
  */
 public final class SafeFileIO {
 
+    /**
+     * Gives {@code file} an inode of its own when other directory entries share it. Real hg's vfs does the same before it opens a
+     * file for writing ({@code nlink > 1}: a temporary copy replaces the file), which is what makes a store copied with hard links
+     * ({@code hg clone}, {@code unshare}) safe to write to: without it, appending to one repository would change the other.
+     */
+    public static void breakHardLinks(File file) throws IOException {
+        java.nio.file.Path path = file.toPath();
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        Object links;
+        try {
+            links = Files.getAttribute(path, "unix:nlink", LinkOption.NOFOLLOW_LINKS);
+        } catch (UnsupportedOperationException | IllegalArgumentException notUnix) {
+            return; // no link count on this file system
+        }
+        if (!(links instanceof Integer) || (Integer) links <= 1) {
+            return;
+        }
+        java.nio.file.Path copy = Files.createTempFile(path.getParent(), file.getName(), ".nlink");
+        try {
+            Files.copy(path, copy, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+            Files.move(copy, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } finally {
+            Files.deleteIfExists(copy);
+        }
+    }
+
+    /** {@code new FileOutputStream(file, true)} for a repository file that may be hard linked to another repository's. */
+    public static java.io.FileOutputStream openAppend(File file) throws IOException {
+        breakHardLinks(file);
+        return new java.io.FileOutputStream(file, true);
+    }
+
+    /** {@code new RandomAccessFile(file, "rw")} for a repository file that may be hard linked to another repository's. */
+    public static RandomAccessFile openReadWrite(File file) throws IOException {
+        breakHardLinks(file);
+        return new RandomAccessFile(file, "rw");
+    }
+
+
     private SafeFileIO() {
         // Prevent instantiation
     }

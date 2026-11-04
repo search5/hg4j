@@ -208,11 +208,11 @@ public class HgLocalClient implements HgRemoteConnection {
         if (narrowScope != null) {
             List<NarrowPattern> includes = new ArrayList<>();
             for (String p : narrowScope.includePatterns) {
-                includes.add(HgTreeFilter.normalizeNarrowPattern(p));
+                includes.add(HgTreeFilter.internalNarrowPattern(p));
             }
             List<NarrowPattern> excludes = new ArrayList<>();
             for (String p : narrowScope.excludePatterns) {
-                excludes.add(HgTreeFilter.normalizeNarrowPattern(p));
+                excludes.add(HgTreeFilter.internalNarrowPattern(p));
             }
             narrowFilter = HgTreeFilter.createNarrowSpecFilter(includes, excludes);
         }
@@ -377,14 +377,34 @@ public class HgLocalClient implements HgRemoteConnection {
         byte[] prevMfContent = new byte[0];
         byte[] deltaBaseMfNode = new byte[20];
         boolean firstManifest = true;
+        // `cgpacker.generatefiles`: a file revision is sent when an outgoing changeset changes the file to it and its own linkrev is not
+        // one of the receiver's, even if that linkrev is another changeset (one stripped later, as in a rebase whose result has the same
+        // file content as the original). It is linked to the first outgoing changeset that changes the file to it.
+        Map<String, byte[]> linkNodes = new HashMap<>();
         for (int r : revs) {
             byte[] clContent = changelog.getRevisionContent(r);
             String clText = new String(clContent, StandardCharsets.UTF_8);
             String[] clLines = clText.split("\n");
+            Set<String> changedHere = new HashSet<>();
             for (int i = 3; i < clLines.length; i++) {
                 String line = clLines[i].trim();
                 if (line.isEmpty()) break;
                 affectedFiles.add(line);
+                changedHere.add(line);
+            }
+            {
+                int mfRevHere = manifest.findRevision(NodeIdUtil.fromHex(clLines[0].trim().substring(0, 40)));
+                if (mfRevHere != -1 && !changedHere.isEmpty()) {
+                    for (String mfLine : new String(manifest.getRevisionContent(mfRevHere), StandardCharsets.ISO_8859_1).split("\n")) {
+                        int nul = mfLine.indexOf('\0');
+                        if (nul > 0 && mfLine.length() >= nul + 41) {
+                            String name = new String(mfLine.substring(0, nul).getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
+                            if (changedHere.contains(name)) {
+                                linkNodes.putIfAbsent(name + "\0" + mfLine.substring(nul + 1, nul + 41), changelog.getIndexRecord(r).getNodeId());
+                            }
+                        }
+                    }
+                }
             }
 
             byte[] mfNode = NodeIdUtil.fromHex(clLines[0].trim().substring(0, 40));
@@ -441,8 +461,16 @@ public class HgLocalClient implements HgRemoteConnection {
             for (int i = 0; i < fl.getRevisionCount(); i++) {
                 Revlog.IndexRecord flRec = fl.getIndexRecord(i);
                 int linkRev = flRec.getLinkRev();
-                if (linkRev < 0 || linkRev >= count || !outgoing[linkRev]) {
+                byte[] linkNode = null;
+                if (linkRev < 0 || linkRev >= count) {
                     continue;
+                }
+                if (!outgoing[linkRev]) {
+                    byte[] first = inCommon[linkRev] ? null : linkNodes.get(path + "\0" + NodeIdUtil.toHex(flRec.getNodeId()).substring(0, 40));
+                    if (first == null) {
+                        continue;
+                    }
+                    linkNode = first;
                 }
                 if (firstFileRev) {
                     firstFileRev = false;
@@ -455,7 +483,7 @@ public class HgLocalClient implements HgRemoteConnection {
                 flEntry.node = flRec.getNodeId();
                 flEntry.p1 = (flRec.getParent1() != -1) ? fl.getIndexRecord(flRec.getParent1()).getNodeId() : new byte[20];
                 flEntry.p2 = (flRec.getParent2() != -1) ? fl.getIndexRecord(flRec.getParent2()).getNodeId() : new byte[20];
-                flEntry.cs = changelog.getIndexRecord(linkRev).getNodeId();
+                flEntry.cs = linkNode != null ? linkNode : changelog.getIndexRecord(linkRev).getNodeId();
                 flEntry.deltabase = deltaBaseFlNode;
                 flEntry.flags = flRec.getFlags();
 
@@ -617,6 +645,23 @@ public class HgLocalClient implements HgRemoteConnection {
         if (bundleBytes == null || bundleBytes.length == 0) {
             return new PushResult("no changes found", List.of());
         }
+        // The apply, the pretxnchangegroup hooks and the rollback after a rejecting hook run in one lock hold, like real hg's
+        // transaction: with the locks released in between, another push could land first and the rollback would undo that one.
+        int timeout = remoteRepo.resolvePushLockTimeoutMs();
+        PushResult result;
+        try (io.github.search5.hg4j.lib.HgLock wlock = remoteRepo.lockWorkingCopy(timeout);
+             io.github.search5.hg4j.lib.HgLock storeLock = remoteRepo.lockStore(timeout)) {
+            result = pushWithHooksLocked(bundleBytes, heads, preHooks, preTxnHooks, postHooks, extraValidator);
+        }
+        return result;
+    }
+
+
+    private PushResult pushWithHooksLocked(byte[] bundleBytes, List<String> heads,
+                                     List<HgHook> preHooks,
+                                     List<HgHook> preTxnHooks,
+                                     List<HgHook> postHooks,
+                                     FetchCommand.PostLockValidator extraValidator) throws IOException, HgLockException {
 
         // Backup remote dirstate before push to preserve bare status
         File dirstateFile = new File(remoteRepo.getDirectory(), ".hg/dirstate");
@@ -770,12 +815,14 @@ public class HgLocalClient implements HgRemoteConnection {
                 importedNodeHexes.add(NodeIdUtil.toHex(node));
             }
             if (!postHooks.isEmpty()) {
-                Map<String, Object> postCtx = new HashMap<>();
-                postCtx.put("repository", remoteRepo);
-                postCtx.put("nodes", importedNodeHexes);
-                for (HgHook hook : postHooks) {
-                    hook.run(postCtx);
-                }
+                remoteRepo.afterLock(() -> {
+                    Map<String, Object> postCtx = new HashMap<>();
+                    postCtx.put("repository", remoteRepo);
+                    postCtx.put("nodes", importedNodeHexes);
+                    for (HgHook hook : postHooks) {
+                        hook.run(postCtx);
+                    }
+                });
             }
 
             return new PushResult("push successful, imported " + imported.size() + " changesets natively", importedNodeHexes, fileRevisions, filesTouched);
@@ -1040,6 +1087,17 @@ public class HgLocalClient implements HgRemoteConnection {
     }
 
     @Override
+    public String lookup(String key) throws IOException {
+        File clIdx = new File(remoteRepo.getStoreDir(), "00changelog.i");
+        File clDat = new File(remoteRepo.getStoreDir(), "00changelog.d");
+        try {
+            return NodeIdUtil.toHex(NodeIdUtil.resolveRevision(remoteRepo.getRevlog(clIdx, clDat), key));
+        } catch (IOException | RuntimeException e) {
+            throw new io.github.search5.hg4j.errors.HgValidationException("unknown revision '" + key + "'");
+        }
+    }
+
+    @Override
     public Map<String, String> listKeys(String namespace) throws IOException {
         Map<String, String> map = new HashMap<>();
         if ("bookmarks".equals(namespace)) {
@@ -1056,6 +1114,10 @@ public class HgLocalClient implements HgRemoteConnection {
                         map.put(name, node);
                     }
                 }
+            }
+        } else if ("obsolete".equals(namespace)) {
+            if (io.github.search5.hg4j.obsolete.ObsStore.exchangeEnabled(remoteRepo)) {
+                map.putAll(io.github.search5.hg4j.obsolete.ObsStore.listMarkers(remoteRepo));
             }
         } else if ("phases".equals(namespace)) {
             PhaseRoots phaseRoots = remoteRepo.getPhaseRoots();
@@ -1077,8 +1139,69 @@ public class HgLocalClient implements HgRemoteConnection {
     }
 
     @Override
+    public byte[] getCachedBundleInline(String path) throws IOException {
+        return HgRemoteConnection.decodeInlineBundle(io.github.search5.hg4j.transport.wireprotov1.Wire1Commands
+                .getCachedBundleInline(remoteRepo, Map.of("path", path)).getPayload());
+    }
+
+    @Override
     public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
         if ("bookmarks".equals(namespace)) {
+            // real hg's pushkey takes wlock and lock around the compare and the write: otherwise two pushes both see the old value
+            int timeout = remoteRepo.resolvePushLockTimeoutMs();
+            try (io.github.search5.hg4j.lib.HgLock wlock = remoteRepo.lockWorkingCopy(timeout);
+                 io.github.search5.hg4j.lib.HgLock storeLock = remoteRepo.lockStore(timeout)) {
+                return pushBookmarkKey(key, oldVal, newVal);
+            } catch (io.github.search5.hg4j.errors.HgLockException e) {
+                throw new IOException(e.getMessage(), e); // the wire interface only knows IOException
+            }
+        }
+        if ("phases".equals(namespace)) {
+            return pushPhaseKey(key, oldVal, newVal);
+        }
+        if ("obsolete".equals(namespace) && io.github.search5.hg4j.obsolete.ObsStore.exchangeEnabled(remoteRepo)) {
+            try {
+                return io.github.search5.hg4j.obsolete.ObsStore.pushMarker(remoteRepo, key, oldVal, newVal);
+            } catch (io.github.search5.hg4j.errors.HgLockException e) {
+                throw new IOException(e.getMessage(), e);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * {@code phases.pushphase}: under the store lock only, a changeset moves to a lower phase number when it is at the old phase now; if it
+     * is at the new phase already (a race with the same result) that is success too; anything else is refused.
+     */
+    private boolean pushPhaseKey(String key, String oldVal, String newVal) throws IOException {
+        int oldPhase;
+        int newPhase;
+        if (oldVal == null || newVal == null) {
+            return false;
+        }
+        try {
+            oldPhase = Math.abs(Integer.parseInt(oldVal.trim()));
+            newPhase = Math.abs(Integer.parseInt(newVal.trim()));
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        int timeout = remoteRepo.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock storeLock = remoteRepo.lockStore(timeout)) {
+            int current = new io.github.search5.hg4j.api.PhaseCommand(remoteRepo).setRevision(key).call();
+            if (current == oldPhase && newPhase < oldPhase) {
+                new io.github.search5.hg4j.api.PhaseCommand(remoteRepo).setRevision(key).setPhase(newPhase).call();
+                return true;
+            }
+            return current == newPhase;
+        } catch (io.github.search5.hg4j.errors.HgLockException e) {
+            throw new IOException(e.getMessage(), e);
+        } catch (IOException unknown) {
+            return false; // a node the repository does not have
+        }
+    }
+
+    private boolean pushBookmarkKey(String key, String oldVal, String newVal) throws IOException {
+        {
             File bkFile = new File(remoteRepo.getHgDir(), "bookmarks");
             Map<String, String> bks = listKeys("bookmarks");
             String currentVal = bks.getOrDefault(key, "");

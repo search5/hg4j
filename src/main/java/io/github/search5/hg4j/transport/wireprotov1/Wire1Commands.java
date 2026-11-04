@@ -167,7 +167,8 @@ public final class Wire1Commands {
 
     /** Whether {@code exp-shape-1} is advertised: with {@code experimental.advertise-shapes}, as the original (default off). */
     static boolean shapesAdvertised(HgRepository repo) {
-        return boolConfig(repo, "experimental", "advertise-shapes", false);
+        // wireprotov1server._capabilities: inside the `experimental.narrow` block
+        return boolConfig(repo, "experimental", "narrow", false) && boolConfig(repo, "experimental", "advertise-shapes", false);
     }
 
     public static Wire1Response capabilities(HgRepository repo) {
@@ -221,19 +222,31 @@ public final class Wire1Commands {
     }
 
     /**
-     * {@code store_shape} (development tree after 7.2.4): information about a named narrow-clone "store shape". hg4j
-     * defines no shapes, so every name is unknown: the answer is code 2 ({@code SHAPE_NOT_FOUND}) with the first unknown name,
-     * exactly what a server with the feature enabled but no shape configured replies. Header {@code >BHII}
-     * (code, size of the unknown-names block, 0, 0), then the block: {@code u32 count, u32 length per name, the names}.
+     * Real hg's {@code store_shape} ({@code wireprotov1server.store_shape}): the patterns, shape fingerprint and sets of shard fingerprints
+     * of the shape of {@code names} (comma separated), so a narrow client can check that it computes the same fingerprint. A name that is
+     * not a shape answers {@code SHAPE_NOT_FOUND} with that name. The sets also include those of the saved previous configs in which the
+     * shape had the same fingerprint, so that bundles generated before a resharding stay usable.
      */
-    public static Wire1Response storeShape(HgRepository repo, Map<String, String> args) {
-        String first = args.getOrDefault("names", "").split(",", -1)[0];
-        byte[] name = first.getBytes(StandardCharsets.UTF_8);
-        java.nio.ByteBuffer block = java.nio.ByteBuffer.allocate(8 + name.length).order(java.nio.ByteOrder.BIG_ENDIAN);
-        block.putInt(1).putInt(name.length).put(name);
-        java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(11 + block.capacity()).order(java.nio.ByteOrder.BIG_ENDIAN);
-        out.put((byte) 2).putShort((short) block.capacity()).putInt(0).putInt(0).put(block.array());
-        return Wire1Response.bytes(out.array());
+    public static Wire1Response storeShape(HgRepository repo, Map<String, String> args) throws IOException {
+        List<String> names = List.of(args.getOrDefault("names", "").split(",", -1));
+        io.github.search5.hg4j.shape.StoreShards shards = io.github.search5.hg4j.shape.StoreShards.fromRepository(repo);
+        io.github.search5.hg4j.shape.Shape shape;
+        try {
+            shape = shards.shape(names);
+        } catch (io.github.search5.hg4j.shape.ShapeException e) {
+            if (e.kind() == io.github.search5.hg4j.shape.ShapeException.Kind.UNKNOWN_PROFILE) {
+                return Wire1Response.bytes(io.github.search5.hg4j.shape.ShapeWire.notFound(List.of(e.subject())));
+            }
+            throw e;
+        }
+        List<java.util.Set<io.github.search5.hg4j.shape.Fingerprint>> groups = new ArrayList<>(shards.shardFingerprintsForShape(shape));
+        for (java.util.Set<io.github.search5.hg4j.shape.Fingerprint> previous
+                : io.github.search5.hg4j.shape.ShapeConfigStore.previousShardsSets(repo, names, shape.storeFingerprint())) {
+            if (!groups.contains(previous)) {
+                groups.add(previous);
+            }
+        }
+        return Wire1Response.bytes(io.github.search5.hg4j.shape.ShapeWire.ok(shape.storeFingerprint(), groups, shape.serializePatterns()));
     }
 
     /**
@@ -583,6 +596,48 @@ public final class Wire1Commands {
     }
 
     /**
+     * {@code exchange.getbundlechunks}'s {@code store_shape_with_fingerprint} ({@code names:fingerprint}): the client says which shape it was
+     * cloned with and what fingerprint it computed for it. The shape is looked up here ({@code narrowspec.patterns_for_shape}), the
+     * fingerprints must agree, and its patterns become the {@code path:} patterns of an ordinary narrow request ({@code to_legacy_patterns}:
+     * the empty path is {@code path:.}).
+     */
+    static NarrowScope shapeScope(HgRepository repo, String spec) throws IOException {
+        String[] parts = spec.split(":", -1);
+        if (parts.length != 2) {
+            throw new IOException("invalid store shape fingerprint: '" + spec + "'");
+        }
+        io.github.search5.hg4j.shape.Fingerprint fingerprint;
+        try {
+            fingerprint = io.github.search5.hg4j.shape.Fingerprint.fromText(io.github.search5.hg4j.shape.Fingerprint.Kind.SHAPE, parts[1]);
+        } catch (io.github.search5.hg4j.errors.HgValidationException e) {
+            throw new IOException("invalid store shape fingerprint: '" + parts[1] + "'");
+        }
+        List<String> names = List.of(parts[0].split(",", -1));
+        io.github.search5.hg4j.shape.Shape shape;
+        try {
+            shape = io.github.search5.hg4j.shape.StoreShards.fromRepository(repo).shape(names);
+        } catch (io.github.search5.hg4j.shape.ShapeException e) {
+            if (e.kind() == io.github.search5.hg4j.shape.ShapeException.Kind.UNKNOWN_PROFILE) {
+                throw new IOException("shape not found on remote: '" + e.subject() + "'");
+            }
+            throw e;
+        }
+        io.github.search5.hg4j.shape.Fingerprint server = shape.storeFingerprint();
+        if (!server.equals(fingerprint)) {
+            throw new IOException("fingerprint mismatch for shape '" + String.join(",", names) + "'\n(hint: server: " + server.toText()
+                    + ", client: " + fingerprint.toText() + ")");
+        }
+        io.github.search5.hg4j.shape.ShardTreeNode.Patterns patterns = shape.patterns();
+        List<String> includes = new ArrayList<>();
+        List<String> excludes = new ArrayList<>();
+        patterns.includes().forEach(p -> includes.add("path:" + (p.isEmpty() ? "." : p)));
+        patterns.excludes().forEach(p -> excludes.add("path:" + (p.isEmpty() ? "." : p)));
+        java.util.Collections.sort(includes);
+        java.util.Collections.sort(excludes);
+        return new NarrowScope(includes, excludes);
+    }
+
+    /**
      * Backlog item 40: narrow clone wire arguments. Real hg's {@code getbundle} command declares
      * no fixed args at all ({@code @wireprotocommand(b'getbundle', b'*')}) -- {@code narrow},
      * {@code includepats} and {@code excludepats} just ride along in the same generic args map as
@@ -610,6 +665,10 @@ public final class Wire1Commands {
             narrowScope = new NarrowScope(
                     splitCsvOrEmpty(args.get("includepats")),
                     splitCsvOrEmpty(args.get("excludepats")));
+        }
+        String shapeSpec = args.get("store_shape_with_fingerprint");
+        if (shapeSpec != null) {
+            narrowScope = shapeScope(repo, shapeSpec);
         }
         Map<String, List<String>> clientCaps = Bundle2Pull.clientCaps(bundleCaps);
         boolean withoutChangegroup = "0".equals(args.get("cg")) && !clientCaps.isEmpty();

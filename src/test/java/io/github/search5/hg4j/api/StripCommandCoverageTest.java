@@ -160,7 +160,7 @@ public class StripCommandCoverageTest {
     }
 
     @Test
-    public void stripFullyRestoresAllTruncatedFilesWhenAMidStripStepFails(@TempDir Path tempDir) throws Exception {
+    public void aStripThatFailsMidwayIsNotUndoneAndSaysWhereTheBundleIs(@TempDir Path tempDir) throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
         File repoDir = tempDir.toFile();
         Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
@@ -170,44 +170,24 @@ public class StripCommandCoverageTest {
         Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
         new CommitCommand(repo).setMessage("rev1").call();
 
-        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
-        File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repo.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repo.getStoreDir(), "00manifest.d");
-        byte[] origClIdx = Files.readAllBytes(clIdx.toPath());
-        byte[] origClDat = Files.readAllBytes(clDat.toPath());
-        byte[] origMfIdx = Files.readAllBytes(mfIdx.toPath());
-        // Backlog #35: a small manifest is now inline by default (matching real hg) and may have
-        // no separate .d file of its own -- guard on mfDat's OWN existence, not clDat's (the
-        // changelog stays non-inline always, so checking it here was never actually meaningful).
-        byte[] origMfDat = mfDat.exists() ? Files.readAllBytes(mfDat.toPath()) : null;
-        byte[] origDirstate = Files.readAllBytes(new File(repo.getDirectory(), ".hg/dirstate").toPath());
+        // a phase root that cannot be parsed makes the step after the cut fail (the cut itself has been done by then)
+        File phaseRootsFile = new File(repo.getStoreDir(), "phaseroots");
+        Files.writeString(phaseRootsFile.toPath(), "1 abc\n");
 
-        // Corrupt the bookmarks file with an odd-length hex node so NodeIdUtil.fromHex() throws
-        // partway through strip's bookmark-cleanup step -- i.e. *after* the changelog/manifest
-        // (and any filelogs) have already been truncated on disk, exercising the failure-path
-        // rollback.
-        File bookmarksFile = new File(repo.getHgDir(), "bookmarks");
-        Files.writeString(bookmarksFile.toPath(), "abc badbookmark\n");
+        StripCommand strip = new StripCommand(repo).setRevision("1");
+        assertThrows(IllegalArgumentException.class, strip::call);
 
-        assertThrows(IllegalArgumentException.class, () -> new StripCommand(repo).setRevision("1").call());
-
-        // The changelog/manifest must be restored byte-for-byte, not merely left at whatever
-        // (smaller) size the failed truncation happened to leave them at.
-        assertArrayEquals(origClIdx, Files.readAllBytes(clIdx.toPath()), "00changelog.i must be fully restored");
-        assertArrayEquals(origClDat, Files.readAllBytes(clDat.toPath()), "00changelog.d must be fully restored");
-        assertArrayEquals(origMfIdx, Files.readAllBytes(mfIdx.toPath()), "00manifest.i must be fully restored");
-        if (origMfDat != null) {
-            assertArrayEquals(origMfDat, Files.readAllBytes(mfDat.toPath()), "00manifest.d must be fully restored");
-        }
-        assertArrayEquals(origDirstate, Files.readAllBytes(new File(repo.getDirectory(), ".hg/dirstate").toPath()));
-
-        // No leftover journal or internal backup directory.
-        assertFalse(new File(repo.getStoreDir(), "journal").exists());
+        // Like repair.strip: nothing is put back; the warning names the backup bundle, which is how the changeset comes back
+        assertTrue(strip.getMessages().stream().anyMatch(m -> m.startsWith("strip failed, backup bundle stored in '")), strip.getMessages().toString());
+        assertTrue(strip.getBackupBundle() != null && strip.getBackupBundle().isFile());
+        // the first transaction did not close: its journal says where the files end, so `hg recover` completes the cut
+        File journal = new File(repo.getStoreDir(), "journal");
+        assertTrue(journal.isFile());
         assertFalse(new File(repo.getStoreDir(), "strip-journal-backup").exists());
-
-        // The repository must be fully usable again -- both changesets still present.
-        assertEquals(2, new LogCommand(repo).call().size());
+        Files.delete(phaseRootsFile.toPath());
+        new RecoverCommand(repo).call();
+        assertFalse(journal.exists());
+        assertEquals(1, new LogCommand(repo).call().size(), "the changeset stays removed");
     }
 
     @Test
@@ -279,39 +259,6 @@ public class StripCommandCoverageTest {
         new StripCommand(repo).setRevision("1").call();
 
         assertEquals(1, new LogCommand(repo).call().size());
-    }
-
-    @Test
-    public void stripRollsBackNewlyCreatedFilesAndSkipsAbsentDirstateBackupOnFailure(@TempDir Path tempDir) throws Exception {
-        HgRepository repo = Hg.init().setDirectory(tempDir.toFile()).call();
-        File repoDir = tempDir.toFile();
-        Files.writeString(new File(repoDir, "a.txt").toPath(), "v0");
-        new AddCommand(repo).call();
-        new CommitCommand(repo).setMessage("rev0").call();
-
-        Files.writeString(new File(repoDir, "a.txt").toPath(), "v1");
-        new CommitCommand(repo).setMessage("rev1").call();
-
-        // Neither dirstate nor fncache exist going into this strip attempt, so the failed
-        // attempt below (a) has no dirstate backup to restore and (b) will freshly re-create
-        // fncache mid-attempt, which the rollback must then delete again rather than leave
-        // behind.
-        Files.delete(new File(repo.getDirectory(), ".hg/dirstate").toPath());
-        File fncacheFile = new File(repo.getStoreDir(), "fncache");
-        Files.delete(fncacheFile.toPath());
-
-        File bookmarksFile = new File(repo.getHgDir(), "bookmarks");
-        Files.writeString(bookmarksFile.toPath(), "abc badbookmark\n");
-
-        assertThrows(IllegalArgumentException.class, () -> new StripCommand(repo).setRevision("1").call());
-
-        assertFalse(fncacheFile.exists(),
-                "fncache was freshly (re)created by the failed attempt and must be rolled back to absent");
-        assertFalse(new File(repo.getDirectory(), ".hg/dirstate").exists(),
-                "dirstate was already absent before the attempt and must stay absent, not be conjured from a null backup");
-        assertFalse(new File(repo.getStoreDir(), "journal").exists());
-        assertFalse(new File(repo.getStoreDir(), "strip-journal-backup").exists());
-        assertEquals(2, new LogCommand(repo).call().size());
     }
 
     @Test

@@ -229,288 +229,256 @@ public class MergeCommand {
     }
 
     public MergeResult call() throws IOException, HgLockException {
-        repository.clearRevlogCache();
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            repository.clearRevlogCache();
+            {
             
-            // PRE_MERGE hooks trigger
-            if (!preMergeHooks.isEmpty()) {
-                Map<String, Object> ctx = new HashMap<>();
-                ctx.put("repository", repository);
-                ctx.put("targetRev", targetRev);
-                ctx.put("targetNodeId", targetNodeId);
-                for (HgHook hook : preMergeHooks) {
-                    if (!hook.run(ctx)) {
-                        throw new HgValidationException("Merge rejected by PRE_MERGE hook");
+                // PRE_MERGE hooks trigger
+                if (!preMergeHooks.isEmpty()) {
+                    Map<String, Object> ctx = new HashMap<>();
+                    ctx.put("repository", repository);
+                    ctx.put("targetRev", targetRev);
+                    ctx.put("targetNodeId", targetNodeId);
+                    for (HgHook hook : preMergeHooks) {
+                        if (!hook.run(ctx)) {
+                            throw new HgValidationException("Merge rejected by PRE_MERGE hook");
+                        }
                     }
                 }
-            }
 
-            Dirstate dirstate = repository.getDirstate();
-            File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-            byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
-            File journalFile = new File(repository.getStoreDir(), "journal");
+                // merge.update: `with repo.dirstate.changing_parents(repo)`; when it fails the dirstate is not written, so nothing is put back
+                return repository.changingParents(() -> {
+                    Dirstate dirstate = repository.getDirstate();
+                    NodeId p1CommitNode = dirstate.getParent1Node();
+                    if (p1CommitNode == null || p1CommitNode.isNull()) {
+                        throw new IllegalStateException("Cannot merge in an empty repository.");
+                    }
 
-            // 0. Set up crash protection backups
-            Files.deleteIfExists(journalFile.toPath());
-            if (dirstateFile.exists()) {
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                appendToJournal(journalFile, "dirstate");
-            }
+                // 1. Load changelog
+                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+                File clDat = new File(repository.getStoreDir(), "00changelog.d");
+                Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-            try {
-                NodeId p1CommitNode = dirstate.getParent1Node();
-                if (p1CommitNode == null || p1CommitNode.isNull()) {
-                    throw new IllegalStateException("Cannot merge in an empty repository.");
+                // Resolve target revision index and Node ID
+                int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
+                if (p1Rev == -1) {
+                    throw new HgRevisionNotFoundException(p1CommitNode.toHex());
                 }
 
-            // 1. Load changelog
-            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-            File clDat = new File(repository.getStoreDir(), "00changelog.d");
-            Revlog changelog = repository.getRevlog(clIdx, clDat);
-
-            // Resolve target revision index and Node ID
-            int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
-            if (p1Rev == -1) {
-                throw new HgRevisionNotFoundException(p1CommitNode.toHex());
-            }
-
-            int p2Rev = targetRev;
-            byte[] p2CommitNode = targetNodeId;
-            if (p2CommitNode != null) {
-                p2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode);
-                if (p2Rev == -1) {
-                    throw new HgRevisionNotFoundException(NodeIdUtil.toHex(p2CommitNode));
+                int p2Rev = targetRev;
+                byte[] p2CommitNode = targetNodeId;
+                if (p2CommitNode != null) {
+                    p2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode);
+                    if (p2Rev == -1) {
+                        throw new HgRevisionNotFoundException(NodeIdUtil.toHex(p2CommitNode));
+                    }
+                } else if (p2Rev != -1) {
+                    if (p2Rev < 0 || p2Rev >= changelog.getRevisionCount()) {
+                        throw new IllegalArgumentException("Target revision index out of bounds: " + p2Rev);
+                    }
+                    p2CommitNode = new byte[20];
+                    System.arraycopy(changelog.getIndexRecord(p2Rev).getNodeId(), 0, p2CommitNode, 0, 20);
+                } else {
+                    throw new IllegalArgumentException("Target NodeID or revision index must be specified.");
                 }
-            } else if (p2Rev != -1) {
-                if (p2Rev < 0 || p2Rev >= changelog.getRevisionCount()) {
-                    throw new IllegalArgumentException("Target revision index out of bounds: " + p2Rev);
+
+                MergeState mergeState = new MergeState();
+                mergeState.local = p1CommitNode.getBytes();
+                mergeState.other = p2CommitNode;
+                File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
+
+                if (p1Rev == p2Rev) {
+                    return new MergeResult(false, Collections.emptyList());
                 }
-                p2CommitNode = new byte[20];
-                System.arraycopy(changelog.getIndexRecord(p2Rev).getNodeId(), 0, p2CommitNode, 0, 20);
-            } else {
-                throw new IllegalArgumentException("Target NodeID or revision index must be specified.");
-            }
 
-            MergeState mergeState = new MergeState();
-            mergeState.local = p1CommitNode.getBytes();
-            mergeState.other = p2CommitNode;
-            File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
+                // 3. Load manifest revlog
+                Revlog manifestRevlog = repository.getManifestRevlog();
 
-            if (p1Rev == p2Rev) {
-                Files.deleteIfExists(journalFile.toPath());
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.deleteIfExists(dirstateBackupFile.toPath());
-                return new MergeResult(false, Collections.emptyList());
-            }
+                // 2. Find Merge Base (LCA)
+                MergeBase lca = getMergeBase(changelog, manifestRevlog, p1Rev, p2Rev, 0);
+                if (lca.manifest.isEmpty() && lca.rev == -1) {
+                    throw new HgRevisionNotFoundException("No common ancestor found between " + p1Rev + " and " + p2Rev);
+                }
 
-            // 3. Load manifest revlog
-            Revlog manifestRevlog = repository.getManifestRevlog();
+                if (lca.rev == p2Rev) {
+                    // Target is already merged (ancestor of P1)
+                    return new MergeResult(false, Collections.emptyList());
+                }
 
-            // 2. Find Merge Base (LCA)
-            MergeBase lca = getMergeBase(changelog, manifestRevlog, p1Rev, p2Rev, 0);
-            if (lca.manifest.isEmpty() && lca.rev == -1) {
-                throw new HgRevisionNotFoundException("No common ancestor found between " + p1Rev + " and " + p2Rev);
-            }
+                if (lca.rev == p1Rev) {
+                    // Fast-forward update: P1 is an ancestor of P2. Cleanly advance P1 to P2.
+                    Map<String, String> manifestP1 = loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
+                    Map<String, String> manifestP2 = loadManifestAtCommit(changelog, manifestRevlog, p2Rev);
 
-            if (lca.rev == p2Rev) {
-                // Target is already merged (ancestor of P1)
-                Files.deleteIfExists(journalFile.toPath());
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.deleteIfExists(dirstateBackupFile.toPath());
-                return new MergeResult(false, Collections.emptyList());
-            }
+                    for (String path : manifestP1.keySet()) {
+                        if (!manifestP2.containsKey(path)) {
+                            deleteFileFromWorkingCopy(path);
+                            dirstate.removeEntry(path);
+                        }
+                    }
+                    for (Map.Entry<String, String> entry : manifestP2.entrySet()) {
+                        String path = entry.getKey();
+                        String hex = entry.getValue();
+                        byte[] content = getFileRevisionContent(path, hex);
+                        int mode = getModeFromManifestHex(hex);
+                        writeFileToWorkingCopy(path, content, mode);
+                        dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
+                    }
+                    dirstate.setParents(new NodeId(p2CommitNode), NodeId.NULL);
+                    repository.writeDirstate(dirstate);
 
-            if (lca.rev == p1Rev) {
-                // Fast-forward update: P1 is an ancestor of P2. Cleanly advance P1 to P2.
+                    // A fast-forward merge is a full single-parent checkout to p2 (equivalent
+                    // to `hg update`), not a real two-parent merge, so the working branch must
+                    // follow the target — same as UpdateCommand/BisectCommand.
+                    repository.setBranch(CommitCommand.getBranchOfRevision(changelog, p2Rev));
+
+                    // Clean up crash protection backups
+
+                    return new MergeResult(false, Collections.emptyList());
+                }
+
+                Map<String, String> manifestLca = lca.manifest;
                 Map<String, String> manifestP1 = loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
                 Map<String, String> manifestP2 = loadManifestAtCommit(changelog, manifestRevlog, p2Rev);
 
-                for (String path : manifestP1.keySet()) {
-                    if (!manifestP2.containsKey(path)) {
-                        deleteFileFromWorkingCopy(path);
-                        dirstate.removeEntry(path);
+                TreeWalk tw = new TreeWalk();
+                tw.addTree(new ManifestTreeIterator(repository, String.valueOf(lca.rev))); // Tree 0: LCA
+                tw.addTree(new ManifestTreeIterator(repository, String.valueOf(p1Rev)));   // Tree 1: P1
+                tw.addTree(new ManifestTreeIterator(repository, String.valueOf(p2Rev)));   // Tree 2: P2
+
+                List<String> conflicts = new ArrayList<>();
+                boolean conflicted = false;
+
+                tw.reset();
+                while (tw.next()) {
+                    String path = tw.getPath();
+                    boolean inLca = tw.isTracked(0);
+                    boolean inP1 = tw.isTracked(1);
+                    boolean inP2 = tw.isTracked(2);
+
+                    String hLca = inLca ? manifestLca.get(path) : null;
+                    String hP1 = inP1 ? manifestP1.get(path) : null;
+                    String hP2 = inP2 ? manifestP2.get(path) : null;
+
+                    if (".hgsubstate".equals(path)) {
+                        // Real hg never runs its generic line-based file merge on .hgsubstate --
+                        // it is always resolved semantically, per subrepo, via subrepoutil.submerge()
+                        // (backlog 32 follow-up "gap B"; see mergeSubrepoState()'s javadoc). Doing a
+                        // plain text 3-way merge on it instead (as this method used to, since
+                        // .hgsubstate is tracked like any other file) would write literal
+                        // "<<<<<<<"/"======="/">>>>>>>" conflict markers into it whenever both
+                        // parents pinned a subrepo to a different revision -- real hg never does
+                        // that to this file.
+                        mergeSubrepoState(hLca, hP1, hP2, dirstate);
+                        continue;
+                    }
+
+                    if (Objects.equals(hP1, hP2)) {
+                        continue;
+                    }
+
+                    if (hP1 == null && hP2 != null) {
+                        if (hLca == null) {
+                            int mode = getModeFromManifestHex(hP2);
+                            byte[] content = getFileRevisionContent(path, hP2);
+                            writeFileToWorkingCopy(path, content, mode);
+                            dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
+                        } else {
+                            deleteFileFromWorkingCopy(path);
+                            dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
+                        }
+                    } else if (hP1 != null && hP2 == null) {
+                        if (hLca == null) {
+                            // Added in P1, keep P1 version (no action needed)
+                        } else {
+                            deleteFileFromWorkingCopy(path);
+                            dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
+                        }
+                    } else if (hP1 != null && hP2 != null) {
+                        if (Objects.equals(hP1, hLca)) {
+                            int mode = getModeFromManifestHex(hP2);
+                            byte[] content = getFileRevisionContent(path, hP2);
+                            writeFileToWorkingCopy(path, content, mode);
+                            dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
+                        } else if (Objects.equals(hP2, hLca)) {
+                            // P2 is unmodified, P1 modified it. Keep P1 version
+                        } else {
+                            // Both modified! Perform 3-way merge
+                            byte[] baseContent = lca.getFileContent(this, path, hLca);
+                            byte[] mineContent = getFileRevisionContent(path, hP1);
+                            byte[] theirsContent = getFileRevisionContent(path, hP2);
+
+                            List<String> baseLines = readLines(baseContent);
+                            List<String> mineLines = readLines(mineContent);
+                            List<String> theirsLines = readLines(theirsContent);
+
+                            Merge3.MergeResult mergeRes = Merge3.merge(baseLines, mineLines, theirsLines);
+                            StringBuilder sb = new StringBuilder();
+                            for (String line : mergeRes.getMergedLines()) {
+                                sb.append(line).append('\n');
+                            }
+                            byte[] mergedBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
+                            int mode = getModeFromManifestHex(hP1);
+
+                            if (mergeRes.isConflicted()) {
+                                conflicted = true;
+                                conflicts.add(path);
+
+                                // 실제 hg(mergestate.add)와 동일하게 충돌 파일의 병합 전 로컬
+                                // 내용을 .hg/merge/<localkey>에 백업해 둔다 — hg resolve가 이
+                                // 파일을 이용해 :local/:other/:merge3 등으로 재시도할 수 있다.
+                                String localKey = MergeState.getLocalKey(path);
+                                File localBackup = new File(repository.getHgDir(), "merge/" + localKey);
+                                localBackup.getParentFile().mkdirs();
+                                Files.write(localBackup.toPath(), mineContent);
+
+                                byte[] ancestorLinkNode = lca.rev != -1
+                                        ? changelog.getIndexRecord(lca.rev).getNodeId()
+                                        : new byte[20];
+                                mergeState.addMergedFile(path, localKey, path, path, cleanHexOf(hLca), path, cleanHexOf(hP2), flagOf(hP1));
+                                mergeState.stateExtras
+                                        .computeIfAbsent(path, k -> new LinkedHashMap<>())
+                                        .put("ancestorlinknode", NodeIdUtil.toHex(ancestorLinkNode));
+                            }
+                            writeFileToWorkingCopy(path, mergedBytes, mode);
+                            dirstate.addEntry(path, new Dirstate.Entry('m', mode, mergedBytes.length, System.currentTimeMillis() / 1000));
+                        }
                     }
                 }
-                for (Map.Entry<String, String> entry : manifestP2.entrySet()) {
-                    String path = entry.getKey();
-                    String hex = entry.getValue();
-                    byte[] content = getFileRevisionContent(path, hex);
-                    int mode = getModeFromManifestHex(hex);
-                    writeFileToWorkingCopy(path, content, mode);
-                    dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
-                }
-                dirstate.setParents(new NodeId(p2CommitNode), NodeId.NULL);
+
+                // 5. Update dirstate parent headers to P1 and P2
+                dirstate.setParents(p1CommitNode, new NodeId(p2CommitNode));
                 repository.writeDirstate(dirstate);
 
-                // A fast-forward merge is a full single-parent checkout to p2 (equivalent
-                // to `hg update`), not a real two-parent merge, so the working branch must
-                // follow the target — same as UpdateCommand/BisectCommand.
-                repository.setBranch(CommitCommand.getBranchOfRevision(changelog, p2Rev));
+                // 실제 hg처럼 충돌이 있으면 .hg/merge/state2를 남겨 이후 세션/hg resolve가
+                // 미해결 파일을 이어서 처리할 수 있게 하고, 충돌 없이 끝났으면 이전에 남아있을
+                // 수 있는 병합 상태를 정리한다.
+                if (conflicted) {
+                    mergeState.write(mergeStateFile);
+                } else {
+                    MergeState.clean(mergeStateFile);
+                }
+
+                // POST_MERGE hooks trigger
+                Map<String, Object> ctx = new HashMap<>();
+                ctx.put("conflicted", conflicted);
+                ctx.put("conflicts", conflicts);
+                ctx.put("repository", repository);
+                for (HgHook hook : postMergeHooks) {
+                    try {
+                        hook.run(ctx);
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Post-merge hook execution failed", e);
+                    }
+                }
 
                 // Clean up crash protection backups
-                Files.deleteIfExists(journalFile.toPath());
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.deleteIfExists(dirstateBackupFile.toPath());
 
-                return new MergeResult(false, Collections.emptyList());
-            }
-
-            Map<String, String> manifestLca = lca.manifest;
-            Map<String, String> manifestP1 = loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
-            Map<String, String> manifestP2 = loadManifestAtCommit(changelog, manifestRevlog, p2Rev);
-
-            TreeWalk tw = new TreeWalk();
-            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(lca.rev))); // Tree 0: LCA
-            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(p1Rev)));   // Tree 1: P1
-            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(p2Rev)));   // Tree 2: P2
-
-            List<String> conflicts = new ArrayList<>();
-            boolean conflicted = false;
-
-            tw.reset();
-            while (tw.next()) {
-                String path = tw.getPath();
-                boolean inLca = tw.isTracked(0);
-                boolean inP1 = tw.isTracked(1);
-                boolean inP2 = tw.isTracked(2);
-
-                String hLca = inLca ? manifestLca.get(path) : null;
-                String hP1 = inP1 ? manifestP1.get(path) : null;
-                String hP2 = inP2 ? manifestP2.get(path) : null;
-
-                if (".hgsubstate".equals(path)) {
-                    // Real hg never runs its generic line-based file merge on .hgsubstate --
-                    // it is always resolved semantically, per subrepo, via subrepoutil.submerge()
-                    // (backlog 32 follow-up "gap B"; see mergeSubrepoState()'s javadoc). Doing a
-                    // plain text 3-way merge on it instead (as this method used to, since
-                    // .hgsubstate is tracked like any other file) would write literal
-                    // "<<<<<<<"/"======="/">>>>>>>" conflict markers into it whenever both
-                    // parents pinned a subrepo to a different revision -- real hg never does
-                    // that to this file.
-                    mergeSubrepoState(hLca, hP1, hP2, dirstate);
-                    continue;
-                }
-
-                if (Objects.equals(hP1, hP2)) {
-                    continue;
-                }
-
-                if (hP1 == null && hP2 != null) {
-                    if (hLca == null) {
-                        int mode = getModeFromManifestHex(hP2);
-                        byte[] content = getFileRevisionContent(path, hP2);
-                        writeFileToWorkingCopy(path, content, mode);
-                        dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
-                    } else {
-                        deleteFileFromWorkingCopy(path);
-                        dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
-                    }
-                } else if (hP1 != null && hP2 == null) {
-                    if (hLca == null) {
-                        // Added in P1, keep P1 version (no action needed)
-                    } else {
-                        deleteFileFromWorkingCopy(path);
-                        dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
-                    }
-                } else if (hP1 != null && hP2 != null) {
-                    if (Objects.equals(hP1, hLca)) {
-                        int mode = getModeFromManifestHex(hP2);
-                        byte[] content = getFileRevisionContent(path, hP2);
-                        writeFileToWorkingCopy(path, content, mode);
-                        dirstate.addEntry(path, new Dirstate.Entry('n', mode, content.length, System.currentTimeMillis() / 1000));
-                    } else if (Objects.equals(hP2, hLca)) {
-                        // P2 is unmodified, P1 modified it. Keep P1 version
-                    } else {
-                        // Both modified! Perform 3-way merge
-                        byte[] baseContent = lca.getFileContent(this, path, hLca);
-                        byte[] mineContent = getFileRevisionContent(path, hP1);
-                        byte[] theirsContent = getFileRevisionContent(path, hP2);
-
-                        List<String> baseLines = readLines(baseContent);
-                        List<String> mineLines = readLines(mineContent);
-                        List<String> theirsLines = readLines(theirsContent);
-
-                        Merge3.MergeResult mergeRes = Merge3.merge(baseLines, mineLines, theirsLines);
-                        StringBuilder sb = new StringBuilder();
-                        for (String line : mergeRes.getMergedLines()) {
-                            sb.append(line).append('\n');
-                        }
-                        byte[] mergedBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
-                        int mode = getModeFromManifestHex(hP1);
-
-                        if (mergeRes.isConflicted()) {
-                            conflicted = true;
-                            conflicts.add(path);
-
-                            // 실제 hg(mergestate.add)와 동일하게 충돌 파일의 병합 전 로컬
-                            // 내용을 .hg/merge/<localkey>에 백업해 둔다 — hg resolve가 이
-                            // 파일을 이용해 :local/:other/:merge3 등으로 재시도할 수 있다.
-                            String localKey = MergeState.getLocalKey(path);
-                            File localBackup = new File(repository.getHgDir(), "merge/" + localKey);
-                            localBackup.getParentFile().mkdirs();
-                            Files.write(localBackup.toPath(), mineContent);
-
-                            byte[] ancestorLinkNode = lca.rev != -1
-                                    ? changelog.getIndexRecord(lca.rev).getNodeId()
-                                    : new byte[20];
-                            mergeState.addMergedFile(path, localKey, path, path, cleanHexOf(hLca), path, cleanHexOf(hP2), flagOf(hP1));
-                            mergeState.stateExtras
-                                    .computeIfAbsent(path, k -> new LinkedHashMap<>())
-                                    .put("ancestorlinknode", NodeIdUtil.toHex(ancestorLinkNode));
-                        }
-                        writeFileToWorkingCopy(path, mergedBytes, mode);
-                        dirstate.addEntry(path, new Dirstate.Entry('m', mode, mergedBytes.length, System.currentTimeMillis() / 1000));
-                    }
-                }
-            }
-
-            // 5. Update dirstate parent headers to P1 and P2
-            dirstate.setParents(p1CommitNode, new NodeId(p2CommitNode));
-            repository.writeDirstate(dirstate);
-
-            // 실제 hg처럼 충돌이 있으면 .hg/merge/state2를 남겨 이후 세션/hg resolve가
-            // 미해결 파일을 이어서 처리할 수 있게 하고, 충돌 없이 끝났으면 이전에 남아있을
-            // 수 있는 병합 상태를 정리한다.
-            if (conflicted) {
-                mergeState.write(mergeStateFile);
-            } else {
-                MergeState.clean(mergeStateFile);
-            }
-
-            // POST_MERGE hooks trigger
-            Map<String, Object> ctx = new HashMap<>();
-            ctx.put("conflicted", conflicted);
-            ctx.put("conflicts", conflicts);
-            ctx.put("repository", repository);
-            for (HgHook hook : postMergeHooks) {
-                try {
-                    hook.run(ctx);
-                } catch (Exception e) {
-                    LOGGER.log(Level.WARNING, "Post-merge hook execution failed", e);
-                }
-            }
-
-            // Clean up crash protection backups
-            Files.deleteIfExists(journalFile.toPath());
-            File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-            Files.deleteIfExists(dirstateBackupFile.toPath());
-
-            return new MergeResult(conflicted, conflicts);
-        } catch (Exception e) {
-            // Restore dirstate on crash/failure
-            if (dirstateBackup != null) {
-                try {
-                    SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-                } catch (Exception ignored) {}
-            }
-            try {
-                Files.deleteIfExists(journalFile.toPath());
-            } catch (Exception ignored) {}
-            throw e;
+                return new MergeResult(conflicted, conflicts);
+                });
+          }
         }
-      }
     }
 
     /**
@@ -527,28 +495,45 @@ public class MergeCommand {
      * every file added purely by p2) untouched on disk. Every path is therefore rewritten (or
      * removed) unconditionally against p1's manifest.
      */
-    public void abort() throws IOException, HgLockException {
-        repository.clearRevlogCache();
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+    private final java.util.List<String> messages = new java.util.ArrayList<>();
 
+    /** What the command printed ({@code aborting the merge, updating back to ...}). */
+    public java.util.List<String> getMessages() {
+        return messages;
+    }
+
+    public void abort() throws IOException, HgLockException {
+        messages.clear();
+        repository.clearRevlogCache();
+        // `commands.merge`/`abort_merge` read the dirstate and the merge state before any lock: the working copy lock is taken by
+        // the clean update at the end (`update()` does `with repo.wlock():`), and the node to go back to was chosen before it
+        Dirstate before = repository.getDirstate();
+        NodeId p1 = before.getParent1Node();
+        NodeId p2 = before.getParent2Node();
+        if (p2 == null || p2.isNull()) {
+            // Matches real hg's "abort: no merge in progress" (hg 7.2, mergestatemod).
+            throw new HgValidationException("no merge in progress");
+        }
+        if (p1 == null || p1.isNull()) {
+            throw new IllegalStateException("Cannot abort merge in an empty repository.");
+        }
+        MergeState state = MergeState.read(new File(repository.getHgDir(), "merge/state2"));
+        // with conflicts the merge state names the local side; without any it was not stored and the parent is used
+        NodeId target = state.isActive() && state.local != null ? new NodeId(state.local) : p1;
+        messages.add("aborting the merge, updating back to " + target.toHex().substring(0, 12) + "\n");
+        final NodeId abortTarget = target;
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            repository.changingParents(() -> {
+            repository.clearRevlogCache();
             Dirstate dirstate = repository.getDirstate();
-            NodeId p1 = dirstate.getParent1Node();
-            NodeId p2 = dirstate.getParent2Node();
-            if (p2 == null || p2.isNull()) {
-                // Matches real hg's "abort: no merge in progress" (hg 7.2, mergestatemod).
-                throw new HgValidationException("no merge in progress");
-            }
-            if (p1 == null || p1.isNull()) {
-                throw new IllegalStateException("Cannot abort merge in an empty repository.");
-            }
+            NodeId p1Back = abortTarget;
 
             File clIdx = new File(repository.getStoreDir(), "00changelog.i");
             File clDat = new File(repository.getStoreDir(), "00changelog.d");
             Revlog changelog = repository.getRevlog(clIdx, clDat);
-            int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1.getBytes());
+            int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1Back.getBytes());
             if (p1Rev == -1) {
-                throw new HgRevisionNotFoundException(p1.toHex());
+                throw new HgRevisionNotFoundException(p1Back.toHex());
             }
             Revlog manifestRevlog = repository.getManifestRevlog();
             Map<String, String> manifestP1 = loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
@@ -570,11 +555,13 @@ public class MergeCommand {
                 }
             }
 
-            dirstate.setParents(p1, NodeId.NULL);
+            dirstate.setParents(p1Back, NodeId.NULL);
             repository.writeDirstate(dirstate);
 
             File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
             MergeState.clean(mergeStateFile);
+            return null;
+            });
         }
     }
 
@@ -883,11 +870,4 @@ public class MergeCommand {
         return list;
     }
 
-    private void appendToJournal(File journalFile, String entry) throws IOException {
-        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
-        }
-    }
 }

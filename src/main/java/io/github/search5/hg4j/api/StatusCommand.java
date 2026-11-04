@@ -1,6 +1,7 @@
 package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.dirstate.Dirstate;
+import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.util.SafeFileIO;
@@ -110,7 +111,83 @@ public class StatusCommand {
         return kept;
     }
 
+    private final Map<String, Dirstate.Entry> fixups = new java.util.LinkedHashMap<>();
+
+    /**
+     * The dirstate's verdict on a tracked file, as `dirstate.status` gives it: a different size is modified; the same size and mtime is
+     * clean; anything else (a different mtime, an ambiguous or racy stat) is "lookup": the content is compared with the parent's, and a
+     * file that turns out clean has its stat refreshed in the dirstate (`_poststatusfixup`) so the next status needs no comparison.
+     */
+    private boolean lookupModified(Dirstate dirstate, String path, Dirstate.Entry dEntry, File diskFile, boolean isSymlink, long diskSize,
+                                   long diskTime, long dirstateMtime) {
+        if (dEntry.getState() == 'm') {
+            return true; // `entry.merged`: a file that took part in a merge is modified until it is committed
+        }
+        boolean statAmbiguous = dEntry.isStatAmbiguous();
+        if (!statAmbiguous && dEntry.getSize() != diskSize) {
+            return true;
+        }
+        if (!statAmbiguous && dEntry.getTime() == diskTime && diskTime != dirstateMtime) {
+            return false;
+        }
+        boolean compared = false;
+        try {
+            byte[] parentContent = getParentCommitFileContent(dirstate, path);
+            if (parentContent != null) {
+                compared = true;
+                if (!Arrays.equals(effectiveContent(diskFile, isSymlink), parentContent)) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+            // no content to compare with: the stat decides
+        }
+        // a stat of the current second can still change within it: not reliable enough to record
+        if (compared && (statAmbiguous || dEntry.getTime() != diskTime) && diskTime < System.currentTimeMillis() / 1000) {
+            fixups.put(path, new Dirstate.Entry(dEntry.getState(), dEntry.getMode(), (int) diskSize, (int) diskTime));
+        }
+        return false;
+    }
+
+    /**
+     * `_poststatusfixup`: updating the dirstate is optional, so the working copy lock is not waited for (`wlock(False)`); if it is not
+     * available the fixes are dropped. The entries are applied to the dirstate as it is under the lock, only where it still holds what
+     * the status saw.
+     */
+    private void writeFixups(Map<String, Dirstate.Entry> seen) {
+        if (fixups.isEmpty()) {
+            return;
+        }
+        Map<String, Dirstate.Entry> pending = new java.util.LinkedHashMap<>(fixups);
+        fixups.clear();
+        try (HgLock lock = repository.lockWorkingCopy(0)) {
+            Dirstate fresh = repository.getDirstate();
+            boolean changed = false;
+            for (Map.Entry<String, Dirstate.Entry> fix : pending.entrySet()) {
+                Dirstate.Entry now = fresh.getEntries().get(fix.getKey());
+                Dirstate.Entry before = seen.get(fix.getKey());
+                if (now != null && before != null && now.getState() == before.getState() && now.getSize() == before.getSize()
+                        && now.getTime() == before.getTime()) {
+                    fresh.addEntry(fix.getKey(), fix.getValue());
+                    changed = true;
+                }
+            }
+            if (changed) {
+                repository.writeDirstate(fresh);
+            }
+        } catch (Exception unavailable) {
+            // LockError: the dirstate is simply left as it was
+        }
+    }
+
     private Status callAll() throws IOException {
+        fixups.clear();
+        Status result = computeAll();
+        writeFixups(new java.util.HashMap<>(repository.getDirstate().getEntries()));
+        return result;
+    }
+
+    private Status computeAll() throws IOException {
         // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
         // changelog-v2 revlog after an external process appended a revision -- see
         // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
@@ -156,28 +233,10 @@ public class StatusCommand {
                         // equaled a real on-disk size and every such entry looked permanently
                         // "modified" instead of falling through to the real content comparison
                         // below.
-                        boolean statAmbiguous = dEntry.isStatAmbiguous();
-                        if (!statAmbiguous && (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime)) {
+                        if (lookupModified(dirstate, path, dEntry, diskFile, isSymlink, diskSize, diskTime, dirstateMtime)) {
                             status.getModified().add(path);
                         } else {
-                            boolean isRacyModified = false;
-                            if (statAmbiguous || diskTime == dirstateMtime) {
-                                try {
-                                    byte[] parentContent = getParentCommitFileContent(dirstate, path);
-                                    if (parentContent != null) {
-                                        byte[] fileContent = effectiveContent(diskFile, isSymlink);
-                                        if (!Arrays.equals(fileContent, parentContent)) {
-                                            isRacyModified = true;
-                                        }
-                                    }
-                                } catch (Exception ignored) {}
-                            }
-
-                            if (isRacyModified) {
-                                status.getModified().add(path);
-                            } else {
-                                status.getClean().add(path);
-                            }
+                            status.getClean().add(path);
                         }
                     }
                 }
@@ -251,28 +310,10 @@ public class StatusCommand {
                             // See the identical comment on this same pattern in the fast-path
                             // branch above -- an entry's cached stat can be fully ambiguous
                             // (size AND mtime sentinel together), not just mtime alone.
-                            boolean statAmbiguous = dEntry.isStatAmbiguous();
-                            if (!statAmbiguous && (dEntry.getSize() != diskSize || dEntry.getTime() != diskTime)) {
+                            if (lookupModified(dirstate, path, dEntry, diskFile, isSymlink, diskSize, diskTime, dirstateMtime)) {
                                 status.getModified().add(path);
                             } else {
-                                boolean isRacyModified = false;
-                                if (statAmbiguous || diskTime == dirstateMtime) {
-                                    try {
-                                        byte[] parentContent = getParentCommitFileContent(dirstate, path);
-                                        if (parentContent != null) {
-                                            byte[] fileContent = effectiveContent(diskFile, isSymlink);
-                                            if (!Arrays.equals(fileContent, parentContent)) {
-                                                isRacyModified = true;
-                                            }
-                                        }
-                                    } catch (Exception ignored) {}
-                                }
-
-                                if (isRacyModified) {
-                                    status.getModified().add(path);
-                                } else {
-                                    status.getClean().add(path);
-                                }
+                                status.getClean().add(path);
                             }
                         } else {
                             status.getClean().add(path);

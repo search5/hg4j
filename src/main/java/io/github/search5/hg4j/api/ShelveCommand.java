@@ -74,7 +74,139 @@ public class ShelveCommand {
         return this;
     }
 
+    private boolean delete = false;
+    private boolean cleanup = false;
+    private final java.util.List<String> names = new java.util.ArrayList<>();
+
+    /** {@code hg shelve --delete NAME...}: the named shelves are moved to {@code .hg/shelve-backup}. */
+    public ShelveCommand setDelete(boolean delete) {
+        this.delete = delete;
+        return this;
+    }
+
+    /** The shelves {@code --delete} removes (real hg takes them as the command's arguments). */
+    public ShelveCommand setNames(String... shelfNames) {
+        names.clear();
+        names.addAll(java.util.Arrays.asList(shelfNames));
+        return this;
+    }
+
+    /** {@code hg shelve --cleanup}: every shelf is moved to {@code .hg/shelve-backup}. */
+    public ShelveCommand setCleanup(boolean cleanup) {
+        this.cleanup = cleanup;
+        return this;
+    }
+
+    // real hg's shelvefileextensions (hg, patch, shelve) plus hg4j's own per-shelf metadata file, which must travel with the shelf
+    private static final String[] SHELF_EXTENSIONS = {"hg", "patch", "shelve", "state"};
+
+    private static boolean shelfExists(File dir, String shelfName) {
+        return new File(dir, shelfName + ".shelve").exists()
+                || (new File(dir, shelfName + ".patch").exists() && new File(dir, shelfName + ".hg").exists());
+    }
+
+    private static long shelfModificationSeconds(File dir, String shelfName) throws IOException {
+        File f = new File(dir, shelfName + ".shelve");
+        if (!f.exists()) {
+            f = new File(dir, shelfName + ".patch");
+        }
+        return Files.getLastModifiedTime(f.toPath()).toMillis() / 1000L; // real hg compares st_mtime in whole seconds
+    }
+
+    /** Real hg's {@code ShelfDir.listshelves}: (mtime, name) of every shelf, newest first, ties by name descending. */
+    private static java.util.List<java.util.Map.Entry<Long, String>> listShelves(File dir) throws IOException {
+        java.util.List<java.util.Map.Entry<Long, String>> shelves = new ArrayList<>();
+        String[] files = dir.list();
+        if (files == null) {
+            return shelves;
+        }
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String file : files) {
+            int dot = file.lastIndexOf('.');
+            String shelfName = dot < 0 ? file : file.substring(0, dot);
+            if (!seen.add(shelfName) || !shelfExists(dir, shelfName)) {
+                continue;
+            }
+            shelves.add(java.util.Map.entry(shelfModificationSeconds(dir, shelfName), shelfName));
+        }
+        shelves.sort((a, b) -> {
+            int byTime = Long.compare(b.getKey(), a.getKey());
+            return byTime != 0 ? byTime : b.getValue().compareTo(a.getValue());
+        });
+        return shelves;
+    }
+
+    /** Real hg's {@code Shelf.movetobackup}: each of the shelf's files goes to the backup directory under a name not yet taken. */
+    private static void moveShelfToBackup(File shelvedDir, File backupDir, String shelfName) throws IOException {
+        Files.createDirectories(backupDir.toPath());
+        for (String ext : SHELF_EXTENSIONS) {
+            String filename = shelfName + "." + ext;
+            File source = new File(shelvedDir, filename);
+            if (!source.exists()) {
+                continue;
+            }
+            String target = filename;
+            for (int i = 1; new File(backupDir, target).exists(); i++) {
+                target = shelfName + "-" + i + "." + ext;
+            }
+            Files.move(source.toPath(), new File(backupDir, target).toPath());
+        }
+    }
+
+    /** Real hg's {@code cleanupoldbackups}: keeps the newest {@code shelve.maxbackups} (10) backups, and any sharing the border's time. */
+    private void cleanupOldBackups(File backupDir) throws IOException {
+        int maxBackups;
+        try {
+            maxBackups = Integer.parseInt(repository.getConfig().get("shelve", "maxbackups", "10").trim());
+        } catch (NumberFormatException e) {
+            maxBackups = 10;
+        }
+        java.util.List<java.util.Map.Entry<Long, String>> backups = listShelves(backupDir);
+        Long borderTime = maxBackups > 0 && maxBackups < backups.size() ? backups.get(maxBackups - 1).getKey() : null;
+        // Python's backups[maxbackups:] (a negative start counts from the end)
+        int from = maxBackups < 0 ? Math.max(backups.size() + maxBackups, 0) : Math.min(maxBackups, backups.size());
+        for (java.util.Map.Entry<Long, String> backup : backups.subList(from, backups.size())) {
+            if (borderTime != null && backup.getKey().equals(borderTime)) {
+                continue;
+            }
+            for (String ext : SHELF_EXTENSIONS) {
+                Files.deleteIfExists(new File(backupDir, backup.getValue() + "." + ext).toPath());
+            }
+        }
+    }
+
+    /**
+     * Real hg's {@code deletecmd} and {@code cleanupcmd}: the working copy lock is taken first, then the shelves are looked at.
+     */
+    private void deleteOrCleanup() throws IOException, HgLockException {
+        File shelvedDir = new File(repository.getHgDir(), "shelved");
+        File backupDir = new File(repository.getHgDir(), "shelve-backup");
+        if (delete && !cleanup && names.isEmpty()) {
+            throw new io.github.search5.hg4j.errors.HgValidationException("no shelved changes specified!");
+        }
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            if (cleanup) {
+                for (java.util.Map.Entry<Long, String> shelf : listShelves(shelvedDir)) {
+                    moveShelfToBackup(shelvedDir, backupDir, shelf.getValue());
+                    cleanupOldBackups(backupDir);
+                }
+            } else {
+                for (String shelfName : names) {
+                    if (!shelfExists(shelvedDir, shelfName)) {
+                        throw new io.github.search5.hg4j.errors.HgValidationException("shelved change '" + shelfName + "' not found");
+                    }
+                    moveShelfToBackup(shelvedDir, backupDir, shelfName);
+                    cleanupOldBackups(backupDir);
+                }
+            }
+        }
+    }
+
     public void call() throws IOException, HgLockException, HgMergeConflictException {
+        if (delete || cleanup) {
+            deleteOrCleanup();
+            return;
+        }
         File shelvedDir = new File(repository.getHgDir(), "shelved");
         shelvedDir.mkdirs();
         File stateFile = new File(shelvedDir, name + ".state");
@@ -219,9 +351,7 @@ public class ShelveCommand {
         File patchFile = new File(shelvedDir, name + ".patch");
         File hgBundleFile = new File(shelvedDir, name + ".hg");
 
-        try (HgLock wlock = repository.lockWorkingCopy();
-             HgLock storeLock = repository.lockStore()) {
-
+        try (HgLock wlock = repository.lockWorkingCopy()) {
             Dirstate dirstate = repository.getDirstate();
             Map<String, Dirstate.Entry> entries = dirstate.getEntries();
 
@@ -293,519 +423,534 @@ public class ShelveCommand {
                 }
             }
 
-            if (shelvedFiles.isEmpty()) {
-                return; // Nothing to shelve
-            }
+            // Like real hg: the working copy was read under wlock; repo.lock() (and the transaction) starts here, before "nothing changed" is decided.
+            try (HgLock storeLock = repository.lockStore()) {
+                if (shelvedFiles.isEmpty()) {
+                    return; // Nothing to shelve
+                }
 
-            // Get parent nodes for standard metadata
-            byte[] p1 = dirstate.getParent1();
-            byte[] p2 = dirstate.getParent2();
-            String p1Hex = NodeIdUtil.toHex(p1);
-            String p2Hex = NodeIdUtil.toHex(p2);
+                // Get parent nodes for standard metadata
+                byte[] p1 = dirstate.getParent1();
+                byte[] p2 = dirstate.getParent2();
+                String p1Hex = NodeIdUtil.toHex(p1);
+                String p2Hex = NodeIdUtil.toHex(p2);
 
-            // 1. Write standard .patch file
-            StringBuilder patchSb = new StringBuilder();
-            patchSb.append("# HG changeset patch\n");
-            patchSb.append("# User hg4j <hg4j@example.com>\n");
-            patchSb.append("# Date ").append(System.currentTimeMillis() / 1000).append(" 0\n");
-            patchSb.append("# Parent ").append(p1Hex).append("\n");
-            patchSb.append("shelve: ").append(name).append("\n\n");
+                // 1. Write standard .patch file
+                StringBuilder patchSb = new StringBuilder();
+                patchSb.append("# HG changeset patch\n");
+                patchSb.append("# User hg4j <hg4j@example.com>\n");
+                patchSb.append("# Date ").append(System.currentTimeMillis() / 1000).append(" 0\n");
+                patchSb.append("# Parent ").append(p1Hex).append("\n");
+                patchSb.append("shelve: ").append(name).append("\n\n");
 
-            for (ShelvedFile sf : shelvedFiles) {
-                patchSb.append(generateDiff(sf.path, sf.state, sf.content, p1Hex));
-            }
+                for (ShelvedFile sf : shelvedFiles) {
+                    patchSb.append(generateDiff(sf.path, sf.state, sf.content, p1Hex));
+                }
 
-            Files.writeString(patchFile.toPath(), patchSb.toString(), StandardCharsets.UTF_8);
+                Files.writeString(patchFile.toPath(), patchSb.toString(), StandardCharsets.UTF_8);
 
-            // 2. Commit temporary revision to capture exact working copy delta
-            CommitCommand commitCmd = new CommitCommand(repository)
-                    .setAuthor("hg4j <hg4j@example.com>")
-                    .setMessage("[shelve] " + name)
-                    .setSkipLockAndJournal(true);
+                // 2. Commit temporary revision to capture exact working copy delta
+                CommitCommand commitCmd = new CommitCommand(repository)
+                        .setAuthor("hg4j <hg4j@example.com>")
+                        .setMessage("[shelve] " + name)
+                        .setSkipLockAndJournal(true);
             
-            byte[] tempCommitNode = commitCmd.call();
+                byte[] tempCommitNode = commitCmd.call();
 
-            // 3. Construct and write native .hg binary bundle from the temporary commit
-            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+                // 3. Construct and write native .hg binary bundle from the temporary commit
+                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+                File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
-            Revlog cl = repository.getRevlog(clIdx, clDat);
-            int tempRev = cl.findRevision(tempCommitNode);
-            if (tempRev == -1) {
-                throw new HgRevisionNotFoundException("Failed to resolve temporary shelve commit.");
-            }
-
-            ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
-            bundle.changelogEntries = new ArrayList<>();
-            bundle.manifestEntries = new ArrayList<>();
-            bundle.fileGroups = new ArrayList<>();
-
-            // Real base content for each of the changelog/manifest/filelog deltas below --
-            // real hg's cg1 changegroup applier (mercurial/changegroup.py cg1unpacker, invoked
-            // by real hg's own `hg unbundle`/`hg unshelve`) reconstructs each entry's content by
-            // applying its delta against the LOCAL repository's content for the entry's declared
-            // p1 node (or empty, only when p1 truly is the null node) -- NOT unconditionally
-            // against empty. An earlier version of this method always encoded "delta against
-            // empty" regardless of the declared (non-null) p1, which only round-trips correctly
-            // under hg4j's own performUnshelve() (which mirrored that same non-standard
-            // convention): real hg's own unbundle/unshelve machinery would instead prepend the
-            // "delta" onto the true p1 content rather than replace it, corrupting every modified
-            // (as opposed to newly-added) shelved file. Confirmed against real hg CLI
-            // (2026-09-03): a `.hg` shelve bundle built the old way could not be applied by real
-            // `hg unshelve` at all. Mirrors real hg's own `writebundle()`/`makechangegroup()`.
-            int p1CommitRev = cl.findRevision(p1);
-            byte[] p1CommitContent = (p1CommitRev != -1) ? cl.getRevisionContent(p1CommitRev) : new byte[0];
-
-            // Changelog entry
-            Revlog.IndexRecord clRec = cl.getIndexRecord(tempRev);
-            ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
-            clEntry.node = clRec.getNodeId();
-            clEntry.p1 = p1;
-            clEntry.p2 = p2;
-            clEntry.cs = clRec.getNodeId();
-            byte[] rawClContent = cl.getRevisionContent(tempRev);
-            clEntry.delta = Revlog.createSimpleDelta(p1CommitContent, rawClContent);
-            bundle.changelogEntries.add(clEntry);
-
-            // Manifest entry
-            String clText = new String(rawClContent, StandardCharsets.UTF_8);
-            byte[] mfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
-            Revlog mf = repository.getManifestRevlog();
-            int mfRev = mf.findRevision(mfNode);
-            Revlog.IndexRecord mfRec = mf.getIndexRecord(mfRev);
-
-            ChangegroupParser.ChangeGroupEntry mfEntry = new ChangegroupParser.ChangeGroupEntry();
-            mfEntry.node = mfRec.getNodeId();
-            byte[] prevMfNode = new byte[20];
-            byte[] p1MfContent = new byte[0];
-            if (p1CommitRev != -1) {
-                String p1ClText = new String(p1CommitContent, StandardCharsets.UTF_8);
-                prevMfNode = NodeIdUtil.fromHex(p1ClText.split("\n")[0].trim().substring(0, 40));
-                int prevMfRev = mf.findRevision(prevMfNode);
-                if (prevMfRev != -1) {
-                    p1MfContent = mf.getRevisionContent(prevMfRev);
-                }
-            }
-            mfEntry.p1 = prevMfNode;
-            mfEntry.p2 = new byte[20];
-            mfEntry.cs = clRec.getNodeId();
-            byte[] rawMfContent = mf.getRevisionContent(mfRev);
-            mfEntry.delta = Revlog.createSimpleDelta(p1MfContent, rawMfContent);
-            bundle.manifestEntries.add(mfEntry);
-
-            // FileGroups entries
-            for (ShelvedFile sf : shelvedFiles) {
-                if (sf.state == 'r') {
-                    continue;
+                Revlog cl = repository.getRevlog(clIdx, clDat);
+                int tempRev = cl.findRevision(tempCommitNode);
+                if (tempRev == -1) {
+                    throw new HgRevisionNotFoundException("Failed to resolve temporary shelve commit.");
                 }
 
-                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), sf.path);
-                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-                Revlog fl = repository.getRevlog(flIdx, flDat);
-                int flRev = fl.getRevisionCount() - 1;
+                ChangegroupParser.ChangegroupBundle bundle = new ChangegroupParser.ChangegroupBundle();
+                bundle.changelogEntries = new ArrayList<>();
+                bundle.manifestEntries = new ArrayList<>();
+                bundle.fileGroups = new ArrayList<>();
 
-                Revlog.IndexRecord flRec = fl.getIndexRecord(flRev);
+                // Real base content for each of the changelog/manifest/filelog deltas below --
+                // real hg's cg1 changegroup applier (mercurial/changegroup.py cg1unpacker, invoked
+                // by real hg's own `hg unbundle`/`hg unshelve`) reconstructs each entry's content by
+                // applying its delta against the LOCAL repository's content for the entry's declared
+                // p1 node (or empty, only when p1 truly is the null node) -- NOT unconditionally
+                // against empty. An earlier version of this method always encoded "delta against
+                // empty" regardless of the declared (non-null) p1, which only round-trips correctly
+                // under hg4j's own performUnshelve() (which mirrored that same non-standard
+                // convention): real hg's own unbundle/unshelve machinery would instead prepend the
+                // "delta" onto the true p1 content rather than replace it, corrupting every modified
+                // (as opposed to newly-added) shelved file. Confirmed against real hg CLI
+                // (2026-09-03): a `.hg` shelve bundle built the old way could not be applied by real
+                // `hg unshelve` at all. Mirrors real hg's own `writebundle()`/`makechangegroup()`.
+                int p1CommitRev = cl.findRevision(p1);
+                byte[] p1CommitContent = (p1CommitRev != -1) ? cl.getRevisionContent(p1CommitRev) : new byte[0];
 
-                ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
-                fg.path = sf.path;
-                fg.entries = new ArrayList<>();
+                // Changelog entry
+                Revlog.IndexRecord clRec = cl.getIndexRecord(tempRev);
+                ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
+                clEntry.node = clRec.getNodeId();
+                clEntry.p1 = p1;
+                clEntry.p2 = p2;
+                clEntry.cs = clRec.getNodeId();
+                byte[] rawClContent = cl.getRevisionContent(tempRev);
+                clEntry.delta = Revlog.createSimpleDelta(p1CommitContent, rawClContent);
+                bundle.changelogEntries.add(clEntry);
 
-                ChangegroupParser.ChangeGroupEntry flEntry = new ChangegroupParser.ChangeGroupEntry();
-                flEntry.node = flRec.getNodeId();
-                byte[] prevFlNode = new byte[20];
-                byte[] flBaseContent = new byte[0];
-                if (flRev > 0) {
-                    prevFlNode = fl.getIndexRecord(flRev - 1).getNodeId();
-                    flBaseContent = fl.getRevisionContent(flRev - 1);
+                // Manifest entry
+                String clText = new String(rawClContent, StandardCharsets.UTF_8);
+                byte[] mfNode = NodeIdUtil.fromHex(clText.split("\n")[0].trim().substring(0, 40));
+                Revlog mf = repository.getManifestRevlog();
+                int mfRev = mf.findRevision(mfNode);
+                Revlog.IndexRecord mfRec = mf.getIndexRecord(mfRev);
+
+                ChangegroupParser.ChangeGroupEntry mfEntry = new ChangegroupParser.ChangeGroupEntry();
+                mfEntry.node = mfRec.getNodeId();
+                byte[] prevMfNode = new byte[20];
+                byte[] p1MfContent = new byte[0];
+                if (p1CommitRev != -1) {
+                    String p1ClText = new String(p1CommitContent, StandardCharsets.UTF_8);
+                    prevMfNode = NodeIdUtil.fromHex(p1ClText.split("\n")[0].trim().substring(0, 40));
+                    int prevMfRev = mf.findRevision(prevMfNode);
+                    if (prevMfRev != -1) {
+                        p1MfContent = mf.getRevisionContent(prevMfRev);
+                    }
                 }
-                flEntry.p1 = prevFlNode;
-                flEntry.p2 = new byte[20];
-                flEntry.cs = clRec.getNodeId();
-                flEntry.delta = Revlog.createSimpleDelta(flBaseContent, sf.content);
+                mfEntry.p1 = prevMfNode;
+                mfEntry.p2 = new byte[20];
+                mfEntry.cs = clRec.getNodeId();
+                byte[] rawMfContent = mf.getRevisionContent(mfRev);
+                mfEntry.delta = Revlog.createSimpleDelta(p1MfContent, rawMfContent);
+                bundle.manifestEntries.add(mfEntry);
 
-                fg.entries.add(flEntry);
-                bundle.fileGroups.add(fg);
-            }
+                // FileGroups entries
+                for (ShelvedFile sf : shelvedFiles) {
+                    if (sf.state == 'r') {
+                        continue;
+                    }
 
-            // Serialize the raw (cg1-style) changegroup bytes, then wrap them in a minimal
-            // uncompressed HG20/bundle2 envelope (Bundle2Parser.wrapChangegroupInBundle2) so the
-            // resulting `.hg` file is byte-for-byte a real Mercurial bundle real hg's own
-            // `exchange.readbundle()`/`bundle2.getunbundler()` can load (verified against real hg
-            // CLI 7.2.2, 2026-09-03) -- a bare, header-less dump of the raw entries (as this method
-            // wrote before) is not recognized as a bundle at all by real hg. Real hg itself only
-            // omits the HG20 envelope (using a bare "HG10BZ"-prefixed bundle1 stream instead) for
-            // repositories whose changegroup.safeversion() is "01"; hg4j does not model that legacy
-            // format distinction, so it always uses the HG20 envelope with cg version "01" here,
-            // which real hg's bundle2 CHANGEGROUP part handler accepts regardless of local repo
-            // format (it only requires the part's own `version` parameter, matching
-            // Bundle2Parser.wrapChangegroupInBundle2's own javadoc).
-            ByteArrayOutputStream rawCg = new ByteArrayOutputStream();
-            try (DataOutputStream dos = new DataOutputStream(rawCg)) {
-                // Changelog group
-                for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
-                    writeEntryChunk(dos, entry);
+                    File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), sf.path);
+                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                    Revlog fl = repository.getRevlog(flIdx, flDat);
+                    int flRev = fl.getRevisionCount() - 1;
+
+                    Revlog.IndexRecord flRec = fl.getIndexRecord(flRev);
+
+                    ChangegroupParser.FileGroup fg = new ChangegroupParser.FileGroup();
+                    fg.path = sf.path;
+                    fg.entries = new ArrayList<>();
+
+                    ChangegroupParser.ChangeGroupEntry flEntry = new ChangegroupParser.ChangeGroupEntry();
+                    flEntry.node = flRec.getNodeId();
+                    byte[] prevFlNode = new byte[20];
+                    byte[] flBaseContent = new byte[0];
+                    if (flRev > 0) {
+                        prevFlNode = fl.getIndexRecord(flRev - 1).getNodeId();
+                        flBaseContent = fl.getRevisionContent(flRev - 1);
+                    }
+                    flEntry.p1 = prevFlNode;
+                    flEntry.p2 = new byte[20];
+                    flEntry.cs = clRec.getNodeId();
+                    flEntry.delta = Revlog.createSimpleDelta(flBaseContent, sf.content);
+
+                    fg.entries.add(flEntry);
+                    bundle.fileGroups.add(fg);
                 }
-                writeTerminalChunk(dos);
 
-                // Manifest group
-                for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
-                    writeEntryChunk(dos, entry);
-                }
-                writeTerminalChunk(dos);
-
-                // File groups
-                for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
-                    writePathChunk(dos, fg.path);
-                    for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                // Serialize the raw (cg1-style) changegroup bytes, then wrap them in a minimal
+                // uncompressed HG20/bundle2 envelope (Bundle2Parser.wrapChangegroupInBundle2) so the
+                // resulting `.hg` file is byte-for-byte a real Mercurial bundle real hg's own
+                // `exchange.readbundle()`/`bundle2.getunbundler()` can load (verified against real hg
+                // CLI 7.2.2, 2026-09-03) -- a bare, header-less dump of the raw entries (as this method
+                // wrote before) is not recognized as a bundle at all by real hg. Real hg itself only
+                // omits the HG20 envelope (using a bare "HG10BZ"-prefixed bundle1 stream instead) for
+                // repositories whose changegroup.safeversion() is "01"; hg4j does not model that legacy
+                // format distinction, so it always uses the HG20 envelope with cg version "01" here,
+                // which real hg's bundle2 CHANGEGROUP part handler accepts regardless of local repo
+                // format (it only requires the part's own `version` parameter, matching
+                // Bundle2Parser.wrapChangegroupInBundle2's own javadoc).
+                ByteArrayOutputStream rawCg = new ByteArrayOutputStream();
+                try (DataOutputStream dos = new DataOutputStream(rawCg)) {
+                    // Changelog group
+                    for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                         writeEntryChunk(dos, entry);
                     }
                     writeTerminalChunk(dos);
+
+                    // Manifest group
+                    for (ChangegroupParser.ChangeGroupEntry entry : bundle.manifestEntries) {
+                        writeEntryChunk(dos, entry);
+                    }
+                    writeTerminalChunk(dos);
+
+                    // File groups
+                    for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+                        writePathChunk(dos, fg.path);
+                        for (ChangegroupParser.ChangeGroupEntry entry : fg.entries) {
+                            writeEntryChunk(dos, entry);
+                        }
+                        writeTerminalChunk(dos);
+                    }
+                    writeTerminalChunk(dos);
                 }
-                writeTerminalChunk(dos);
+                byte[] wrappedBundle = Bundle2Parser.wrapChangegroupInBundle2(rawCg.toByteArray(), "01");
+                Files.write(hgBundleFile.toPath(), wrappedBundle);
+
+                // Real hg's own shelve also writes a minimal "<name>.shelve" info file (a single
+                // `node=<hex>` line, via `scmutil.simplekeyvaluefile`) alongside the `.hg` bundle --
+                // verified against a real hg 7.2.2 `hg shelve` (2026-09-03). hg4j's own unshelve does
+                // not need this file when its own richer `<name>.state` file is present (see
+                // performUnshelve()), but writing it unconditionally lets a real hg CLI recognize and
+                // process this shelve too (`hg unshelve`/`hg shelve --list` both read it), and lets
+                // hg4j's own unshelve fall back to it when reading a shelve `.state` never wrote.
+                File shelveInfoFile = new File(shelvedDir, name + ".shelve");
+                Files.writeString(shelveInfoFile.toPath(), "node=" + NodeIdUtil.toHex(tempCommitNode) + "\n", StandardCharsets.UTF_8);
+
+                // 4. Clean and strip the temporary commit immediately (Repository remains pure)
+                stripRevisionsFrom(tempRev);
+                repository.clearRevlogCache();
+
+                // 5. Write metadata .state file
+                StringBuilder stateSb = new StringBuilder();
+                stateSb.append("# HG shelve state\n");
+                stateSb.append(name).append("\n");
+                stateSb.append(p1Hex).append("\n");
+                stateSb.append(p2Hex).append("\n");
+                stateSb.append(shelvedFiles.size()).append("\n");
+                for (ShelvedFile sf : shelvedFiles) {
+                    stateSb.append(sf.path).append(" ").append(sf.state).append(" ").append(sf.mode).append("\n");
+                }
+
+                Files.writeString(stateFile.toPath(), stateSb.toString(), StandardCharsets.UTF_8);
+
+                // Revert changes in working directory to clean state
+                revertToLatestCommit(dirstate, shelvedFiles);
             }
-            byte[] wrappedBundle = Bundle2Parser.wrapChangegroupInBundle2(rawCg.toByteArray(), "01");
-            Files.write(hgBundleFile.toPath(), wrappedBundle);
-
-            // Real hg's own shelve also writes a minimal "<name>.shelve" info file (a single
-            // `node=<hex>` line, via `scmutil.simplekeyvaluefile`) alongside the `.hg` bundle --
-            // verified against a real hg 7.2.2 `hg shelve` (2026-09-03). hg4j's own unshelve does
-            // not need this file when its own richer `<name>.state` file is present (see
-            // performUnshelve()), but writing it unconditionally lets a real hg CLI recognize and
-            // process this shelve too (`hg unshelve`/`hg shelve --list` both read it), and lets
-            // hg4j's own unshelve fall back to it when reading a shelve `.state` never wrote.
-            File shelveInfoFile = new File(shelvedDir, name + ".shelve");
-            Files.writeString(shelveInfoFile.toPath(), "node=" + NodeIdUtil.toHex(tempCommitNode) + "\n", StandardCharsets.UTF_8);
-
-            // 4. Clean and strip the temporary commit immediately (Repository remains pure)
-            stripRevisionsFrom(tempRev);
-            repository.clearRevlogCache();
-
-            // 5. Write metadata .state file
-            StringBuilder stateSb = new StringBuilder();
-            stateSb.append("# HG shelve state\n");
-            stateSb.append(name).append("\n");
-            stateSb.append(p1Hex).append("\n");
-            stateSb.append(p2Hex).append("\n");
-            stateSb.append(shelvedFiles.size()).append("\n");
-            for (ShelvedFile sf : shelvedFiles) {
-                stateSb.append(sf.path).append(" ").append(sf.state).append(" ").append(sf.mode).append("\n");
-            }
-
-            Files.writeString(stateFile.toPath(), stateSb.toString(), StandardCharsets.UTF_8);
-
-            // Revert changes in working directory to clean state
-            revertToLatestCommit(dirstate, shelvedFiles);
         }
     }
 
     private void performUnshelve(File stateFile) throws IOException, HgLockException, HgMergeConflictException {
-        File shelvedDir = stateFile.getParentFile();
-        File patchFile = new File(shelvedDir, name + ".patch");
-        File hgBundleFile = new File(shelvedDir, name + ".hg");
-        File shelveInfoFile = new File(shelvedDir, name + ".shelve");
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
+        // a conflict is a result that keeps the working copy and the dirstate it produced (`unshelve --continue` resumes from them)
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore();
+             HgRepository.DirstateChange change = repository.openChangingParents()) {
+          try {
+            File shelvedDir = stateFile.getParentFile();
+            File patchFile = new File(shelvedDir, name + ".patch");
+            File hgBundleFile = new File(shelvedDir, name + ".hg");
+            File shelveInfoFile = new File(shelvedDir, name + ".shelve");
 
-        if (!hgBundleFile.exists()) {
-            throw new HgRepositoryNotFoundException("Shelve file not found: " + name);
-        }
-        boolean hasState = stateFile.exists();
-        if (!hasState && !shelveInfoFile.exists()) {
-            throw new HgRepositoryNotFoundException("Shelve file not found: " + name);
-        }
-
-        // 실제 hg가 만든 shelve interop (백로그 23): `.hg` 번들은 이제 항상 HG20/bundle2
-        // 봉투(우리 자신이 썼든, 실제 hg가 BZ2 압축까지 얹어 썼든 -- Bundle2Parser는 둘 다
-        // 지원)이므로, 먼저 그 봉투를 벗겨 원시 changegroup 바이트 + 실제 cg 버전 파라미터를
-        // 얻은 뒤에야 ChangegroupParser로 파싱한다. 버전을 명시하지 않고 자동 감지에 맡기면
-        // 안 된다 -- 실제 hg 7.2가 기본으로 만드는 shelve 번들은 cg02/03(현대 리포용
-        // changegroup.safeversion() 결과)이라, "01"로 잘못 감지되면 헤더 크기가 달라 p1/p2
-        // 필드를 완전히 엉뚱한 오프셋에서 읽게 된다(2026-09-03 발견 -- real hg shelve를
-        // hg4j로 unshelve하면 p1이 항상 null-node로 읽혀 즉시 파라미터 불일치로 실패했다).
-        // hg4j가 예전에 쓰던 봉투 없는 원시 포맷과의 하위 호환을 위해 "HG20" 매직이 없으면
-        // 원시 cg1 파싱으로 폴백한다.
-        ChangegroupParser.ChangegroupBundle bundle;
-        byte[] bundleFileBytes = Files.readAllBytes(hgBundleFile.toPath());
-        if (bundleFileBytes.length >= 4 && bundleFileBytes[0] == 'H' && bundleFileBytes[1] == 'G'
-                && bundleFileBytes[2] == '2' && bundleFileBytes[3] == '0') {
-            ExtractedBundle2 ext =
-                    Bundle2Parser.extractChangegroupDetailed(
-                            new ByteArrayInputStream(bundleFileBytes));
-            bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(ext.changegroupBytes), ext.cgVersion);
-        } else {
-            bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(bundleFileBytes));
-        }
-        // Real hg's own shelve bundle is not always a single-commit changegroup: `writebundle()`
-        // bundles the outgoing set for `mutableancestors(shelvectx)` (the shelved commit AND any
-        // of its still-draft ancestors not otherwise known) -- for the common case of shelving
-        // straight after a plain local (draft-phase) commit, that outgoing set is the shelved
-        // commit AND its parent, i.e. TWO changelog/manifest entries (and, for any file the
-        // parent commit itself touched, two filelog entries for that path too). Confirmed against
-        // real hg CLI (2026-09-03): `bundle.changelogEntries.get(0)` is that PARENT commit, not the
-        // shelved one -- picking it unconditionally silently reconstructed the wrong manifest/file
-        // content. The shelved commit's own node is always resolvable via the `.shelve` info file
-        // (real hg's `{'node': hex(node)}`, which performShelve() now also writes); hg4j's own
-        // bundles only ever contain a single entry, so this resolves to it either way.
-        byte[] shelveTargetNode = resolveShelveTargetNode(shelveInfoFile, bundle);
-        ChangegroupParser.ChangeGroupEntry clEntry = findEntryByNode(bundle.changelogEntries, shelveTargetNode);
-        ChangegroupParser.ChangeGroupEntry mfEntry = findEntryByChangeset(bundle.manifestEntries, shelveTargetNode);
-        if (clEntry == null || mfEntry == null) {
-            throw new HgValidationException("Cannot unshelve: shelved commit not found in bundle: " + name);
-        }
-
-        String p1Hex;
-        String p2Hex;
-        Map<String, Character> fileStates = new HashMap<>();
-        Map<String, Integer> fileModes = new HashMap<>();
-
-        if (hasState) {
-            List<String> stateLines = Files.readAllLines(stateFile.toPath(), StandardCharsets.UTF_8);
-            String shelveName = stateLines.get(1).trim();
-            p1Hex = stateLines.get(2).trim();
-            p2Hex = stateLines.get(3).trim();
-
-            if (!shelveName.equals(name)) {
-                throw new HgValidationException("Cannot unshelve: Shelve name mismatch. State file has '" + shelveName
-                    + "' but expected '" + name + "'");
+            if (!hgBundleFile.exists()) {
+                throw new HgRepositoryNotFoundException("Shelve file not found: " + name);
+            }
+            boolean hasState = stateFile.exists();
+            if (!hasState && !shelveInfoFile.exists()) {
+                throw new HgRepositoryNotFoundException("Shelve file not found: " + name);
             }
 
-            int shelvedFilesCount = Integer.parseInt(stateLines.get(4).trim());
+            // 실제 hg가 만든 shelve interop (백로그 23): `.hg` 번들은 이제 항상 HG20/bundle2
+            // 봉투(우리 자신이 썼든, 실제 hg가 BZ2 압축까지 얹어 썼든 -- Bundle2Parser는 둘 다
+            // 지원)이므로, 먼저 그 봉투를 벗겨 원시 changegroup 바이트 + 실제 cg 버전 파라미터를
+            // 얻은 뒤에야 ChangegroupParser로 파싱한다. 버전을 명시하지 않고 자동 감지에 맡기면
+            // 안 된다 -- 실제 hg 7.2가 기본으로 만드는 shelve 번들은 cg02/03(현대 리포용
+            // changegroup.safeversion() 결과)이라, "01"로 잘못 감지되면 헤더 크기가 달라 p1/p2
+            // 필드를 완전히 엉뚱한 오프셋에서 읽게 된다(2026-09-03 발견 -- real hg shelve를
+            // hg4j로 unshelve하면 p1이 항상 null-node로 읽혀 즉시 파라미터 불일치로 실패했다).
+            // hg4j가 예전에 쓰던 봉투 없는 원시 포맷과의 하위 호환을 위해 "HG20" 매직이 없으면
+            // 원시 cg1 파싱으로 폴백한다.
+            ChangegroupParser.ChangegroupBundle bundle;
+            byte[] bundleFileBytes = Files.readAllBytes(hgBundleFile.toPath());
+            if (bundleFileBytes.length >= 4 && bundleFileBytes[0] == 'H' && bundleFileBytes[1] == 'G'
+                    && bundleFileBytes[2] == '2' && bundleFileBytes[3] == '0') {
+                ExtractedBundle2 ext =
+                        Bundle2Parser.extractChangegroupDetailed(
+                                new ByteArrayInputStream(bundleFileBytes));
+                bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(ext.changegroupBytes), ext.cgVersion);
+            } else {
+                bundle = ChangegroupParser.parseBundle(new ByteArrayInputStream(bundleFileBytes));
+            }
+            // Real hg's own shelve bundle is not always a single-commit changegroup: `writebundle()`
+            // bundles the outgoing set for `mutableancestors(shelvectx)` (the shelved commit AND any
+            // of its still-draft ancestors not otherwise known) -- for the common case of shelving
+            // straight after a plain local (draft-phase) commit, that outgoing set is the shelved
+            // commit AND its parent, i.e. TWO changelog/manifest entries (and, for any file the
+            // parent commit itself touched, two filelog entries for that path too). Confirmed against
+            // real hg CLI (2026-09-03): `bundle.changelogEntries.get(0)` is that PARENT commit, not the
+            // shelved one -- picking it unconditionally silently reconstructed the wrong manifest/file
+            // content. The shelved commit's own node is always resolvable via the `.shelve` info file
+            // (real hg's `{'node': hex(node)}`, which performShelve() now also writes); hg4j's own
+            // bundles only ever contain a single entry, so this resolves to it either way.
+            byte[] shelveTargetNode = resolveShelveTargetNode(shelveInfoFile, bundle);
+            ChangegroupParser.ChangeGroupEntry clEntry = findEntryByNode(bundle.changelogEntries, shelveTargetNode);
+            ChangegroupParser.ChangeGroupEntry mfEntry = findEntryByChangeset(bundle.manifestEntries, shelveTargetNode);
+            if (clEntry == null || mfEntry == null) {
+                throw new HgValidationException("Cannot unshelve: shelved commit not found in bundle: " + name);
+            }
 
-            for (int i = 0; i < shelvedFilesCount; i++) {
-                String line = stateLines.get(5 + i).trim();
-                String[] tokens = line.split(" ");
-                if (tokens.length >= 3) {
-                    int mode = Integer.parseInt(tokens[tokens.length - 1]);
-                    char state = tokens[tokens.length - 2].charAt(0);
-                    StringBuilder pathSb = new StringBuilder();
-                    for (int t = 0; t <= tokens.length - 3; t++) {
-                        if (t > 0) pathSb.append(" ");
-                        pathSb.append(tokens[t]);
+            String p1Hex;
+            String p2Hex;
+            Map<String, Character> fileStates = new HashMap<>();
+            Map<String, Integer> fileModes = new HashMap<>();
+
+            if (hasState) {
+                List<String> stateLines = Files.readAllLines(stateFile.toPath(), StandardCharsets.UTF_8);
+                String shelveName = stateLines.get(1).trim();
+                p1Hex = stateLines.get(2).trim();
+                p2Hex = stateLines.get(3).trim();
+
+                if (!shelveName.equals(name)) {
+                    throw new HgValidationException("Cannot unshelve: Shelve name mismatch. State file has '" + shelveName
+                        + "' but expected '" + name + "'");
+                }
+
+                int shelvedFilesCount = Integer.parseInt(stateLines.get(4).trim());
+
+                for (int i = 0; i < shelvedFilesCount; i++) {
+                    String line = stateLines.get(5 + i).trim();
+                    String[] tokens = line.split(" ");
+                    if (tokens.length >= 3) {
+                        int mode = Integer.parseInt(tokens[tokens.length - 1]);
+                        char state = tokens[tokens.length - 2].charAt(0);
+                        StringBuilder pathSb = new StringBuilder();
+                        for (int t = 0; t <= tokens.length - 3; t++) {
+                            if (t > 0) pathSb.append(" ");
+                            pathSb.append(tokens[t]);
+                        }
+                        String path = pathSb.toString();
+                        fileStates.put(path, state);
+                        fileModes.put(path, mode);
+                    } else {
+                        int space = line.lastIndexOf(' ');
+                        String path = line.substring(0, space);
+                        char state = line.substring(space + 1).charAt(0);
+                        fileStates.put(path, state);
                     }
-                    String path = pathSb.toString();
+                }
+            } else {
+                // No hg4j-native `.state` file -- this shelve was made by real hg (or by a version
+                // of hg4j predating this fix). Derive p1/p2 straight from the changegroup's own
+                // changelog entry (always present, regardless of who produced the bundle), and
+                // derive the per-file add/modify/remove/mode info by diffing the shelved commit's
+                // manifest (decoded from the bundle's manifest entry) against the current parent's
+                // manifest -- exactly the information hg4j's own `.state` file would otherwise supply.
+                p1Hex = NodeIdUtil.toHex(clEntry.p1);
+                p2Hex = NodeIdUtil.toHex(clEntry.p2);
+
+                byte[] baseMfContent = resolveBaseManifestContent(deltaBaseNode(mfEntry));
+                byte[] shelveMfContent = Revlog.applyDelta(baseMfContent, mfEntry.delta);
+                Map<String, String> shelveManifest = parseManifestText(shelveMfContent);
+                Map<String, String> baseManifest = parseManifestText(baseMfContent);
+
+                for (Map.Entry<String, String> e : shelveManifest.entrySet()) {
+                    String path = e.getKey();
+                    String hexAndFlag = e.getValue();
+                    String flag = hexAndFlag.substring(40);
+                    int mode = flag.contains("l") ? 0120000 : (flag.contains("x") ? 0755 : 0644);
+                    char state = baseManifest.containsKey(path) ? 'n' : 'a';
                     fileStates.put(path, state);
                     fileModes.put(path, mode);
-                } else {
-                    int space = line.lastIndexOf(' ');
-                    String path = line.substring(0, space);
-                    char state = line.substring(space + 1).charAt(0);
-                    fileStates.put(path, state);
                 }
-            }
-        } else {
-            // No hg4j-native `.state` file -- this shelve was made by real hg (or by a version
-            // of hg4j predating this fix). Derive p1/p2 straight from the changegroup's own
-            // changelog entry (always present, regardless of who produced the bundle), and
-            // derive the per-file add/modify/remove/mode info by diffing the shelved commit's
-            // manifest (decoded from the bundle's manifest entry) against the current parent's
-            // manifest -- exactly the information hg4j's own `.state` file would otherwise supply.
-            p1Hex = NodeIdUtil.toHex(clEntry.p1);
-            p2Hex = NodeIdUtil.toHex(clEntry.p2);
-
-            byte[] baseMfContent = resolveBaseManifestContent(deltaBaseNode(mfEntry));
-            byte[] shelveMfContent = Revlog.applyDelta(baseMfContent, mfEntry.delta);
-            Map<String, String> shelveManifest = parseManifestText(shelveMfContent);
-            Map<String, String> baseManifest = parseManifestText(baseMfContent);
-
-            for (Map.Entry<String, String> e : shelveManifest.entrySet()) {
-                String path = e.getKey();
-                String hexAndFlag = e.getValue();
-                String flag = hexAndFlag.substring(40);
-                int mode = flag.contains("l") ? 0120000 : (flag.contains("x") ? 0755 : 0644);
-                char state = baseManifest.containsKey(path) ? 'n' : 'a';
-                fileStates.put(path, state);
-                fileModes.put(path, mode);
-            }
-            for (String path : baseManifest.keySet()) {
-                if (!shelveManifest.containsKey(path)) {
-                    fileStates.put(path, 'r');
-                }
-            }
-        }
-
-        byte[] p1Node = NodeIdUtil.fromHex(p1Hex);
-        byte[] p2Node = NodeIdUtil.fromHex(p2Hex);
-
-        try (HgLock wlock = repository.lockWorkingCopy();
-             HgLock storeLock = repository.lockStore()) {
-
-            Dirstate dirstate = repository.getDirstate();
-
-            // Real hg's `hg unshelve` refuses to start while another merge/graft/rebase etc. is
-            // already mid-flight (`cmdutil.checkunfinished`); hg4j approximates that here with the
-            // one kind of in-progress state it can actually detect from the dirstate alone -- an
-            // unresolved second parent.
-            byte[] currentP2 = dirstate.getParent2();
-            if (currentP2 != null && !NodeIdUtil.isAllZero(currentP2)) {
-                throw new HgValidationException("Cannot unshelve: an unresolved merge is already in progress");
-            }
-
-            // Real hg's unshelve (mercurial/shelve.py _commitworkingcopychanges) tolerates pending
-            // working-copy changes by temporarily committing them too, then folding the shelved
-            // changes on top of that temp commit as well. hg4j doesn't implement that
-            // generalization yet -- require a clean working copy relative to its current parent
-            // instead of silently clobbering unrelated pending changes in the diff-based restore
-            // below.
-            Status wdStatus = new StatusCommand(repository).call();
-            if (!wdStatus.getAdded().isEmpty() || !wdStatus.getModified().isEmpty() || !wdStatus.getRemoved().isEmpty()) {
-                throw new HgValidationException("Cannot unshelve: the working copy has pending uncommitted changes "
-                        + "(commit or shelve them first -- hg4j does not yet support unshelving onto pending changes)");
-            }
-
-            // The TRUE current working-directory parent -- may differ from the shelve's own
-            // original parent (p1Hex/p1Node above) if other work has landed since the shelve was
-            // taken. This is real hg's `pctx`.
-            byte[] originalWdParent = dirstate.getParent1();
-
-            // Fail fast (before touching anything) if the current parent doesn't even resolve to
-            // a real revision -- real hg would already have failed resolving `repo['.']` long
-            // before reaching any shelve logic in that case. Checking this upfront, rather than
-            // only discovering it later when the rebase step tries to target it, avoids building
-            // (and then having to unwind) a throwaway restore commit against a working copy whose
-            // own notion of "current parent" cannot be trusted in the first place.
-            if (!NodeIdUtil.isAllZero(originalWdParent)) {
-                File clIdxCheck = new File(repository.getStoreDir(), "00changelog.i");
-                File clDatCheck = new File(repository.getStoreDir(), "00changelog.d");
-                Revlog clCheck = repository.getRevlog(clIdxCheck, clDatCheck);
-                if (NodeIdUtil.findRevisionByNodeId(clCheck, originalWdParent) == -1) {
-                    throw new HgRevisionNotFoundException("Cannot unshelve: working directory parent revision not found: "
-                            + NodeIdUtil.toHex(originalWdParent));
-                }
-            }
-
-            // Step 1: recreate the shelved commit as a real (throwaway) commit on top of the
-            // parent it was ORIGINALLY shelved from -- checkout that parent first so the shelved
-            // bundle's per-file deltas (encoded against p1's own local filelog revisions) apply
-            // cleanly, exactly like a fresh `hg update` to that commit followed by unpacking the
-            // shelve's changegroup on top (real hg's own `_unshelverestorecommit`).
-            checkoutFullClean(p1Node);
-            dirstate = repository.getDirstate();
-            if (!NodeIdUtil.isAllZero(p2Node)) {
-                // Preserve the exact (p1, p2) pairing the shelve was taken from (e.g. a shelve
-                // made mid-merge) -- checkoutFullClean() above only ever moves a single parent.
-                dirstate.setParents(p1Node, p2Node);
-                repository.writeDirstate(dirstate);
-                dirstate = repository.getDirstate();
-            }
-
-            // Restore files from bundle (verbatim per-file bundle decode -- this is what builds
-            // the throwaway restore commit's content, unchanged from before this class was
-            // rewritten to use the real rebase-based algorithm).
-            for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
-                String path = fg.path;
-                // As with the changelog/manifest groups above, a file this bundle's OTHER
-                // (non-shelved) entries also touched can carry more than one entry here -- select
-                // the one that actually belongs to the shelved commit (matching cs), and skip this
-                // path entirely if the shelved commit itself never touched it.
-                ChangegroupParser.ChangeGroupEntry flEntry = findEntryByChangeset(fg.entries, shelveTargetNode);
-                if (flEntry == null) {
-                    continue;
-                }
-
-                Character state = fileStates.get(path);
-                if (state == null) state = 'm';
-
-                // Real base content for this file -- resolved from the LOCAL filelog by the
-                // entry's own DELTA BASE node (empty only when that node truly is null), matching
-                // how performShelve() now encodes the delta (see its comment for why "always
-                // apply against empty" was wrong for real-hg-produced/consumed bundles). This is
-                // deliberately deltabase, NOT p1: a cg02+ entry's declared p1 (the true changelog
-                // parentage) and its delta's actual reference point can differ -- confirmed against
-                // a real `hg shelve` bundle (2026-09-03), whose single-file-modification entry had
-                // deltabase = null (a full-text "snapshot" delta, i.e. start=0/end=0 covering
-                // nothing) even though p1 correctly pointed at the file's real previous revision;
-                // applying that delta against the (non-empty) p1 content instead of empty produced
-                // a corrupted result with the old content spuriously appended at the end.
-                byte[] baseContent = resolveBaseFileContent(path, deltaBaseNode(flEntry));
-                byte[] content = Revlog.applyDelta(baseContent, flEntry.delta);
-
-                File diskFile = new File(repository.getDirectory(), path);
-                diskFile.getParentFile().mkdirs();
-                if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
-                    Files.delete(diskFile.toPath());
-                }
-
-                Integer savedMode = fileModes.get(path);
-                int mode = 0644;
-                if (savedMode != null) {
-                    mode = savedMode;
-                } else {
-                    mode = diskFile.canExecute() ? 0755 : 0644;
-                }
-
-                if (mode == 0120000) {
-                    String target = new String(content, StandardCharsets.UTF_8).trim();
-                    try {
-                        Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
-                    } catch (Exception e) {
-                        Files.write(diskFile.toPath(), content);
+                for (String path : baseManifest.keySet()) {
+                    if (!shelveManifest.containsKey(path)) {
+                        fileStates.put(path, 'r');
                     }
+                }
+            }
+
+            byte[] p1Node = NodeIdUtil.fromHex(p1Hex);
+            byte[] p2Node = NodeIdUtil.fromHex(p2Hex);
+
+            {
+
+                Dirstate dirstate = repository.getDirstate();
+
+                // Real hg's `hg unshelve` refuses to start while another merge/graft/rebase etc. is
+                // already mid-flight (`cmdutil.checkunfinished`); hg4j approximates that here with the
+                // one kind of in-progress state it can actually detect from the dirstate alone -- an
+                // unresolved second parent.
+                byte[] currentP2 = dirstate.getParent2();
+                if (currentP2 != null && !NodeIdUtil.isAllZero(currentP2)) {
+                    throw new HgValidationException("Cannot unshelve: an unresolved merge is already in progress");
+                }
+
+                // Real hg's unshelve (mercurial/shelve.py _commitworkingcopychanges) tolerates pending
+                // working-copy changes by temporarily committing them too, then folding the shelved
+                // changes on top of that temp commit as well. hg4j doesn't implement that
+                // generalization yet -- require a clean working copy relative to its current parent
+                // instead of silently clobbering unrelated pending changes in the diff-based restore
+                // below.
+                Status wdStatus = new StatusCommand(repository).call();
+                if (!wdStatus.getAdded().isEmpty() || !wdStatus.getModified().isEmpty() || !wdStatus.getRemoved().isEmpty()) {
+                    throw new HgValidationException("Cannot unshelve: the working copy has pending uncommitted changes "
+                            + "(commit or shelve them first -- hg4j does not yet support unshelving onto pending changes)");
+                }
+
+                // The TRUE current working-directory parent -- may differ from the shelve's own
+                // original parent (p1Hex/p1Node above) if other work has landed since the shelve was
+                // taken. This is real hg's `pctx`.
+                byte[] originalWdParent = dirstate.getParent1();
+
+                // Fail fast (before touching anything) if the current parent doesn't even resolve to
+                // a real revision -- real hg would already have failed resolving `repo['.']` long
+                // before reaching any shelve logic in that case. Checking this upfront, rather than
+                // only discovering it later when the rebase step tries to target it, avoids building
+                // (and then having to unwind) a throwaway restore commit against a working copy whose
+                // own notion of "current parent" cannot be trusted in the first place.
+                if (!NodeIdUtil.isAllZero(originalWdParent)) {
+                    File clIdxCheck = new File(repository.getStoreDir(), "00changelog.i");
+                    File clDatCheck = new File(repository.getStoreDir(), "00changelog.d");
+                    Revlog clCheck = repository.getRevlog(clIdxCheck, clDatCheck);
+                    if (NodeIdUtil.findRevisionByNodeId(clCheck, originalWdParent) == -1) {
+                        throw new HgRevisionNotFoundException("Cannot unshelve: working directory parent revision not found: "
+                                + NodeIdUtil.toHex(originalWdParent));
+                    }
+                }
+
+                // Step 1: recreate the shelved commit as a real (throwaway) commit on top of the
+                // parent it was ORIGINALLY shelved from -- checkout that parent first so the shelved
+                // bundle's per-file deltas (encoded against p1's own local filelog revisions) apply
+                // cleanly, exactly like a fresh `hg update` to that commit followed by unpacking the
+                // shelve's changegroup on top (real hg's own `_unshelverestorecommit`).
+                checkoutFullClean(p1Node);
+                dirstate = repository.getDirstate();
+                if (!NodeIdUtil.isAllZero(p2Node)) {
+                    // Preserve the exact (p1, p2) pairing the shelve was taken from (e.g. a shelve
+                    // made mid-merge) -- checkoutFullClean() above only ever moves a single parent.
+                    dirstate.setParents(p1Node, p2Node);
+                    repository.writeDirstate(dirstate);
+                    dirstate = repository.getDirstate();
+                }
+
+                // Restore files from bundle (verbatim per-file bundle decode -- this is what builds
+                // the throwaway restore commit's content, unchanged from before this class was
+                // rewritten to use the real rebase-based algorithm).
+                for (ChangegroupParser.FileGroup fg : bundle.fileGroups) {
+                    String path = fg.path;
+                    // As with the changelog/manifest groups above, a file this bundle's OTHER
+                    // (non-shelved) entries also touched can carry more than one entry here -- select
+                    // the one that actually belongs to the shelved commit (matching cs), and skip this
+                    // path entirely if the shelved commit itself never touched it.
+                    ChangegroupParser.ChangeGroupEntry flEntry = findEntryByChangeset(fg.entries, shelveTargetNode);
+                    if (flEntry == null) {
+                        continue;
+                    }
+
+                    Character state = fileStates.get(path);
+                    if (state == null) state = 'm';
+
+                    // Real base content for this file -- resolved from the LOCAL filelog by the
+                    // entry's own DELTA BASE node (empty only when that node truly is null), matching
+                    // how performShelve() now encodes the delta (see its comment for why "always
+                    // apply against empty" was wrong for real-hg-produced/consumed bundles). This is
+                    // deliberately deltabase, NOT p1: a cg02+ entry's declared p1 (the true changelog
+                    // parentage) and its delta's actual reference point can differ -- confirmed against
+                    // a real `hg shelve` bundle (2026-09-03), whose single-file-modification entry had
+                    // deltabase = null (a full-text "snapshot" delta, i.e. start=0/end=0 covering
+                    // nothing) even though p1 correctly pointed at the file's real previous revision;
+                    // applying that delta against the (non-empty) p1 content instead of empty produced
+                    // a corrupted result with the old content spuriously appended at the end.
+                    byte[] baseContent = resolveBaseFileContent(path, deltaBaseNode(flEntry));
+                    byte[] content = Revlog.applyDelta(baseContent, flEntry.delta);
+
+                    File diskFile = new File(repository.getDirectory(), path);
+                    diskFile.getParentFile().mkdirs();
+                    if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                        Files.delete(diskFile.toPath());
+                    }
+
+                    Integer savedMode = fileModes.get(path);
+                    int mode = 0644;
+                    if (savedMode != null) {
+                        mode = savedMode;
+                    } else {
+                        mode = diskFile.canExecute() ? 0755 : 0644;
+                    }
+
+                    if (mode == 0120000) {
+                        String target = new String(content, StandardCharsets.UTF_8).trim();
+                        try {
+                            Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
+                        } catch (Exception e) {
+                            Files.write(diskFile.toPath(), content);
+                        }
+                    } else {
+                        Files.write(diskFile.toPath(), content);
+                        boolean exec = (mode == 0755);
+                        diskFile.setExecutable(exec, false);
+                    }
+
+                    int size = content.length;
+                    long time = SafeFileIO.lastModifiedSeconds(diskFile);
+
+                    dirstate.addEntry(path, new Dirstate.Entry(state, mode, size, time));
+                }
+
+                // Restore deleted files
+                for (Map.Entry<String, Character> entry : fileStates.entrySet()) {
+                    if (entry.getValue() == 'r') {
+                        File diskFile = new File(repository.getDirectory(), entry.getKey());
+                        Files.deleteIfExists(diskFile.toPath());
+                        dirstate.addEntry(entry.getKey(), new Dirstate.Entry('r', 0, 0, 0));
+                    }
+                }
+
+                repository.writeDirstate(dirstate);
+
+                CommitCommand commitCmd = new CommitCommand(repository)
+                        .setAuthor("hg4j <hg4j@example.com>")
+                        .setMessage("[unshelve] " + name)
+                        .setSkipLockAndJournal(true);
+                byte[] tempCommitNode = commitCmd.call();
+
+                // Step 2: rebase the restored commit onto the TRUE current working-directory parent,
+                // if anything has landed there since the shelve was taken -- a no-op (rebasing onto
+                // the parent it's already on) otherwise. Reuses RebaseCommand's own cherry-pick + real
+                // 3-way-merge conflict detection wholesale rather than reimplementing one here.
+                byte[] finalNode;
+                String currentP1HexNow = NodeIdUtil.toHex(originalWdParent);
+                if (currentP1HexNow.equalsIgnoreCase(p1Hex)) {
+                    finalNode = tempCommitNode;
                 } else {
-                    Files.write(diskFile.toPath(), content);
-                    boolean exec = (mode == 0755);
-                    diskFile.setExecutable(exec, false);
+                    try {
+                        finalNode = new RebaseCommand(repository)
+                                .setSource(tempCommitNode)
+                                .setTarget(originalWdParent)
+                                .call();
+                    } catch (HgMergeConflictException e) {
+                        // Paused: RebaseCommand has already persisted its own resumable state
+                        // (.hg/rebasestate-hg4j). Remember just enough on our side (which shelve, and
+                        // where the final result should land once it's done) so a fresh ShelveCommand
+                        // instance can pick this back up later via unshelveContinue()/unshelveAbort(),
+                        // then propagate -- mirroring real hg pausing exactly like `hg rebase` would.
+                        writeUnshelveState(name, tempCommitNode, originalWdParent);
+                        throw e;
+                    } catch (Exception e) {
+                        // Anything else (e.g. a corrupted/invalid current parent1 that doesn't even
+                        // resolve to a real revision): undo the throwaway restore commit so a failed
+                        // unshelve attempt never leaves stray store state or a half-moved working copy
+                        // behind.
+                        rollbackFailedUnshelveAttempt(tempCommitNode, originalWdParent);
+                        if (e instanceof IOException io) throw io;
+                        if (e instanceof HgLockException lk) throw lk;
+                        if (e instanceof RuntimeException re) throw re;
+                        throw new IOException(e);
+                    }
                 }
 
-                int size = content.length;
-                long time = SafeFileIO.lastModifiedSeconds(diskFile);
-
-                dirstate.addEntry(path, new Dirstate.Entry(state, mode, size, time));
+                // Step 3: "uncommit" the result back onto the working copy as pending changes, and
+                // erase every trace of the throwaway commit(s).
+                finishUnshelve(name, stateFile, hgBundleFile, shelveInfoFile, patchFile,
+                        tempCommitNode, finalNode, originalWdParent);
             }
-
-            // Restore deleted files
-            for (Map.Entry<String, Character> entry : fileStates.entrySet()) {
-                if (entry.getValue() == 'r') {
-                    File diskFile = new File(repository.getDirectory(), entry.getKey());
-                    Files.deleteIfExists(diskFile.toPath());
-                    dirstate.addEntry(entry.getKey(), new Dirstate.Entry('r', 0, 0, 0));
-                }
-            }
-
-            repository.writeDirstate(dirstate);
-
-            CommitCommand commitCmd = new CommitCommand(repository)
-                    .setAuthor("hg4j <hg4j@example.com>")
-                    .setMessage("[unshelve] " + name)
-                    .setSkipLockAndJournal(true);
-            byte[] tempCommitNode = commitCmd.call();
-
-            // Step 2: rebase the restored commit onto the TRUE current working-directory parent,
-            // if anything has landed there since the shelve was taken -- a no-op (rebasing onto
-            // the parent it's already on) otherwise. Reuses RebaseCommand's own cherry-pick + real
-            // 3-way-merge conflict detection wholesale rather than reimplementing one here.
-            byte[] finalNode;
-            String currentP1HexNow = NodeIdUtil.toHex(originalWdParent);
-            if (currentP1HexNow.equalsIgnoreCase(p1Hex)) {
-                finalNode = tempCommitNode;
-            } else {
-                try {
-                    finalNode = new RebaseCommand(repository)
-                            .setSource(tempCommitNode)
-                            .setTarget(originalWdParent)
-                            .call();
-                } catch (HgMergeConflictException e) {
-                    // Paused: RebaseCommand has already persisted its own resumable state
-                    // (.hg/rebasestate-hg4j). Remember just enough on our side (which shelve, and
-                    // where the final result should land once it's done) so a fresh ShelveCommand
-                    // instance can pick this back up later via unshelveContinue()/unshelveAbort(),
-                    // then propagate -- mirroring real hg pausing exactly like `hg rebase` would.
-                    writeUnshelveState(name, tempCommitNode, originalWdParent);
-                    throw e;
-                } catch (Exception e) {
-                    // Anything else (e.g. a corrupted/invalid current parent1 that doesn't even
-                    // resolve to a real revision): undo the throwaway restore commit so a failed
-                    // unshelve attempt never leaves stray store state or a half-moved working copy
-                    // behind.
-                    rollbackFailedUnshelveAttempt(tempCommitNode, originalWdParent);
-                    if (e instanceof IOException io) throw io;
-                    if (e instanceof HgLockException lk) throw lk;
-                    if (e instanceof RuntimeException re) throw re;
-                    throw new IOException(e);
-                }
-            }
-
-            // Step 3: "uncommit" the result back onto the working copy as pending changes, and
-            // erase every trace of the throwaway commit(s).
-            finishUnshelve(name, stateFile, hgBundleFile, shelveInfoFile, patchFile,
-                    tempCommitNode, finalNode, originalWdParent);
+          } catch (HgMergeConflictException conflict) {
+            throw conflict;
+          } catch (Throwable failure) {
+            change.failed();
+            throw failure;
+          }
         }
     }
 
@@ -824,26 +969,26 @@ public class ShelveCommand {
      *                                   way {@link RebaseCommand} itself would)
      */
     public void unshelveContinue() throws IOException, HgLockException, HgMergeConflictException {
-        File unshelveStateFile = unshelveStateFile();
-        if (!unshelveStateFile.exists()) {
-            throw new HgValidationException("no unshelve in progress");
-        }
-
-        try (HgLock wlock = repository.lockWorkingCopy();
-             HgLock storeLock = repository.lockStore()) {
-
+        // Like real hg (shelve.hgabortunshelve / hgcontinueunshelve): wlock, then the state is read, then repo.lock()
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            File unshelveStateFile = unshelveStateFile();
+            if (!unshelveStateFile.exists()) {
+                throw new HgValidationException("no unshelve in progress");
+            }
             UnshelveState state = readUnshelveState();
+            try (HgLock storeLock = repository.lockStore()) {
 
-            byte[] finalNode = new RebaseCommand(repository).continueRebase();
+                byte[] finalNode = new RebaseCommand(repository).continueRebase();
 
-            File shelvedDir = new File(repository.getHgDir(), "shelved");
-            File stateFile = new File(shelvedDir, state.name + ".state");
-            File hgBundleFile = new File(shelvedDir, state.name + ".hg");
-            File shelveInfoFile = new File(shelvedDir, state.name + ".shelve");
-            File patchFile = new File(shelvedDir, state.name + ".patch");
+                File shelvedDir = new File(repository.getHgDir(), "shelved");
+                File stateFile = new File(shelvedDir, state.name + ".state");
+                File hgBundleFile = new File(shelvedDir, state.name + ".hg");
+                File shelveInfoFile = new File(shelvedDir, state.name + ".shelve");
+                File patchFile = new File(shelvedDir, state.name + ".patch");
 
-            finishUnshelve(state.name, stateFile, hgBundleFile, shelveInfoFile, patchFile,
-                    state.tempCommitNode, finalNode, state.originalWdParent);
+                finishUnshelve(state.name, stateFile, hgBundleFile, shelveInfoFile, patchFile,
+                        state.tempCommitNode, finalNode, state.originalWdParent);
+            }
         }
     }
 
@@ -857,32 +1002,32 @@ public class ShelveCommand {
      * @throws HgValidationException if no unshelve is in progress
      */
     public void unshelveAbort() throws IOException, HgLockException {
-        File unshelveStateFile = unshelveStateFile();
-        if (!unshelveStateFile.exists()) {
-            throw new HgValidationException("no unshelve in progress");
-        }
-
-        try (HgLock wlock = repository.lockWorkingCopy();
-             HgLock storeLock = repository.lockStore()) {
-
+        // Like real hg (shelve.hgabortunshelve / hgcontinueunshelve): wlock, then the state is read, then repo.lock()
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            File unshelveStateFile = unshelveStateFile();
+            if (!unshelveStateFile.exists()) {
+                throw new HgValidationException("no unshelve in progress");
+            }
             UnshelveState state = readUnshelveState();
+            try (HgLock storeLock = repository.lockStore()) {
 
-            File rebaseStateFile = new File(repository.getHgDir(), "rebasestate-hg4j");
-            if (rebaseStateFile.exists()) {
-                new RebaseCommand(repository).abort();
+                File rebaseStateFile = new File(repository.getHgDir(), "rebasestate-hg4j");
+                if (rebaseStateFile.exists()) {
+                    new RebaseCommand(repository).abort();
+                }
+
+                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+                File clDat = new File(repository.getStoreDir(), "00changelog.d");
+                Revlog cl = repository.getRevlog(clIdx, clDat);
+                int tempRev = cl.findRevision(state.tempCommitNode);
+                if (tempRev != -1) {
+                    stripRevisionsFrom(tempRev);
+                    repository.clearRevlogCache();
+                }
+
+                checkoutFullClean(state.originalWdParent);
+                deleteUnshelveStateFile();
             }
-
-            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-            File clDat = new File(repository.getStoreDir(), "00changelog.d");
-            Revlog cl = repository.getRevlog(clIdx, clDat);
-            int tempRev = cl.findRevision(state.tempCommitNode);
-            if (tempRev != -1) {
-                stripRevisionsFrom(tempRev);
-                repository.clearRevlogCache();
-            }
-
-            checkoutFullClean(state.originalWdParent);
-            deleteUnshelveStateFile();
         }
     }
 

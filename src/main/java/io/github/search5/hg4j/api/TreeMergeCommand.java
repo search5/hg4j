@@ -47,6 +47,19 @@ public class TreeMergeCommand {
         return this;
     }
 
+    private byte[] base;
+    private boolean baseGiven;
+
+    /**
+     * The ancestor to merge against, instead of the common ancestor of the two sides: {@code graft} merges with the parent of the
+     * grafted changeset as the ancestor. {@code null} (or the null node) means an empty ancestor.
+     */
+    public TreeMergeCommand setBase(byte[] base) {
+        this.base = base;
+        this.baseGiven = true;
+        return this;
+    }
+
     public static class TreeMergeResult {
         private final boolean conflicted;
         private final List<String> conflicts;
@@ -117,9 +130,22 @@ public class TreeMergeCommand {
         // pure store-reading helpers (LCA resolution, manifest/file-content loading) are called;
         // call() (the working-copy-mutating porcelain command) is never invoked on it.
         MergeCommand helper = new MergeCommand(repository);
-        MergeCommand.MergeBase lca = helper.getMergeBase(changelog, manifestRevlog, p1Rev, p2Rev, 0);
-
-        Map<String, String> manifestLca = lca.manifest;
+        MergeCommand.MergeBase lca = null;
+        Map<String, String> manifestLca;
+        if (baseGiven) {
+            if (base == null || NodeIdUtil.isAllZero(base)) {
+                manifestLca = new java.util.HashMap<>();
+            } else {
+                int baseRev = NodeIdUtil.findRevisionByNodeId(changelog, base);
+                if (baseRev == -1) {
+                    throw new HgRevisionNotFoundException(NodeIdUtil.toHex(base));
+                }
+                manifestLca = helper.loadManifestAtCommit(changelog, manifestRevlog, baseRev);
+            }
+        } else {
+            lca = helper.getMergeBase(changelog, manifestRevlog, p1Rev, p2Rev, 0);
+            manifestLca = lca.manifest;
+        }
         Map<String, String> manifestP1 = helper.loadManifestAtCommit(changelog, manifestRevlog, p1Rev);
         Map<String, String> manifestP2 = helper.loadManifestAtCommit(changelog, manifestRevlog, p2Rev);
 
@@ -166,7 +192,8 @@ public class TreeMergeCommand {
                 } else if (Objects.equals(hP2, hLca)) {
                     // Theirs unmodified, ours modified -- ours already correct, no delta.
                 } else {
-                    byte[] baseContent = lca.getFileContent(helper, path, hLca);
+                    byte[] baseContent = lca != null ? lca.getFileContent(helper, path, hLca)
+                            : (hLca == null ? new byte[0] : helper.getFileRevisionContent(path, hLca));
                     byte[] mineContent = helper.getFileRevisionContent(path, hP1);
                     byte[] theirsContent = helper.getFileRevisionContent(path, hP2);
 

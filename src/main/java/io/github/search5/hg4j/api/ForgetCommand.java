@@ -21,7 +21,15 @@ public class ForgetCommand {
     }
 
 
-    private final FileSelection selection = new FileSelection();
+    private FileSelection selection = new FileSelection();
+    private boolean explicitOnly;
+
+    /** The selection a parent hands to a subrepository: only the files it names exactly are forgotten there ({@code explicitonly=True}). */
+    ForgetCommand forSubrepo(FileSelection inside) {
+        this.selection = inside;
+        this.explicitOnly = true;
+        return this;
+    }
     private final java.util.List<String> warnings = new java.util.ArrayList<>();
 
     /** The files to work on, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}); a bare name is relative to the current directory. */
@@ -67,10 +75,12 @@ public class ForgetCommand {
         io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, null);
         java.util.List<String> forgotten = new java.util.ArrayList<>();
         try (HgLock wlock = repository.lockWorkingCopy()) {
+            // commands.forget: `with repo.wlock(), repo.dirstate.changing_files(repo)`
+            repository.changingFiles(() -> {
             Dirstate dirstate = repository.getDirstate();
             for (java.util.Map.Entry<String, Dirstate.Entry> e : new java.util.TreeMap<>(dirstate.getEntries()).entrySet()) {
                 String path = e.getKey();
-                if (e.getValue().getState() == 'r' || !matcher.matches(path)) {
+                if (e.getValue().getState() == 'r' || !matcher.matches(path) || explicitOnly && !matcher.exact(path)) {
                     continue;
                 }
                 if (e.getValue().getState() == 'a') {
@@ -81,8 +91,36 @@ public class ForgetCommand {
                 forgotten.add(path);
             }
             repository.writeDirstate(dirstate);
+            forgetInSubrepos(matcher, forgotten);
+            return null;
+            });
         }
         return forgotten;
+    }
+
+    /**
+     * {@code cmdutil.forget}: each subrepository forgets the files the parent's matcher names inside it, under its own working copy
+     * lock; what it forgot is reported with the subrepository's path in front. A subrepository that is not on the disk is skipped.
+     */
+    private void forgetInSubrepos(io.github.search5.hg4j.match.Matcher matcher, java.util.List<String> forgotten)
+            throws IOException, HgLockException {
+        for (SubrepoRecursion.Sub sub : SubrepoRecursion.hgSubrepos(repository)) {
+            if (sub.repository() == null) {
+                warnings.add(SubrepoRecursion.missingMessage(sub.path()));
+                continue;
+            }
+            io.github.search5.hg4j.match.Matcher inside = SubrepoRecursion.subdir(sub.path(), matcher);
+            if (inside.files().isEmpty()) {
+                continue;
+            }
+            try (HgRepository subRepository = sub.repository()) {
+                ForgetCommand nested = new ForgetCommand(subRepository).forSubrepo(FileSelection.of(inside));
+                for (String file : nested.callSelected()) {
+                    forgotten.add(SubrepoRecursion.display(sub.path(), file));
+                }
+                warnings.addAll(nested.getWarnings());
+            }
+        }
     }
 
     public ForgetCommand setFile(String file) {
@@ -95,6 +133,7 @@ public class ForgetCommand {
             throw new IllegalStateException("File path must be specified.");
         }
         try (HgLock wlock = repository.lockWorkingCopy()) {
+            repository.changingFiles(() -> {
             Dirstate dirstate = repository.getDirstate();
             Dirstate.Entry entry = dirstate.getEntries().get(file);
             if (entry == null) {
@@ -109,6 +148,8 @@ public class ForgetCommand {
                 dirstate.addEntry(file, new Dirstate.Entry('r', 0, 0, 0));
             }
             repository.writeDirstate(dirstate);
+            return null;
+            });
         }
     }
 }

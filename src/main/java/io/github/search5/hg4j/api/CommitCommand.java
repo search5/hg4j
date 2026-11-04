@@ -63,6 +63,8 @@ public class CommitCommand {
     private Long forcedTime = null;
     private Integer forcedOffset = null;
     private boolean skipLockAndJournal = false;
+    /** The transaction of a caller that runs several commits in one ({@code rebase.singletransaction}); it does the journal and rollback. */
+    private StoreRollback outerTransaction;
 
     // Per-call() transient rollback/journal bookkeeping (backlog #39 requirement-matrix fix,
     // 2026-09-05) -- instance fields (rather than locals threaded through every helper) purely so
@@ -150,6 +152,14 @@ public class CommitCommand {
         return this;
     }
 
+    private final java.util.Map<String, String> extraFields = new java.util.LinkedHashMap<>();
+
+    /** An extra field of the new changeset ({@code repo.commit(extra=...)}), as rebase and graft record their source. */
+    public CommitCommand setExtra(String key, String value) {
+        extraFields.put(key, value);
+        return this;
+    }
+
     /** {@code hg commit --close-branch}: marks the new commit as closing the named branch head it becomes. */
     public CommitCommand setCloseBranch(boolean closeBranch) {
         this.closeBranch = closeBranch;
@@ -178,6 +188,12 @@ public class CommitCommand {
         if (hook != null) {
             postCommitHooks.add(hook);
         }
+        return this;
+    }
+
+    CommitCommand setTransaction(StoreRollback transaction) {
+        this.outerTransaction = transaction;
+        this.skipLockAndJournal = transaction != null;
         return this;
     }
 
@@ -222,985 +238,929 @@ public class CommitCommand {
         // leaves any already-completed recursive subrepo commits in place (matching real hg,
         // which never rolls back a subrepo it already committed just because the parent commit
         // subsequently failed).
-        applySubrepoStateBeforeCommit();
-
-        // PRE_COMMIT hooks trigger
-        if (!preCommitHooks.isEmpty()) {
-            Map<String, Object> ctx = new HashMap<>();
-            ctx.put("author", author);
-            ctx.put("message", message);
-            ctx.put("repository", repository);
-            for (HgHook hook : preCommitHooks) {
-                if (!hook.run(ctx)) {
-                    throw new HgValidationException("Pre-commit hook execution rejected the commit txn");
-                }
-            }
-        }
-
-        fileSizes = new HashMap<>();
-        docketBackups = new HashMap<>();
-        truncateOnlyEntries = new HashSet<>();
-        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
-        // N-2: snapshot the dirstate-v2 data file this backup's docket references (if any), so a
-        // rollback can restore it too -- see the matching restore-site comment for why this is
-        // needed (Dirstate.write()'s own "W-LEAK" cleanup deletes the previous uid's data file as
-        // soon as it writes a new docket, which would otherwise orphan dirstateBackup on rollback).
-        byte[] dirstateV2DataBackup = captureDirstateV2DataBackup(dirstateFile, dirstateBackup);
-        File fncacheFile = new File(repository.getStoreDir(), "fncache");
-        byte[] fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
-        FileIndex.Snapshot fileIndexBackup = repository.isFileIndexV1()
-                ? FileIndex.snapshot(repository.getStoreDir()) : null;
-        journalFile = new File(repository.getStoreDir(), "journal");
-
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
         try (HgLock wlock = skipLockAndJournal ? HgLock.noOp() : repository.lockWorkingCopy();
-             HgLock storeLock = skipLockAndJournal ? HgLock.noOp() : repository.lockStore()) {
+             HgLock storeLock = skipLockAndJournal ? HgLock.noOp() : repository.lockStore();
+             // commit: `with repo.dirstate.changing_parents(repo)` inside the locks. The dirstate is written when the context ends,
+             // after the store transaction is closed (the original writes it as a post-finalize file generator), and is not touched at all
+             // when the commit fails: there is no dirstate backup to put back.
+             HgRepository.DirstateChange dirstateChange = skipLockAndJournal && !repository.holdsWorkingCopyLock()
+                     ? null : repository.openChangingParents()) {
+          try {
+            applySubrepoStateBeforeCommit();
 
-            if (!skipLockAndJournal) {
-                // Create physical journal and backups for Crash Resilience
-                Files.deleteIfExists(journalFile.toPath());
-                
-                if (dirstateFile.exists()) {
-                    File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                    Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    appendToJournal(journalFile, "dirstate");
-                    // dirstate-v2's own companion data file (backlog #39, found live 2026-09-05):
-                    // Dirstate.write()'s "W-LEAK" cleanup deletes the *previous* uid's
-                    // ".hg/dirstate.<uid>" data file the instant a NEW docket is durably written --
-                    // so if this transaction crashes anywhere after that write, a later
-                    // HgRepository#checkAndPerformAutoRollback() (a genuinely separate process --
-                    // unlike the in-process dirstateV2DataBackup byte[] below, which only survives
-                    // within THIS same call() invocation's own catch block) would restore
-                    // dirstate.backup's docket bytes pointing at a data file that no longer
-                    // exists. Real hg's own dirstate-v2 reader then treats the missing/mismatched
-                    // companion as an unrecoverable "dirstate read race" and aborts outright
-                    // (verified live against hg-rust-7.2.4). Persisting the OLD data file's bytes
-                    // to disk here (consumed by checkAndPerformAutoRollback's matching restore)
-                    // is what actually survives a crash.
-                    // Deliberately NOT named "dirstate.*" -- CommitCommandCoverageTest's own
-                    // dirstate-v2-data-file-count assertions (and any real hg tooling that might
-                    // do the same) glob hgDir for "dirstate." prefixed files to enumerate the
-                    // *actual* dirstate-v2 data files; naming this "dirstate.backup.data" made it
-                    // collide with that glob (found live 2026-09-05 running the full regression
-                    // suite after adding this file).
-                    File dirstateV2DataBackupFile = new File(repository.getDirectory(), ".hg/dirstateV2.backup.data");
-                    if (dirstateV2DataBackup != null) {
-                        SafeFileIO.writeAtomic(dirstateV2DataBackupFile, dirstateV2DataBackup);
-                    } else {
-                        Files.deleteIfExists(dirstateV2DataBackupFile.toPath());
-                    }
-                }
-                if (fncacheFile.exists()) {
-                    File fncacheBackupFile = new File(repository.getStoreDir(), "fncache.backup");
-                    Files.copy(fncacheFile.toPath(), fncacheBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    appendToJournal(journalFile, "fncache");
-                }
-            }
-
-            // Initialize Transaction File Sizes Rollback Backup -- v2/docket-aware (backlog #39,
-            // see recordRevlogRollbackState's javadoc for why a plain byte-length record is not
-            // enough for changelog-v2/general-v2 repositories).
-            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-            File clDat = new File(repository.getStoreDir(), "00changelog.d");
-            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-
-            recordRevlogRollbackState(clIdx, clDat);
-            recordRevlogRollbackState(mfIdx, mfDat);
-
-            Dirstate dirstate = repository.getDirstate();
-            NodeId p1CommitNode = dirstate.getParent1Node();
-            NodeId p2CommitNode = dirstate.getParent2Node();
-
-            // 1. Load changelog and find parent commit rev index
-            Revlog changelog = repository.getRevlog(clIdx, clDat);
-
-            int parent1Rev = -1;
-            if (p1CommitNode != null && !p1CommitNode.isNull()) {
-                parent1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
-                if (parent1Rev == -1) {
-                    throw new HgRevisionNotFoundException(p1CommitNode.toHex());
-                }
-            }
-
-            int parent2Rev = -1;
-            if (p2CommitNode != null && !p2CommitNode.isNull()) {
-                parent2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode.getBytes());
-                if (parent2Rev == -1) {
-                    throw new HgRevisionNotFoundException(p2CommitNode.toHex());
-                }
-            }
-
-            int newCommitRev = changelog.getRevisionCount();
-
-            // 2. Load previous manifests
-            Map<String, String> manifestP1 = new TreeMap<>();
-            Map<String, String> manifestP2 = new TreeMap<>();
-            byte[] p1ManifestNode = new byte[20];
-            byte[] p2ManifestNode = new byte[20];
-
-            Revlog manifestRevlog = repository.getManifestRevlog();
-
-            int parent1ManifestRev = -1;
-            if (parent1Rev != -1) {
-                byte[] p1CommitNodeBytes = p1CommitNode.getBytes();
-                Map<String, String> mf1 = repository.getManifestAtCommit(p1CommitNodeBytes);
-                manifestP1.putAll(mf1);
-                byte[] clContent = changelog.getRevisionContent(parent1Rev);
-                p1ManifestNode = extractManifestNode(clContent);
-                if (p1ManifestNode != null) {
-                    parent1ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p1ManifestNode);
-                }
-                LOGGER.log(Level.FINE, "[DEBUG MERGE] parent1Rev={0}, p1ManifestNode={1}, parent1ManifestRev={2}", new Object[]{parent1Rev, (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null"), parent1ManifestRev});
-            }
-
-            int parent2ManifestRev = -1;
-            if (parent2Rev != -1 && p2CommitNode != null && !p2CommitNode.isNull()) {
-                byte[] p2CommitNodeBytes = p2CommitNode.getBytes();
-                Map<String, String> mf2 = repository.getManifestAtCommit(p2CommitNodeBytes);
-                manifestP2.putAll(mf2);
-                byte[] clContent = changelog.getRevisionContent(parent2Rev);
-                p2ManifestNode = extractManifestNode(clContent);
-                if (p2ManifestNode != null) {
-                    parent2ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p2ManifestNode);
-                }
-                LOGGER.log(Level.FINE, "[DEBUG MERGE] parent2Rev={0}, p2CommitNode={1}, p2ManifestNode={2}, parent2ManifestRev={3}", new Object[]{parent2Rev, p2CommitNode.toHex(), (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null"), parent2ManifestRev});
-            }
-
-            // 3. Process dirstate entries and write filelogs
-            // M-2: Record transaction start time in epoch seconds for racy-hg check
-            final long txStartSec = System.currentTimeMillis() / 1000;
-            Map<String, String> newManifest = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-            List<String> filesModified = new ArrayList<>();
-            // tracked files that are gone from the disk without `hg remove`: real hg leaves them out of the commit (they stay `!`)
-            Set<String> missingFiles = new LinkedHashSet<>();
-            Set<String> fncachePaths = new LinkedHashSet<>();
-
-            // SD_FILES sidedata bookkeeping (backlog item 19) -- only actually encoded/attached
-            // below when repository.isSidedataCopies() is true; harmless to always populate.
-            Set<String> sdAdded = new LinkedHashSet<>();
-            Set<String> sdRemoved = new LinkedHashSet<>();
-            Set<String> sdTouched = new LinkedHashSet<>();
-            Map<String, String> sdCopiedFromP1 = new LinkedHashMap<>();
-            Map<String, String> sdCopiedFromP2 = new LinkedHashMap<>();
-
-            // Load existing fncache if any
-            if (fncacheFile.exists()) {
-                fncachePaths.addAll(Files.readAllLines(fncacheFile.toPath()));
-            }
-
-            // fileindex-v1 repositories track tracked-file logical paths via the fileindex trie
-            // instead of fncache; loaded/appended/written the same way fncachePaths is above
-            // (monotonic accumulation -- matches real hg's own fncache, which is never pruned on
-            // commit either, only via `hg debugrebuildfncache`).
-            boolean useFileIndex = repository.isFileIndexV1();
-            Set<String> fileIndexPaths = useFileIndex
-                    ? new LinkedHashSet<>(FileIndex.readTrackedPaths(repository.getStoreDir()))
-                    : Collections.emptySet();
-
-            // Check for unresolved merge conflicts. Real hg (mercurial/commands.py's `commit`,
-            // via `mergestatemod.mergestate.read(repo)` + `ms.unresolvedcount()`) aborts based
-            // purely on the merge state's own resolved/unresolved flags -- never by re-scanning
-            // working-copy file content for literal conflict markers, which this used to do.
-            // That textual scan was both a false negative (a resolved file that legitimately
-            // still contains "<<<<<<<"/"======="/">>>>>>>" text, e.g. it IS a diff/patch file,
-            // would wrongly re-block the commit forever) and a false positive relative to real
-            // hg (a conflict resolved via `hg resolve --tool internal:local`/`:other` -- which
-            // never writes markers at all -- would be silently allowed through by this scan even
-            // while real hg's mergestate still correctly flags it unresolved).
-            MergeState activeMergeState = MergeState.read(new File(repository.getHgDir(), "merge/state2"));
-            if (activeMergeState.isActive() && !activeMergeState.unresolvedFiles().isEmpty()) {
-                throw new HgValidationException("unresolved merge conflicts (see 'hg help resolve')");
-            }
-
-            // a partial commit: only the selected files are committed (mercurial/localrepo.py: "cannot partially commit a merge")
-            io.github.search5.hg4j.match.Matcher partial = null;
-            if (!selection.isEmpty()) {
-                if (parent2Rev != -1) {
-                    throw new HgValidationException("cannot partially commit a merge (do not specify files or patterns)");
-                }
-                partial = selection.matcher(repository, null);
-            }
-
-            TreeWalk tw = new TreeWalk();
-            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent1Rev))); // Tree 0: P1
-            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent2Rev))); // Tree 1: P2
-            tw.addTree(new WorkingDirTreeIterator(repository));                           // Tree 2: Working Copy
-
-            tw.reset();
-            while (tw.next()) {
-                String path = tw.getPath();
-                boolean inP1 = tw.isTracked(0);
-                boolean inP2 = tw.isTracked(1);
-                boolean inWorking = tw.isTracked(2);
-
-                if (partial != null && !partial.matches(path)) {
-                    // not selected: the new revision keeps what the parent has, and the working copy keeps its own state
-                    if (inP1) {
-                        newManifest.put(path, manifestP1.get(path));
-                    }
-                    continue;
-                }
-
-                if (inWorking) {
-                    char workingState = tw.getState(2);
-                    if (workingState == 'r') {
-                        filesModified.add(path);
-                        sdRemoved.add(path);
-                    } else if (workingState == 'a' || workingState == 'm' || workingState == 'n') {
-                        File diskFile = new File(repository.getDirectory(), path);
-                        // A symlink is valid to commit even when its target is missing (dangling)
-                        // or not a plain file — real hg tracks it regardless (verified live).
-                        // exists()/isFile() alone follow the link and would reject it.
-                        boolean physicallyMissing = !Files.isSymbolicLink(diskFile.toPath())
-                                && (!diskFile.exists() || !diskFile.isFile());
-
-                        // Backlog 32 gap #2 (verified live against Mercurial 7.2): unlike every
-                        // OTHER tracked-but-missing file (which makes `hg commit` abort with
-                        // "nothing changed (N missing files)"), real hg specially tolerates
-                        // `.hgsub` (the subrepo spec file) being deleted from the working
-                        // directory WITHOUT an explicit `hg remove` -- `hg commit` neither
-                        // aborts nor mints a new `.hgsub` revision, it silently carries the
-                        // previous manifest entry forward unchanged (`hg cat -r tip .hgsub`
-                        // afterwards still returns the OLD content; `hg log --follow -- .hgsub`
-                        // shows no new revision for it). The actual subrepo-side reaction to
-                        // `.hgsub`'s absence happens separately, in
-                        // applySubrepoStateBeforeCommit() above, which empties `.hgsubstate` to
-                        // match "no subrepos currently declared" (an explicit `hg remove .hgsub`
-                        // instead goes through the ordinary workingState == 'r' branch above,
-                        // and applySubrepoStateBeforeCommit() additionally drops .hgsubstate
-                        // from tracking entirely in that case, also verified live).
-                        if (physicallyMissing && workingState == 'n' && ".hgsub".equals(path)) {
-                            String carryHexP1 = manifestP1.get(path);
-                            String carryHexP2 = parent2Rev != -1 ? manifestP2.get(path) : null;
-                            if (carryHexP1 != null) {
-                                newManifest.put(path, carryHexP1);
-                            } else if (carryHexP2 != null) {
-                                newManifest.put(path, carryHexP2);
-                            }
-                            continue;
-                        }
-
-                        if (physicallyMissing) {
-                            missingFiles.add(path);
-                            String keepP1 = manifestP1.get(path);
-                            String keepP2 = parent2Rev != -1 ? manifestP2.get(path) : null;
-                            if (keepP1 != null) {
-                                newManifest.put(path, keepP1);
-                            } else if (keepP2 != null) {
-                                newManifest.put(path, keepP2);
-                            }
-                            continue;
-                        }
-
-                        // A symlink's "size" (and content, for the M-2 racy check below) must be
-                        // its own target-path-string bytes -- File#length()/readAllBytes() follow
-                        // the link and read whatever it points at instead, which is wrong for
-                        // deciding whether the symlink ITSELF changed (matches the convention
-                        // already used elsewhere in this class and in AddCommand/CopyCommand/
-                        // GraftCommand/RebaseCommand).
-                        boolean diskIsSymlink = Files.isSymbolicLink(diskFile.toPath());
-                        // Large file support: safely record 32-bit masked size in dirstate v1
-                        long diskSize = diskIsSymlink
-                                ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
-                                : diskFile.length();
-
-                        // Check if the file has actually changed compared to the recorded dirstate
-                        boolean changed = workingState == 'a' || workingState == 'm';
-                        if (workingState == 'n') {
-                            long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
-                            Dirstate.Entry dEntry = dirstate.getEntries().get(path);
-                            if (dEntry != null) {
-                                // An entry whose cached stat is ambiguous (real hg's own "unset"
-                                // sentinel -- see Dirstate.Entry#isStatAmbiguous(), most commonly
-                                // hit when a file was committed within the same wall-clock second
-                                // as the dirstate write) can never be trusted via a raw size/mtime
-                                // comparison: its sentinel size (-1) never equals a real on-disk
-                                // size, which previously made this branch treat EVERY such entry
-                                // as unconditionally "changed" (skipping the content-level check
-                                // below entirely) even when byte-identical to the parent --
-                                // confirmed live against a real hg-authored dirstate produced by
-                                // an add+commit that landed in the same second.
-                                boolean statAmbiguous = dEntry.isStatAmbiguous();
-                                // Backlog #39: a pure `chmod +x`/`chmod -x` on an otherwise
-                                // untouched tracked file changes neither its size nor its mtime
-                                // (chmod updates ctime, not mtime, on POSIX) -- verified live
-                                // against real hg 7.2 (`hg status` reports "M" for exactly this,
-                                // with zero content change). The size/mtime-only comparison below
-                                // was completely blind to this, so a real executable-bit flip was
-                                // silently NEVER committed at all (found via a `TreeMergeCommand`
-                                // matrix test exercising a flag-only change across two commits --
-                                // the second commit's manifest simply never recorded the flip).
-                                boolean diskExecutable = !diskIsSymlink && diskFile.canExecute();
-                                boolean dirstateExecutable = !statAmbiguous && (dEntry.getMode() & 0111) != 0;
-                                boolean execBitChanged = !statAmbiguous && diskExecutable != dirstateExecutable;
-                                if (execBitChanged || (!statAmbiguous && (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime))) {
-                                    // Changed if the executable bit, size, or mtime differs
-                                    changed = true;
-                                } else if (statAmbiguous || diskTime >= txStartSec - 1) {
-                                    // M-2: racy-hg check (accounting for 1-second resolution) --
-                                    // compare against the CURRENT PARENT commit's own recorded
-                                    // content for this path, not just "whatever the filelog's most
-                                    // recently-appended revision happens to be". A filelog's latest
-                                    // revision can belong to an entirely different branch that
-                                    // isn't even an ancestor of the commit being built now (e.g.
-                                    // RebaseCommand cherry-picking a fast-forwarded file whose
-                                    // filelog most recently gained a revision from the
-                                    // ORIGINAL/source side, not the destination side this commit's
-                                    // parent chain actually descends from) -- the old
-                                    // "positionally last revision" heuristic silently kept the
-                                    // PARENT's stale manifest entry instead of the just-written new
-                                    // content whenever that mismatch occurred, confirmed live via
-                                    // ShelveRealHgInteropTest's
-                                    // unshelveRebasesOntoAnUnrelatedInterveningCommit (2026-09-04):
-                                    // unshelve's rebase step fast-forwards a.txt's shelved content
-                                    // onto a dest commit that never touched it, but a.txt's filelog
-                                    // had ALREADY gained a newer (throwaway restore commit's)
-                                    // revision in between, so "last in filelog" silently pointed at
-                                    // the wrong content and the fast-forward was dropped entirely.
-                                    // For a merge commit, "unchanged" legitimately means "matches
-                                    // EITHER parent" (the byte-level disambiguation a few lines
-                                    // below picks whichever one it actually is) -- comparing only
-                                    // against P1 would wrongly flag a file that only matches P2
-                                    // (e.g. reverted-on-one-side-of-a-merge) as "changed" and divert
-                                    // it away from that disambiguation entirely, minting a brand
-                                    // new filelog revision for content that already exists.
-                                    String hexP1x = manifestP1.get(path);
-                                    String hexP2x = manifestP2.get(path);
-                                    if (hexP1x != null || hexP2x != null) {
-                                        byte[] fileContent = diskIsSymlink
-                                                ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
-                                                : Files.readAllBytes(diskFile.toPath());
-                                        // Only ever escalate to "changed" when at least one
-                                        // parent's content could actually be READ and compared --
-                                        // when a parent's filelog is itself missing/corrupted/
-                                        // emptied (a scenario this class's own tests exercise
-                                        // deliberately), neither side is verifiable, and the
-                                        // pre-existing byte-level disambiguation logic below
-                                        // already tolerates exactly that (it swallows the same
-                                        // read failure and falls back to the OTHER side without
-                                        // needing to re-verify it) -- staying "unchanged" here and
-                                        // deferring to it avoids minting a brand new filelog
-                                        // revision for content that's already the correct side's.
-                                        Boolean p1Matches = null;
-                                        if (hexP1x != null) {
-                                            try {
-                                                p1Matches = Arrays.equals(fileContent, getFileRevisionContent(repository, path, hexP1x));
-                                            } catch (Exception ignored) {
-                                            }
-                                        }
-                                        Boolean p2Matches = null;
-                                        if (hexP2x != null) {
-                                            try {
-                                                p2Matches = Arrays.equals(fileContent, getFileRevisionContent(repository, path, hexP2x));
-                                            } catch (Exception ignored) {
-                                            }
-                                        }
-                                        boolean anyReadable = p1Matches != null || p2Matches != null;
-                                        boolean matchesAParent = Boolean.TRUE.equals(p1Matches) || Boolean.TRUE.equals(p2Matches);
-                                        if (anyReadable && !matchesAParent) {
-                                            changed = true;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // A tracked path marked 'n' (dirstate says "unchanged") that is
-                            // absent from BOTH candidate parent manifests cannot legitimately be
-                            // "unchanged" -- there is nothing for it to be unchanged FROM. Without
-                            // this, such a path silently vanishes from the new commit's manifest
-                            // entirely (the "!changed" branch below only knows how to reuse an
-                            // *existing* parent manifest entry; when neither parent has one, it
-                            // has no else-case and just drops the path). Real caller that hits
-                            // this: RebaseCommand.cherryPickBackup marks every file it writes as
-                            // 'n' with disk-matching size/mtime (correct fast path for files
-                            // genuinely carried over unchanged from the target), including
-                            // brand-new files added by the very revision being cherry-picked when
-                            // the rebase target never had that path -- caught live against a
-                            // real-hg-created repo by RebaseRealHgInteropTest (hg4j-only round
-                            // trips never exercised this because they never asserted on the
-                            // rebased commit's manifest/file content, only on changelog linkage).
-                            if (!changed) {
-                                boolean presentInP1 = manifestP1.containsKey(path);
-                                boolean presentInP2 = parent2Rev != -1 && manifestP2.containsKey(path);
-                                if (!presentInP1 && !presentInP2) {
-                                    changed = true;
-                                }
-                            }
-                        }
-
-                        if (changed) {
-                            byte[] fileContent;
-                            if (Files.isSymbolicLink(diskFile.toPath())) {
-                                fileContent = Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8);
-                            } else {
-                                fileContent = Files.readAllBytes(diskFile.toPath());
-                            }
-                            File flIdx = getFilelogIndex(repository.getStoreDir(), path);
-                            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-
-                            // Capture pre-write file sizes for potential rollback transaction
-                            // (v2/docket-aware -- see recordRevlogRollbackState; matters here for
-                            // general-v2 repositories, where every filelog is v2 too).
-                            recordRevlogRollbackState(flIdx, flDat);
-
-                            // Ensure parent directories exist in store
-                            flIdx.getParentFile().mkdirs();
-
-                            Revlog filelog = repository.getRevlog(flIdx, flDat);
-
-                            // Find parent1 filelog revision index
-                            int parent1FileRev = -1;
-                            byte[] p1FileNode = new byte[20];
-                            if (inP1) {
-                                byte[] prevFileNode = tw.getNodeId(0);
-                                parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNode);
-                                if (parent1FileRev != -1) {
-                                    p1FileNode = prevFileNode;
-                                }
-                            }
-
-                            // Find parent2 filelog revision index (N-4: Merge ancestral track protection)
-                            int parent2FileRev = -1;
-                            byte[] p2FileNode = new byte[20];
-                            if (inP2) {
-                                byte[] prevFileNodeP2 = tw.getNodeId(1);
-                                parent2FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNodeP2);
-                                if (parent2FileRev != -1) {
-                                    p2FileNode = prevFileNodeP2;
-                                }
-                            }
-
-                            // Integrates Copy-Rename Track "Writer"
-                            String originalPath = dirstate.getCopyMap().get(path);
-                            Map<String, String> copyMeta = null;
-
-                            if (originalPath != null) {
-                                String sourceEntry = manifestP1.get(originalPath);
-                                String hexSource = (sourceEntry != null && sourceEntry.length() >= 40)
-                                        ? sourceEntry.substring(0, 40) : "0000000000000000000000000000000000000000";
-                                copyMeta = new LinkedHashMap<>();
-                                copyMeta.put("copy", originalPath);
-                                copyMeta.put("copyrev", hexSource);
-
-                                // SD_FILES copy-tracing (backlog item 19): classify by which
-                                // parent's manifest actually contains the copy source -- mirrors
-                                // the sourceEntry lookup just above (P1 first, matching real hg's
-                                // own preference for p1 when a source exists in both).
-                                if (manifestP1.containsKey(originalPath)) {
-                                    sdCopiedFromP1.put(path, originalPath);
-                                } else if (manifestP2.containsKey(originalPath)) {
-                                    sdCopiedFromP2.put(path, originalPath);
-                                }
-                            }
-
-                            if (workingState == 'a') {
-                                sdAdded.add(path);
-                            } else {
-                                sdTouched.add(path);
-                            }
-
-                            // LFS: the factory decides whether this content goes to the LFS store. For an LFS file the filelog
-                            // holds the pointer (flagged REVIDX_EXTSTORED), the copy/rename metadata lives inside the pointer
-                            // as x-hg-* fields instead of a separate metadata block, and the node hash is computed over the
-                            // metadata-wrapped REAL bytes (see Revlog#wrapMetadata and BuiltinHgLfs).
-                            byte[] contentToStore = fileContent;
-                            byte[] lfsHashBasis = null;
-                            int extraRevFlags = 0;
-                            Map<String, String> filelogMetadata = copyMeta;
-                            HgLfsFactory.Cleaned cleaned = HgLfsFactory.getInstance()
-                                    .applyCleanFilter(repository, path, fileContent, copyMeta);
-                            if (cleaned.isLfs()) {
-                                contentToStore = cleaned.stored();
-                                lfsHashBasis = Revlog.wrapMetadata(fileContent, copyMeta);
-                                extraRevFlags = Revlog.REVIDX_EXTSTORED;
-                                filelogMetadata = null;
-                            }
-
-                            // Backlog #39: a pure executable-bit flip (content byte-identical to
-                            // what a parent already has recorded) must NOT mint a brand new
-                            // filelog revision -- real hg 7.2 CLI, verified live, reuses the
-                            // EXISTING filelog node hex unchanged and only changes the MANIFEST
-                            // line's flag suffix (e.g. "<hex> 755 * run.sh" after "<hex> 644
-                            // run.sh", same <hex> both times). Blindly calling appendRevision()
-                            // here for that case would try to append a revision whose computed
-                            // node hash (SHA1 of the same parents + same content) is IDENTICAL to
-                            // an already-existing revision in this same filelog -- a real
-                            // correctness hazard (duplicate node hashes are never valid within one
-                            // revlog). Skipped for the copy/LFS paths (copyMeta != null / LFS
-                            // pointer bytes always differ from the parent's stored bytes anyway,
-                            // so this reuse can never legitimately apply there).
-                            byte[] newFileNode = null;
-                            if (copyMeta == null && extraRevFlags == 0) {
-                                String reuseHex = manifestP1.get(path);
-                                if (reuseHex == null || reuseHex.length() < 40) {
-                                    reuseHex = parent2Rev != -1 ? manifestP2.get(path) : null;
-                                }
-                                if (reuseHex != null && reuseHex.length() >= 40) {
-                                    try {
-                                        byte[] candidateContent = getFileRevisionContent(repository, path, reuseHex.substring(0, 40));
-                                        if (Arrays.equals(candidateContent, contentToStore)) {
-                                            newFileNode = NodeIdUtil.fromHex(reuseHex.substring(0, 40));
-                                        }
-                                    } catch (Exception ignored) {
-                                        // Unreadable parent revision -- fall through to a normal append.
-                                    }
-                                }
-                            }
-                            if (newFileNode == null) {
-                                newFileNode = filelog.appendRevision(contentToStore, filelogMetadata, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev, null, extraRevFlags, lfsHashBasis);
-                            }
-
-                            // Capture execution flag and symlink flag for serialization
-                            String flag = "";
-                            if (Files.isSymbolicLink(diskFile.toPath())) {
-                                flag = "l";
-                            } else if (diskFile.canExecute()) {
-                                flag = "x";
-                            }
-
-                            newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
-                            filesModified.add(path);
-
-                            // Register only .i file paths in fncache (raw logical path as per native Mercurial specs)
-                            fncachePaths.add("data/" + path + ".i");
-                            if (!filelog.isInline()) {
-                                // Backlog #43: a filelog that just grew past real hg's 131072-byte
-                                // inline threshold (Revlog.enforceInlineSize(), called from inside
-                                // appendRevision() above) splits into a separate .d file -- real
-                                // hg's own fncache tracks BOTH the .i and .d path for any
-                                // non-inline data/meta revlog (RE_FNCACHE_FILE in store.py matches
-                                // "(data|meta)/....[id]$"), confirmed live against real hg 7.2.
-                                // Without this, real hg's own `hg verify` on a repository into
-                                // which hg4j just committed such a file reports
-                                // "warning: revlog 'data/<path>.d' not in fncache!" (GcCommand's
-                                // own fncache rebuild already established this same convention for
-                                // its own, unrelated code path).
-                                fncachePaths.add("data/" + path + ".d");
-                            }
-                            if (useFileIndex) {
-                                fileIndexPaths.add(path);
-                            }
-                        } else {
-                            // File has not changed in working directory
-                            String hexP1 = manifestP1.get(path);
-                            String hexP2 = manifestP2.get(path);
-                            if (parent2Rev == -1) {
-                                if (hexP1 != null) {
-                                    newManifest.put(path, hexP1);
-                                }
-                            } else {
-                                if (hexP1 != null && hexP2 == null) {
-                                    newManifest.put(path, hexP1);
-                                } else if (hexP1 == null && hexP2 != null) {
-                                    newManifest.put(path, hexP2);
-                                } else if (hexP1 != null && hexP2 != null) {
-                                    if (hexP1.equals(hexP2)) {
-                                        newManifest.put(path, hexP1);
-                                    } else {
-                                        // Bytes level disambiguation to determine which side this file belongs to
-                                        byte[] diskBytes = Files.readAllBytes(diskFile.toPath());
-                                        byte[] p1Bytes = null;
-                                        try {
-                                            p1Bytes = getFileRevisionContent(repository, path, hexP1);
-                                        } catch (Exception e) {
-                                            // Ignore
-                                        }
-                                        if (p1Bytes != null && Arrays.equals(diskBytes, p1Bytes)) {
-                                            newManifest.put(path, hexP1);
-                                        } else {
-                                            newManifest.put(path, hexP2);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (useFileIndex) {
-                FileIndex.writeTrackedPaths(repository.getStoreDir(), fileIndexPaths);
-            }
-
-            // Amend support: resolve the DECLARED parent(s) for the new changelog/manifest
-            // revisions separately from the dirstate-derived parent(s) used above (and still
-            // used below for the treemanifest sub-directory reuse map) to determine what
-            // changed and what an unchanged file's manifest entry should reuse -- see
-            // hasDeclaredParents' field doc for why these must be allowed to differ.
-            int declaredClRev1 = parent1Rev;
-            int declaredClRev2 = parent2Rev;
-            byte[] declaredClNode1 = p1CommitNode != null ? p1CommitNode.getBytes() : new byte[20];
-            byte[] declaredClNode2 = p2CommitNode != null ? p2CommitNode.getBytes() : new byte[20];
-            byte[] declaredMfNode1 = p1ManifestNode;
-            byte[] declaredMfNode2 = p2ManifestNode;
-            int declaredMfRev1 = parent1ManifestRev;
-            int declaredMfRev2 = parent2ManifestRev;
-            if (hasDeclaredParents) {
-                declaredClNode1 = declaredParent1.getBytes();
-                declaredClRev1 = declaredParent1.isNull() ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, declaredClNode1);
-                declaredClNode2 = declaredParent2.getBytes();
-                declaredClRev2 = declaredParent2.isNull() ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, declaredClNode2);
-
-                declaredMfNode1 = declaredClRev1 != -1 ? extractManifestNode(changelog.getRevisionContent(declaredClRev1)) : new byte[20];
-                declaredMfRev1 = isNullNode(declaredMfNode1) ? -1 : NodeIdUtil.findRevisionByNodeId(manifestRevlog, declaredMfNode1);
-                declaredMfNode2 = declaredClRev2 != -1 ? extractManifestNode(changelog.getRevisionContent(declaredClRev2)) : new byte[20];
-                declaredMfRev2 = isNullNode(declaredMfNode2) ? -1 : NodeIdUtil.findRevisionByNodeId(manifestRevlog, declaredMfNode2);
-            }
-
-            if ((partial != null || !missingFiles.isEmpty()) && filesModified.isEmpty()) {
-                throw new HgValidationException("nothing changed" + (missingFiles.isEmpty() ? ""
-                        : " (" + missingFiles.size() + " missing files, see 'hg status')"));
-            }
-
-            // 4. Serialize and write new manifest revision
-            byte[] manifestNode;
-            if (repository.isTreemanifest()) {
-                Map<String, byte[]> p1DirNodes = collectDirNodes(p1ManifestNode);
-                Map<String, byte[]> p2DirNodes = collectDirNodes(p2ManifestNode);
-                manifestNode = writeTreeManifestDir("", newManifest, p1DirNodes, p2DirNodes,
-                        declaredMfNode1, declaredMfNode2, manifestRevlog, newCommitRev, fncachePaths);
-            } else {
-                StringBuilder manifestSb = new StringBuilder();
-                for (Map.Entry<String, String> entry : newManifest.entrySet()) {
-                    manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
-                }
-                byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
-                manifestNode = manifestRevlog.appendRevision(manifestTextBytes, declaredMfRev1, declaredMfRev2, declaredMfNode1, declaredMfNode2, newCommitRev);
-            }
-
-            // Write fncache back atomically -- deliberately after the manifest write above (not
-            // right after the per-file loop) because backlog #45's fix makes writeTreeManifestDir
-            // append meta/<dir>/00manifest.i/.d entries into this same fncachePaths set as it
-            // writes each touched treemanifest dirlog.
-            if (!fncachePaths.isEmpty()) {
-                SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
-            }
-
-            // 5. Serialize and write new changelog (commit) revision
-            long secs = forcedTime != null ? forcedTime : System.currentTimeMillis() / 1000;
-            int offsetSeconds = forcedOffset != null ? forcedOffset : -TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
-            String branchName = repository.getBranch();
-            // 실제 hg(changelog.add)는 branch extra 항목을 default/빈 브랜치일 때는 아예
-            // 쓰지 않는다 — 항상 "branch:default"를 남기면 기본 브랜치 커밋의 changelog
-            // 원문 바이트가 실제 hg와 달라져 동일 내용이라도 노드 해시가 어긋난다
-            // (2026-09-01 실제 hg로 확인: 기본 브랜치 커밋의 3번째 줄은 "초 tz"뿐이고
-            // "branch:" 문구가 전혀 없다).
-            // 실제 hg(changelog.encodeextra)는 extra 항목이 여럿이면 키 알파벳순으로 정렬해
-            // '\0'로 join한다 -- "branch"가 "close"보다 앞선다. buildChangelogText()가 join
-            // 직전에 다시 정렬하므로 여기서의 삽입 순서 자체는 정확성에 영향을 주지 않는다.
-            List<String> extraParts = new ArrayList<>();
-            if (branchName != null && !branchName.isEmpty() && !"default".equals(branchName)) {
-                extraParts.add("branch:" + encodeExtraKey(branchName));
-            }
-            if (this.closeBranch) {
-                extraParts.add("close:1");
-            }
-            Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
-
-            byte[] changelogTextBytes = buildChangelogText(manifestNode, author, secs, offsetSeconds, extraParts, filesModified, message);
-
-            // See the hasDeclaredParents field doc: an amend commit records its parent(s) as
-            // the amended commit's own parent(s) (declaredClNode1/2), not the dirstate's actual
-            // (pre-amend) parent -- both are identical for a normal (non-amend) commit.
-            byte[] p1CommitNodeHash = declaredClNode1;
-            byte[] p2CommitNodeHash = declaredClNode2;
-
-            byte[] sidedataContainer = null;
-            if (repository.isSidedataCopies()) {
-                byte[] sdFiles = ChangingFiles.encode(sdAdded, sdRemoved, Set.of(), Set.of(), sdTouched, sdCopiedFromP1, sdCopiedFromP2);
-                if (sdFiles.length > 0) {
-                    sidedataContainer = SidedataCodec.serialize(
-                            Map.of(SD_FILES, sdFiles));
-                }
-            }
-            // changelog(commit) 리비전은 metadata(clMeta)를 쓰지 않는다 -- 이 오버로드의
-            // metadata 파라미터는 Revlog.wrapMetadata()를 거쳐 "\x01\n key: value \n...\x01\n"
-            // 블록을 콘텐츠 앞에 붙이는데, 이는 실제 Mercurial의 filelog rename/copy 메타데이터
-            // 포맷(hg mv 추적, LFS 포인터 등)이지 changelog 리비전 포맷이 아니다 -- changelog
-            // 리비전의 첫 줄은 반드시 40자 매니페스트 헥스여야 한다(LogCommand의 파서 및 실제
-            // hg 자신의 계약). branch/close 같은 커밋 단위 메타데이터는 위에서 이미 date 줄의
-            // extra 딕셔너리에 넣었다.
-            byte[] commitNode = changelog.appendRevision(changelogTextBytes, (Map<String, String>) null, declaredClRev1, declaredClRev2, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
-
-            // 6. Update and save Dirstate
-            dirstate.setParents(new NodeId(commitNode), NodeId.NULL);
-
-            // Real hg fully removes .hg/merge/ once an active merge state is finalized by a
-            // successful commit (mercurial/mergestate.py's `mergestate.reset()`, called
-            // unconditionally by `localrepo.commit()` whenever `ms.active()` -- verified live
-            // against real hg 7.2, 2026-09-05: right after `hg commit` following a two-parent
-            // merge OR a single-parent `hg backout` conflict resolution, `.hg/merge` itself is
-            // gone, not just its `state2` file). Gating this on `parent2Rev != -1` (a real
-            // two-parent commit) misses the single-parent case entirely -- {@link BackoutCommand}
-            // writes the exact same `.hg/merge/state2` bookkeeping for its own conflicting
-            // (older-ancestor) backout path even though its result commit keeps a single parent
-            // (real hg's own `mergemod.back_out`/`_update` does too) -- leaving `.hg/merge`
-            // behind forever after such a commit and making a subsequent real
-            // `hg resolve --list`/`hg summary` wrongly keep reporting the just-committed file as
-            // resolved-but-still-tracked instead of nothing at all.
-            if (activeMergeState.isActive()) {
-                deleteRecursively(new File(repository.getHgDir(), "merge"));
-            }
-
-            List<String> pathsToChange = new ArrayList<>(dirstate.getEntries().keySet());
-            for (String path : pathsToChange) {
-                Dirstate.Entry entry = dirstate.getEntries().get(path);
-                if (entry == null) continue;
-                if (partial != null && !partial.matches(path)) continue; // not committed: the dirstate keeps its state
-                if (missingFiles.contains(path)) continue; // left out of the commit: still missing
-                
-                if (entry.getState() == 'r') {
-                    dirstate.removeEntry(path);
-                    // A removed path cannot still be a pending copy destination once it is
-                    // dropped from the dirstate entirely.
-                    dirstate.getCopyMap().remove(path);
-                } else if (entry.getState() == 'a' || entry.getState() == 'm' || filesModified.contains(path)) {
-                    File diskFile = new File(repository.getDirectory(), path);
-                    boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
-                    int mode = diskFile.canExecute() ? 0755 : 0644;
-                    // A symlink's dirstate "size" must be the length of its own target path
-                    // string (lstat semantics, matching the filelog content recorded above),
-                    // not File.length() which follows the link to whatever it points at.
-                    int size = isSymlink
-                            ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
-                            : (int) diskFile.length();
-                    long time = SafeFileIO.lastModifiedSeconds(diskFile);
-                    dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
-                    // Real hg clears the dirstate's pending copy record for a path once it is
-                    // committed (verified live: `hg debugstate` shows "copy: a -> b" for an
-                    // uncommitted `hg copy a b`, but that line is gone immediately after `hg
-                    // commit` -- the copy info now lives in the filelog/changeset metadata
-                    // written above, not in the dirstate). Without this, hg4j would leave a
-                    // stale pending-copy record in the physical dirstate file after commit,
-                    // which real hg would still (incorrectly) report via `hg status -C` /
-                    // re-chase via a subsequent `hg copy` on the same destination.
-                    dirstate.getCopyMap().remove(path);
-                }
-            }
-            repository.writeDirstate(dirstate);
-
-            // 6.5. Update Phase for the new commit (all new commits default to DRAFT)
-            //
-            // Real hg's phases.registernew() (mercurial/phases.py) only records an explicit
-            // phaseroots root when the new commit's phase is not already implied by its
-            // parent(s) -- a plain child of an existing draft/secret commit inherits that phase
-            // via ancestry and needs no explicit entry of its own. Recording one unconditionally
-            // (as this used to) appended one line per commit forever, so a repository with N
-            // linear commits diverged from real hg's phaseroots (a single root at the earliest
-            // draft commit) by having N-1 redundant lines -- verified against real hg 7.2.4.
-            try {
-                PhaseRoots phaseRoots = repository.getPhaseRoots();
-                int p1Phase = phaseRoots.getPhase(new NodeId(p1CommitNodeHash), changelog).getValue();
-                int p2Phase = phaseRoots.getPhase(new NodeId(p2CommitNodeHash), changelog).getValue();
-                if (Math.max(p1Phase, p2Phase) < PhaseRoots.Phase.DRAFT.getValue()) {
-                    phaseRoots.setPhase(new NodeId(commitNode), PhaseRoots.Phase.DRAFT, changelog);
-                }
-            } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Failed to set phase for new commit node", e);
-            }
-
-            // Commit transaction: delete journal and backup files
-            if (!skipLockAndJournal) {
-                try {
-                    Files.deleteIfExists(journalFile.toPath());
-                    Files.deleteIfExists(new File(repository.getDirectory(), ".hg/dirstate.backup").toPath());
-                    Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
-                } catch (Exception ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to clean up transaction backups", ignored);
-                }
-            }
-
-            // POST_COMMIT hooks trigger
-            if (!postCommitHooks.isEmpty()) {
+            // PRE_COMMIT hooks trigger
+            if (!preCommitHooks.isEmpty()) {
                 Map<String, Object> ctx = new HashMap<>();
                 ctx.put("author", author);
                 ctx.put("message", message);
-                ctx.put("commitNode", commitNode);
                 ctx.put("repository", repository);
-                for (HgHook hook : postCommitHooks) {
-                    try {
-                        hook.run(ctx);
-                    } catch (Exception e) {
-                        LOGGER.log(Level.WARNING, "Post-commit hook execution failed", e);
+                for (HgHook hook : preCommitHooks) {
+                    if (!hook.run(ctx)) {
+                        throw new HgValidationException("Pre-commit hook execution rejected the commit txn");
                     }
                 }
             }
 
-            // 활성 북마크가 존재하면 해당 북마크를 새로운 커밋 노드로 전진시킨다.
-            // force(true): 보통의 "하나 위에 커밋"은 항상 순수 fast-forward라 이 값이
-            // 필요없지만(옛 활성 위치가 새 커밋의 parent1 그 자체), AmendCommand처럼 CommitCommand를
-            // 내부적으로 재사용하는 리라이트 계열 호출은 새 커밋이 옛 활성 위치의 "형제"(같은
-            // parent를 공유)일 뿐 자손이 아닌 경우가 있다 — 이때 이 시점엔 아직 obsstore에
-            // predecessor->successor 마커조차 기록되지 않은 상태다(마커는 성공한 커밋의 노드
-            //해시가 있어야 쓸 수 있어 항상 커밋 다음에 쓰임, 예: AmendCommand#call). real hg
-            // 자신도 이런 내부 rewrite에 의한 bookmark 이동은 사용자용 `hg bookmark -r`의
-            // validdest 게이트를 거치지 않고 무조건 이동시킨다(`scmutil.cleanupnodes`) — 그
-            // 게이트는 사용자가 직접 입력하는 대화형 이동에만 해당하므로, 여기서도 동일하게
-            // 우회한다(2026-09-05, 백로그 #39 wave 3에서 BookmarkCommand에 force 게이트를
-            // 추가하며 함께 발견·수정 — 안 그러면 amend 직후 활성 bookmark 전진이
-            // HgValidationException으로 깨짐, `PushRealHgInteropTest#testPushOfBookmarkAdvancedAcrossAmendSucceedsWithoutForce`
-            // 로 재현).
-            BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
-            String active = bookmarkCmd.getActiveBookmark();
-            if (active != null) {
-                            bookmarkCmd.setBookmarkName(active)
-                           .setRevision(NodeIdUtil.toHex(commitNode))
-                           .setForce(true)
-                           .call();
-            }
+            fileSizes = new HashMap<>();
+            docketBackups = new HashMap<>();
+            truncateOnlyEntries = new HashSet<>();
+            File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+            File fncacheFile = new File(repository.getStoreDir(), "fncache");
+            // The backups a failed commit restores are taken once both locks are held (below): a copy taken before them could
+            // predate a commit another process makes in between, and restoring it would wipe out that commit's dirstate and fncache.
+            byte[] dirstateBackup = null;
+            byte[] dirstateV2DataBackup = null;
+            byte[] fncacheBackup = null;
+            FileIndex.Snapshot fileIndexBackup = null;
+            journalFile = new File(repository.getStoreDir(), "journal");
 
-            // 4b. Write undo info for rollback support
             try {
-                writeUndoInfo(repository, fileSizes, dirstateBackup, docketBackups, truncateOnlyEntries, dirstateV2DataBackup);
-            } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Failed to write undo info for rollback", e);
-            }
- 
-            return commitNode;
-        } catch (Exception t) {
-            if (skipLockAndJournal) {
-                repository.clearRevlogCache();
-                throw t;
-            }
-            // N-1: Transaction Rollback Session
-            // Restore v2/docket full-content backups first (backlog #39, see
-            // recordRevlogRollbackState's javadoc) -- these docket files never change size, so
-            // they are absent from the byte-length-truncate loop below entirely.
-            for (Map.Entry<File, byte[]> docketEntry : docketBackups.entrySet()) {
-                try {
-                    SafeFileIO.writeAtomic(docketEntry.getKey(), docketEntry.getValue());
-                } catch (Exception ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to restore docket backup during rollback: " + docketEntry.getKey(), ignored);
-                    t.addSuppressed(ignored);
+
+                dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+                // N-2: snapshot the dirstate-v2 data file this backup's docket references (if any), so a
+                // rollback can restore it too -- see the matching restore-site comment for why this is
+                // needed (Dirstate.write()'s own "W-LEAK" cleanup deletes the previous uid's data file as
+                // soon as it writes a new docket, which would otherwise orphan dirstateBackup on rollback).
+                dirstateV2DataBackup = captureDirstateV2DataBackup(dirstateFile, dirstateBackup);
+                fncacheBackup = fncacheFile.exists() ? Files.readAllBytes(fncacheFile.toPath()) : null;
+                fileIndexBackup = repository.isFileIndexV1() ? FileIndex.snapshot(repository.getStoreDir()) : null;
+
+                if (outerTransaction != null) {
+                    outerTransaction.trackFile(fncacheFile);
+                    outerTransaction.trackFile(new File(repository.getStoreDir(), "phaseroots"));
                 }
-            }
-            // Rollback files to original truncated sizes
-            for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
-                File file = sizeEntry.getKey();
-                long origSize = sizeEntry.getValue();
-                if (origSize == 0 && !truncateOnlyEntries.contains(file)) {
-                    try {
-                        Files.deleteIfExists(file.toPath());
-                    } catch (Exception ignored) {
-                        LOGGER.log(Level.WARNING, "Failed to delete size-0 file during rollback: " + file, ignored);
-                        t.addSuppressed(ignored);
-                    }
-                } else {
-                    // truncateOnlyEntries (a v2 revlog's resolved companion .idx/.dat/.sda) must
-                    // never be deleted even at size 0 -- real hg expects them to always physically
-                    // exist as long as the docket references them (see the field's own javadoc).
-                    try {
-                        File parent = file.getParentFile();
-                        if (parent != null) {
-                            parent.mkdirs();
-                        }
-                        try (FileChannel outChan = FileChannel.open(file.toPath(),
-                                StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
-                            outChan.truncate(origSize);
-                            outChan.force(true);
-                        }
-                    } catch (Exception ignored) {
-                        LOGGER.log(Level.WARNING, "Failed to truncate file during rollback: " + file, ignored);
-                        t.addSuppressed(ignored);
-                    }
-                }
-            }
+                if (!skipLockAndJournal) {
+                    // Create physical journal and backups for Crash Resilience
+                    Files.deleteIfExists(journalFile.toPath());
             
-            // Restore fncache atomically (N-1 Rollback Refinement)
-            if (fncacheBackup != null) {
-                try {
-                    SafeFileIO.writeAtomic(fncacheFile, fncacheBackup);
-                } catch (Exception ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to restore fncache backup during rollback", ignored);
-                    t.addSuppressed(ignored);
+                    if (fncacheFile.exists()) {
+                        File fncacheBackupFile = new File(repository.getStoreDir(), "fncache.backup");
+                        Files.copy(fncacheFile.toPath(), fncacheBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                        appendToJournal(journalFile, "fncache");
+                    }
                 }
-            } else {
-                try {
-                    Files.deleteIfExists(fncacheFile.toPath());
-                } catch (Exception ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to delete fncache during rollback", ignored);
-                    t.addSuppressed(ignored);
-                }
-            }
 
-            // Restore fileindex atomically (mirrors the fncache rollback above)
-            if (fileIndexBackup != null) {
-                try {
-                    FileIndex.restore(repository.getStoreDir(), fileIndexBackup);
-                } catch (Exception ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to restore fileindex backup during rollback", ignored);
-                    t.addSuppressed(ignored);
-                }
-            }
+                // Initialize Transaction File Sizes Rollback Backup -- v2/docket-aware (backlog #39,
+                // see recordRevlogRollbackState's javadoc for why a plain byte-length record is not
+                // enough for changelog-v2/general-v2 repositories).
+                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+                File clDat = new File(repository.getStoreDir(), "00changelog.d");
+                File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+                File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
-            // Restore dirstate atomically (N-1 Rollback Refinement with Dirstate V2 garbage collection)
-            if (dirstateBackup != null) {
-                try {
-                    if (dirstateFile.exists()) {
-                        byte[] currentBytes = Files.readAllBytes(dirstateFile.toPath());
-                        if (currentBytes.length >= 12 && new String(currentBytes, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
-                            ByteBuffer currentBuf = ByteBuffer.wrap(currentBytes).order(ByteOrder.BIG_ENDIAN);
-                            int currentUidSize = currentBuf.get(124) & 0xFF;
-                            byte[] currentUidBytes = new byte[currentUidSize];
-                            currentBuf.position(125);
-                            currentBuf.get(currentUidBytes);
-                            String currentUid = new String(currentUidBytes, StandardCharsets.US_ASCII);
-                            
-                            String oldUid = null;
-                            if (dirstateBackup.length >= 12 && new String(dirstateBackup, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
-                                ByteBuffer oldBuf = ByteBuffer.wrap(dirstateBackup).order(ByteOrder.BIG_ENDIAN);
-                                int oldUidSize = oldBuf.get(124) & 0xFF;
-                                byte[] oldUidBytes = new byte[oldUidSize];
-                                oldBuf.position(125);
-                                oldBuf.get(oldUidBytes);
-                                oldUid = new String(oldUidBytes, StandardCharsets.US_ASCII);
+                recordRevlogRollbackState(clIdx, clDat);
+                recordRevlogRollbackState(mfIdx, mfDat);
+
+                Dirstate dirstate = repository.getDirstate();
+                NodeId p1CommitNode = dirstate.getParent1Node();
+                NodeId p2CommitNode = dirstate.getParent2Node();
+
+                // 1. Load changelog and find parent commit rev index
+                Revlog changelog = repository.getRevlog(clIdx, clDat);
+
+                int parent1Rev = -1;
+                if (p1CommitNode != null && !p1CommitNode.isNull()) {
+                    parent1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1CommitNode.getBytes());
+                    if (parent1Rev == -1) {
+                        throw new HgRevisionNotFoundException(p1CommitNode.toHex());
+                    }
+                }
+
+                int parent2Rev = -1;
+                if (p2CommitNode != null && !p2CommitNode.isNull()) {
+                    parent2Rev = NodeIdUtil.findRevisionByNodeId(changelog, p2CommitNode.getBytes());
+                    if (parent2Rev == -1) {
+                        throw new HgRevisionNotFoundException(p2CommitNode.toHex());
+                    }
+                }
+
+                int newCommitRev = changelog.getRevisionCount();
+
+                // 2. Load previous manifests
+                Map<String, String> manifestP1 = new TreeMap<>();
+                Map<String, String> manifestP2 = new TreeMap<>();
+                byte[] p1ManifestNode = new byte[20];
+                byte[] p2ManifestNode = new byte[20];
+
+                Revlog manifestRevlog = repository.getManifestRevlog();
+
+                int parent1ManifestRev = -1;
+                if (parent1Rev != -1) {
+                    byte[] p1CommitNodeBytes = p1CommitNode.getBytes();
+                    Map<String, String> mf1 = repository.getManifestAtCommit(p1CommitNodeBytes);
+                    manifestP1.putAll(mf1);
+                    byte[] clContent = changelog.getRevisionContent(parent1Rev);
+                    p1ManifestNode = extractManifestNode(clContent);
+                    if (p1ManifestNode != null) {
+                        parent1ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p1ManifestNode);
+                    }
+                    LOGGER.log(Level.FINE, "[DEBUG MERGE] parent1Rev={0}, p1ManifestNode={1}, parent1ManifestRev={2}", new Object[]{parent1Rev, (p1ManifestNode != null ? NodeIdUtil.toHex(p1ManifestNode) : "null"), parent1ManifestRev});
+                }
+
+                int parent2ManifestRev = -1;
+                if (parent2Rev != -1 && p2CommitNode != null && !p2CommitNode.isNull()) {
+                    byte[] p2CommitNodeBytes = p2CommitNode.getBytes();
+                    Map<String, String> mf2 = repository.getManifestAtCommit(p2CommitNodeBytes);
+                    manifestP2.putAll(mf2);
+                    byte[] clContent = changelog.getRevisionContent(parent2Rev);
+                    p2ManifestNode = extractManifestNode(clContent);
+                    if (p2ManifestNode != null) {
+                        parent2ManifestRev = NodeIdUtil.findRevisionByNodeId(manifestRevlog, p2ManifestNode);
+                    }
+                    LOGGER.log(Level.FINE, "[DEBUG MERGE] parent2Rev={0}, p2CommitNode={1}, p2ManifestNode={2}, parent2ManifestRev={3}", new Object[]{parent2Rev, p2CommitNode.toHex(), (p2ManifestNode != null ? NodeIdUtil.toHex(p2ManifestNode) : "null"), parent2ManifestRev});
+                }
+
+                // 3. Process dirstate entries and write filelogs
+                // M-2: Record transaction start time in epoch seconds for racy-hg check
+                final long txStartSec = System.currentTimeMillis() / 1000;
+                Map<String, String> newManifest = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+                List<String> filesModified = new ArrayList<>();
+                // tracked files that are gone from the disk without `hg remove`: real hg leaves them out of the commit (they stay `!`)
+                Set<String> missingFiles = new LinkedHashSet<>();
+                Set<String> fncachePaths = new LinkedHashSet<>();
+
+                // SD_FILES sidedata bookkeeping (backlog item 19) -- only actually encoded/attached
+                // below when repository.isSidedataCopies() is true; harmless to always populate.
+                Set<String> sdAdded = new LinkedHashSet<>();
+                Set<String> sdRemoved = new LinkedHashSet<>();
+                Set<String> sdTouched = new LinkedHashSet<>();
+                Map<String, String> sdCopiedFromP1 = new LinkedHashMap<>();
+                Map<String, String> sdCopiedFromP2 = new LinkedHashMap<>();
+
+                // Load existing fncache if any
+                if (fncacheFile.exists()) {
+                    fncachePaths.addAll(Files.readAllLines(fncacheFile.toPath()));
+                }
+
+                // fileindex-v1 repositories track tracked-file logical paths via the fileindex trie
+                // instead of fncache; loaded/appended/written the same way fncachePaths is above
+                // (monotonic accumulation -- matches real hg's own fncache, which is never pruned on
+                // commit either, only via `hg debugrebuildfncache`).
+                boolean useFileIndex = repository.isFileIndexV1();
+                Set<String> fileIndexPaths = useFileIndex
+                        ? new LinkedHashSet<>(FileIndex.readTrackedPaths(repository.getStoreDir()))
+                        : Collections.emptySet();
+
+                // Check for unresolved merge conflicts. Real hg (mercurial/commands.py's `commit`,
+                // via `mergestatemod.mergestate.read(repo)` + `ms.unresolvedcount()`) aborts based
+                // purely on the merge state's own resolved/unresolved flags -- never by re-scanning
+                // working-copy file content for literal conflict markers, which this used to do.
+                // That textual scan was both a false negative (a resolved file that legitimately
+                // still contains "<<<<<<<"/"======="/">>>>>>>" text, e.g. it IS a diff/patch file,
+                // would wrongly re-block the commit forever) and a false positive relative to real
+                // hg (a conflict resolved via `hg resolve --tool internal:local`/`:other` -- which
+                // never writes markers at all -- would be silently allowed through by this scan even
+                // while real hg's mergestate still correctly flags it unresolved).
+                MergeState activeMergeState = MergeState.read(new File(repository.getHgDir(), "merge/state2"));
+                if (activeMergeState.isActive() && !activeMergeState.unresolvedFiles().isEmpty()) {
+                    throw new HgValidationException("unresolved merge conflicts (see 'hg help resolve')");
+                }
+
+                // a partial commit: only the selected files are committed (mercurial/localrepo.py: "cannot partially commit a merge")
+                io.github.search5.hg4j.match.Matcher partial = null;
+                if (!selection.isEmpty()) {
+                    if (parent2Rev != -1) {
+                        throw new HgValidationException("cannot partially commit a merge (do not specify files or patterns)");
+                    }
+                    partial = selection.matcher(repository, null);
+                }
+
+                TreeWalk tw = new TreeWalk();
+                tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent1Rev))); // Tree 0: P1
+                tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent2Rev))); // Tree 1: P2
+                tw.addTree(new WorkingDirTreeIterator(repository));                           // Tree 2: Working Copy
+
+                tw.reset();
+                while (tw.next()) {
+                    String path = tw.getPath();
+                    boolean inP1 = tw.isTracked(0);
+                    boolean inP2 = tw.isTracked(1);
+                    boolean inWorking = tw.isTracked(2);
+
+                    if (partial != null && !partial.matches(path)) {
+                        // not selected: the new revision keeps what the parent has, and the working copy keeps its own state
+                        if (inP1) {
+                            newManifest.put(path, manifestP1.get(path));
+                        }
+                        continue;
+                    }
+
+                    if (inWorking) {
+                        char workingState = tw.getState(2);
+                        if (workingState == 'r') {
+                            filesModified.add(path);
+                            sdRemoved.add(path);
+                        } else if (workingState == 'a' || workingState == 'm' || workingState == 'n') {
+                            File diskFile = new File(repository.getDirectory(), path);
+                            // A symlink is valid to commit even when its target is missing (dangling)
+                            // or not a plain file — real hg tracks it regardless (verified live).
+                            // exists()/isFile() alone follow the link and would reject it.
+                            boolean physicallyMissing = !Files.isSymbolicLink(diskFile.toPath())
+                                    && (!diskFile.exists() || !diskFile.isFile());
+
+                            // Backlog 32 gap #2 (verified live against Mercurial 7.2): unlike every
+                            // OTHER tracked-but-missing file (which makes `hg commit` abort with
+                            // "nothing changed (N missing files)"), real hg specially tolerates
+                            // `.hgsub` (the subrepo spec file) being deleted from the working
+                            // directory WITHOUT an explicit `hg remove` -- `hg commit` neither
+                            // aborts nor mints a new `.hgsub` revision, it silently carries the
+                            // previous manifest entry forward unchanged (`hg cat -r tip .hgsub`
+                            // afterwards still returns the OLD content; `hg log --follow -- .hgsub`
+                            // shows no new revision for it). The actual subrepo-side reaction to
+                            // `.hgsub`'s absence happens separately, in
+                            // applySubrepoStateBeforeCommit() above, which empties `.hgsubstate` to
+                            // match "no subrepos currently declared" (an explicit `hg remove .hgsub`
+                            // instead goes through the ordinary workingState == 'r' branch above,
+                            // and applySubrepoStateBeforeCommit() additionally drops .hgsubstate
+                            // from tracking entirely in that case, also verified live).
+                            if (physicallyMissing && workingState == 'n' && ".hgsub".equals(path)) {
+                                String carryHexP1 = manifestP1.get(path);
+                                String carryHexP2 = parent2Rev != -1 ? manifestP2.get(path) : null;
+                                if (carryHexP1 != null) {
+                                    newManifest.put(path, carryHexP1);
+                                } else if (carryHexP2 != null) {
+                                    newManifest.put(path, carryHexP2);
+                                }
+                                continue;
                             }
-                            
-                            if (currentUid != null && !currentUid.equals(oldUid)) {
-                                File newDirstateDataFile = new File(dirstateFile.getParentFile(), "dirstate." + currentUid);
-                                Files.deleteIfExists(newDirstateDataFile.toPath());
+
+                            if (physicallyMissing) {
+                                missingFiles.add(path);
+                                String keepP1 = manifestP1.get(path);
+                                String keepP2 = parent2Rev != -1 ? manifestP2.get(path) : null;
+                                if (keepP1 != null) {
+                                    newManifest.put(path, keepP1);
+                                } else if (keepP2 != null) {
+                                    newManifest.put(path, keepP2);
+                                }
+                                continue;
                             }
 
-                            // Dirstate.write()'s own "W-LEAK" cleanup already deleted the
-                            // *previous* uid's ".hg/dirstate.<uid>" data file the moment this
-                            // (now-failing) transaction wrote its new docket. Restoring
-                            // dirstateBackup's docket bytes below would then point at a data
-                            // file that no longer exists, leaving a dirstate-v2 repository that
-                            // fails to even load. Restore that data file from the snapshot taken
-                            // before the transaction started, if it's missing.
-                            if (oldUid != null && dirstateV2DataBackup != null) {
-                                File oldDataFile = new File(dirstateFile.getParentFile(), "dirstate." + oldUid);
-                                if (!oldDataFile.exists()) {
-                                    SafeFileIO.writeAtomic(oldDataFile, dirstateV2DataBackup);
+                            // A symlink's "size" (and content, for the M-2 racy check below) must be
+                            // its own target-path-string bytes -- File#length()/readAllBytes() follow
+                            // the link and read whatever it points at instead, which is wrong for
+                            // deciding whether the symlink ITSELF changed (matches the convention
+                            // already used elsewhere in this class and in AddCommand/CopyCommand/
+                            // GraftCommand/RebaseCommand).
+                            boolean diskIsSymlink = Files.isSymbolicLink(diskFile.toPath());
+                            // Large file support: safely record 32-bit masked size in dirstate v1
+                            long diskSize = diskIsSymlink
+                                    ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                                    : diskFile.length();
+
+                            // Check if the file has actually changed compared to the recorded dirstate
+                            boolean changed = workingState == 'a' || workingState == 'm';
+                            if (workingState == 'n') {
+                                long diskTime = SafeFileIO.lastModifiedSeconds(diskFile);
+                                Dirstate.Entry dEntry = dirstate.getEntries().get(path);
+                                if (dEntry != null) {
+                                    // An entry whose cached stat is ambiguous (real hg's own "unset"
+                                    // sentinel -- see Dirstate.Entry#isStatAmbiguous(), most commonly
+                                    // hit when a file was committed within the same wall-clock second
+                                    // as the dirstate write) can never be trusted via a raw size/mtime
+                                    // comparison: its sentinel size (-1) never equals a real on-disk
+                                    // size, which previously made this branch treat EVERY such entry
+                                    // as unconditionally "changed" (skipping the content-level check
+                                    // below entirely) even when byte-identical to the parent --
+                                    // confirmed live against a real hg-authored dirstate produced by
+                                    // an add+commit that landed in the same second.
+                                    boolean statAmbiguous = dEntry.isStatAmbiguous();
+                                    // Backlog #39: a pure `chmod +x`/`chmod -x` on an otherwise
+                                    // untouched tracked file changes neither its size nor its mtime
+                                    // (chmod updates ctime, not mtime, on POSIX) -- verified live
+                                    // against real hg 7.2 (`hg status` reports "M" for exactly this,
+                                    // with zero content change). The size/mtime-only comparison below
+                                    // was completely blind to this, so a real executable-bit flip was
+                                    // silently NEVER committed at all (found via a `TreeMergeCommand`
+                                    // matrix test exercising a flag-only change across two commits --
+                                    // the second commit's manifest simply never recorded the flip).
+                                    boolean diskExecutable = !diskIsSymlink && diskFile.canExecute();
+                                    boolean dirstateExecutable = !statAmbiguous && (dEntry.getMode() & 0111) != 0;
+                                    boolean execBitChanged = !statAmbiguous && diskExecutable != dirstateExecutable;
+                                    if (execBitChanged || (!statAmbiguous && (dEntry.getSize() != (int) diskSize || dEntry.getTime() != diskTime))) {
+                                        // Changed if the executable bit, size, or mtime differs
+                                        changed = true;
+                                    } else if (statAmbiguous || diskTime >= txStartSec - 1) {
+                                        // M-2: racy-hg check (accounting for 1-second resolution) --
+                                        // compare against the CURRENT PARENT commit's own recorded
+                                        // content for this path, not just "whatever the filelog's most
+                                        // recently-appended revision happens to be". A filelog's latest
+                                        // revision can belong to an entirely different branch that
+                                        // isn't even an ancestor of the commit being built now (e.g.
+                                        // RebaseCommand cherry-picking a fast-forwarded file whose
+                                        // filelog most recently gained a revision from the
+                                        // ORIGINAL/source side, not the destination side this commit's
+                                        // parent chain actually descends from) -- the old
+                                        // "positionally last revision" heuristic silently kept the
+                                        // PARENT's stale manifest entry instead of the just-written new
+                                        // content whenever that mismatch occurred, confirmed live via
+                                        // ShelveRealHgInteropTest's
+                                        // unshelveRebasesOntoAnUnrelatedInterveningCommit (2026-09-04):
+                                        // unshelve's rebase step fast-forwards a.txt's shelved content
+                                        // onto a dest commit that never touched it, but a.txt's filelog
+                                        // had ALREADY gained a newer (throwaway restore commit's)
+                                        // revision in between, so "last in filelog" silently pointed at
+                                        // the wrong content and the fast-forward was dropped entirely.
+                                        // For a merge commit, "unchanged" legitimately means "matches
+                                        // EITHER parent" (the byte-level disambiguation a few lines
+                                        // below picks whichever one it actually is) -- comparing only
+                                        // against P1 would wrongly flag a file that only matches P2
+                                        // (e.g. reverted-on-one-side-of-a-merge) as "changed" and divert
+                                        // it away from that disambiguation entirely, minting a brand
+                                        // new filelog revision for content that already exists.
+                                        String hexP1x = manifestP1.get(path);
+                                        String hexP2x = manifestP2.get(path);
+                                        if (hexP1x != null || hexP2x != null) {
+                                            byte[] fileContent = diskIsSymlink
+                                                    ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
+                                                    : Files.readAllBytes(diskFile.toPath());
+                                            // Only ever escalate to "changed" when at least one
+                                            // parent's content could actually be READ and compared --
+                                            // when a parent's filelog is itself missing/corrupted/
+                                            // emptied (a scenario this class's own tests exercise
+                                            // deliberately), neither side is verifiable, and the
+                                            // pre-existing byte-level disambiguation logic below
+                                            // already tolerates exactly that (it swallows the same
+                                            // read failure and falls back to the OTHER side without
+                                            // needing to re-verify it) -- staying "unchanged" here and
+                                            // deferring to it avoids minting a brand new filelog
+                                            // revision for content that's already the correct side's.
+                                            Boolean p1Matches = null;
+                                            if (hexP1x != null) {
+                                                try {
+                                                    p1Matches = Arrays.equals(fileContent, getFileRevisionContent(repository, path, hexP1x));
+                                                } catch (Exception ignored) {
+                                                }
+                                            }
+                                            Boolean p2Matches = null;
+                                            if (hexP2x != null) {
+                                                try {
+                                                    p2Matches = Arrays.equals(fileContent, getFileRevisionContent(repository, path, hexP2x));
+                                                } catch (Exception ignored) {
+                                                }
+                                            }
+                                            boolean anyReadable = p1Matches != null || p2Matches != null;
+                                            boolean matchesAParent = Boolean.TRUE.equals(p1Matches) || Boolean.TRUE.equals(p2Matches);
+                                            if (anyReadable && !matchesAParent) {
+                                                changed = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // A tracked path marked 'n' (dirstate says "unchanged") that is
+                                // absent from BOTH candidate parent manifests cannot legitimately be
+                                // "unchanged" -- there is nothing for it to be unchanged FROM. Without
+                                // this, such a path silently vanishes from the new commit's manifest
+                                // entirely (the "!changed" branch below only knows how to reuse an
+                                // *existing* parent manifest entry; when neither parent has one, it
+                                // has no else-case and just drops the path). Real caller that hits
+                                // this: RebaseCommand.cherryPickBackup marks every file it writes as
+                                // 'n' with disk-matching size/mtime (correct fast path for files
+                                // genuinely carried over unchanged from the target), including
+                                // brand-new files added by the very revision being cherry-picked when
+                                // the rebase target never had that path -- caught live against a
+                                // real-hg-created repo by RebaseRealHgInteropTest (hg4j-only round
+                                // trips never exercised this because they never asserted on the
+                                // rebased commit's manifest/file content, only on changelog linkage).
+                                if (!changed) {
+                                    boolean presentInP1 = manifestP1.containsKey(path);
+                                    boolean presentInP2 = parent2Rev != -1 && manifestP2.containsKey(path);
+                                    if (!presentInP1 && !presentInP2) {
+                                        changed = true;
+                                    }
+                                }
+                            }
+
+                            if (changed) {
+                                byte[] fileContent;
+                                if (Files.isSymbolicLink(diskFile.toPath())) {
+                                    fileContent = Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8);
+                                } else {
+                                    fileContent = Files.readAllBytes(diskFile.toPath());
+                                }
+                                File flIdx = getFilelogIndex(repository.getStoreDir(), path);
+                                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+
+                                // Capture pre-write file sizes for potential rollback transaction
+                                // (v2/docket-aware -- see recordRevlogRollbackState; matters here for
+                                // general-v2 repositories, where every filelog is v2 too).
+                                recordRevlogRollbackState(flIdx, flDat);
+
+                                // Ensure parent directories exist in store
+                                flIdx.getParentFile().mkdirs();
+
+                                Revlog filelog = repository.getRevlog(flIdx, flDat);
+
+                                // Find parent1 filelog revision index
+                                int parent1FileRev = -1;
+                                byte[] p1FileNode = new byte[20];
+                                if (inP1) {
+                                    byte[] prevFileNode = tw.getNodeId(0);
+                                    parent1FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNode);
+                                    if (parent1FileRev != -1) {
+                                        p1FileNode = prevFileNode;
+                                    }
+                                }
+
+                                // Find parent2 filelog revision index (N-4: Merge ancestral track protection)
+                                int parent2FileRev = -1;
+                                byte[] p2FileNode = new byte[20];
+                                if (inP2) {
+                                    byte[] prevFileNodeP2 = tw.getNodeId(1);
+                                    parent2FileRev = NodeIdUtil.findRevisionByNodeId(filelog, prevFileNodeP2);
+                                    if (parent2FileRev != -1) {
+                                        p2FileNode = prevFileNodeP2;
+                                    }
+                                }
+
+                                // Integrates Copy-Rename Track "Writer"
+                                String originalPath = dirstate.getCopyMap().get(path);
+                                Map<String, String> copyMeta = null;
+
+                                if (originalPath != null) {
+                                    String sourceEntry = manifestP1.get(originalPath);
+                                    String hexSource = (sourceEntry != null && sourceEntry.length() >= 40)
+                                            ? sourceEntry.substring(0, 40) : "0000000000000000000000000000000000000000";
+                                    copyMeta = new LinkedHashMap<>();
+                                    copyMeta.put("copy", originalPath);
+                                    copyMeta.put("copyrev", hexSource);
+
+                                    // SD_FILES copy-tracing (backlog item 19): classify by which
+                                    // parent's manifest actually contains the copy source -- mirrors
+                                    // the sourceEntry lookup just above (P1 first, matching real hg's
+                                    // own preference for p1 when a source exists in both).
+                                    if (manifestP1.containsKey(originalPath)) {
+                                        sdCopiedFromP1.put(path, originalPath);
+                                    } else if (manifestP2.containsKey(originalPath)) {
+                                        sdCopiedFromP2.put(path, originalPath);
+                                    }
+                                }
+
+                                if (workingState == 'a') {
+                                    sdAdded.add(path);
+                                } else {
+                                    sdTouched.add(path);
+                                }
+
+                                // LFS: the factory decides whether this content goes to the LFS store. For an LFS file the filelog
+                                // holds the pointer (flagged REVIDX_EXTSTORED), the copy/rename metadata lives inside the pointer
+                                // as x-hg-* fields instead of a separate metadata block, and the node hash is computed over the
+                                // metadata-wrapped REAL bytes (see Revlog#wrapMetadata and BuiltinHgLfs).
+                                byte[] contentToStore = fileContent;
+                                byte[] lfsHashBasis = null;
+                                int extraRevFlags = 0;
+                                Map<String, String> filelogMetadata = copyMeta;
+                                HgLfsFactory.Cleaned cleaned = HgLfsFactory.getInstance()
+                                        .applyCleanFilter(repository, path, fileContent, copyMeta);
+                                if (cleaned.isLfs()) {
+                                    contentToStore = cleaned.stored();
+                                    lfsHashBasis = Revlog.wrapMetadata(fileContent, copyMeta);
+                                    extraRevFlags = Revlog.REVIDX_EXTSTORED;
+                                    filelogMetadata = null;
+                                }
+
+                                // Backlog #39: a pure executable-bit flip (content byte-identical to
+                                // what a parent already has recorded) must NOT mint a brand new
+                                // filelog revision -- real hg 7.2 CLI, verified live, reuses the
+                                // EXISTING filelog node hex unchanged and only changes the MANIFEST
+                                // line's flag suffix (e.g. "<hex> 755 * run.sh" after "<hex> 644
+                                // run.sh", same <hex> both times). Blindly calling appendRevision()
+                                // here for that case would try to append a revision whose computed
+                                // node hash (SHA1 of the same parents + same content) is IDENTICAL to
+                                // an already-existing revision in this same filelog -- a real
+                                // correctness hazard (duplicate node hashes are never valid within one
+                                // revlog). Skipped for the copy/LFS paths (copyMeta != null / LFS
+                                // pointer bytes always differ from the parent's stored bytes anyway,
+                                // so this reuse can never legitimately apply there).
+                                byte[] newFileNode = null;
+                                if (copyMeta == null && extraRevFlags == 0) {
+                                    String reuseHex = manifestP1.get(path);
+                                    if (reuseHex == null || reuseHex.length() < 40) {
+                                        reuseHex = parent2Rev != -1 ? manifestP2.get(path) : null;
+                                    }
+                                    if (reuseHex != null && reuseHex.length() >= 40) {
+                                        try {
+                                            byte[] candidateContent = getFileRevisionContent(repository, path, reuseHex.substring(0, 40));
+                                            if (Arrays.equals(candidateContent, contentToStore)) {
+                                                newFileNode = NodeIdUtil.fromHex(reuseHex.substring(0, 40));
+                                            }
+                                        } catch (Exception ignored) {
+                                            // Unreadable parent revision -- fall through to a normal append.
+                                        }
+                                    }
+                                }
+                                if (newFileNode == null) {
+                                    newFileNode = filelog.appendRevision(contentToStore, filelogMetadata, parent1FileRev, parent2FileRev, p1FileNode, p2FileNode, newCommitRev, null, extraRevFlags, lfsHashBasis);
+                                }
+
+                                // Capture execution flag and symlink flag for serialization
+                                String flag = "";
+                                if (Files.isSymbolicLink(diskFile.toPath())) {
+                                    flag = "l";
+                                } else if (diskFile.canExecute()) {
+                                    flag = "x";
+                                }
+
+                                newManifest.put(path, NodeIdUtil.toHex(newFileNode) + flag);
+                                filesModified.add(path);
+
+                                // Register only .i file paths in fncache (raw logical path as per native Mercurial specs)
+                                fncachePaths.add("data/" + path + ".i");
+                                if (!filelog.isInline()) {
+                                    // Backlog #43: a filelog that just grew past real hg's 131072-byte
+                                    // inline threshold (Revlog.enforceInlineSize(), called from inside
+                                    // appendRevision() above) splits into a separate .d file -- real
+                                    // hg's own fncache tracks BOTH the .i and .d path for any
+                                    // non-inline data/meta revlog (RE_FNCACHE_FILE in store.py matches
+                                    // "(data|meta)/....[id]$"), confirmed live against real hg 7.2.
+                                    // Without this, real hg's own `hg verify` on a repository into
+                                    // which hg4j just committed such a file reports
+                                    // "warning: revlog 'data/<path>.d' not in fncache!" (GcCommand's
+                                    // own fncache rebuild already established this same convention for
+                                    // its own, unrelated code path).
+                                    fncachePaths.add("data/" + path + ".d");
+                                }
+                                if (useFileIndex) {
+                                    fileIndexPaths.add(path);
+                                }
+                            } else {
+                                // File has not changed in working directory
+                                String hexP1 = manifestP1.get(path);
+                                String hexP2 = manifestP2.get(path);
+                                if (parent2Rev == -1) {
+                                    if (hexP1 != null) {
+                                        newManifest.put(path, hexP1);
+                                    }
+                                } else {
+                                    if (hexP1 != null && hexP2 == null) {
+                                        newManifest.put(path, hexP1);
+                                    } else if (hexP1 == null && hexP2 != null) {
+                                        newManifest.put(path, hexP2);
+                                    } else if (hexP1 != null && hexP2 != null) {
+                                        if (hexP1.equals(hexP2)) {
+                                            newManifest.put(path, hexP1);
+                                        } else {
+                                            // Bytes level disambiguation to determine which side this file belongs to
+                                            byte[] diskBytes = Files.readAllBytes(diskFile.toPath());
+                                            byte[] p1Bytes = null;
+                                            try {
+                                                p1Bytes = getFileRevisionContent(repository, path, hexP1);
+                                            } catch (Exception e) {
+                                                // Ignore
+                                            }
+                                            if (p1Bytes != null && Arrays.equals(diskBytes, p1Bytes)) {
+                                                newManifest.put(path, hexP1);
+                                            } else {
+                                                newManifest.put(path, hexP2);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                    SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-                } catch (Exception ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to restore dirstate backup during rollback", ignored);
-                    t.addSuppressed(ignored);
                 }
-            } else {
+
+                if (useFileIndex) {
+                    FileIndex.writeTrackedPaths(repository.getStoreDir(), fileIndexPaths);
+                }
+
+                // Amend support: resolve the DECLARED parent(s) for the new changelog/manifest
+                // revisions separately from the dirstate-derived parent(s) used above (and still
+                // used below for the treemanifest sub-directory reuse map) to determine what
+                // changed and what an unchanged file's manifest entry should reuse -- see
+                // hasDeclaredParents' field doc for why these must be allowed to differ.
+                int declaredClRev1 = parent1Rev;
+                int declaredClRev2 = parent2Rev;
+                byte[] declaredClNode1 = p1CommitNode != null ? p1CommitNode.getBytes() : new byte[20];
+                byte[] declaredClNode2 = p2CommitNode != null ? p2CommitNode.getBytes() : new byte[20];
+                byte[] declaredMfNode1 = p1ManifestNode;
+                byte[] declaredMfNode2 = p2ManifestNode;
+                int declaredMfRev1 = parent1ManifestRev;
+                int declaredMfRev2 = parent2ManifestRev;
+                if (hasDeclaredParents) {
+                    declaredClNode1 = declaredParent1.getBytes();
+                    declaredClRev1 = declaredParent1.isNull() ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, declaredClNode1);
+                    declaredClNode2 = declaredParent2.getBytes();
+                    declaredClRev2 = declaredParent2.isNull() ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, declaredClNode2);
+
+                    declaredMfNode1 = declaredClRev1 != -1 ? extractManifestNode(changelog.getRevisionContent(declaredClRev1)) : new byte[20];
+                    declaredMfRev1 = isNullNode(declaredMfNode1) ? -1 : NodeIdUtil.findRevisionByNodeId(manifestRevlog, declaredMfNode1);
+                    declaredMfNode2 = declaredClRev2 != -1 ? extractManifestNode(changelog.getRevisionContent(declaredClRev2)) : new byte[20];
+                    declaredMfRev2 = isNullNode(declaredMfNode2) ? -1 : NodeIdUtil.findRevisionByNodeId(manifestRevlog, declaredMfNode2);
+                }
+
+                if ((partial != null || !missingFiles.isEmpty()) && filesModified.isEmpty()) {
+                    throw new HgValidationException("nothing changed" + (missingFiles.isEmpty() ? ""
+                            : " (" + missingFiles.size() + " missing files, see 'hg status')"));
+                }
+
+                // 4. Serialize and write new manifest revision
+                byte[] manifestNode;
+                if (repository.isTreemanifest()) {
+                    Map<String, byte[]> p1DirNodes = collectDirNodes(p1ManifestNode);
+                    Map<String, byte[]> p2DirNodes = collectDirNodes(p2ManifestNode);
+                    manifestNode = writeTreeManifestDir("", newManifest, p1DirNodes, p2DirNodes,
+                            declaredMfNode1, declaredMfNode2, manifestRevlog, newCommitRev, fncachePaths);
+                } else {
+                    StringBuilder manifestSb = new StringBuilder();
+                    for (Map.Entry<String, String> entry : newManifest.entrySet()) {
+                        manifestSb.append(entry.getKey()).append('\0').append(entry.getValue()).append('\n');
+                    }
+                    byte[] manifestTextBytes = manifestSb.toString().getBytes(StandardCharsets.UTF_8);
+                    manifestNode = manifestRevlog.appendRevision(manifestTextBytes, declaredMfRev1, declaredMfRev2, declaredMfNode1, declaredMfNode2, newCommitRev);
+                }
+
+                // Write fncache back atomically -- deliberately after the manifest write above (not
+                // right after the per-file loop) because backlog #45's fix makes writeTreeManifestDir
+                // append meta/<dir>/00manifest.i/.d entries into this same fncachePaths set as it
+                // writes each touched treemanifest dirlog.
+                if (!fncachePaths.isEmpty()) {
+                    SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
+                }
+
+                // 5. Serialize and write new changelog (commit) revision
+                long secs = forcedTime != null ? forcedTime : System.currentTimeMillis() / 1000;
+                int offsetSeconds = forcedOffset != null ? forcedOffset : -TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000;
+                String branchName = repository.getBranch();
+                // 실제 hg(changelog.add)는 branch extra 항목을 default/빈 브랜치일 때는 아예
+                // 쓰지 않는다 — 항상 "branch:default"를 남기면 기본 브랜치 커밋의 changelog
+                // 원문 바이트가 실제 hg와 달라져 동일 내용이라도 노드 해시가 어긋난다
+                // (2026-09-01 실제 hg로 확인: 기본 브랜치 커밋의 3번째 줄은 "초 tz"뿐이고
+                // "branch:" 문구가 전혀 없다).
+                // 실제 hg(changelog.encodeextra)는 extra 항목이 여럿이면 키 알파벳순으로 정렬해
+                // '\0'로 join한다 -- "branch"가 "close"보다 앞선다. buildChangelogText()가 join
+                // 직전에 다시 정렬하므로 여기서의 삽입 순서 자체는 정확성에 영향을 주지 않는다.
+                List<String> extraParts = new ArrayList<>();
+                if (branchName != null && !branchName.isEmpty() && !"default".equals(branchName)) {
+                    extraParts.add("branch:" + encodeExtraKey(branchName));
+                }
+                if (this.closeBranch) {
+                    extraParts.add("close:1");
+                }
+                for (java.util.Map.Entry<String, String> field : extraFields.entrySet()) {
+                    extraParts.add(field.getKey() + ":" + field.getValue());
+                }
+                Collections.sort(filesModified, NodeIdUtil.UTF8_STRING_COMPARATOR);
+
+                byte[] changelogTextBytes = buildChangelogText(manifestNode, author, secs, offsetSeconds, extraParts, filesModified, message);
+
+                // See the hasDeclaredParents field doc: an amend commit records its parent(s) as
+                // the amended commit's own parent(s) (declaredClNode1/2), not the dirstate's actual
+                // (pre-amend) parent -- both are identical for a normal (non-amend) commit.
+                byte[] p1CommitNodeHash = declaredClNode1;
+                byte[] p2CommitNodeHash = declaredClNode2;
+
+                byte[] sidedataContainer = null;
+                if (repository.isSidedataCopies()) {
+                    byte[] sdFiles = ChangingFiles.encode(sdAdded, sdRemoved, Set.of(), Set.of(), sdTouched, sdCopiedFromP1, sdCopiedFromP2);
+                    if (sdFiles.length > 0) {
+                        sidedataContainer = SidedataCodec.serialize(
+                                Map.of(SD_FILES, sdFiles));
+                    }
+                }
+                // changelog(commit) 리비전은 metadata(clMeta)를 쓰지 않는다 -- 이 오버로드의
+                // metadata 파라미터는 Revlog.wrapMetadata()를 거쳐 "\x01\n key: value \n...\x01\n"
+                // 블록을 콘텐츠 앞에 붙이는데, 이는 실제 Mercurial의 filelog rename/copy 메타데이터
+                // 포맷(hg mv 추적, LFS 포인터 등)이지 changelog 리비전 포맷이 아니다 -- changelog
+                // 리비전의 첫 줄은 반드시 40자 매니페스트 헥스여야 한다(LogCommand의 파서 및 실제
+                // hg 자신의 계약). branch/close 같은 커밋 단위 메타데이터는 위에서 이미 date 줄의
+                // extra 딕셔너리에 넣었다.
+                byte[] commitNode = changelog.appendRevision(changelogTextBytes, (Map<String, String>) null, declaredClRev1, declaredClRev2, p1CommitNodeHash, p2CommitNodeHash, newCommitRev, sidedataContainer);
+
+                // 6. Update and save Dirstate
+                dirstate.setParents(new NodeId(commitNode), NodeId.NULL);
+
+                // Real hg fully removes .hg/merge/ once an active merge state is finalized by a
+                // successful commit (mercurial/mergestate.py's `mergestate.reset()`, called
+                // unconditionally by `localrepo.commit()` whenever `ms.active()` -- verified live
+                // against real hg 7.2, 2026-09-05: right after `hg commit` following a two-parent
+                // merge OR a single-parent `hg backout` conflict resolution, `.hg/merge` itself is
+                // gone, not just its `state2` file). Gating this on `parent2Rev != -1` (a real
+                // two-parent commit) misses the single-parent case entirely -- {@link BackoutCommand}
+                // writes the exact same `.hg/merge/state2` bookkeeping for its own conflicting
+                // (older-ancestor) backout path even though its result commit keeps a single parent
+                // (real hg's own `mergemod.back_out`/`_update` does too) -- leaving `.hg/merge`
+                // behind forever after such a commit and making a subsequent real
+                // `hg resolve --list`/`hg summary` wrongly keep reporting the just-committed file as
+                // resolved-but-still-tracked instead of nothing at all.
+                if (activeMergeState.isActive()) {
+                    deleteRecursively(new File(repository.getHgDir(), "merge"));
+                }
+
+                List<String> pathsToChange = new ArrayList<>(dirstate.getEntries().keySet());
+                for (String path : pathsToChange) {
+                    Dirstate.Entry entry = dirstate.getEntries().get(path);
+                    if (entry == null) continue;
+                    if (partial != null && !partial.matches(path)) continue; // not committed: the dirstate keeps its state
+                    if (missingFiles.contains(path)) continue; // left out of the commit: still missing
+            
+                    if (entry.getState() == 'r') {
+                        dirstate.removeEntry(path);
+                        // A removed path cannot still be a pending copy destination once it is
+                        // dropped from the dirstate entirely.
+                        dirstate.getCopyMap().remove(path);
+                    } else if (entry.getState() == 'a' || entry.getState() == 'm' || filesModified.contains(path)) {
+                        File diskFile = new File(repository.getDirectory(), path);
+                        boolean isSymlink = Files.isSymbolicLink(diskFile.toPath());
+                        int mode = diskFile.canExecute() ? 0755 : 0644;
+                        // A symlink's dirstate "size" must be the length of its own target path
+                        // string (lstat semantics, matching the filelog content recorded above),
+                        // not File.length() which follows the link to whatever it points at.
+                        int size = isSymlink
+                                ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                                : (int) diskFile.length();
+                        long time = SafeFileIO.lastModifiedSeconds(diskFile);
+                        dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
+                        // Real hg clears the dirstate's pending copy record for a path once it is
+                        // committed (verified live: `hg debugstate` shows "copy: a -> b" for an
+                        // uncommitted `hg copy a b`, but that line is gone immediately after `hg
+                        // commit` -- the copy info now lives in the filelog/changeset metadata
+                        // written above, not in the dirstate). Without this, hg4j would leave a
+                        // stale pending-copy record in the physical dirstate file after commit,
+                        // which real hg would still (incorrectly) report via `hg status -C` /
+                        // re-chase via a subsequent `hg copy` on the same destination.
+                        dirstate.getCopyMap().remove(path);
+                    }
+                }
+                repository.writeDirstate(dirstate);
+
+                // 6.5. Update Phase for the new commit (all new commits default to DRAFT)
+                //
+                // Real hg's phases.registernew() (mercurial/phases.py) only records an explicit
+                // phaseroots root when the new commit's phase is not already implied by its
+                // parent(s) -- a plain child of an existing draft/secret commit inherits that phase
+                // via ancestry and needs no explicit entry of its own. Recording one unconditionally
+                // (as this used to) appended one line per commit forever, so a repository with N
+                // linear commits diverged from real hg's phaseroots (a single root at the earliest
+                // draft commit) by having N-1 redundant lines -- verified against real hg 7.2.4.
                 try {
-                    Files.deleteIfExists(dirstateFile.toPath());
+                    PhaseRoots phaseRoots = repository.getPhaseRoots();
+                    int p1Phase = phaseRoots.getPhase(new NodeId(p1CommitNodeHash), changelog).getValue();
+                    int p2Phase = phaseRoots.getPhase(new NodeId(p2CommitNodeHash), changelog).getValue();
+                    if (Math.max(p1Phase, p2Phase) < PhaseRoots.Phase.DRAFT.getValue()) {
+                        phaseRoots.setPhase(new NodeId(commitNode), PhaseRoots.Phase.DRAFT, changelog);
+                    }
+                } catch (Exception e) {
+                    LOGGER.log(Level.WARNING, "Failed to set phase for new commit node", e);
+                }
+
+                // Commit transaction: delete journal and backup files
+                if (!skipLockAndJournal) {
+                    try {
+                        Files.deleteIfExists(journalFile.toPath());
+                        Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
+                    } catch (Exception ignored) {
+                        LOGGER.log(Level.WARNING, "Failed to clean up transaction backups", ignored);
+                    }
+                }
+
+                // POST_COMMIT hooks: like real hg they run after the locks are released
+                if (!postCommitHooks.isEmpty()) {
+                    final byte[] hookNode = commitNode;
+                    repository.afterLock(() -> {
+                        Map<String, Object> ctx = new HashMap<>();
+                        ctx.put("author", author);
+                        ctx.put("message", message);
+                        ctx.put("commitNode", hookNode);
+                        ctx.put("repository", repository);
+                        for (HgHook hook : postCommitHooks) {
+                            try {
+                                hook.run(ctx);
+                            } catch (Exception e) {
+                                LOGGER.log(Level.WARNING, "Post-commit hook execution failed", e);
+                            }
+                        }
+                    });
+                }
+
+                // 활성 북마크가 존재하면 해당 북마크를 새로운 커밋 노드로 전진시킨다.
+                // force(true): 보통의 "하나 위에 커밋"은 항상 순수 fast-forward라 이 값이
+                // 필요없지만(옛 활성 위치가 새 커밋의 parent1 그 자체), AmendCommand처럼 CommitCommand를
+                // 내부적으로 재사용하는 리라이트 계열 호출은 새 커밋이 옛 활성 위치의 "형제"(같은
+                // parent를 공유)일 뿐 자손이 아닌 경우가 있다 — 이때 이 시점엔 아직 obsstore에
+                // predecessor->successor 마커조차 기록되지 않은 상태다(마커는 성공한 커밋의 노드
+                //해시가 있어야 쓸 수 있어 항상 커밋 다음에 쓰임, 예: AmendCommand#call). real hg
+                // 자신도 이런 내부 rewrite에 의한 bookmark 이동은 사용자용 `hg bookmark -r`의
+                // validdest 게이트를 거치지 않고 무조건 이동시킨다(`scmutil.cleanupnodes`) — 그
+                // 게이트는 사용자가 직접 입력하는 대화형 이동에만 해당하므로, 여기서도 동일하게
+                // 우회한다(2026-09-05, 백로그 #39 wave 3에서 BookmarkCommand에 force 게이트를
+                // 추가하며 함께 발견·수정 — 안 그러면 amend 직후 활성 bookmark 전진이
+                // HgValidationException으로 깨짐, `PushRealHgInteropTest#testPushOfBookmarkAdvancedAcrossAmendSucceedsWithoutForce`
+                // 로 재현).
+                BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
+                String active = bookmarkCmd.getActiveBookmark();
+                if (active != null) {
+                                bookmarkCmd.setBookmarkName(active)
+                               .setRevision(NodeIdUtil.toHex(commitNode))
+                               .setForce(true)
+                               .call();
+                }
+
+                // 4b. Write undo info for rollback support
+                try {
+                    writeUndoInfo(repository, fileSizes, dirstateBackup, docketBackups, truncateOnlyEntries, dirstateV2DataBackup);
+                } catch (Exception e) {
+                    LOGGER.log(Level.WARNING, "Failed to write undo info for rollback", e);
+                }
+ 
+                return commitNode;
+            } catch (Exception t) {
+                if (skipLockAndJournal) {
+                    repository.clearRevlogCache();
+                    throw t;
+                }
+                // N-1: Transaction Rollback Session
+                // Restore v2/docket full-content backups first (backlog #39, see
+                // recordRevlogRollbackState's javadoc) -- these docket files never change size, so
+                // they are absent from the byte-length-truncate loop below entirely.
+                for (Map.Entry<File, byte[]> docketEntry : docketBackups.entrySet()) {
+                    try {
+                        SafeFileIO.writeAtomic(docketEntry.getKey(), docketEntry.getValue());
+                    } catch (Exception ignored) {
+                        LOGGER.log(Level.WARNING, "Failed to restore docket backup during rollback: " + docketEntry.getKey(), ignored);
+                        t.addSuppressed(ignored);
+                    }
+                }
+                // Rollback files to original truncated sizes
+                for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
+                    File file = sizeEntry.getKey();
+                    long origSize = sizeEntry.getValue();
+                    if (origSize == 0 && !truncateOnlyEntries.contains(file)) {
+                        try {
+                            Files.deleteIfExists(file.toPath());
+                        } catch (Exception ignored) {
+                            LOGGER.log(Level.WARNING, "Failed to delete size-0 file during rollback: " + file, ignored);
+                            t.addSuppressed(ignored);
+                        }
+                    } else {
+                        // truncateOnlyEntries (a v2 revlog's resolved companion .idx/.dat/.sda) must
+                        // never be deleted even at size 0 -- real hg expects them to always physically
+                        // exist as long as the docket references them (see the field's own javadoc).
+                        try {
+                            File parent = file.getParentFile();
+                            if (parent != null) {
+                                parent.mkdirs();
+                            }
+                            try (FileChannel outChan = FileChannel.open(file.toPath(),
+                                    StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+                                outChan.truncate(origSize);
+                                outChan.force(true);
+                            }
+                        } catch (Exception ignored) {
+                            LOGGER.log(Level.WARNING, "Failed to truncate file during rollback: " + file, ignored);
+                            t.addSuppressed(ignored);
+                        }
+                    }
+                }
+        
+                // Restore fncache atomically (N-1 Rollback Refinement)
+                if (fncacheBackup != null) {
+                    try {
+                        SafeFileIO.writeAtomic(fncacheFile, fncacheBackup);
+                    } catch (Exception ignored) {
+                        LOGGER.log(Level.WARNING, "Failed to restore fncache backup during rollback", ignored);
+                        t.addSuppressed(ignored);
+                    }
+                } else {
+                    try {
+                        Files.deleteIfExists(fncacheFile.toPath());
+                    } catch (Exception ignored) {
+                        LOGGER.log(Level.WARNING, "Failed to delete fncache during rollback", ignored);
+                        t.addSuppressed(ignored);
+                    }
+                }
+
+                // Restore fileindex atomically (mirrors the fncache rollback above)
+                if (fileIndexBackup != null) {
+                    try {
+                        FileIndex.restore(repository.getStoreDir(), fileIndexBackup);
+                    } catch (Exception ignored) {
+                        LOGGER.log(Level.WARNING, "Failed to restore fileindex backup during rollback", ignored);
+                        t.addSuppressed(ignored);
+                    }
+                }
+
+                // The dirstate is only written when the changing_parents context ends well, so a failed commit never touched it
+                // Cleanup journal and backup files on failure after restore
+                try {
+                    Files.deleteIfExists(journalFile.toPath());
+                    Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
                 } catch (Exception ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to delete dirstate during rollback", ignored);
+                    LOGGER.log(Level.WARNING, "Failed to clean up journal/backups after rollback", ignored);
                     t.addSuppressed(ignored);
                 }
+                repository.clearRevlogCache();
+                throw t;
             }
-            // Cleanup journal and backup files on failure after restore
-            try {
-                Files.deleteIfExists(journalFile.toPath());
-                Files.deleteIfExists(new File(repository.getDirectory(), ".hg/dirstate.backup").toPath());
-                Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
-            } catch (Exception ignored) {
-                LOGGER.log(Level.WARNING, "Failed to clean up journal/backups after rollback", ignored);
-                t.addSuppressed(ignored);
+          } catch (Throwable failure) {
+            if (dirstateChange != null) {
+                dirstateChange.failed();
             }
-            repository.clearRevlogCache();
-            throw t;
+            throw failure;
+          }
         }
     }
 
@@ -1909,6 +1869,9 @@ public class CommitCommand {
      * FIRST-seen -- i.e. genuinely pre-transaction -- size wins).
      */
     private void recordRevlogRollbackState(File idxFile, File datFile) throws IOException {
+        if (outerTransaction != null) {
+            outerTransaction.trackRevlog(idxFile, datFile);
+        }
         if (fileSizes.containsKey(idxFile) || docketBackups.containsKey(idxFile)) {
             return;
         }

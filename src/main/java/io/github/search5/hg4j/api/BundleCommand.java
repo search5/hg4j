@@ -298,7 +298,8 @@ public class BundleCommand {
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
         File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
-        try (HgLock storeLock = repository.lockStore()) {
+        // Like real hg, `bundle` only reads: no lock
+        {
             Revlog changelog = repository.getRevlog(clIdx, clDat);
             int count = changelog.getRevisionCount();
             if (count == 0) {

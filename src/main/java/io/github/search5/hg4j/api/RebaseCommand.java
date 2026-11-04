@@ -15,6 +15,10 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import io.github.search5.hg4j.lib.NodeId;
+import io.github.search5.hg4j.phase.PhaseRoots;
+import java.util.TreeMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -96,26 +100,6 @@ public class RebaseCommand {
         }
     }
 
-    /** Result of attempting to cherry-pick a single original revision onto {@code currentBase}. */
-    private static final class CherryPickOutcome {
-        final byte[] originalNode;
-        final byte[] newNode; // null when conflicted
-        final List<String> conflictedPaths;
-
-        CherryPickOutcome(byte[] originalNode, byte[] newNode, List<String> conflictedPaths) {
-            this.originalNode = originalNode;
-            this.newNode = newNode;
-            this.conflictedPaths = conflictedPaths;
-        }
-    }
-
-    /** On-disk (hg4j-private) record of a paused, resumable rebase -- see {@link #rebaseStateFile()}. */
-    private static final class PausedRebaseState {
-        byte[] originalWdParent;
-        byte[] currentBase;
-        List<byte[]> remaining = new ArrayList<>();
-    }
-
     public RebaseCommand(HgRepository repository) {
         this.repository = repository;
     }
@@ -144,234 +128,1064 @@ public class RebaseCommand {
         return this;
     }
 
-    public byte[] call() throws IOException, HgLockException, HgMergeConflictException {
+    private final List<String> sourceSpecs = new ArrayList<>();
+    private final List<String> baseSpecs = new ArrayList<>();
+    private final List<String> revSpecs = new ArrayList<>();
+    private String destSpec;
+
+    /** {@code -s REV}: the changesets and their descendants (may be given more than once). */
+    public RebaseCommand addSourceRevset(String revset) {
+        sourceSpecs.add(revset);
+        return this;
+    }
+
+    /** {@code -b REV}: the branches that contain these changesets (may be given more than once). */
+    public RebaseCommand addBaseRevset(String revset) {
+        baseSpecs.add(revset);
+        return this;
+    }
+
+    /** {@code -r REV}: exactly these changesets (may be given more than once). */
+    public RebaseCommand addRevisionRevset(String revset) {
+        revSpecs.add(revset);
+        return this;
+    }
+
+    /** {@code -d REV}: the destination; may use {@code SRC} (the changeset being placed) and {@code ALLSRC} (all of them). */
+    public RebaseCommand setDestination(String revset) {
+        this.destSpec = revset;
+        return this;
+    }
+
+    // ------------------------------------------------------------------ runtime state (rebaseruntime)
+
+    private boolean keep;
+    private boolean collapse;
+    private String collapseMessage;
+    private int external = -1;
+    private boolean keepBranches;
+    private final List<String> messages = new ArrayList<>();
+    private RebasePlanner planner;
+    private Revlog changelog;
+    private Map<Integer, Integer> destMap = new LinkedHashMap<>();
+    private Map<Integer, Integer> state = new LinkedHashMap<>();
+    private Set<Integer> skipped = new HashSet<>();
+    private int originalWd;
+    private String activeBookmark = "";
+    private boolean resume;
+    private Boolean singleTransactionOption;
+    private StoreRollback transaction;
+
+    /** {@code rebase.singletransaction}: all the commits in one transaction (default: the setting in {@code hgrc}, else off). */
+    public RebaseCommand setSingleTransaction(boolean single) {
+        this.singleTransactionOption = single;
+        return this;
+    }
+
+    private boolean singleTransaction() {
+        if (singleTransactionOption != null) {
+            return singleTransactionOption;
+        }
+        String configured = repository.getConfig().get("rebase", "singletransaction", "false");
+        return configured != null && java.util.Set.of("1", "yes", "true", "on", "always").contains(configured.trim().toLowerCase());
+    }
+
+    /** {@code --collapse}: the rebased changesets become one. */
+    public RebaseCommand setCollapse(boolean collapse) {
+        this.collapse = collapse;
+        return this;
+    }
+
+    /** {@code -m}: the message of the collapsed changeset (default: {@code Collapsed revision} and one line per changeset). */
+    public RebaseCommand setMessage(String message) {
+        this.collapseMessage = message;
+        return this;
+    }
+
+    private boolean edit;
+    private java.util.function.UnaryOperator<String> messageEditor;
+
+    /** {@code -e/--edit}: the message of each new changeset is passed through the editor ({@link #setMessageEditor}) before it is committed. */
+    public RebaseCommand setEdit(boolean edit) {
+        this.edit = edit;
+        return this;
+    }
+
+    /**
+     * The commit message editor ({@code cmdutil.getcommiteditor}): given the proposed message it returns the one to commit, an empty
+     * result aborts with {@code empty commit message}. A collapse without {@code -m} always runs it ("Collapsed revision" and one line per
+     * changeset is only the proposal), other commits run it when {@link #setEdit} is on. Without an editor the proposal is used as it is.
+     */
+    public RebaseCommand setMessageEditor(java.util.function.UnaryOperator<String> editor) {
+        this.messageEditor = editor;
+        return this;
+    }
+
+    private String edited(String proposal, boolean force) throws HgValidationException {
+        if (messageEditor == null || !(edit || force)) {
+            return proposal;
+        }
+        String result = messageEditor.apply(proposal);
+        if (result == null || result.strip().isEmpty()) {
+            throw new HgValidationException("empty commit message");
+        }
+        return result;
+    }
+
+    /** {@code --keep}: keep the original changesets. */
+    public RebaseCommand setKeep(boolean keep) {
+        this.keep = keep;
+        return this;
+    }
+
+    /** {@code --keepbranches}: the new changesets keep the branch of the originals. */
+    public RebaseCommand setKeepBranches(boolean keepBranches) {
+        this.keepBranches = keepBranches;
+        return this;
+    }
+
+    /** What the command printed ({@code rebasing ...}, notes), in order. */
+    public List<String> getMessages() {
+        return messages;
+    }
+
+    private void loadChangelog() throws IOException {
         repository.clearRevlogCache();
-        if (sourceNode == null || targetNode == null) {
+        changelog = repository.getRevlog(new File(repository.getStoreDir(), "00changelog.i"),
+                new File(repository.getStoreDir(), "00changelog.d"));
+        planner = new RebasePlanner(new RebasePlanner.Graph() {
+            public int size() {
+                return changelog.getRevisionCount();
+            }
+
+            public int[] parents(int rev) {
+                Revlog.IndexRecord rec = changelog.getIndexRecord(rev);
+                return new int[] {rec.getParent1(), rec.getParent2()};
+            }
+        }).withNamer(r -> {
+            return shortHex(changelog.getIndexRecord(r).getNodeId());
+        });
+    }
+
+    private static String shortHex(byte[] node) {
+        return NodeIdUtil.toHex(node).substring(0, 12);
+    }
+
+    private byte[] nodeOf(int rev) throws IOException {
+        byte[] n = changelog.getIndexRecord(rev).getNodeId();
+        return n.length == 20 ? n : java.util.Arrays.copyOf(n, 20);
+    }
+
+    private String hexOf(int rev) throws IOException {
+        return NodeIdUtil.toHex(nodeOf(rev));
+    }
+
+    private int revOf(String hex) throws IOException {
+        return changelog.findRevision(NodeIdUtil.fromHex(hex));
+    }
+
+    /** {@code scmutil.bail_if_changed}. */
+    private void bailIfChanged() throws IOException {
+        Dirstate dirstate = repository.getDirstate();
+        byte[] p2 = dirstate.getParent2();
+        if (p2 != null && !NodeIdUtil.isAllZero(p2)) {
+            throw new HgValidationException("outstanding uncommitted merge");
+        }
+        Status status = new StatusCommand(repository).call();
+        if (!status.getModified().isEmpty() || !status.getAdded().isEmpty() || !status.getRemoved().isEmpty()) {
+            throw new HgValidationException("uncommitted changes");
+        }
+    }
+
+    /** {@code storestatus}: the state in the file and format of Mercurial. */
+    private void storeStatus() throws IOException {
+        RebaseState file = new RebaseState();
+        file.originalWd = hexOf(originalWd);
+        file.keep = keep;
+        file.collapse = collapse;
+        file.external = external >= 0 ? hexOf(external) : RebaseState.NULL_HEX;
+        file.keepBranches = keepBranches;
+        file.activeBookmark = activeBookmark;
+        for (Map.Entry<Integer, Integer> e : state.entrySet()) {
+            int newRev = e.getValue();
+            file.state.put(hexOf(e.getKey()), new RebaseState.Entry(newRev >= 0 ? hexOf(newRev) : RebaseState.TODO, hexOf(destMap.get(e.getKey()))));
+        }
+        file.store(repository);
+    }
+
+    /** {@code restorestatus}. */
+    private void restoreStatus() throws IOException {
+        RebaseState file = RebaseState.read(repository);
+        keep = file.keep;
+        collapse = file.collapse;
+        external = file.external.equals(RebaseState.NULL_HEX) ? -1 : revOf(file.external);
+        keepBranches = file.keepBranches;
+        activeBookmark = file.activeBookmark;
+        originalWd = revOf(file.originalWd);
+        destMap = new LinkedHashMap<>();
+        state = new LinkedHashMap<>();
+        for (Map.Entry<String, RebaseState.Entry> e : file.state.entrySet()) {
+            int rev = revOf(e.getKey());
+            destMap.put(rev, revOf(e.getValue().destNode()));
+            state.put(rev, e.getValue().newNode().equals(RebaseState.TODO) ? RebasePlanner.TODO : revOf(e.getValue().newNode()));
+        }
+        skipped = new HashSet<>();
+        for (String hex : file.skipped()) {
+            skipped.add(revOf(hex));
+        }
+    }
+
+    /** {@code cmdutil.checkunfinished}. */
+    private void checkUnfinished() throws HgValidationException {
+        if (RebaseState.file(repository).isFile()) {
+            throw new HgValidationException("rebase in progress\n(use 'hg rebase --continue' or 'hg rebase --abort')");
+        }
+    }
+
+    /** {@code _ctxdesc}: {@code REV:NODE}, its bookmarks and tags (the branch is left out), and the first line of the message. */
+    private String describe(int rev) throws IOException {
+        String firstLine = readRevisionMeta(rev, changelog).message.split("\n", 2)[0];
+        String node = NodeIdUtil.toHex(nodeOf(rev));
+        List<String> names = new ArrayList<>();
+        List<String> marks = new ArrayList<>();
+        for (Map.Entry<String, String> bookmark : new BookmarkCommand(repository).list().entrySet()) {
+            if (bookmark.getValue().equals(node)) {
+                marks.add(bookmark.getKey());
+            }
+        }
+        java.util.Collections.sort(marks);
+        names.addAll(marks);
+        List<String> tags = new ArrayList<>();
+        for (TagsCommand.Tag tag : new TagsCommand(repository).call()) {
+            if (java.util.Arrays.equals(tag.getNode(), nodeOf(rev)) && !tags.contains(tag.getName())) {
+                tags.add(tag.getName());
+            }
+        }
+        if (rev == changelog.getRevisionCount() - 1 && !tags.contains("tip")) {
+            tags.add("tip");
+        }
+        java.util.Collections.sort(tags);
+        names.addAll(tags);
+        return rev + ":" + shortHex(nodeOf(rev)) + (names.isEmpty() ? "" : " " + String.join(" ", names)) + " \"" + firstLine + "\"";
+    }
+
+    // ------------------------------------------------------------------ rebase
+
+    /**
+     * {@code hg rebase -s SOURCE -d TARGET}. As in Mercurial ({@code _origrebase}), the working copy lock and then the store lock are taken
+     * once for the whole command and released when it ends; each changeset is merged in the working copy and committed in a transaction of
+     * its own, and the state is written to {@code .hg/rebasestate} before the first changeset and after each one.
+     *
+     * @return the new node of the last changeset rebased, {@code null} when there was nothing to rebase
+     */
+    public byte[] call() throws IOException, HgLockException, HgMergeConflictException {
+        boolean nodeStyle = sourceNode != null && targetNode != null;
+        if (!nodeStyle && sourceSpecs.isEmpty() && baseSpecs.isEmpty() && revSpecs.isEmpty()) {
             throw new IllegalStateException("Source and Target nodes must be specified for rebase.");
         }
-
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
-
-        int srcRev = NodeIdUtil.findRevisionByNodeId(changelog, sourceNode);
-        int tgtRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNode);
-
-        if (srcRev == -1 || tgtRev == -1) {
-            throw new HgRevisionNotFoundException("Source or target revision not found in history.");
-        }
-
-        // Collect all descendant revisions of source revision (inclusive), in ascending order --
-        // ascending order guarantees every original parent is processed (or at least readable, it
-        // is NEVER stripped) before any of its children.
-        ChangesetGraph graph = new ChangesetGraph(changelog);
-        List<Integer> revisionsToRebase = new ArrayList<>();
-        revisionsToRebase.add(srcRev);
-        for (int r = srcRev + 1; r < changelog.getRevisionCount(); r++) {
-            if (graph.isAncestor(srcRev, r)) {
-                revisionsToRebase.add(r);
-            }
-        }
-
-        byte[] originalWdParent = repository.getDirstate().getParent1Node().getBytes();
-
-        File backupDir = new File(repository.getStoreDir(), "rebase-backup");
-        Map<File, File> backupMapping = new HashMap<>();
-
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
-
-            try {
-                // PRE_REBASE hooks trigger
-                if (!preRebaseHooks.isEmpty()) {
-                    Map<String, Object> ctx = new HashMap<>();
-                    ctx.put("repository", repository);
-                    ctx.put("sourceNode", sourceNode);
-                    ctx.put("targetNode", targetNode);
-                    for (HgHook hook : preRebaseHooks) {
-                        if (!hook.run(ctx)) {
-                            throw new HgValidationException("Rebase rejected by PRE_REBASE hook");
-                        }
-                    }
-                }
-
-                deleteDirRecursively(backupDir);
-                backupStoreFiles(backupDir, backupMapping);
-
-                // Create journal for crash recovery
-                writeRebaseJournal(backupMapping);
-
-                return processQueue(revisionsToRebase, targetNode, originalWdParent, backupDir);
-            } catch (HgMergeConflictException e) {
-                // Paused, resumable state has already been persisted by processQueue -- do NOT
-                // roll back (that would discard the pause and any already-completed cherry-picks
-                // in this same call()), just propagate.
-                throw e;
-            } catch (Exception t) {
-                performPhysicalRollback(backupMapping, backupDir);
-                throw t;
-            }
-        }
+        messages.clear();
+        return run();
     }
 
-    /**
-     * Resumes a rebase paused by {@link #call()} (or a previous {@link #continueRebase()}) on a
-     * conflict, after the caller has resolved every unresolved file reported by
-     * {@code hg resolve --list} (or hg4j's own reading of {@code .hg/merge/state2}) and staged the
-     * resolution on disk. Completes the currently-paused revision's commit and proceeds through
-     * any further queued revisions, pausing again on the next conflict if there is one.
-     *
-     * @return the final rebased tip node, once every queued revision has been committed
-     * @throws HgValidationException     if no rebase is in progress, or unresolved files remain
-     * @throws HgMergeConflictException  if a later queued revision itself conflicts
-     */
-    public byte[] continueRebase() throws IOException, HgLockException, HgMergeConflictException {
-        repository.clearRevlogCache();
-        File stateFile = rebaseStateFile();
-        if (!stateFile.exists()) {
-            throw new HgValidationException("no rebase in progress");
+    private boolean dryRun;
+    private java.util.function.BooleanSupplier confirm;
+
+    /** {@code -n/--dry-run}: the rebase is done in memory and undone; the repository and the working copy are left as they were. */
+    public RebaseCommand setDryRun(boolean dryRun) {
+        this.dryRun = dryRun;
+        return this;
+    }
+
+    /** {@code --confirm}: the rebase is done in memory first; the answer decides whether it is applied (asked after "rebase completed successfully"). */
+    public RebaseCommand setConfirm(java.util.function.BooleanSupplier apply) {
+        this.confirm = apply;
+        return this;
+    }
+
+    private byte[] run() throws IOException, HgLockException, HgMergeConflictException {
+        boolean nodeStyle = sourceNode != null && targetNode != null;
+        boolean inMemory = dryRun || confirm != null;
+        if (inMemory) {
+            messages.add(confirm != null ? "starting in-memory rebase\n" : "starting dry-run rebase; repository will not be changed\n");
         }
-
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
-
-            PausedRebaseState state = readRebaseState();
-
-            MergeState ms = MergeState.read(mergeStateFile(repository));
-            if (!ms.unresolvedFiles().isEmpty()) {
-                throw new HgValidationException(
-                        "unresolved merge conflicts (see 'hg resolve --list'): " + ms.unresolvedFiles());
+        // `with repo.wlock(), repo.lock():` takes both before anything is read
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
+            loadChangelog();
+            checkUnfinished();
+            if (!inMemory) {
+                bailIfChanged();
             }
-
-            File backupDir = new File(repository.getStoreDir(), "rebase-backup");
-            try {
-                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-                File clDat = new File(repository.getStoreDir(), "00changelog.d");
-                Revlog changelog = repository.getRevlog(clIdx, clDat);
-
-                int firstOrigRev = NodeIdUtil.findRevisionByNodeId(changelog, state.remaining.get(0));
-                if (firstOrigRev == -1) {
-                    throw new HgRevisionNotFoundException("Paused rebase's original revision is gone from the changelog.");
+            List<String> src = new ArrayList<>(sourceSpecs);
+            String dst = destSpec;
+            if (nodeStyle) {
+                if (NodeIdUtil.findRevisionByNodeId(changelog, sourceNode) == -1 || NodeIdUtil.findRevisionByNodeId(changelog, targetNode) == -1) {
+                    throw new HgRevisionNotFoundException("Source or target revision not found in history.");
                 }
-                byte[] firstOrigNode = changelog.getIndexRecord(firstOrigRev).getNodeId();
-
-                RevisionMeta meta = readRevisionMeta(firstOrigRev, changelog);
-                if (meta.branch != null && !meta.branch.isEmpty() && !"default".equals(meta.branch)) {
-                    repository.setBranch(meta.branch);
-                } else {
-                    repository.setBranch("default");
+                src.add(NodeIdUtil.toHex(sourceNode));
+                dst = NodeIdUtil.toHex(targetNode);
+            }
+            if (!defineDestMap(src, baseSpecs, revSpecs, dst)) {
+                return null;
+            }
+            if (inMemory && destMap.containsKey(changelog.findRevision(repository.getDirstate().getParent1()))) {
+                bailIfChanged(); // the working copy parent is rebased: it has to be clean after all
+            }
+            if (!buildState()) {
+                messages.add("nothing to rebase\n");
+                return null;
+            }
+            if (collapse) {
+                Set<Integer> dests = new HashSet<>(destMap.values());
+                if (dests.size() != 1) {
+                    throw new HgValidationException("--collapse does not work with multiple destinations");
                 }
-
-                CommitCommand commitCmd = new CommitCommand(repository)
-                        .setAuthor(meta.author)
-                        .setMessage("[rebase] " + meta.message)
-                        .setDate(meta.time, meta.offsetSeconds)
-                        .setSkipLockAndJournal(true);
-                byte[] newNode = commitCmd.call();
-
-                cleanMergeDir(repository);
+                external = externalParent(state, planner.ancestors(dests.iterator().next()));
+            }
+            if (!keep) {
+                // rewriteutil.precheck: nothing public, no merge in progress, no descendants left behind
                 try {
-                    HgObsMarker.writeMarker(repository.getStoreDir(), firstOrigNode, List.of(newNode), "rebase");
-                } catch (Exception e) {
-                    // non-blocking
+                    ChangesetRewrite.precheck(repository, changelog, new ArrayList<>(destMap.keySet()), "rebase");
+                } catch (HgValidationException e) {
+                    throw new HgValidationException(e.getMessage() + "\n(use --keep to keep original changesets)");
                 }
-
-                List<Integer> remainingOrigRevs = new ArrayList<>();
-                for (int i = 1; i < state.remaining.size(); i++) {
-                    int rev = NodeIdUtil.findRevisionByNodeId(changelog, state.remaining.get(i));
-                    if (rev == -1) {
-                        throw new HgRevisionNotFoundException("Paused rebase's queued revision is gone from the changelog.");
+            }
+            if (!preRebaseHooks.isEmpty()) {
+                Map<String, Object> ctx = new HashMap<>();
+                ctx.put("repository", repository);
+                ctx.put("sourceNode", sourceNode);
+                ctx.put("targetNode", targetNode);
+                for (HgHook hook : preRebaseHooks) {
+                    if (!hook.run(ctx)) {
+                        throw new HgValidationException("Rebase rejected by PRE_REBASE hook");
                     }
-                    remainingOrigRevs.add(rev);
                 }
+            }
+            if (inMemory) {
+                byte[] result = rebaseInMemory();
+                return pendingApply ? applyConfirmed() : result;
+            }
+            if (keepBranches && collapse) {
+                Set<String> branches = new HashSet<>();
+                for (int rev : state.keySet()) {
+                    branches.add(CommitCommand.getBranchOfRevision(changelog, rev));
+                    if (branches.size() > 1) {
+                        throw new HgValidationException("cannot collapse multiple named branches");
+                    }
+                }
+            }
+            skipped = new HashSet<>();
+            resume = false;
+            // the bookmark that was active is put away while rebasing and comes back at the end
+            File current = new File(repository.getHgDir(), "bookmarks.current");
+            activeBookmark = current.isFile() ? Files.readString(current.toPath(), StandardCharsets.UTF_8).trim() : "";
+            if (!activeBookmark.isEmpty()) {
+                Files.deleteIfExists(current.toPath());
+            }
+            RebaseState.storeCollapseMessage(repository, collapseMessage);
+            // stored before the first changeset so that `--abort` works if anything fails from here on
+            storeStatus();
+            return performAndFinish();
+        }
+    }
 
-                return processQueue(remainingOrigRevs, newNode, state.originalWdParent, backupDir);
-            } catch (HgMergeConflictException e) {
-                throw e;
-            } catch (Exception t) {
-                Map<File, File> backupMapping = reconstructBackupMapping(backupDir);
-                performPhysicalRollback(backupMapping, backupDir);
-                throw t;
+
+
+    /**
+     * {@code _dryrunrebase}: every changeset is merged in memory and committed in a transaction that is always aborted, so the repository
+     * and the working copy stay as they were. A conflict ends it with {@code hit a merge conflict}. With {@code --confirm} the answer
+     * decides whether the same rebase is then done for real.
+     */
+    private byte[] rebaseInMemory() throws IOException, HgLockException, HgMergeConflictException {
+        StoreRollback tr = new StoreRollback(repository);
+        boolean applied = false;
+        try {
+            GraftInMemory committer = new GraftInMemory(repository);
+            for (List<Integer> batch : RebasePlanner.sortSource(destMap)) {
+                for (int rev : planner.topoOrder(batch)) {
+                    String desc = describe(rev);
+                    int current = state.get(rev);
+                    if (current == rev) {
+                        messages.add("already rebased " + desc + "\n");
+                        continue;
+                    }
+                    if (current != RebasePlanner.TODO) {
+                        messages.add("already rebased " + desc + " as " + shortHex(nodeOf(current)) + "\n");
+                        continue;
+                    }
+                    messages.add("rebasing " + desc + "\n");
+                    RebasePlanner.Parents parents = planner.defineParents(rev, destMap, state, skipped, Set.of());
+                    byte[] p1 = nodeOf(parents.p1());
+                    byte[] p2 = parents.p2() < 0 ? null : nodeOf(parents.p2());
+                    messages.addAll(committer.mergedFiles(changelog, p1, nodeOf(rev), parents.base() < 0 ? null : nodeOf(parents.base())));
+                    TreeMergeCommand.TreeMergeResult merged = new TreeMergeCommand(repository).setOurs(p1).setTheirs(nodeOf(rev))
+                            .setBase(parents.base() < 0 ? null : nodeOf(parents.base())).call();
+                    if (merged.isConflicted()) {
+                        messages.add("hit a merge conflict\n");
+                        return null;
+                    }
+                    if (p2 == null && !skipEmptyDisabled() && merged.getChangedFiles().isEmpty() && merged.getRemovedFiles().isEmpty()) {
+                        messages.add("note: not rebasing " + desc + ", its destination already has all its changes\n");
+                        skipped.add(rev);
+                        state.put(rev, parents.p1());
+                        continue;
+                    }
+                    final String sourceHex = hexOf(rev);
+                    final boolean keepBranch = keepBranches;
+                    byte[] node = committer.commit(tr, changelog, p1, p2, nodeOf(rev), rev, merged, (entry, both) -> {
+                        entry.extra.put("rebase_source", sourceHex);
+                        ChangesetRewrite.Entry branchFrom = keepBranch ? both[0] : both[1];
+                        if (branchFrom.extra.containsKey("branch")) {
+                            entry.extra.put("branch", branchFrom.extra.get("branch"));
+                        }
+                    });
+                    state.put(rev, changelog.findRevision(node));
+                }
+            }
+            if (confirm != null) {
+                messages.add("rebase completed successfully\n");
+                applied = confirm.getAsBoolean();
+            } else {
+                messages.add("dry-run rebase completed successfully; run without -n/--dry-run to perform this rebase\n");
+            }
+            return null;
+        } finally {
+            tr.abort(); // `_prepareabortorcontinue(isabort=True, backup=False, ...)`: nothing of the rebase stays, and no backup is kept
+            repository.clearRevlogCache();
+            loadChangelog();
+            pendingApply = applied;
+        }
+    }
+
+    private boolean pendingApply;
+
+    /** After a confirmed {@code --confirm}: the same rebase is done on disk (the working copy must be clean for that). */
+    private byte[] applyConfirmed() throws IOException, HgLockException, HgMergeConflictException {
+        List<String> first = new ArrayList<>(messages);
+        confirm = null;
+        dryRun = false;
+        pendingApply = false;
+        messages.clear();
+        try {
+            return run();
+        } finally {
+            List<String> second = new ArrayList<>(messages);
+            messages.clear();
+            messages.addAll(first);
+            for (String line : second) {
+                if (!line.startsWith("rebasing ") && !line.startsWith("already rebased ")) {
+                    messages.add(line);
+                }
             }
         }
+    }
+
+    // ------------------------------------------------------------------ _definedestmap
+
+    private int single(String spec) throws IOException {
+        TreeSet<Integer> revs = ChangesetRewrite.revrange(repository, changelog, spec);
+        if (revs.isEmpty()) {
+            throw new HgValidationException("empty revision set");
+        }
+        return revs.last();
+    }
+
+    private TreeSet<Integer> union(List<String> specs) throws IOException {
+        TreeSet<Integer> out = new TreeSet<>();
+        for (String spec : specs) {
+            out.addAll(ChangesetRewrite.revrange(repository, changelog, spec));
+        }
+        return out;
+    }
+
+    private Set<Integer> descendantsOf(Set<Integer> roots) {
+        Set<Integer> out = new TreeSet<>(roots);
+        for (int r = 0; r < changelog.getRevisionCount(); r++) {
+            int[] parents = planner.parentsOf(r);
+            if (out.contains(parents[0]) || out.contains(parents[1])) {
+                out.add(r);
+            }
+        }
+        return out;
+    }
+
+    /** {@code ancestor(a, b)}: the common ancestor that is not an ancestor of another common ancestor; the lowest revision if several. */
+    private int commonAncestor(int a, int b) {
+        Set<Integer> common = new TreeSet<>(planner.ancestors(a));
+        common.retainAll(planner.ancestors(b));
+        int best = -1;
+        for (int c : common) {
+            boolean head = true;
+            for (int d : common) {
+                if (d > c && planner.isAncestor(c, d)) {
+                    head = false;
+                    break;
+                }
+            }
+            if (head && (best == -1 || c < best)) {
+                best = c;
+            }
+        }
+        return best;
+    }
+
+    private static HgValidationException noDestination(String message, String hint) {
+        return new HgValidationException(hint == null ? message : message + "\n(" + hint + ")");
+    }
+
+    /** {@code destutil.destmerge(action="rebase", onheadcheck=False)}: the destination when {@code -d} is not given. */
+    private int defaultDestination(Set<Integer> sourceSet) throws IOException {
+        File currentFile = new File(repository.getHgDir(), "bookmarks.current");
+        String active = currentFile.isFile() ? Files.readString(currentFile.toPath(), StandardCharsets.UTF_8).trim() : "";
+        Map<String, String> bookmarks = new BookmarkCommand(repository).list();
+        if (!active.isEmpty() && bookmarks.containsKey(active)) {
+            // _destmergebook: the heads of the active bookmark (divergent ones, name@something, too)
+            List<String> heads = new ArrayList<>();
+            String current = bookmarks.get(active);
+            for (Map.Entry<String, String> bookmark : bookmarks.entrySet()) {
+                if ((bookmark.getKey().equals(active) || bookmark.getKey().startsWith(active + "@")) && !heads.contains(bookmark.getValue())) {
+                    heads.add(bookmark.getValue());
+                }
+            }
+            String hint = "run 'hg heads' to see all heads, specify destination with -d";
+            if (heads.size() == 2) {
+                return revOf(current.equals(heads.get(0)) ? heads.get(1) : heads.get(0));
+            } else if (heads.size() > 2) {
+                throw noDestination("multiple matching bookmarks to rebase - please rebase to an explicit rev or bookmark", hint);
+            }
+            throw noDestination("no matching bookmark to rebase - please rebase to an explicit rev or bookmark", hint);
+        }
+        // _destmergebranch
+        if (sourceSet.isEmpty()) {
+            throw noDestination("source set is empty", null);
+        }
+        String branch = null;
+        for (int r : sourceSet) {
+            int[] parents = planner.parentsOf(r);
+            if (sourceSet.contains(parents[0]) || sourceSet.contains(parents[1])) {
+                continue; // not a root of the set
+            }
+            String b = CommitCommand.getBranchOfRevision(changelog, r);
+            if (branch != null && !b.equals(branch)) {
+                throw noDestination("rebaseset is rooted in multiple named branches", "specify an explicit destination with --dest");
+            }
+            branch = b;
+        }
+        int count = changelog.getRevisionCount();
+        boolean[] hasChildInBranch = new boolean[count];
+        for (int r = 0; r < count; r++) {
+            if (CommitCommand.getBranchOfRevision(changelog, r).equals(branch)) {
+                for (int p : planner.parentsOf(r)) {
+                    if (p >= 0) {
+                        hasChildInBranch[p] = true;
+                    }
+                }
+            }
+        }
+        List<Integer> branchHeads = new ArrayList<>();
+        for (int r = 0; r < count; r++) {
+            if (CommitCommand.getBranchOfRevision(changelog, r).equals(branch) && !hasChildInBranch[r]
+                    && !CommitCommand.isRevisionClosingBranch(changelog, r)) {
+                branchHeads.add(r);
+            }
+        }
+        boolean onHead = false;
+        for (int h : branchHeads) {
+            onHead |= sourceSet.contains(h);
+        }
+        Set<Integer> sourceDescendants = descendantsOf(sourceSet);
+        branchHeads.removeIf(sourceDescendants::contains);
+        Set<Integer> bookmarked = new HashSet<>();
+        for (String node : bookmarks.values()) {
+            bookmarked.add(revOf(node));
+        }
+        List<Integer> unbookmarked = new ArrayList<>(branchHeads);
+        unbookmarked.removeIf(bookmarked::contains);
+        if (unbookmarked.size() > 1) {
+            throw noDestination("branch '" + branch + "' has " + (branchHeads.size() + 1) + " heads - please rebase to an explicit rev",
+                    "run 'hg heads .' to see heads, specify destination with -d");
+        } else if (unbookmarked.isEmpty()) {
+            String hint = "run 'hg heads' to see all heads, specify destination with -d";
+            if (!branchHeads.isEmpty()) {
+                throw noDestination("heads are bookmarked - please rebase to an explicit rev", hint);
+            }
+            int topological = 0;
+            boolean[] hasChild = new boolean[count];
+            for (int r = 0; r < count; r++) {
+                for (int p : planner.parentsOf(r)) {
+                    if (p >= 0) {
+                        hasChild[p] = true;
+                    }
+                }
+            }
+            for (int r = 0; r < count; r++) {
+                topological += hasChild[r] ? 0 : 1;
+            }
+            if (topological > 1) {
+                throw noDestination("branch '" + branch + "' has one head - please rebase to an explicit rev", hint);
+            } else if (!onHead) {
+                throw noDestination("nothing to rebase", "use 'hg update' instead");
+            }
+            throw noDestination("nothing to rebase", null);
+        }
+        return unbookmarked.get(0);
+    }
+
+    /** `%s` of a context: the short hash. */
+    private String desc(int rev) throws IOException {
+        return shortHex(nodeOf(rev));
     }
 
     /**
-     * Aborts an in-progress (paused-on-conflict) rebase, mirroring real hg's
-     * {@code hg rebase --abort} (verified live against real hg 7.2, 2026-09-04): every cherry-pick
-     * already committed during this rebase attempt is discarded (the changelog/manifest/filelogs
-     * are restored byte-for-byte to their pre-rebase content), and the working copy plus dirstate
-     * are restored to exactly whatever was checked out before {@link #call()} started.
+     * {@code _definedestmap}: the sources from {@code -r}, {@code -s} or {@code -b} (in that order of priority) and where each goes.
+     *
+     * @return {@code false} when there is nothing to rebase (the reason is in the messages)
      */
-    public void abort() throws IOException, HgLockException {
-        repository.clearRevlogCache();
-        File stateFile = rebaseStateFile();
-        if (!stateFile.exists()) {
-            throw new HgValidationException("no rebase in progress");
+    private boolean defineDestMap(List<String> srcf, List<String> basef, List<String> revf, String destf) throws IOException {
+        Set<Integer> rebaseSet;
+        Integer dest = null;
+        if (destf == null && "true".equalsIgnoreCase(repository.getConfig().get("commands", "rebase.requiredest", "false"))) {
+            throw new HgValidationException("you must specify a destination\n(use: hg rebase -d REV)");
         }
-
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
-
-            PausedRebaseState state = readRebaseState();
-            File backupDir = new File(repository.getStoreDir(), "rebase-backup");
-            Map<File, File> backupMapping = reconstructBackupMapping(backupDir);
-            performPhysicalRollback(backupMapping, backupDir);
-
-            restoreWorkingCopyCleanTo(repository, state.originalWdParent);
-            cleanMergeDir(repository);
-            deleteRebaseStateFile();
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Queue processing shared by call() and continueRebase()
-    // ------------------------------------------------------------------
-
-    private byte[] processQueue(List<Integer> origRevs, byte[] startBase, byte[] originalWdParent,
-                                 File backupDir) throws IOException, HgLockException, HgMergeConflictException {
-        byte[] currentBase = startBase;
-        for (int i = 0; i < origRevs.size(); i++) {
-            int origRev = origRevs.get(i);
-            CherryPickOutcome outcome = cherryPickRevision(origRev, currentBase);
-
-            if (!outcome.conflictedPaths.isEmpty()) {
-                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-                File clDat = new File(repository.getStoreDir(), "00changelog.d");
-                Revlog changelog = repository.getRevlog(clIdx, clDat);
-
-                List<byte[]> remainingNodes = new ArrayList<>();
-                for (int j = i; j < origRevs.size(); j++) {
-                    remainingNodes.add(changelog.getIndexRecord(origRevs.get(j)).getNodeId());
+        if (!revf.isEmpty()) {
+            rebaseSet = union(revf);
+            if (rebaseSet.isEmpty()) {
+                messages.add("empty \"rev\" revision set - nothing to rebase\n");
+                return false;
+            }
+        } else if (!srcf.isEmpty()) {
+            Set<Integer> src = union(srcf);
+            if (src.isEmpty()) {
+                messages.add("empty \"source\" revision set - nothing to rebase\n");
+                return false;
+            }
+            rebaseSet = descendantsOf(src);
+        } else {
+            TreeSet<Integer> base = union(basef.isEmpty() ? List.of(".") : basef);
+            if (base.isEmpty()) {
+                messages.add("empty \"base\" revision set - can't compute rebase set\n");
+                return false;
+            }
+            dest = destf == null ? defaultDestination(base) : single(destf);
+            Map<Integer, List<Integer>> bpbase = new LinkedHashMap<>();
+            for (int b : base) {
+                bpbase.computeIfAbsent(commonAncestor(b, dest), k -> new ArrayList<>()).add(b);
+            }
+            if (bpbase.containsKey(-1)) {
+                bpbase.clear(); // no branching point: "nothing to rebase"
+            }
+            Set<Integer> roots = new TreeSet<>();
+            for (Map.Entry<Integer, List<Integer>> e : bpbase.entrySet()) {
+                Set<Integer> up = new HashSet<>();
+                for (int b : e.getValue()) {
+                    up.addAll(planner.ancestors(b));
                 }
-                writeRebaseState(originalWdParent, currentBase, remainingNodes);
-
-                throw new HgMergeConflictException(outcome.conflictedPaths,
-                        "rebase halted: " + outcome.conflictedPaths.size()
-                                + " conflicting file(s) require resolution (see 'hg resolve --list')");
+                for (int r = 0; r < changelog.getRevisionCount(); r++) {
+                    int[] parents = planner.parentsOf(r);
+                    if ((parents[0] == e.getKey() || parents[1] == e.getKey()) && up.contains(r)) {
+                        roots.add(r);
+                    }
+                }
             }
-
-            try {
-                HgObsMarker.writeMarker(repository.getStoreDir(), outcome.originalNode, List.of(outcome.newNode), "rebase");
-            } catch (Exception e) {
-                // non-blocking
+            rebaseSet = descendantsOf(roots);
+            if (roots.isEmpty()) {
+                rebaseSet = new TreeSet<>();
             }
-            currentBase = outcome.newNode;
+            if (rebaseSet.isEmpty()) {
+                boolean explicit = !basef.isEmpty();
+                final int finalDest = dest;
+                String baseNames = String.join("+", base.stream().map(r -> {
+                    try {
+                        return desc(r);
+                    } catch (IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                }).toList());
+                if (new ArrayList<>(base).equals(List.of(dest))) {
+                    messages.add(explicit ? "nothing to rebase - " + desc(dest) + " is both \"base\" and destination\n"
+                            : "nothing to rebase - working directory parent is also destination\n");
+                } else if (base.stream().allMatch(b -> planner.isAncestor(b, finalDest))) {
+                    messages.add(explicit ? "nothing to rebase - \"base\" " + baseNames + " is already an ancestor of destination " + desc(dest) + "\n"
+                            : "nothing to rebase - working directory parent is already an ancestor of destination " + desc(dest) + "\n");
+                } else {
+                    messages.add("nothing to rebase from " + baseNames + " to " + desc(dest) + "\n");
+                }
+                return false;
+            }
         }
-        return finalizeRebase(currentBase, backupDir);
+        if (dest == null && destf == null) {
+            dest = defaultDestination(rebaseSet);
+        }
+        destMap = new LinkedHashMap<>();
+        if (dest == null) {
+            String allSrc = "(" + String.join("+", rebaseSet.stream().map(String::valueOf).toList()) + ")";
+            if (destf.matches(".*\\bSRC\\b.*")) {
+                // multi-destination: the destination is worked out for each source separately
+                for (int r : rebaseSet) {
+                    String one = destf.replaceAll("\\bALLSRC\\b", allSrc).replaceAll("\\bSRC\\b", String.valueOf(r));
+                    TreeSet<Integer> found = ChangesetRewrite.revrange(repository, changelog, one);
+                    if (found.size() == 1) {
+                        destMap.put(r, found.first());
+                    } else if (found.isEmpty()) {
+                        messages.add("skipping " + desc(r) + " - empty destination\n");
+                    } else {
+                        throw new HgValidationException("rebase destination for " + desc(r) + " is not unique");
+                    }
+                }
+            } else {
+                dest = single(destf.replaceAll("\\bALLSRC\\b", allSrc));
+            }
+        }
+        if (dest != null) {
+            for (int r : rebaseSet) {
+                destMap.put(r, dest);
+            }
+        }
+        if (destMap.isEmpty()) {
+            messages.add("nothing to rebase - empty destination\n");
+            return false;
+        }
+        return true;
     }
 
-    private byte[] finalizeRebase(byte[] currentBase, File backupDir) throws IOException {
-        checkoutNode(repository, currentBase);
+    /**
+     * {@code buildstate}: {@code state} starts as "to do" for every source, a source that is already a child of its destination (same
+     * branch) is done, and so is anything whose parents are all done.
+     *
+     * @return {@code false} when nothing is left to rebase
+     */
+    private boolean buildState() throws IOException {
+        originalWd = changelog.findRevision(repository.getDirstate().getParent1());
+        List<List<Integer>> batches = RebasePlanner.sortSource(destMap);
+        List<Integer> roots = new ArrayList<>();
+        for (int rev : batches.get(0)) {
+            int[] parents = planner.parentsOf(rev);
+            if (!(destMap.containsKey(parents[0]) || destMap.containsKey(parents[1]))) {
+                roots.add(rev);
+            }
+        }
+        if (roots.isEmpty()) {
+            throw new HgValidationException("no matching revisions");
+        }
+        state = new LinkedHashMap<>();
+        for (int rev : destMap.keySet()) {
+            state.put(rev, RebasePlanner.TODO);
+        }
+        boolean empty = batches.size() == 1;
+        for (int root : roots) {
+            int dest = destMap.get(root);
+            if (planner.isAncestor(root, dest)) {
+                throw new HgValidationException("source is ancestor of destination");
+            }
+            if (planner.isAncestor(dest, root)) {
+                String rootBranch = CommitCommand.getBranchOfRevision(changelog, root);
+                boolean sameBranch = dest == originalWd ? rootBranch.equals(repository.getBranch())
+                        : rootBranch.equals(CommitCommand.getBranchOfRevision(changelog, dest));
+                int[] parents = planner.parentsOf(root);
+                if (!collapse && sameBranch && (parents[0] == dest || parents[1] == dest)) {
+                    state.put(root, root);
+                    continue;
+                }
+            }
+            empty = false;
+        }
+        if (empty) {
+            return false;
+        }
+        for (int rev : new TreeSet<>(state.keySet())) {
+            int[] parents = planner.parentsOf(rev);
+            boolean any = false;
+            boolean all = true;
+            for (int p : parents) {
+                if (p >= 0) {
+                    any = true;
+                    all &= state.containsKey(p) && state.get(p) == p;
+                }
+            }
+            if (any && all) {
+                state.put(rev, rev);
+            }
+        }
+        return true;
+    }
 
-        deleteRebaseJournal();
-        deleteDirRecursively(backupDir);
-        deleteRebaseStateFile();
+    /** {@code externalparent}: the one parent outside the set and the destination's ancestors, which a collapse takes as second parent. */
+    private int externalParent(Map<Integer, Integer> state, Set<Integer> destAncestors) throws HgValidationException {
+        Set<Integer> parents = new TreeSet<>();
+        int source = Collections.min(state.keySet());
+        for (int rev : state.keySet()) {
+            if (rev == source) {
+                continue;
+            }
+            for (int p : planner.parentsOf(rev)) {
+                if (p >= 0 && !state.containsKey(p) && !destAncestors.contains(p)) {
+                    parents.add(p);
+                }
+            }
+        }
+        if (parents.isEmpty()) {
+            return -1;
+        }
+        if (parents.size() == 1) {
+            return parents.iterator().next();
+        }
+        throw new HgValidationException("unable to collapse on top of " + Collections.max(destAncestors)
+                + ", there is more than one external parent: "
+                + String.join(", ", parents.stream().map(String::valueOf).toList()));
+    }
 
+    /** {@code _performrebase} then {@code _finishrebase}. */
+    private byte[] performAndFinish() throws IOException, HgLockException, HgMergeConflictException {
+        // `tr = repo.transaction("rebase") if rebase.singletransaction`, held through `_finishrebase`; the old changesets are removed when
+        // it has closed (`repair.delayedstrip`). `util.acceptintervention(tr)` closes it when the rebase stops for the user (a conflict)
+        // and aborts it on any other failure
+        transaction = singleTransaction() ? new StoreRollback(repository) : null;
+        deferredReplacements = null;
+        try {
+            for (List<Integer> batch : RebasePlanner.sortSource(destMap)) {
+                for (int rev : planner.topoOrder(batch)) {
+                    rebaseNode(rev);
+                }
+            }
+            byte[] result = finishRebase();
+            if (transaction != null) {
+                StoreRollback tr = transaction;
+                transaction = null;
+                tr.commit(); // the status file was removed by the finish, nothing to write
+                if (deferredReplacements != null) {
+                    Map<String, String> replacements = deferredReplacements;
+                    deferredReplacements = null;
+                    ChangesetRewrite.cleanupNodes(repository, replacements, "rebase", deferredSkipped);
+                    loadChangelog();
+                }
+            }
+            return result;
+        } catch (HgMergeConflictException e) {
+            closeTransaction();
+            throw e; // the state stays for `--continue` and `--abort`
+        } catch (IOException | RuntimeException failed) {
+            if (transaction != null) {
+                StoreRollback tr = transaction;
+                transaction = null;
+                tr.abort();
+                repository.clearRevlogCache();
+            }
+            throw failed;
+        }
+    }
+
+    private Map<String, String> deferredReplacements;
+    private Set<String> deferredSkipped = Set.of();
+
+    /** The transaction closes and its state file is written ({@code storestatus(tr)} is a file generator of the transaction). */
+    private void closeTransaction() throws IOException {
+        if (transaction != null) {
+            StoreRollback tr = transaction;
+            transaction = null;
+            tr.commit();
+            storeStatus();
+        }
+    }
+
+    /** {@code _rebasenode}. */
+    private void rebaseNode(int rev) throws IOException, HgLockException, HgMergeConflictException {
+        String desc = describe(rev);
+        int current = state.get(rev);
+        if (current == rev) {
+            messages.add("already rebased " + desc + "\n");
+        } else if (current == RebasePlanner.TODO) {
+            messages.add("rebasing " + desc + "\n");
+            RebasePlanner.Parents parents = planner.defineParents(rev, destMap, state, skipped, Set.of());
+            int p1 = parents.p1();
+            boolean resuming = resume && changelog.findRevision(repository.getDirstate().getParent1()) == p1;
+            resume = false;
+            byte[] p2Node = parents.p2() < 0 ? new byte[20] : nodeOf(parents.p2());
+            if (!resuming) {
+                // rebasenode: update to the destination (unless already there), then merge the source against the base
+                if (changelog.findRevision(repository.getDirstate().getParent1()) != p1) {
+                    cleanUpdate(p1);
+                }
+                List<String> conflicts = mergeRevision(rev, nodeOf(p1), parents.base(), p2Node);
+                if (!conflicts.isEmpty()) {
+                    throw new HgMergeConflictException(conflicts,
+                            "unresolved conflicts (see 'hg resolve', then 'hg rebase --continue')");
+                }
+            }
+            final byte[] newP1 = nodeOf(p1);
+            repository.changingParents(() -> {
+                repository.getDirstate().setParents(newP1, p2Node);
+                repository.writeDirstate(repository.getDirstate());
+                return null;
+            });
+            if (collapse) {
+                // no commit while collapsing: the working copy keeps what was merged, and this changeset "became" its parent
+                state.put(rev, p1);
+                if (transaction == null) {
+                    storeStatus();
+                }
+                return;
+            }
+            if (parents.p2() < 0 && !skipEmptyDisabled() && workingCopyUnchanged(p1)) {
+                // rewrite.empty-successor=skip (the default): nothing to commit, the destination has all the changes already
+                messages.add("note: not rebasing " + desc + ", its destination already has all its changes\n");
+                skipped.add(rev);
+                state.put(rev, p1);
+            } else {
+                byte[] newNode = concludeNode(rev, null);
+                state.put(rev, changelog.findRevision(newNode));
+            }
+        } else {
+            messages.add("already rebased " + desc + " as " + shortHex(nodeOf(current)) + "\n");
+        }
+        // after each changeset is done, not when it stopped for a conflict; with one transaction the state is written when it closes
+        if (transaction == null) {
+            storeStatus();
+        }
+    }
+
+    /** {@code mergemod.clean_update}: the working copy becomes the revision, local changes discarded. */
+    private void cleanUpdate(int rev) throws IOException, HgLockException {
+        restoreWorkingCopyCleanTo(repository, nodeOf(rev));
+        repository.setBranch(CommitCommand.getBranchOfRevision(changelog, rev));
+    }
+
+    /** {@code rewrite.empty-successor=keep}: an empty successor is created instead of the changeset being dropped. */
+    private boolean skipEmptyDisabled() {
+        return "keep".equalsIgnoreCase(repository.getConfig().get("rewrite", "empty-successor", "skip"));
+    }
+
+    /**
+     * Whether the working copy holds exactly what the first parent holds (what `repo.commit` returns `None` for): the same files with the
+     * same content. (The dirstate cannot say: the merge marks the files it wrote as normal.)
+     */
+    private boolean workingCopyUnchanged(int p1) throws IOException {
+        MergeCommand helper = new MergeCommand(repository);
+        Map<String, String> manifest = helper.loadManifestAtCommit(changelog, repository.getManifestRevlog(), p1);
+        Set<String> tracked = new HashSet<>();
+        for (Map.Entry<String, Dirstate.Entry> e : repository.getDirstate().getEntries().entrySet()) {
+            if (e.getValue().getState() != 'r') {
+                tracked.add(e.getKey());
+            }
+        }
+        if (!tracked.equals(manifest.keySet())) {
+            return false;
+        }
+        for (Map.Entry<String, String> e : manifest.entrySet()) {
+            File onDisk = new File(repository.getDirectory(), e.getKey());
+            byte[] disk = Files.isSymbolicLink(onDisk.toPath())
+                    ? Files.readSymbolicLink(onDisk.toPath()).toString().getBytes(StandardCharsets.UTF_8)
+                    : (onDisk.isFile() ? Files.readAllBytes(onDisk.toPath()) : null);
+            if (disk == null || !java.util.Arrays.equals(disk, helper.getFileRevisionContent(e.getKey(), e.getValue()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean sameManifest(int a, int b) throws IOException {
+        String ma = new String(changelog.getRevisionContent(a), StandardCharsets.UTF_8).split("\n", 2)[0];
+        String mb = new String(changelog.getRevisionContent(b), StandardCharsets.UTF_8).split("\n", 2)[0];
+        return ma.equals(mb);
+    }
+
+    /** {@code _concludenode}/{@code commitnode}: the commit, in a transaction of its own, with the user, date and message of the source. */
+    private byte[] concludeNode(int rev, String message) throws IOException, HgLockException {
+        RevisionMeta meta = readRevisionMeta(rev, changelog);
+        if (keepBranches) {
+            repository.setBranch(meta.branch == null || meta.branch.isEmpty() ? "default" : meta.branch);
+        }
+        byte[] node = new CommitCommand(repository).setTransaction(transaction)
+                .setAuthor(meta.author)
+                .setMessage(message != null ? message : edited(meta.message, false))
+                .setDate(meta.time, meta.offsetSeconds)
+                .setExtra("rebase_source", hexOf(rev)) // `rebase.store-source` is on by default
+                .call();
+        cleanMergeDir(repository);
+        loadChangelog();
+        return node;
+    }
+
+    /** {@code _finishrebase}. */
+    private byte[] finishRebase() throws IOException, HgLockException {
+        if (collapse) {
+            RebasePlanner.Parents parents = planner.defineParents(Collections.min(state.keySet()), destMap, state, skipped, Set.of());
+            String message = collapseMessage;
+            boolean proposed = message == null || message.isEmpty();
+            if (proposed) {
+                StringBuilder text = new StringBuilder("Collapsed revision");
+                for (int rev : new TreeSet<>(state.keySet())) {
+                    if (!skipped.contains(rev)) {
+                        text.append("\n* ").append(readRevisionMeta(rev, changelog).message);
+                    }
+                }
+                message = text.toString();
+            }
+            message = edited(message, proposed);
+            final byte[] collapseP1 = nodeOf(parents.p1());
+            final byte[] collapseP2 = external >= 0 ? nodeOf(external) : new byte[20];
+            repository.changingParents(() -> {
+                Dirstate dirstate = repository.getDirstate();
+                dirstate.setParents(collapseP1, collapseP2);
+                repository.writeDirstate(dirstate);
+                return null;
+            });
+            byte[] collapsed = concludeNode(Collections.max(state.keySet()), message);
+            int collapsedRev = changelog.findRevision(collapsed);
+            for (int rev : new ArrayList<>(state.keySet())) {
+                state.put(rev, collapsedRev);
+            }
+        }
+        // the working copy goes back to the original parent (or what it became), before anything is stripped
+        int newWd = state.getOrDefault(originalWd, originalWd);
+        if (newWd < 0) {
+            newWd = originalWd;
+        }
+        if (changelog.findRevision(repository.getDirstate().getParent1()) != newWd) {
+            cleanUpdate(newWd);
+        }
+        byte[] last = null;
+        int lastRev = -1;
+        Map<String, String> replacements = new LinkedHashMap<>();
+        Set<String> skippedHex = new HashSet<>();
+        for (Map.Entry<Integer, Integer> e : new TreeMap<>(state).entrySet()) {
+            int newRev = e.getValue();
+            if (newRev >= 0 && newRev != e.getKey()) {
+                replacements.put(hexOf(e.getKey()), hexOf(newRev));
+                if (skipped.contains(e.getKey())) {
+                    skippedHex.add(hexOf(e.getKey()));
+                }
+                if (e.getKey() > lastRev) {
+                    lastRev = e.getKey();
+                    last = nodeOf(newRev);
+                }
+            }
+        }
+        if (keep) {
+            ChangesetRewrite.moveBookmarks(repository, replacements);
+        } else {
+            if (transaction != null) {
+                // `repair.delayedstrip`: inside a transaction the removal waits until it has closed (it needs none to be running)
+                deferredReplacements = replacements;
+                deferredSkipped = skippedHex;
+            } else {
+                ChangesetRewrite.cleanupNodes(repository, replacements, "rebase", skippedHex);
+                loadChangelog();
+            }
+        }
+        RebaseState.clear(repository);
+        RebaseState.clearCollapseMessage(repository);
+        Files.deleteIfExists(new File(repository.getStoreDir(), "undo").toPath());
+        if (!activeBookmark.isEmpty()) {
+            Map<String, String> bookmarks = new BookmarkCommand(repository).list();
+            String marked = bookmarks.get(activeBookmark);
+            if (marked != null && marked.equals(NodeIdUtil.toHex(repository.getDirstate().getParent1()))) {
+                Files.writeString(new File(repository.getHgDir(), "bookmarks.current").toPath(), activeBookmark, StandardCharsets.UTF_8);
+            }
+        }
         Map<String, Object> ctx = new HashMap<>();
         ctx.put("sourceNode", sourceNode);
         ctx.put("targetNode", targetNode);
-        ctx.put("rebasedTipNode", NodeIdUtil.toHex(currentBase));
+        ctx.put("rebasedTipNode", last == null ? null : NodeIdUtil.toHex(last));
         ctx.put("repository", repository);
         for (HgHook hook : postRebaseHooks) {
             try {
@@ -380,145 +1194,280 @@ public class RebaseCommand {
                 LOGGER.log(Level.WARNING, "Post-rebase hook execution failed", e);
             }
         }
+        return last;
+    }
 
-        return currentBase;
+    /**
+     * {@code hg rebase --continue}: the locks first, then the state is read under them. The changeset the rebase stopped on is committed
+     * from the working copy (it is the one still to do whose destination is the working copy parent), then the rest goes on.
+     */
+    public byte[] continueRebase() throws IOException, HgLockException, HgMergeConflictException {
+        messages.clear();
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
+            loadChangelog();
+            if (!RebaseState.file(repository).isFile()) {
+                throw new HgValidationException("no rebase in progress");
+            }
+            restoreStatus();
+            collapseMessage = RebaseState.restoreCollapseMessage(repository, false);
+            MergeState ms = MergeState.read(mergeStateFile(repository));
+            if (!ms.unresolvedFiles().isEmpty()) {
+                throw new HgValidationException("unresolved merge conflicts (see 'hg resolve --list'): " + ms.unresolvedFiles());
+            }
+            resume = true;
+            return performAndFinish();
+        }
+    }
+
+    /**
+     * {@code hg rebase --stop}: under both locks, the state is restored; the stopped rebase can only be kept (not undone) when the
+     * original changesets stay ({@code --keep}), since without obsolescence markers removing them would orphan the unrebased
+     * descendants. The working copy goes back to the original parent (clearing the interrupted merge) and the rebase is finished with
+     * what it has done so far.
+     */
+    public void stop() throws IOException, HgLockException {
+        messages.clear();
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
+            loadChangelog();
+            if (!RebaseState.file(repository).isFile()) {
+                throw new HgValidationException("no rebase in progress");
+            }
+            restoreStatus();
+            if (collapse) {
+                throw new HgValidationException("cannot stop in --collapse session");
+            }
+            if (!keep) {
+                throw new HgValidationException("cannot remove original changesets with unrebased descendants\n"
+                        + "(either enable obsmarkers to allow unstable revisions or use --keep to keep original changesets)");
+            }
+            cleanUpdate(originalWd);
+            cleanMergeDir(repository);
+            finishRebase();
+        }
+    }
+
+    /**
+     * {@code hg rebase --abort} ({@code _abort}): the rebased changesets are stripped (not when one of them is public or has gained
+     * descendants that are not part of the rebase), the working copy goes back to the original parent, and the state files go.
+     */
+    public void abort() throws IOException, HgLockException {
+        messages.clear();
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
+            loadChangelog();
+            if (!RebaseState.file(repository).isFile()) {
+                throw new HgValidationException("no rebase in progress");
+            }
+            restoreStatus();
+            try {
+                List<Integer> rebased = new ArrayList<>();
+                for (Map.Entry<Integer, Integer> e : state.entrySet()) {
+                    int newRev = e.getValue();
+                    if (newRev >= 0 && newRev != e.getKey() && newRev != destMap.get(e.getKey())) {
+                        rebased.add(newRev);
+                    }
+                }
+                boolean cleanup = true;
+                if (!rebased.isEmpty()) {
+                    PhaseRoots phases = repository.getPhaseRoots();
+                    for (int r : rebased) {
+                        if (phases.getPhase(new NodeId(nodeOf(r)), changelog) == PhaseRoots.Phase.PUBLIC) {
+                            messages.add("warning: can't clean up public changesets " + shortHex(nodeOf(r)) + "\n");
+                            cleanup = false;
+                        }
+                    }
+                    Set<Integer> rebasedSet = new HashSet<>(rebased);
+                    for (int r = 0; r < changelog.getRevisionCount() && cleanup; r++) {
+                        int[] parents = planner.parentsOf(r);
+                        if (!rebasedSet.contains(r) && (rebasedSet.contains(parents[0]) || rebasedSet.contains(parents[1]))) {
+                            messages.add("warning: new changesets detected on destination branch, can't strip\n");
+                            cleanup = false;
+                        }
+                    }
+                }
+                if (cleanup && !rebased.isEmpty()) {
+                    int wd = changelog.findRevision(repository.getDirstate().getParent1());
+                    if (rebased.contains(wd) || destMap.containsValue(wd)) {
+                        restoreWorkingCopyCleanTo(repository, nodeOf(originalWd));
+                        repository.setBranch(CommitCommand.getBranchOfRevision(changelog, originalWd));
+                    }
+                    Set<Integer> rebasedSet = new HashSet<>(rebased);
+                    for (int r : new TreeSet<>(rebasedSet)) {
+                        int[] parents = planner.parentsOf(r);
+                        if (!rebasedSet.contains(parents[0]) && !rebasedSet.contains(parents[1])) {
+                            StripCommand strip = new StripCommand(repository).setRevision(hexOf(r)).setKeep(true).setTopic("rebase");
+                            strip.call();
+                            loadChangelog();
+                        }
+                    }
+                } else {
+                    restoreWorkingCopyCleanTo(repository, nodeOf(originalWd));
+                }
+                cleanMergeDir(repository);
+                if (!activeBookmark.isEmpty() && new BookmarkCommand(repository).list().containsKey(activeBookmark)) {
+                    Files.writeString(new File(repository.getHgDir(), "bookmarks.current").toPath(), activeBookmark, StandardCharsets.UTF_8);
+                }
+            } finally {
+                RebaseState.clear(repository);
+                RebaseState.clearCollapseMessage(repository);
+            }
+            messages.add("rebase aborted\n");
+        }
     }
 
     // ------------------------------------------------------------------
     // Cherry-pick of a single original revision, with real 3-way-merge conflict detection
     // ------------------------------------------------------------------
 
-    private CherryPickOutcome cherryPickRevision(int origRev, byte[] currentBase) throws IOException, HgLockException {
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
+    /**
+     * {@code mergemod._update(rev, branchmerge=True, force=True, ancestor=base)} into the working copy that stands on {@code currentBase}:
+     * the source is merged against the base, the working copy gets the result, the dirstate gets both new parents, and the paths that could
+     * not be merged are returned with their bookkeeping in {@code .hg/merge/state2}.
+     */
+    private List<String> mergeRevision(int origRev, byte[] currentBase, int baseRev, byte[] p2Node) throws IOException, HgLockException {
+        // rebasenode: the merge runs in `repo.dirstate.changing_parents(repo)`
+        return repository.changingParents(() -> mergeRevisionBody(origRev, currentBase, baseRev, p2Node));
+    }
+
+    private List<String> mergeRevisionBody(int origRev, byte[] currentBase, int baseRev, byte[] p2Node) throws IOException, HgLockException {
+        if (collapse) {
+            return mergeIntoWorkingCopy(origRev, currentBase, baseRev, p2Node);
+        }
         Revlog manifestRevlog = repository.getManifestRevlog();
         MergeCommand helper = new MergeCommand(repository);
-
-        Revlog.IndexRecord rec = changelog.getIndexRecord(origRev);
-        byte[] originalNode = rec.getNodeId();
-        int parent1Rev = rec.getParent1();
-        int parent2Rev = rec.getParent2();
-
-        // 1. Reset the working copy fully to the destination's currently-checked-out state.
-        checkoutNode(repository, currentBase);
+        byte[] originalNode = nodeOf(origRev);
         Dirstate dirstate = repository.getDirstate();
 
         int currentBaseRev = NodeIdUtil.findRevisionByNodeId(changelog, currentBase);
         Map<String, String> localManifest = helper.loadManifestAtCommit(changelog, manifestRevlog, currentBaseRev);
         Map<String, String> otherManifest = helper.loadManifestAtCommit(changelog, manifestRevlog, origRev);
+        Map<String, String> ancestorManifest = baseRev == -1
+                ? Collections.emptyMap()
+                : helper.loadManifestAtCommit(changelog, manifestRevlog, baseRev);
 
         List<String> conflicts = new ArrayList<>();
         MergeState mergeState = null;
 
-        if (parent2Rev != -1) {
-            // The original revision is itself a merge commit. Rebasing it here means flattening it
-            // into a single-parent commit onto currentBase -- a simplification predating this
-            // 2026-09-04 change that this pass intentionally preserves as-is (a real recursive
-            // re-merge of both original parents is out of scope for this change): its own final,
-            // fully-resolved manifest is authoritative for every path it differs from currentBase
-            // on, with no 3-way merge/conflict detection attempted.
-            Set<String> allPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-            allPaths.addAll(localManifest.keySet());
-            allPaths.addAll(otherManifest.keySet());
-            for (String path : allPaths) {
-                String hLocal = localManifest.get(path);
-                String hOther = otherManifest.get(path);
-                if (Objects.equals(hLocal, hOther)) {
-                    continue;
-                }
-                if (hOther == null) {
+        Set<String> changed = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        Set<String> unionKeys = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        unionKeys.addAll(ancestorManifest.keySet());
+        unionKeys.addAll(otherManifest.keySet());
+        for (String path : unionKeys) {
+            if (!Objects.equals(ancestorManifest.get(path), otherManifest.get(path))) {
+                changed.add(path);
+            }
+        }
+
+        for (String path : changed) {
+            String hAnc = ancestorManifest.get(path);
+            String hOther = otherManifest.get(path);
+            String hLocal = localManifest.get(path);
+
+            if (hOther == null) {
+                // The source removed this path.
+                if (hLocal != null && Objects.equals(hLocal, hAnc)) {
                     deleteFileFromWorkingCopy(repository, path);
                     dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
-                } else {
-                    applyResolvedContent(repository, dirstate, helper, path, hOther, 'n');
                 }
+                continue;
             }
-        } else {
-            Map<String, String> ancestorManifest = parent1Rev == -1
-                    ? Collections.emptyMap()
-                    : helper.loadManifestAtCommit(changelog, manifestRevlog, parent1Rev);
-
-            Set<String> changed = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-            Set<String> unionKeys = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-            unionKeys.addAll(ancestorManifest.keySet());
-            unionKeys.addAll(otherManifest.keySet());
-            for (String path : unionKeys) {
-                if (!Objects.equals(ancestorManifest.get(path), otherManifest.get(path))) {
-                    changed.add(path);
-                }
+            if (hLocal == null || Objects.equals(hLocal, hAnc)) {
+                applyResolvedContent(repository, dirstate, helper, path, hOther, 'n');
+                continue;
             }
-
-            for (String path : changed) {
-                String hAnc = ancestorManifest.get(path);
-                String hOther = otherManifest.get(path);
-                String hLocal = localManifest.get(path);
-
-                if (hOther == null) {
-                    // The original revision removed this path.
-                    if (hLocal != null && Objects.equals(hLocal, hAnc)) {
-                        deleteFileFromWorkingCopy(repository, path);
-                        dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
-                    }
-                    // Otherwise dest never had it, or dest's own content has diverged from the
-                    // ancestor -- leave dest's file untouched rather than guess.
-                    continue;
-                }
-
-                if (hLocal == null || Objects.equals(hLocal, hAnc)) {
-                    // Dest doesn't have this path at all, or is unchanged since the original
-                    // revision's own parent -- fast-forward to the original revision's content
-                    // (the common, non-conflicting case; preserves prior behavior exactly).
-                    applyResolvedContent(repository, dirstate, helper, path, hOther, 'n');
-                    continue;
-                }
-
-                if (Objects.equals(hLocal, hOther)) {
-                    continue; // already identical, nothing to do
-                }
-
-                // Dest and the original revision changed this path differently since their common
-                // point of reference (or both independently added it): attempt a real 3-way merge
-                // (shared with GraftCommand, which hits the exact same decision -- see
-                // attemptThreeWayMerge's own javadoc).
-                byte[] ancestorLinkNode = parent1Rev != -1
-                        ? changelog.getIndexRecord(parent1Rev).getNodeId()
-                        : new byte[20];
-                ThreeWayMergeOutcome mergeOutcome = attemptThreeWayMerge(repository, helper, path,
-                        hAnc, hLocal, hOther, ancestorLinkNode, currentBase, originalNode, dirstate, mergeState);
-                mergeState = mergeOutcome.mergeState;
-                if (mergeOutcome.conflicted) {
-                    conflicts.add(path);
-                }
+            if (Objects.equals(hLocal, hOther)) {
+                continue;
+            }
+            byte[] ancestorLinkNode = baseRev != -1 ? nodeOf(baseRev) : new byte[20];
+            messages.add("merging " + path + "\n");
+            ThreeWayMergeOutcome mergeOutcome = attemptThreeWayMerge(repository, helper, path,
+                    hAnc, hLocal, hOther, ancestorLinkNode, currentBase, originalNode, dirstate, mergeState);
+            mergeState = mergeOutcome.mergeState;
+            if (mergeOutcome.conflicted) {
+                conflicts.add(path);
             }
         }
 
-        dirstate.setParents(currentBase, new byte[20]);
+        dirstate.setParents(currentBase, p2Node);
         repository.writeDirstate(dirstate);
-
         if (!conflicts.isEmpty()) {
             mergeState.write(mergeStateFile(repository));
-            return new CherryPickOutcome(originalNode, null, conflicts);
-        }
-
-        // No leftover conflict state from a previous, now-superseded attempt at this same revision.
-        cleanMergeDir(repository);
-
-        RevisionMeta meta = readRevisionMeta(origRev, changelog);
-        if (meta.branch != null && !meta.branch.isEmpty() && !"default".equals(meta.branch)) {
-            repository.setBranch(meta.branch);
         } else {
-            repository.setBranch("default");
+            cleanMergeDir(repository);
         }
+        return conflicts;
+    }
 
-        CommitCommand commitCmd = new CommitCommand(repository)
-                .setAuthor(meta.author)
-                .setMessage("[rebase] " + meta.message)
-                .setDate(meta.time, meta.offsetSeconds)
-                .setSkipLockAndJournal(true);
+    /**
+     * The merge of a collapse: the working copy already holds the changes merged from the earlier changesets, so the local side of each
+     * file is what is on disk (not the destination's committed version).
+     */
+    private List<String> mergeIntoWorkingCopy(int origRev, byte[] currentBase, int baseRev, byte[] p2Node) throws IOException, HgLockException {
+        return repository.changingParents(() -> mergeIntoWorkingCopyBody(origRev, currentBase, baseRev, p2Node));
+    }
 
-        byte[] newNode = commitCmd.call();
-        return new CherryPickOutcome(originalNode, newNode, Collections.emptyList());
+    private List<String> mergeIntoWorkingCopyBody(int origRev, byte[] currentBase, int baseRev, byte[] p2Node) throws IOException, HgLockException {
+        Revlog manifestRevlog = repository.getManifestRevlog();
+        MergeCommand helper = new MergeCommand(repository);
+        byte[] originalNode = nodeOf(origRev);
+        Dirstate dirstate = repository.getDirstate();
+        Map<String, String> otherManifest = helper.loadManifestAtCommit(changelog, manifestRevlog, origRev);
+        Map<String, String> ancestorManifest = baseRev == -1 ? Collections.emptyMap()
+                : helper.loadManifestAtCommit(changelog, manifestRevlog, baseRev);
+        List<String> conflicts = new ArrayList<>();
+        MergeState mergeState = null;
+        Set<String> changed = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        Set<String> union = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        union.addAll(ancestorManifest.keySet());
+        union.addAll(otherManifest.keySet());
+        for (String path : union) {
+            if (!Objects.equals(ancestorManifest.get(path), otherManifest.get(path))) {
+                changed.add(path);
+            }
+        }
+        for (String path : changed) {
+            String hAnc = ancestorManifest.get(path);
+            String hOther = otherManifest.get(path);
+            Dirstate.Entry entry = dirstate.getEntries().get(path);
+            File onDisk = new File(repository.getDirectory(), path);
+            boolean localPresent = entry != null && entry.getState() != 'r' && (onDisk.exists() || Files.isSymbolicLink(onDisk.toPath()));
+            byte[] localContent = localPresent ? (Files.isSymbolicLink(onDisk.toPath())
+                    ? Files.readSymbolicLink(onDisk.toPath()).toString().getBytes(StandardCharsets.UTF_8) : Files.readAllBytes(onDisk.toPath())) : null;
+            byte[] ancestorContent = hAnc == null ? null : helper.getFileRevisionContent(path, hAnc);
+            if (hOther == null) {
+                if (localPresent && ancestorContent != null && java.util.Arrays.equals(localContent, ancestorContent)) {
+                    deleteFileFromWorkingCopy(repository, path);
+                    dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
+                }
+                continue;
+            }
+            byte[] otherContent = helper.getFileRevisionContent(path, hOther);
+            if (!localPresent || (ancestorContent != null && java.util.Arrays.equals(localContent, ancestorContent))) {
+                applyResolvedContent(repository, dirstate, helper, path, hOther, entry != null && entry.getState() == 'a' ? 'a' : 'n');
+                continue;
+            }
+            if (java.util.Arrays.equals(localContent, otherContent)) {
+                continue;
+            }
+            byte[] ancestorLinkNode = baseRev != -1 ? nodeOf(baseRev) : new byte[20];
+            messages.add("merging " + path + "\n");
+            ThreeWayMergeOutcome outcome = attemptThreeWayMerge(repository, helper, path, hAnc, localContent, entry.getMode(),
+                    flagOf(hOther), null, hOther, ancestorLinkNode, currentBase, originalNode, dirstate, mergeState);
+            mergeState = outcome.mergeState;
+            if (outcome.conflicted) {
+                conflicts.add(path);
+            }
+        }
+        dirstate.setParents(currentBase, p2Node);
+        repository.writeDirstate(dirstate);
+        if (!conflicts.isEmpty()) {
+            mergeState.write(mergeStateFile(repository));
+        } else {
+            cleanMergeDir(repository);
+        }
+        return conflicts;
     }
 
     private static void applyResolvedContent(HgRepository repository, Dirstate dirstate, MergeCommand helper,
@@ -566,8 +1515,17 @@ public class RebaseCommand {
             String ancestorHex, String localHex, String otherHex, byte[] ancestorLinkNode,
             byte[] localCommitNode, byte[] otherCommitNode, Dirstate dirstate, MergeState existingMergeState)
             throws IOException {
+        return attemptThreeWayMerge(repository, helper, path, ancestorHex, helper.getFileRevisionContent(path, localHex),
+                helper.getModeFromManifestHex(localHex != null ? localHex : otherHex), flagOf(localHex != null ? localHex : otherHex),
+                localHex, otherHex, ancestorLinkNode, localCommitNode, otherCommitNode, dirstate, existingMergeState);
+    }
+
+    /** The same with the local side given as content (a working copy that already holds merged changes). */
+    static ThreeWayMergeOutcome attemptThreeWayMerge(HgRepository repository, MergeCommand helper, String path,
+            String ancestorHex, byte[] localContent, int mode, String flag, String localHex, String otherHex, byte[] ancestorLinkNode,
+            byte[] localCommitNode, byte[] otherCommitNode, Dirstate dirstate, MergeState existingMergeState)
+            throws IOException {
         byte[] baseContent = ancestorHex == null ? new byte[0] : helper.getFileRevisionContent(path, ancestorHex);
-        byte[] localContent = helper.getFileRevisionContent(path, localHex);
         byte[] otherContent = helper.getFileRevisionContent(path, otherHex);
 
         List<String> baseLines = helper.readLines(baseContent);
@@ -580,8 +1538,6 @@ public class RebaseCommand {
             sb.append(line).append('\n');
         }
         byte[] mergedBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
-        int mode = helper.getModeFromManifestHex(localHex != null ? localHex : otherHex);
-
         writeFileToWorkingCopy(repository, path, mergedBytes, mode);
         dirstate.addEntry(path, new Dirstate.Entry('m', mode, mergedBytes.length,
                 SafeFileIO.lastModifiedSeconds(new File(repository.getDirectory(), path))));
@@ -590,6 +1546,8 @@ public class RebaseCommand {
             return new ThreeWayMergeOutcome(false, existingMergeState);
         }
 
+        // filemerge: the local version is saved as `<file>.orig` before the tool runs, and kept when the merge is not resolved
+        Files.write(new File(repository.getDirectory(), path + ".orig").toPath(), localContent);
         MergeState mergeState = existingMergeState;
         if (mergeState == null) {
             mergeState = new MergeState();
@@ -602,7 +1560,7 @@ public class RebaseCommand {
         Files.write(localBackup.toPath(), localContent);
 
         mergeState.addMergedFile(path, localKey, path, path, cleanHexOf(ancestorHex), path, cleanHexOf(otherHex),
-                flagOf(localHex != null ? localHex : otherHex));
+                flag);
         mergeState.stateExtras
                 .computeIfAbsent(path, k -> new LinkedHashMap<>())
                 .put("ancestorlinknode", NodeIdUtil.toHex(ancestorLinkNode));
@@ -726,6 +1684,18 @@ public class RebaseCommand {
      * state behind as a paused rebase does.
      */
     static void restoreWorkingCopyCleanTo(HgRepository repository, byte[] targetNode) throws IOException {
+        // mergemod.clean_update: a changing_parents context under the caller's wlock
+        try {
+            repository.changingParents(() -> {
+                restoreWorkingCopyCleanToBody(repository, targetNode);
+                return null;
+            });
+        } catch (io.github.search5.hg4j.errors.HgLockException e) {
+            throw new IOException(e.getMessage(), e);
+        }
+    }
+
+    private static void restoreWorkingCopyCleanToBody(HgRepository repository, byte[] targetNode) throws IOException {
         Map<String, String> targetManifest;
         if (targetNode == null || NodeIdUtil.isAllZero(targetNode)) {
             targetManifest = Collections.emptyMap();
@@ -847,147 +1817,6 @@ public class RebaseCommand {
         repository.writeDirstate(dirstate);
     }
 
-    // ------------------------------------------------------------------
-    // Physical store backup / rollback (crash-safety net for the whole rebase attempt)
-    // ------------------------------------------------------------------
-
-    private void backupStoreFiles(File backupDir, Map<File, File> backupMapping) throws IOException {
-        backupDir.mkdirs();
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-
-        copyToBackup(clIdx, backupDir, backupMapping);
-        copyToBackup(clDat, backupDir, backupMapping);
-        copyToBackup(mfIdx, backupDir, backupMapping);
-        copyToBackup(mfDat, backupDir, backupMapping);
-
-        // Every cherry-pick commit is written with CommitCommand.setSkipLockAndJournal(true) (this
-        // class owns the transaction instead), so a filelog a cherry-pick might append a revision
-        // to needs to be backed up here too. Rather than compute exactly which paths the queued
-        // revisions touch (redundant with the per-revision diffing cherryPickRevision already does,
-        // and easy to under-approximate), just back up every filelog fncache knows about -- a plain
-        // byte copy, safe even for a corrupt/stale entry (unlike loading it as a Revlog).
-        File fncacheFile = new File(repository.getStoreDir(), "fncache");
-        if (fncacheFile.exists()) {
-            copyToBackup(fncacheFile, backupDir, backupMapping);
-            List<String> fncachePaths = Files.readAllLines(fncacheFile.toPath(), StandardCharsets.UTF_8);
-            for (String relPath : fncachePaths) {
-                if (relPath.isEmpty() || !relPath.endsWith(".i")) {
-                    continue;
-                }
-                File flIdx = new File(repository.getStoreDir(), relPath);
-                File flDat = new File(repository.getStoreDir(), relPath.substring(0, relPath.length() - 2) + ".d");
-                copyToBackup(flIdx, backupDir, backupMapping);
-                copyToBackup(flDat, backupDir, backupMapping);
-            }
-        }
-    }
-
-    private void copyToBackup(File sourceFile, File backupDir, Map<File, File> backupMapping) throws IOException {
-        if (!sourceFile.exists()) return;
-        String relPath = repository.getStoreDir().toPath().relativize(sourceFile.toPath()).toString();
-        File targetFile = new File(backupDir, relPath);
-        targetFile.getParentFile().mkdirs();
-        Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        backupMapping.put(sourceFile, targetFile);
-    }
-
-    /**
-     * Rebuilds the {@code storeFile -> backupCopy} mapping {@link #copyToBackup} would have
-     * produced, purely from {@code backupDir}'s own layout -- needed because {@link #abort()}/
-     * {@link #continueRebase()} may run on a brand-new {@link RebaseCommand} instance (a fresh
-     * process, even) that never ran the original {@link #call()} and so never populated the
-     * in-memory mapping itself.
-     */
-    private Map<File, File> reconstructBackupMapping(File backupDir) throws IOException {
-        Map<File, File> mapping = new HashMap<>();
-        if (!backupDir.exists()) {
-            return mapping;
-        }
-        Path base = backupDir.toPath();
-        try (var stream = Files.walk(base)) {
-            List<Path> files = stream.filter(Files::isRegularFile).toList();
-            for (Path p : files) {
-                Path rel = base.relativize(p);
-                File orig = new File(repository.getStoreDir(), rel.toString().replace('\\', '/'));
-                mapping.put(orig, p.toFile());
-            }
-        }
-        return mapping;
-    }
-
-    private static void deleteDirRecursively(File file) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    deleteDirRecursively(child);
-                }
-            }
-        }
-        file.delete();
-    }
-
-    private void writeRebaseJournal(Map<File, File> backupMapping) throws IOException {
-        File journalFile = new File(repository.getStoreDir(), "journal");
-        Files.deleteIfExists(journalFile.toPath());
-
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<File, File> entry : backupMapping.entrySet()) {
-            File origFile = entry.getKey();
-            File backupFile = entry.getValue();
-
-            String origRel = repository.getHgDir().toPath().relativize(origFile.toPath()).toString().replace('\\', '/');
-            String backupRel = repository.getHgDir().toPath().relativize(backupFile.toPath()).toString().replace('\\', '/');
-
-            sb.append("backup ").append(origRel).append("\t").append(backupRel).append("\n");
-        }
-        Files.writeString(journalFile.toPath(), sb.toString(), StandardCharsets.UTF_8);
-        try (var fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
-        }
-    }
-
-    private void deleteRebaseJournal() throws IOException {
-        File journalFile = new File(repository.getStoreDir(), "journal");
-        Files.deleteIfExists(journalFile.toPath());
-    }
-
-    private void performPhysicalRollback(Map<File, File> backupMapping, File backupDir) {
-        for (Map.Entry<File, File> entry : backupMapping.entrySet()) {
-            File originalFile = entry.getKey();
-            File backupCopy = entry.getValue();
-            if (backupCopy.exists()) {
-                try {
-                    originalFile.getParentFile().mkdirs();
-                    Files.copy(backupCopy.toPath(), originalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                } catch (Exception ignored) {}
-            } else {
-                try {
-                    Files.deleteIfExists(originalFile.toPath());
-                } catch (Exception ignored) {}
-            }
-        }
-        try {
-            deleteRebaseJournal();
-        } catch (Exception ignored) {}
-        deleteDirRecursively(backupDir);
-        repository.clearRevlogCache();
-    }
-
-    // ------------------------------------------------------------------
-    // Paused-rebase state persistence (own hg4j-private format; NOT real hg's own binary
-    // .hg/rebasestate -- mid-flight resume interop with real hg's own `hg rebase --continue` is
-    // not a goal, only the end state (visible-vs-hidden revisions, obsstore, conflict markers via
-    // .hg/merge/state2) needs to round-trip through real hg, and that's handled elsewhere)
-    // ------------------------------------------------------------------
-
-    private File rebaseStateFile() {
-        return new File(repository.getHgDir(), "rebasestate-hg4j");
-    }
-
     /** Package-private so {@link GraftCommand} can write/read the same {@code .hg/merge/state2}
      * file for its own paused-on-conflict graft state. */
     static File mergeStateFile(HgRepository repository) {
@@ -1012,43 +1841,13 @@ public class RebaseCommand {
         deleteDirRecursively(new File(repository.getHgDir(), "merge"));
     }
 
-    private void writeRebaseState(byte[] originalWdParent, byte[] currentBase, List<byte[]> remaining) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("originalWdParent=").append(NodeIdUtil.toHex(originalWdParent)).append('\n');
-        sb.append("currentBase=").append(NodeIdUtil.toHex(currentBase)).append('\n');
-        sb.append("remaining=");
-        for (int i = 0; i < remaining.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append(NodeIdUtil.toHex(remaining.get(i)));
-        }
-        sb.append('\n');
-        Files.writeString(rebaseStateFile().toPath(), sb.toString(), StandardCharsets.UTF_8);
-    }
-
-    private PausedRebaseState readRebaseState() throws IOException {
-        PausedRebaseState state = new PausedRebaseState();
-        for (String line : Files.readAllLines(rebaseStateFile().toPath(), StandardCharsets.UTF_8)) {
-            int eq = line.indexOf('=');
-            if (eq == -1) continue;
-            String key = line.substring(0, eq);
-            String val = line.substring(eq + 1);
-            switch (key) {
-                case "originalWdParent" -> state.originalWdParent = NodeIdUtil.fromHex(val);
-                case "currentBase" -> state.currentBase = NodeIdUtil.fromHex(val);
-                case "remaining" -> {
-                    if (!val.isEmpty()) {
-                        for (String hex : val.split(",")) {
-                            state.remaining.add(NodeIdUtil.fromHex(hex));
-                        }
-                    }
-                }
-                default -> { /* forward-compatible: ignore unknown keys */ }
+    private static void deleteDirRecursively(File file) {
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteDirRecursively(child);
             }
         }
-        return state;
-    }
-
-    private void deleteRebaseStateFile() throws IOException {
-        Files.deleteIfExists(rebaseStateFile().toPath());
+        file.delete();
     }
 }

@@ -587,7 +587,7 @@ public class StatusCommandTest {
     }
 
     @Test
-    public void dirstateStateMIsTreatedLikeStateNForCleanDetection(@TempDir Path tempDir) throws Exception {
+    public void dirstateStateMIsModifiedUntilCommittedLikeMercurial(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         File f = new File(repoDir, "merged.txt");
@@ -601,12 +601,12 @@ public class StatusCommandTest {
         repo.writeDirstate(dirstate);
 
         Status fast = new StatusCommand(repo).call();
-        assertTrue(fast.getClean().contains("merged.txt"),
-                "A dirstate entry marked 'm' (merge) with matching size/mtime must be treated as clean just like 'n', got: " + fast.getModified());
+        assertTrue(fast.getModified().contains("merged.txt"),
+                "A dirstate entry marked 'm' (merge) is modified until it is committed, as `hg status` reports a merged file, got: " + fast.getClean());
 
         HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
         Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();
-        assertTrue(slow.getClean().contains("merged.txt"));
+        assertTrue(slow.getModified().contains("merged.txt"));
     }
 
     @Test
@@ -631,7 +631,7 @@ public class StatusCommandTest {
     }
 
     @Test
-    public void mtimeOnlyChangeWithUnchangedSizeIsReportedModifiedByTheCheapCheck(@TempDir Path tempDir) throws Exception {
+    public void mtimeOnlyChangeWithUnchangedSizeIsLookedUpAndFoundCleanLikeMercurial(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         File f = new File(repoDir, "touched.txt");
@@ -644,9 +644,14 @@ public class StatusCommandTest {
         assertTrue(f.setLastModified(bumpedTime));
         assertEquals(originalTime + 1000, f.lastModified() / 1000);
 
+        // Mercurial compares the content of a file whose mtime differs ("lookup") and finds it clean: `hg status -A` says `C`
         Status fast = new StatusCommand(repo).call();
-        assertTrue(fast.getModified().contains("touched.txt"),
-                "A tracked file whose mtime changed with unchanged size must be Modified via the cheap size/mtime check alone, got: " + fast.getClean());
+        assertTrue(fast.getClean().contains("touched.txt"), "touched but unchanged is clean, got modified: " + fast.getModified());
+        assertTrue(fast.getModified().isEmpty());
+
+        Files.writeString(f.toPath(), "unchanged content, only the mtime moves!");
+        assertTrue(f.setLastModified(bumpedTime + 5000));
+        assertTrue(new StatusCommand(repo).call().getModified().contains("touched.txt"));
 
         HgTreeFilter customFilter = HgTreeFilter.fromPathFilter(p -> true);
         Status slow = new StatusCommand(repo).setTreeFilter(customFilter).call();

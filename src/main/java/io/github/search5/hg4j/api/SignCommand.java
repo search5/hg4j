@@ -28,14 +28,10 @@ import java.util.List;
  * <ul>
  *   <li>{@code hg sign --force} crashes in the original with {@code UnboundLocalError} (the variable
  *       {@code msigs} is only defined without {@code --force}); {@link #setForce} works here.</li>
- *   <li>All preconditions are checked BEFORE any file is touched, so a refused signing leaves the working
- *       copy as it was. The original appends to {@code .hgsigs} first and can leave it modified when it then
- *       aborts.</li>
- *   <li><b>Limitation:</b> the commit made here cannot be restricted to {@code .hgsigs} ({@link CommitCommand}
- *       has no path filter, real hg uses {@code match=.hgsigs}). So when other tracked files have uncommitted
- *       changes the command refuses to commit and tells you to commit them first or use
- *       {@link #setCommit(boolean) setCommit(false)}.</li>
- *   <li>If the commit fails after {@code .hgsigs} was written, the file is restored.</li>
+ *   <li>All the checks that can refuse are made before {@code .hgsigs} is touched (as in the original, where the signing and
+ *       the check of {@code .hgsigs} come before the file is written).</li>
+ *   <li>Like the original, a failure after {@code .hgsigs} was written (adding it, the commit) leaves the file as it is: it is not
+ *       restored. The commit holds {@code .hgsigs} only ({@code match=.hgsigs}); other changes stay uncommitted.</li>
  * </ul>
  */
 public class SignCommand {
@@ -122,65 +118,51 @@ public class SignCommand {
         if (keyring == null) {
             throw new IllegalStateException("A keyring with the signing key must be set");
         }
-        repository.refreshIfChangedOnDisk();
+        // `with repo.wlock(): return _dosign(...)`: only the working copy lock for the whole command; the commit takes the store lock
+        // itself and gives it back (the signing, the write of .hgsigs and the add are under the working copy lock alone)
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy()) {
+            repository.refreshIfChangedOnDisk();
 
-        // ---- everything that can refuse is checked before anything is written
-        PGPSecretKey key = keyring.findSigningKey(keySpec);
-        if (key == null) {
-            throw new HgValidationException("no usable signing key found"
-                    + (keySpec == null || keySpec.isBlank() ? "" : " for '" + keySpec + "'")
-                    + (keyring.getNotes().isEmpty() ? "" : " (" + String.join("; ", keyring.getNotes()) + ")"));
-        }
-        List<String> nodes = nodesToSign();
-        boolean tracked = !local;
-        if (tracked) {
-            Status status = new StatusCommand(repository).call();
-            if (!force && touched(status, SIGS_FILE)) {
-                throw new HgValidationException("working copy of .hgsigs is changed (please commit .hgsigs manually"
-                        + " or use force)");
+            // ---- everything that can refuse is checked before anything is written
+            PGPSecretKey key = keyring.findSigningKey(keySpec);
+            if (key == null) {
+                throw new HgValidationException("no usable signing key found"
+                        + (keySpec == null || keySpec.isBlank() ? "" : " for '" + keySpec + "'")
+                        + (keyring.getNotes().isEmpty() ? "" : " (" + String.join("; ", keyring.getNotes()) + ")"));
+            }
+            List<String> nodes = nodesToSign();
+            boolean tracked = !local;
+            if (tracked) {
+                Status status = new StatusCommand(repository).call();
+                // `repo.status(match=msigs, unknown=True, ignored=True)`: a .hgsigs that is changed, or not tracked, counts
+                if (!force && (touched(status, SIGS_FILE) || status.getUntracked().contains(SIGS_FILE))) {
+                    throw new HgValidationException("working copy of .hgsigs is changed \n(please commit .hgsigs manually)");
+                }
+            }
+
+            Instant signedAt = now != null ? now : Instant.now();
+            List<HgSigEntry> entries = new ArrayList<>();
+            for (String node : nodes) {
+                entries.add(HgSigner.sign(node, key, passphrase, signedAt));
+            }
+            byte[] lines = HgSigsFile.format(entries);
+
+            if (local) {
+                Files.write(new File(repository.getHgDir(), "localsigs").toPath(), lines,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                return entries;
+            }
+
+            File sigsFile = new File(repository.getDirectory(), SIGS_FILE);
+            Files.write(sigsFile.toPath(), lines, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            if (!repository.getDirstate().getEntries().containsKey(SIGS_FILE)) {
+                new AddCommand(repository).addFile(SIGS_FILE).call();
             }
             if (commit) {
-                List<String> others = new ArrayList<>();
-                for (String f : concat(status.getAdded(), status.getModified(), status.getRemoved())) {
-                    if (!f.equals(SIGS_FILE)) {
-                        others.add(f);
-                    }
-                }
-                if (!others.isEmpty()) {
-                    throw new HgValidationException("cannot commit the signature: other files have uncommitted"
-                            + " changes (" + String.join(", ", others) + "); commit them first or sign without"
-                            + " committing (setCommit(false))");
-                }
+                new CommitCommand(repository).setAuthor(author).setMessage(commitMessage(nodes)).setPatterns(SIGS_FILE).call();
             }
-        }
-
-        Instant signedAt = now != null ? now : Instant.now();
-        List<HgSigEntry> entries = new ArrayList<>();
-        for (String node : nodes) {
-            entries.add(HgSigner.sign(node, key, passphrase, signedAt));
-        }
-        byte[] lines = HgSigsFile.format(entries);
-
-        if (local) {
-            Files.write(new File(repository.getHgDir(), "localsigs").toPath(), lines,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             return entries;
         }
-
-        File sigsFile = new File(repository.getDirectory(), SIGS_FILE);
-        boolean existed = sigsFile.exists();
-        byte[] before = existed ? Files.readAllBytes(sigsFile.toPath()) : null;
-        Files.write(sigsFile.toPath(), lines, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try {
-            new AddCommand(repository).addFile(SIGS_FILE).call();
-            if (commit) {
-                new CommitCommand(repository).setAuthor(author).setMessage(commitMessage(nodes)).call();
-            }
-        } catch (IOException | RuntimeException | HgLockException e) {
-            restore(sigsFile, existed, before, e);
-            throw e;
-        }
-        return entries;
     }
 
     private List<String> nodesToSign() throws IOException {
@@ -218,19 +200,6 @@ public class SignCommand {
             sb.append("Added signature for changeset ").append(node, 0, 12);
         }
         return sb.toString();
-    }
-
-    private void restore(File sigsFile, boolean existed, byte[] before, Throwable cause) {
-        try {
-            if (existed) {
-                Files.write(sigsFile.toPath(), before);
-            } else {
-                new ForgetCommand(repository).setFile(SIGS_FILE).call();
-                Files.deleteIfExists(sigsFile.toPath());
-            }
-        } catch (IOException | HgLockException restoreFailure) {
-            cause.addSuppressed(restoreFailure);
-        }
     }
 
     private static boolean touched(Status status, String file) {

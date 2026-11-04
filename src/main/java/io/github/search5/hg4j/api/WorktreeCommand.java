@@ -105,25 +105,28 @@ public class WorktreeCommand {
         // path a freshly-`hg init`ed repository takes before its first commit) -- letting
         // UpdateCommand create the dirstate from scratch, in whatever format (v1 or v2) the shared
         // store actually uses, is both simpler and correct for every combo.
-        File clIdx = new File(worktreeRepo.getStoreDir(), "00changelog.i");
-        File clDat = new File(worktreeRepo.getStoreDir(), "00changelog.d");
-        Revlog changelog = worktreeRepo.getRevlog(clIdx, clDat);
-        if (changelog.getRevisionCount() > 0) {
-            new UpdateCommand(worktreeRepo).setForce(true).setRevision("tip").call();
-        } else {
-            // Nothing to check out -- fall back to the same plain 40-byte (p1+p2 node) stub as
-            // before, matching real hg's own no-op share of an empty repository and preserving
-            // WorktreeCommandTest's existing "defaults dirstate when main has none" expectations.
-            File newDirstate = new File(newHgDir, "dirstate");
-            byte[] mainDirstateBytes = new File(mainHgDir, "dirstate").exists() ?
-                    Files.readAllBytes(new File(mainHgDir, "dirstate").toPath()) : new byte[40];
-            byte[] initialDirstate = new byte[40];
-            if (mainDirstateBytes.length >= 40) {
-                System.arraycopy(mainDirstateBytes, 0, initialDirstate, 0, 40);
+        // Like real hg's share + update: the new working copy is locked while its dirstate is created and it is brought up to date.
+        try (io.github.search5.hg4j.lib.HgLock destWlock = worktreeRepo.lockWorkingCopy()) {
+            File clIdx = new File(worktreeRepo.getStoreDir(), "00changelog.i");
+            File clDat = new File(worktreeRepo.getStoreDir(), "00changelog.d");
+            Revlog changelog = worktreeRepo.getRevlog(clIdx, clDat);
+            if (changelog.getRevisionCount() > 0) {
+                new UpdateCommand(worktreeRepo).setForce(true).setRevision("tip").call();
+            } else {
+                // Nothing to check out -- fall back to the same plain 40-byte (p1+p2 node) stub as
+                // before, matching real hg's own no-op share of an empty repository and preserving
+                // WorktreeCommandTest's existing "defaults dirstate when main has none" expectations.
+                File newDirstate = new File(newHgDir, "dirstate");
+                byte[] mainDirstateBytes = new File(mainHgDir, "dirstate").exists() ?
+                        Files.readAllBytes(new File(mainHgDir, "dirstate").toPath()) : new byte[40];
+                byte[] initialDirstate = new byte[40];
+                if (mainDirstateBytes.length >= 40) {
+                    System.arraycopy(mainDirstateBytes, 0, initialDirstate, 0, 40);
+                }
+                Files.write(newDirstate.toPath(), initialDirstate);
             }
-            Files.write(newDirstate.toPath(), initialDirstate);
-        }
 
-        return worktreeRepo;
+            return worktreeRepo;
+        }
     }
 }

@@ -64,7 +64,14 @@ public final class RepoSupport {
             // bookmarks at all: without it `hg incoming -B` / `outgoing -B` say "remote doesn't support bookmarks".
             map.put("bookmarks", "");
             map.put("namespaces", "");
+            if (io.github.search5.hg4j.obsolete.ObsStore.exchangeEnabled(repo)) {
+                map.put("obsolete", ""); // registered when obsolescence markers are exchanged (obsolete.isenabled(exchangeopt))
+            }
             map.put("phases", "");
+        } else if ("obsolete".equals(namespace)) {
+            if (io.github.search5.hg4j.obsolete.ObsStore.exchangeEnabled(repo)) {
+                map.putAll(io.github.search5.hg4j.obsolete.ObsStore.listMarkers(repo));
+            }
         } else if ("phases".equals(namespace)) {
             // Real hg's phases.listphases(): the DRAFT ROOTS (not every non-public changeset), each valued "1",
             // and, when the repository is publishing, an extra "publishing" = "True". The extra key matters:
@@ -100,6 +107,19 @@ public final class RepoSupport {
     private static boolean applyPushkey(HgRepository repo, String namespace, String key, String oldVal, String newVal, boolean dryRun) throws IOException {
         if ("phases".equals(namespace)) {
             return pushPhase(repo, key, oldVal, newVal, dryRun);
+        }
+        if ("obsolete".equals(namespace)) {
+            if (!io.github.search5.hg4j.obsolete.ObsStore.exchangeEnabled(repo)) {
+                return false;
+            }
+            if (dryRun) {
+                return key != null && key.startsWith("dump") && (oldVal == null || oldVal.isEmpty());
+            }
+            try {
+                return io.github.search5.hg4j.obsolete.ObsStore.pushMarker(repo, key, oldVal, newVal);
+            } catch (io.github.search5.hg4j.errors.HgLockException e) {
+                throw new IOException(e.getMessage(), e);
+            }
         }
         if (!"bookmarks".equals(namespace)) {
             return false;

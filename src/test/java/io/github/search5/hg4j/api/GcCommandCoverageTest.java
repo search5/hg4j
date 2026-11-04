@@ -162,7 +162,7 @@ public class GcCommandCoverageTest {
     }
 
     @Test
-    public void testStoreDirAsRegularFileSkipsOrphanFileScan(@TempDir Path tempDir) throws Exception {
+    public void testStoreDirAsRegularFileCannotBeLocked(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.resolve("repo").toFile();
         HgRepository repo = Hg.init().setDirectory(repoDir).call();
         File storeDir = repo.getStoreDir();
@@ -172,10 +172,9 @@ public class GcCommandCoverageTest {
         Files.delete(storeDir.toPath());
         assertTrue(storeDir.createNewFile());
 
+        // like real hg, whose repo.lock() fails when the store is not a directory, gc cannot lock such a repository
         GcCommand gc = new GcCommand(repo);
-        String report = gc.call();
-        assertTrue(report.contains("defragmented and re-delta optimized 0 store revlogs"), report);
-        assertTrue(report.contains("cleaned 0 orphaned temp files"), report);
+        assertThrows(io.github.search5.hg4j.errors.HgLockException.class, gc::call);
     }
 
     @Test

@@ -162,143 +162,156 @@ public class GraftCommand {
         if (sourceRevision == null || sourceRevision.isEmpty()) {
             throw new IllegalArgumentException("Source revision must be specified for graft");
         }
-        repository.clearRevlogCache();
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
+        // the working copy update runs in a changing_parents context that ends (and writes the dirstate) before the commit step, which
+        // opens its own, as merge.update and the commit do in the original; a conflict is a result, not a failure, so it keeps the update
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgRepository.DirstateChange change = repository.openChangingParents()) {
+          try {
+            repository.clearRevlogCache();
 
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
-        Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
+            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
+            Revlog manifestRevlog = repository.getRevlog(mfIdx, mfDat);
 
-        byte[] origNode = NodeIdUtil.resolveRevision(changelog, sourceRevision);
-        if (origNode == null) {
-            throw new IOException("Graft source revision not found: " + sourceRevision);
-        }
-        int origRev = changelog.findRevision(origNode);
+            byte[] origNode = NodeIdUtil.resolveRevision(changelog, sourceRevision);
+            if (origNode == null) {
+                throw new IOException("Graft source revision not found: " + sourceRevision);
+            }
+            int origRev = changelog.findRevision(origNode);
 
-        GraftMeta meta = parseGraftMeta(changelog, origRev);
-        Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
+            GraftMeta meta = parseGraftMeta(changelog, origRev);
+            Map<String, String> originalManifest = getManifestForCommit(changelog, manifestRevlog, origNode);
 
-        int parent1Rev = changelog.getIndexRecord(origRev).getParent1();
-        byte[] parent1Node = parent1Rev == -1 ? null : changelog.getIndexRecord(parent1Rev).getNodeId();
-        Map<String, String> ancestorManifest = getManifestForCommit(changelog, manifestRevlog, parent1Node);
+            int parent1Rev = changelog.getIndexRecord(origRev).getParent1();
+            byte[] parent1Node = parent1Rev == -1 ? null : changelog.getIndexRecord(parent1Rev).getNodeId();
+            Map<String, String> ancestorManifest = getManifestForCommit(changelog, manifestRevlog, parent1Node);
 
-        // Acquire lock explicitly to restore files and commit safely in a transaction
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+            // Acquire lock explicitly to restore files and commit safely in a transaction
+            {
 
-            Dirstate dirstate = repository.getDirstate();
-            byte[] destParentNode = dirstate.getParent1();
-            Map<String, String> destManifest = getManifestForCommit(changelog, manifestRevlog, destParentNode);
+                Dirstate dirstate = repository.getDirstate();
+                byte[] destParentNode = dirstate.getParent1();
+                Map<String, String> destManifest = getManifestForCommit(changelog, manifestRevlog, destParentNode);
 
-            MergeCommand mergeHelper = new MergeCommand(repository);
-            List<String> conflictedPaths = new ArrayList<>();
-            MergeState pendingMergeState = null;
+                MergeCommand mergeHelper = new MergeCommand(repository);
+                List<String> conflictedPaths = new ArrayList<>();
+                MergeState pendingMergeState = null;
 
-            // 2. For each modified file in the source revision, copy contents and write to working copy.
-            // The dirstate is also updated here (mirroring AddCommand/RemoveCommand's own bookkeeping):
-            // a file the source revision touched but that isn't already tracked on the current branch
-            // must be marked 'a' (added) or CommitCommand's WorkingDirTreeIterator reports it as
-            // untracked ('?') and silently drops it from the grafted commit's manifest; a file the
-            // source revision removed must be marked 'r' (removed) or CommitCommand throws
-            // "Tracked file not found on disk" once the physical file is deleted below.
-            for (String path : meta.filesModified) {
-                String hexAndFlag = originalManifest.get(path);
-                Dirstate.Entry existingEntry = dirstate.getEntries().get(path);
-                if (hexAndFlag == null) {
-                    // File deleted in source revision -> delete in working copy too
-                    File wFile = new File(repository.getDirectory(), path);
-                    if (wFile.exists()) {
-                        wFile.delete();
-                    }
-                    if (existingEntry != null) {
-                        if (existingEntry.getState() == 'a') {
-                            dirstate.removeEntry(path);
-                        } else {
-                            dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
+                // 2. For each modified file in the source revision, copy contents and write to working copy.
+                // The dirstate is also updated here (mirroring AddCommand/RemoveCommand's own bookkeeping):
+                // a file the source revision touched but that isn't already tracked on the current branch
+                // must be marked 'a' (added) or CommitCommand's WorkingDirTreeIterator reports it as
+                // untracked ('?') and silently drops it from the grafted commit's manifest; a file the
+                // source revision removed must be marked 'r' (removed) or CommitCommand throws
+                // "Tracked file not found on disk" once the physical file is deleted below.
+                for (String path : meta.filesModified) {
+                    String hexAndFlag = originalManifest.get(path);
+                    Dirstate.Entry existingEntry = dirstate.getEntries().get(path);
+                    if (hexAndFlag == null) {
+                        // File deleted in source revision -> delete in working copy too
+                        File wFile = new File(repository.getDirectory(), path);
+                        if (wFile.exists()) {
+                            wFile.delete();
                         }
+                        if (existingEntry != null) {
+                            if (existingEntry.getState() == 'a') {
+                                dirstate.removeEntry(path);
+                            } else {
+                                dirstate.addEntry(path, new Dirstate.Entry('r', 0, 0, 0));
+                            }
+                        }
+                        continue;
                     }
-                    continue;
-                }
 
-                String hAnc = ancestorManifest.get(path);
-                String hLocalDest = destManifest.get(path);
+                    String hAnc = ancestorManifest.get(path);
+                    String hLocalDest = destManifest.get(path);
 
-                if (Objects.equals(hLocalDest, hexAndFlag)) {
-                    continue; // dest already matches the source -- nothing to do
-                }
-
-                if (hLocalDest != null && !Objects.equals(hLocalDest, hAnc)) {
-                    // Genuine divergence: the destination changed (or independently added) this
-                    // path differently than the graft source did, since their common ancestor --
-                    // attempt a real 3-way merge instead of blindly overwriting dest's content
-                    // (verified against real `hg graft` 7.2 -- see this class's own javadoc).
-                    byte[] ancestorLinkNode = parent1Node != null ? parent1Node : new byte[20];
-                    RebaseCommand.ThreeWayMergeOutcome mergeOutcome = RebaseCommand.attemptThreeWayMerge(
-                            repository, mergeHelper, path, hAnc, hLocalDest, hexAndFlag,
-                            ancestorLinkNode, destParentNode, origNode, dirstate, pendingMergeState);
-                    pendingMergeState = mergeOutcome.mergeState;
-                    if (mergeOutcome.conflicted) {
-                        conflictedPaths.add(path);
+                    if (Objects.equals(hLocalDest, hexAndFlag)) {
+                        continue; // dest already matches the source -- nothing to do
                     }
-                    continue;
-                }
 
-                // Fast path: dest doesn't have this path at all, or is unchanged since the graft
-                // source's own parent -- the common, non-conflicting case (preserves prior
-                // behavior exactly).
-                String fileHex = hexAndFlag.substring(0, 40);
-                // Manifest entries are "<40-hex-nodeid><flag>": flag is "x" (executable),
-                // "l" (symlink) or empty (verified against `hg manifest --debug`, e.g.
-                // "<hash> 755 * script.sh" / "<hash> 644 @ link.txt"). CommitCommand.getRevisionContent
-                // only needs the node hex, but real `hg graft` (verified against `hg graft` v7.2:
-                // grafting an executable script or a symlink onto a branch that never had it
-                // restores the exact mode/symlink-ness in the working copy) also restores this
-                // flag onto the copied working-copy file -- previously dropped here, which meant a
-                // grafted executable script or symlink silently lost its mode/symlink-ness.
-                String flag = hexAndFlag.length() > 40 ? hexAndFlag.substring(40) : "";
-                boolean symlink = flag.contains("l");
-                boolean executable = flag.contains("x");
-                byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
-
-                File wFile = new File(repository.getDirectory(), path);
-                wFile.getParentFile().mkdirs();
-                if (symlink) {
-                    if (wFile.exists() || Files.isSymbolicLink(wFile.toPath())) {
-                        Files.delete(wFile.toPath());
+                    if (hLocalDest != null && !Objects.equals(hLocalDest, hAnc)) {
+                        // Genuine divergence: the destination changed (or independently added) this
+                        // path differently than the graft source did, since their common ancestor --
+                        // attempt a real 3-way merge instead of blindly overwriting dest's content
+                        // (verified against real `hg graft` 7.2 -- see this class's own javadoc).
+                        byte[] ancestorLinkNode = parent1Node != null ? parent1Node : new byte[20];
+                        RebaseCommand.ThreeWayMergeOutcome mergeOutcome = RebaseCommand.attemptThreeWayMerge(
+                                repository, mergeHelper, path, hAnc, hLocalDest, hexAndFlag,
+                                ancestorLinkNode, destParentNode, origNode, dirstate, pendingMergeState);
+                        pendingMergeState = mergeOutcome.mergeState;
+                        if (mergeOutcome.conflicted) {
+                            conflictedPaths.add(path);
+                        }
+                        continue;
                     }
-                    String target = new String(fileContent, StandardCharsets.UTF_8).trim();
-                    try {
-                        Files.createSymbolicLink(wFile.toPath(), Path.of(target));
-                    } catch (Exception e) {
+
+                    // Fast path: dest doesn't have this path at all, or is unchanged since the graft
+                    // source's own parent -- the common, non-conflicting case (preserves prior
+                    // behavior exactly).
+                    String fileHex = hexAndFlag.substring(0, 40);
+                    // Manifest entries are "<40-hex-nodeid><flag>": flag is "x" (executable),
+                    // "l" (symlink) or empty (verified against `hg manifest --debug`, e.g.
+                    // "<hash> 755 * script.sh" / "<hash> 644 @ link.txt"). CommitCommand.getRevisionContent
+                    // only needs the node hex, but real `hg graft` (verified against `hg graft` v7.2:
+                    // grafting an executable script or a symlink onto a branch that never had it
+                    // restores the exact mode/symlink-ness in the working copy) also restores this
+                    // flag onto the copied working-copy file -- previously dropped here, which meant a
+                    // grafted executable script or symlink silently lost its mode/symlink-ness.
+                    String flag = hexAndFlag.length() > 40 ? hexAndFlag.substring(40) : "";
+                    boolean symlink = flag.contains("l");
+                    boolean executable = flag.contains("x");
+                    byte[] fileContent = getFileRevisionContent(repository, path, fileHex);
+
+                    File wFile = new File(repository.getDirectory(), path);
+                    wFile.getParentFile().mkdirs();
+                    if (symlink) {
+                        if (wFile.exists() || Files.isSymbolicLink(wFile.toPath())) {
+                            Files.delete(wFile.toPath());
+                        }
+                        String target = new String(fileContent, StandardCharsets.UTF_8).trim();
+                        try {
+                            Files.createSymbolicLink(wFile.toPath(), Path.of(target));
+                        } catch (Exception e) {
+                            Files.write(wFile.toPath(), fileContent);
+                        }
+                    } else {
                         Files.write(wFile.toPath(), fileContent);
+                        wFile.setExecutable(executable, false);
                     }
-                } else {
-                    Files.write(wFile.toPath(), fileContent);
-                    wFile.setExecutable(executable, false);
+
+                    if (existingEntry == null) {
+                        int mode = symlink ? 0120000 : (executable ? 0755 : 0644);
+                        int size = fileContent.length;
+                        long time = SafeFileIO.lastModifiedSeconds(wFile);
+                        dirstate.addEntry(path, new Dirstate.Entry('a', mode, size, time));
+                    }
+                }
+                repository.writeDirstate(dirstate);
+                change.close();
+
+                if (!conflictedPaths.isEmpty()) {
+                    pendingMergeState.write(RebaseCommand.mergeStateFile(repository));
+                    writeGraftState(origNode, destParentNode);
+                    throw new HgMergeConflictException(conflictedPaths,
+                            "graft halted: " + conflictedPaths.size()
+                                    + " conflicting file(s) require resolution (see 'hg resolve --list')");
                 }
 
-                if (existingEntry == null) {
-                    int mode = symlink ? 0120000 : (executable ? 0755 : 0644);
-                    int size = fileContent.length;
-                    long time = SafeFileIO.lastModifiedSeconds(wFile);
-                    dirstate.addEntry(path, new Dirstate.Entry('a', mode, size, time));
-                }
+                byte[] newCommitNode = commitGraftedRevision(origNode, meta);
+                return NodeIdUtil.toHex(newCommitNode);
             }
-            repository.writeDirstate(dirstate);
-
-            if (!conflictedPaths.isEmpty()) {
-                pendingMergeState.write(RebaseCommand.mergeStateFile(repository));
-                writeGraftState(origNode, destParentNode);
-                throw new HgMergeConflictException(conflictedPaths,
-                        "graft halted: " + conflictedPaths.size()
-                                + " conflicting file(s) require resolution (see 'hg resolve --list')");
-            }
-
-            byte[] newCommitNode = commitGraftedRevision(origNode, meta);
-            return NodeIdUtil.toHex(newCommitNode);
+          } catch (HgMergeConflictException conflict) {
+            throw conflict;
+          } catch (Throwable failure) {
+            change.failed();
+            throw failure;
+          }
         }
     }
 
@@ -312,38 +325,40 @@ public class GraftCommand {
      * @throws HgValidationException if no graft is in progress, or unresolved files remain
      */
     public String continueGraft() throws IOException, HgLockException {
-        repository.clearRevlogCache();
-        File stateFile = graftStateFile();
-        if (!stateFile.exists()) {
-            throw new HgValidationException("no graft in progress");
-        }
-
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
-
-            PausedGraftState state = readGraftState();
-
-            MergeState ms = MergeState.read(RebaseCommand.mergeStateFile(repository));
-            if (!ms.unresolvedFiles().isEmpty()) {
-                throw new HgValidationException(
-                        "unresolved merge conflicts (see 'hg resolve --list'): " + ms.unresolvedFiles());
+        // Like real hg (_dograft, hgabortgraft): the wlock is taken first and the graft state is looked for under it.
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            repository.clearRevlogCache();
+            File stateFile = graftStateFile();
+            if (!stateFile.exists()) {
+                throw new HgValidationException("no graft in progress");
             }
 
-            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-            File clDat = new File(repository.getStoreDir(), "00changelog.d");
-            Revlog changelog = repository.getRevlog(clIdx, clDat);
-            int origRev = changelog.findRevision(state.origNode);
-            if (origRev == -1) {
-                throw new HgRevisionNotFoundException("Paused graft's source revision is gone from the changelog.");
+            {
+
+                PausedGraftState state = readGraftState();
+
+                MergeState ms = MergeState.read(RebaseCommand.mergeStateFile(repository));
+                if (!ms.unresolvedFiles().isEmpty()) {
+                    throw new HgValidationException(
+                            "unresolved merge conflicts (see 'hg resolve --list'): " + ms.unresolvedFiles());
+                }
+
+                File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+                File clDat = new File(repository.getStoreDir(), "00changelog.d");
+                Revlog changelog = repository.getRevlog(clIdx, clDat);
+                int origRev = changelog.findRevision(state.origNode);
+                if (origRev == -1) {
+                    throw new HgRevisionNotFoundException("Paused graft's source revision is gone from the changelog.");
+                }
+
+                GraftMeta meta = parseGraftMeta(changelog, origRev);
+                byte[] newCommitNode = commitGraftedRevision(state.origNode, meta);
+
+                RebaseCommand.cleanMergeDir(repository);
+                deleteGraftStateFile();
+
+                return NodeIdUtil.toHex(newCommitNode);
             }
-
-            GraftMeta meta = parseGraftMeta(changelog, origRev);
-            byte[] newCommitNode = commitGraftedRevision(state.origNode, meta);
-
-            RebaseCommand.cleanMergeDir(repository);
-            deleteGraftStateFile();
-
-            return NodeIdUtil.toHex(newCommitNode);
         }
     }
 
@@ -355,19 +370,21 @@ public class GraftCommand {
      * the working copy/dirstate to exactly what was checked out before {@link #call()} started.
      */
     public void abort() throws IOException, HgLockException {
-        repository.clearRevlogCache();
-        File stateFile = graftStateFile();
-        if (!stateFile.exists()) {
-            throw new HgValidationException("no graft in progress");
-        }
+        // Like real hg (_dograft, hgabortgraft): the wlock is taken first and the graft state is looked for under it.
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            repository.clearRevlogCache();
+            File stateFile = graftStateFile();
+            if (!stateFile.exists()) {
+                throw new HgValidationException("no graft in progress");
+            }
 
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+            {
 
-            PausedGraftState state = readGraftState();
-            RebaseCommand.restoreWorkingCopyCleanTo(repository, state.destParentNode);
-            RebaseCommand.cleanMergeDir(repository);
-            deleteGraftStateFile();
+                PausedGraftState state = readGraftState();
+                RebaseCommand.restoreWorkingCopyCleanTo(repository, state.destParentNode);
+                RebaseCommand.cleanMergeDir(repository);
+                deleteGraftStateFile();
+            }
         }
     }
 
@@ -402,103 +419,95 @@ public class GraftCommand {
      * companion files via {@code "trunc <path>\t<size>"} journal lines.
      */
     private byte[] commitGraftedRevision(byte[] origNode, GraftMeta meta) throws IOException, HgLockException {
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
+        // Like real hg, graft holds only the working copy lock; the store lock is taken for the commit step, which is this method.
+        try (HgLock storeLock = repository.lockStore()) {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
-        Map<File, Long> fileSizes = new LinkedHashMap<>();
-        Map<File, byte[]> docketBackups = new LinkedHashMap<>();
-        List<File> docketBackupFiles = new ArrayList<>();
-        Set<File> truncateOnlyEntries = new HashSet<>();
-        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
-        File journalFile = new File(repository.getStoreDir(), "journal");
-        File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-
-        Files.deleteIfExists(journalFile.toPath());
-        if (dirstateFile.exists()) {
-            Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            appendToJournal(journalFile, "dirstate");
-        }
-        recordRevlogRollbackState(clIdx, clDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
-        recordRevlogRollbackState(mfIdx, mfDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
-        for (String path : meta.filesModified) {
-            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-            recordRevlogRollbackState(flIdx, flDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
-        }
-
-        try {
-            // Delegate execution to CommitCommand to ensure fncache registry, phase draft
-            // transition, and hooks are fully executed.
-            CommitCommand commitCmd = new CommitCommand(repository);
-            commitCmd.setAuthor(meta.author);
-            commitCmd.setMessage(meta.message);
-            commitCmd.setSkipLockAndJournal(true);
-            if (meta.dateSecs != null && meta.dateOffset != null) {
-                commitCmd.setDate(meta.dateSecs, meta.dateOffset);
-            }
-
-            byte[] newCommitNode = commitCmd.call();
-
-            // POST_GRAFT hooks trigger
-            Map<String, Object> ctx = new HashMap<>();
-            ctx.put("sourceRevision", NodeIdUtil.toHex(origNode));
-            ctx.put("graftedNode", NodeIdUtil.toHex(newCommitNode));
-            ctx.put("repository", repository);
-            for (HgHook hook : postGraftHooks) {
-                try {
-                    hook.run(ctx);
-                } catch (Exception e) {
-                    LOGGER.log(Level.WARNING, "Post-graft hook execution failed", e);
-                }
-            }
+            Map<File, Long> fileSizes = new LinkedHashMap<>();
+            Map<File, byte[]> docketBackups = new LinkedHashMap<>();
+            List<File> docketBackupFiles = new ArrayList<>();
+            Set<File> truncateOnlyEntries = new HashSet<>();
+            File journalFile = new File(repository.getStoreDir(), "journal");
 
             Files.deleteIfExists(journalFile.toPath());
-            Files.deleteIfExists(dirstateBackupFile.toPath());
-            for (File backupFile : docketBackupFiles) {
-                Files.deleteIfExists(backupFile.toPath());
+            recordRevlogRollbackState(clIdx, clDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
+            recordRevlogRollbackState(mfIdx, mfDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
+            for (String path : meta.filesModified) {
+                File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+                recordRevlogRollbackState(flIdx, flDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
             }
-            return newCommitNode;
-        } catch (Exception e) {
-            // Restore v2/docket full-content backups first (same recovery strategy as
-            // CommitCommand/RollbackCommand/RecoverCommand's own docket-aware fix), then roll
-            // every touched classic revlog back to its pre-commit size (truncate-only, never
-            // delete-on-zero, for a v2 revlog's resolved companion files -- they must keep
-            // physically existing, even empty, as long as the just-restored docket references
-            // them) and restore dirstate.
-            for (Map.Entry<File, byte[]> docketEntry : docketBackups.entrySet()) {
-                try {
-                    SafeFileIO.writeAtomic(docketEntry.getKey(), docketEntry.getValue());
-                } catch (IOException ignored) {
-                    LOGGER.log(Level.WARNING, "Failed to restore docket backup during graft rollback: " + docketEntry.getKey(), ignored);
+
+            try {
+                // Delegate execution to CommitCommand to ensure fncache registry, phase draft
+                // transition, and hooks are fully executed.
+                CommitCommand commitCmd = new CommitCommand(repository);
+                commitCmd.setAuthor(meta.author);
+                commitCmd.setMessage(meta.message);
+                commitCmd.setSkipLockAndJournal(true);
+                if (meta.dateSecs != null && meta.dateOffset != null) {
+                    commitCmd.setDate(meta.dateSecs, meta.dateOffset);
                 }
-            }
-            for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
-                File file = sizeEntry.getKey();
-                long origSize = sizeEntry.getValue();
-                if (origSize == 0 && !truncateOnlyEntries.contains(file)) {
-                    Files.deleteIfExists(file.toPath());
-                } else {
-                    file.getParentFile().mkdirs();
-                    try (FileChannel outChan = FileChannel.open(file.toPath(),
-                            StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
-                        outChan.truncate(origSize);
-                        outChan.force(true);
+
+                byte[] newCommitNode = commitCmd.call();
+
+                // POST_GRAFT hooks trigger
+                Map<String, Object> ctx = new HashMap<>();
+                ctx.put("sourceRevision", NodeIdUtil.toHex(origNode));
+                ctx.put("graftedNode", NodeIdUtil.toHex(newCommitNode));
+                ctx.put("repository", repository);
+                for (HgHook hook : postGraftHooks) {
+                    try {
+                        hook.run(ctx);
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Post-graft hook execution failed", e);
                     }
                 }
+
+                Files.deleteIfExists(journalFile.toPath());
+                for (File backupFile : docketBackupFiles) {
+                    Files.deleteIfExists(backupFile.toPath());
+                }
+                return newCommitNode;
+            } catch (Exception e) {
+                // Restore v2/docket full-content backups first (same recovery strategy as
+                // CommitCommand/RollbackCommand/RecoverCommand's own docket-aware fix), then roll
+                // every touched classic revlog back to its pre-commit size (truncate-only, never
+                // delete-on-zero, for a v2 revlog's resolved companion files -- they must keep
+                // physically existing, even empty, as long as the just-restored docket references
+                // them) and restore dirstate.
+                for (Map.Entry<File, byte[]> docketEntry : docketBackups.entrySet()) {
+                    try {
+                        SafeFileIO.writeAtomic(docketEntry.getKey(), docketEntry.getValue());
+                    } catch (IOException ignored) {
+                        LOGGER.log(Level.WARNING, "Failed to restore docket backup during graft rollback: " + docketEntry.getKey(), ignored);
+                    }
+                }
+                for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
+                    File file = sizeEntry.getKey();
+                    long origSize = sizeEntry.getValue();
+                    if (origSize == 0 && !truncateOnlyEntries.contains(file)) {
+                        Files.deleteIfExists(file.toPath());
+                    } else {
+                        file.getParentFile().mkdirs();
+                        try (FileChannel outChan = FileChannel.open(file.toPath(),
+                                StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+                            outChan.truncate(origSize);
+                            outChan.force(true);
+                        }
+                    }
+                }
+                // the dirstate is only written by the commit's own changing_parents context, so a failure never touched it
+                Files.deleteIfExists(journalFile.toPath());
+                for (File backupFile : docketBackupFiles) {
+                    Files.deleteIfExists(backupFile.toPath());
+                }
+                repository.clearRevlogCache();
+                throw e;
             }
-            if (dirstateBackup != null) {
-                SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-            }
-            Files.deleteIfExists(journalFile.toPath());
-            Files.deleteIfExists(dirstateBackupFile.toPath());
-            for (File backupFile : docketBackupFiles) {
-                Files.deleteIfExists(backupFile.toPath());
-            }
-            repository.clearRevlogCache();
-            throw e;
         }
     }
 

@@ -738,3 +738,61 @@ add, forget, remove, revert의 패턴 선택(`FileSelection`)을 실제 hg와 �
 ## [2026-11-04] 전체 test·interop 통과, 전체 커버리지 측정
 `test` 2226개(건너뜀 2), `interopTest` 2875개(건너뜀 7)가 모두 통과했다(interop 1시간 28분). 두 태스크의 JaCoCo 데이터를 합친 커버리지: 명령어 93.3%, 라인 93.0%, 분기 83.3%, 메서드 95.5%, 클래스 99.7%.
 라인 30줄 이상 클래스 중 낮은 쪽: `LineDelta$Myers$Search` 61.6%, `HgLfsFactory` 71.9%, `BookmarkCommand` 73.7%, `HgAuthConfig` 73.8%, `SvnSubrepoUtil` 74.2%.
+
+## [2026-11-04] 동시 접근 점검과 잠금 수정
+`bookmark`에 잠금이 없어 동시 기록 시 북마크가 유실되는 것을 발견했고, 같은 종류의 문제를 코드 탐색(정적 휴리스틱)과 실제 hg 소스 대조로 찾아 고쳤다: 로컬 pushkey, tag/sign/import/bisect의 잠금 추가, 8개 명령의 잠금 순서 교정, 롤백 백업을 잠금 안으로, `Bundle2Push`와 로컬 push의 요청 전체 잠금, 재진입 잠금의 자동 복구 생략. 자세한 표와 한계는 [[concepts/locking-and-concurrency]].
+13:51에 전체 test와 전체 interop을 다시 시작했다.
+
+## [2026-11-04] 잠금 획득과 해제 지점을 hg의 로직 위치에 맞춤
+메서드 전체를 감싸던 래퍼를 걷어내고, 각 명령에서 잠금 획득 문장을 hg의 지점(입력 검증 뒤, 첫 상태 읽기 앞)으로 옮겨 상태 읽기와 롤백이 잠금 안에서 일어나게 했다. `pull`은 네트워크 수신 전부터, `push`는 discovery 앞에서 잡는다. 표와 의도적 차이(`update` 등의 store lock)는 [[concepts/locking-and-concurrency]].
+
+## [2026-11-04] hg보다 더 잠그던 부분을 hg와 같게
+`update`/`merge`/`revert`/`remove`/`bisect`의 store 잠금 제거, `graft`는 커밋 단계에서만 store 잠금, `bundle`은 무잠금, `shelve`는 hg의 `lock` 지점으로 분리. dirstate만 기록하던 저널을 `.hg/wc-journal`로 분리하고 `wlock` 획득 시 복구한다. `update`의 활성 북마크 전환은 `wlock`만 잡는다.
+
+## [2026-11-04] admin::verify와 graft --to
+`admin::verify`(체크 틀 + `working-copy.dirstate`, 잠금 없음)와 `graft --to`(`GraftInMemory`)를 구현했다. 후자는 원본처럼 `lock`만 잡고 트랜잭션 안에서 메모리 병합하며, 같은 입력으로 만든 결과 노드가 실제 hg 7.2와 일치한다. 이 과정에서 `Revlog.appendRevision`과 `NodeIdUtil.computeNodeId`가 32바이트(20바이트 노드 + 0 패딩)를 돌려줘서 그대로 hex로 쓰면 64자리가 된다는 점을 확인했다. 새 코드는 20바이트로 잘라 쓴다.
+
+## [2026-11-04] pull --rev와 admin::chainsaw-update
+사용자 결정으로 코어 `pull -r REV`를 구현했다(`lookup` 와이어 명령을 HTTP·SSH·로컬 연결에 추가, 스트림 클론은 `pullop.heads`가 있으면 건너뜀). `admin::chainsaw-update`는 원본의 잠금 순서를 따른다: 잠금 파일 제거(잠금 없이) 후 `wlock`->`lock` 아래에서 recover, pull, purge(원본 purge는 잠금을 잡지 않음), update. `purge`에 `--all`과 `--files`를 추가했다.
+
+## [2026-11-04] narrowspec을 원본과 같게 변경 (사용자 지시)
+`mercurial/narrowspec.py`를 `NarrowSpec`으로 옮기고 실제 hg의 `narrowspec` 모듈로 만든 벡터로 검증했다. 정규화·검증 문구, `format`, `parseconfig`(경고·거부 포함), `restrictpatterns`, 매처(트리 해석), `checkworkingcopynarrowspec`(update가 오래된 작업 사본 사양을 거부)를 맞췄다. [[concepts/store-shapes]] 14절에 대응표를 남겼다.
+
+## [2026-11-04] 미완료 계획 항목 진행 (12, 8, 14, 7, 6, 5 완료, 9는 shape 포팅 중)
+12 remotenames, 8 로컬 클론의 스토어 복사, 14 subrepo `-S` 재귀, 7 스트림 클론 클라이언트(v1, v2), 6 obsolete pushkey, 5 캐시 쓰기(실제 hg와 바이트 동일)를 구현했다. 5번은 계획서의 잠금 설명이 틀렸음을 hg 소스로 바로잡았다(`tags2-*`/`branch2-*`는 잠금 없음, `hgtagsfnodes1`은 `lock(wait=False)`, `rbc-*`는 `wlock(wait=False)`). 9번은 사용자 결정에 따라 Rust 전용 shape 기능을 Java로 포팅 중이며 [[concepts/store-shapes]]에 분석을 남겼다(A~D단계 완료). 전체 단위 test는 한 번 2개 실패(스트림 확인용 별도 연결이 mock 서버를 막음)했고 `FetchCommand`의 기존 연결을 쓰도록 고쳐 해소했다. 포팅 중 기존 결함 두 가지를 찾아 고쳤다: 서버의 `path:.` 와이어 패턴 거부, narrowspec 트리 해석 불일치.
+
+## [2026-11-04] 스토어 shape 소스 분석 문서 작성 (포팅 전)
+사용자 지시로 Rust 전용 기능(shape, sharded 번들, `admin::narrow-server`)을 Java로 포팅하기 전에 소스를 한 번에 분석해 [[concepts/store-shapes]]에 정리했다. `shape.rs` 본문, `shape.py`, `ShapeMatcher`, `ZeroPath`, 서버·클라이언트 와이어, `clone --shape`, clonebundle 선택, `admin::` 명령과 `store-shapes-lock`을 읽었다. 핵심 발견: 트리 정규화·지문·패턴 블록은 `shape.py`에 순수 Python 구현이 있어 설치된 hg로 바이트 단위 비교가 된다(문서의 기준값을 재현해 확인). Rust와 Python의 `from_patterns`가 같은 경로가 포함·제외 양쪽일 때 다르다는 점을 결정 대기로 남겼다. 아직 읽지 않은 곳은 문서 12절에 목록으로 적었다.
+
+## [2026-11-04] 잠금, 해제, 재잠금, 롤백을 hg 소스와 한 줄씩 대조
+hg 소스를 읽어 하나씩 대조했다. 고친 것: `FetchCommand.applyBundle`의 롤백이 잠금 밖(잠금 획득 실패 때 dirstate와 fncache를 삭제하던 회귀 포함), `rebase --continue/--abort`와 `graft --continue/--abort`와 `unshelve --continue/--abort`의 순서와 위치, `unbundle`은 store 잠금만, `recover`/`verify`의 잠금, 사후 훅을 `_afterlock`처럼 가장 바깥 잠금 해제 뒤로(`HgRepository#afterLock`), `clone`과 `PullCommand.applyBundle`의 dirstate 쓰기에 `wlock`. 단위 test 계측으로 dirstate 쓰기 호출자를 전수 확인했다. 인터롭은 이 작업 동안 돌리지 않았다.
+
+## [2026-11-04] 잠금 대기 방식과 남은 잠금 지점까지 hg와 맞춤
+인자 없는 `lockWorkingCopy()`/`lockStore()`가 즉시 실패하던 것을 hg처럼 `ui.timeout` 대기로 바꿨다(테스트 JVM만 기본값 0). hg 전체(`mercurial/`, `hgext/`)의 잠금 지점을 전수 스캔해 hg4j 대응 기능이 있는 것을 모두 대조했다. 새로 고친 것: censor, gc, clonebundles 적용, worktree, narrow clone, lfs requirement. 분류와 대응 기능이 없는 항목은 [[concepts/locking-and-concurrency]].
+
+## 2026-11-04 rebase 원본 구조로 재작성
+
+`RebaseState`, `RebasePlanner`(실제 hg 벡터 4,360건 일치), `RebaseCommand` 교체(wlock→lock 한 번, 노드별 커밋, 원본 `.hg/rebasestate`). 번들 생성의 파일 리비전 선택과 충돌 시 `.orig` 백업을 고침. 테스트: RebaseStateTest, RebasePlannerVectorsTest, RebaseOriginalParityTest, RebaseLockTest. 자세한 내용은 [[concepts/rebase-original]].
+
+## 2026-11-04 잠금 대조 루프 마무리
+
+`rebase`의 남은 옵션(`-r/-b/-d`, `--collapse`, `--stop`, `--dry-run/--confirm`, `singletransaction`, 편집기, 기본 목적지, 진행 메시지, topo 순서, 빈 후계)을 원본대로 이식하고 실제 hg와 노드 해시까지 비교. `strip`(세 트랜잭션, 실패해도 되돌리지 않음, 여러 리비전, `-B`, v2 저널), `sign`(wlock만, 복원 안 함, `.hgsigs`만 커밋), `push`(잠금 실패 허용, 로컬/원격 단계 갱신, 서버 `phases` pushkey, `pushback` 순서), `merge --abort`/`revert`/`phase`의 읽기 순서, `status`의 stat 보정과 `m` 항목을 맞춤. 비교하다 발견해 고친 hg4j 쪽 결함: 번들 생성이 changeset이 바꾼 파일 리비전을 linkrev로만 골라 strip 뒤 사라지던 것, 충돌 병합이 `.orig`를 남기지 않던 것, `status`가 같은 내용의 mtime 변경을 modified로 보고하던 것. 정정: `singletransaction`에서 strip이 트랜잭션 안이라고 한 설명은 틀렸고 원본은 닫힌 뒤(`delayedstrip`). 자세한 목록은 [[lock-parity-matrix]], [[concepts/rebase-original]], [[concepts/strip-original]].
+
+## 2026-11-04 dirstate 재작성 1단계(읽기)
+- `DirstateV2Tree`(데이터 파일을 제자리에서 이진 탐색, 지연 해석), `LazyEntryMap`(디스크 트리 위에 변경분만 메모리에 보관) 추가. `Dirstate.read`의 v2 경로는 더 이상 전체를 `LinkedHashMap`에 펼치지 않고 `FileChannel.map`으로 읽는다. docket의 `data_length`까지만 유효로 본다(원본과 동일).
+- Dirstate/Status 관련 단위 테스트 통과. 남은 1단계: 변경분만 덧붙이는 쓰기, `unreachable_bytes`, 비율 0.5 규칙, 실제 hg와 왕복 비교.
+
+## 2026-11-04 dirstate 재작성 1단계(쓰기)와 2단계(컨텍스트), 4단계 첫 묶음
+- 1단계 쓰기: `DirstateV2Appender`(바뀐 경로의 노드와 상위 배열만 끝에 덧붙임, 옛 배열은 `unreachable_bytes`로 계산, 비율 0.5 이상이면 새 파일), docket을 마지막에 교체. `DirstateV2AppendTest`가 실제 Rust hg와 양방향으로 확인. 전체 단위 테스트 통과.
+- 2단계: `HgRepository.changingFiles/changingParents`. wlock 필수, 두 종류 상호 배타, 중첩, 가장 바깥에서만 쓰기, 어느 깊이에서든 예외면 전부 폐기. 컨텍스트 안의 `getDirstate()`는 같은 객체를, `writeDirstate`는 쓰기 예약만 한다. `DirstateContextTest`.
+- 4단계 1묶음: add, forget, remove(call과 callSelected), copy/rename(CopyEngine)을 `changing_files`로 이전. CopyEngine과 Remove의 수동 dirstate 바이트 백업/복원(v2에서는 docket만 복원해 위험했던 부분)을 제거.
+- 남은 이전: merge, revert, update, graft, histedit, commit, rebase, strip, shelve, backout, bisect, pull, clone, status.
+- 4단계 2묶음: update, merge(call과 abort), revert를 컨텍스트로 이전(update/merge는 `changing_parents`, revert는 `changing_files`). Merge의 dirstate 바이트 백업/복원 제거. `HgLock.onClosed`가 콜백 하나만 가지므로 wlock 보유 표시는 `track(lock, onRelease)`로 합쳤다(덮어쓰면 afterLock 작업이 실행되지 않음).
+- 4단계 3묶음: bisect, pull(두 경로), clone(`checkoutLatest`)을 `changing_parents`로 이전. wlock 보유 표시를 인스턴스 대신 wlock 파일 경로 기준(스레드별)으로 바꿨다: 한 명령 안에서 같은 작업 사본을 여러 `HgRepository`로 여는 일이 흔하다(clone이 `repo`를 다시 연다).
+- 남은 이전: graft, histedit, backout, commit, rebase, strip, shelve, status. 커밋을 하는 명령들은 3단계(트랜잭션 연결, `dirstate.backup` 제거)와 함께 처리한다.
+- 3단계 시작(commit): `HgRepository.DirstateChange`(try-with-resources용, `failed()`로 폐기)를 추가하고 `CommitCommand`가 `changing_parents`를 연 채 실행한다. dirstate는 저장소 트랜잭션이 닫힌 뒤 컨텍스트가 끝날 때 쓰이고(원본의 post-finalize 파일 생성기와 같은 순서), 실패하면 디스크의 dirstate를 건드리지 않는다. 그래서 `.hg/dirstate.backup` 복사, 저널의 `dirstate` 항목, 실패 시 복원 코드(v2 데이터 파일 복원 포함)를 제거했다. `hg rollback`용 `undo.dirstate`는 그대로 유지.
+- 남은 `dirstate.backup` 사용: graft, histedit, fetch. 이 셋과 rebase/strip/shelve/backout/status 이전이 남았다.
+- 3단계 계속: graft(`call`의 작업 사본 갱신은 `changing_parents`, 충돌은 실패가 아니라 결과이므로 변경을 보존하고 커밋 단계는 자기 컨텍스트), histedit(전체가 `changing_parents`), fetch(번들 적용은 dirstate를 건드리지 않으므로 백업 제거)에서 `dirstate.backup` 복사/복원/저널 항목을 제거했다. `HgRepository.checkAndPerformAutoRollback`은 저널의 옛 `dirstate` 줄을 무시한다(원본의 `recover`도 dirstate를 건드리지 않는다). `restoreDirstateFromBackup`과 `readDirstateV2Uid` 삭제. `JournalingCrashRecoveryTest`가 옛 동작(복구가 dirstate 복원)을 고정하고 있어 원본 동작으로 고쳤다.
+- 남은 이전: backout, rebase, strip, shelve, status. 그 뒤 `undo.dirstate`(rollback)가 v2 데이터 파일과 맞는지 점검.
+- 4단계 마무리: backout, strip(부모 갱신), rebase(병합, clean update, 부모 갱신), unshelve를 이전. performShelve를 컨텍스트로 감싸면 보관용 임시 커밋의 부모가 dirstate에 남아 unshelve가 실패해(원본도 shelve 자체 컨텍스트 없음) 감싸지 않았다. `rollback`의 undo.dirstate 복원은 덧붙이기와 맞는다: 옛 docket이 가리키는 길이까지는 데이터 파일이 그대로이고, 새 파일로 바뀐 경우에는 `undo.backup.dirstate.data`로 복원한다. `HgRepositoryCoverageTest`의 자동 복구 2건과 `RebaseCommandCoverageTest` 1건이 옛 동작을 고정하고 있어 원본 동작으로 고쳤다.
+- 전체 단위 테스트 통과(EXIT=0). 매트릭스에 "할 일"로 남은 항목 없음(rebase 기본 목적지 표기는 이미 구현된 것을 갱신).

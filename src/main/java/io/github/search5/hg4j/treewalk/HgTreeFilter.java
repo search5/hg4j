@@ -131,50 +131,27 @@ public abstract class HgTreeFilter implements PathFilter {
         if (pattern == null) {
             throw new IllegalArgumentException("Narrow pattern cannot be null");
         }
-        String kind;
-        String pat;
-        if (pattern.startsWith("path:")) {
-            kind = "path";
-            pat = pattern.substring("path:".length());
-        } else if (pattern.startsWith("rootfilesin:")) {
-            kind = "rootfilesin";
-            pat = pattern.substring("rootfilesin:".length());
-        } else {
-            int colon = pattern.indexOf(':');
-            if (colon > 0 && isLikelyKindPrefix(pattern.substring(0, colon))) {
-                throw new IllegalArgumentException(
-                        "invalid prefix on narrow pattern: " + pattern
-                                + " (narrow patterns must begin with one of: path:, rootfilesin:)");
-            }
-            kind = "path";
-            pat = pattern;
+        try {
+            String normalized = io.github.search5.hg4j.narrow.NarrowSpec.normalizePattern(pattern);
+            io.github.search5.hg4j.narrow.NarrowSpec.validatePatterns(java.util.List.of(normalized)); // parsepatterns: only path: / rootfilesin:
+            return internalNarrowPattern(normalized);
+        } catch (io.github.search5.hg4j.errors.HgValidationException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
         }
+    }
 
-        while (pat.endsWith("/")) {
-            pat = pat.substring(0, pat.length() - 1);
+    /**
+     * A pattern of the internal representation ({@code narrowspec.validatepatterns}): only the prefix is checked, so the root can be
+     * {@code path:.} as a clone sends it and the narrowspec file may hold it.
+     */
+    public static NarrowPattern internalNarrowPattern(String spec) {
+        try {
+            io.github.search5.hg4j.narrow.NarrowSpec.validatePatterns(java.util.List.of(spec));
+        } catch (io.github.search5.hg4j.errors.HgValidationException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
         }
-
-        if (!pat.equals(pat.strip())) {
-            throw new IllegalArgumentException(
-                    "leading or trailing whitespace is not allowed in narrowspec paths: " + pattern);
-        }
-        if (pat.contains("\n")) {
-            throw new IllegalArgumentException("newlines are not allowed in narrowspec paths");
-        }
-        if (!pat.isEmpty()) {
-            for (String component : pat.split("/", -1)) {
-                if (component.isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "empty path components are not allowed in narrowspec paths: " + pattern);
-                }
-                if (component.equals(".") || component.equals("..")) {
-                    throw new IllegalArgumentException(
-                            "\".\" and \"..\" are not allowed in narrowspec paths: " + pattern);
-                }
-            }
-        }
-
-        return new NarrowPattern(kind, pat);
+        int colon = spec.indexOf(':');
+        return new NarrowPattern(spec.substring(0, colon), spec.substring(colon + 1));
     }
 
     private static boolean isLikelyKindPrefix(String candidate) {
@@ -240,9 +217,29 @@ public abstract class HgTreeFilter implements PathFilter {
         private final List<NarrowPattern> includes;
         private final List<NarrowPattern> excludes;
 
+        /**
+         * {@code narrowspec.match}: when every pattern is a {@code path:} one the spec is read as a tree, so a path included inside an
+         * excluded directory that is itself inside an included one is included ({@code shard_tree_matcher}); {@code null} for the old
+         * "excludes win" reading, used when a {@code rootfilesin:} pattern is present.
+         */
+        private final io.github.search5.hg4j.shape.ShardTreeNode tree;
+
         private NarrowSpecFilter(List<NarrowPattern> includes, List<NarrowPattern> excludes) {
             this.includes = includes;
             this.excludes = excludes;
+            io.github.search5.hg4j.shape.ShardTreeNode built = null;
+            boolean onlyPaths = includes.stream().allMatch(p -> "path".equals(p.kind)) && excludes.stream().allMatch(p -> "path".equals(p.kind));
+            if (onlyPaths && !includes.isEmpty()) {
+                try {
+                    // narrowspec.match -> shard_tree_matcher: the paths as they are, "." being the root
+                    built = io.github.search5.hg4j.shape.ShardTreeNode.fromPatterns(
+                            includes.stream().map(p -> p.path).collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new)),
+                            excludes.stream().map(p -> p.path).collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new)));
+                } catch (io.github.search5.hg4j.errors.HgValidationException invalid) {
+                    built = null; // a pattern the tree cannot hold: keep the old reading
+                }
+            }
+            this.tree = built;
         }
 
         /** The narrowspec's include patterns, exactly as normalized at narrow-clone time. */
@@ -268,6 +265,9 @@ public abstract class HgTreeFilter implements PathFilter {
                 normalized = normalized.substring(0, normalized.length() - 1);
             }
 
+            if (tree != null) {
+                return tree.deepestPrefixNode(normalized).included();
+            }
             for (NarrowPattern ex : excludes) {
                 if (matchesPattern(ex, normalized)) {
                     return false;
@@ -312,25 +312,47 @@ public abstract class HgTreeFilter implements PathFilter {
         }
         List<NarrowPattern> includes = new ArrayList<>();
         List<NarrowPattern> excludes = new ArrayList<>();
-        List<NarrowPattern> current = null;
-        String raw = Files.readString(narrowSpecFile.toPath(), StandardCharsets.UTF_8);
-        for (String rawLine : raw.split("\n", -1)) {
-            String line = rawLine.trim();
-            if (line.isEmpty()) {
-                continue;
-            }
-            if (line.equals("[include]")) {
-                current = includes;
-            } else if (line.equals("[exclude]")) {
-                current = excludes;
-            } else if (current != null) {
-                current.add(normalizeNarrowPattern(line));
-            }
+        // narrowspec.load -> parseconfig: sparse.parseconfig then validatepatterns
+        io.github.search5.hg4j.narrow.NarrowSpec.Patterns parsed;
+        try {
+            parsed = io.github.search5.hg4j.narrow.NarrowSpec.parseConfig(Files.readString(narrowSpecFile.toPath(), StandardCharsets.UTF_8), null);
+        } catch (io.github.search5.hg4j.errors.HgValidationException e) {
+            throw new IOException(e.getMessage(), e);
         }
+        parsed.includes().forEach(p -> includes.add(internalNarrowPattern(p)));
+        parsed.excludes().forEach(p -> excludes.add(internalNarrowPattern(p)));
         return createNarrowSpecFilter(includes, excludes);
     }
 
+    /**
+     * {@code localrepo._narrowmatch}: the narrowspec as {@link #loadFromRepository} reads it, after {@code checkworkingcopynarrowspec}: the
+     * copy the working copy was updated to ({@code .hg/narrowspec.dirstate}, empty when missing) must be the store's.
+     *
+     * @throws IOException {@code working copy's narrowspec is stale} with the hint to run {@code hg tracked --update-working-copy}
+     */
+    public static HgTreeFilter loadForWorkingCopy(HgRepository repository) throws IOException {
+        File storeFile = new File(repository.getStoreDir(), io.github.search5.hg4j.narrow.NarrowSpec.FILENAME);
+        if (storeFile.exists()) {
+            try {
+                io.github.search5.hg4j.narrow.NarrowSpec.Patterns store = io.github.search5.hg4j.narrow.NarrowSpec.parseConfig(
+                        Files.readString(storeFile.toPath(), StandardCharsets.UTF_8), null);
+                File copy = new File(repository.getHgDir(), io.github.search5.hg4j.narrow.NarrowSpec.DIRSTATE_FILENAME);
+                io.github.search5.hg4j.narrow.NarrowSpec.Patterns working = io.github.search5.hg4j.narrow.NarrowSpec.parseConfig(
+                        copy.exists() ? Files.readString(copy.toPath(), StandardCharsets.UTF_8) : "", null);
+                if (io.github.search5.hg4j.narrow.NarrowSpec.isWorkingCopyStale(store, working)) {
+                    throw new io.github.search5.hg4j.errors.HgValidationException(io.github.search5.hg4j.narrow.NarrowSpec.STALE_MESSAGE);
+                }
+            } catch (io.github.search5.hg4j.errors.HgValidationException e) {
+                throw new IOException(e.getMessage(), e);
+            }
+        }
+        return loadFromRepository(repository);
+    }
+
     private static boolean matchesPattern(NarrowPattern pattern, String path) {
+        if (pattern.path.equals(".")) {
+            pattern = new NarrowPattern(pattern.kind, ""); // path:. is the root
+        }
         if ("rootfilesin".equals(pattern.kind)) {
             if (pattern.path.isEmpty()) {
                 return !path.contains("/");

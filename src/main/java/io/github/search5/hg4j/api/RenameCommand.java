@@ -45,82 +45,158 @@ public final class RenameCommand {
      *
      * @throws IOException if physical file move or dirstate write fails
      */
+    private final java.util.List<String> patterns = new java.util.ArrayList<>();
+    private boolean force;
+    private boolean after;
+    private boolean dryRun;
+    private boolean forget;
+    private final java.util.List<String> include = new java.util.ArrayList<>();
+    private final java.util.List<String> exclude = new java.util.ArrayList<>();
+    private String cwd = "";
+    private String atRev;
+
+    /**
+     * The sources followed by the destination, as on the command line ({@code hg rename SOURCE... DEST}): each is a pattern
+     * ({@code kind:pattern}, plain names are relative to {@link #setCwd}), the destination must be an existing directory when there
+     * are several sources. Used by {@link #callPatterns()}.
+     */
+    public RenameCommand setPatterns(String... sourcesAndDestination) {
+        patterns.clear();
+        patterns.addAll(java.util.Arrays.asList(sourcesAndDestination));
+        return this;
+    }
+
+    /** {@code -f}/{@code --force}: overwrite a destination that exists (only for {@link #callPatterns()}). */
+    public RenameCommand setForce(boolean force) {
+        this.force = force;
+        return this;
+    }
+
+    /** {@code --after}: record a rename that already happened on disk. */
+    public RenameCommand setAfter(boolean after) {
+        this.after = after;
+        return this;
+    }
+
+    /** {@code --dry-run}: only report what would be done. */
+    public RenameCommand setDryRun(boolean dryRun) {
+        this.dryRun = dryRun;
+        return this;
+    }
+
+    /** {@code --forget}: unmark the destinations as copies (the files stay). */
+    public RenameCommand setForget(boolean forget) {
+        this.forget = forget;
+        return this;
+    }
+
+    /**
+     * {@code --at-rev REV}: the rename is recorded in (or, with {@link #setForget}, removed from) the changeset REV, which is replaced
+     * by a changed copy of itself. Needs {@link #setAfter} or {@link #setForget}; REV must be a draft without children.
+     */
+    public RenameCommand setAtRev(String revision) {
+        this.atRev = revision;
+        return this;
+    }
+
+    /** {@code -I}. */
+    public RenameCommand setInclude(String... patterns) {
+        include.clear();
+        include.addAll(java.util.Arrays.asList(patterns));
+        return this;
+    }
+
+    /** {@code -X}. */
+    public RenameCommand setExclude(String... patterns) {
+        exclude.clear();
+        exclude.addAll(java.util.Arrays.asList(patterns));
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public RenameCommand setCwd(String cwd) {
+        this.cwd = cwd == null ? "" : cwd;
+        return this;
+    }
+
+    /** What {@code hg rename} reports: the warnings and status lines real hg prints, and whether a file was not handled (exit status 1). */
+    public record PatternResult(boolean failed, java.util.List<String> warnings, java.util.List<String> status) {
+    }
+
+    /**
+     * {@code hg rename [OPTION]... SOURCE... DEST} with all of its options. Real hg does not fail on a file it cannot handle: it
+     * prints a warning and goes on, and the result says so ({@link PatternResult#failed()}).
+     */
+    public PatternResult callPatterns() throws IOException, HgLockException {
+        CopyEngine.Result result = CopyEngine.execute(repository, true, patterns, after, force, dryRun, forget, include, exclude, cwd, atRev);
+        return new PatternResult(result.failed(), result.warnings(), result.status());
+    }
+
     public void call() throws IOException, HgLockException {
         if (sourcePath == null || targetPath == null) {
             throw new IllegalStateException("Source and target paths must be specified.");
         }
 
-        File srcFile = new File(repository.getDirectory(), sourcePath);
-        File destFile = new File(repository.getDirectory(), targetPath);
-
-        // A symlink is valid to rename even when its target is missing (dangling) -- File#exists()
-        // follows the link and returns false in that case, matching the same lstat-aware
-        // convention AddCommand/CommitCommand already use elsewhere.
-        if (!Files.isSymbolicLink(srcFile.toPath()) && !srcFile.exists()) {
-            throw new HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
-        }
-
-        // 1. Lock repository for working directory changes
-        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
-        File journalFile = new File(repository.getStoreDir(), "journal");
-
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
         try (HgLock lock = repository.lockWorkingCopy()) {
-            // Create physical journal and backups for Crash Resilience
-            Files.deleteIfExists(journalFile.toPath());
-            if (dirstateFile.exists()) {
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                appendToJournal(journalFile, "dirstate");
+            File srcFile = new File(repository.getDirectory(), sourcePath);
+            File destFile = new File(repository.getDirectory(), targetPath);
+
+            // A symlink is valid to rename even when its target is missing (dangling) -- File#exists()
+            // follows the link and returns false in that case, matching the same lstat-aware
+            // convention AddCommand/CommitCommand already use elsewhere.
+            if (!Files.isSymbolicLink(srcFile.toPath()) && !srcFile.exists()) {
+                throw new HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
             }
 
-            try {
-                // 2. Perform physical move
-                destFile.getParentFile().mkdirs();
-                Files.move(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            // 1. Lock repository for working directory changes
+            File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+            byte[] dirstateBackup = null; // read once the lock is held
 
-                // 3. Update dirstate copy map and state entries
-                Dirstate dirstate = repository.getDirstate();
-                
-                // Source: marked as removed ('r')
-                dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
-                
-                // Target: marked as added ('a'). A symlink's dirstate mode/size must reflect the
-                // link itself (lstat semantics) -- File#canExecute()/length() both follow the
-                // link to whatever it points at, matching what AddCommand/CopyCommand already do.
-                boolean destIsSymlink = Files.isSymbolicLink(destFile.toPath());
-                int mode = destIsSymlink ? 0120000 : (destFile.canExecute() ? 0755 : 0644);
-                int size = destIsSymlink
-                        ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
-                        : (int) destFile.length();
-                long time = SafeFileIO.lastModifiedSeconds(destFile);
-                dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, size, time));
-                
-                // Register Copy-rename linkage in copyMap
-                dirstate.addCopy(targetPath, sourcePath);
+            {
+                dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
 
-                repository.writeDirstate(dirstate);
-
-                // Clean up crash backups on success
-                Files.deleteIfExists(journalFile.toPath());
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.deleteIfExists(dirstateBackupFile.toPath());
-            } catch (Exception e) {
-                // Restore dirstate on failure
-                if (dirstateBackup != null) {
-                    try {
-                        SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-                    } catch (Exception ignored) {}
-                }
                 try {
-                    Files.deleteIfExists(journalFile.toPath());
-                } catch (Exception ignored) {}
-                throw e;
+                    // 2. Perform physical move
+                    destFile.getParentFile().mkdirs();
+                    Files.move(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+                    // 3. Update dirstate copy map and state entries
+                    Dirstate dirstate = repository.getDirstate();
+                
+                    // Source: marked as removed ('r')
+                    dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
+                
+                    // Target: marked as added ('a'). A symlink's dirstate mode/size must reflect the
+                    // link itself (lstat semantics) -- File#canExecute()/length() both follow the
+                    // link to whatever it points at, matching what AddCommand/CopyCommand already do.
+                    boolean destIsSymlink = Files.isSymbolicLink(destFile.toPath());
+                    int mode = destIsSymlink ? 0120000 : (destFile.canExecute() ? 0755 : 0644);
+                    int size = destIsSymlink
+                            ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
+                            : (int) destFile.length();
+                    long time = SafeFileIO.lastModifiedSeconds(destFile);
+                    dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, size, time));
+                
+                    // Register Copy-rename linkage in copyMap
+                    dirstate.addCopy(targetPath, sourcePath);
+
+                    repository.writeDirstate(dirstate);
+
+                    // Clean up crash backups on success
+                } catch (Exception e) {
+                    // Restore dirstate on failure
+                    if (dirstateBackup != null) {
+                        try {
+                            SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
+                        } catch (Exception ignored) {}
+                    }
+                    try {
+                    } catch (Exception ignored) {}
+                    throw e;
+                }
             }
         }
     }
 
-    private void appendToJournal(File journal, String entry) throws IOException {
-        Files.write(journal.toPath(), (entry + "\n").getBytes(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-    }
 }

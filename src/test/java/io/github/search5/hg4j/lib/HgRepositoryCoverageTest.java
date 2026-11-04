@@ -355,8 +355,8 @@ public class HgRepositoryCoverageTest {
 
             assertEquals("ORIGINAL-A", Files.readString(origA.toPath()));
             assertFalse(origB.exists(), "backup missing -> original must be deleted");
-            assertEquals("GOOD-DIRSTATE", Files.readString(dirstateFile.toPath()));
-            assertFalse(dirstateBackup.exists(), "dirstate.backup must be consumed (moved)");
+            // recovering a transaction never touches the dirstate (a "dirstate" journal line of an older version is ignored)
+            assertEquals("CORRUPT-DIRSTATE", Files.readString(dirstateFile.toPath()));
             assertEquals("GOOD-FNCACHE", Files.readString(fncacheFile.toPath()));
             assertFalse(fncacheBackup.exists(), "fncache.backup must be consumed (moved)");
             assertEquals("0123", Files.readString(truncTarget.toPath()), "file must be truncated to recorded size");
@@ -632,42 +632,22 @@ public class HgRepositoryCoverageTest {
     }
 
     @Test
-    public void testLockStorePropagatesRuntimeExceptionFromAutoRollbackAndReleasesLock(@TempDir Path tempDir) throws Exception {
+    public void testLockStoreRefusesAnAbandonedTransactionAndReleasesTheLock(@TempDir Path tempDir) throws Exception {
         File repoDir = tempDir.toFile();
-        HgRepository repo = new HgRepository(repoDir) {
-            @Override
-            public synchronized void checkAndPerformAutoRollback() {
-                throw new IllegalStateException("boom");
-            }
-        };
-        repo.getStoreDir().mkdirs();
-        try {
-            assertThrows(IllegalStateException.class, repo::lockStore);
-            // Lock must have been released (closed) despite the failure, so acquiring again works.
+        try (HgRepository repo = new HgRepository(repoDir)) {
+            repo.getStoreDir().mkdirs();
+            Files.writeString(new File(repo.getStoreDir(), "journal").toPath(), "");
+            io.github.search5.hg4j.errors.HgAbandonedTransactionException e =
+                    assertThrows(io.github.search5.hg4j.errors.HgAbandonedTransactionException.class, repo::lockStore);
+            assertTrue(e.getMessage().endsWith("abandoned transaction found\n(hint: run 'hg recover' to clean up transaction)"), e.getMessage());
+            // the lock was released despite the refusal, and the variant that does not look at the journal still works
             try (HgLock relock = new HgLock(new File(repo.getStoreDir(), "lock"), 0, true)) {
                 assertNotNull(relock);
             }
-        } finally {
-            repo.close();
-        }
-    }
-
-    @Test
-    public void testLockStoreWrapsNonRuntimeThrowableFromAutoRollbackInHgLockException(@TempDir Path tempDir) throws Exception {
-        File repoDir = tempDir.toFile();
-        HgRepository repo = new HgRepository(repoDir) {
-            @Override
-            public synchronized void checkAndPerformAutoRollback() {
-                throw new AssertionError("simulated non-RuntimeException throwable");
+            try (HgLock recoverer = repo.lockStoreWithoutRecovery(0)) {
+                assertNotNull(recoverer);
             }
-        };
-        repo.getStoreDir().mkdirs();
-        try {
-            HgLockException ex = assertThrows(HgLockException.class, repo::lockStore);
-            assertNotNull(ex.getCause());
-            assertTrue(ex.getCause() instanceof AssertionError);
-        } finally {
-            repo.close();
+            assertTrue(new File(repo.getStoreDir(), "journal").exists(), "nothing was recovered by the lock");
         }
     }
 
@@ -710,7 +690,7 @@ public class HgRepositoryCoverageTest {
 
             repo.checkAndPerformAutoRollback();
 
-            assertFalse(dirstateFile.exists(), "no dirstate.backup present -> original must be deleted");
+            assertTrue(dirstateFile.exists(), "recovery leaves the dirstate alone");
             assertFalse(fncacheFile.exists(), "no fncache.backup present -> original must be deleted");
             assertEquals("1234", Files.readString(tabTarget.toPath()), "tab-separated generic entry must truncate correctly");
             assertFalse(new File(storeDir, "journal").exists());

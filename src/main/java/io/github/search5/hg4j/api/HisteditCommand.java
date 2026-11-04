@@ -64,205 +64,209 @@ public class HisteditCommand implements AutoCloseable {
             return;
         }
 
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
-        File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
-        File mfDat = new File(repository.getStoreDir(), "00manifest.d");
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
+        // the dirstate is changed inside a changing_parents context and written when it ends well; a failure leaves the file on disk alone
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore();
+             HgRepository.DirstateChange dirstateChange = repository.openChangingParents()) {
+          try {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+            File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
+            File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
-        // Backup current repository status for rollback in case of error
-        Dirstate dirstate = repository.getDirstate();
-        byte[] originalParent = dirstate.getParent1();
+            // Backup current repository status for rollback in case of error
+            // read once the locks are held (below): values read earlier could be outdated by another process' commit
+            Dirstate dirstate = null;
+            byte[] originalParent = null;
 
-        // Crash/failure safety: snapshot every revlog this operation may append to before
-        // touching anything, journal them (same scheme as CommitCommand/StripCommand), and
-        // back up dirstate — so a mid-histedit failure (this method's own catch block, or a
-        // real crash recovered via HgRepository.checkAndPerformAutoRollback()) truncates
-        // everything back to its pre-histedit state instead of leaving a half-rewritten
-        // history behind.
-        Map<File, Long> fileSizes = new LinkedHashMap<>();
-        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
-        File journalFile = new File(repository.getStoreDir(), "journal");
-        File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
-
-            Files.deleteIfExists(journalFile.toPath());
-            if (dirstateFile.exists()) {
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                appendToJournal(journalFile, "dirstate");
-            }
-            recordAndJournal(clIdx, fileSizes, journalFile);
-            recordAndJournal(clDat, fileSizes, journalFile);
-            recordAndJournal(mfIdx, fileSizes, journalFile);
-            recordAndJournal(mfDat, fileSizes, journalFile);
-
-            // The base for the very first replayed commit must be the true original parent
-            // of the FIRST rule (whatever revision comes right before the edited range) --
-            // NOT the current dirstate tip. Real `hg histedit` only ever rewrites a
-            // contiguous range of history and rebuilds it on top of that range's original
-            // base; using the current tip here would (when some rule in the range is a DROP,
-            // or a rule set doesn't extend all the way to the tip) incorrectly carry forward
-            // manifest entries that belong to revisions the edited range never touches.
-            Rule firstRule = rules.get(0);
-            byte[] firstRuleNode = NodeIdUtil.fromHex(firstRule.hexNode);
-            int firstRuleRev = changelog.findRevision(firstRuleNode);
-            if (firstRuleRev == -1) {
-                throw new IOException("Histedit failed: Revision not found for node " + firstRule.hexNode);
-            }
-            int baseRev = changelog.getIndexRecord(firstRuleRev).getParent1();
-            byte[] rewriteBase = (baseRev != -1) ? changelog.getIndexRecord(baseRev).getNodeId() : new byte[20];
-
-            // To support folding/merging revisions, we will parse the target revisions content
-            // and perform clean recommits according to actions.
-            byte[] lastCommittedNode = rewriteBase;
-            String pendingCommitMsg = null;
-            // All hex nodes belonging to the currently open pick/fold/roll group, in rule
-            // order. Verified against real `hg histedit`: a fold/roll must fold *every*
-            // member's file changes into the resulting commit (not just the last one), while
-            // the resulting commit's author and branch always stay those of the group's
-            // anchor (the pick, or first fold/roll if it opens the group) -- never those of
-            // a later folded-in commit.
-            List<String> pendingHexNodes = new ArrayList<>();
-            String pendingAuthor = null;
-
-            for (Rule rule : rules) {
-                byte[] nodeBytes = NodeIdUtil.fromHex(rule.hexNode);
-                int rev = changelog.findRevision(nodeBytes);
-                if (rev == -1) {
-                    throw new IOException("Histedit failed: Revision not found for node " + rule.hexNode);
-                }
-
-                byte[] clContent = changelog.getRevisionContent(rev);
-                ParsedChangeset parsed = parseChangeset(clContent);
-
-                if (rule.action == Action.PICK) {
-                    if (pendingCommitMsg != null) {
-                        // Commit folded changes first
-                        lastCommittedNode = commitNewRev(lastCommittedNode, pendingAuthor, pendingCommitMsg, pendingHexNodes, fileSizes, journalFile);
-                        pendingCommitMsg = null;
-                        pendingHexNodes = new ArrayList<>();
-                    }
-                    pendingCommitMsg = parsed.message;
-                    pendingAuthor = parsed.author;
-                    pendingHexNodes.add(rule.hexNode);
-                } else if (rule.action == Action.FOLD) {
-                    if (pendingCommitMsg == null) {
-                        pendingCommitMsg = parsed.message;
-                        pendingAuthor = parsed.author;
-                    } else {
-                        pendingCommitMsg = pendingCommitMsg + "\n" + parsed.message;
-                    }
-                    pendingHexNodes.add(rule.hexNode);
-                } else if (rule.action == Action.ROLL) {
-                    if (pendingCommitMsg == null) {
-                        pendingCommitMsg = parsed.message;
-                        pendingAuthor = parsed.author;
-                    }
-                    // Drop this commit message, keep the accumulated pending CommitMsg
-                    pendingHexNodes.add(rule.hexNode);
-                } else if (rule.action == Action.DROP) {
-                    // Skip completely -- but, like real `hg histedit` (verified live, 2026-09-05:
-                    // under experimental.evolution=all, real hg's own histedit registers a
-                    // "prune" obsmarker -- precursor with an empty successor set -- for a dropped
-                    // revision, exactly like StripCommand.call() already does for a plain `hg
-                    // strip`), the dropped revision must be marked pruned so a plain `hg log`
-                    // hides it. This class never physically strips (matching RebaseCommand's own
-                    // 2026-09-04 evolution-only design), so without this marker the dropped
-                    // revision stayed fully visible in a plain log forever -- found live via this
-                    // class's own requirement-matrix interop test.
-                    try {
-                        HgObsMarker.writeMarker(repository.getStoreDir(), nodeBytes, List.of(), "prune");
-                    } catch (Exception e) {
-                        // non-blocking, same as every other obsmarker write in this class
-                    }
-                }
-            }
-
-            if (pendingCommitMsg != null) {
-                lastCommittedNode = commitNewRev(lastCommittedNode, pendingAuthor, pendingCommitMsg, pendingHexNodes, fileSizes, journalFile);
-            }
-
-            // Real hg's histedit finishes with an implicit checkout of the new tip: any path
-            // that was part of the pre-histedit working copy but is no longer part of the
-            // final manifest (its owning commit got DROPped entirely, or was removed partway
-            // through a fold/roll group) must disappear from the working directory too.
-            // Verified against real `hg histedit`: dropping a commit that added b.txt leaves
-            // b.txt off disk (and out of `hg manifest -r tip`) once histedit finishes.
-            //
-            // The dirstate's own tracked-path set must be reconciled the same way -- found live
-            // via this class's own requirement-matrix interop test (2026-09-05): `hg verify`
-            // reported "<path> marked as tracked in p1 (...) but not in manifest1" because this
-            // loop used to only delete the dropped path's physical file, never its dirstate
-            // entry, leaving a dropped commit's path permanently stuck as tracked afterward
-            // (undetectable by any test that only checks `File.exists()`/log content, since
-            // `hg status`/`hg add` would still silently treat it as already-removed-from-disk).
-            Revlog manifestRevlogForCleanup = repository.getRevlog(mfIdx, mfDat);
-            Map<String, String> oldManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, originalParent);
-            Map<String, String> finalManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, lastCommittedNode);
-            Dirstate d = repository.getDirstate();
-            Set<String> allTouchedPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
-            allTouchedPaths.addAll(oldManifest.keySet());
-            allTouchedPaths.addAll(finalManifest.keySet());
-            for (String path : allTouchedPaths) {
-                String finalHexAndFlag = finalManifest.get(path);
-                if (finalHexAndFlag == null) {
-                    Files.deleteIfExists(new File(repository.getDirectory(), path).toPath());
-                    d.removeEntry(path);
-                } else if (!finalHexAndFlag.equals(oldManifest.get(path))) {
-                    // Newly introduced, or changed, by the rewritten range -- (re)stage as
-                    // clean/tracked so `hg verify`'s dirstate-vs-manifest1 cross-check agrees.
-                    File wf = new File(repository.getDirectory(), path);
-                    String flag = finalHexAndFlag.length() > 40 ? finalHexAndFlag.substring(40) : "";
-                    int mode = flag.contains("x") ? 0755 : (flag.contains("l") ? 0120000 : 0644);
-                    long size = wf.exists() ? wf.length() : 0L;
-                    d.addEntry(path, new Dirstate.Entry('n', mode, (int) size, SafeFileIO.lastModifiedSeconds(wf)));
-                }
-            }
-
-            // Sync workspace to the last committed node
-            d.setParents(lastCommittedNode, new byte[20]);
-            repository.writeDirstate(d);
-            repository.clearRevlogCache();
-
-            // Leave the working branch matching the new tip's branch, the same way real
-            // hg's checkout after a history-rewrite does.
-            int newTipRev = changelog.findRevision(lastCommittedNode);
-            if (newTipRev != -1) {
-                repository.setBranch(CommitCommand.getBranchOfRevision(changelog, newTipRev));
-            }
+            // Crash/failure safety: snapshot every revlog this operation may append to before
+            // touching anything, journal them (same scheme as CommitCommand/StripCommand), and
+            // back up dirstate — so a mid-histedit failure (this method's own catch block, or a
+            // real crash recovered via HgRepository.checkAndPerformAutoRollback()) truncates
+            // everything back to its pre-histedit state instead of leaving a half-rewritten
+            // history behind.
+            Map<File, Long> fileSizes = new LinkedHashMap<>();
+            File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
+            byte[] dirstateBackup = null;
+            File journalFile = new File(repository.getStoreDir(), "journal");
 
             try {
-                CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup);
-            } catch (Exception e) {
-                // non-blocking, same as CommitCommand/StripCommand
-            }
-            Files.deleteIfExists(journalFile.toPath());
-            Files.deleteIfExists(dirstateBackupFile.toPath());
-        } catch (Exception e) {
-            // Roll every touched revlog back to its pre-histedit size and restore dirstate,
-            // same recovery strategy as CommitCommand/StripCommand.
-            for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
-                File file = sizeEntry.getKey();
-                long origSize = sizeEntry.getValue();
-                if (origSize == 0) {
-                    Files.deleteIfExists(file.toPath());
-                } else if (file.exists()) {
-                    try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
-                        outChan.truncate(origSize);
-                        outChan.force(true);
+                dirstate = repository.getDirstate();
+                originalParent = dirstate.getParent1();
+                dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
+
+                Files.deleteIfExists(journalFile.toPath());
+                recordAndJournal(clIdx, fileSizes, journalFile);
+                recordAndJournal(clDat, fileSizes, journalFile);
+                recordAndJournal(mfIdx, fileSizes, journalFile);
+                recordAndJournal(mfDat, fileSizes, journalFile);
+
+                // The base for the very first replayed commit must be the true original parent
+                // of the FIRST rule (whatever revision comes right before the edited range) --
+                // NOT the current dirstate tip. Real `hg histedit` only ever rewrites a
+                // contiguous range of history and rebuilds it on top of that range's original
+                // base; using the current tip here would (when some rule in the range is a DROP,
+                // or a rule set doesn't extend all the way to the tip) incorrectly carry forward
+                // manifest entries that belong to revisions the edited range never touches.
+                Rule firstRule = rules.get(0);
+                byte[] firstRuleNode = NodeIdUtil.fromHex(firstRule.hexNode);
+                int firstRuleRev = changelog.findRevision(firstRuleNode);
+                if (firstRuleRev == -1) {
+                    throw new IOException("Histedit failed: Revision not found for node " + firstRule.hexNode);
+                }
+                int baseRev = changelog.getIndexRecord(firstRuleRev).getParent1();
+                byte[] rewriteBase = (baseRev != -1) ? changelog.getIndexRecord(baseRev).getNodeId() : new byte[20];
+
+                // To support folding/merging revisions, we will parse the target revisions content
+                // and perform clean recommits according to actions.
+                byte[] lastCommittedNode = rewriteBase;
+                String pendingCommitMsg = null;
+                // All hex nodes belonging to the currently open pick/fold/roll group, in rule
+                // order. Verified against real `hg histedit`: a fold/roll must fold *every*
+                // member's file changes into the resulting commit (not just the last one), while
+                // the resulting commit's author and branch always stay those of the group's
+                // anchor (the pick, or first fold/roll if it opens the group) -- never those of
+                // a later folded-in commit.
+                List<String> pendingHexNodes = new ArrayList<>();
+                String pendingAuthor = null;
+
+                for (Rule rule : rules) {
+                    byte[] nodeBytes = NodeIdUtil.fromHex(rule.hexNode);
+                    int rev = changelog.findRevision(nodeBytes);
+                    if (rev == -1) {
+                        throw new IOException("Histedit failed: Revision not found for node " + rule.hexNode);
+                    }
+
+                    byte[] clContent = changelog.getRevisionContent(rev);
+                    ParsedChangeset parsed = parseChangeset(clContent);
+
+                    if (rule.action == Action.PICK) {
+                        if (pendingCommitMsg != null) {
+                            // Commit folded changes first
+                            lastCommittedNode = commitNewRev(lastCommittedNode, pendingAuthor, pendingCommitMsg, pendingHexNodes, fileSizes, journalFile);
+                            pendingCommitMsg = null;
+                            pendingHexNodes = new ArrayList<>();
+                        }
+                        pendingCommitMsg = parsed.message;
+                        pendingAuthor = parsed.author;
+                        pendingHexNodes.add(rule.hexNode);
+                    } else if (rule.action == Action.FOLD) {
+                        if (pendingCommitMsg == null) {
+                            pendingCommitMsg = parsed.message;
+                            pendingAuthor = parsed.author;
+                        } else {
+                            pendingCommitMsg = pendingCommitMsg + "\n" + parsed.message;
+                        }
+                        pendingHexNodes.add(rule.hexNode);
+                    } else if (rule.action == Action.ROLL) {
+                        if (pendingCommitMsg == null) {
+                            pendingCommitMsg = parsed.message;
+                            pendingAuthor = parsed.author;
+                        }
+                        // Drop this commit message, keep the accumulated pending CommitMsg
+                        pendingHexNodes.add(rule.hexNode);
+                    } else if (rule.action == Action.DROP) {
+                        // Skip completely -- but, like real `hg histedit` (verified live, 2026-09-05:
+                        // under experimental.evolution=all, real hg's own histedit registers a
+                        // "prune" obsmarker -- precursor with an empty successor set -- for a dropped
+                        // revision, exactly like StripCommand.call() already does for a plain `hg
+                        // strip`), the dropped revision must be marked pruned so a plain `hg log`
+                        // hides it. This class never physically strips (matching RebaseCommand's own
+                        // 2026-09-04 evolution-only design), so without this marker the dropped
+                        // revision stayed fully visible in a plain log forever -- found live via this
+                        // class's own requirement-matrix interop test.
+                        try {
+                            HgObsMarker.writeMarker(repository.getStoreDir(), nodeBytes, List.of(), "prune");
+                        } catch (Exception e) {
+                            // non-blocking, same as every other obsmarker write in this class
+                        }
                     }
                 }
+
+                if (pendingCommitMsg != null) {
+                    lastCommittedNode = commitNewRev(lastCommittedNode, pendingAuthor, pendingCommitMsg, pendingHexNodes, fileSizes, journalFile);
+                }
+
+                // Real hg's histedit finishes with an implicit checkout of the new tip: any path
+                // that was part of the pre-histedit working copy but is no longer part of the
+                // final manifest (its owning commit got DROPped entirely, or was removed partway
+                // through a fold/roll group) must disappear from the working directory too.
+                // Verified against real `hg histedit`: dropping a commit that added b.txt leaves
+                // b.txt off disk (and out of `hg manifest -r tip`) once histedit finishes.
+                //
+                // The dirstate's own tracked-path set must be reconciled the same way -- found live
+                // via this class's own requirement-matrix interop test (2026-09-05): `hg verify`
+                // reported "<path> marked as tracked in p1 (...) but not in manifest1" because this
+                // loop used to only delete the dropped path's physical file, never its dirstate
+                // entry, leaving a dropped commit's path permanently stuck as tracked afterward
+                // (undetectable by any test that only checks `File.exists()`/log content, since
+                // `hg status`/`hg add` would still silently treat it as already-removed-from-disk).
+                Revlog manifestRevlogForCleanup = repository.getRevlog(mfIdx, mfDat);
+                Map<String, String> oldManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, originalParent);
+                Map<String, String> finalManifest = getManifestForCommit(changelog, manifestRevlogForCleanup, lastCommittedNode);
+                Dirstate d = repository.getDirstate();
+                Set<String> allTouchedPaths = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+                allTouchedPaths.addAll(oldManifest.keySet());
+                allTouchedPaths.addAll(finalManifest.keySet());
+                for (String path : allTouchedPaths) {
+                    String finalHexAndFlag = finalManifest.get(path);
+                    if (finalHexAndFlag == null) {
+                        Files.deleteIfExists(new File(repository.getDirectory(), path).toPath());
+                        d.removeEntry(path);
+                    } else if (!finalHexAndFlag.equals(oldManifest.get(path))) {
+                        // Newly introduced, or changed, by the rewritten range -- (re)stage as
+                        // clean/tracked so `hg verify`'s dirstate-vs-manifest1 cross-check agrees.
+                        File wf = new File(repository.getDirectory(), path);
+                        String flag = finalHexAndFlag.length() > 40 ? finalHexAndFlag.substring(40) : "";
+                        int mode = flag.contains("x") ? 0755 : (flag.contains("l") ? 0120000 : 0644);
+                        long size = wf.exists() ? wf.length() : 0L;
+                        d.addEntry(path, new Dirstate.Entry('n', mode, (int) size, SafeFileIO.lastModifiedSeconds(wf)));
+                    }
+                }
+
+                // Sync workspace to the last committed node
+                d.setParents(lastCommittedNode, new byte[20]);
+                repository.writeDirstate(d);
+                repository.clearRevlogCache();
+
+                // Leave the working branch matching the new tip's branch, the same way real
+                // hg's checkout after a history-rewrite does.
+                int newTipRev = changelog.findRevision(lastCommittedNode);
+                if (newTipRev != -1) {
+                    repository.setBranch(CommitCommand.getBranchOfRevision(changelog, newTipRev));
+                }
+
+                try {
+                    CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup);
+                } catch (Exception e) {
+                    // non-blocking, same as CommitCommand/StripCommand
+                }
+                Files.deleteIfExists(journalFile.toPath());
+            } catch (Exception e) {
+                // Roll every touched revlog back to its pre-histedit size and restore dirstate,
+                // same recovery strategy as CommitCommand/StripCommand.
+                for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
+                    File file = sizeEntry.getKey();
+                    long origSize = sizeEntry.getValue();
+                    if (origSize == 0) {
+                        Files.deleteIfExists(file.toPath());
+                    } else if (file.exists()) {
+                        try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
+                            outChan.truncate(origSize);
+                            outChan.force(true);
+                        }
+                    }
+                }
+                Files.deleteIfExists(journalFile.toPath());
+                repository.clearRevlogCache();
+                throw e;
             }
-            if (dirstateBackup != null) {
-                SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-            }
-            Files.deleteIfExists(journalFile.toPath());
-            Files.deleteIfExists(dirstateBackupFile.toPath());
-            repository.clearRevlogCache();
-            throw e;
+          } catch (Throwable failure) {
+            dirstateChange.failed();
+            throw failure;
+          }
         }
     }
 

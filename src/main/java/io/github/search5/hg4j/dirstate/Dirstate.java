@@ -24,9 +24,17 @@ public class Dirstate {
 
     private NodeId parent1 = NodeId.NULL;
     private NodeId parent2 = NodeId.NULL;
-    private final Map<String, Entry> entries = new LinkedHashMap<>();
+    private final LazyEntryMap entries = new LazyEntryMap();
     private final Map<String, String> copyMap = new LinkedHashMap<>();
     private boolean isV2 = false;
+
+    // What the attached dirstate-v2 data file looked like when it was read: the append writer needs them (see write(File))
+    private String baseUid;
+    private int baseLength;
+    private int baseUnreachable;
+    private byte[] baseIgnoreHash = new byte[20];
+    private Map<String, String> baseCopies = new LinkedHashMap<>();
+    private File baseDocket;
 
     public Map<String, String> getCopyMap() {
         return copyMap;
@@ -229,37 +237,42 @@ public class Dirstate {
                 docketBuf.get(uidBytes);
                 String uid = new String(uidBytes, StandardCharsets.US_ASCII);
 
-                // Load .hg/dirstate.<uid> data file
+                // The data file named by the docket, read in place: its first `data_length` bytes are what the docket describes, and it
+                // may be longer (a writer appended and has not yet replaced the docket, or died before it did)
                 File dataFile = new File(file.getParentFile(), "dirstate." + uid);
                 if (!dataFile.exists()) {
                     throw new HgCorruptDataException("Dirstate-v2 data file not found for uid: " + uid);
                 }
-                byte[] dataBytes = Files.readAllBytes(dataFile.toPath());
-                if (dataBytes.length != dataLength) {
-                    throw new HgCorruptDataException("Dirstate-v2 data file length mismatch. Expected " + dataLength + " but got " + dataBytes.length);
-                }
-
                 this.isV2 = true;
-                DirstateV2Parser parser = new DirstateV2Parser();
-                int rootStart = docketBuf.getInt(76);
-                int rootCount = docketBuf.getInt(80);
-                Dirstate parsed = parser.parse(dataBytes, rootStart, rootCount);
                 this.parent1 = new NodeId(p1);
                 this.parent2 = new NodeId(p2);
-                this.entries.clear();
-                this.entries.putAll(parsed.getEntries());
-                // BUG (backlog #39 wave 4, 2026-09-05): this used to only copy over the parsed
-                // entries, silently dropping the parsed copyMap entirely -- confirmed live: a
-                // dirstate-v2 repo that records a pending (uncommitted) `hg copy`'s copy-source
-                // metadata, then gets its dirstate re-read (e.g. by a SECOND hg4j write command
-                // running before the first copy is committed, such as a second `hg copy` from the
-                // same source), lost the first copy's copyMap record entirely on that re-read --
-                // the destination stayed correctly tracked as an added file, but its copy-source
-                // linkage vanished, so the eventual commit recorded no copy metadata for it at
-                // all (`hg log --template {file_copies}` silently missing that destination,
-                // `hg log --follow` unable to trace back through the copy).
+                int rootStart = docketBuf.getInt(76);
+                int rootCount = docketBuf.getInt(80);
+                int entryCount = docketBuf.getInt(84);
+                int copyCount = docketBuf.getInt(88);
+                java.nio.ByteBuffer mapped;
+                try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(dataFile.toPath(),
+                        java.nio.file.StandardOpenOption.READ)) {
+                    if (channel.size() < dataLength) {
+                        throw new HgCorruptDataException("Dirstate-v2 data file is shorter than the docket says. Expected " + dataLength
+                                + " but got " + channel.size());
+                    }
+                    mapped = dataLength == 0 ? java.nio.ByteBuffer.allocate(0)
+                            : channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, dataLength);
+                }
+                DirstateV2Tree tree = new DirstateV2Tree(mapped, rootStart, rootCount, entryCount, copyCount);
+                this.entries.attach(tree);
+                // BUG (backlog #39 wave 4, 2026-09-05): the copy sources of the entries have to be kept as well, or a later write of
+                // the dirstate loses the record of a pending `hg copy`.
                 this.copyMap.clear();
-                this.copyMap.putAll(parsed.getCopyMap());
+                this.copyMap.putAll(tree.copies());
+                this.baseUid = uid;
+                this.baseLength = dataLength;
+                this.baseUnreachable = docketBuf.getInt(92);
+                this.baseIgnoreHash = new byte[20];
+                docketBuf.get(100, this.baseIgnoreHash);
+                this.baseCopies = new LinkedHashMap<>(this.copyMap);
+                this.baseDocket = file;
                 return;
             }
         }
@@ -300,11 +313,81 @@ public class Dirstate {
         return out.toByteArray();
     }
 
+    /**
+     * The usual way to save a dirstate-v2: the changes made since it was read are appended to the data file and the docket is replaced,
+     * as the Rust implementation does ({@code DirstateMapWriteMode::Auto}). The data comes first and the docket, which holds the length
+     * that is valid, last, so that a crash in between leaves the old state intact. When the file on disk is not the one that was read,
+     * or too much of it is unreachable (ratio of 0.5, {@code ACCEPTABLE_UNREACHABLE_BYTES_RATIO}), the caller writes a new file instead.
+     */
+    private boolean appendTo(File docket) throws IOException {
+        DirstateV2Tree tree = entries.base();
+        if (tree == null || baseUid == null || baseDocket == null || !docket.equals(baseDocket) || !docket.exists()) {
+            return false;
+        }
+        byte[] onDisk = Files.readAllBytes(docket.toPath());
+        if (onDisk.length < 125 || !"dirstate-v2\n".equals(new String(onDisk, 0, 12, StandardCharsets.US_ASCII))) {
+            return false;
+        }
+        ByteBuffer disk = ByteBuffer.wrap(onDisk).order(ByteOrder.BIG_ENDIAN);
+        int uidSize = disk.get(124) & 0xFF;
+        String diskUid = new String(onDisk, 125, uidSize, StandardCharsets.US_ASCII);
+        if (!diskUid.equals(baseUid) || disk.getInt(120) != baseLength) {
+            return false; // somebody else replaced it: write from scratch
+        }
+        Set<String> changed = new HashSet<>(entries.changed().keySet());
+        changed.addAll(entries.removedPaths());
+        for (String path : copyMap.keySet()) {
+            if (!copyMap.get(path).equals(baseCopies.get(path))) {
+                changed.add(path);
+            }
+        }
+        for (String path : baseCopies.keySet()) {
+            if (!copyMap.containsKey(path)) {
+                changed.add(path);
+            }
+        }
+        DirstateV2Appender.Result result = new DirstateV2Appender(tree, baseLength, entries::get, copyMap).append(changed);
+        long unreachable = (long) baseUnreachable + result.unreachableAdded();
+        if (baseLength == 0 || (double) unreachable / baseLength >= 0.5) {
+            return false;
+        }
+        File dataFile = new File(docket.getParentFile(), "dirstate." + baseUid);
+        long newLength = (long) baseLength + result.data().length;
+        if (result.data().length > 0) {
+            try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(dataFile, "rw")) {
+                file.setLength(baseLength); // whatever a writer that died left past the valid length goes
+                file.seek(baseLength);
+                file.write(result.data());
+                file.getFD().sync();
+            }
+        }
+        ByteBuffer next = ByteBuffer.allocate(onDisk.length).order(ByteOrder.BIG_ENDIAN);
+        next.put(onDisk);
+        byte[] p1 = new byte[32];
+        byte[] p2 = new byte[32];
+        System.arraycopy(parent1.getBytes(), 0, p1, 0, 20);
+        System.arraycopy(parent2.getBytes(), 0, p2, 0, 20);
+        next.put(12, p1);
+        next.put(44, p2);
+        next.putInt(76, result.rootStart());
+        next.putInt(80, result.rootCount());
+        next.putInt(84, entries.size());
+        next.putInt(88, copyMap.size());
+        next.putInt(92, (int) unreachable);
+        next.putInt(120, (int) newLength);
+        SafeFileIO.writeAtomic(docket, next.array());
+        read(docket);
+        return true;
+    }
+
     public void write(File file) throws IOException {
         if (file == null) {
             throw new IllegalArgumentException("Target file cannot be null");
         }
 
+        if (isV2 && appendTo(file)) {
+            return;
+        }
         if (isV2) {
             // W-LEAK: If the existing docket file (`.hg/dirstate`) is present before writing,
             // read it to determine the old uid.
@@ -390,10 +473,15 @@ public class Dirstate {
             // 5. Write Docket file
             SafeFileIO.writeAtomic(file, docketBuf.array());
 
-            // 6. W-LEAK: Delete the old data file
+            // 6. Attach the file just written (the changes made so far are in it now), then delete the old data file: a mapped file
+            // cannot be deleted on every platform, so it is released first and a failure to delete only leaves an orphan behind
+            read(file);
             if (oldUid != null && !oldUid.equals(uid)) {
-                File oldDataFile = new File(file.getParentFile(), "dirstate." + oldUid);
-                Files.deleteIfExists(oldDataFile.toPath());
+                try {
+                    Files.deleteIfExists(new File(file.getParentFile(), "dirstate." + oldUid).toPath());
+                } catch (IOException ignored) {
+                    // an orphan data file is harmless
+                }
             }
             return;
         }

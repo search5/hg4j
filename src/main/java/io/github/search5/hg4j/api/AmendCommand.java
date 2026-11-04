@@ -69,68 +69,73 @@ public final class AmendCommand {
      * @throws IOException if commit or obsstore serialization fails
      */
     public byte[] call() throws IOException, HgLockException {
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        // Like real hg, the locks are taken before the first read of the repository state and released when the command ends.
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeout);
+             io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore(lockTimeout)) {
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
-        int count = changelog.getRevisionCount();
-        if (count == 0) {
-            throw new IllegalStateException("No commits exist to amend (empty repository)");
-        }
-
-        int obsoleteRev = count - 1;
-        Revlog.IndexRecord obsoleteRec = changelog.getIndexRecord(obsoleteRev);
-        byte[] obsoleteNode = obsoleteRec.getNodeId();
-
-        // The amended commit keeps the OLD commit's own parent(s) -- it replaces old as a
-        // sibling rather than becoming its child (real hg: `base = old.p1()`).
-        int baseP1Rev = obsoleteRec.getParent1();
-        int baseP2Rev = obsoleteRec.getParent2();
-        NodeId baseParent1 = baseP1Rev >= 0 ? new NodeId(changelog.getIndexRecord(baseP1Rev).getNodeId()) : NodeId.NULL;
-        NodeId baseParent2 = baseP2Rev >= 0 ? new NodeId(changelog.getIndexRecord(baseP2Rev).getNodeId()) : NodeId.NULL;
-
-        // Default author/message to the amended-away commit's own values when the caller didn't
-        // override them (real hg: `user = opts.get('user') or old.user()`; message likewise
-        // reuses old's description via the pre-filled commit editor when -m isn't given).
-        String effectiveAuthor = this.author;
-        String effectiveMessage = this.message;
-        if (effectiveAuthor == null || effectiveMessage == null) {
-            byte[] oldContent = changelog.getRevisionContent(obsoleteRev);
-            String oldText = new String(oldContent, StandardCharsets.UTF_8);
-            String[] lines = oldText.split("\n", -1);
-            if (effectiveAuthor == null && lines.length > 1) {
-                effectiveAuthor = lines[1];
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
+            int count = changelog.getRevisionCount();
+            if (count == 0) {
+                throw new IllegalStateException("No commits exist to amend (empty repository)");
             }
-            if (effectiveMessage == null) {
-                int emptyLineIdx = -1;
-                for (int i = 3; i < lines.length; i++) {
-                    if (lines[i].isEmpty()) {
-                        emptyLineIdx = i;
-                        break;
+
+            int obsoleteRev = count - 1;
+            Revlog.IndexRecord obsoleteRec = changelog.getIndexRecord(obsoleteRev);
+            byte[] obsoleteNode = obsoleteRec.getNodeId();
+
+            // The amended commit keeps the OLD commit's own parent(s) -- it replaces old as a
+            // sibling rather than becoming its child (real hg: `base = old.p1()`).
+            int baseP1Rev = obsoleteRec.getParent1();
+            int baseP2Rev = obsoleteRec.getParent2();
+            NodeId baseParent1 = baseP1Rev >= 0 ? new NodeId(changelog.getIndexRecord(baseP1Rev).getNodeId()) : NodeId.NULL;
+            NodeId baseParent2 = baseP2Rev >= 0 ? new NodeId(changelog.getIndexRecord(baseP2Rev).getNodeId()) : NodeId.NULL;
+
+            // Default author/message to the amended-away commit's own values when the caller didn't
+            // override them (real hg: `user = opts.get('user') or old.user()`; message likewise
+            // reuses old's description via the pre-filled commit editor when -m isn't given).
+            String effectiveAuthor = this.author;
+            String effectiveMessage = this.message;
+            if (effectiveAuthor == null || effectiveMessage == null) {
+                byte[] oldContent = changelog.getRevisionContent(obsoleteRev);
+                String oldText = new String(oldContent, StandardCharsets.UTF_8);
+                String[] lines = oldText.split("\n", -1);
+                if (effectiveAuthor == null && lines.length > 1) {
+                    effectiveAuthor = lines[1];
+                }
+                if (effectiveMessage == null) {
+                    int emptyLineIdx = -1;
+                    for (int i = 3; i < lines.length; i++) {
+                        if (lines[i].isEmpty()) {
+                            emptyLineIdx = i;
+                            break;
+                        }
+                    }
+                    if (emptyLineIdx != -1) {
+                        effectiveMessage = String.join("\n", Arrays.asList(lines).subList(emptyLineIdx + 1, lines.length));
                     }
                 }
-                if (emptyLineIdx != -1) {
-                    effectiveMessage = String.join("\n", Arrays.asList(lines).subList(emptyLineIdx + 1, lines.length));
-                }
             }
+
+            boolean effectiveCloseBranch = (this.closeBranch != null)
+                    ? this.closeBranch
+                    : CommitCommand.isRevisionClosingBranch(changelog, obsoleteRev);
+
+            // 1. Create a new amended commit that replaces `old`, keeping old's own parent(s)
+            CommitCommand commitCmd = new CommitCommand(repository);
+            if (effectiveAuthor != null) commitCmd.setAuthor(effectiveAuthor);
+            if (effectiveMessage != null) commitCmd.setMessage(effectiveMessage);
+            commitCmd.setCloseBranch(effectiveCloseBranch);
+            commitCmd.setAmendDeclaredParents(baseParent1, baseParent2);
+
+            byte[] newCommitNode = commitCmd.call();
+
+            // 2. Generate and append obsolescence marker in obsstore
+            HgObsMarker.writeMarker(repository.getStoreDir(), obsoleteNode, List.of(newCommitNode), "amend");
+
+                return newCommitNode;
         }
-
-        boolean effectiveCloseBranch = (this.closeBranch != null)
-                ? this.closeBranch
-                : CommitCommand.isRevisionClosingBranch(changelog, obsoleteRev);
-
-        // 1. Create a new amended commit that replaces `old`, keeping old's own parent(s)
-        CommitCommand commitCmd = new CommitCommand(repository);
-        if (effectiveAuthor != null) commitCmd.setAuthor(effectiveAuthor);
-        if (effectiveMessage != null) commitCmd.setMessage(effectiveMessage);
-        commitCmd.setCloseBranch(effectiveCloseBranch);
-        commitCmd.setAmendDeclaredParents(baseParent1, baseParent2);
-
-        byte[] newCommitNode = commitCmd.call();
-
-        // 2. Generate and append obsolescence marker in obsstore
-        HgObsMarker.writeMarker(repository.getStoreDir(), obsoleteNode, List.of(newCommitNode), "amend");
-
-            return newCommitNode;
     }
 }

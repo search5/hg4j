@@ -82,7 +82,7 @@ public final class CensorCommand {
         return this;
     }
 
-    public void call() throws IOException {
+    public void call() throws IOException, io.github.search5.hg4j.errors.HgLockException {
         if (path == null || path.isEmpty()) {
             throw new HgValidationException("File path is required for censor");
         }
@@ -90,25 +90,30 @@ public final class CensorCommand {
             throw new HgValidationException("Revision is required for censor");
         }
 
-        File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-        if (!flIdx.exists()) {
-            throw new HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
-        }
+        // Like real hg (censor.censor): wlock and lock around the whole censoring, which rewrites a filelog in place.
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeout);
+             io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore(lockTimeout)) {
+            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+            if (!flIdx.exists()) {
+                throw new HgRepositoryNotFoundException("Filelog index does not exist for: " + path);
+            }
 
-        Revlog filelog = repository.getRevlog(flIdx, flDat);
-        byte[] nodeId = NodeIdUtil.fromHex(nodeHex);
-        int rev = filelog.findRevision(nodeId);
-        if (rev == -1) {
-            throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
-        }
+            Revlog filelog = repository.getRevlog(flIdx, flDat);
+            byte[] nodeId = NodeIdUtil.fromHex(nodeHex);
+            int rev = filelog.findRevision(nodeId);
+            if (rev == -1) {
+                throw new HgRevisionNotFoundException("File revision not found: " + path + " @ " + nodeHex);
+            }
 
-        if (checkHeads) {
-            checkNotLiveAtHeadsOrWorkingCopy(nodeId);
-        }
+            if (checkHeads) {
+                checkNotLiveAtHeadsOrWorkingCopy(nodeId);
+            }
 
-        filelog.censorRevision(rev, buildTombstone(tombstone));
-        repository.clearRevlogCache();
+            filelog.censorRevision(rev, buildTombstone(tombstone));
+            repository.clearRevlogCache();
+        }
     }
 
     /** Real hg's own {@code check_heads} + working-directory guard from {@code hgext/censor.py}'s

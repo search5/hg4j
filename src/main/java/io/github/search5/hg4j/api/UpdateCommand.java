@@ -100,261 +100,266 @@ public class UpdateCommand {
         // HgTreeFilter.ALL), pick up whatever narrowspec the repository itself was narrow cloned
         // with -- so checkout keeps respecting the narrow scope on every later `update`, not just
         // right after NarrowCloneCommand's own initial checkout.
-        if (this.treeFilter == HgTreeFilter.ALL) {
-            this.treeFilter = HgTreeFilter.loadFromRepository(repository);
-        }
-
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-
-        try (HgLock wlock = repository.lockWorkingCopy();
-             HgLock storeLock = repository.lockStore()) {
-
-            // PRE_UPDATE hooks trigger
-            if (!preUpdateHooks.isEmpty()) {
-                Map<String, Object> ctx = new HashMap<>();
-                ctx.put("repository", repository);
-                ctx.put("targetRevision", targetRevision);
-                ctx.put("force", force);
-                for (HgHook hook : preUpdateHooks) {
-                    if (!hook.run(ctx)) {
-                        throw new HgValidationException("Update rejected by PRE_UPDATE hook");
-                    }
-                }
+        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            // commands.update: `with repo.dirstate.changing_parents(repo)` inside the locks; the dirstate is written when it ends well
+            return repository.changingParents(() -> {
+            if (this.treeFilter == HgTreeFilter.ALL) {
+                this.treeFilter = HgTreeFilter.loadForWorkingCopy(repository);
             }
 
-            Dirstate dirstate = repository.getDirstate();
-            if (!force) {
-                if (!dirstate.getEntries().isEmpty()) {
-                    Status status = new StatusCommand(repository).call();
-                    if (!status.getAdded().isEmpty() || !status.getModified().isEmpty() || !status.getRemoved().isEmpty()) {
-                        throw new HgValidationException("Working directory has uncommitted changes. Use force to update.");
-                    }
-                }
-            }
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
 
-            Revlog changelog = repository.getRevlog(clIdx, clDat);
-            byte[] targetNodeId = resolveTargetNodeId(changelog);
-            if (targetNodeId == null) {
-                throw new HgValidationException("Repository is empty, cannot update.");
-            }
+            {
 
-            int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
-            if (commitRev == -1) {
-                throw new HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
-            }
-
-            // Resolve current parent revision for TreeWalk
-            dirstate = repository.getDirstate();
-            String parentRev = "";
-            if (changelog.getRevisionCount() > 0) {
-                byte[] parentNode = dirstate.getParent1();
-                int parentRevNum = NodeIdUtil.findRevisionByNodeId(changelog, parentNode);
-                if (parentRevNum != -1) {
-                    parentRev = String.valueOf(parentRevNum);
-                }
-            }
-
-            // one batch request for every LFS blob this update needs, instead of one request per file
-            TreeWalk prefetchWalk = new TreeWalk();
-            prefetchWalk.addTree(new ManifestTreeIterator(repository, parentRev));
-            prefetchWalk.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev)));
-            prefetchWalk.reset();
-            java.util.List<java.util.Map.Entry<Revlog, Integer>> toRead = new java.util.ArrayList<>();
-            java.util.List<String> toReadPaths = new java.util.ArrayList<>();
-            while (prefetchWalk.next()) {
-                String prefetchPath = prefetchWalk.getPath();
-                if ((treeFilter != null && !treeFilter.accept(prefetchPath)) || !prefetchWalk.isTracked(1)) {
-                    continue;
-                }
-                File prefetchIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), prefetchPath);
-                if (!prefetchIdx.exists()) {
-                    continue; // reported by the update loop below
-                }
-                File prefetchDat = new File(prefetchIdx.getPath().substring(0, prefetchIdx.getPath().length() - 2) + ".d");
-                Revlog prefetchLog = repository.getRevlog(prefetchIdx, prefetchDat);
-                int prefetchRev = NodeIdUtil.findRevisionByNodeId(prefetchLog, prefetchWalk.getNodeId(1));
-                if (prefetchRev != -1) {
-                    toRead.add(java.util.Map.entry(prefetchLog, prefetchRev));
-                    toReadPaths.add(prefetchPath);
-                }
-            }
-            HgLfsFactory.getInstance().prefetch(repository, toRead, toReadPaths);
-
-            TreeWalk tw = new TreeWalk();
-            tw.addTree(new ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest
-            tw.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev))); // Tree 1: Target Commit Manifest
-
-            tw.reset();
-            while (tw.next()) {
-                String path = tw.getPath();
-                if (treeFilter != null && !treeFilter.accept(path)) {
-                    continue;
-                }
-                boolean inParent = tw.isTracked(0);
-                boolean inTarget = tw.isTracked(1);
-
-                if (inParent && !inTarget) {
-                    // Process deletions: Files in current manifest that are NOT in target manifest
-                    File diskFile = new File(repository.getDirectory(), path);
-                    if (diskFile.exists()) {
-                        Files.delete(diskFile.toPath());
-                        // Delete empty parent directories if clean
-                        File parent = diskFile.getParentFile();
-                        while (parent != null && !parent.equals(repository.getDirectory())) {
-                            File[] files = parent.listFiles();
-                            if (files == null || files.length == 0) {
-                                Files.delete(parent.toPath());
-                                parent = parent.getParentFile();
-                            } else {
-                                break;
-                            }
+                // PRE_UPDATE hooks trigger
+                if (!preUpdateHooks.isEmpty()) {
+                    Map<String, Object> ctx = new HashMap<>();
+                    ctx.put("repository", repository);
+                    ctx.put("targetRevision", targetRevision);
+                    ctx.put("force", force);
+                    for (HgHook hook : preUpdateHooks) {
+                        if (!hook.run(ctx)) {
+                            throw new HgValidationException("Update rejected by PRE_UPDATE hook");
                         }
                     }
-                    dirstate.removeEntry(path);
-                } else if (inTarget) {
-                    // Process updates and creations: Files in target manifest
-                    byte[] targetNode = tw.getNodeId(1);
-                    String hexNode = NodeIdUtil.toHex(targetNode);
-                    boolean executable = tw.isExecutable(1);
+                }
 
-                    File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
-                    File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
-
-                    if (!flIdx.exists()) {
-                        throw new HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
-                    }
-
-                    Revlog filelog = repository.getRevlog(flIdx, flDat);
-                    int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, targetNode);
-                    if (fileRev == -1) {
-                        throw new HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
-                    }
-
-                    byte[] fileContent = filelog.getRevisionContent(fileRev);
-
-                    // LFS pipeline (backlog 31, extended by backlog 42): a REVIDX_EXTSTORED
-                    // revision's filelog content is an LFS pointer, not the real bytes -- resolve
-                    // it back to the real content before it reaches disk, mirroring real hg's
-                    // hgext/lfs `readfromstore` wrapper. Delegated to HgLfsFactory#applySmudgeFilter
-                    // so this checkout path and AnnotateCommand's content-reading path share one
-                    // implementation that consistently honors [lfs] url / usercache config.
-                    fileContent = HgLfsFactory.getInstance().applySmudgeFilter(repository, path, fileContent, filelog.isExtStored(fileRev));
-
-                    boolean symlink = tw.isSymlink(1);
-
-                    File diskFile = new File(repository.getDirectory(), path);
-                    boolean needsWrite = true;
-
-                    if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
-                        if (!symlink) {
-                            try {
-                                byte[] existingContent = Files.readAllBytes(diskFile.toPath());
-                                if (Arrays.equals(existingContent, fileContent)) {
-                                    needsWrite = false;
-                                }
-                            } catch (Exception ignored) {
-                            }
-                        } else if (Files.isSymbolicLink(diskFile.toPath())) {
-                            // Skip the delete+recreate churn (and its symlink mtime bump) when the
-                            // target is already exactly right, mirroring the regular-file
-                            // unchanged-content fast path just above.
-                            try {
-                                String existingTarget = Files.readSymbolicLink(diskFile.toPath()).toString();
-                                String desiredTarget = new String(fileContent, StandardCharsets.UTF_8).trim();
-                                if (existingTarget.equals(desiredTarget)) {
-                                    needsWrite = false;
-                                }
-                            } catch (Exception ignored) {
-                            }
+                Dirstate dirstate = repository.getDirstate();
+                if (!force) {
+                    if (!dirstate.getEntries().isEmpty()) {
+                        Status status = new StatusCommand(repository).call();
+                        if (!status.getAdded().isEmpty() || !status.getModified().isEmpty() || !status.getRemoved().isEmpty()) {
+                            throw new HgValidationException("Working directory has uncommitted changes. Use force to update.");
                         }
-                        if (needsWrite) {
+                    }
+                }
+
+                Revlog changelog = repository.getRevlog(clIdx, clDat);
+                byte[] targetNodeId = resolveTargetNodeId(changelog);
+                if (targetNodeId == null) {
+                    throw new HgValidationException("Repository is empty, cannot update.");
+                }
+
+                int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
+                if (commitRev == -1) {
+                    throw new HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
+                }
+
+                // Resolve current parent revision for TreeWalk
+                dirstate = repository.getDirstate();
+                String parentRev = "";
+                if (changelog.getRevisionCount() > 0) {
+                    byte[] parentNode = dirstate.getParent1();
+                    int parentRevNum = NodeIdUtil.findRevisionByNodeId(changelog, parentNode);
+                    if (parentRevNum != -1) {
+                        parentRev = String.valueOf(parentRevNum);
+                    }
+                }
+
+                // one batch request for every LFS blob this update needs, instead of one request per file
+                TreeWalk prefetchWalk = new TreeWalk();
+                prefetchWalk.addTree(new ManifestTreeIterator(repository, parentRev));
+                prefetchWalk.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev)));
+                prefetchWalk.reset();
+                java.util.List<java.util.Map.Entry<Revlog, Integer>> toRead = new java.util.ArrayList<>();
+                java.util.List<String> toReadPaths = new java.util.ArrayList<>();
+                while (prefetchWalk.next()) {
+                    String prefetchPath = prefetchWalk.getPath();
+                    if ((treeFilter != null && !treeFilter.accept(prefetchPath)) || !prefetchWalk.isTracked(1)) {
+                        continue;
+                    }
+                    File prefetchIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), prefetchPath);
+                    if (!prefetchIdx.exists()) {
+                        continue; // reported by the update loop below
+                    }
+                    File prefetchDat = new File(prefetchIdx.getPath().substring(0, prefetchIdx.getPath().length() - 2) + ".d");
+                    Revlog prefetchLog = repository.getRevlog(prefetchIdx, prefetchDat);
+                    int prefetchRev = NodeIdUtil.findRevisionByNodeId(prefetchLog, prefetchWalk.getNodeId(1));
+                    if (prefetchRev != -1) {
+                        toRead.add(java.util.Map.entry(prefetchLog, prefetchRev));
+                        toReadPaths.add(prefetchPath);
+                    }
+                }
+                HgLfsFactory.getInstance().prefetch(repository, toRead, toReadPaths);
+
+                TreeWalk tw = new TreeWalk();
+                tw.addTree(new ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest
+                tw.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev))); // Tree 1: Target Commit Manifest
+
+                tw.reset();
+                while (tw.next()) {
+                    String path = tw.getPath();
+                    if (treeFilter != null && !treeFilter.accept(path)) {
+                        continue;
+                    }
+                    boolean inParent = tw.isTracked(0);
+                    boolean inTarget = tw.isTracked(1);
+
+                    if (inParent && !inTarget) {
+                        // Process deletions: Files in current manifest that are NOT in target manifest
+                        File diskFile = new File(repository.getDirectory(), path);
+                        if (diskFile.exists()) {
                             Files.delete(diskFile.toPath());
+                            // Delete empty parent directories if clean
+                            File parent = diskFile.getParentFile();
+                            while (parent != null && !parent.equals(repository.getDirectory())) {
+                                File[] files = parent.listFiles();
+                                if (files == null || files.length == 0) {
+                                    Files.delete(parent.toPath());
+                                    parent = parent.getParentFile();
+                                } else {
+                                    break;
+                                }
+                            }
                         }
-                    }
+                        dirstate.removeEntry(path);
+                    } else if (inTarget) {
+                        // Process updates and creations: Files in target manifest
+                        byte[] targetNode = tw.getNodeId(1);
+                        String hexNode = NodeIdUtil.toHex(targetNode);
+                        boolean executable = tw.isExecutable(1);
 
-                    // Backlog #39 fix: a symlink's dirstate mode must carry the full S_IFLNK +
-                    // rwxrwxrwx bits (0120777), not just the bare S_IFLNK type bits (0120000) --
-                    // verified live against real hg 7.2: every symlink's `lstat` mode is
-                    // unconditionally 0120777 (symlinks have no real permissions of their own), so
-                    // a dirstate entry recorded with the bare 0120000 makes real hg's own `hg
-                    // status` (which compares the stored mode against a fresh `lstat`) see a
-                    // spurious permission mismatch and report the untouched symlink as modified.
-                    int mode = 0644;
-                    if (needsWrite) {
-                        diskFile.getParentFile().mkdirs();
-                        if (symlink) {
-                            mode = 0120777;
-                            String target = new String(fileContent, StandardCharsets.UTF_8).trim();
-                            try {
-                                Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
-                            } catch (Exception e) {
+                        File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+                        File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+
+                        if (!flIdx.exists()) {
+                            throw new HgRepositoryNotFoundException("Filelog index not found for tracked file: " + path);
+                        }
+
+                        Revlog filelog = repository.getRevlog(flIdx, flDat);
+                        int fileRev = NodeIdUtil.findRevisionByNodeId(filelog, targetNode);
+                        if (fileRev == -1) {
+                            throw new HgRevisionNotFoundException("File version not found in filelog: " + path + " rev hex " + hexNode);
+                        }
+
+                        byte[] fileContent = filelog.getRevisionContent(fileRev);
+
+                        // LFS pipeline (backlog 31, extended by backlog 42): a REVIDX_EXTSTORED
+                        // revision's filelog content is an LFS pointer, not the real bytes -- resolve
+                        // it back to the real content before it reaches disk, mirroring real hg's
+                        // hgext/lfs `readfromstore` wrapper. Delegated to HgLfsFactory#applySmudgeFilter
+                        // so this checkout path and AnnotateCommand's content-reading path share one
+                        // implementation that consistently honors [lfs] url / usercache config.
+                        fileContent = HgLfsFactory.getInstance().applySmudgeFilter(repository, path, fileContent, filelog.isExtStored(fileRev));
+
+                        boolean symlink = tw.isSymlink(1);
+
+                        File diskFile = new File(repository.getDirectory(), path);
+                        boolean needsWrite = true;
+
+                        if (diskFile.exists() || Files.isSymbolicLink(diskFile.toPath())) {
+                            if (!symlink) {
+                                try {
+                                    byte[] existingContent = Files.readAllBytes(diskFile.toPath());
+                                    if (Arrays.equals(existingContent, fileContent)) {
+                                        needsWrite = false;
+                                    }
+                                } catch (Exception ignored) {
+                                }
+                            } else if (Files.isSymbolicLink(diskFile.toPath())) {
+                                // Skip the delete+recreate churn (and its symlink mtime bump) when the
+                                // target is already exactly right, mirroring the regular-file
+                                // unchanged-content fast path just above.
+                                try {
+                                    String existingTarget = Files.readSymbolicLink(diskFile.toPath()).toString();
+                                    String desiredTarget = new String(fileContent, StandardCharsets.UTF_8).trim();
+                                    if (existingTarget.equals(desiredTarget)) {
+                                        needsWrite = false;
+                                    }
+                                } catch (Exception ignored) {
+                                }
+                            }
+                            if (needsWrite) {
+                                Files.delete(diskFile.toPath());
+                            }
+                        }
+
+                        // Backlog #39 fix: a symlink's dirstate mode must carry the full S_IFLNK +
+                        // rwxrwxrwx bits (0120777), not just the bare S_IFLNK type bits (0120000) --
+                        // verified live against real hg 7.2: every symlink's `lstat` mode is
+                        // unconditionally 0120777 (symlinks have no real permissions of their own), so
+                        // a dirstate entry recorded with the bare 0120000 makes real hg's own `hg
+                        // status` (which compares the stored mode against a fresh `lstat`) see a
+                        // spurious permission mismatch and report the untouched symlink as modified.
+                        int mode = 0644;
+                        if (needsWrite) {
+                            diskFile.getParentFile().mkdirs();
+                            if (symlink) {
+                                mode = 0120777;
+                                String target = new String(fileContent, StandardCharsets.UTF_8).trim();
+                                try {
+                                    Files.createSymbolicLink(diskFile.toPath(), Path.of(target));
+                                } catch (Exception e) {
+                                    Files.write(diskFile.toPath(), fileContent);
+                                }
+                            } else {
                                 Files.write(diskFile.toPath(), fileContent);
+                                diskFile.setExecutable(executable, false);
+                                mode = executable ? 0755 : 0644;
                             }
                         } else {
-                            Files.write(diskFile.toPath(), fileContent);
-                            diskFile.setExecutable(executable, false);
-                            mode = executable ? 0755 : 0644;
+                            if (symlink) {
+                                mode = 0120777;
+                            } else {
+                                diskFile.setExecutable(executable, false);
+                                mode = executable ? 0755 : 0644;
+                            }
                         }
-                    } else {
-                        if (symlink) {
-                            mode = 0120777;
-                        } else {
-                            diskFile.setExecutable(executable, false);
-                            mode = executable ? 0755 : 0644;
-                        }
+
+                        int size = fileContent.length;
+                        long time = SafeFileIO.lastModifiedSeconds(diskFile);
+
+                        dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
                     }
-
-                    int size = fileContent.length;
-                    long time = SafeFileIO.lastModifiedSeconds(diskFile);
-
-                    dirstate.addEntry(path, new Dirstate.Entry('n', mode, size, time));
                 }
-            }
 
-            // 4. Conclude checkout parent node updates
-            dirstate.setParents(targetNodeId, new byte[20]);
-            repository.writeDirstate(dirstate);
+                // 4. Conclude checkout parent node updates
+                dirstate.setParents(targetNodeId, new byte[20]);
+                repository.writeDirstate(dirstate);
 
-            // Real hg's `hg update` switches the working directory's active branch to
-            // whatever branch the target revision was committed on (`hg branch` reflects
-            // dirstate.branch, which `merge.update()` always resets on checkout). Without
-            // this, the working branch stays stuck on whatever it was before the update,
-            // so e.g. the next commit lands on the wrong branch.
-            repository.setBranch(CommitCommand.getBranchOfRevision(changelog, commitRev));
+                // Real hg's `hg update` switches the working directory's active branch to
+                // whatever branch the target revision was committed on (`hg branch` reflects
+                // dirstate.branch, which `merge.update()` always resets on checkout). Without
+                // this, the working branch stays stuck on whatever it was before the update,
+                // so e.g. the next commit lands on the wrong branch.
+                repository.setBranch(CommitCommand.getBranchOfRevision(changelog, commitRev));
 
-            // 4a. Update active bookmark based on targetNodeId (Auto-Switch)
-            BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
-            Map<String, String> allBookmarks = bookmarkCmd.call();
-            String targetHex = NodeIdUtil.toHex(targetNodeId);
-            List<String> matchingBookmarks = new ArrayList<>();
-            for (Map.Entry<String, String> entry : allBookmarks.entrySet()) {
-                if (entry.getValue().equals(targetHex)) {
-                    matchingBookmarks.add(entry.getKey());
+                // 4a. Update active bookmark based on targetNodeId (Auto-Switch)
+                BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
+                Map<String, String> allBookmarks = bookmarkCmd.call();
+                String targetHex = NodeIdUtil.toHex(targetNodeId);
+                List<String> matchingBookmarks = new ArrayList<>();
+                for (Map.Entry<String, String> entry : allBookmarks.entrySet()) {
+                    if (entry.getValue().equals(targetHex)) {
+                        matchingBookmarks.add(entry.getKey());
+                    }
                 }
-            }
-            if (matchingBookmarks.size() == 1) {
-                bookmarkCmd.setBookmarkName(matchingBookmarks.get(0)).setActive(true).call();
-            } else {
-                bookmarkCmd.setActive(true).setBookmarkName(null).call();
-            }
-
-            // 5. Recursive Subrepo Checkout (JGit-like subrepository checkout support)
-            recursiveSubrepoCheckout(repository);
-
-            // POST_UPDATE hooks trigger
-            Map<String, Object> ctx = new HashMap<>();
-            ctx.put("targetNode", NodeIdUtil.toHex(targetNodeId));
-            ctx.put("repository", repository);
-            for (HgHook hook : postUpdateHooks) {
-                try {
-                    hook.run(ctx);
-                } catch (Exception e) {
-                    LOGGER.log(Level.WARNING, "Post-update hook execution failed", e);
+                if (matchingBookmarks.size() == 1) {
+                    bookmarkCmd.setBookmarkName(matchingBookmarks.get(0)).setActive(true).setCurrentOnly(true).call();
+                } else {
+                    bookmarkCmd.setActive(true).setCurrentOnly(true).setBookmarkName(null).call();
                 }
-            }
 
-            return targetNodeId;
+                // 5. Recursive Subrepo Checkout (JGit-like subrepository checkout support)
+                recursiveSubrepoCheckout(repository);
+
+                // POST_UPDATE hooks trigger
+                Map<String, Object> ctx = new HashMap<>();
+                ctx.put("targetNode", NodeIdUtil.toHex(targetNodeId));
+                ctx.put("repository", repository);
+                for (HgHook hook : postUpdateHooks) {
+                    try {
+                        hook.run(ctx);
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Post-update hook execution failed", e);
+                    }
+                }
+
+                return targetNodeId;
+            }
+            });
         }
     }
 

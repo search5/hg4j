@@ -1,5 +1,7 @@
 package io.github.search5.hg4j.storage;
 
+import io.github.search5.hg4j.util.SafeFileIO;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -503,7 +505,7 @@ public final class NodeMapFile {
 
             File dataFile = new File(dir, radix + "-" + uid + ".nd");
             if (incremental) {
-                try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
+                try (RandomAccessFile raf = SafeFileIO.openReadWrite(dataFile)) {
                     raf.seek(appendOffset);
                     raf.write(appendData);
                 }

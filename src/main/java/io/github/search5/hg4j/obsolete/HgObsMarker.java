@@ -1,5 +1,7 @@
 package io.github.search5.hg4j.obsolete;
 
+import io.github.search5.hg4j.util.SafeFileIO;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
@@ -137,7 +139,7 @@ public final class HgObsMarker {
             buf.put(e.getValue().getBytes(StandardCharsets.UTF_8));
         }
 
-        try (FileOutputStream out = new FileOutputStream(obsstoreFile, true)) {
+        try (FileOutputStream out = SafeFileIO.openAppend(obsstoreFile)) {
             if (writeVersionByte) {
                 out.write(1); // _fm1version
             }

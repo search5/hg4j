@@ -260,6 +260,13 @@ public class HgRemoteClient implements HgRemoteConnection {
      */
     @Override
     public String fetchClonebundlesManifest() throws IOException {
+        // wireprotov1peer: a server that has `clonebundles_manifest` is asked for it with `mandatory_params`, so that it does not
+        // downgrade the entries (no `peer-bundle-cache://` entries, no mandatory bundlespec parameters) for a client too old to read them
+        if (getCapabilities().contains("clonebundles_manifest")) {
+            Map<String, String> params = new HashMap<>();
+            params.put("mandatory_params", "1");
+            return new String(executeArgsCommand("clonebundles_manifest", params), StandardCharsets.UTF_8);
+        }
         byte[] bytes = executeGetBinary("clonebundles");
         return new String(bytes, StandardCharsets.UTF_8);
     }
@@ -398,12 +405,17 @@ public class HgRemoteClient implements HgRemoteConnection {
             // includepats/excludepats when non-empty -- an empty string would decode server-side
             // as a single bogus empty-string pattern (`"".split(",") == [""]`), so this omits
             // them the same way rather than sending an always-present-but-possibly-empty value.
-            params.put("narrow", "1");
-            if (!narrowScope.includePatterns.isEmpty()) {
-                params.put("includepats", String.join(",", narrowScope.includePatterns));
-            }
-            if (!narrowScope.excludePatterns.isEmpty()) {
-                params.put("excludepats", String.join(",", narrowScope.excludePatterns));
+            if (narrowScope.storeShapeWithFingerprint != null) {
+                // a shape clone names its shape and fingerprint; the server derives the patterns
+                params.put("store_shape_with_fingerprint", narrowScope.storeShapeWithFingerprint);
+            } else {
+                params.put("narrow", "1");
+                if (!narrowScope.includePatterns.isEmpty()) {
+                    params.put("includepats", String.join(",", narrowScope.includePatterns));
+                }
+                if (!narrowScope.excludePatterns.isEmpty()) {
+                    params.put("excludepats", String.join(",", narrowScope.excludePatterns));
+                }
             }
         }
 
@@ -911,6 +923,42 @@ public class HgRemoteClient implements HgRemoteConnection {
     /** Real hg wireproto v1 {@code branchmap} response: one line per branch, {@code
      * "<url-quoted-branch-name> <hex1> <hex2> ..."}, lines joined by {@code \n} (mercurial's own
      * {@code wireprotov1server.branchmap}). */
+    @Override
+    public String lookup(String key) throws IOException {
+        Map<String, String> params = new HashMap<>();
+        params.put("key", key);
+        return HgRemoteConnection.decodeLookup(executeArgsCommand("lookup", params));
+    }
+
+    @Override
+    public io.github.search5.hg4j.shape.ShapeWire.Reply storeShape(List<String> names) throws IOException {
+        Map<String, String> params = new HashMap<>();
+        params.put("names", String.join(",", names));
+        return io.github.search5.hg4j.shape.ShapeWire.decodeReply(executeArgsCommand("store_shape", params), names);
+    }
+
+    @Override
+    public byte[] getCachedBundleInline(String path) throws IOException {
+        Map<String, String> params = new HashMap<>();
+        params.put("path", path);
+        return HgRemoteConnection.decodeInlineBundle(executeArgsCommand("get_cached_bundle_inline", params));
+    }
+
+    @Override
+    public byte[] getStreamBundle() throws IOException {
+        Map<String, String> params = new HashMap<>();
+        params.put("common", "");
+        params.put("cg", "0");
+        params.put("stream", "1");
+        params.put("bundlecaps", Bundle2Parser.buildStreamBundleCaps());
+        return executeArgsCommand("getbundle", params);
+    }
+
+    @Override
+    public byte[] streamOut() throws IOException {
+        return executeGetBinary("stream_out");
+    }
+
     @Override
     public Map<String, List<String>> getBranchHeads() throws IOException {
         String resp = executeGet("branchmap");

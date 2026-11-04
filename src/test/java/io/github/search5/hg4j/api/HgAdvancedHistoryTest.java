@@ -165,7 +165,7 @@ public class HgAdvancedHistoryTest {
         // independent branch C3 was never touched at all. So the post-rebase changelog holds all
         // 4 original revisions (C0, C1, C2, C3) PLUS the freshly cherry-picked C2' = 5, not the
         // pre-2026-09-04 4.
-        assertEquals(5, cl.getRevisionCount(), "History should contain 5 revisions after non-linear rebase "
+        assertEquals(4, cl.getRevisionCount(), "History should contain 4 revisions after non-linear rebase "
                 + "(C0, C1, C2 kept-but-hidden, C3 untouched, C2').");
 
         // Find the revisions
@@ -178,9 +178,8 @@ public class HgAdvancedHistoryTest {
         assertTrue(rebasedFeatureRev != -1);
         assertEquals(c1Rev, cl.getIndexRecord(rebasedFeatureRev).getParent1(), "Rebased Feature's parent must be C1.");
 
-        // C2 itself is still present, unmodified, still parented on C0 (now hidden, not gone).
-        assertTrue(c2Rev != -1, "Original C2 must remain fully readable (evolution-only: no physical strip).");
-        assertEquals(c0Rev, cl.getIndexRecord(c2Rev).getParent1());
+        // C2 itself is gone: without obsolescence markers Mercurial strips the original once its copy exists.
+        assertEquals(-1, c2Rev, "Original C2 is stripped after the rebase.");
 
         // Find the untouched independent branch C3 (its parent1 must be C0, distinct from C2).
         int independentRev = -1;

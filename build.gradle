@@ -103,6 +103,9 @@ test {
     maxHeapSize = "2048m"
     maxParallelForks = 1
     forkEvery = 100
+    // hg waits ui.timeout (600 s) for a lock another process holds; unit tests that hold a lock on purpose expect the failure at
+    // once, and the tests that exercise the wait set an explicit `[ui] timeout` in the repository's hgrc.
+    systemProperty 'hg4j.ui.timeout', '0'
     // Keep the tests (and the real hg processes they start) away from the developer's real ~/.cache/lfs: hg4j and hg both
     // resolve the LFS user cache from XDG_CACHE_HOME. The directory is emptied before every run so no test can pass because an
     // earlier run left its blob behind.

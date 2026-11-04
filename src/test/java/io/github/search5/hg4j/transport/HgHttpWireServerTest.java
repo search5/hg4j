@@ -190,9 +190,14 @@ public class HgHttpWireServerTest {
         HgRemoteClient after = new HgRemoteClient(baseUrl());
         after.getCapabilities();
         assertTrue(after.supportsClonebundles(), "Once the manifest exists, the capability must be advertised");
+        // The client asks `clonebundles_manifest` with `mandatory_params` when the server has it (wireprotov1peer): the manifest as
+        // stored, nothing downgraded.
+        assertEquals(manifestBody, after.fetchClonebundlesManifest());
         // The legacy `clonebundles` command appends b'' and joins with a newline, so each (newline-terminated) line is
         // followed by an empty line -- byte for byte what real hg 7.2.4 answers (WireServerParityInteropTest).
-        assertEquals(manifestBody + "\n", after.fetchClonebundlesManifest());
+        HttpResponse<byte[]> legacy = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder().uri(URI.create(baseUrl() + "/?cmd=clonebundles")).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(manifestBody + "\n", new String(legacy.body(), java.nio.charset.StandardCharsets.UTF_8));
     }
 
     /**

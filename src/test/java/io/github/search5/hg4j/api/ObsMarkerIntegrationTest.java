@@ -50,10 +50,9 @@ public class ObsMarkerIntegrationTest {
         // Strip 실행
         new StripCommand(repo).setRevision(tipHex).call();
 
-        // obsstore 파일에 prune 마커가 작성되었는지 확인
+        // Like Mercurial (repair.strip), strip writes no obsolescence marker: the changeset is simply gone
         File obsstore = new File(repo.getStoreDir(), "obsstore");
-        assertTrue(obsstore.exists(), "obsstore file must be created on strip (prune)");
-        assertTrue(obsstore.length() > 20, "obsstore file must contain binary marker bytes");
+        assertFalse(obsstore.exists() && obsstore.length() > 0, "strip must not write a prune marker");
     }
 
     private static String toHex(byte[] bytes) {

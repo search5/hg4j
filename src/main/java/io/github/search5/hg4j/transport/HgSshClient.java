@@ -458,6 +458,114 @@ public class HgSshClient implements HgRemoteConnection {
      * client-side call.
      */
     @Override
+    public String lookup(String key) throws IOException {
+        ensureConnected();
+        if (protocolVersion == 2) {
+            writeLine("lookup");
+            writeLine("key " + key);
+            writeLine("");
+            return HgRemoteConnection.decodeLookup(readBinaryResponse());
+        }
+        sendCommand("lookup", Map.of("key", key));
+        return HgRemoteConnection.decodeLookup(readFramedResponse());
+    }
+
+    @Override
+    public io.github.search5.hg4j.shape.ShapeWire.Reply storeShape(List<String> names) throws IOException {
+        ensureConnected();
+        if (protocolVersion == 2) {
+            writeLine("store_shape");
+            writeLine("names " + String.join(",", names));
+            writeLine("");
+            return io.github.search5.hg4j.shape.ShapeWire.decodeReply(readBinaryResponse(), names);
+        }
+        // "names *": the fixed argument, then the (empty) wildcard bucket
+        sendCommand("store_shape", Map.of("names", String.join(",", names)), Map.of());
+        return io.github.search5.hg4j.shape.ShapeWire.decodeReply(readFramedResponse(), names);
+    }
+
+    @Override
+    public byte[] getCachedBundleInline(String path) throws IOException {
+        ensureConnected();
+        if (protocolVersion == 2) {
+            writeLine("get_cached_bundle_inline");
+            writeLine("path " + path);
+            writeLine("");
+        } else {
+            sendCommand("get_cached_bundle_inline", Map.of("path", path));
+        }
+        // an unframed stream: the length as an unsigned varint, then the bundle
+        long length = 0;
+        int shift = 0;
+        while (true) {
+            int b = in.read();
+            if (b < 0) {
+                throw new HgProtocolException(sshUrl, "unexpected response from remote server: truncated inline clone bundle");
+            }
+            length |= (long) (b & 0x7F) << shift;
+            if ((b & 0x80) == 0) {
+                break;
+            }
+            shift += 7;
+        }
+        ByteArrayOutputStream whole = new ByteArrayOutputStream();
+        readExactlyInto(whole, (int) length);
+        return whole.toByteArray();
+    }
+
+    @Override
+    public byte[] getStreamBundle() throws IOException {
+        ensureConnected();
+        if (protocolVersion == 2) {
+            writeLine("getbundle");
+            writeLine("common ");
+            writeLine("cg 0");
+            writeLine("stream 1");
+            writeLine("bundlecaps " + Bundle2Parser.buildStreamBundleCaps());
+            writeLine("");
+            return readBinaryResponse();
+        }
+        Map<String, String> extra = new LinkedHashMap<>();
+        extra.put("common", "");
+        extra.put("cg", "0");
+        extra.put("stream", "1");
+        extra.put("bundlecaps", Bundle2Parser.buildStreamBundleCaps());
+        sendCommand("getbundle", Map.of(), extra);
+        return readBinaryResponse();
+    }
+
+    @Override
+    public byte[] streamOut() throws IOException {
+        ensureConnected();
+        sendCommand("stream_out", Map.of());
+        // a raw unframed stream: the status line, the counts line, then per file `<name>\0<size>\n` and exactly size bytes
+        ByteArrayOutputStream whole = new ByteArrayOutputStream();
+        String status = readLine();
+        whole.write((status + "\n").getBytes(StandardCharsets.US_ASCII));
+        if (!status.trim().equals("0")) {
+            return whole.toByteArray();
+        }
+        String counts = readLine();
+        whole.write((counts + "\n").getBytes(StandardCharsets.US_ASCII));
+        int files;
+        try {
+            files = Integer.parseInt(counts.trim().split(" ")[0]);
+        } catch (NumberFormatException e) {
+            throw new HgProtocolException(sshUrl, "unexpected response from remote server: " + counts, e);
+        }
+        for (int i = 0; i < files; i++) {
+            String header = readLine();
+            whole.write((header + "\n").getBytes(StandardCharsets.ISO_8859_1));
+            int nul = header.indexOf('\0');
+            if (nul < 0) {
+                throw new HgProtocolException(sshUrl, "unexpected response from remote server: " + header);
+            }
+            readExactlyInto(whole, Integer.parseInt(header.substring(nul + 1).trim()));
+        }
+        return whole.toByteArray();
+    }
+
+    @Override
     public Map<String, List<String>> getBranchHeads() throws IOException {
         ensureConnected();
 
@@ -530,6 +638,17 @@ public class HgSshClient implements HgRemoteConnection {
     @Override
     public String fetchClonebundlesManifest() throws IOException {
         ensureConnected();
+        if (capabilities.contains("clonebundles_manifest")) {
+            // see HgRemoteClient#fetchClonebundlesManifest: `mandatory_params` keeps the server from downgrading the entries
+            if (protocolVersion == 2) {
+                writeLine("clonebundles_manifest");
+                writeLine("mandatory_params 1");
+                writeLine("");
+                return new String(readBinaryResponse(), StandardCharsets.UTF_8);
+            }
+            sendCommand("clonebundles_manifest", Map.of(), Map.of("mandatory_params", "1"));
+            return new String(readFramedResponse(), StandardCharsets.UTF_8);
+        }
         if (protocolVersion == 2) {
             writeLine("clonebundles");
             writeLine("");
@@ -594,7 +713,9 @@ public class HgSshClient implements HgRemoteConnection {
                         + Bundle2Parser.buildChangegroupBundleCaps("01,02,03,04,05")
                         + ",compression=GZ,BZ,ZS");
             }
-            if (narrowScope != null) {
+            if (narrowScope != null && narrowScope.storeShapeWithFingerprint != null) {
+                writeLine("store_shape_with_fingerprint " + narrowScope.storeShapeWithFingerprint);
+            } else if (narrowScope != null) {
                 writeLine("narrow 1");
                 if (!narrowScope.includePatterns.isEmpty()) {
                     writeLine("includepats " + String.join(",", narrowScope.includePatterns));
@@ -616,7 +737,9 @@ public class HgSshClient implements HgRemoteConnection {
             extra.put("heads", String.join(" ", heads));
         }
         extra.put("cg", "true");
-        if (narrowScope != null) {
+        if (narrowScope != null && narrowScope.storeShapeWithFingerprint != null) {
+            extra.put("store_shape_with_fingerprint", narrowScope.storeShapeWithFingerprint);
+        } else if (narrowScope != null) {
             extra.put("narrow", "1");
             if (!narrowScope.includePatterns.isEmpty()) {
                 extra.put("includepats", String.join(",", narrowScope.includePatterns));

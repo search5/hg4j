@@ -133,7 +133,216 @@ public class PushCommand {
 
     private io.github.search5.hg4j.lib.ProgressMonitor monitor;
 
+    private boolean sourceLocked;
+    private final List<String> messages = new ArrayList<>();
+
+    /** What the push printed besides its result (e.g. {@code cannot lock source repo, skipping local public phase update}). */
+    public List<String> getMessages() {
+        return messages;
+    }
+
+    /**
+     * {@code lock = pushop.repo.lock()}: waits for {@code ui.timeout}. When the source repository cannot be locked the push is not
+     * aborted ({@code except error.LockUnavailable}): only the local phase update is skipped. An abandoned transaction is not
+     * "unavailable": it still aborts.
+     */
+    private HgLock lockSourceRepository() throws HgLockException {
+        HgLock wlock = null;
+        try {
+            // "bundle2 push may receive a reply bundle touching bookmarks requiring the wlock. Take it now to ensure proper ordering"
+            if (isTrue(repository.getConfig().get("experimental", "bundle2.pushback", "false"))) {
+                wlock = repository.lockWorkingCopy(repository.resolvePushLockTimeoutMs());
+            }
+            HgLock lock = repository.lockStore(repository.resolvePushLockTimeoutMs());
+            sourceLocked = true;
+            return wlock == null ? lock : new PairLock(lock, wlock);
+        } catch (io.github.search5.hg4j.errors.HgAbandonedTransactionException e) {
+            releaseQuietly(wlock);
+            throw e;
+        } catch (HgLockException e) {
+            releaseQuietly(wlock);
+            sourceLocked = false;
+            return HgLock.noOp();
+        }
+    }
+
+    /** The store lock and the working copy lock taken before it; released in the order of `lockmod.release(trmanager, lock, wlock)`. */
+    private static final class PairLock extends HgLock {
+        private final HgLock store;
+        private final HgLock working;
+
+        PairLock(HgLock store, HgLock working) {
+            super();
+            this.store = store;
+            this.working = working;
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                store.close();
+            } finally {
+                working.close();
+            }
+        }
+    }
+
+    private static void releaseQuietly(HgLock lock) {
+        if (lock != null) {
+            try {
+                lock.close();
+            } catch (IOException ignored) {
+                // nothing more can be done about a lock that does not release
+            }
+        }
+    }
+
+    private static boolean isTrue(String value) {
+        return value != null && java.util.Set.of("1", "yes", "true", "on", "always").contains(value.trim().toLowerCase());
+    }
+
+    /**
+     * {@code _pushsyncphase} for the local repository: what the remote has now (the changesets just pushed, and those it had) is public
+     * here too when the remote is publishing, otherwise what is not under one of its draft roots. Without the lock the phases are left
+     * alone and the user is told ({@code _localphasemove}).
+     */
+    private void syncLocalPhases(HgRemoteConnection client, Revlog changelog, int count, boolean[] ancestorsOfWanted, boolean[] send,
+                                 boolean[] remoteKnown, boolean pushed) throws IOException {
+        List<Integer> common = new ArrayList<>();
+        boolean[] hasChild = new boolean[count];
+        for (int r = 0; r < count; r++) {
+            if (ancestorsOfWanted[r] && (send[r] || remoteKnown[r])) {
+                Revlog.IndexRecord rec = changelog.getIndexRecord(r);
+                if (rec.getParent1() >= 0) hasChild[rec.getParent1()] = true;
+                if (rec.getParent2() >= 0) hasChild[rec.getParent2()] = true;
+            }
+        }
+        for (int r = 0; r < count; r++) {
+            if (ancestorsOfWanted[r] && (send[r] || remoteKnown[r]) && !hasChild[r]) {
+                common.add(r);
+            }
+        }
+        Map<String, String> remotePhases;
+        try {
+            remotePhases = client.listKeys("phases");
+        } catch (Exception noPhases) {
+            remotePhases = null; // an old server: the reply is read as "no phase information", everything pushed is public
+        }
+        boolean publishing = remotePhases == null || remotePhases.isEmpty()
+                || (remotePhases.containsKey("publishing") && !remotePhases.get("publishing").isEmpty());
+        List<Integer> toPublic = common;
+        if (!publishing) {
+            List<Integer> draftRoots = new ArrayList<>();
+            for (Map.Entry<String, String> entry : remotePhases.entrySet()) {
+                if (entry.getKey().length() == 40 && Integer.parseInt(entry.getValue().trim()) == PhaseRoots.Phase.DRAFT.getValue()) {
+                    int rev = changelog.findRevision(NodeIdUtil.fromHex(entry.getKey()));
+                    if (rev >= 0) {
+                        draftRoots.add(rev);
+                    }
+                }
+            }
+            toPublic = FetchCommand.publicHeads(changelog, common, draftRoots);
+        }
+        PhaseRoots phaseRoots = repository.getPhaseRoots();
+        // `_pushdiscoveryphase` (before anything moves): to a remote that is not publishing, the pushed changesets that are already public
+        // here have to be published there as well; the heads of those are what the remote is told about
+        List<Integer> outdated = new ArrayList<>();
+        if (!publishing && !pushed) {
+            // nothing was pushed (`fallbackoutdatedphases`): the remote draft roots that are public here, and what lies between them and the
+            // common heads, are published there
+            List<Integer> fallbackRoots = new ArrayList<>();
+            for (Map.Entry<String, String> entry : remotePhases.entrySet()) {
+                if (entry.getKey().length() == 40 && Integer.parseInt(entry.getValue().trim()) == PhaseRoots.Phase.DRAFT.getValue()) {
+                    int rev = changelog.findRevision(NodeIdUtil.fromHex(entry.getKey()));
+                    if (rev >= 0 && phaseRoots.getPhase(new NodeId(changelog.getIndexRecord(rev).getNodeId()), changelog) != PhaseRoots.Phase.DRAFT
+                            && phaseRoots.getPhase(new NodeId(changelog.getIndexRecord(rev).getNodeId()), changelog) != PhaseRoots.Phase.SECRET) {
+                        fallbackRoots.add(rev);
+                    }
+                }
+            }
+            if (!fallbackRoots.isEmpty()) {
+                boolean[] belowHeads = new boolean[count];
+                for (int head : common) {
+                    java.util.ArrayDeque<Integer> work = new java.util.ArrayDeque<>();
+                    work.add(head);
+                    while (!work.isEmpty()) {
+                        int r = work.poll();
+                        if (r < 0 || belowHeads[r]) {
+                            continue;
+                        }
+                        belowHeads[r] = true;
+                        work.add(changelog.getIndexRecord(r).getParent1());
+                        work.add(changelog.getIndexRecord(r).getParent2());
+                    }
+                }
+                boolean[] inRange = new boolean[count];
+                for (int r = 0; r < count; r++) {
+                    Revlog.IndexRecord rec = changelog.getIndexRecord(r);
+                    boolean fromRoot = fallbackRoots.contains(r)
+                            || (rec.getParent1() >= 0 && inRange[rec.getParent1()] && belowHeads[rec.getParent1()])
+                            || (rec.getParent2() >= 0 && inRange[rec.getParent2()] && belowHeads[rec.getParent2()]);
+                    inRange[r] = fromRoot && belowHeads[r];
+                }
+                boolean[] rangeHasChild = new boolean[count];
+                for (int r = 0; r < count; r++) {
+                    if (inRange[r] && phaseRoots.getPhase(new NodeId(changelog.getIndexRecord(r).getNodeId()), changelog) == PhaseRoots.Phase.PUBLIC) {
+                        Revlog.IndexRecord rec = changelog.getIndexRecord(r);
+                        if (rec.getParent1() >= 0) rangeHasChild[rec.getParent1()] = true;
+                        if (rec.getParent2() >= 0) rangeHasChild[rec.getParent2()] = true;
+                    }
+                }
+                for (int r = 0; r < count; r++) {
+                    if (inRange[r] && !rangeHasChild[r] && !toPublic.contains(r)
+                            && phaseRoots.getPhase(new NodeId(changelog.getIndexRecord(r).getNodeId()), changelog) == PhaseRoots.Phase.PUBLIC) {
+                        outdated.add(r);
+                    }
+                }
+            }
+        }
+        if (!publishing && pushed) {
+            boolean[] published = new boolean[count];
+            for (int r = 0; r < count; r++) {
+                published[r] = send[r] && phaseRoots.getPhase(new NodeId(changelog.getIndexRecord(r).getNodeId()), changelog)
+                        == PhaseRoots.Phase.PUBLIC;
+            }
+            boolean[] publishedHasChild = new boolean[count];
+            for (int r = 0; r < count; r++) {
+                if (published[r]) {
+                    Revlog.IndexRecord rec = changelog.getIndexRecord(r);
+                    if (rec.getParent1() >= 0) publishedHasChild[rec.getParent1()] = true;
+                    if (rec.getParent2() >= 0) publishedHasChild[rec.getParent2()] = true;
+                }
+            }
+            for (int r = 0; r < count; r++) {
+                if (published[r] && !publishedHasChild[r] && !toPublic.contains(r)) {
+                    outdated.add(r);
+                }
+            }
+        }
+        boolean wouldMove = false;
+        for (int head : toPublic) {
+            NodeId node = new NodeId(changelog.getIndexRecord(head).getNodeId());
+            if (phaseRoots.getPhase(node, changelog) == PhaseRoots.Phase.PUBLIC) {
+                continue;
+            }
+            wouldMove = true;
+            if (sourceLocked) {
+                Hg.wrap(repository).phase().setRevision(NodeIdUtil.toHex(node.getBytes())).setPhase(0).call();
+            }
+        }
+        if (wouldMove && !sourceLocked) {
+            messages.add("cannot lock source repo, skipping local public phase update\n");
+        }
+        for (int rev : outdated) {
+            String hex = NodeIdUtil.toHex(changelog.getIndexRecord(rev).getNodeId());
+            if (!client.pushkey("phases", hex, "1", "0")) {
+                messages.add("updating " + hex.substring(0, 12) + " to public failed!\n");
+            }
+        }
+    }
+
     public String call() throws IOException, HgLockException {
+        messages.clear();
         try (io.github.search5.hg4j.lfs.HgLfsProgress bound = io.github.search5.hg4j.lfs.HgLfsProgress.bind(monitor)) {
             return callPush();
         }
@@ -174,7 +383,10 @@ public class PushCommand {
             }
         }
 
-        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(resolvedUrl, repository.getConfig())) {
+        // Like real hg's exchange.push, the store lock is taken once the connection is up and before anything is discovered, and
+        // released after the last step (changesets, phases, bookmarks) has finished.
+        try (HgRemoteConnection client = HgRemoteConnectionFactory.createConnection(resolvedUrl, repository.getConfig());
+             HgLock storeLock = lockSourceRepository()) {
             List<String> remoteHeads = client.getHeads();
 
             // Like real hg's wrapped exchange.push: a repository that holds LFS files can only go to a remote that has the lfs
@@ -194,7 +406,7 @@ public class PushCommand {
             // waiting up to ui.timeout -- 600s default -- rather than aborting on the very first
             // contended attempt) so this local read-lock waits like real hg's does instead of
             // failing immediately if another local hg4j operation happens to hold it.
-            try (HgLock storeLock = repository.lockStore(repository.resolvePushLockTimeoutMs())) {
+            {
                 Revlog changelog = repository.getRevlog(clIdx, clDat);
                 int count = changelog.getRevisionCount();
                 if (count == 0) {
@@ -251,7 +463,7 @@ public class PushCommand {
 
                 // the heads whose ancestors are pushed
                 boolean[] wanted = new boolean[count];
-                Map<String, String> localBookmarks = new BookmarkCommand(repository).call();
+                Map<String, String> localBookmarks = new BookmarkCommand(repository).list();
                 if (!explicitBookmarks.isEmpty()) {
                     for (String name : explicitBookmarks) {
                         String hex = localBookmarks.get(name);
@@ -307,6 +519,7 @@ public class PushCommand {
                 this.bookmarkResult = 0;
 
                 if (startRev >= count) {
+                    syncLocalPhases(client, changelog, count, ancestorsOfWanted, send, remoteKnown, false);
                     // nothing to send, but the bookmarks may still have to move
                     StringBuilder none = new StringBuilder(secretCount > 0 && explicitBookmarks.isEmpty()
                             ? "No changesets to push (remote is up-to-date; ignored " + secretCount + " secret changesets)"
@@ -588,6 +801,7 @@ public class PushCommand {
                 // the server must have a blob before it receives a pointer to it
                 io.github.search5.hg4j.lfs.HgLfsPrePush.upload(repository, resolvedUrl, sentFileRevisions);
                 String response = client.push(bundleBytes, force ? List.of("force") : remoteHeads);
+                syncLocalPhases(client, changelog, count, ancestorsOfWanted, send, remoteKnown, true);
 
                 // 3a. Bookmarks, decided like exchange._pushdiscoverybookmarks does
                 String bookmarkLines = pushBookmarks(client, changelog, localBookmarks, null);
@@ -595,19 +809,29 @@ public class PushCommand {
                     response = response + "\n" + bookmarkLines;
                 }
 
-                // POST_PUSH hooks trigger
+                // exchange.push: `if experimental.remotenames: logexchange.pullremotenames(repo, remote)` once the locks are released
+                if (RemoteNames.enabled(repository)) {
+                    RemoteNames.keepAfterLock(repository, RemoteNames.locationOf(client, resolvedUrl), client.listKeys("bookmarks"),
+                            client.getBranchHeads());
+                }
+
+                // POST_PUSH hooks: they run after the store lock is released, like real hg's _afterlock work
                 if (!postPushHooks.isEmpty()) {
-                    Map<String, Object> ctx = new HashMap<>();
-                    ctx.put("destinationUrl", resolvedUrl);
-                    ctx.put("response", response);
-                    ctx.put("repository", repository);
-                    for (HgHook hook : postPushHooks) {
-                        try {
-                            hook.run(ctx);
-                        } catch (Exception e) {
-                            // Non-blocking postScm trigger warning
+                    final String hookResponse = response;
+                    final String hookUrl = resolvedUrl;
+                    repository.afterLock(() -> {
+                        Map<String, Object> ctx = new HashMap<>();
+                        ctx.put("destinationUrl", hookUrl);
+                        ctx.put("response", hookResponse);
+                        ctx.put("repository", repository);
+                        for (HgHook hook : postPushHooks) {
+                            try {
+                                hook.run(ctx);
+                            } catch (Exception e) {
+                                // Non-blocking postScm trigger warning
+                            }
                         }
-                    }
+                    });
                 }
 
                 return response;
@@ -1006,7 +1230,7 @@ public class PushCommand {
                                             Map<Integer, List<Integer>> childrenByRev) throws IOException {
         Map<String, String> localBookmarks;
         try {
-            localBookmarks = new BookmarkCommand(repository).call();
+            localBookmarks = new BookmarkCommand(repository).list();
         } catch (Exception e) {
             return Set.of();
         }

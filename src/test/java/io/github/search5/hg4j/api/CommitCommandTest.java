@@ -513,11 +513,10 @@ public class CommitCommandTest {
             Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath());
         }
 
-        // 3. Open repository again, and trigger rollback via store lock acquisition
+        // 3. Open repository again: like hg, taking the lock does not recover; the transaction is refused until `recover` ran
         try (HgRepository crashedRepo = new HgRepository(repoDir)) {
-            try (HgLock lock = crashedRepo.lockStore()) {
-                // lockStore() will trigger checkAndPerformAutoRollback
-            }
+            assertThrows(io.github.search5.hg4j.errors.HgAbandonedTransactionException.class, crashedRepo::lockStore);
+            new RecoverCommand(crashedRepo).call();
         }
 
         // 4. Verify that changelog.i is rolled back to original size and journal is deleted

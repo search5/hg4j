@@ -108,55 +108,60 @@ public class ImportCommand {
             message = "Imported patch";
         }
 
-        ParsedPatch parsed = parseAndApplyPatch(patchText);
+        // Like real hg, the locks are taken before the first read of the repository state and released when the command ends.
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeout);
+             io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore(lockTimeout)) {
+            ParsedPatch parsed = parseAndApplyPatch(patchText);
 
-        // Apply to the working directory + dirstate first (each of AddCommand/RemoveCommand takes
-        // its own short-lived wlock, mirroring what a manual `hg add`/`hg rm` sequence would do
-        // before the final `hg commit`).
-        List<String> addedOrModifiedPaths = new ArrayList<>();
-        for (Map.Entry<String, String> e : parsed.modifiedOrAdded.entrySet()) {
-            String path = e.getKey();
-            File wFile = new File(repository.getDirectory(), path);
-            File parentDir = wFile.getParentFile();
-            if (parentDir != null) {
-                parentDir.mkdirs();
+            // Apply to the working directory + dirstate first (each of AddCommand/RemoveCommand takes
+            // its own short-lived wlock, mirroring what a manual `hg add`/`hg rm` sequence would do
+            // before the final `hg commit`).
+            List<String> addedOrModifiedPaths = new ArrayList<>();
+            for (Map.Entry<String, String> e : parsed.modifiedOrAdded.entrySet()) {
+                String path = e.getKey();
+                File wFile = new File(repository.getDirectory(), path);
+                File parentDir = wFile.getParentFile();
+                if (parentDir != null) {
+                    parentDir.mkdirs();
+                }
+                Files.write(wFile.toPath(), e.getValue().getBytes(StandardCharsets.UTF_8));
+                addedOrModifiedPaths.add(path);
             }
-            Files.write(wFile.toPath(), e.getValue().getBytes(StandardCharsets.UTF_8));
-            addedOrModifiedPaths.add(path);
-        }
-        if (!addedOrModifiedPaths.isEmpty()) {
-            AddCommand addCmd = new AddCommand(repository);
-            for (String path : addedOrModifiedPaths) {
-                addCmd.addFile(path);
+            if (!addedOrModifiedPaths.isEmpty()) {
+                AddCommand addCmd = new AddCommand(repository);
+                for (String path : addedOrModifiedPaths) {
+                    addCmd.addFile(path);
+                }
+                addCmd.call();
             }
-            addCmd.call();
-        }
-        for (String path : parsed.deleted) {
-            new RemoveCommand(repository).setFile(path).setForce(true).call();
-        }
+            for (String path : parsed.deleted) {
+                new RemoveCommand(repository).setFile(path).setForce(true).call();
+            }
 
-        CommitCommand commitCmd = new CommitCommand(repository)
-                .setAuthor(author)
-                .setMessage(message);
-        // A missing/unparseable "# Date" header falls back to the current time at UTC (offset 0)
-        // -- NOT CommitCommand's own no-setDate-called default (current time, LOCAL offset) --
-        // matching this command's pre-existing (pre-backlog-#39) fallback behavior exactly.
-        long fallbackSecs = System.currentTimeMillis() / 1000;
-        int fallbackOffset = 0;
-        if (dateVal != null) {
-            String[] dateParts = dateVal.trim().split("\\s+");
-            try {
-                fallbackSecs = Long.parseLong(dateParts[0]);
-                fallbackOffset = dateParts.length > 1 ? Integer.parseInt(dateParts[1]) : 0;
-            } catch (NumberFormatException ignored) {
-                // Malformed/unparseable date header -- fall back to "now, UTC" computed above,
-                // matching how this command has always tolerated a garbled date.
-                fallbackSecs = System.currentTimeMillis() / 1000;
-                fallbackOffset = 0;
+            CommitCommand commitCmd = new CommitCommand(repository)
+                    .setAuthor(author)
+                    .setMessage(message);
+            // A missing/unparseable "# Date" header falls back to the current time at UTC (offset 0)
+            // -- NOT CommitCommand's own no-setDate-called default (current time, LOCAL offset) --
+            // matching this command's pre-existing (pre-backlog-#39) fallback behavior exactly.
+            long fallbackSecs = System.currentTimeMillis() / 1000;
+            int fallbackOffset = 0;
+            if (dateVal != null) {
+                String[] dateParts = dateVal.trim().split("\\s+");
+                try {
+                    fallbackSecs = Long.parseLong(dateParts[0]);
+                    fallbackOffset = dateParts.length > 1 ? Integer.parseInt(dateParts[1]) : 0;
+                } catch (NumberFormatException ignored) {
+                    // Malformed/unparseable date header -- fall back to "now, UTC" computed above,
+                    // matching how this command has always tolerated a garbled date.
+                    fallbackSecs = System.currentTimeMillis() / 1000;
+                    fallbackOffset = 0;
+                }
             }
+            commitCmd.setDate(fallbackSecs, fallbackOffset);
+            commitCmd.call();
         }
-        commitCmd.setDate(fallbackSecs, fallbackOffset);
-        commitCmd.call();
     }
 
     /** Strips a leading {@code "a/"}/{@code "b/"} prefix if present, else returns {@code s} unchanged. */

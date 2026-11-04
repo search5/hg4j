@@ -180,27 +180,63 @@ public class DirstateV2Serializer {
 
             DirstateV2Node nodeView = new DirstateV2Node(mainBuffer, offset);
 
-            // 1. Basic properties
+            fillEntryFields(nodeView, node.entry);
+
+            // 5. Paths & tree structures
+            nodeView.setPathOffset(dataOffset + pathOffsetMap.get(node));
+            nodeView.setPathLen(pathLenMap.get(node));
+            nodeView.setChildrenStart(childrenStartMap.getOrDefault(node, 0));
+            nodeView.setChildrenCount(childrenCountMap.getOrDefault(node, 0));
+
+            // 6. Basename start calculation
+            String fullPath = fullPathMap.get(node);
+            int lastSlash = fullPath.lastIndexOf('/');
+            short basenameStart = (short) (lastSlash == -1 ? 0 : lastSlash + 1);
+            nodeView.setBasenameStart(basenameStart);
+
+            // 7. Extra V2 specific metadata fields
+            nodeView.setDescendantsWithEntryCount(node.getDescendantsWithEntryCount());
+            nodeView.setTrackedDescendants(node.getTrackedDescendantsCount());
+            int copyLen = copyLenMap.getOrDefault(node, (short) 0);
+            int copyOffset = copyOffsetMap.getOrDefault(node, 0);
+            nodeView.setCopySourceLen((short) copyLen);
+            if (copyLen > 0) {
+                nodeView.setCopySourceOffset(dataOffset + copyOffset);
+            } else {
+                nodeView.setCopySourceOffset(0);
+            }
+            nodeView.setMtimeNanoseconds(node.entry != null ? node.entry.nanos() : 0);
+        }
+
+        // Write data block
+        mainBuffer.position(dataOffset);
+        mainBuffer.put(rawDataBlock);
+
+        return mainBuffer.array();
+    }
+
+    /** Sets state, flags, mode, size and mtime of {@code nodeView} from {@code entry} ({@code null}: a directory without an entry). */
+    static void fillEntryFields(DirstateV2Node nodeView, Dirstate.Entry entry) {
             char state = '\0';
             int mode = 0;
             int size = 0;
             long time = 0;
 
             int nanos = 0;
-            if (node.entry != null) {
-                state = node.entry.getState();
-                mode = node.entry.getMode();
-                size = node.entry.getSize();
-                time = node.entry.getTime();
-                nanos = node.entry.nanos();
+            if (entry != null) {
+                state = entry.getState();
+                mode = entry.getMode();
+                size = entry.getSize();
+                time = entry.getTime();
+                nanos = entry.nanos();
             }
 
             // 2. Set state (this automatically configures WDIR_TRACKED, P1_TRACKED, P2_INFO)
-            nodeView.setState(node.entry != null ? state : 'd');
+            nodeView.setState(entry != null ? state : 'd');
 
             // 3. Configure file mode/mtime metadata flags if it represents a file entry
             int flagsVal = nodeView.getFlags() & 0xFFFF;
-            if (node.entry != null) {
+            if (entry != null) {
                 // Mirror real hg's own DirstateItem.v2_data() (mercurial/pure/parsers.py): the
                 // HAS_MODE_AND_SIZE/HAS_MTIME bits are only set when a genuine cached stat value
                 // exists -- an ambiguous entry (Dirstate.Entry#isStatAmbiguous(), most commonly a
@@ -247,38 +283,7 @@ public class DirstateV2Serializer {
             }
             nodeView.setSize(size);
             nodeView.setMtime(time);
-
-            // 5. Paths & tree structures
-            nodeView.setPathOffset(dataOffset + pathOffsetMap.get(node));
-            nodeView.setPathLen(pathLenMap.get(node));
-            nodeView.setChildrenStart(childrenStartMap.getOrDefault(node, 0));
-            nodeView.setChildrenCount(childrenCountMap.getOrDefault(node, 0));
-
-            // 6. Basename start calculation
-            String fullPath = fullPathMap.get(node);
-            int lastSlash = fullPath.lastIndexOf('/');
-            short basenameStart = (short) (lastSlash == -1 ? 0 : lastSlash + 1);
-            nodeView.setBasenameStart(basenameStart);
-
-            // 7. Extra V2 specific metadata fields
-            nodeView.setDescendantsWithEntryCount(node.getDescendantsWithEntryCount());
-            nodeView.setTrackedDescendants(node.getTrackedDescendantsCount());
-            int copyLen = copyLenMap.getOrDefault(node, (short) 0);
-            int copyOffset = copyOffsetMap.getOrDefault(node, 0);
-            nodeView.setCopySourceLen((short) copyLen);
-            if (copyLen > 0) {
-                nodeView.setCopySourceOffset(dataOffset + copyOffset);
-            } else {
-                nodeView.setCopySourceOffset(0);
-            }
             nodeView.setMtimeNanoseconds(nanos);
-        }
-
-        // Write data block
-        mainBuffer.position(dataOffset);
-        mainBuffer.put(rawDataBlock);
-
-        return mainBuffer.array();
     }
 
     /**

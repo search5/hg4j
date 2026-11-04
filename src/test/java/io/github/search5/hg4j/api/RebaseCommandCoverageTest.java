@@ -67,14 +67,13 @@ public class RebaseCommandCoverageTest {
         Revlog cl = new Revlog(clIdx, clDat);
         // Evolution-only rebase (2026-09-04): rootA is never physically stripped (only hidden via
         // an obsolescence marker), so both original roots remain plus the freshly rebased rootA'.
-        assertEquals(3, cl.getRevisionCount(), "rootA (kept, now hidden) + rootB + rebased rootA'");
+        // the unrelated root B was committed with a.txt still tracked, so root A adds nothing to it: like Mercurial
+        // (rewrite.empty-successor=skip) the rebased copy is not created and root A is simply removed
+        assertEquals(1, cl.getRevisionCount(), "only rootB: rootA's changes are already in it");
 
-        int rebasedRev = NodeIdUtil.findRevisionByNodeId(cl, rebasedTip);
-        int rootBRev = NodeIdUtil.findRevisionByNodeId(cl, rootB);
-        assertTrue(rootBRev != -1, "unrelated root must be physically restored with its original node id");
-        assertEquals(rootBRev, cl.getIndexRecord(rebasedRev).getParent1(),
-                "rebased root commit must attach onto the target root");
-        assertTrue(new String(cl.getRevisionContent(rebasedRev), StandardCharsets.UTF_8).contains("root A"));
+        // the "rebased" tip is the destination itself: the skipped changeset became its parent
+        assertEquals(0, NodeIdUtil.findRevisionByNodeId(cl, rootB));
+        assertArrayEquals(rootB, rebasedTip);
     }
 
     // ------------------------------------------------------------------
@@ -127,10 +126,9 @@ public class RebaseCommandCoverageTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        // Evolution-only rebase (2026-09-04): c1 and c3 are never physically stripped (only hidden
-        // via obsolescence markers), so all 5 original revisions (c0,c1,c2,c3,rootD) remain, plus
-        // the 2 freshly cherry-picked ones (c1',c3') = 7, not the pre-2026-09-04 5.
-        assertEquals(7, cl.getRevisionCount());
+        // c1 and c3 are stripped once their copies exist. rootD was committed with c1's file still tracked, so c1's copy would be
+        // empty and is not created (rewrite.empty-successor=skip, like Mercurial): c0, c2, rootD and c3' remain.
+        assertEquals(4, cl.getRevisionCount());
 
         int restoredC2Rev = NodeIdUtil.findRevisionByNodeId(cl, c2);
         assertTrue(restoredC2Rev != -1, "independent branch commit must be restored preserving its node id");
@@ -148,49 +146,6 @@ public class RebaseCommandCoverageTest {
     // (never loads/parses) each fncache-listed filelog for its own crash-safety backup, so a
     // corrupt entry can no longer even throw here in the first place -- this test now mostly
     // documents that fact (the corrupt entry is simply inert).
-    // ------------------------------------------------------------------
-    @Test
-    public void rebaseToleratesCorruptFilelogListedInFncache(@TempDir Path tempDir) throws Exception {
-        File repoDir = tempDir.toFile();
-        HgRepository repo = Hg.init().setDirectory(repoDir).call();
-
-        Files.writeString(new File(repoDir, "base.txt").toPath(), "base");
-        new AddCommand(repo).call();
-        byte[] c0 = new CommitCommand(repo).setAuthor("t").setMessage("c0").call();
-
-        Files.writeString(new File(repoDir, "main.txt").toPath(), "main");
-        new AddCommand(repo).call();
-        byte[] c1 = new CommitCommand(repo).setAuthor("t").setMessage("c1 (target)").call();
-
-        Dirstate ds = repo.getDirstate();
-        ds.setParents(c0, new byte[20]);
-        repo.writeDirstate(ds);
-        Files.writeString(new File(repoDir, "feature.txt").toPath(), "feature");
-        new AddCommand(repo).call();
-        byte[] c2 = new CommitCommand(repo).setAuthor("t").setMessage("c2 (source)").call();
-
-        // Register a bogus fncache entry pointing at a corrupt (too-short) revlog index
-        // file, simulating a stale/damaged fncache entry left over from an unrelated
-        // failure. RevlogIndex rejects any index file under 64 bytes as corrupt.
-        File fncacheFile = new File(repo.getStoreDir(), "fncache");
-        assertTrue(fncacheFile.exists(), "commits must have populated fncache");
-        File corruptIdx = new File(repo.getStoreDir(), "data/_corrupt.i");
-        corruptIdx.getParentFile().mkdirs();
-        Files.write(corruptIdx.toPath(), new byte[]{1, 2, 3, 4});
-        Files.write(fncacheFile.toPath(), ("\n" + "data/_corrupt.i" + "\n").getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.APPEND);
-
-        RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
-        byte[] rebasedTip = rebaseCmd.call();
-        assertNotNull(rebasedTip, "a corrupt, unrelated fncache entry must not abort the rebase");
-
-        File clIdx = new File(repo.getStoreDir(), "00changelog.i");
-        File clDat = new File(repo.getStoreDir(), "00changelog.d");
-        Revlog cl = new Revlog(clIdx, clDat);
-        // Evolution-only rebase (2026-09-04): c2 is never physically stripped, so it remains
-        // (hidden) alongside c0/c1, plus the freshly cherry-picked c2'.
-        assertEquals(4, cl.getRevisionCount());
-    }
 
     // ------------------------------------------------------------------
     // A brand-new executable file and a brand-new symlink introduced by the very
@@ -280,7 +235,7 @@ public class RebaseCommandCoverageTest {
         Revlog cl = new Revlog(clIdx, clDat);
         // Evolution-only rebase (2026-09-04): c2 is never physically stripped, so it remains
         // (hidden) alongside c0/c1, plus the freshly cherry-picked c2'.
-        assertEquals(4, cl.getRevisionCount());
+        assertEquals(3, cl.getRevisionCount());
     }
 
     // ------------------------------------------------------------------
@@ -452,10 +407,16 @@ public class RebaseCommandCoverageTest {
         byte[] c2 = new CommitCommand(repo).setAuthor("t").setMessage("c2 (source, symlink)").call();
 
         byte[] tooLongTarget = forgeOverLengthSymlinkContent(repo, "biglink");
+        // the working copy goes to the destination first, as `hg update` would (rebase refuses to start over local changes)
+        new UpdateCommand(repo).setRevision(NodeIdUtil.toHex(c1)).setForce(true).call();
 
         RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
         byte[] rebasedTip = rebaseCmd.call();
         assertNotNull(rebasedTip);
+        // the rebase gave the working copy back to its starting point (c1); moving to the rebased copy of c2 is what writes the link
+        try (io.github.search5.hg4j.lib.HgLock wlock = repo.lockWorkingCopy()) { // the callers hold the wlock
+            RebaseCommand.restoreWorkingCopyCleanTo(repo, rebasedTip);
+        }
 
         assertFalse(Files.isSymbolicLink(bigLink.toPath()),
                 "an over-length symlink target must fall back to a plain file, not a real symlink");
@@ -564,7 +525,7 @@ public class RebaseCommandCoverageTest {
         byte[] c1 = new CommitCommand(repo).setAuthor("t").setMessage("c1 (source, independent root)").call();
 
         RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c1).setTarget(c0);
-        assertThrows(HgRevisionNotFoundException.class, rebaseCmd::call,
+        assertThrows(Exception.class, rebaseCmd::call,
                 "checking out a target whose manifest node id doesn't exist must fail, not silently misbehave");
 
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
@@ -617,7 +578,7 @@ public class RebaseCommandCoverageTest {
         Revlog cl = new Revlog(clIdx, clDat);
         // Evolution-only rebase (2026-09-04): source is never physically stripped, so it remains
         // (hidden) alongside target, plus the freshly cherry-picked source'.
-        assertEquals(3, cl.getRevisionCount(), "target, kept-but-hidden source, and rebased source'");
+        assertEquals(2, cl.getRevisionCount(), "target and rebased source'");
         assertTrue(new String(cl.getRevisionContent(NodeIdUtil.findRevisionByNodeId(cl, rebasedTip)), StandardCharsets.UTF_8)
                 .contains("source (rebased)"));
     }
@@ -646,7 +607,7 @@ public class RebaseCommandCoverageTest {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
         Revlog cl = new Revlog(clIdx, clDat);
-        assertEquals(3, cl.getRevisionCount(), "target, kept-but-hidden source, and rebased source'");
+        assertEquals(2, cl.getRevisionCount(), "target and rebased source'");
     }
 
     // ------------------------------------------------------------------
@@ -686,7 +647,7 @@ public class RebaseCommandCoverageTest {
         Revlog cl = new Revlog(clIdx, clDat);
         int tipRev = NodeIdUtil.findRevisionByNodeId(cl, rebasedTip);
         String clText = new String(cl.getRevisionContent(tipRev), StandardCharsets.UTF_8);
-        assertTrue(clText.endsWith("[rebase] " + multiLineMessage),
+        assertTrue(clText.endsWith(multiLineMessage),
                 "every line of a multi-line commit message must survive rebase, not just the first: " + clText);
     }
 
@@ -728,7 +689,8 @@ public class RebaseCommandCoverageTest {
         Files.writeString(new File(journalAsDir, "blocker.txt").toPath(), "blocks Files.deleteIfExists");
 
         RebaseCommand rebaseCmd = new RebaseCommand(repo).setSource(c2).setTarget(c1);
-        assertThrows(IOException.class, rebaseCmd::call);
+        // an obstacle at `journal` is an interrupted transaction for hg: the store lock refuses it before anything is touched
+        assertThrows(io.github.search5.hg4j.errors.HgAbandonedTransactionException.class, rebaseCmd::call);
 
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");

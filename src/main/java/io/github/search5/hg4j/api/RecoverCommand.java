@@ -53,27 +53,33 @@ public class RecoverCommand {
      * Checks for an interrupted transaction and rolls it back if one is found, then returns a
      * {@link RecoverResult} describing what happened.
      */
-    public RecoverResult call() {
-        File journalFile = new File(repository.getStoreDir(), "journal");
-        boolean hadJournal = journalFile.exists();
-        if (!hadJournal) {
-            // Matches real hg's "no interrupted transaction available": there is nothing to do.
-            return new RecoverResult(false, true, null);
+    public RecoverResult call() throws io.github.search5.hg4j.errors.HgLockException {
+        // Like real hg (localrepo.recover, verify.verify): everything happens under the store lock, which does not recover by itself.
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStoreWithoutRecovery(lockTimeout)) {
+            File journalFile = new File(repository.getStoreDir(), "journal");
+            boolean hadJournal = journalFile.exists();
+            if (!hadJournal) {
+                // Matches real hg's "no interrupted transaction available": there is nothing to do.
+                return new RecoverResult(false, true, null);
+            }
+
+            repository.checkAndPerformAutoRollback();
+
+            // checkAndPerformAutoRollback() deletes the journal only once rollback succeeds and
+            // retains it for retry on failure (see HgRepository#checkAndPerformAutoRollback), so its
+            // absence afterward is the public, filesystem-observable signal of success.
+            boolean success = !journalFile.exists();
+
+            List<String> verifyErrors = null;
+            if (verify && success) {
+                verifyErrors = new VerifyCommand(repository).call();
+            }
+
+            return new RecoverResult(true, success, verifyErrors);
+        } catch (java.io.IOException e) {
+            throw new io.github.search5.hg4j.errors.HgLockException("lock", "Failed to release the store lock", e);
         }
-
-        repository.checkAndPerformAutoRollback();
-
-        // checkAndPerformAutoRollback() deletes the journal only once rollback succeeds and
-        // retains it for retry on failure (see HgRepository#checkAndPerformAutoRollback), so its
-        // absence afterward is the public, filesystem-observable signal of success.
-        boolean success = !journalFile.exists();
-
-        List<String> verifyErrors = null;
-        if (verify && success) {
-            verifyErrors = new VerifyCommand(repository).call();
-        }
-
-        return new RecoverResult(true, success, verifyErrors);
     }
 
     /**

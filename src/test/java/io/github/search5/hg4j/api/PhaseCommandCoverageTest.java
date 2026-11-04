@@ -79,8 +79,9 @@ public class PhaseCommandCoverageTest {
         // higher phase number) without --force must be rejected, matching real hg's
         // "cannot move N changesets to a higher phase, use --force" CLI gate exactly.
         PhaseCommand cmd = new PhaseCommand(repo).setRevision("tip").setPhase(2);
-        IOException ex = assertThrows(IOException.class, cmd::call);
-        assertTrue(ex.getMessage().contains("force"), "exception must mention --force: " + ex.getMessage());
+        assertEquals(1, cmd.call(), "the phase is left as it was");
+        assertEquals(1, cmd.getExitCode(), "like commands.phase: a warning and exit code 1, not an abort");
+        assertEquals(java.util.List.of("cannot move 1 changesets to a higher phase, use --force\n"), cmd.getMessages());
 
         // The rejected move must not have touched the file at all.
         int ph = new PhaseCommand(repo).setRevision("tip").call();

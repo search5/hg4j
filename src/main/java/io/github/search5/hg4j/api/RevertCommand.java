@@ -3,6 +3,7 @@ package io.github.search5.hg4j.api;
 import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.HgRepository;
+import io.github.search5.hg4j.errors.HgRevisionNotFoundException;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.errors.HgLockException;
@@ -51,7 +52,13 @@ public class RevertCommand {
     }
 
 
-    private final FileSelection selection = new FileSelection();
+    private FileSelection selection = new FileSelection();
+    private final java.util.List<String> subrepoMessages = new java.util.ArrayList<>();
+
+    /** What the last {@link #callSelected()} said about subrepositories ({@code reverting subrepo NAME}). */
+    public java.util.List<String> getSubrepoMessages() {
+        return subrepoMessages;
+    }
     private final java.util.List<String> warnings = new java.util.ArrayList<>();
 
     /** The files to work on, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}); a bare name is relative to the current directory. */
@@ -97,27 +104,118 @@ public class RevertCommand {
      *
      * @return the reverted files
      */
-    public java.util.List<String> callSelected() throws IOException, HgLockException {
-        if (selection.patternCount() == 0 && !all) {
-            throw new HgValidationException("no files specified");
+    /** The hint `commands.revert` gives when nothing says which files to revert: it depends on the merge, the revision and local changes. */
+    private String noFilesHint() throws IOException {
+        Dirstate dirstate = repository.getDirstate();
+        byte[] p2 = dirstate.getParent2();
+        if (p2 != null && !NodeIdUtil.isAllZero(p2)) {
+            return "uncommitted merge, use --all to discard all changes, or 'hg update -C .' to abort the merge";
         }
-        warnings.clear();
-        io.github.search5.hg4j.match.Matcher matcher = selection.patternCount() == 0 && selection.isEmpty()
-                ? io.github.search5.hg4j.match.Matchers.always() : selection.matcher(repository, null);
-        io.github.search5.hg4j.fileset.FileStatus status =
-                io.github.search5.hg4j.fileset.RepositoryFilesetContext.workingDirectoryStatus(repository, matcher, false, false, false);
-        java.util.TreeSet<String> changed = new java.util.TreeSet<>();
-        changed.addAll(status.modified());
-        changed.addAll(status.added());
-        changed.addAll(status.removed());
-        changed.addAll(status.deleted());
-        java.util.List<String> reverted = new java.util.ArrayList<>();
-        for (String path : changed) {
-            if (new RevertCommand(repository).setFile(path).setRevision(revision).call()) {
-                reverted.add(path);
+        Status status = new StatusCommand(repository).call();
+        boolean dirty = !status.getModified().isEmpty() || !status.getAdded().isEmpty() || !status.getRemoved().isEmpty();
+        boolean elsewhere = false;
+        int rev = -1;
+        if (revision != null && !revision.isEmpty()) {
+            Revlog changelog = repository.getRevlog(new File(repository.getStoreDir(), "00changelog.i"),
+                    new File(repository.getStoreDir(), "00changelog.d"));
+            byte[] node = NodeIdUtil.resolveRevision(changelog, revision);
+            if (node != null) {
+                rev = changelog.findRevision(node);
+                elsewhere = !java.util.Arrays.equals(node, dirstate.getParent1());
             }
         }
-        return reverted;
+        if (elsewhere) {
+            return (dirty ? "uncommitted changes, use --all to discard all changes, or 'hg update " + rev + "' to update"
+                    : "use --all to revert all files, or 'hg update " + rev + "' to update");
+        }
+        return dirty ? "uncommitted changes, use --all to discard all changes" : "use --all to revert all files";
+    }
+
+    public java.util.List<String> callSelected() throws IOException, HgLockException {
+        if (selection.patternCount() == 0 && !all && selection.isEmpty()) {
+            throw new HgValidationException("no files or directories specified\n(" + noFilesHint() + ")");
+        }
+        warnings.clear();
+        subrepoMessages.clear();
+        // commands.revert reads the parents and resolves the revision before any lock; `cmdutil.revert` then runs entirely under
+        // `repo.wlock()`, the status it reads included
+        byte[] secondParent = repository.getDirstate().getParent2();
+        boolean noRevision = revision == null || revision.isEmpty();
+        if (noRevision && secondParent != null && !NodeIdUtil.isAllZero(secondParent)) {
+            throw new HgValidationException("uncommitted merge with no revision specified\n(use 'hg update' or see 'hg help revert')");
+        }
+        if (!noRevision) {
+            Revlog changelog = repository.getRevlog(new File(repository.getStoreDir(), "00changelog.i"),
+                    new File(repository.getStoreDir(), "00changelog.d"));
+            if (NodeIdUtil.resolveRevision(changelog, revision) == null) {
+                throw new HgRevisionNotFoundException(revision);
+            }
+        }
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            io.github.search5.hg4j.match.Matcher matcher = selection.patternCount() == 0 && selection.isEmpty()
+                    ? io.github.search5.hg4j.match.Matchers.always() : selection.matcher(repository, null);
+            io.github.search5.hg4j.fileset.FileStatus status =
+                    io.github.search5.hg4j.fileset.RepositoryFilesetContext.workingDirectoryStatus(repository, matcher, false, false, false);
+            java.util.TreeSet<String> changed = new java.util.TreeSet<>();
+            changed.addAll(status.modified());
+            changed.addAll(status.added());
+            changed.addAll(status.removed());
+            changed.addAll(status.deleted());
+            java.util.List<String> reverted = new java.util.ArrayList<>();
+            for (String path : changed) {
+                if (new RevertCommand(repository).setFile(path).setRevision(revision).call()) {
+                    reverted.add(path);
+                }
+            }
+            revertSubrepos(matcher);
+            return reverted;
+        }
+    }
+
+    /**
+     * {@code cmdutil.revert}: the subrepositories whose own path the matcher selects are reverted in two steps
+     * ({@code hgsubrepo.revert}): every changed file of the subrepository goes back to the revision the target's {@code .hgsubstate}
+     * records (the old content is backed up), then the subrepository is updated to that revision. The subrepository takes its own
+     * working copy lock for the first step; the second one is an update, which takes it again.
+     */
+    private void revertSubrepos(io.github.search5.hg4j.match.Matcher matcher) throws IOException, HgLockException {
+        java.util.List<SubrepoRecursion.Sub> targets = new java.util.ArrayList<>();
+        for (SubrepoRecursion.Sub sub : SubrepoRecursion.hgSubrepos(repository)) {
+            if (matcher.matches(sub.path())) {
+                targets.add(sub);
+            }
+        }
+        if (targets.isEmpty()) {
+            return;
+        }
+        Dirstate dirstate = repository.getDirstate();
+        byte[] target = dirstate.getParent1();
+        if (revision != null && !revision.isEmpty()) {
+            target = NodeIdUtil.resolveRevision(repository.getRevlog(new File(repository.getStoreDir(), "00changelog.i"),
+                    new File(repository.getStoreDir(), "00changelog.d")), revision);
+        }
+        String targetHex = NodeIdUtil.toHex(target);
+        java.util.Map<String, io.github.search5.hg4j.submodule.HgSubrepoEntry> recorded = new java.util.HashMap<>();
+        try {
+            byte[] hgsub = new CatCommand(repository).setFile(".hgsub").setRevision(targetHex).call();
+            byte[] hgsubstate = new CatCommand(repository).setFile(".hgsubstate").setRevision(targetHex).call();
+            recorded = io.github.search5.hg4j.submodule.HgSubrepoParser.parseSubrepositories(hgsub, hgsubstate);
+        } catch (IOException noSubrepos) {
+            // the target has no .hgsub: every named subrepository is reported below
+        }
+        for (SubrepoRecursion.Sub sub : targets) {
+            io.github.search5.hg4j.submodule.HgSubrepoEntry entry = recorded.get(sub.path());
+            if (entry == null) {
+                throw new HgValidationException("subrepository '" + sub.path() + "' does not exist in " + targetHex.substring(0, 12) + "!");
+            }
+            subrepoMessages.add("reverting subrepo " + sub.path() + "\n");
+            if (sub.repository() != null) {
+                try (HgRepository subRepository = sub.repository()) {
+                    new RevertCommand(subRepository).setAll(true).setRevision(entry.getRevision()).callSelected();
+                }
+            }
+            UpdateCommand.checkoutSubrepoEntry(repository.getDirectory(), entry);
+        }
     }
 
     public RevertCommand setFile(String file) {
@@ -135,9 +233,9 @@ public class RevertCommand {
             throw new IllegalStateException("File path must be specified.");
         }
 
-        try (HgLock wlock = repository.lockWorkingCopy();
-             HgLock storeLock = repository.lockStore()) {
-
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            // cmdutil.revert: `with repo.wlock(), repo.dirstate.changing_files(repo)`
+            return repository.changingFiles(() -> {
             Dirstate dirstate = repository.getDirstate();
             byte[] parentNodeId = dirstate.getParent1();
 
@@ -249,6 +347,7 @@ public class RevertCommand {
 
             repository.writeDirstate(dirstate);
             return true;
+            });
         }
     }
 

@@ -295,6 +295,79 @@ public class Revlog {
      * since the stale docket end-pointers kept advertising revisions whose bytes had just been
      * cut off the companion files).
      */
+    /**
+     * The sizes the files of a v1 revlog have once {@link #truncate(int)} has cut it to {@code keepCount} revisions ({@code 0} when the
+     * file goes), worked out without touching anything: what a transaction writes to its journal before a strip, so that recovering it
+     * completes the cut. For a v2 (docket) revlog these are the companion files, and {@link #truncatedDocket(int)} gives the docket.
+     */
+    /** The index file (for a version 2 revlog, its docket). */
+    public File getIndexFile() {
+        return idxFile;
+    }
+
+    /** Whether this revlog is a version 2 one (a docket and companion files); its cut is journaled as "trunc" lines plus the new docket. */
+    public synchronized boolean isDocketRevlog() {
+        return index.isV2();
+    }
+
+    /**
+     * The docket of a version 2 revlog as {@link #truncate(int)} will leave it (its index and data ends moved to the cut, the rest as it
+     * is), so a journal can carry it as the file {@code hg recover} installs to complete a strip that was interrupted.
+     */
+    public synchronized byte[] truncatedDocket(int keepCount) throws IOException {
+        byte[] docket = java.nio.file.Files.readAllBytes(idxFile.toPath());
+        File resolvedDat = index.getResolvedDataFile();
+        long newIndexEnd = (long) keepCount * RevlogIndex.V2_RECORD_SIZE;
+        long newDataEnd = keepCount == 0 ? 0L : (keepCount < getRevisionCount() ? getIndexRecord(keepCount).getOffset()
+                : (resolvedDat != null && resolvedDat.exists() ? resolvedDat.length() : 0L));
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(docket);
+        buf.position(10);
+        buf.putLong(newIndexEnd);
+        buf.putLong(newIndexEnd);
+        buf.putLong(newDataEnd);
+        buf.putLong(newDataEnd);
+        return docket;
+    }
+
+    public synchronized java.util.Map<File, Long> truncatedSizes(int keepCount) throws IOException {
+        java.util.Map<File, Long> sizes = new java.util.LinkedHashMap<>();
+        if (index.isV2()) {
+            File resolvedIdx = index.getResolvedIndexFile();
+            File resolvedDat = index.getResolvedDataFile();
+            File resolvedSda = index.getResolvedSidedataFile();
+            if (resolvedIdx != null) {
+                sizes.put(resolvedIdx, (long) keepCount * RevlogIndex.V2_RECORD_SIZE);
+            }
+            if (resolvedDat != null) {
+                sizes.put(resolvedDat, keepCount == 0 ? 0L : (keepCount < getRevisionCount() ? getIndexRecord(keepCount).getOffset()
+                        : (resolvedDat.exists() ? resolvedDat.length() : 0L)));
+            }
+            if (resolvedSda != null && resolvedSda.exists()) {
+                sizes.put(resolvedSda, resolvedSda.length()); // the sidedata file keeps its size: the docket's sidedata end is not touched
+            }
+            return sizes;
+        }
+        if (!idxFile.exists()) {
+            return sizes;
+        }
+        if (inline) {
+            sizes.put(idxFile, keepCount == 0 ? 0L : (keepCount < getRevisionCount() ? getFileOffset(keepCount) : idxFile.length()));
+            return sizes;
+        }
+        if (keepCount == 0) {
+            sizes.put(idxFile, 0L);
+            if (datFile != null && datFile.exists()) {
+                sizes.put(datFile, 0L);
+            }
+            return sizes;
+        }
+        sizes.put(idxFile, (long) keepCount * 64);
+        if (datFile != null && datFile.exists()) {
+            sizes.put(datFile, keepCount < getRevisionCount() ? getIndexRecord(keepCount).getOffset() : datFile.length());
+        }
+        return sizes;
+    }
+
     public synchronized void truncate(int keepCount) throws IOException {
         if (index.isV2()) {
             File resolvedIdx = index.getResolvedIndexFile();
@@ -309,12 +382,12 @@ public class Revlog {
                 newDataEnd = (resolvedDat != null && resolvedDat.exists()) ? resolvedDat.length() : 0;
             }
             if (resolvedIdx != null && resolvedIdx.exists()) {
-                try (RandomAccessFile raf = new RandomAccessFile(resolvedIdx, "rw")) {
+                try (RandomAccessFile raf = SafeFileIO.openReadWrite(resolvedIdx)) {
                     raf.setLength(newIndexEnd);
                 }
             }
             if (resolvedDat != null && resolvedDat.exists()) {
-                try (RandomAccessFile raf = new RandomAccessFile(resolvedDat, "rw")) {
+                try (RandomAccessFile raf = SafeFileIO.openReadWrite(resolvedDat)) {
                     raf.setLength(newDataEnd);
                 }
             }
@@ -348,7 +421,7 @@ public class Revlog {
             } else {
                 targetIdxSize = idxFile.length();
             }
-            try (RandomAccessFile raf = new RandomAccessFile(idxFile, "rw")) {
+            try (RandomAccessFile raf = SafeFileIO.openReadWrite(idxFile)) {
                 raf.setLength(targetIdxSize);
             }
             // Inline revlogs never have a companion .d file -- leave datFile (if one somehow
@@ -386,11 +459,11 @@ public class Revlog {
         }
 
         long keepIndexLength = (long) keepCount * 64;
-        try (RandomAccessFile rafIdx = new RandomAccessFile(idxFile, "rw")) {
+        try (RandomAccessFile rafIdx = SafeFileIO.openReadWrite(idxFile)) {
             rafIdx.setLength(keepIndexLength);
         }
         if (targetDatSize >= 0) {
-            try (RandomAccessFile rafDat = new RandomAccessFile(datFile, "rw")) {
+            try (RandomAccessFile rafDat = SafeFileIO.openReadWrite(datFile)) {
                 rafDat.setLength(targetDatSize);
             }
         }
@@ -1132,6 +1205,7 @@ public class Revlog {
             String dataEntry = storeRelative.substring(0, storeRelative.length() - ".i".length()) + ".d";
             List<String> existing = Files.readAllLines(fncacheFile.toPath());
             if (!existing.contains(dataEntry)) {
+                SafeFileIO.breakHardLinks(fncacheFile); // the fncache may be hard linked to another repository's
                 try (Writer w = new FileWriter(fncacheFile, true)) {
                     w.write(dataEntry);
                     w.write("\n");
@@ -1256,7 +1330,7 @@ public class Revlog {
         }
 
         long offset = resolvedDataFile.exists() ? resolvedDataFile.length() : 0;
-        try (FileOutputStream out = new FileOutputStream(resolvedDataFile, true)) {
+        try (FileOutputStream out = SafeFileIO.openAppend(resolvedDataFile)) {
             out.write(dataHunk);
             out.getFD().sync();
         }
@@ -1266,7 +1340,7 @@ public class Revlog {
         if (sidedataContainer != null && sidedataContainer.length > 0) {
             File sdaFile = index.getResolvedSidedataFile();
             sidedataOffset = sdaFile.exists() ? sdaFile.length() : 0L;
-            try (FileOutputStream sdaOut = new FileOutputStream(sdaFile, true)) {
+            try (FileOutputStream sdaOut = SafeFileIO.openAppend(sdaFile)) {
                 sdaOut.write(sidedataContainer);
                 sdaOut.getFD().sync();
             }
@@ -1312,7 +1386,7 @@ public class Revlog {
         }
         recordBuf.flip();
 
-        try (FileOutputStream out = new FileOutputStream(resolvedIndexFile, true)) {
+        try (FileOutputStream out = SafeFileIO.openAppend(resolvedIndexFile)) {
             out.write(recordBuf.array());
             out.getFD().sync();
         }
@@ -1502,7 +1576,8 @@ public class Revlog {
         // otherwise corrupt the store on every such call.
         int existingRev = findRevision(nodeId);
         if (existingRev != -1) {
-            return getIndexRecord(existingRev).getNodeId();
+            // a node is 20 bytes, like the one returned for a revision that was just appended (the index record keeps a 32 byte field)
+            return Arrays.copyOf(getIndexRecord(existingRev).getNodeId(), 20);
         }
 
         if (index.isV2()) {
@@ -1571,14 +1646,14 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.write(dataHunk);
                 out.getFD().sync();
             }
         } else {
             // Non-inline: Write dataHunk into datFile, and 64-byte record into idxFile
-            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(datFile)) {
                 out.write(dataHunk);
                 out.getFD().sync();
             }
@@ -1602,7 +1677,7 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.getFD().sync();
             }
@@ -1810,13 +1885,13 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId32);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.write(dataHunk);
                 out.getFD().sync();
             }
         } else {
-            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(datFile)) {
                 out.write(dataHunk);
                 out.getFD().sync();
             }
@@ -1840,7 +1915,7 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId32);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.getFD().sync();
             }
@@ -1956,7 +2031,7 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId32);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.write(dataHunk);
                 out.getFD().sync();
@@ -1964,7 +2039,7 @@ public class Revlog {
         } else {
             offset = datFile.exists() ? datFile.length() : 0;
 
-            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(datFile)) {
                 out.write(dataHunk);
                 out.getFD().sync();
             }
@@ -1988,7 +2063,7 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId32);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.getFD().sync();
             }
@@ -2068,13 +2143,13 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.write(dataHunk);
                 out.getFD().sync();
             }
         } else {
-            try (FileOutputStream out = new FileOutputStream(datFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(datFile)) {
                 out.write(dataHunk);
                 out.getFD().sync();
             }
@@ -2098,7 +2173,7 @@ public class Revlog {
             recordBuf.putInt(parent2);
             recordBuf.put(nodeId);
 
-            try (FileOutputStream out = new FileOutputStream(idxFile, true)) {
+            try (FileOutputStream out = SafeFileIO.openAppend(idxFile)) {
                 out.write(recordBuf.array());
                 out.getFD().sync();
             }

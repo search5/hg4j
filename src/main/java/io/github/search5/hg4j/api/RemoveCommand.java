@@ -30,7 +30,25 @@ public class RemoveCommand {
     }
 
 
-    private final FileSelection selection = new FileSelection();
+    private FileSelection selection = new FileSelection();
+    private boolean subrepos;
+
+    /**
+     * {@code hg remove -S}: also remove the files of every hg subrepository the patterns reach. Without it only subrepositories that
+     * are named (the path itself or a file inside it) are entered ({@code cmdutil.remove}).
+     */
+    public RemoveCommand setSubrepos(boolean subrepos) {
+        this.subrepos = subrepos;
+        return this;
+    }
+
+    /** The selection a parent hands to a subrepository: its matcher seen from inside. */
+    RemoveCommand forSubrepo(FileSelection inside, boolean subrepos, boolean force) {
+        this.selection = inside;
+        this.subrepos = subrepos;
+        this.force = force;
+        return this;
+    }
     private final java.util.List<String> warnings = new java.util.ArrayList<>();
 
     /** The files to work on, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}); a bare name is relative to the current directory. */
@@ -74,25 +92,59 @@ public class RemoveCommand {
             throw new HgValidationException("no files specified");
         }
         warnings.clear();
-        io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, null);
-        Dirstate dirstate = repository.getDirstate();
-        java.util.List<String> candidates = new java.util.ArrayList<>();
-        for (java.util.Map.Entry<String, Dirstate.Entry> e : new java.util.TreeMap<>(dirstate.getEntries()).entrySet()) {
-            if (e.getValue().getState() != 'r' && matcher.matches(e.getKey())) {
-                candidates.add(e.getKey());
-            }
-        }
-        java.util.List<String> removed = new java.util.ArrayList<>();
-        for (String path : candidates) {
-            try {
-                if (new RemoveCommand(repository).setFile(path).setForce(force).call()) {
-                    removed.add(path);
+        // commands.remove: `with repo.wlock()` around the whole of cmdutil.remove (the status it reads included); the
+        // per-file locks below are the same thread's, so reentrant.
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            return repository.changingFiles(() -> {
+            io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, null);
+            // cmdutil.remove reads `wctx.substate` before it removes anything: removing .hgsub must not hide the subrepositories
+            java.util.List<SubrepoRecursion.Sub> subs = SubrepoRecursion.hgSubrepos(repository);
+            Dirstate dirstate = repository.getDirstate();
+            java.util.List<String> candidates = new java.util.ArrayList<>();
+            for (java.util.Map.Entry<String, Dirstate.Entry> e : new java.util.TreeMap<>(dirstate.getEntries()).entrySet()) {
+                if (e.getValue().getState() != 'r' && matcher.matches(e.getKey())) {
+                    candidates.add(e.getKey());
                 }
-            } catch (HgValidationException refused) {
-                warnings.add("not removing " + path + ": " + refused.getMessage());
+            }
+            java.util.List<String> removed = new java.util.ArrayList<>();
+            for (String path : candidates) {
+                try {
+                    if (new RemoveCommand(repository).setFile(path).setForce(force).removeOne()) {
+                        removed.add(path);
+                    }
+                } catch (HgValidationException refused) {
+                    warnings.add("not removing " + path + ": " + refused.getMessage());
+                }
+            }
+            removeInSubrepos(subs, matcher, removed);
+            return removed;
+            });
+        }
+    }
+
+    /**
+     * {@code cmdutil.remove}: a subrepository is entered when {@code -S} was given, the pattern names it, or names a file inside it;
+     * it removes under its own working copy lock. A subrepository that is not on the disk is reported and skipped.
+     */
+    private void removeInSubrepos(java.util.List<SubrepoRecursion.Sub> subs, io.github.search5.hg4j.match.Matcher matcher,
+                                  java.util.List<String> removed) throws IOException, HgLockException {
+        for (SubrepoRecursion.Sub sub : subs) {
+            io.github.search5.hg4j.match.Matcher inside = SubrepoRecursion.subdir(sub.path(), matcher);
+            if (!(subrepos || matcher.exact(sub.path()) || !inside.files().isEmpty())) {
+                continue;
+            }
+            if (sub.repository() == null) {
+                warnings.add(SubrepoRecursion.missingMessage(sub.path()));
+                continue;
+            }
+            try (HgRepository subRepository = sub.repository()) {
+                RemoveCommand nested = new RemoveCommand(subRepository).forSubrepo(FileSelection.of(inside), subrepos, force);
+                for (String file : nested.callSelected()) {
+                    removed.add(SubrepoRecursion.display(sub.path(), file));
+                }
+                warnings.addAll(nested.getWarnings());
             }
         }
-        return removed;
     }
 
     public RemoveCommand setFile(String file) {
@@ -105,31 +157,22 @@ public class RemoveCommand {
         return this;
     }
 
-    private void appendToJournal(File journal, String entry) throws IOException {
-        Files.write(journal.toPath(), (entry + "\n").getBytes(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-    }
 
     public boolean call() throws IOException, HgLockException {
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("File path must be specified.");
         }
 
-        File dirstateFile = new File(repository.getDirectory(), ".hg/dirstate");
-        byte[] dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
-        File journalFile = new File(repository.getStoreDir(), "journal");
+        try (HgLock wlock = repository.lockWorkingCopy()) {
+            // commands.remove: `with repo.wlock(), repo.dirstate.changing_files(repo)`
+            return repository.changingFiles(this::removeOne);
+        }
+    }
 
-        try (HgLock wlock = repository.lockWorkingCopy();
-             HgLock storeLock = repository.lockStore()) {
+    /** The removal of {@link #file} itself, for a caller that already holds the lock and a {@code changing_files} context. */
+    private boolean removeOne() throws IOException, HgLockException {
+        {
 
-            // Create physical journal and backups for Crash Resilience
-            Files.deleteIfExists(journalFile.toPath());
-            if (dirstateFile.exists()) {
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.copy(dirstateFile.toPath(), dirstateBackupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                appendToJournal(journalFile, "dirstate");
-            }
-
-            try {
                 Dirstate dirstate = repository.getDirstate();
                 Dirstate.Entry entry = dirstate.getEntries().get(file);
 
@@ -214,23 +257,8 @@ public class RemoveCommand {
                 repository.writeDirstate(dirstate);
 
                 // Clean up crash backups on success
-                Files.deleteIfExists(journalFile.toPath());
-                File dirstateBackupFile = new File(repository.getDirectory(), ".hg/dirstate.backup");
-                Files.deleteIfExists(dirstateBackupFile.toPath());
 
                 return true;
-            } catch (Exception e) {
-                // Restore dirstate on failure
-                if (dirstateBackup != null) {
-                    try {
-                        SafeFileIO.writeAtomic(dirstateFile, dirstateBackup);
-                    } catch (Exception ignored) {}
-                }
-                try {
-                    Files.deleteIfExists(journalFile.toPath());
-                } catch (Exception ignored) {}
-                throw e;
-            }
         }
     }
 }

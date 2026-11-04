@@ -105,113 +105,118 @@ public class TagCommand {
     }
 
     public Map<String, String> call() throws IOException, HgLockException {
-        File tagsFile = new File(repository.getDirectory(), ".hgtags");
+        // Like real hg, the locks are taken before the first read of the repository state and released when the command ends.
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeout);
+             io.github.search5.hg4j.lib.HgLock storeLock = repository.lockStore(lockTimeout)) {
+            File tagsFile = new File(repository.getDirectory(), ".hgtags");
 
-        if (tagName != null && !tagName.isEmpty()) {
-            String hex;
-            if (remove) {
-                hex = "0".repeat(40);
-            } else {
-                if (nodeId == null || nodeId.length < 20) {
-                    throw new IllegalArgumentException("Valid NodeID must be specified for creating a tag");
+            if (tagName != null && !tagName.isEmpty()) {
+                String hex;
+                if (remove) {
+                    hex = "0".repeat(40);
+                } else {
+                    if (nodeId == null || nodeId.length < 20) {
+                        throw new IllegalArgumentException("Valid NodeID must be specified for creating a tag");
+                    }
+                    hex = NodeIdUtil.toHex(nodeId).substring(0, 40);
                 }
-                hex = NodeIdUtil.toHex(nodeId).substring(0, 40);
-            }
 
-            // real hg 7.2.2: `hg tag <existing-name>` without -f aborts instead of silently
-            // moving the tag (verified against the CLI, 2026-09-04) -- and the check spans the
-            // MERGED local+global namespace, not just the file being written to: a local tag
-            // colliding with an existing global name (or vice versa) is rejected the same way
-            // (also verified against the CLI). Removal is exempt -- an existing tag can always
-            // be removed regardless of `force`.
-            if (!remove && !force) {
-                Map<String, byte[]> existingGlobal = TagsCommand.readTagFile(tagsFile);
-                Map<String, byte[]> existingLocal = TagsCommand.readTagFile(new File(repository.getHgDir(), "localtags"));
-                byte[] existingNode = existingLocal.containsKey(tagName) ? existingLocal.get(tagName) : existingGlobal.get(tagName);
-                if (existingNode != null && !NodeIdUtil.isAllZero(existingNode)) {
-                    throw new HgValidationException("tag '" + tagName + "' already exists (use -f to force)");
-                }
-            }
-
-            // 1. PRE_TAG hooks trigger
-            if (!preTagHooks.isEmpty()) {
-                Map<String, Object> ctx = new HashMap<>();
-                ctx.put("repository", repository);
-                ctx.put("tag", tagName);
-                ctx.put("node", nodeId);
-                for (HgHook hook : preTagHooks) {
-                    if (!hook.run(ctx)) {
-                        throw new HgValidationException("Tag creation rejected by PRE_TAG hook: " + tagName);
+                // real hg 7.2.2: `hg tag <existing-name>` without -f aborts instead of silently
+                // moving the tag (verified against the CLI, 2026-09-04) -- and the check spans the
+                // MERGED local+global namespace, not just the file being written to: a local tag
+                // colliding with an existing global name (or vice versa) is rejected the same way
+                // (also verified against the CLI). Removal is exempt -- an existing tag can always
+                // be removed regardless of `force`.
+                if (!remove && !force) {
+                    Map<String, byte[]> existingGlobal = TagsCommand.readTagFile(tagsFile);
+                    Map<String, byte[]> existingLocal = TagsCommand.readTagFile(new File(repository.getHgDir(), "localtags"));
+                    byte[] existingNode = existingLocal.containsKey(tagName) ? existingLocal.get(tagName) : existingGlobal.get(tagName);
+                    if (existingNode != null && !NodeIdUtil.isAllZero(existingNode)) {
+                        throw new HgValidationException("tag '" + tagName + "' already exists (use -f to force)");
                     }
                 }
+
+                // 1. PRE_TAG hooks trigger
+                if (!preTagHooks.isEmpty()) {
+                    Map<String, Object> ctx = new HashMap<>();
+                    ctx.put("repository", repository);
+                    ctx.put("tag", tagName);
+                    ctx.put("node", nodeId);
+                    for (HgHook hook : preTagHooks) {
+                        if (!hook.run(ctx)) {
+                            throw new HgValidationException("Tag creation rejected by PRE_TAG hook: " + tagName);
+                        }
+                    }
+                }
+
+                String entry = hex + " " + tagName + "\n";
+
+                if (local) {
+                    // .hg/localtags: untracked, never committed (real hg does not add/commit it either).
+                    File localTagsFile = new File(repository.getHgDir(), "localtags");
+                    Files.writeString(localTagsFile.toPath(), entry, StandardCharsets.UTF_8,
+                            StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                } else {
+                    // Append to .hgtags
+                    Files.writeString(tagsFile.toPath(), entry, StandardCharsets.UTF_8,
+                            StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+
+                    // Add .hgtags to tracking
+                    new AddCommand(repository).call();
+
+                    // Commit the tag. Real hg's own tag commit message uses the short (12-hex-digit)
+                    // node form (mercurial.node.short()), verified directly against hg 7.2.2
+                    // (2026-09-04) -- not the full 40-digit hex.
+                    if (commit) {
+                        String message = remove
+                                ? "Removed tag " + tagName
+                                : "Added tag " + tagName + " for changeset " + hex.substring(0, 12);
+                        new CommitCommand(repository)
+                                .setAuthor("hg4j <hg4j@google.com>")
+                                .setMessage(message)
+                                .call();
+                    }
+                }
+
+                // 2. POST_TAG hooks trigger
+                if (!postTagHooks.isEmpty()) {
+                    Map<String, Object> ctx = new HashMap<>();
+                    ctx.put("repository", repository);
+                    ctx.put("tag", tagName);
+                    ctx.put("node", nodeId);
+                    for (HgHook hook : postTagHooks) {
+                        hook.run(ctx);
+                    }
+                }
+
+                Map<String, String> result = new LinkedHashMap<>();
+                result.put(tagName, hex);
+                return result;
             }
 
-            String entry = hex + " " + tagName + "\n";
 
-            if (local) {
-                // .hg/localtags: untracked, never committed (real hg does not add/commit it either).
-                File localTagsFile = new File(repository.getHgDir(), "localtags");
-                Files.writeString(localTagsFile.toPath(), entry, StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            } else {
-                // Append to .hgtags
-                Files.writeString(tagsFile.toPath(), entry, StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            // List tags
+            if (!tagsFile.exists()) {
+                return Collections.emptyMap();
+            }
 
-                // Add .hgtags to tracking
-                new AddCommand(repository).call();
-
-                // Commit the tag. Real hg's own tag commit message uses the short (12-hex-digit)
-                // node form (mercurial.node.short()), verified directly against hg 7.2.2
-                // (2026-09-04) -- not the full 40-digit hex.
-                if (commit) {
-                    String message = remove
-                            ? "Removed tag " + tagName
-                            : "Added tag " + tagName + " for changeset " + hex.substring(0, 12);
-                    new CommitCommand(repository)
-                            .setAuthor("hg4j <hg4j@google.com>")
-                            .setMessage(message)
-                            .call();
+            Map<String, String> tags = new LinkedHashMap<>();
+            List<String> lines = Files.readAllLines(tagsFile.toPath(), StandardCharsets.UTF_8);
+            for (String line : lines) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue;
+                }
+                int spaceIdx = line.indexOf(' ');
+                if (spaceIdx != -1) {
+                    String node = line.substring(0, spaceIdx).trim();
+                    String name = line.substring(spaceIdx + 1).trim();
+                    tags.put(name, node);
                 }
             }
-
-            // 2. POST_TAG hooks trigger
-            if (!postTagHooks.isEmpty()) {
-                Map<String, Object> ctx = new HashMap<>();
-                ctx.put("repository", repository);
-                ctx.put("tag", tagName);
-                ctx.put("node", nodeId);
-                for (HgHook hook : postTagHooks) {
-                    hook.run(ctx);
-                }
-            }
-
-            Map<String, String> result = new LinkedHashMap<>();
-            result.put(tagName, hex);
-            return result;
+            return tags;
         }
-
-
-        // List tags
-        if (!tagsFile.exists()) {
-            return Collections.emptyMap();
-        }
-
-        Map<String, String> tags = new LinkedHashMap<>();
-        List<String> lines = Files.readAllLines(tagsFile.toPath(), StandardCharsets.UTF_8);
-        for (String line : lines) {
-            line = line.trim();
-            if (line.isEmpty() || line.startsWith("#")) {
-                continue;
-            }
-            int spaceIdx = line.indexOf(' ');
-            if (spaceIdx != -1) {
-                String node = line.substring(0, spaceIdx).trim();
-                String name = line.substring(spaceIdx + 1).trim();
-                tags.put(name, node);
-            }
-        }
-        return tags;
     }
 
 

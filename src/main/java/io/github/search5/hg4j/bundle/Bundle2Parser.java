@@ -275,6 +275,11 @@ public class Bundle2Parser {
      * "HG20"} token as its own list element (matching real hg's own client's exact 2-token shape,
      * captured 2026-09-03) rather than pre-joined into one string.
      */
+    /** The {@code bundlecaps} a stream clone through bundle2 asks with: bundle2 itself and {@code stream=v2}. */
+    public static String buildStreamBundleCaps() {
+        return "HG20,bundle2=" + pythonQuote("HG20\nstream=v2");
+    }
+
     public static String buildBundle2CapsToken(String changegroupVersionsCsv) {
         String blob = "HG20\nchangegroup=" + changegroupVersionsCsv;
         return "bundle2=" + pythonQuote(blob);

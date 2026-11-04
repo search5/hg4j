@@ -217,7 +217,8 @@ public class CloneCommandCoverageTest {
     private static void invokeCheckoutLatest(HgRepository repo) throws Throwable {
         Method m = CloneCommand.class.getDeclaredMethod("checkoutLatest", HgRepository.class);
         m.setAccessible(true);
-        try {
+        // clone.py updates the new working copy with the destination's wlock held, and the dirstate context requires it
+        try (io.github.search5.hg4j.lib.HgLock wlock = repo.lockWorkingCopy()) {
             m.invoke(new CloneCommand(), repo);
         } catch (InvocationTargetException e) {
             throw e.getCause();

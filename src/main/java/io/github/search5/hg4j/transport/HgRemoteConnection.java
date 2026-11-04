@@ -70,9 +70,21 @@ public interface HgRemoteConnection extends Closeable {
         public final List<String> includePatterns;
         public final List<String> excludePatterns;
 
+        /**
+         * {@code names:fingerprint} of the store shape the repository was cloned with ({@code exchange._pullbundle2}): sent as
+         * {@code store_shape_with_fingerprint} <em>instead of</em> the patterns, the server looks the shape up itself. {@code null} for an
+         * ordinary narrow request.
+         */
+        public final String storeShapeWithFingerprint;
+
         public NarrowScope(List<String> includePatterns, List<String> excludePatterns) {
+            this(includePatterns, excludePatterns, null);
+        }
+
+        public NarrowScope(List<String> includePatterns, List<String> excludePatterns, String storeShapeWithFingerprint) {
             this.includePatterns = includePatterns != null ? includePatterns : Collections.emptyList();
             this.excludePatterns = excludePatterns != null ? excludePatterns : Collections.emptyList();
+            this.storeShapeWithFingerprint = storeShapeWithFingerprint;
         }
     }
 
@@ -123,6 +135,85 @@ public interface HgRemoteConnection extends Closeable {
      */
     default Map<String, List<String>> getBranchHeads() throws IOException {
         return null;
+    }
+
+    /**
+     * Executes the legacy {@code stream_out} wire command and returns the whole response ({@code 0\n}, {@code <files> <bytes>\n},
+     * then per file {@code <name>\0<size>\n} and the data), or an error code line ({@code 1\n} forbidden, {@code 2\n} could not
+     * lock). {@code null} when this connection cannot stream.
+     */
+    default byte[] streamOut() throws IOException {
+        return null;
+    }
+
+    /**
+     * Executes {@code getbundle} the way real hg asks for a stream clone through bundle2 ({@code stream=1}, {@code cg=0}, a
+     * {@code bundle2} capability naming {@code stream=v2}): the response holds a {@code stream2} part. {@code null} when this
+     * connection cannot.
+     */
+    default byte[] getStreamBundle() throws IOException {
+        return null;
+    }
+
+    /**
+     * Executes the {@code lookup} wire command: the full hex node of a revision identifier (a node prefix, a bookmark, a tag, a branch).
+     * The reply is {@code 1 <node>} or {@code 0 <error>}; the error becomes an exception with the remote's own message
+     * ({@code wireprotov1peer.lookup}). {@code null} when this connection cannot look up.
+     */
+    default String lookup(String key) throws IOException {
+        return null;
+    }
+
+    /** Decodes the reply of {@code lookup}: {@code 1 <hex>\n} or {@code 0 <message>\n}. */
+    static String decodeLookup(byte[] reply) throws IOException {
+        String text = new String(reply, java.nio.charset.StandardCharsets.UTF_8);
+        String trimmed = text.endsWith("\n") ? text.substring(0, text.length() - 1) : text;
+        int space = trimmed.indexOf(' ');
+        if (space < 0) {
+            throw new IOException("unexpected response from remote server: " + text);
+        }
+        if (trimmed.substring(0, space).equals("1")) {
+            return trimmed.substring(space + 1);
+        }
+        throw new io.github.search5.hg4j.errors.HgValidationException(trimmed.substring(space + 1));
+    }
+
+    /**
+     * Executes the {@code store_shape} wire command ({@code exp-shape-1}): the patterns, fingerprint and shard fingerprint sets of the shape
+     * made of {@code names}. The reply is checked like {@code wireprotov1peer.store_shape} does. {@code null} when this connection cannot.
+     */
+    default io.github.search5.hg4j.shape.ShapeWire.Reply storeShape(List<String> names) throws IOException {
+        return null;
+    }
+
+    /**
+     * Executes {@code get_cached_bundle_inline} ({@code peer-bundle-cache://} manifest entries): the bundle of the given name from the
+     * server's {@code server.peer-bundle-cache-root}. The reply is the length as an unsigned varint and then the bundle.
+     */
+    default byte[] getCachedBundleInline(String path) throws IOException {
+        throw new IOException("this connection cannot fetch inline clone bundles");
+    }
+
+    /** Splits the unframed reply of {@code get_cached_bundle_inline}: an unsigned varint length, then that many bytes. */
+    static byte[] decodeInlineBundle(byte[] reply) throws IOException {
+        long length = 0;
+        int shift = 0;
+        int pos = 0;
+        while (true) {
+            if (pos >= reply.length) {
+                throw new IOException("unexpected response from remote server: truncated inline clone bundle");
+            }
+            int b = reply[pos++] & 0xFF;
+            length |= (long) (b & 0x7F) << shift;
+            if ((b & 0x80) == 0) {
+                break;
+            }
+            shift += 7;
+        }
+        if (reply.length - pos < length) {
+            throw new IOException("unexpected response from remote server: inline clone bundle is shorter than announced");
+        }
+        return java.util.Arrays.copyOfRange(reply, pos, pos + (int) length);
     }
 
     /**

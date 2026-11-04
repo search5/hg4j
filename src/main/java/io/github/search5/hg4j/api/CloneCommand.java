@@ -13,6 +13,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,29 @@ public class CloneCommand {
     private String sourceUrl;
     private File directory;
     private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
+    private boolean pull;
+    private Boolean stream;
+    private final List<String> messages = new ArrayList<>();
+
+    /** {@code hg clone --stream} / {@code --no-stream}; {@code null} follows the remote's {@code stream-preferred}. */
+    public CloneCommand setStream(Boolean stream) {
+        this.stream = stream;
+        return this;
+    }
+
+    /** What the clone reported ({@code streaming all changes}, ...). */
+    public List<String> getMessages() {
+        return messages;
+    }
+
+    /**
+     * {@code hg clone --pull}: always pull the changesets, even from a local repository (without it, a local source is cloned by
+     * copying its store, hard linked where possible, as real hg does).
+     */
+    public CloneCommand setPull(boolean pull) {
+        this.pull = pull;
+        return this;
+    }
 
     public CloneCommand setProgressMonitor(ProgressMonitor monitor) {
         if (monitor != null) {
@@ -68,32 +92,129 @@ public class CloneCommand {
         monitor.update(1);
 
         // 2. Pull changes from remote source
-        PullCommand pullCmd = new PullCommand(repo);
-        pullCmd.setSource(sourceUrl);
-        pullCmd.setProgressMonitor(monitor);
-        List<byte[]> importedCommits = pullCmd.call();
+        // Like real hg (clone.py: destwlock = destrepo.wlock()): the destination is locked from the moment it exists until the last update.
+        try (io.github.search5.hg4j.lib.HgLock destWlock = repo.lockWorkingCopy()) {
+            // cmd_impls/clone.py: a local source is cloned by copying its store, unless that was not asked for or is not possible
+            if (!pull && copyLocalStore(repo)) {
+                repo = new HgRepository(directory);
+            } else {
+                PullCommand pullCmd = new PullCommand(repo);
+                pullCmd.setSource(sourceUrl);
+                pullCmd.setStream(stream);
+                pullCmd.setProgressMonitor(monitor);
+                pullCmd.call();
+                messages.addAll(pullCmd.getMessages());
+            }
 
-        if (importedCommits.isEmpty()) {
+            // a stream clone brings the changesets in without a pull "result", so ask the store itself
+            File changelogIndex = new File(repo.getStoreDir(), "00changelog.i");
+            if (!changelogIndex.isFile() || repo.getRevlog(changelogIndex, new File(repo.getStoreDir(), "00changelog.d"))
+                    .getRevisionCount() == 0) {
+                monitor.end();
+                return repo; // Empty repository pulled
+            }
+
+            // 3. Checkout (Update) the latest revision to working directory
+            checkoutLatest(repo);
+            monitor.update(1);
+
+            // 4. Recursively clone/checkout any subrepos declared in the just-checked-out .hgsub
+            // (backlog 32 gap #1 -- verified live against Mercurial 7.2: `hg clone` on a parent repo
+            // whose tip declares subrepos automatically recurses into each one, checking it out to
+            // the revision pinned in .hgsubstate, without any extra flag). Reuses the same recursive
+            // checkout logic UpdateCommand's own post-update step uses (see
+            // UpdateCommand.recursiveSubrepoCheckout), including its git-subrepo support (gap #3)
+            // and its "skip the pull when the pinned revision is already present locally" behavior
+            // (gap #4) -- here the subrepo is never present locally yet, so this always clones.
+            UpdateCommand.recursiveSubrepoCheckout(repo);
+
             monitor.end();
-            return repo; // Empty repository pulled
+            return repo;
         }
+    }
 
-        // 3. Checkout (Update) the latest revision to working directory
-        checkoutLatest(repo);
-        monitor.update(1);
+    private File localSourceDirectory() {
+        String path;
+        if (sourceUrl.startsWith("file://")) {
+            path = java.net.URI.create(sourceUrl).getPath();
+        } else if (sourceUrl.contains("://")) {
+            return null;
+        } else {
+            path = sourceUrl;
+        }
+        File dir = new File(path);
+        return new File(dir, ".hg").isDirectory() ? dir : null;
+    }
 
-        // 4. Recursively clone/checkout any subrepos declared in the just-checked-out .hgsub
-        // (backlog 32 gap #1 -- verified live against Mercurial 7.2: `hg clone` on a parent repo
-        // whose tip declares subrepos automatically recurses into each one, checking it out to
-        // the revision pinned in .hgsubstate, without any extra flag). Reuses the same recursive
-        // checkout logic UpdateCommand's own post-update step uses (see
-        // UpdateCommand.recursiveSubrepoCheckout), including its git-subrepo support (gap #3)
-        // and its "skip the pull when the pinned revision is already present locally" behavior
-        // (gap #4) -- here the subrepo is never present locally yet, so this always clones.
-        UpdateCommand.recursiveSubrepoCheckout(repo);
+    /**
+     * Real hg's local clone ({@code streamclone.local_copy}): the source's store is copied into the new repository, with hard links
+     * where both are on the same device. The source store lock is only tried ({@code srcrepo.lock(wait=False)}): when somebody holds
+     * it, the copy is given up and the changesets are pulled instead. A source with a secret changeset is never copied. The caller holds
+     * the working copy lock of the new repository.
+     *
+     * @return whether the store was copied
+     */
+    private boolean copyLocalStore(HgRepository repo) throws IOException, HgLockException {
+        File sourceDir = localSourceDirectory();
+        if (sourceDir == null) {
+            return false;
+        }
+        HgRepository source = new HgRepository(sourceDir);
+        Revlog sourceChangelog = source.getRevlog(new File(source.getStoreDir(), "00changelog.i"),
+                new File(source.getStoreDir(), "00changelog.d"));
+        if (sourceChangelog != null && !source.getPhaseRoots().getRoots(io.github.search5.hg4j.phase.PhaseRoots.Phase.SECRET).isEmpty()) {
+            return false;
+        }
+        io.github.search5.hg4j.lib.HgLock sourceLock;
+        try {
+            sourceLock = source.lockStore(0);
+        } catch (HgLockException busy) {
+            return false;
+        }
+        try (io.github.search5.hg4j.lib.HgLock held = sourceLock) {
+            File destStore = new File(repo.getHgDir(), "store");
+            deleteTree(destStore.toPath());
+            try (io.github.search5.hg4j.lib.HgLock destLock = repo.lockStore()) {
+                io.github.search5.hg4j.lib.HgLock copyLock = io.github.search5.hg4j.lib.StoreCopy.copyStore(source, repo.getHgDir(),
+                        io.github.search5.hg4j.transport.wireprotov1.RepoSupport.isPublishing(source));
+                if (copyLock != null) {
+                    copyLock.close();
+                }
+                File sourceBookmarks = new File(source.getHgDir(), "bookmarks");
+                if (sourceBookmarks.isFile()) {
+                    java.nio.file.Files.copy(sourceBookmarks.toPath(), new File(repo.getHgDir(), "bookmarks").toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+                dropWorkingCopyRequirements(new File(repo.getHgDir(), "requires"));
+            }
+        }
+        return true;
+    }
 
-        monitor.end();
-        return repo;
+    /** {@code creation.clone_requirements}: the store's requirements are the source's, the working directory's are the new repository's own. */
+    private static void dropWorkingCopyRequirements(File requires) throws IOException {
+        if (!requires.exists()) {
+            return;
+        }
+        List<String> kept = new ArrayList<>();
+        for (String line : java.nio.file.Files.readAllLines(requires.toPath(), StandardCharsets.UTF_8)) {
+            String t = line.trim();
+            if (!t.equals("shared") && !t.equals("relshared") && !t.equals("dirstate-v2")) {
+                kept.add(line);
+            }
+        }
+        java.nio.file.Files.writeString(requires.toPath(), String.join("\n", kept) + "\n", StandardCharsets.UTF_8);
+    }
+
+    private static void deleteTree(java.nio.file.Path root) throws IOException {
+        if (!java.nio.file.Files.exists(root)) {
+            return;
+        }
+        try (var walk = java.nio.file.Files.walk(root)) {
+            for (java.nio.file.Path p : (Iterable<java.nio.file.Path>) walk.sorted(java.util.Comparator.reverseOrder())::iterator) {
+                java.nio.file.Files.delete(p);
+            }
+        }
     }
 
     /**
@@ -122,6 +243,18 @@ public class CloneCommand {
     }
 
     private void checkoutLatest(HgRepository repo) throws IOException {
+        try {
+            // clone.py updates the new working copy with the destination's wlock held and its dirstate in a changing_parents context
+            repo.changingParents(() -> {
+                checkoutLatestInContext(repo);
+                return null;
+            });
+        } catch (io.github.search5.hg4j.errors.HgLockException e) {
+            throw new IOException(e.getMessage(), e);
+        }
+    }
+
+    private void checkoutLatestInContext(HgRepository repo) throws IOException {
         File clIdx = new File(repo.getStoreDir(), "00changelog.i");
         File clDat = new File(repo.getStoreDir(), "00changelog.d");
 

@@ -33,7 +33,32 @@ public class AddCommand {
         return this;
     }
 
-    private final FileSelection selection = new FileSelection();
+    private FileSelection selection = new FileSelection();
+    private boolean subrepos;
+    private boolean explicitOnly;
+    private final List<String> subrepoMessages = new ArrayList<>();
+
+    /**
+     * {@code hg add -S}: also add the unknown files of the hg subrepositories. Without it only files that are named exactly reach into
+     * a subrepository ({@code cmdutil.add}: {@code sub.add(..., explicitonly=True)}).
+     */
+    public AddCommand setSubrepos(boolean subrepos) {
+        this.subrepos = subrepos;
+        return this;
+    }
+
+    /** What {@code hg add} reports about subrepositories (for now: {@code skipping missing subrepository}). */
+    public List<String> getSubrepoMessages() {
+        return subrepoMessages;
+    }
+
+    /** The selection a parent hands to a subrepository: its matcher seen from inside, adding only the files it names when asked. */
+    AddCommand forSubrepo(FileSelection inside, boolean subrepos, boolean explicitOnly) {
+        this.selection = inside;
+        this.subrepos = subrepos;
+        this.explicitOnly = explicitOnly;
+        return this;
+    }
 
     /** {@code hg add [FILE]...}: the files to add, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}). */
     public AddCommand setPatterns(String... patterns) {
@@ -78,12 +103,26 @@ public class AddCommand {
                 selected.add(removed);
             }
         }
+        if (explicitOnly) {
+            selected.removeIf(f -> !matcher.exact(f));
+        }
         java.util.Collections.sort(selected);
         return selected;
     }
 
     public void call() throws IOException, HgLockException {
         try (HgLock wlock = repository.lockWorkingCopy()) {
+            // commands.add: `with repo.wlock(), repo.dirstate.changing_files(repo)`
+            repository.changingFiles(() -> {
+                addTracked();
+                addInSubrepos();
+                return null;
+            });
+        }
+    }
+
+    private void addTracked() throws IOException {
+        {
             Dirstate dirstate = repository.getDirstate();
 
             List<String> filesToAdd = new ArrayList<>(files);
@@ -150,6 +189,31 @@ public class AddCommand {
             }
 
             repository.writeDirstate(dirstate);
+        }
+    }
+
+    /**
+     * {@code cmdutil.add}: for each subrepository (sorted) the parent's matcher is handed down, and the subrepository adds under its
+     * own working copy lock. A subrepository that is not on the disk is skipped with a message. Done while the parent's lock is held.
+     */
+    private void addInSubrepos() throws IOException, HgLockException {
+        io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, null);
+        for (SubrepoRecursion.Sub sub : SubrepoRecursion.hgSubrepos(repository)) {
+            if (sub.repository() == null) {
+                subrepoMessages.add(SubrepoRecursion.missingMessage(sub.path()));
+                continue;
+            }
+            io.github.search5.hg4j.match.Matcher inside = SubrepoRecursion.subdir(sub.path(), matcher);
+            if (!subrepos && inside.files().isEmpty()) {
+                continue; // explicit-only with no name inside: nothing could be added there
+            }
+            try (HgRepository subRepository = sub.repository()) {
+                AddCommand nested = new AddCommand(subRepository).forSubrepo(FileSelection.of(inside), subrepos, !subrepos);
+                nested.call();
+                for (String message : nested.subrepoMessages) {
+                    subrepoMessages.add(message);
+                }
+            }
         }
     }
 }

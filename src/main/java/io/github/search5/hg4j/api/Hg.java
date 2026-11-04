@@ -65,8 +65,8 @@ public class Hg implements AutoCloseable {
      * Acquires exclusive store and working copy locks to prevent concurrent write contention during execution.
      */
     public void runTransaction(Runnable action) throws Exception {
-        try (HgLock storeLock = repository.lockStore();
-             HgLock wlock = repository.lockWorkingCopy()) {
+        try (HgLock wlock = repository.lockWorkingCopy();
+             HgLock storeLock = repository.lockStore()) {
             action.run();
         }
     }
@@ -296,7 +296,7 @@ public class Hg implements AutoCloseable {
         return command;
     }
 
-    public void rollback() throws IOException {
+    public void rollback() throws IOException, io.github.search5.hg4j.errors.HgLockException {
         new RollbackCommand(this.repository).call();
     }
 

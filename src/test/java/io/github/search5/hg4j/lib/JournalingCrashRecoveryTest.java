@@ -56,11 +56,10 @@ public class JournalingCrashRecoveryTest {
             Files.writeString(dirstateFile.toPath(), "Dirstate V2_PARTIAL_CRASH_GARBAGE\n");
         }
 
-        // Instantiate a new HgRepository and trigger auto-rollback via store lock acquisition
+        // Instantiate a new HgRepository: the lock does not recover (as hg's repo.lock()), `recover` does
         try (HgRepository recoveredRepo = new HgRepository(repoDir)) {
-            try (HgLock lock = recoveredRepo.lockStore()) {
-                // lockStore() will trigger checkAndPerformAutoRollback
-            }
+            org.junit.jupiter.api.Assertions.assertThrows(io.github.search5.hg4j.errors.HgAbandonedTransactionException.class, recoveredRepo::lockStore);
+            new io.github.search5.hg4j.api.RecoverCommand(recoveredRepo).call();
         }
 
         // Verify journal and backups are deleted after successful rollback
@@ -70,7 +69,9 @@ public class JournalingCrashRecoveryTest {
         // Verify file sizes and contents are rolled back perfectly
         assertEquals("Changelog Index V1\n", Files.readString(clIdx.toPath()), "Index should be truncated to pre-transaction state");
         assertEquals("Changelog Data V1\n", Files.readString(clDat.toPath()), "Data should be truncated to pre-transaction state");
-        assertEquals("Dirstate V1\n", Files.readString(dirstateFile.toPath()), "Dirstate should be restored from backup");
+        // `hg recover` never touches the dirstate: it is written after the transaction (as a post-finalize file generator), so a
+        // journal left by a crash has no dirstate to put back. A "dirstate" line written by an older version is ignored.
+        assertEquals("Dirstate V2_PARTIAL_CRASH_GARBAGE\n", Files.readString(dirstateFile.toPath()), "recovery leaves the dirstate alone");
     }
 
     @Test
@@ -112,11 +113,10 @@ public class JournalingCrashRecoveryTest {
             Files.writeString(journalFile.toPath(), journalContent);
         }
 
-        // 5. Instantiate a new HgRepository and trigger auto-rollback via lock acquisition
+        // 5. Instantiate a new HgRepository: the lock refuses, `recover` cleans up
         try (HgRepository recoveredRepo = new HgRepository(repoDir)) {
-            try (HgLock lock = recoveredRepo.lockStore()) {
-                // lockStore() triggers checkAndPerformAutoRollback
-            }
+            org.junit.jupiter.api.Assertions.assertThrows(io.github.search5.hg4j.errors.HgAbandonedTransactionException.class, recoveredRepo::lockStore);
+            new io.github.search5.hg4j.api.RecoverCommand(recoveredRepo).call();
         }
 
         // 6. Verify journal and rebase-backup dir are deleted after successful recovery

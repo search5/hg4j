@@ -38,7 +38,7 @@ import java.util.TreeSet;
  * {@code .n} docket and {@code -<uid>.nd} data files are streamed like any other store file. A store larger than {@link #MAX_BYTES} is
  * refused as well because responses are built in memory.
  */
-final class StreamClone {
+public final class StreamClone {
 
     /** requirements that do not matter to a client applying a stream (requirements.py STREAM_IGNORABLE_REQUIREMENTS). */
     private static final Set<String> STREAM_IGNORABLE = Set.of("exp-sparse", "shared", "relshared", "share-safe",
@@ -153,7 +153,7 @@ final class StreamClone {
     }
 
     /** The content of a bundle2 {@code stream2} part. */
-    record Stream2(int fileCount, long byteCount, byte[] payload, String requirements) {
+    public record Stream2(int fileCount, long byteCount, byte[] payload, String requirements) {
     }
 
     /**
@@ -164,6 +164,31 @@ final class StreamClone {
      * @throws IOException when streaming is not allowed (the same messages the original aborts with) or the store is locked
      */
     static Stream2 stream2(HgRepository repo) throws IOException {
+        return stream2(repo, null);
+    }
+
+    /**
+     * The files one shard of a sharded bundle holds ({@code narrow_info}): the {@code data/} revlogs whose file the shard's matcher
+     * selects; the top level shard ({@code match_top_level_entries}, the one named {@code .hg-files}) also has the root revlogs, the
+     * phase roots and the caches.
+     */
+    public record ShardSelection(java.util.function.Predicate<String> matchesFile, boolean topLevel) {
+    }
+
+    /** The file a {@code data/} store name belongs to: {@code data/foo/a.i} is {@code foo/a}. */
+    static String filelogPath(String wireName) {
+        String name = wireName.substring("data/".length());
+        for (String ext : new String[] {".i", ".d", ".nd", ".n"}) {
+            if (name.endsWith(ext)) {
+                String stripped = name.substring(0, name.length() - ext.length());
+                int dash = ext.equals(".nd") ? stripped.lastIndexOf('-') : -1;
+                return dash > 0 ? stripped.substring(0, dash) : stripped;
+            }
+        }
+        return name;
+    }
+
+    public static Stream2 stream2(HgRepository repo, ShardSelection shard) throws IOException {
         if (!allowServerGeneration(repo)) {
             throw new IOException("stream data requested but server does not allow this feature");
         }
@@ -171,10 +196,15 @@ final class StreamClone {
         long total = 0;
         try (HgLock ignored = repo.lockStore()) {
             List<String> names = new ArrayList<>(dataFileNames(repo));
-            if (!RepoSupport.isPublishing(repo) && new File(repo.getStoreDir(), "phaseroots").isFile()) {
+            if (shard != null) {
+                names.removeIf(n -> !shard.matchesFile().test(filelogPath(n)));
+            }
+            if ((shard == null || shard.topLevel()) && !RepoSupport.isPublishing(repo) && new File(repo.getStoreDir(), "phaseroots").isFile()) {
                 names.add("phaseroots"); // top_entries yields it before the manifest and the changelog
             }
-            names.addAll(rootFileNames(repo));
+            if (shard == null || shard.topLevel()) {
+                names.addAll(rootFileNames(repo));
+            }
             for (String wireName : names) {
                 File file = new File(repo.getStoreDir(),
                         wireName.startsWith("data/") ? NodeIdUtil.encodeFname(wireName) : wireName);
@@ -185,7 +215,7 @@ final class StreamClone {
             }
             // the cache files a clone is worth having (cacheutil.cachetocopy), those that exist, after the store; names are
             // relative to .hg/cache and are marked 'c'
-            for (String name : cacheFilesToCopy()) {
+            for (String name : shard != null && !shard.topLevel() ? List.<String>of() : cacheFilesToCopy()) {
                 File file = new File(new File(repo.getHgDir(), "cache"), name);
                 if (file.isFile()) {
                     entries.add(new Entry(name, file, file.length(), 'c'));

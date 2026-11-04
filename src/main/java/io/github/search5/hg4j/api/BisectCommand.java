@@ -46,7 +46,7 @@ public class BisectCommand {
      * @return next bisect candidate node ID
      * @throws IOException if revision lookup fails
      */
-    public byte[] next() throws IOException {
+    public byte[] next() throws IOException, io.github.search5.hg4j.errors.HgLockException {
         if (goodNode == null || badNode == null) {
             throw new IllegalStateException("Good and Bad revision nodes must be set prior to bisect query");
         }
@@ -55,65 +55,72 @@ public class BisectCommand {
         // changelog-v2 revlog after an external process appended a revision -- see
         // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the
         // common (freshly-opened-per-call) case.
-        repository.refreshIfChangedOnDisk();
-        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
-        File clDat = new File(repository.getStoreDir(), "00changelog.d");
-        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        // Like real hg, the locks are taken before the first read of the repository state and released when the command ends.
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeout)) {
+            repository.refreshIfChangedOnDisk();
+            File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+            File clDat = new File(repository.getStoreDir(), "00changelog.d");
+            Revlog changelog = repository.getRevlog(clIdx, clDat);
 
-        int goodRev = changelog.findRevision(goodNode);
-        int badRev = changelog.findRevision(badNode);
-        if (goodRev == -1 || badRev == -1) {
-            throw new IOException("Bisect error: revision nodes not found in changelog history");
+            int goodRev = changelog.findRevision(goodNode);
+            int badRev = changelog.findRevision(badNode);
+            if (goodRev == -1 || badRev == -1) {
+                throw new IOException("Bisect error: revision nodes not found in changelog history");
+            }
+            if (goodRev == badRev) {
+                // Matches real hg (mercurial/hbisect.py bisect()): `hg bisect --good
+                // X --bad X` aborts with "inconsistent state, X is good and bad"
+                // rather than silently treating X as its own bisect candidate.
+                throw new IOException("Bisect error: revision " + NodeIdUtil.toHex(goodNode) + " is marked as both good and bad");
+            }
+
+            // 1. DAG-based Topological range search (Graph Algorithm)
+            List<Integer> range = getTopologicalRange(changelog, goodRev, badRev);
+            if (range.isEmpty()) {
+                throw new IOException("Bisect error: no topological path exists between good and bad nodes");
+            }
+
+            int midRev = selectBisectCandidate(changelog, range, goodRev, badRev);
+            byte[] midNode = changelog.getIndexRecord(midRev).getNodeId();
+
+            // 2. Physical File Checkout & Workspace Sync
+            //
+            // Uses ManifestTreeIterator (the same treemanifest-aware reader ManifestCommand/
+            // StatusCommand/DiffCommand already rely on) rather than hand-parsing the root manifest
+            // revlog's raw text directly. The old hand-rolled parse (removed here, backlog #39)
+            // treated EVERY manifest line as a real file: under a treemanifest repository
+            // (experimental.treemanifest=1) the root manifest's entries for subdirectories are
+            // "t"-flagged pointers to a nested `meta/<dir>/00manifest.i` sub-manifest revision, not
+            // file content -- so bisect would try to open a (nonexistent) filelog for the raw
+            // directory name and either throw or silently skip every file that lived inside any
+            // subdirectory, leaving the working copy incompletely (or wrongly) checked out at each
+            // bisect step.
+            for (ManifestWalk.Entry entry : listManifestEntries(changelog, midNode)) {
+                String path = entry.getPath();
+                byte[] fileContent = getFileRevisionContent(repository, path, NodeIdUtil.toHex(entry.getNodeId()));
+                File wFile = new File(repository.getDirectory(), path);
+                wFile.getParentFile().mkdirs();
+                Files.write(wFile.toPath(), fileContent);
+            }
+
+            // Update working directory parent to checkout the mid-node automatically
+            repository.changingParents(() -> {
+                Dirstate d = repository.getDirstate();
+                d.setParents(midNode, new byte[20]);
+                repository.writeDirstate(d);
+                return null;
+            });
+
+            // Each candidate hg4j checks out during bisect is a full working-copy checkout,
+            // same as `hg update` — the working branch must follow it, or `hg branch`/a
+            // subsequent commit would silently report whatever branch bisect started on.
+            repository.setBranch(CommitCommand.getBranchOfRevision(changelog, midRev));
+
+            repository.clearRevlogCache();
+
+            return midNode;
         }
-        if (goodRev == badRev) {
-            // Matches real hg (mercurial/hbisect.py bisect()): `hg bisect --good
-            // X --bad X` aborts with "inconsistent state, X is good and bad"
-            // rather than silently treating X as its own bisect candidate.
-            throw new IOException("Bisect error: revision " + NodeIdUtil.toHex(goodNode) + " is marked as both good and bad");
-        }
-
-        // 1. DAG-based Topological range search (Graph Algorithm)
-        List<Integer> range = getTopologicalRange(changelog, goodRev, badRev);
-        if (range.isEmpty()) {
-            throw new IOException("Bisect error: no topological path exists between good and bad nodes");
-        }
-
-        int midRev = selectBisectCandidate(changelog, range, goodRev, badRev);
-        byte[] midNode = changelog.getIndexRecord(midRev).getNodeId();
-
-        // 2. Physical File Checkout & Workspace Sync
-        //
-        // Uses ManifestTreeIterator (the same treemanifest-aware reader ManifestCommand/
-        // StatusCommand/DiffCommand already rely on) rather than hand-parsing the root manifest
-        // revlog's raw text directly. The old hand-rolled parse (removed here, backlog #39)
-        // treated EVERY manifest line as a real file: under a treemanifest repository
-        // (experimental.treemanifest=1) the root manifest's entries for subdirectories are
-        // "t"-flagged pointers to a nested `meta/<dir>/00manifest.i` sub-manifest revision, not
-        // file content -- so bisect would try to open a (nonexistent) filelog for the raw
-        // directory name and either throw or silently skip every file that lived inside any
-        // subdirectory, leaving the working copy incompletely (or wrongly) checked out at each
-        // bisect step.
-        for (ManifestWalk.Entry entry : listManifestEntries(changelog, midNode)) {
-            String path = entry.getPath();
-            byte[] fileContent = getFileRevisionContent(repository, path, NodeIdUtil.toHex(entry.getNodeId()));
-            File wFile = new File(repository.getDirectory(), path);
-            wFile.getParentFile().mkdirs();
-            Files.write(wFile.toPath(), fileContent);
-        }
-
-        // Update working directory parent to checkout the mid-node automatically
-        Dirstate d = repository.getDirstate();
-        d.setParents(midNode, new byte[20]);
-        repository.writeDirstate(d);
-
-        // Each candidate hg4j checks out during bisect is a full working-copy checkout,
-        // same as `hg update` — the working branch must follow it, or `hg branch`/a
-        // subsequent commit would silently report whatever branch bisect started on.
-        repository.setBranch(CommitCommand.getBranchOfRevision(changelog, midRev));
-
-        repository.clearRevlogCache();
-
-        return midNode;
     }
 
     private List<Integer> getTopologicalRange(Revlog changelog, int goodRev, int badRev) throws IOException {

@@ -40,7 +40,18 @@ public class HgLock implements AutoCloseable {
     private boolean acquiredJvmLock = false;
     private boolean acquiredFileLock = false;
     private boolean isReentrant = false;
+
+    /** True when this thread already held the lock and this instance only counts one more level of it. */
+    public boolean isReentrant() {
+        return isReentrant;
+    }
     private boolean closed = false;
+    private Runnable onClosed;
+
+    /** Called once, after this hold of the lock is released; {@link HgRepository} uses it for real hg's {@code _afterlock}. */
+    void onClosed(Runnable callback) {
+        this.onClosed = callback;
+    }
 
     /**
      * Internal constructor for No-op Dummy Lock.
@@ -288,6 +299,19 @@ public class HgLock implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        boolean alreadyClosed = closed;
+        try {
+            release();
+        } finally {
+            if (!alreadyClosed && onClosed != null) {
+                Runnable callback = onClosed;
+                onClosed = null;
+                callback.run();
+            }
+        }
+    }
+
+    private void release() throws IOException {
         if (lockFile == null) {
             return;
         }

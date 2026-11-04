@@ -255,6 +255,18 @@ public class HgRepository implements Repository {
      * @throws IOException if loading fails
      */
     public synchronized Dirstate getDirstate() throws IOException {
+        DirstateContext open = dirstateContext.get();
+        if (open != null && open.current != null) {
+            return open.current;
+        }
+        Dirstate loaded = readDirstate();
+        if (open != null) {
+            open.current = loaded;
+        }
+        return loaded;
+    }
+
+    private Dirstate readDirstate() throws IOException {
         Dirstate oldDirstate = this.cachedDirstate;
         Dirstate dirstate = null;
         try {
@@ -345,6 +357,13 @@ public class HgRepository implements Repository {
             throw new IllegalArgumentException("Dirstate cannot be null");
         }
         dirstate.setV2(defaultDirstateV2);
+        DirstateContext open = dirstateContext.get();
+        if (open != null) {
+            // inside a changing context nothing is written until the outermost one ends well
+            open.current = dirstate;
+            open.dirty = true;
+            return;
+        }
         storeEngine.writeDirstate(this, dirstate);
         this.cachedDirstate = dirstate;
     }
@@ -602,15 +621,15 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * Locks the working directory (updates to dirstate or working copy), failing immediately
-     * (fail-fast, no wait) if it is already held -- see {@link #lockWorkingCopy(int)} for a
-     * variant that waits like real hg's own default {@code wlock()}.
+     * Locks the working directory (updates to dirstate or working copy). Like real hg's {@code repo.wlock()} (whose {@code wait}
+     * defaults to true) it waits for {@code ui.timeout} seconds (600 unless configured) when another process holds the lock;
+     * {@code ui.timeout = 0} fails at once. See {@link #resolvePushLockTimeoutMs()}.
      *
      * @return the {@link HgLock} instance
-     * @throws HgLockException if acquiring the lock fails
+     * @throws HgLockException if the lock could not be acquired within the timeout
      */
     public HgLock lockWorkingCopy() throws HgLockException {
-        return lockWorkingCopy(0);
+        return lockWorkingCopy(resolvePushLockTimeoutMs());
     }
 
     /**
@@ -641,19 +660,165 @@ public class HgRepository implements Repository {
      * @throws HgLockException if the lock could not be acquired within {@code timeoutMs}
      */
     public HgLock lockWorkingCopy(int timeoutMs) throws HgLockException {
-        return new HgLock(new File(hgDir, "wlock"), timeoutMs, true);
+        // Like real hg's repo.wlock(): nothing is recovered when the lock is taken. The dirstate is not journaled either; a command that
+        // changes it in memory writes it once at the end and puts the old bytes back when it fails.
+        HgLock lock = new HgLock(new File(hgDir, "wlock"), timeoutMs, true);
+        // keyed by the lock file, not by this object: the same working copy is often opened more than once in a command
+        String key = wlockKey();
+        WLOCKS_HELD.get().merge(key, 1, Integer::sum);
+        return track(lock, () -> WLOCKS_HELD.get().computeIfPresent(key, (k, n) -> n > 1 ? n - 1 : null));
+    }
+
+    private static final ThreadLocal<Map<String, Integer>> WLOCKS_HELD = ThreadLocal.withInitial(HashMap::new);
+
+    private String wlockKey() {
+        try {
+            return new File(hgDir, "wlock").getCanonicalPath();
+        } catch (IOException e) {
+            return new File(hgDir, "wlock").getAbsolutePath();
+        }
+    }
+
+    /** Whether this thread holds the working copy lock ({@code repo.currentwlock()} is not {@code None}). */
+    public boolean holdsWorkingCopyLock() {
+        return WLOCKS_HELD.get().containsKey(wlockKey());
+    }
+
+    /** The work a dirstate-changing context runs. */
+    @FunctionalInterface
+    public interface DirstateBody<T> {
+        T run() throws IOException, io.github.search5.hg4j.errors.HgLockException;
+    }
+
+    /** {@code dirstate.changing_files}/{@code changing_parents}/{@code running_status}: what the open context holds. */
+    private static final class DirstateContext {
+        final String kind;
+        int level;
+        Dirstate current;
+        boolean dirty;
+        boolean invalid;
+
+        DirstateContext(String kind) {
+            this.kind = kind;
+        }
+    }
+
+    private final ThreadLocal<DirstateContext> dirstateContext = new ThreadLocal<>();
+
+    /**
+     * {@code dirstate.changing_files}: the set of tracked files changes, the parents do not. Like the original it requires the working
+     * copy lock, excludes {@link #changingParents}, may be nested, writes the dirstate once when the outermost one ends normally and
+     * throws every change away when any of them ends with an exception (the next read goes back to the disk).
+     */
+    public <T> T changingFiles(DirstateBody<T> body) throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        return inDirstateContext("changing_files", body);
+    }
+
+    /** {@code dirstate.changing_parents}: the working copy parents change (update, merge, commit...). Same rules as {@link #changingFiles}. */
+    public <T> T changingParents(DirstateBody<T> body) throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        return inDirstateContext("changing_parents", body);
+    }
+
+    private <T> T inDirstateContext(String kind, DirstateBody<T> body) throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        DirstateChange change = openDirstateContext(kind);
+        try {
+            T result = body.run();
+            change.close();
+            return result;
+        } catch (IOException | io.github.search5.hg4j.errors.HgLockException | RuntimeException failure) {
+            change.failed();
+            try {
+                change.close();
+            } catch (IOException suppressed) {
+                failure.addSuppressed(suppressed);
+            }
+            throw failure;
+        }
     }
 
     /**
-     * Locks the store repository database (commits, metadata, index updates), failing immediately
-     * (fail-fast, no wait) if it is already held -- see {@link #lockStore(int)} for a variant that
-     * waits like real hg's own default {@code lock()}.
+     * An open dirstate-changing context for a caller whose body cannot be a lambda: close it (a try-with-resources does) and the dirstate
+     * is written if this was the outermost context and {@link #failed()} was not called; after {@code failed()} every change is dropped.
+     */
+    public final class DirstateChange implements AutoCloseable {
+        private final DirstateContext context;
+        private final boolean outermost;
+        private boolean failed;
+        private boolean closed;
+
+        private DirstateChange(DirstateContext context, boolean outermost) {
+            this.context = context;
+            this.outermost = outermost;
+        }
+
+        /** Marks the context as ended by an exception: the next {@link #close()} throws every change away. */
+        public void failed() {
+            failed = true;
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            context.level--;
+            if (failed) {
+                // an exception anywhere invalidates the whole context, whatever the outer ones do afterwards
+                context.current = null;
+                context.dirty = false;
+                context.invalid = true;
+                synchronized (HgRepository.this) {
+                    cachedDirstate = null;
+                }
+            }
+            if (outermost) {
+                dirstateContext.remove();
+                if (!context.invalid && context.dirty && context.current != null) {
+                    writeDirstate(context.current);
+                }
+            }
+        }
+    }
+
+    /** Opens a {@code changing_parents} context; see {@link DirstateChange}. */
+    public DirstateChange openChangingParents() {
+        return openDirstateContext("changing_parents");
+    }
+
+    /** Opens a {@code changing_files} context; see {@link DirstateChange}. */
+    public DirstateChange openChangingFiles() {
+        return openDirstateContext("changing_files");
+    }
+
+    private DirstateChange openDirstateContext(String kind) {
+        if (!holdsWorkingCopyLock()) {
+            throw new IllegalStateException("trying to change the dirstate without holding the wlock");
+        }
+        DirstateContext open = dirstateContext.get();
+        if (open != null && !open.kind.equals(kind)) {
+            throw new IllegalStateException("trying to open \"" + kind + "\" dirstate-changing context while a \"" + open.kind
+                    + "\" is already open");
+        }
+        boolean outermost = open == null;
+        if (outermost) {
+            open = new DirstateContext(kind);
+            dirstateContext.set(open);
+        }
+        open.level++;
+        return new DirstateChange(open, outermost);
+    }
+
+    /**
+     * Locks the store repository database (commits, metadata, index updates). Like real hg's {@code repo.lock()} (whose {@code wait}
+     * defaults to true) it waits for {@code ui.timeout} seconds (600 unless configured) when another process holds the lock;
+     * {@code ui.timeout = 0} fails at once. See {@link #resolvePushLockTimeoutMs()}.
      *
      * @return the {@link HgLock} instance
-     * @throws HgLockException if acquiring the lock fails
+     * @throws HgLockException if the lock could not be acquired within the timeout
      */
     public HgLock lockStore() throws HgLockException {
-        return lockStore(0);
+        return lockStore(resolvePushLockTimeoutMs());
     }
 
     /**
@@ -678,18 +843,110 @@ public class HgRepository implements Repository {
      * @return the {@link HgLock} instance
      * @throws HgLockException if the lock could not be acquired within {@code timeoutMs}
      */
-    public HgLock lockStore(int timeoutMs) throws HgLockException {
-        HgLock lock = new HgLock(new File(storeDir, "lock"), timeoutMs, true);
+    /**
+     * The store lock without the recovery of an interrupted transaction that {@link #lockStore(int)} performs when it takes the lock
+     * anew. Real hg's {@code repo.lock()} never recovers by itself; {@code recover} and {@code verify} need to look at the journal
+     * while they hold the lock.
+     */
+    public HgLock lockStoreWithoutRecovery(int timeoutMs) throws HgLockException {
+        return track(new HgLock(new File(storeDir, "lock"), timeoutMs, true));
+    }
+
+    /** Work postponed until the locks are released, like real hg's {@code repo._afterlock(callback)}. */
+    @FunctionalInterface
+    public interface AfterLockAction {
+        void run() throws Exception;
+    }
+
+    private final ThreadLocal<int[]> heldLocks = ThreadLocal.withInitial(() -> new int[1]);
+    private final ThreadLocal<List<AfterLockAction>> afterLockActions = ThreadLocal.withInitial(ArrayList::new);
+
+    private HgLock track(HgLock lock) {
+        return track(lock, () -> { });
+    }
+
+    private HgLock track(HgLock lock, Runnable onRelease) {
+        heldLocks.get()[0]++;
+        lock.onClosed(() -> {
+            onRelease.run();
+            lockReleased();
+        });
+        return lock;
+    }
+
+    private void lockReleased() {
+        int[] held = heldLocks.get();
+        if (--held[0] > 0) {
+            return;
+        }
+        held[0] = 0;
+        List<AfterLockAction> pending = new ArrayList<>(afterLockActions.get());
+        afterLockActions.get().clear();
+        for (AfterLockAction action : pending) {
+            runAfterLock(action);
+        }
+    }
+
+    private void runAfterLock(AfterLockAction action) {
         try {
-            checkAndPerformAutoRollback();
-        } catch (Throwable t) {
+            action.run();
+        } catch (Exception e) {
+            // like real hg's non-throwing post hooks (changegroup, incoming, commit, pushkey): they cannot fail the operation
+            LOGGER.log(Level.WARNING, "Work postponed until the locks were released failed", e);
+        }
+    }
+
+    /**
+     * Runs {@code action} once the last lock this thread holds on this repository is released, or at once when it holds none
+     * (real hg's {@code repo._afterlock}). Post hooks use it: {@code commit}, {@code changegroup}, {@code incoming}, {@code pushkey}.
+     */
+    public void afterLock(AfterLockAction action) {
+        if (heldLocks.get()[0] == 0) {
+            runAfterLock(action);
+        } else {
+            afterLockActions.get().add(action);
+        }
+    }
+
+    /**
+     * {@code localrepo.store_shapes_lock}: the lock a {@code server-shapes} update holds so that a concurrent update cannot be silently
+     * thrown away. A file of its own in the store ({@code store-shapes-lock}), independent of the store lock; it is taken before it
+     * ({@code admin::narrow-server --shape-update}). Re-entrant for the thread that holds it.
+     *
+     * @param timeoutMs how long to wait; hg's callers pass {@code wait=False}, that is {@code 0}
+     */
+    public HgLock lockStoreShapes(int timeoutMs) throws HgLockException {
+        return new HgLock(new File(storeDir, "store-shapes-lock"), timeoutMs, true);
+    }
+
+    /** Who holds the {@code store-shapes-lock} ({@code host:pid}), or {@code null} when nobody does ({@code svfs.readlock}). */
+    public String readStoreShapesLockHolder() {
+        File lockFile = new File(storeDir, "store-shapes-lock");
+        try {
+            return java.nio.file.Files.readSymbolicLink(lockFile.toPath()).toString().trim();
+        } catch (java.nio.file.NotLinkException regularFile) {
+            try {
+                return java.nio.file.Files.readString(lockFile.toPath()).trim();
+            } catch (IOException e) {
+                return null;
+            }
+        } catch (IOException | UnsupportedOperationException e) {
+            return null;
+        }
+    }
+
+    public HgLock lockStore(int timeoutMs) throws HgLockException {
+        HgLock lock = track(new HgLock(new File(storeDir, "lock"), timeoutMs, true));
+        // Nothing is recovered here: real hg's repo.lock() never does. A command that opens a transaction meets an interrupted one
+        // (store/journal) with "abandoned transaction found", and `recover` is what cleans it up. The journal found while this thread
+        // already holds the lock belongs to the transaction it is running itself.
+        if (!lock.isReentrant() && new File(storeDir, "journal").exists()) {
             try {
                 lock.close();
-            } catch (Exception ignored) {}
-            if (t instanceof RuntimeException) {
-                throw (RuntimeException) t;
+            } catch (Exception ignored) {
+                // the refusal below is what matters
             }
-            throw new HgLockException("lock", "Failed to perform auto-rollback after lock acquisition", t);
+            throw new io.github.search5.hg4j.errors.HgAbandonedTransactionException();
         }
         return lock;
     }
@@ -705,7 +962,9 @@ public class HgRepository implements Repository {
      * fails.
      */
     public int resolvePushLockTimeoutMs() {
-        String raw = getConfig().get("ui", "timeout", "600");
+        // hg's default is 600 seconds. `hg4j.ui.timeout` only changes that default (the test runs set it to 0 so that a test which holds
+        // a lock on purpose does not wait ten minutes); an explicit `[ui] timeout` in a repository always wins.
+        String raw = getConfig().get("ui", "timeout", System.getProperty("hg4j.ui.timeout", "600"));
         try {
             long seconds = Long.parseLong(raw.trim());
             if (seconds <= 0) {
@@ -750,32 +1009,7 @@ public class HgRepository implements Repository {
                         }
                     }
                 } else if (line.equals("dirstate")) {
-                    File dirstateBackup = new File(hgDir, "dirstate.backup");
-                    File dirstateFile = new File(hgDir, "dirstate");
-                    if (dirstateBackup.exists()) {
-                        Files.move(dirstateBackup.toPath(), dirstateFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                        // dirstate-v2's own companion data file (backlog #39, found live
-                        // 2026-09-05): the docket bytes just restored above may reference a
-                        // "<uid>" whose ".hg/dirstate.<uid>" data file Dirstate.write()'s own
-                        // "W-LEAK" cleanup already deleted (it removes the *previous* uid's data
-                        // file the instant the crashed transaction durably wrote its own new
-                        // docket) -- restore it from the durable backup CommitCommand leaves
-                        // alongside "dirstate.backup" (see its own recordRevlogRollbackState-
-                        // adjacent comment) if it is indeed missing. Without this, real hg's own
-                        // dirstate-v2 reader treats the dangling reference as an unrecoverable
-                        // "dirstate read race" and aborts outright (verified live against
-                        // hg-rust-7.2.4).
-                        String uid = readDirstateV2Uid(dirstateFile);
-                        if (uid != null) {
-                            File dataFile = new File(hgDir, "dirstate." + uid);
-                            File dataBackup = new File(hgDir, "dirstateV2.backup.data");
-                            if (!dataFile.exists() && dataBackup.exists()) {
-                                Files.copy(dataBackup.toPath(), dataFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                            }
-                        }
-                    } else {
-                        Files.deleteIfExists(dirstateFile.toPath());
-                    }
+                    // written by older versions: recovering a transaction never touches the dirstate (it is written after the transaction)
                 } else if (line.equals("fncache")) {
                     File fncacheBackup = new File(storeDir, "fncache.backup");
                     File fncacheFile = new File(storeDir, "fncache");
@@ -847,32 +1081,6 @@ public class HgRepository implements Repository {
         }
     }
 
-    /**
-     * Parses a dirstate-v2 docket file's own {@code uid} field (the identifier of its companion
-     * {@code .hg/dirstate.<uid>} data file), or {@code null} if {@code dirstateFile} does not
-     * exist, is empty, or is not dirstate-v2 (a plain v1 dirstate has no such structure). See
-     * {@code CommitCommand#captureDirstateV2DataBackup}'s javadoc for the exact on-disk layout
-     * being read (magic {@code "dirstate-v2\n"}, uid length byte at offset 124, uid bytes
-     * immediately after).
-     */
-    private static String readDirstateV2Uid(File dirstateFile) {
-        try {
-            byte[] bytes = Files.readAllBytes(dirstateFile.toPath());
-            if (bytes.length < 125) {
-                return null;
-            }
-            if (!new String(bytes, 0, 12, StandardCharsets.US_ASCII).equals("dirstate-v2\n")) {
-                return null;
-            }
-            int uidSize = bytes[124] & 0xFF;
-            if (bytes.length < 125 + uidSize) {
-                return null;
-            }
-            return new String(bytes, 125, uidSize, StandardCharsets.US_ASCII);
-        } catch (Exception e) {
-            return null;
-        }
-    }
 
     private void deleteDirRecursively(File file) {
         if (file.isDirectory()) {

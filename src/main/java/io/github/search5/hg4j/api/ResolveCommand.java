@@ -59,39 +59,43 @@ public final class ResolveCommand {
      *         was requested while there is no merge in progress (or for a path that is not
      *         part of it) — matching real hg's refusal to resolve outside a merge.
      */
-    public Map<String, Boolean> call() throws IOException {
-        File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
-        MergeState mergeState = MergeState.read(mergeStateFile);
+    public Map<String, Boolean> call() throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        // Like real hg, the locks are taken before the first read of the repository state and released when the command ends.
+        int lockTimeout = repository.resolvePushLockTimeoutMs();
+        try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeout)) {
+            File mergeStateFile = new File(repository.getHgDir(), "merge/state2");
+            MergeState mergeState = MergeState.read(mergeStateFile);
 
-        if (fileToMark != null && (markResolved || markUnresolved)) {
-            if (!mergeState.isActive()) {
-                throw new HgValidationException(
-                        "resolve command not applicable when not merging");
-            }
-            if (!mergeState.hasFile(fileToMark)) {
-                throw new HgValidationException(
-                        fileToMark + " is not part of the current merge, nothing to resolve");
+            if (fileToMark != null && (markResolved || markUnresolved)) {
+                if (!mergeState.isActive()) {
+                    throw new HgValidationException(
+                            "resolve command not applicable when not merging");
+                }
+                if (!mergeState.hasFile(fileToMark)) {
+                    throw new HgValidationException(
+                            fileToMark + " is not part of the current merge, nothing to resolve");
+                }
+
+                if (markResolved) {
+                    mergeState.markResolved(fileToMark);
+                } else {
+                    mergeState.markUnresolved(fileToMark);
+                }
+                mergeState.write(mergeStateFile);
+
+                if (!list) {
+                    Map<String, Boolean> filtered = new LinkedHashMap<>();
+                    filtered.put(fileToMark, isResolved(mergeState, fileToMark));
+                    return filtered;
+                }
             }
 
-            if (markResolved) {
-                mergeState.markResolved(fileToMark);
-            } else {
-                mergeState.markUnresolved(fileToMark);
+            Map<String, Boolean> states = new LinkedHashMap<>();
+            for (String path : mergeState.state.keySet()) {
+                states.put(path, isResolved(mergeState, path));
             }
-            mergeState.write(mergeStateFile);
-
-            if (!list) {
-                Map<String, Boolean> filtered = new LinkedHashMap<>();
-                filtered.put(fileToMark, isResolved(mergeState, fileToMark));
-                return filtered;
-            }
+            return states;
         }
-
-        Map<String, Boolean> states = new LinkedHashMap<>();
-        for (String path : mergeState.state.keySet()) {
-            states.put(path, isResolved(mergeState, path));
-        }
-        return states;
     }
 
     private static boolean isResolved(MergeState mergeState, String path) {

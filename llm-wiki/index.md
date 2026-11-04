@@ -67,6 +67,10 @@ status: current
 | [backlog/01-resolve-mergestate.md](backlog/01-resolve-mergestate.md) | 1 | ResolveCommand ↔ MergeState 연동 |
 | [backlog/wire-protocol-negotiation.md](backlog/wire-protocol-negotiation.md) | 2, 3, 22, 24, 25 | HTTP/SSH 프로토콜 협상, v1 인자 전송 버그, SSH 전송 계층 재작성 |
 | [backlog/push-and-concurrency.md](backlog/push-and-concurrency.md) | 13, 33, 38 | Push 증분 처리, SSH checkheads, 동시 push 레이스 |
+| [concepts/locking-and-concurrency.md](concepts/locking-and-concurrency.md) | | 잠금 범위와 순서, 2026-11-04 동시성 점검 결과와 한계 |
+| [concepts/store-shapes.md](concepts/store-shapes.md) | | 스토어 shape(샤드, 프로필, 지문)와 sharded 번들의 hg/Rust 소스 분석, 와이어, 잠금, 기준값, 포팅 설계 (포팅 전 분석) |
+| [concepts/rebase-original.md](concepts/rebase-original.md) | | rebase 원본(hgext/rebase.py) 소스 분석: 상태 파일 형식, 잠금·트랜잭션 구조, 노드 처리, abort, 재작성 계획 (1차) |
+| [lock-parity-matrix.md](lock-parity-matrix.md) | | 잠금 대조표: hg 원본 대 hg4j 명령별 잠금 위치, 결정 사항, 진행 상태 |
 | [backlog/revlog-storage-formats.md](backlog/revlog-storage-formats.md) | 4, 15, 21, 35, 43 | Revlog v2 일반/persistent-nodemap/fileindex-v1, inline 레이아웃·성장 전환 |
 | [backlog/dirstate-v2.md](backlog/dirstate-v2.md) | 5, 37 | Dirstate v2 바이트 레이아웃, 트리 구조 유실 버그(총 5건) |
 | [backlog/censor.md](backlog/censor.md) | 6, 7 | Censor 삭제, cg3 censor 지원(추가 2건 발견) |
@@ -136,3 +140,5 @@ status: current
 - 저장소 루트: `/Users/mzc01-search5/yona-convert/hg4j`
 - Java 21 / Gradle 9.4.1, `io.github.search5.hg4j` 좌표로 Maven Central + Gradle Plugin Portal 배포
 - 진입점: `io.github.search5.hg4j.api.Hg` (README.md 사용 예제 참고)
+- [[concepts/strip-original]]: `hg strip`(명령, `repair.strip`)의 잠금, 세 트랜잭션, 실패 처리 분석
+- [[concepts/dirstate-original]]: dirstate의 변경 컨텍스트, 트랜잭션 연결, v2 mmap·덧붙이기 분석과 재작성 계획

@@ -60,7 +60,7 @@ public class BisectCommandTest {
         Files.writeString(f.toPath(), "v1");
         new CommitCommand(repo).setMessage("Commit 2 (mid, on feature)").call();
 
-        new BranchCommand(repo).setBranchName("default").call();
+        new BranchCommand(repo).setBranchName("default").setForce(true).call(); // hg needs -f to move onto an existing branch from another one
         Files.writeString(f.toPath(), "v2");
         new CommitCommand(repo).setMessage("Commit 3 (bad)").call();
         byte[] badNode = repo.getDirstate().getParent1();

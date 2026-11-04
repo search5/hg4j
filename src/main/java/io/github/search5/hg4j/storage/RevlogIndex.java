@@ -1000,6 +1000,7 @@ public class RevlogIndex {
         buf.putLong(docketSidedataEnd);
         buf.putLong(docketPendingSidedataEnd);
         buf.flip();
+        SafeFileIO.breakHardLinks(idxFile); // this repository may share the file with another one
         try (FileChannel ch = FileChannel.open(idxFile.toPath(), StandardOpenOption.WRITE)) {
             ch.position(10); // index_end 오프셋 (S_HEADER: version_header(4)+6*B(6)=10)
             ch.write(buf);

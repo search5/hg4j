@@ -77,7 +77,7 @@ public class UnbundleCommand {
 
         ChangegroupParser.ChangegroupBundle bundle = ChangegroupParser.parseBundle(
                 new ByteArrayInputStream(changegroupBytes), cgVersion);
-        FetchCommand fetch = new FetchCommand(repository);
+        FetchCommand fetch = new FetchCommand(repository).setWorkingCopyLock(false); // real hg: `unbundle` holds only the store lock
         return fetch.applyBundle(bundle);
     }
 }

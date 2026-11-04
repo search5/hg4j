@@ -159,7 +159,7 @@ public class IdentifyCommand {
     }
 
     private List<String> bookmarksForNode(byte[] node) throws IOException {
-        Map<String, String> allBookmarks = new BookmarkCommand(repository).call();
+        Map<String, String> allBookmarks = new BookmarkCommand(repository).list();
         String hex = NodeIdUtil.toHex(node);
         List<String> names = new ArrayList<>();
         for (Map.Entry<String, String> e : allBookmarks.entrySet()) {

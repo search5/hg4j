@@ -95,10 +95,14 @@ public class BookmarkRealHgInteropTest {
         byte[] node = new CommitCommand(local).setAuthor("T").setMessage("c1").call();
         new BookmarkCommand(local).setBookmarkName("mybook").setRevision(new NodeId(node).toHex()).call();
 
+        // 7.2.4와 같게: -B 없이는 원격에 없는 북마크를 만들지 않는다
         new PushCommand(local).setDestination(remoteDir.getAbsolutePath()).call();
+        assertFalse(HgTestUtils.hg(remoteDir, "bookmarks").contains("mybook"), "-B 없는 push는 새 북마크를 만들지 않는다");
+
+        new PushCommand(local).setDestination(remoteDir.getAbsolutePath()).setBookmarks("mybook").call();
 
         String remoteBookmarks = HgTestUtils.hg(remoteDir, "bookmarks");
-        assertTrue(remoteBookmarks.contains("mybook"), "push 후 실제 hg 원격에 bookmark가 반영돼야 함: " + remoteBookmarks);
+        assertTrue(remoteBookmarks.contains("mybook"), "push -B 후 실제 hg 원격에 bookmark가 반영돼야 함: " + remoteBookmarks);
     }
 
     @Test

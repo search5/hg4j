@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-04
-status: 계획 (미착수). 5단계 중 0단계 완료
+status: 진행 중. 5단계 중 1단계 완료(2026-11-04)
 audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전트)
 ---
 
@@ -50,7 +50,14 @@ audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전�
   기본 종류(CLI 인자는 `relpath`, `-I/-X`는 `glob`). 합성: include/exclude, 합집합, 교집합, 차집합, 부정.
 - 원본의 글롭 → 정규식 변환(`_globre`)과 `.hgignore`의 구문 줄(`syntax: glob`, `syntax: re`, `syntax: rootglob`)을 같은 구현으로 쓴다.
 - 대조: 실제 hg로 `hg files -I`/`-X`/종류별 패턴을 같은 저장소에 돌려 목록이 같은지 비교(패턴 약 40종 x 리비전/작업 사본).
-- 이 단계 완료 기준: 위 대조 통과 + `SparsePathFilter`가 새 매처를 쓰도록 이관(기존 테스트 통과).
+- 이 단계 완료 기준: 위 대조 통과.
+- **완료 (2026-11-04).** 패키지 `io.github.search5.hg4j.match`: `Matchers`(패턴 종류 14종, `-I`/`-X` 합성, `listfile:`/`include:`/`subinclude:`/`set:`), `Globs`
+  (`_globre`와 `_regex` 이식, 파이썬 정규식 번역), `PatternFiles`(`.hgignore` 문법), `Matcher`, `KindPattern`. 대조 테스트
+  `MatcherParityInteropTest` 7개(약 70개 패턴 x 인자/`-I`/`-X` x 루트/하위 디렉터리 + 조합 + 오류 문구), 단위 테스트 `MatchersTest` 10개.
+- **계획 변경:** `SparsePathFilter`는 이관하지 않는다. sparse checkout 전용 글롭 규칙(디렉터리면 내용 전체 포함, `hg debugsparse`로 확인)이라 일반 매처와
+  의미가 다르다. 일반 매처로 바꾸면 sparse 동작이 변한다. `FilesCommand#setPattern`(글롭 의미)도 4단계에서 `setPatterns`(원본 의미)를 새로 만들고 옛 것은
+  그대로 둔다.
+- **원본 7.2의 결함 확인:** `hg files subinclude:...`는 내부 오류(AssertionError)로 죽는다. `hg status -A -n subinclude:...`는 정상이라 후자로 대조했다.
 
 ### Phase 2: 언어 (파서·분석·평가 틀)
 - `MiniFileset`의 토큰화·파서(결합 강도 20/15/10/5/4/2)를 `filesetlang.py` 전체로 확장: `analyze`, `optimize`, `andsets`/`orsets`/`notset`/

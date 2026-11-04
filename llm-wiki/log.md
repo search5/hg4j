@@ -708,3 +708,8 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 
 ## [2026-11-04] 일반 파일셋 엔진 계획 수립
 사용자 지시로 일반 파일셋 엔진 구현을 결정했다. 조사 결과 hg4j에는 **패턴 매처 자체가 없어**(종류별 `glob:`/`re:`/`path:`, `-I`/`-X`) 파일셋의 선행 조건이 되므로 범위가 "매처 + 언어 + 술어 24종 + 명령 연결"의 5단계가 되었다. 계획서 [[implementation-plan-fileset]], 백로그 48 [[fileset-and-matcher]]을 만들고 색인과 스펙 갭 표를 갱신했다. 아직 착수하지 않았다(0단계 완료).
+
+## [2026-11-04] 파일셋 계획 1단계 완료: 패턴 매처
+`io.github.search5.hg4j.match`(`Matchers`, `Globs`, `PatternFiles`, `Matcher`, `KindPattern`). 패턴 종류 14종, `-I`/`-X`, `listfile`/`include`/`subinclude`/`set`, 원본 오류 문구. 실제 hg와의 대조 7개(약 70개 패턴을 인자, `-I`, `-X`, 루트와 하위 디렉터리에서), 단위 테스트 10개. `SparsePathFilter`는 sparse 전용 규칙이라 이관하지 않기로 계획을 고쳤다.
+함께 고친 것: 북마크 push 변경(`-B` 없이는 새 북마크를 만들지 않음)의 영향을 받는 interop 테스트 `BookmarkRealHgInteropTest#testPushSyncsBookmarkToRemote`를 7.2.4 동작에 맞췄다. 그때 push를 쓰는 interop 클래스를 이름으로만 골라서 이 클래스를 놓쳤으므로, 이후에는 `grep PushCommand`로 사용 클래스를 모두 찾아 돌린다.
+검증: 일반 test 2217개, 매처 대조 7개, push 사용 interop 클래스 전부 통과.

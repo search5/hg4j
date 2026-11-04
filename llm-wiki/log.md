@@ -721,3 +721,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-04] 파일셋 계획 3단계 완료: 술어 24종
 `Predicates`(modified, added, removed, deleted, missing, unknown, ignored, clean, tracked, binary, exec, symlink, resolved, unresolved, hgignore, portable, grep, size, encoding, eol, copied, revs, status, subrepo + lfs), 확장된 `FilesetContext`/`RepositoryFilesetContext`(작업 디렉터리의 8가지 상태 분류, 리비전 지정, ignore, 머지 상태). 실제 hg와의 대조 4개 통과. 알려진 한계는 [[implementation-plan-fileset]] 참조.
 검증: 일반 test 2226개 통과.
+
+## [2026-11-04] 파일셋 계획 4a단계 완료: 읽기 명령 연결
+`api/FileSelection`(패턴, `-I`, `-X`, cwd)과 files, status, diff, log, cat의 `setPatterns`/`setInclude`/`setExclude`/`setCwd`. `FilesCommand#setFileset`은 새 파일셋 엔진으로 옮겼다(`lfs()`는 이제 확장이 켜진 저장소에서만 알려진 식별자로, 원본과 같다). 5개 명령 x 패턴 22종 x 인자/-I/-X x 루트와 하위 디렉터리를 실제 hg와 대조(5개 테스트). 이때 LFS 파일셋 테스트 저장소에 `[extensions] lfs`를 명시해야 했다.
+검증: 일반 test 2226개, 파일셋·매처·LFS 파일·Cat/Files 관련 interop 통과.

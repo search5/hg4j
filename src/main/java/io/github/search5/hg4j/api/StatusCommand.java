@@ -49,7 +49,68 @@ public class StatusCommand {
         return this;
     }
 
+    private final FileSelection selection = new FileSelection();
+
+    /** The files to report, as {@code hg status [FILE]...} takes them (patterns, {@code kind:pattern}, {@code set:EXPRESSION}). */
+    public StatusCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg status -I}. */
+    public StatusCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg status -X}. */
+    public StatusCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public StatusCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
     public Status call() throws IOException {
+        Status all = callAll();
+        if (selection.isEmpty()) {
+            return all;
+        }
+        io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, null);
+        Status kept = new Status();
+        for (String f : all.getAdded()) {
+            if (matcher.matches(f)) {
+                kept.getAdded().add(f);
+            }
+        }
+        for (String f : all.getModified()) {
+            if (matcher.matches(f)) {
+                kept.getModified().add(f);
+            }
+        }
+        for (String f : all.getRemoved()) {
+            if (matcher.matches(f)) {
+                kept.getRemoved().add(f);
+            }
+        }
+        for (String f : all.getClean()) {
+            if (matcher.matches(f)) {
+                kept.getClean().add(f);
+            }
+        }
+        for (String f : all.getUntracked()) {
+            if (matcher.matches(f)) {
+                kept.getUntracked().add(f);
+            }
+        }
+        return kept;
+    }
+
+    private Status callAll() throws IOException {
         // Backlog #39: guard against a long-lived HgRepository handle serving a stale cached
         // changelog-v2 revlog after an external process appended a revision -- see
         // DescribeCommand#call()'s javadoc for the full root-cause writeup. Cheap no-op in the

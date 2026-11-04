@@ -30,6 +30,47 @@ public class CatCommand {
         return this;
     }
 
+    private final FileSelection selection = new FileSelection();
+
+    /** {@code hg cat [FILE]...}: the files to print, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}). */
+    public CatCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg cat -I}. */
+    public CatCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg cat -X}. */
+    public CatCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public CatCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
+    /** The content of every file of the revision the patterns select, in path order (path to content). */
+    public java.util.Map<String, byte[]> callAll() throws IOException {
+        if (selection.patternCount() == 0) {
+            throw new io.github.search5.hg4j.errors.HgValidationException("invalid arguments"); // `hg cat` needs a FILE argument
+        }
+        io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, revision);
+        java.util.Map<String, byte[]> contents = new java.util.LinkedHashMap<>();
+        for (String path : new FilesCommand(repository).setRevision(revision).call()) {
+            if (matcher.matches(path)) {
+                contents.put(path, new CatCommand(repository).setFile(path).setRevision(revision).call());
+            }
+        }
+        return contents;
+    }
+
     public CatCommand setRevision(String revision) {
         this.revision = revision;
         return this;

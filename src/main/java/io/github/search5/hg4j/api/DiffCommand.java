@@ -43,6 +43,32 @@ public class DiffCommand {
     private int newRevision = NOT_SET; // NOT_SET defaults to tip; -1 means "empty manifest" (see NOT_SET's doc)
     private HgTreeFilter treeFilter = HgTreeFilter.ALL;
 
+    private final FileSelection selection = new FileSelection();
+
+    /** The files to diff, as {@code hg diff [FILE]...} takes them (patterns, {@code kind:pattern}, {@code set:EXPRESSION}). */
+    public DiffCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg diff -I}. */
+    public DiffCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg diff -X}. */
+    public DiffCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public DiffCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
     public DiffCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -154,10 +180,14 @@ public class DiffCommand {
         tw.addTree(new ManifestTreeIterator(repository, String.valueOf(targetOld)));
         tw.addTree(new ManifestTreeIterator(repository, String.valueOf(targetNew)));
 
+        HgTreeFilter selected = selection.isEmpty() ? null : selection.treeFilter(repository, String.valueOf(targetNew));
         tw.reset();
         while (tw.next()) {
             String path = tw.getPath();
             if (treeFilter != null && !treeFilter.accept(path)) {
+                continue;
+            }
+            if (selected != null && !selected.accept(path)) {
                 continue;
             }
             boolean inOld = tw.isTracked(0);

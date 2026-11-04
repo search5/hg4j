@@ -33,6 +33,32 @@ public class LogCommand {
         this.repository = repository;
     }
 
+    private final FileSelection selection = new FileSelection();
+
+    /** {@code hg log [FILE]...}: only the revisions that touch files matching these patterns. */
+    public LogCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg log -I}. */
+    public LogCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg log -X}. */
+    public LogCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public LogCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
     public LogCommand setTreeFilter(HgTreeFilter treeFilter) {
         if (treeFilter != null) {
             this.treeFilter = treeFilter;
@@ -113,6 +139,8 @@ public class LogCommand {
                 allowedRevs = graph.getAllAncestors(startRevNum);
             }
         }
+
+        HgTreeFilter selected = selection.isEmpty() ? null : selection.treeFilter(repository, null);
 
         // Return newest commits first
         for (int rev = totalRevisions - 1; rev >= 0; rev--) {
@@ -219,6 +247,18 @@ public class LogCommand {
                 boolean matched = false;
                 for (String file : files) {
                     if (treeFilter.accept(file)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    continue;
+                }
+            }
+            if (selected != null) {
+                boolean matched = false;
+                for (String file : files) {
+                    if (selected.accept(file)) {
                         matched = true;
                         break;
                     }

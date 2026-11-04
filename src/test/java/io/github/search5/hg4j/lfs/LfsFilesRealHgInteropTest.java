@@ -62,6 +62,8 @@ class LfsFilesRealHgInteropTest {
         repo = tempDir.resolve("repo").toFile();
         repo.mkdirs();
         hg(repo, "init");
+        // real hg gets the extension from the command line; hg4j reads it from the repository configuration
+        Files.writeString(new File(repo, ".hg/hgrc").toPath(), "[extensions]\nlfs =\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
         write("big.bin", 500, 1);
         Files.writeString(new File(repo, "small.txt").toPath(), "small\n");
         hg(repo, "add");

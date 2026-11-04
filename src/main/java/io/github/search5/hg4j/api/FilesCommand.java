@@ -88,6 +88,34 @@ public class FilesCommand {
     }
 
     private String fileset;
+    private final FileSelection selection = new FileSelection();
+
+    /**
+     * The files to list, given as {@code hg files [OPTION]... [FILE]...} takes them: patterns ({@code relpath} by default),
+     * {@code kind:pattern} and {@code set:EXPRESSION}.
+     */
+    public FilesCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg files -I}: only the files matching these patterns (globs by default). */
+    public FilesCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg files -X}: not the files matching these patterns (globs by default). */
+    public FilesCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public FilesCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
 
     public List<String> call() throws IOException {
         List<String> paths;
@@ -112,40 +140,28 @@ public class FilesCommand {
             paths = applyFileset(paths);
         }
 
+        if (!selection.isEmpty()) {
+            io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, revision == null ? null : revision);
+            List<String> kept = new ArrayList<>();
+            for (String path : paths) {
+                if (matcher.matches(path)) {
+                    kept.add(path);
+                }
+            }
+            paths = kept;
+        }
+
         paths.sort(NodeIdUtil.UTF8_STRING_COMPARATOR);
         return paths;
     }
 
     private List<String> applyFileset(List<String> paths) throws IOException {
-        String expression = fileset;
-        // the files stored in LFS at the listed revision; the working copy has none (real hg asks the file's revision
-        // history, which a working file does not have), so lfs() is empty there
-        java.util.Set<String> lfsFiles = new java.util.HashSet<>();
-        if (expression.contains("lfs") && revision != null) {
-            Revlog changelog = repository.getRevlog(new File(repository.getStoreDir(), "00changelog.i"),
-                    new File(repository.getStoreDir(), "00changelog.d"));
-            byte[] node = NodeIdUtil.resolveRevision(changelog, revision);
-            int rev = node == null ? -1 : changelog.findRevision(node);
-            if (rev >= 0) {
-                lfsFiles.addAll(io.github.search5.hg4j.lfs.HgLfsFiles.inManifest(repository, rev).keySet());
-            }
-        }
-        io.github.search5.hg4j.lfs.MiniFileset.Matcher matcher =
-                io.github.search5.hg4j.lfs.MiniFileset.compile(expression, lfsFiles::contains);
-        boolean needsSize = expression.contains("size");
+        io.github.search5.hg4j.fileset.RepositoryFilesetContext ctx =
+                new io.github.search5.hg4j.fileset.RepositoryFilesetContext(repository, revision);
+        io.github.search5.hg4j.match.Matcher matcher = io.github.search5.hg4j.fileset.Fileset.compile(ctx, "", fileset);
         List<String> kept = new ArrayList<>();
         for (String path : paths) {
-            long size = -1;
-            if (needsSize) {
-                if (revision == null) {
-                    File onDisk = new File(repository.getDirectory(), path);
-                    size = onDisk.isFile() ? onDisk.length() : 0;
-                } else {
-                    // the size of the content as of that revision (an LFS file counts by its real content, not its pointer)
-                    size = new CatCommand(repository).setFile(path).setRevision(revision).call().length;
-                }
-            }
-            if (matcher.matches(path, size)) {
+            if (matcher.matches(path)) {
                 kept.add(path);
             }
         }

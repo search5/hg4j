@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-04
-status: 진행 중. 5단계 중 3단계 완료(2026-11-04)
+status: 진행 중. 5단계 중 3단계 완료, 4단계는 4a(읽기 명령) 완료, 4b(변경 명령) 남음(2026-11-04)
 audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전트)
 ---
 
@@ -93,6 +93,11 @@ audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전�
   `annotate`, `log`(파일 인자), `files`(`-I`/`-X` 포함). 각 명령에 `setPatterns(String...)`, `setInclude(String...)`, `setExclude(String...)`.
 - 규칙: 명령마다 원본이 패턴을 해석하는 기준(작업 디렉터리 상대인지 저장소 루트 상대인지, `hg add`의 하위 저장소 처리 등)을 원본 코드로 확인한 뒤 적용한다.
 - 이 단계 완료 기준: 명령별 대조 테스트(명령 14개 x 시나리오 4개 이상).
+- **4a 완료 (2026-11-04): 읽기 명령 5개.** `FileSelection`(`api` 패키지: 패턴 / `-I` / `-X` / cwd)과 `FilesCommand`, `StatusCommand`, `DiffCommand`, `LogCommand`,
+  `CatCommand#callAll`에 `setPatterns`/`setInclude`/`setExclude`/`setCwd`를 추가했다(옛 `setPattern`/`setTreeFilter`는 그대로). `FilesCommand#setFileset`은 새 엔진으로 교체했고
+  `MiniFileset`을 쓰지 않는다. 대조 `FileSelectionCommandsParityInteropTest` 5개: 패턴 22종 x 인자/`-I`/`-X`(+조합) x 루트/`src` 디렉터리 x 명령 5개(files는 리비전과 작업 디렉터리).
+  `hg cat`은 FILE 인자가 없으면 `invalid arguments`로 거절한다(`-I`만으로는 안 된다).
+- **4b 남음: 변경 명령** `add`, `remove`, `forget`, `revert`, `commit`(그리고 `annotate`, `archive`, `grep`, `locate`). 존재하지 않는 파일 경고, 부분 커밋 등 명령별 규칙이 있어 별도 단계로 한다.
 
 ### Phase 5: 마무리
 - `MiniFileset`을 제거하고 호출부를 새 엔진으로 일원화. 위키 갱신(`modules/`, `index.md`, 이 계획서의 상태, 백로그 문서, `log.md`).

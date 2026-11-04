@@ -796,3 +796,9 @@ hg 소스를 읽어 하나씩 대조했다. 고친 것: `FetchCommand.applyBundl
 - 남은 이전: backout, rebase, strip, shelve, status. 그 뒤 `undo.dirstate`(rollback)가 v2 데이터 파일과 맞는지 점검.
 - 4단계 마무리: backout, strip(부모 갱신), rebase(병합, clean update, 부모 갱신), unshelve를 이전. performShelve를 컨텍스트로 감싸면 보관용 임시 커밋의 부모가 dirstate에 남아 unshelve가 실패해(원본도 shelve 자체 컨텍스트 없음) 감싸지 않았다. `rollback`의 undo.dirstate 복원은 덧붙이기와 맞는다: 옛 docket이 가리키는 길이까지는 데이터 파일이 그대로이고, 새 파일로 바뀐 경우에는 `undo.backup.dirstate.data`로 복원한다. `HgRepositoryCoverageTest`의 자동 복구 2건과 `RebaseCommandCoverageTest` 1건이 옛 동작을 고정하고 있어 원본 동작으로 고쳤다.
 - 전체 단위 테스트 통과(EXIT=0). 매트릭스에 "할 일"로 남은 항목 없음(rebase 기본 목적지 표기는 이미 구현된 것을 갱신).
+
+## 2026-11-05 전체 interop 실패 정리와 실제 hg 경쟁 테스트
+
+- 전체 실행에서 나온 실패 7건 중 코드 결함 3건을 고침: 번들 적용 뒤 sidedata 재작성이 cg5의 복사 정보를 덮어씀(번들에 sidedata가 있으면 재작성 생략), unshelve가 리베이스 결과 리비전을 남김(원본 strip 뒤에도 결과를 지움)과 abort가 `.hg/rebasestate`·merge 상태를 정리하지 않음, LFS 저장소의 strip이 cg1 임시 번들로 플래그를 잃음(cg3 사용).
+- 테스트가 옛 동작을 고정한 3건은 실제 hg로 확인하고 고침: unshelve --abort 뒤 `.orig` 잔류, sign은 `.hgsigs`만 커밋, store_shape 빈 이름은 응답 없음.
+- `lib/RealHgLockContentionInteropTest` 추가: 실제 hg와 hg4j가 동시에 쓰는 3가지 시나리오를 잠금을 켠 채(손상 없음)와 hg4j 잠금을 끈 채(손상이 드러남, `HgLock.disabledForTests`)로 각각 실행한다.

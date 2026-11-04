@@ -22,6 +22,13 @@ public class HgLock implements AutoCloseable {
 
     static boolean forceFallback = false;
 
+    /**
+     * For tests only: while set, a lock takes nothing and releases nothing (its {@code onClosed} callback still runs). Contention tests
+     * use it to show that a scenario really needs the locks: it must fail with this set and pass without it.
+     */
+    static volatile boolean disabledForTests = false;
+    private boolean disabled = false;
+
     private static class LockInfo {
         final Thread thread;
         int count;
@@ -102,6 +109,10 @@ public class HgLock implements AutoCloseable {
         this.lockFile = lockFile;
         this.timeoutMs = timeoutMs;
         this.allowReentrant = allowReentrant;
+        if (disabledForTests) {
+            disabled = true;
+            return;
+        }
         acquire();
     }
 
@@ -300,6 +311,9 @@ public class HgLock implements AutoCloseable {
     @Override
     public void close() throws IOException {
         boolean alreadyClosed = closed;
+        if (disabled) {
+            closed = true;
+        }
         try {
             release();
         } finally {
@@ -312,7 +326,7 @@ public class HgLock implements AutoCloseable {
     }
 
     private void release() throws IOException {
-        if (lockFile == null) {
+        if (lockFile == null || disabled) {
             return;
         }
         String absPath = lockFile.getAbsolutePath();

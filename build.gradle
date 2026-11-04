@@ -121,6 +121,8 @@ test {
 // 이 태스크로만 돈다 -- 매트릭스가 커지면서 기본 테스트 루프가 계속 느려지는 문제를
 // 해결하기 위해 2026-09-04 분리(사용자 지시). `./gradlew interopTest`로 명시적으로 실행.
 tasks.register('interopTest', Test) {
+    // `-PignoreTestFailures`: a full run still produces the JaCoCo report and verification when some test fails (the failures are read from the reports)
+    ignoreFailures = project.hasProperty('ignoreTestFailures')
     group = 'verification'
     description = 'Runs real hg CLI / Docker 기반 interop 테스트만(@Tag("interop")). 느리고 hg/Docker 설치가 필요함.'
     useJUnitPlatform {

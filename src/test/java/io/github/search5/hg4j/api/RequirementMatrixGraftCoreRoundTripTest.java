@@ -320,9 +320,8 @@ public class RequirementMatrixGraftCoreRoundTripTest {
         // needs no write permission on the file itself -- can fully self-heal in-process). Finish
         // the job the same way a real restarted process would.
         if (new File(repo.getStoreDir(), "journal").exists()) {
-            try (HgLock lock = repo.lockStore()) {
-                // acquiring the lock alone triggers checkAndPerformAutoRollback()
-            }
+            // like real hg, taking the lock refuses to go on over an abandoned transaction; `hg recover` finishes the job
+            new RecoverCommand(repo).call();
         }
 
         // The companion files a v2 changelog actually grows into must be back to their pre-graft
@@ -419,9 +418,9 @@ public class RequirementMatrixGraftCoreRoundTripTest {
         // own post-success cleanup would have left behind.
         File journalFile = new File(storeDir, "journal");
         Files.deleteIfExists(journalFile.toPath());
-        appendJournalLine(journalFile, "dirstate");
-        File dirstateBackupFile = new File(repoDir, ".hg/dirstate.backup");
-        Files.write(dirstateBackupFile.toPath(), dirstateBackup);
+        // The dirstate is written after the transaction is closed (a post-finalize file generator in the original), so a crash while
+        // the journal still exists leaves the dirstate on the pre-graft parent: put that state back.
+        Files.write(new File(repoDir, ".hg/dirstate").toPath(), dirstateBackup);
         writeRestoreJournalLines(journalFile, storeDir, clIdx, clDat, clSnap);
         writeRestoreJournalLines(journalFile, storeDir, mfIdx, mfDat, mfSnap);
         writeRestoreJournalLines(journalFile, storeDir, flIdx, flDat, flSnap);
@@ -429,9 +428,8 @@ public class RequirementMatrixGraftCoreRoundTripTest {
         // 4. Trigger crash recovery on a fresh repository handle, exactly as a real re-opened
         // process would (HgRepository#lockStore() calls checkAndPerformAutoRollback() first).
         HgRepository crashedRepo = new HgRepository(repoDir);
-        try (HgLock lock = crashedRepo.lockStore()) {
-            // acquiring the lock alone triggers checkAndPerformAutoRollback()
-        }
+        assertThrows(io.github.search5.hg4j.errors.HgAbandonedTransactionException.class, crashedRepo::lockStore);
+        new RecoverCommand(crashedRepo).call();
         assertFalse(journalFile.exists(), "journal must be consumed after a successful crash recovery for combo " + combo);
 
         // 5. real hg must see exactly the pre-graft commit set -- NOT the phantom grafted

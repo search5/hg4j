@@ -139,17 +139,15 @@ public final class RequirementMatrixRecoverHelperMain {
 
         File journalFile = new File(storeDir, "journal");
         Files.deleteIfExists(journalFile.toPath());
-        appendJournalLine(journalFile, "dirstate");
-        File dirstateBackupFile = new File(repoDir, ".hg/dirstate.backup");
-        Files.write(dirstateBackupFile.toPath(), dirstateBackup);
-        // dirstate-v2's own companion data file -- see HgRepository#checkAndPerformAutoRollback's
-        // matching "dirstate" branch javadoc / CommitCommand#recordRevlogRollbackState's
-        // adjacent comment for the full story (found live 2026-09-05 via this exact scenario:
-        // Dirstate.write()'s "W-LEAK" cleanup deletes the previous uid's data file the moment c1
-        // durably writes its own new docket, so restoring dirstateBackup's docket bytes alone
-        // would point at a data file that no longer exists).
-        if (dirstateV2DataBackup != null) {
-            Files.write(new File(repoDir, ".hg/dirstateV2.backup.data").toPath(), dirstateV2DataBackup);
+        // The dirstate is written after the transaction is closed, so a crash while the journal still exists leaves the pre-commit dirstate:
+        // put it back, with the data file of a dirstate-v2 docket if the commit replaced it.
+        Files.write(new File(repoDir, ".hg/dirstate").toPath(), dirstateBackup);
+        if (dirstateV2DataBackup != null && dirstateBackup.length > 125) {
+            String uid = new String(dirstateBackup, 125, dirstateBackup[124] & 0xFF, StandardCharsets.US_ASCII);
+            File dataFile = new File(repoDir, ".hg/dirstate." + uid);
+            if (!dataFile.exists()) {
+                Files.write(dataFile.toPath(), dirstateV2DataBackup);
+            }
         }
         writeRestoreJournalLines(journalFile, storeDir, clIdx, clDat, clSnap);
         writeRestoreJournalLines(journalFile, storeDir, mfIdx, mfDat, mfSnap);

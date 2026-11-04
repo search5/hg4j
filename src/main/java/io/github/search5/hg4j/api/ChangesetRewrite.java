@@ -229,11 +229,16 @@ final class ChangesetRewrite {
 
     /** Appends {@code entry} as a new changeset with the given parents and returns its node. */
     static byte[] append(Revlog changelog, Entry entry, byte[] p1Node, byte[] p2Node) throws IOException {
+        return append(changelog, entry, p1Node, p2Node, null);
+    }
+
+    /** Like {@link #append(Revlog, Entry, byte[], byte[])}, with the serialized sidedata a changelog-v2 repository keeps for the changeset. */
+    static byte[] append(Revlog changelog, Entry entry, byte[] p1Node, byte[] p2Node, byte[] sidedata) throws IOException {
         byte[] n1 = p1Node == null ? new byte[20] : p1Node;
         byte[] n2 = p2Node == null ? new byte[20] : p2Node;
         int p1 = NodeIdUtil.isAllZero(n1) ? -1 : changelog.findRevision(n1);
         int p2 = NodeIdUtil.isAllZero(n2) ? -1 : changelog.findRevision(n2);
-        return changelog.appendRevision(entry.toBytes(), (Map<String, String>) null, p1, p2, n1, n2, changelog.getRevisionCount());
+        return changelog.appendRevision(entry.toBytes(), (Map<String, String>) null, p1, p2, n1, n2, changelog.getRevisionCount(), sidedata);
     }
 
     // ------------------------------------------------------------------ cmdutil.cleanup_nodes

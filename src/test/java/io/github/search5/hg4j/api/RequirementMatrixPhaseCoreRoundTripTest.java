@@ -186,9 +186,11 @@ public class RequirementMatrixPhaseCoreRoundTripTest {
         byte[] beforeA = Files.readAllBytes(phaseRootsFile(repoA).toPath());
         byte[] beforeB = Files.readAllBytes(phaseRootsFile(repoB).toPath());
 
-        IOException ex = assertThrows(IOException.class,
-                () -> new PhaseCommand(new HgRepository(repoA)).setRevision("0").setPhase(2).call());
-        assertTrue(ex.getMessage().toLowerCase().contains("force"), "combo " + combo + ": " + ex.getMessage());
+        // like the original command, a refused move is reported (message, exit status 1) and not thrown
+        PhaseCommand refused = new PhaseCommand(new HgRepository(repoA)).setRevision("0").setPhase(2);
+        refused.call();
+        assertEquals(1, refused.getExitCode(), "combo " + combo + ": the move must be refused");
+        assertTrue(String.join("", refused.getMessages()).toLowerCase().contains("force"), "combo " + combo + ": " + refused.getMessages());
 
         boolean nativeRejected = false;
         try {

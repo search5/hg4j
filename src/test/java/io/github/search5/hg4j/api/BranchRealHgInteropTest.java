@@ -205,7 +205,8 @@ public class BranchRealHgInteropTest {
         byte[] c1a = new CommitCommand(repo).setAuthor("T").setMessage("c1a-feature").call();
 
         setParentTo(repo, c0);
-        new BranchCommand(repo).setBranchName("feature").call();
+        // real hg refuses to reuse a branch name that lives on another line of history unless forced (`hg branch -f`)
+        new BranchCommand(repo).setBranchName("feature").setForce(true).call();
         Files.writeString(new File(repoDir, "c.txt").toPath(), "2");
         new AddCommand(repo).call();
         byte[] c1b = new CommitCommand(repo).setAuthor("T").setMessage("c1b-feature-fork").call();

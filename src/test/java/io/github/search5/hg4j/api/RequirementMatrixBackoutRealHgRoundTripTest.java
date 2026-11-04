@@ -202,7 +202,6 @@ public class RequirementMatrixBackoutRealHgRoundTripTest {
 
             String desc = LocalHg.hgIn(workDir, repoRelPath, "log", "-r", backoutHex, "--template", "{desc}");
             assertEquals("Backed out changeset " + c1Hex.substring(0, 12), desc);
-
             assertEquals("", LocalHg.hgIn(workDir, repoRelPath, "status"),
                     "working copy must be clean right after the backout commit for combo " + combo);
         });
@@ -249,8 +248,9 @@ public class RequirementMatrixBackoutRealHgRoundTripTest {
 
             assertEquals("", LocalHg.hgIn(workDir, repoRelPath, "resolve", "--list"),
                     "no unresolved/resolved entries should remain once the backout is committed for combo " + combo);
-            assertEquals("", LocalHg.hgIn(workDir, repoRelPath, "status"),
-                    "working copy must be clean right after the backout commit for combo " + combo);
+            // real hg leaves the `.orig` backup of the conflicted merge (verified with hg 7.2.4)
+            assertEquals("? conflict.txt.orig", LocalHg.hgIn(workDir, repoRelPath, "status"),
+                    "only the merge backup may be left after the backout commit for combo " + combo);
         });
     }
 }

@@ -828,6 +828,7 @@ public class FetchCommand {
                 appendToJournal(journalFile, "store/00manifest.d\t" + mfDatLen);
 
                 Revlog changelog = repository.getRevlog(clIdx, clDat);
+                final int firstImportedRev = changelog.getRevisionCount();
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                     int rev = changelog.getRevisionCount();
                     changelog.appendChangeGroupEntry(entry, rev);
@@ -940,6 +941,11 @@ public class FetchCommand {
                         // commit path, and GcCommand's own fncache rebuild for the same convention).
                         fncachePaths.add(rawPath + ".d");
                     }
+                }
+
+                // a repository that keeps changed-files sidedata for its changesets needs it for the ones that just arrived
+                if (repository.isSidedataCopies() && !bundle.changelogEntries.isEmpty()) {
+                    ChangesetSidedata.rewriteTail(repository, changelog, firstImportedRev);
                 }
 
                 if (!fncachePaths.isEmpty()) {

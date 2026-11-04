@@ -241,10 +241,15 @@ public final class GraftInMemory {
         Map<String, String> targetManifest = new TreeMap<>(manifest);
         int linkrev = changelog.getRevisionCount();
         List<String> files = new ArrayList<>();
+        // the files the changeset adds, removes and touches, which a repository with changeset sidedata stores next to the changelog entry
+        java.util.Set<String> sdAdded = new java.util.LinkedHashSet<>();
+        java.util.Set<String> sdRemoved = new java.util.LinkedHashSet<>();
+        java.util.Set<String> sdTouched = new java.util.LinkedHashSet<>();
 
         for (String path : merged.getRemovedFiles()) {
             if (manifest.remove(path) != null) {
                 files.add(path);
+                sdRemoved.add(path);
             }
         }
         for (Map.Entry<String, byte[]> e : merged.getChangedFiles().entrySet()) {
@@ -265,6 +270,7 @@ public final class GraftInMemory {
             if (!entry.equals(old)) {
                 manifest.put(path, entry);
                 files.add(path);
+                (old == null ? sdAdded : sdTouched).add(path);
             }
         }
 
@@ -317,7 +323,15 @@ public final class GraftInMemory {
         if (changelog.findRevision(existing) >= 0) {
             return existing;
         }
-        byte[] node = node20(ChangesetRewrite.append(changelog, entry, target, secondParent));
+        byte[] sidedata = null;
+        if (repository.isSidedataCopies()) {
+            byte[] sdFiles = ChangingFiles.encode(sdAdded, sdRemoved, java.util.Set.of(), java.util.Set.of(), sdTouched, Map.of(), Map.of());
+            if (sdFiles.length > 0) {
+                sidedata = io.github.search5.hg4j.storage.SidedataCodec.serialize(
+                        Map.of(io.github.search5.hg4j.storage.SidedataCodec.SD_FILES, sdFiles));
+            }
+        }
+        byte[] node = node20(ChangesetRewrite.append(changelog, entry, target, secondParent, sidedata));
 
         // phases.registernew: a new changeset is draft unless its parent is already secret/draft
         PhaseRoots phaseRoots = repository.getPhaseRoots();

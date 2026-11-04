@@ -27,6 +27,11 @@ public final class RequirementMatrixPhaseHelperMain {
         boolean force = Boolean.parseBoolean(args[3]);
 
         HgRepository repo = new HgRepository(repoDir);
-        new PhaseCommand(repo).setRevision(revision).setPhase(targetPhase).setForce(force).call();
+        // a refused move is not an exception (as in the original): the exit status says so, like the CLI's
+        PhaseCommand phase = new PhaseCommand(repo).setRevision(revision).setPhase(targetPhase).setForce(force);
+        phase.call();
+        if (phase.getExitCode() != 0) {
+            System.exit(phase.getExitCode());
+        }
     }
 }

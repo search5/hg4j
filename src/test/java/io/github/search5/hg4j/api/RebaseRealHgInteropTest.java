@@ -254,8 +254,9 @@ public class RebaseRealHgInteropTest {
         String resolveList = HgTestUtils.hg(repoDir, "resolve", "--list");
         assertEquals("", resolveList.trim(), "no unresolved files must remain after abort");
 
+        // real hg leaves the `.orig` backup that the conflicted merge wrote (verified with hg 7.2.4: `? f.txt.orig` after `rebase --abort`)
         String status = HgTestUtils.hg(repoDir, "status");
-        assertEquals("", status.trim(), "working copy must be clean after abort");
+        assertEquals("? f.txt.orig", status.trim(), "only the merge backup may remain after abort, exactly as real hg");
 
         // A second abort() (or continueRebase()) with nothing in progress must fail closed, same
         // as real hg's own "abort: no rebase in progress".
@@ -319,11 +320,12 @@ public class RebaseRealHgInteropTest {
         String resolveList = HgTestUtils.hg(repoDir, "resolve", "--list");
         assertEquals("", resolveList.trim(), "no unresolved files must remain once the rebase completes");
 
-        // Same evolution-only contract as the non-conflicting case: source is hidden, not gone.
-        String hiddenLog = hgEvolution(repoDir, "log", "--hidden", "-r", sourceNode, "--template", "{node}");
-        assertEquals(sourceNode, hiddenLog);
+        // Without evolution enabled the original is stripped, as in real hg: neither a plain nor a --hidden log finds it.
         String plainLog = hgEvolution(repoDir, "log", "--template", "{node} ");
-        assertFalse(plainLog.contains(sourceNode), "hidden revision must not appear in a plain `hg log`");
+        assertFalse(plainLog.contains(sourceNode), "the original must be gone after the rebase");
+        AssertionError unknown = assertThrows(AssertionError.class,
+                () -> hgEvolution(repoDir, "log", "--hidden", "-r", sourceNode, "--template", "{node}"));
+        assertTrue(unknown.getMessage().contains("unknown revision"), "the original is not kept hidden: it is stripped");
 
         // Nothing left in progress.
         assertThrows(HgValidationException.class, () -> new RebaseCommand(repo).continueRebase());
@@ -389,31 +391,12 @@ public class RebaseRealHgInteropTest {
                 .setTarget(NodeIdUtil.fromHex(targetNode))
                 .call();
 
-        // 실제 hg debugobsolete로 원문 마커 확인 -- predecessor/successor hex가 그대로 보여야 함
-        // (HgObsolescenceRealHgInteropTest가 이미 증명한 "hg4j가 쓴 obsstore를 real hg가 파싱
-        // 가능"의 연장선).
+        // Without `experimental.evolution` real hg strips the rebased originals and writes no obsolescence marker.
         String debugObsolete = hgEvolution(repoDir, "debugobsolete");
-        assertTrue(debugObsolete.contains(sourceNode), "marker의 predecessor에 원본 노드가 있어야 함:\n" + debugObsolete);
-
-        // Evolution-only rebase (2026-09-04): the original node is fully readable, so real hg's
-        // `hg log --hidden -r <node>` finds it (no "unknown revision") and reports the exact same
-        // node -- this is the direct fix for this test's original documented bug.
-        String hiddenLog = hgEvolution(repoDir, "log", "--hidden", "-r", sourceNode, "--template", "{node}");
-        assertEquals(sourceNode, hiddenLog,
-                "the original revision must be found and fully readable via `hg log --hidden`, not \"unknown revision\"");
-
-        // Its content, message and parentage must still be exactly what they always were.
-        String hiddenDesc = hgEvolution(repoDir, "log", "--hidden", "-r", sourceNode, "--template", "{desc}");
-        assertEquals("c2 source", hiddenDesc);
-        String hiddenCat = hgEvolution(repoDir, "cat", "--hidden", "-r", sourceNode, "source.txt");
-        assertEquals("on-source", hiddenCat.trim());
-
-        // But it must NOT show up in a plain `hg log`/`hg log -G` (no --hidden): a revision with a
-        // live, non-obsolete successor is hidden by default, exactly like real hg's own
-        // evolution-based rebase.
+        assertFalse(debugObsolete.contains(sourceNode), "no marker is written when evolution is off:\n" + debugObsolete);
         String plainLog = hgEvolution(repoDir, "log", "--template", "{node} ");
-        assertFalse(plainLog.contains(sourceNode), "hidden revision must not appear in a plain `hg log`");
+        assertFalse(plainLog.contains(sourceNode), "the original must be gone from a plain `hg log`");
         String plainLogGraph = hgEvolution(repoDir, "log", "-G", "--template", "{node} ");
-        assertFalse(plainLogGraph.contains(sourceNode), "hidden revision must not appear in a plain `hg log -G`");
+        assertFalse(plainLogGraph.contains(sourceNode), "the original must be gone from a plain `hg log -G`");
     }
 }

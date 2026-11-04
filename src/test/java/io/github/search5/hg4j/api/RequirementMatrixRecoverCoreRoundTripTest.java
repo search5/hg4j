@@ -219,9 +219,8 @@ public class RequirementMatrixRecoverCoreRoundTripTest {
         // journal cleanup would have left behind.
         File journalFile = new File(storeDir, "journal");
         Files.deleteIfExists(journalFile.toPath());
-        appendJournalLine(journalFile, "dirstate");
-        File dirstateBackupFile = new File(repoDir, ".hg/dirstate.backup");
-        Files.write(dirstateBackupFile.toPath(), dirstateBackup);
+        // the dirstate is written after the transaction is closed: a crash while the journal exists leaves the pre-commit dirstate
+        Files.write(dirstateFile.toPath(), dirstateBackup);
         writeRestoreJournalLines(journalFile, storeDir, clIdx, clDat, clSnap);
         writeRestoreJournalLines(journalFile, storeDir, mfIdx, mfDat, mfSnap);
         if (dlIdx.exists() || dlSnap.idxLen() > 0) {

@@ -717,3 +717,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-04] 파일셋 계획 2단계 완료: 언어와 평가 틀
 `io.github.search5.hg4j.fileset`(`FilesetLanguage`, `Fileset`, `Difflib`, `FilesetContext`, `RepositoryFilesetContext`, `FilesetParseException`). 파서·분석(상태 힌트)·최적화가 `hg debugfileset --show-stage`와 글자 단위로 같고, 거절 문구와 위치, 평가 시 오류와 `did you mean` 힌트가 같다. 대조 테스트 4개(식 약 140개), 단위 테스트 6개. 술어 24종의 구현은 3단계.
 검증: 일반 test 2223개 통과.
+
+## [2026-11-04] 파일셋 계획 3단계 완료: 술어 24종
+`Predicates`(modified, added, removed, deleted, missing, unknown, ignored, clean, tracked, binary, exec, symlink, resolved, unresolved, hgignore, portable, grep, size, encoding, eol, copied, revs, status, subrepo + lfs), 확장된 `FilesetContext`/`RepositoryFilesetContext`(작업 디렉터리의 8가지 상태 분류, 리비전 지정, ignore, 머지 상태). 실제 hg와의 대조 4개 통과. 알려진 한계는 [[implementation-plan-fileset]] 참조.
+검증: 일반 test 2226개 통과.

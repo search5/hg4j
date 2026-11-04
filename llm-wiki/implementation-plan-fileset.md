@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-04
-status: 진행 중. 5단계 중 2단계 완료(2026-11-04)
+status: 진행 중. 5단계 중 3단계 완료(2026-11-04)
 audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전트)
 ---
 
@@ -79,6 +79,14 @@ audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전�
 - `lfs()`는 이미 구현되어 있으므로 새 엔진 위로 옮긴다.
 - 대조: 술어마다 리비전 4개 + 작업 사본에서 실제 hg `hg files "set:..."`와 결과 집합 비교(술어 24종 x 문맥 5개 이상, 인자 변형 포함).
 - 이 단계 완료 기준: 위 대조 전부 통과, `lfs.track`/`.hglfs` 기존 테스트(`LfsTrackRealHgInteropTest` 등)가 새 엔진으로도 통과.
+- **술어 구현 완료 (2026-11-04), `lfs.track`/`.hglfs`의 새 엔진 이관은 5단계로 미룬다.** `Predicates`(24종 + `lfs`), `RepositoryFilesetContext`(작업 디렉터리·리비전·널
+  문맥: 플래그, 내용, 크기, 복사 원본, 상태, ignore, 머지 상태, 서브저장소, 리비전 지정), `Sizes`, `PythonRegex`(`grep()` 오류 문구).
+  대조 `FilesetPredicateParityInteropTest` 4개: 식 약 80개 x 리비전 2개와 작업 디렉터리(수정·추가·삭제·누락·미추적·무시·깨끗함이 섞인 상태), 인자 오류 약 50종,
+  머지 상태(`resolved`/`unresolved`). 변이(deleted를 removed로)에서 실패함을 확인. 단위 `PredicatesTest` 3개.
+- **알려진 한계:** (1) 리비전 지정(`revs()`, `status()`의 인자)은 번호·해시·`.`·`tip`·이름·`a:b` 범위·`HgRevsetEngine`이 이해하는 식만 읽는다. 전체 리비전셋 언어는 hg4j에 없다.
+  (2) `grep()`의 정규식 오류 문구는 파이썬이 쓰는 흔한 오류(괄호·집합 미닫힘, 반복할 것 없음, 잘못된 이스케이프)만 같다. (3) 작업 디렉터리의 `deleted`/`removed`/`unknown`/`ignored`는
+  `StatusCommand` 결과를 다시 분류해 만든다(`StatusCommand` 자체는 삭제된 파일을 removed로 합쳐 보고한다. 4단계에서 정리 대상).
+  (4) `hgignore()`는 새 매처로 `.hgignore`를 읽지만 `HgRepository`의 기존 무시 처리는 따로 있다(4단계에서 일원화).
 
 ### Phase 4: 명령 연결
 - `set:EXPR`과 패턴 종류를 받도록 만든다: `status`, `cat`, `diff`, `commit`, `add`, `remove`, `forget`, `revert`, `locate`, `grep`, `archive`,

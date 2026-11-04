@@ -121,7 +121,7 @@ status: 번호 매겨진 백로그 1~47번 전부 완료(25번은 오탐으로 �
 | 45 | CommitCommand가 treemanifest manifest를 fncache 미등록(43번 작업 중 발견) | ✅ | [[backlog/revlog-storage-formats]] |
 | 46 | HgHttpWireServer가 com.sun.net.httpserver.HttpHandler 대신 jakarta.servlet.http.HttpServlet 사용하도록 마이그레이션 | ✅ | [[backlog/wire-protocol-negotiation]] |
 | 47 | RevlogIndex.checkAndUpdate()가 로컬 커밋 이력 있는 장수 서버 핸들에서 외부 변경을 영원히 못 봄(46번 검증 중 발견, 백로그 24번 재발) | ✅ | [[backlog/wire-protocol-negotiation]] |
-| 48 | 일반 파일셋 엔진과 패턴 매처(`set:`, 술어 24종, `-I`/`-X`, 패턴 종류) — 사용자 지시로 구현(2026-11-04), 계획서 [[implementation-plan-fileset]] | ⏳ 진행 중(2/5) | [[backlog/fileset-and-matcher]] |
+| 48 | 일반 파일셋 엔진과 패턴 매처(`set:`, 술어 24종, `-I`/`-X`, 패턴 종류) — 사용자 지시로 구현(2026-11-04), 계획서 [[implementation-plan-fileset]] | ⏳ 진행 중(3/5) | [[backlog/fileset-and-matcher]] |
 | — | 워킹 브랜치 복원 버그 4건 + histedit 저널링 | ✅ | [[backlog/branch-restore-bugs]] |
 
 ## 반복 발견 방지 규칙

@@ -169,6 +169,13 @@ public final class Globs {
         return Pattern.compile(java);
     }
 
+    /** Like {@link #compile} with only {@code \n} as line terminator, as Python's byte patterns have it. */
+    public static Pattern compileUnixLines(String python) {
+        String java = python.replace("(?P<", "(?<").replaceAll("\\(\\?P=(\\w+)\\)", "\\\\k<$1>");
+        java = stripUnknownFlags(java);
+        return Pattern.compile(java, Pattern.UNIX_LINES);
+    }
+
     private static String stripUnknownFlags(String regex) {
         java.util.regex.Matcher m = Pattern.compile("\\(\\?([aiLmsux]+)([:)])").matcher(regex);
         StringBuilder out = new StringBuilder();

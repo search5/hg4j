@@ -30,7 +30,16 @@ public final class Fileset {
     /** The registered predicates (name to implementation); more are added by the predicate classes. */
     private static final Map<String, PredicateImpl> IMPLEMENTATIONS = new LinkedHashMap<>();
 
+    static {
+        Predicates.registerAll();
+    }
+
     private Fileset() {
+    }
+
+    /** Evaluates a parse tree against a match context ({@code fileset.getmatch}). */
+    static Matcher match(MatchContext mctx, Object tree) throws IOException {
+        return getMatch(mctx, tree);
     }
 
     /** Registers the implementation of a predicate whose weight is known to {@link FilesetLanguage}. */
@@ -49,23 +58,44 @@ public final class Fileset {
         Tree tree = FilesetLanguage.parse(expression);
         tree = FilesetLanguage.analyze(tree, symbols);
         tree = FilesetLanguage.optimize(tree, symbols);
-        return getMatch(new MatchContext(ctx, cwd, null, Set.of()), tree);
+        return getMatch(new MatchContext(ctx.p1(), ctx, cwd, null, Set.of()), tree);
     }
 
     // ---------------------------------------------------------------- the evaluation context
 
     /** Mercurial's {@code matchctx}: the context, the current directory and the matcher the subtree is narrowed by. */
     public static final class MatchContext {
+        private final FilesetContext base;
         private final FilesetContext ctx;
         private final String cwd;
         private final Matcher narrowedBy;
         private final Set<String> statusKeys;
+        private FileStatus status;
 
-        MatchContext(FilesetContext ctx, String cwd, Matcher narrowedBy, Set<String> statusKeys) {
+        MatchContext(FilesetContext base, FilesetContext ctx, String cwd, Matcher narrowedBy, Set<String> statusKeys) {
+            this.base = base;
             this.ctx = ctx;
             this.cwd = cwd;
             this.narrowedBy = narrowedBy;
             this.statusKeys = statusKeys;
+        }
+
+        /** The context the status is taken against (the first parent unless a predicate switched it). */
+        public FilesetContext base() {
+            return base;
+        }
+
+        /** {@code matchctx.status()}: the precomputed status of the subtree ({@code withstatus} node). */
+        public FileStatus status() {
+            if (status == null) {
+                throw new IllegalStateException("no status was computed for this part of the expression");
+            }
+            return status;
+        }
+
+        /** {@code matchctx.switch}: the same subtree evaluated for another pair of contexts. */
+        public MatchContext switchTo(FilesetContext newBase, FilesetContext newCtx) {
+            return new MatchContext(newBase, newCtx, cwd, narrowedBy, Set.of());
         }
 
         public FilesetContext ctx() {
@@ -103,11 +133,15 @@ public final class Fileset {
         }
 
         MatchContext narrowed(Matcher match) {
-            return new MatchContext(ctx, cwd, match, statusKeys);
+            MatchContext m = new MatchContext(base, ctx, cwd, match, statusKeys);
+            m.status = status; // a wider status is kept
+            return m;
         }
 
-        MatchContext withStatus(Set<String> keys) {
-            return new MatchContext(ctx, cwd, narrowedBy, keys);
+        MatchContext withStatus(Set<String> keys) throws IOException {
+            MatchContext m = new MatchContext(base, ctx, cwd, narrowedBy, keys);
+            m.status = base.status(ctx, narrowedBy, keys.contains("ignored"), keys.contains("clean"), keys.contains("unknown"));
+            return m;
         }
     }
 

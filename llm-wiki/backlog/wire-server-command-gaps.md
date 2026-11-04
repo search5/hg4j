@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-03
-status: current (B8, B3, B1, B2, B4, B9 수정 완료(높음 4개 모두). 나머지 진행 중 - 아래 표의 상태 열 참고)
+status: completed — 원본 23개 명령 전부 구현, 결함 B1~B11 전부 수정됨(2026-11-04 코드 대조로 표의 "없음" 행을 갱신)
 ---
 
 # 서버 와이어 명령 점검: 원본 Mercurial 대비 누락과 차이
@@ -57,23 +57,25 @@ status: current (B8, B3, B1, B2, B4, B9 수정 완료(높음 4개 모두). 나�
 | between | :253 | 구현(껍데기) | B5 |
 | branchmap | :263 | 구현 | B4 |
 | branches | :276 | 구현 | B6 수정됨 (병합 이력 포함 원본과 바이트 동일) |
-| get_cached_bundle_inline | :286 | 없음 | 클라이언트는 `peer-bundle-cache://` 항목이 있을 때만 호출(`exchange.py:3148`). hg4j 매니페스트에는 없음. 영향 없음 |
+| get_cached_bundle_inline | :286 | 구현 | 클라이언트는 `peer-bundle-cache://` 항목이 있을 때만 호출(`exchange.py:3148`). hg4j 매니페스트에는 없음. 영향 없음 |
 | clonebundles | :339 | 구현 | 매니페스트 없을 때 동일 |
-| clonebundles_manifest | :361 | 없음 | 클라이언트는 서버가 `clonebundles_manifest` capability를 광고할 때만 호출(`wireprotov1peer.py:361`). hg4j는 광고 안 함. 영향 없음 |
-| store_shape | :390 | 없음 | narrow shapes(Rust, experimental) capability 광고 시에만. 영향 없음 |
+| clonebundles_manifest | :361 | 구현 | 클라이언트는 서버가 `clonebundles_manifest` capability를 광고할 때만 호출(`wireprotov1peer.py:361`). hg4j는 광고 안 함. 영향 없음 |
+| store_shape | :390 | 구현 | narrow shapes(Rust, experimental) capability 광고 시에만. 영향 없음 |
 | capabilities / hello | :503 / :708 | 구현 | 아래 capability 비교 |
 | changegroup / changegroupsubset | :509 / :520 | 구현 | 구형 경로. 대조하지 않음 |
 | debugwireargs | :530 | 구현 | 원본과 바이트 동일(`three`/`four` 선택 인자 포함). 광고할 capability는 없음 |
 | getbundle | :609 | 구현 | **B8** |
 | heads | :688 | 구현 | B9 |
-| heads_buckets | :694 | 없음 | `experimental.disco.heads-fingerprints` capability를 광고할 때만(`setdiscovery.py:438`). 영향 없음 |
+| heads_buckets | :694 | 구현 | `experimental.disco.heads-fingerprints` capability를 광고할 때만(`setdiscovery.py:438`). 영향 없음 |
 | listkeys | :739 | 구현(부분) | B2, B3, B4 |
 | lookup | :745 | 구현(부분) | **B1** |
 | known | :758 | 구현 | 동일 |
 | protocaps | :767 | 구현(SSH만) | 원본 서버는 SSH에서 광고하지만(`wireprotoserver.py:455`) 이 소스의 `sshpeer.py`/`wireprotov1peer.py`에는 호출이 없다. hg4j도 SSH capabilities에 `protocaps`를 광고하고 `OK`로 응답한다(값은 저장하지 않음) |
 | pushkey | :774 | 구현 | 기존 테스트가 다룸 |
-| stream_out | :803 | 없음 | 서버가 `stream` capability를 광고할 때만 호출(`streamclone.py:273`). hg4j는 광고 안 함 → 스트리밍 클론이 없을 뿐 clone은 `getbundle`로 동작. 성능 이점만 없음 |
+| stream_out | :803 | 구현 | 서버가 `stream` capability를 광고할 때만 호출(`streamclone.py:273`). hg4j는 광고 안 함 → 스트리밍 클론이 없을 뿐 clone은 `getbundle`로 동작. 성능 이점만 없음 |
 | unbundle | :812 | 구현 | 기존 테스트가 다룸 |
+
+(2026-11-04 정정: 아래 8개 중 5개는 이후 구현되어 `Wire1Commands`/`HgSshWireServer`에 있다: get_cached_bundle_inline, clonebundles_manifest, store_shape, heads_buckets, stream_out. 남은 이름은 구형 전용뿐이며 모두 동작한다.)
 
 즉 "이름이 없는" 8개(branches, get_cached_bundle_inline, clonebundles_manifest, store_shape, debugwireargs, heads_buckets,
 protocaps, stream_out) 중 **실제로 문제가 되는 것은 구형 discovery용 `branches` 하나뿐**이고(B6, 낮음), 나머지는 서버가

@@ -702,3 +702,6 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 알려진 차이: `-B <없는 이름>`처럼 아무것도 push하지 않을 때 원본은 전진한 북마크를 원격에 없는 변경집합을 가리키게(dangling) 옮기는데, hg4j는 옮기지 않는다.
 **secret 비노출**: push는 secret 변경집합을 오류 없이 제외한다(종전엔 `push includes secret commit`으로 중단). `lookup`은 secret을 원본 문구로 거절한다(해시와 접두어는 `filtered revision '<key>' (not in 'served' subset)`, 그 밖은 `unknown revision`), `lookup tip`은 served 뷰의 tip이다. legacy `changegroup`/`changegroupsubset`은 같은 `getBundle` 마스크로 이미 숨겨지며 원시 요청 대조로 확인했다.
 테스트: `BookmarkPushRealHgInteropTest` 16개(로컬 경로와 실제 hg 서버 HTTP, 8시나리오: 일반 push, `-B new/adv/gone/div/same/nothere`, `-B new -B adv`), `SecretServedViewParityInteropTest` 4개(heads, branchmap, known, lookup 8종, listkeys, batch, changegroup, changegroupsubset, push). 옛 동작을 가정한 단위 테스트 6개를 7.2.4 동작에 맞게 고쳤다. 검증: 일반 test 2207개, E2E 36개와 push 관련 interop 8개 클래스 통과.
+
+## [2026-11-04] 문서 상태 정정
+`backlog/wire-server-command-gaps.md`(원본 23개 명령 전부 구현, B1~B11 전부 수정됨)와 `index.md`(스펙 백로그 45번 완료)가 낡은 "미착수/없음" 표기를 담고 있어 코드 대조(`Wire1Commands`, `StreamClone`, `HeadsBuckets` 등)로 바로잡았다. 완성도 보고에서 이 낡은 표기를 그대로 인용한 실수가 있었다.

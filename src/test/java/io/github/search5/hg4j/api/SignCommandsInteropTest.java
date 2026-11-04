@@ -137,13 +137,12 @@ public class SignCommandsInteropTest {
     }
 
     @Test
-    @DisplayName("다른 파일에 커밋되지 않은 변경이 있으면 .hgsigs 를 만들기 전에 거부한다")
-    void sign_refusesBeforeWriting_whenOtherFilesAreDirty() throws Exception {
+    @DisplayName("다른 파일에 커밋되지 않은 변경이 있어도 원본처럼 .hgsigs 만 커밋하고 나머지는 그대로 둔다")
+    void sign_commitsOnlyHgsigs_whenOtherFilesAreDirty() throws Exception {
         Files.writeString(repoDir.resolve("a.txt"), "changed\n");
-        HgValidationException ex = assertThrows(HgValidationException.class, () -> sign().call());
-        assertTrue(ex.getMessage().contains("a.txt"), ex.getMessage());
-        assertFalse(Files.exists(repoDir.resolve(".hgsigs")), "nothing was written");
-        assertEquals("M a.txt", LocalHg.hgIn(tmp, "repo", "status"), "working copy untouched");
+        sign().call();
+        assertEquals("M a.txt", LocalHg.hgIn(tmp, "repo", "status"), "other changes stay uncommitted");
+        assertEquals(".hgsigs", LocalHg.hgIn(tmp, "repo", "log", "-r", "tip", "--template", "{files}"));
     }
 
     @Test

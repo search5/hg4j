@@ -1011,7 +1011,7 @@ public class ShelveCommand {
             UnshelveState state = readUnshelveState();
             try (HgLock storeLock = repository.lockStore()) {
 
-                File rebaseStateFile = new File(repository.getHgDir(), "rebasestate-hg4j");
+                File rebaseStateFile = RebaseState.file(repository);
                 if (rebaseStateFile.exists()) {
                     new RebaseCommand(repository).abort();
                 }
@@ -1026,6 +1026,7 @@ public class ShelveCommand {
                 }
 
                 checkoutFullClean(state.originalWdParent);
+                RebaseCommand.cleanMergeDir(repository); // the merge state of the conflicting step goes (`mergestatemod.mergestate.clean`)
                 deleteUnshelveStateFile();
             }
         }
@@ -1089,11 +1090,10 @@ public class ShelveCommand {
         // them inside a single transaction it then aborts -- mercurial/shelve.py
         // _finishunshelve -> _aborttransaction -- which physically erases them; this truncation-
         // based strip achieves the same end state).
+        // (a rebase without evolution already stripped the original restore commit, so the rebased result is what remains)
         int tempRev = cl.findRevision(tempCommitNode);
-        if (tempRev != -1) {
-            stripRevisionsFrom(tempRev);
-            repository.clearRevlogCache();
-        }
+        stripRevisionsFrom(tempRev != -1 ? Math.min(tempRev, finalRev) : finalRev);
+        repository.clearRevlogCache();
 
         checkoutFullClean(originalWdParent);
         Dirstate dirstate = repository.getDirstate();

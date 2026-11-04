@@ -296,7 +296,7 @@ public class ShelveRealHgInteropTest {
         // No trace of the shelve/unshelve scaffolding remains, and no extra revisions were left
         // behind.
         assertFalse(new File(repo.getHgDir(), "shelved/default.state").exists());
-        assertFalse(new File(repo.getHgDir(), "rebasestate-hg4j").exists());
+        assertFalse(new File(repo.getHgDir(), "rebasestate").exists());
         assertFalse(new File(repo.getHgDir(), "shelvedstate-hg4j").exists());
         assertEquals("1 0", HgTestUtils.hg(repoDir, "log", "--template", "{rev} ").trim());
     }
@@ -336,13 +336,14 @@ public class ShelveRealHgInteropTest {
         // state.
         assertEquals("line1-intervening\n", Files.readString(f.toPath()));
         assertEquals(NodeIdUtil.toHex(interveningCommit), NodeIdUtil.toHex(repo.getDirstate().getParent1()));
-        assertEquals("", HgTestUtils.hg(repoDir, "status").trim());
+        // real hg leaves the conflicting file's .orig behind after --abort (confirmed with hg 7.2)
+        assertEquals("? f.txt.orig", HgTestUtils.hg(repoDir, "status").trim());
         assertEquals("", HgTestUtils.hg(repoDir, "resolve", "--list").trim());
 
         // The shelve itself must remain untouched/usable, unlike a completed unshelve.
         assertTrue(new File(repo.getHgDir(), "shelved/default.state").exists());
         assertTrue(new File(repo.getHgDir(), "shelved/default.hg").exists());
-        assertFalse(new File(repo.getHgDir(), "rebasestate-hg4j").exists());
+        assertFalse(new File(repo.getHgDir(), "rebasestate").exists());
         assertFalse(new File(repo.getHgDir(), "shelvedstate-hg4j").exists());
 
         // No extra revisions left behind either.

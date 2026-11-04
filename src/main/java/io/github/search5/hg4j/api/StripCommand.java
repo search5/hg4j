@@ -374,7 +374,10 @@ public class StripCommand {
                     }
                 }
                 try (io.github.search5.hg4j.transport.HgLocalClient client = new io.github.search5.hg4j.transport.HgLocalClient(repository)) {
-                    savedBundle = client.getBundle(common, heads, null);
+                    // a repository with LFS revisions needs the flags of its revisions kept: only changegroup version 03 carries them
+                    savedBundle = client.getBundle(common, heads, io.github.search5.hg4j.lfs.HgLfsConfig.requiresLfs(repository)
+                            ? java.util.List.of("HG20", io.github.search5.hg4j.bundle.Bundle2Parser.buildBundle2CapsToken("01,02,03"))
+                            : null);
                 }
                 io.github.search5.hg4j.phase.PhaseRoots phases = repository.getPhaseRoots();
                 for (int r : savedRevs) {
@@ -511,9 +514,16 @@ public class StripCommand {
                 // second transaction "strip": what was kept above the cut is added again
                 if (savedBundle != null) {
                     repository.clearRevlogCache();
-                    io.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle =
-                            io.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(
-                                    new java.io.ByteArrayInputStream(savedBundle, 6, savedBundle.length - 6), "01");
+                    io.github.search5.hg4j.bundle.ChangegroupParser.ChangegroupBundle bundle;
+                    if (savedBundle.length >= 4 && savedBundle[0] == 'H' && savedBundle[1] == 'G' && savedBundle[2] == '2') {
+                        io.github.search5.hg4j.bundle.Bundle2Parser.ExtractedBundle2 extracted =
+                                io.github.search5.hg4j.bundle.Bundle2Parser.extractChangegroupDetailed(new java.io.ByteArrayInputStream(savedBundle));
+                        bundle = io.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(
+                                new java.io.ByteArrayInputStream(extracted.changegroupBytes), extracted.cgVersion);
+                    } else {
+                        bundle = io.github.search5.hg4j.bundle.ChangegroupParser.parseBundle(
+                                new java.io.ByteArrayInputStream(savedBundle, 6, savedBundle.length - 6), "01");
+                    }
                     // the locks are held here already; unbundle's rule (no working copy lock) keeps the dirstate out of it
                     new FetchCommand(repository).setWorkingCopyLock(false).applyBundle(bundle);
                     repository.clearRevlogCache();

@@ -944,7 +944,9 @@ public class FetchCommand {
                 }
 
                 // a repository that keeps changed-files sidedata for its changesets needs it for the ones that just arrived
-                if (repository.isSidedataCopies() && !bundle.changelogEntries.isEmpty()) {
+                // (a changegroup that already carries the sidedata, such as cg5, keeps its own, which includes the copy information)
+                if (repository.isSidedataCopies() && !bundle.changelogEntries.isEmpty()
+                        && bundle.changelogEntries.stream().anyMatch(e -> e.sidedata == null)) {
                     ChangesetSidedata.rewriteTail(repository, changelog, firstImportedRev);
                 }
 

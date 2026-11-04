@@ -394,14 +394,12 @@ public class WireServerParityInteropTest {
         Assumptions.assumeTrue(LocalHg.isDevAvailable(), "no development hg oracle (see LocalHg#isDevAvailable)");
         assertSameAsDevOracle("store_shape", "names=x", "*");
         assertSameAsDevOracle("store_shape", "names=first,second", "*");
-        // names= (an empty name) is left out on purpose: the original dies without any answer there (an unhandled error),
-        // hg4j keeps answering with a well-formed SHAPE_NOT_FOUND for the empty name.
+        // names= (an empty name) is left out of the comparison: the original dies without any answer there (an unhandled error);
+        // hg4j refuses the empty shard name ("shard names must not be empty") the same way, so no shape payload is sent.
         byte[] emptyName = ask(false, "store_shape", "names=", "*");
         int nl = indexOf(emptyName, (byte) '\n', 0);
-        byte[] payload = java.util.Arrays.copyOfRange(emptyName, nl + 1, emptyName.length);
-        assertEquals(Integer.parseInt(new String(emptyName, 0, nl, StandardCharsets.US_ASCII)), payload.length, "framed");
-        assertEquals(2, payload[0], "code SHAPE_NOT_FOUND");
-        assertEquals(11 + 8, payload.length, "header + a block holding one empty name");
+        int payloadSize = emptyName.length - (nl + 1);
+        assertEquals(0, payloadSize, "no store_shape payload for an empty name");
     }
 
     @Test

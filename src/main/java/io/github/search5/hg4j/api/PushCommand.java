@@ -52,6 +52,16 @@ public class PushCommand {
     private String destinationUrl;
     private boolean force = false;
     private boolean allowNewBranch = false;
+    /** {@code hg push -B}: the bookmarks named explicitly. */
+    private final List<String> explicitBookmarks = new ArrayList<>();
+    /** The exit status of the bookmark part of the last push, as in Mercurial: 0 fine, 1 a bookmark update failed, 2 refused. */
+    private int bookmarkResult;
+    /** The revisions this push sends ({@code outgoing}): ancestors of what is pushed, minus what the remote has, minus secret. */
+    private boolean[] outgoing;
+    /** With -B: the ancestors of the named bookmarks (what Mercurial calls {@code pushed}); {@code null} when unrestricted. */
+    private boolean[] pushedAncestors;
+    /** The revisions the remote already has (known locally). */
+    private boolean[] remoteHas;
 
     private final List<HgHook> prePushHooks = new ArrayList<>();
     private final List<HgHook> postPushHooks = new ArrayList<>();
@@ -72,6 +82,24 @@ public class PushCommand {
     public PushCommand setAllowNewBranch(boolean allowNewBranch) {
         this.allowNewBranch = allowNewBranch;
         return this;
+    }
+
+    /**
+     * {@code hg push -B NAME ...}: pushes the bookmark (creating it on the remote if the remote lacks it, moving it to where
+     * the local one is, or deleting it remotely when it no longer exists locally) together with the changesets it needs. Only
+     * the ancestors of the named bookmarks are pushed then, not the other heads.
+     */
+    public PushCommand setBookmarks(String... names) {
+        explicitBookmarks.clear();
+        if (names != null) {
+            explicitBookmarks.addAll(List.of(names));
+        }
+        return this;
+    }
+
+    /** The status of the bookmark part of the last {@link #call()}: 0 fine, 1 a bookmark update failed, 2 a bookmark was refused. */
+    public int getBookmarkResult() {
+        return bookmarkResult;
     }
 
     public PushCommand registerPrePushHook(HgHook hook) {
@@ -173,22 +201,18 @@ public class PushCommand {
                     return "No changesets to push (empty local repository)";
                 }
 
-                // Find all local heads
-                List<String> localHeads = new ArrayList<>();
-                boolean[] isParent = new boolean[count];
-                for (int i = 0; i < count; i++) {
-                    Revlog.IndexRecord rec = changelog.getIndexRecord(i);
-                    if (rec.getParent1() >= 0) isParent[rec.getParent1()] = true;
-                    if (rec.getParent2() >= 0) isParent[rec.getParent2()] = true;
-                }
-                for (int i = 0; i < count; i++) {
-                    if (!isParent[i]) {
-                        localHeads.add(NodeIdUtil.toHex(changelog.getIndexRecord(i).getNodeId()));
+                // The revisions to send: the ancestors of the heads being pushed (all visible heads, or the changesets of the
+                // bookmarks named with -B), without what the remote has already and without secret changesets, which Mercurial
+                // leaves out silently (discovery.findcommonoutgoing)
+                boolean[] hiddenRevs = io.github.search5.hg4j.transport.ServedView.hidden(repository, changelog);
+                int secretCount = 0;
+                if (hiddenRevs != null) {
+                    for (boolean h : hiddenRevs) {
+                        if (h) {
+                            secretCount++;
+                        }
                     }
                 }
-
-                // Calculate startRev for new commits to push
-                int startRev = 0;
                 List<String> validRemoteHeads = new ArrayList<>();
                 if (remoteHeads != null) {
                     for (String rh : remoteHeads) {
@@ -197,9 +221,8 @@ public class PushCommand {
                         }
                     }
                 }
-
+                boolean[] remoteKnown = new boolean[count];
                 if (!validRemoteHeads.isEmpty()) {
-                    boolean[] remoteKnown = new boolean[count];
                     for (String rh : validRemoteHeads) {
                         int rev = changelog.findRevision(NodeIdUtil.fromHex(rh));
                         if (rev != -1) {
@@ -224,31 +247,78 @@ public class PushCommand {
                     if (!hasAnyCommon) {
                         throw new HgValidationException("abort: repository is unrelated");
                     }
+                }
 
-                    // Find the first revision not known to remote
-                    int firstNewRev = count;
-                    for (int i = 0; i < count; i++) {
-                        if (!remoteKnown[i]) {
-                            firstNewRev = i;
-                            break;
+                // the heads whose ancestors are pushed
+                boolean[] wanted = new boolean[count];
+                Map<String, String> localBookmarks = new BookmarkCommand(repository).call();
+                if (!explicitBookmarks.isEmpty()) {
+                    for (String name : explicitBookmarks) {
+                        String hex = localBookmarks.get(name);
+                        int rev = hex == null ? -1 : changelog.findRevision(NodeIdUtil.fromHex(hex));
+                        if (rev >= 0) {
+                            wanted[rev] = true;
                         }
                     }
-                    startRev = firstNewRev;
-                }
-
-                if (startRev >= count) {
-                    return "No changesets to push (remote is up-to-date)";
-                }
-
-                // Phase Check: Block push if any target commit is in secret phase (E-4 Phases workflow)
-                PhaseRoots phaseRoots = repository.getPhaseRoots();
-                for (int r = startRev; r < count; r++) {
-                    byte[] nodeBytes = changelog.getIndexRecord(r).getNodeId();
-                    NodeId nodeId = new NodeId(nodeBytes);
-                    if (phaseRoots.isSecret(nodeId, changelog)) {
-                        throw new HgValidationException("abort: push includes secret commit: " + nodeId.toHex());
+                } else {
+                    boolean[] isParent = new boolean[count];
+                    for (int i = 0; i < count; i++) {
+                        if (hiddenRevs != null && hiddenRevs[i]) {
+                            continue;
+                        }
+                        Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+                        if (rec.getParent1() >= 0) isParent[rec.getParent1()] = true;
+                        if (rec.getParent2() >= 0) isParent[rec.getParent2()] = true;
+                    }
+                    for (int i = 0; i < count; i++) {
+                        if (!isParent[i] && (hiddenRevs == null || !hiddenRevs[i])) {
+                            wanted[i] = true;
+                        }
                     }
                 }
+                // ancestors of the wanted heads (parents have lower numbers, so one sweep down)
+                boolean[] ancestorsOfWanted = new boolean[count];
+                for (int i = count - 1; i >= 0; i--) {
+                    if (wanted[i]) {
+                        ancestorsOfWanted[i] = true;
+                    }
+                    if (ancestorsOfWanted[i]) {
+                        Revlog.IndexRecord rec = changelog.getIndexRecord(i);
+                        if (rec.getParent1() >= 0) ancestorsOfWanted[rec.getParent1()] = true;
+                        if (rec.getParent2() >= 0) ancestorsOfWanted[rec.getParent2()] = true;
+                    }
+                }
+                boolean[] send = new boolean[count];
+                int startRev = count;
+                for (int i = 0; i < count; i++) {
+                    send[i] = ancestorsOfWanted[i] && !remoteKnown[i] && (hiddenRevs == null || !hiddenRevs[i]);
+                    if (send[i] && startRev == count) {
+                        startRev = i;
+                    }
+                }
+                this.outgoing = send;
+                this.remoteHas = remoteKnown;
+                // Mercurial reads an empty "pushed" set (every -B name is missing locally) as "no restriction"
+                boolean anyWanted = false;
+                for (boolean w : wanted) {
+                    anyWanted |= w;
+                }
+                this.pushedAncestors = explicitBookmarks.isEmpty() || !anyWanted ? null : ancestorsOfWanted;
+                this.bookmarkResult = 0;
+
+                if (startRev >= count) {
+                    // nothing to send, but the bookmarks may still have to move
+                    StringBuilder none = new StringBuilder(secretCount > 0 && explicitBookmarks.isEmpty()
+                            ? "No changesets to push (remote is up-to-date; ignored " + secretCount + " secret changesets)"
+                            : "No changesets to push (remote is up-to-date)");
+                    String bookmarkLines = pushBookmarks(client, changelog, localBookmarks, null);
+                    if (!bookmarkLines.isEmpty()) {
+                        none.append('\n').append(bookmarkLines);
+                    }
+                    return none.toString();
+                }
+
+                PhaseRoots phaseRoots = repository.getPhaseRoots();
 
                 // checkheads: reject a push that would create new remote head(s) or introduce a
                 // brand-new named branch, unless the caller opted in via --force/--new-branch
@@ -304,6 +374,9 @@ public class PushCommand {
                 byte[] prevClContent = null;
                 byte[] prevClNode = new byte[20];
                 for (int r = startRev; r < count; r++) {
+                    if (!send[r]) {
+                        continue;
+                    }
                     Revlog.IndexRecord clRec = changelog.getIndexRecord(r);
                     ChangegroupParser.ChangeGroupEntry clEntry = new ChangegroupParser.ChangeGroupEntry();
                     clEntry.node = clRec.getNodeId();
@@ -316,7 +389,7 @@ public class PushCommand {
                     byte[] content = changelog.getRevisionContent(r);
                     byte[] deltaBasis;
                     byte[] deltaBaseNode;
-                    if (r == startRev) {
+                    if (prevClContent == null) {
                         deltaBasis = (clRec.getParent1() != -1) ? changelog.getRevisionContent(clRec.getParent1()) : new byte[0];
                         deltaBaseNode = clP1Node;
                     } else {
@@ -350,6 +423,9 @@ public class PushCommand {
                 byte[] prevMfContent = null;
                 byte[] prevMfNode = new byte[20];
                 for (int r = startRev; r < count; r++) {
+                    if (!send[r]) {
+                        continue;
+                    }
                     byte[] clContent = changelog.getRevisionContent(r);
                     String clText = new String(clContent, StandardCharsets.UTF_8);
                     String[] clLines = clText.split("\n");
@@ -421,7 +497,7 @@ public class PushCommand {
                                 continue;
                             }
                             Revlog dirlog = repository.getRevlog(dirIdx, dirDat);
-                            List<ChangegroupParser.ChangeGroupEntry> dirEntries = packRevlogRange(dirlog, changelog, startRev);
+                            List<ChangegroupParser.ChangeGroupEntry> dirEntries = packRevlogRange(dirlog, changelog, send);
                             if (!dirEntries.isEmpty()) {
                                 ChangegroupParser.ManifestGroup mg = new ChangegroupParser.ManifestGroup();
                                 mg.path = dirPath;
@@ -449,9 +525,9 @@ public class PushCommand {
                     if (!flIdx.exists()) continue;
 
                     Revlog fl = repository.getRevlog(flIdx, flDat);
-                    List<ChangegroupParser.ChangeGroupEntry> flEntries = packRevlogRange(fl, changelog, startRev);
+                    List<ChangegroupParser.ChangeGroupEntry> flEntries = packRevlogRange(fl, changelog, send);
                     for (int fileRev = 0; fileRev < fl.getRevisionCount(); fileRev++) {
-                        if (fl.getIndexRecord(fileRev).getLinkRev() >= startRev) {
+                        if (send[fl.getIndexRecord(fileRev).getLinkRev()]) {
                             sentFileRevisions.add(Map.entry(fl, fileRev));
                         }
                     }
@@ -513,21 +589,10 @@ public class PushCommand {
                 io.github.search5.hg4j.lfs.HgLfsPrePush.upload(repository, resolvedUrl, sentFileRevisions);
                 String response = client.push(bundleBytes, force ? List.of("force") : remoteHeads);
 
-                // 3a. Sync local bookmarks to remote utilizing pushkey protocol
-                try {
-                    Map<String, String> localBks = new BookmarkCommand(repository).call();
-                    Map<String, String> remoteBks = client.listKeys("bookmarks");
-                    for (Map.Entry<String, String> entry : localBks.entrySet()) {
-                        String name = entry.getKey();
-                        String localHex = entry.getValue();
-                        String remoteHex = remoteBks != null ? remoteBks.getOrDefault(name, "") : "";
-                        if (!localHex.equals(remoteHex)) {
-                            client.pushkey("bookmarks", name, remoteHex, localHex);
-                        }
-                    }
-                } catch (Exception e) {
-                    // 북마크 푸시 실패 시 비차단 경고 처리
-                    LOGGER.log(Level.WARNING, "Failed to push bookmarks to remote: " + e.getMessage(), e);
+                // 3a. Bookmarks, decided like exchange._pushdiscoverybookmarks does
+                String bookmarkLines = pushBookmarks(client, changelog, localBookmarks, null);
+                if (!bookmarkLines.isEmpty()) {
+                    response = response + "\n" + bookmarkLines;
                 }
 
                 // POST_PUSH hooks trigger
@@ -636,7 +701,9 @@ public class PushCommand {
 
         TreeSet<String> touchedBranches = new TreeSet<>();
         for (int r = startRev; r < count; r++) {
-            touchedBranches.add(branchByRev[r]);
+            if (outgoing[r]) {
+                touchedBranches.add(branchByRev[r]);
+            }
         }
 
         List<String> newBranches = new ArrayList<>();
@@ -665,7 +732,7 @@ public class PushCommand {
             }
             int unsyncedCount = oldHeads == null ? 0 : (oldHeads.size() - oldHeadsKnownRevs.size());
             for (int r = startRev; r < count; r++) {
-                if (branch.equals(branchByRev[r])) {
+                if (outgoing[r] && branch.equals(branchByRev[r])) {
                     candidateRevs.add(r);
                 }
             }
@@ -713,7 +780,9 @@ public class PushCommand {
         }
         int unsyncedCount = validRemoteHeads.size() - oldHeadsKnownRevs.size();
         for (int r = startRev; r < count; r++) {
-            candidateRevs.add(r);
+            if (outgoing[r]) {
+                candidateRevs.add(r);
+            }
         }
         Set<Integer> rawNewHeads = topoHeadsWithinSet(changelog, candidateRevs);
         Set<Integer> adjustedNewHeads = applyObsolescenceDiscard(changelog, rawNewHeads, candidateRevs, obsSuccessors, phaseRoots);
@@ -814,6 +883,118 @@ public class PushCommand {
         return false;
     }
 
+    /**
+     * The bookmark part of a push: Mercurial's {@code _pushdiscoverybookmarks} / {@code _processcompared}. A bookmark that
+     * exists on both sides and was advanced locally moves on the remote even without {@code -B}; creating, overwriting and
+     * deleting remote bookmarks needs the name given with {@code -B}. Updates go through {@code pushkey}.
+     *
+     * @return the lines Mercurial prints ({@code updating bookmark X}, {@code exporting bookmark X}, ...), newline separated
+     */
+    private String pushBookmarks(HgRemoteConnection client, Revlog changelog, Map<String, String> local, Object unused)
+            throws IOException {
+        Map<String, String> remote;
+        try {
+            remote = client.listKeys("bookmarks");
+        } catch (IOException e) {
+            remote = Map.of();
+        }
+        if (remote == null) {
+            remote = Map.of();
+        }
+        List<String> lines = new ArrayList<>();
+        TreeSet<String> explicit = new TreeSet<>(explicitBookmarks);
+        TreeSet<String> names = new TreeSet<>(local.keySet());
+        names.addAll(remote.keySet());
+        Map<String, List<String>> obsSuccessors = null;
+        Map<Integer, List<Integer>> children = null;
+        List<String[]> updates = new ArrayList<>(); // name, old, new
+        for (String b : names) {
+            String s = local.get(b);
+            String d = remote.get(b);
+            if (d != null && d.isEmpty()) {
+                d = null;
+            }
+            if (s == null) {
+                if (d != null && explicit.remove(b)) {
+                    updates.add(new String[] {b, d, ""}); // deleted locally: delete remotely
+                }
+                continue;
+            }
+            int sRev = changelog.findRevision(NodeIdUtil.fromHex(s));
+            if (d == null) { // addsrc
+                if (explicit.remove(b)) {
+                    if (b.contains("@") && !b.endsWith("@")) {
+                        lines.add("cannot push divergent bookmark " + b + "!");
+                        bookmarkResult = 2;
+                    } else if (pushedAncestors != null && (sRev < 0 || !pushedAncestors[sRev])) {
+                        lines.add("cannot push bookmark X without its revision: " + b + "!");
+                        bookmarkResult = 2;
+                    } else {
+                        updates.add(new String[] {b, "", s});
+                    }
+                }
+                continue;
+            }
+            if (s.equals(d)) { // same
+                explicit.remove(b);
+                continue;
+            }
+            int dRev = changelog.findRevision(NodeIdUtil.fromHex(d));
+            boolean advancedHere = false;
+            if (sRev >= 0 && dRev >= 0) {
+                if (obsSuccessors == null) {
+                    obsSuccessors = loadObsSuccessorMap();
+                    children = buildChildrenMap(changelog, changelog.getRevisionCount());
+                }
+                if (sRev >= dRev) {
+                    advancedHere = isInForeground(changelog, dRev, sRev, obsSuccessors, children); // advsrc
+                }
+            }
+            if (advancedHere) {
+                explicit.remove(b);
+                if (pushedAncestors == null || pushedAncestors[sRev]) {
+                    updates.add(new String[] {b, d, s});
+                }
+            } else if (explicit.remove(b)) { // advdst, diverge or differ: overwritten only when asked for
+                if (pushedAncestors == null || (sRev >= 0 && pushedAncestors[sRev])) {
+                    updates.add(new String[] {b, d, s});
+                }
+            }
+        }
+        if (!explicit.isEmpty()) {
+            lines.add("bookmark " + explicit.first() + " does not exist on the local or remote repository!");
+            bookmarkResult = 2;
+        }
+        for (String[] update : updates) {
+            // A bookmark must not point at a changeset the remote lacks. Mercurial's bundle2 "bookmarks" part would store such a
+            // dangling bookmark (a push of "-B <missing name>" leaves an advanced bookmark's changeset behind); hg4j leaves it out.
+            if (!update[2].isEmpty()) {
+                int target = changelog.findRevision(NodeIdUtil.fromHex(update[2]));
+                if (target >= 0 && !outgoing[target] && !remoteHas[target]) {
+                    LOGGER.log(Level.WARNING, "not moving bookmark " + update[0] + ": the remote lacks its changeset");
+                    continue;
+                }
+            }
+            String action = !update[1].isEmpty() && !update[2].isEmpty() ? "update" : !update[2].isEmpty() ? "export" : "delete";
+            String label = action.equals("update") ? "updating bookmark " + update[0]
+                    : action.equals("export") ? "exporting bookmark " + update[0] : "deleting remote bookmark " + update[0];
+            boolean ok;
+            try {
+                ok = client.pushkey("bookmarks", update[0], update[1], update[2]);
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "bookmark push failed: " + e.getMessage(), e);
+                ok = false;
+            }
+            if (ok) {
+                lines.add(label);
+            } else {
+                lines.add(label + " failed");
+                bookmarkResult = 1;
+            }
+        }
+        return String.join("\n", lines);
+    }
+
     /** Real hg's {@code discovery._nowarnheads}: local bookmarks whose remote counterpart is
      * known locally and whose local position is a valid "forward" move from that remote position
      * (see {@link #isInForeground}) are exempted from being blamed for a new-head rejection.
@@ -838,10 +1019,21 @@ public class PushCommand {
         } catch (IOException e) {
             return Set.of();
         }
-        if (remoteBookmarks == null || remoteBookmarks.isEmpty()) {
-            return Set.of();
+        if (remoteBookmarks == null) {
+            remoteBookmarks = Map.of();
         }
         Set<Integer> nowarn = new HashSet<>();
+        // bookmarks.pushing: a bookmark named with -B that the remote does not have yet is not blamed for the new head it makes
+        for (String name : explicitBookmarks) {
+            String localHex = localBookmarks.get(name);
+            String remoteHex = remoteBookmarks.get(name);
+            if (localHex != null && (remoteHex == null || remoteHex.isEmpty())) {
+                int rev = changelog.findRevision(NodeIdUtil.fromHex(localHex));
+                if (rev != -1) {
+                    nowarn.add(rev);
+                }
+            }
+        }
         for (Map.Entry<String, String> entry : localBookmarks.entrySet()) {
             String name = entry.getKey();
             String localHex = entry.getValue();
@@ -948,13 +1140,13 @@ public class PushCommand {
      * censored revision's tombstone bytes transfer as-is, matching real hg's own changegroup
      * packer.
      */
-    private static List<ChangegroupParser.ChangeGroupEntry> packRevlogRange(Revlog revlog, Revlog changelog, int startRev) throws IOException {
+    private static List<ChangegroupParser.ChangeGroupEntry> packRevlogRange(Revlog revlog, Revlog changelog, boolean[] send) throws IOException {
         List<ChangegroupParser.ChangeGroupEntry> entries = new ArrayList<>();
         byte[] prevContent = null;
         byte[] prevNode = new byte[20];
         for (int i = 0; i < revlog.getRevisionCount(); i++) {
             Revlog.IndexRecord rec = revlog.getIndexRecord(i);
-            if (rec.getLinkRev() < startRev) {
+            if (rec.getLinkRev() < 0 || rec.getLinkRev() >= send.length || !send[rec.getLinkRev()]) {
                 continue;
             }
             ChangegroupParser.ChangeGroupEntry entry = new ChangegroupParser.ChangeGroupEntry();

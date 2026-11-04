@@ -413,8 +413,25 @@ public final class Wire1Commands {
      */
     public static Wire1Response lookup(HgRepository repo, Map<String, String> args) throws IOException {
         RevisionLookup.Outcome outcome = RevisionLookup.resolve(repo, args.get("key"));
+        if ("tip".equals(args.get("key"))) {
+            // the tip of the served view: the highest revision that is not hidden
+            Revlog changelog = RepoSupport.changelog(repo);
+            boolean[] hidden = io.github.search5.hg4j.transport.ServedView.hidden(repo, changelog);
+            if (hidden != null) {
+                int rev = changelog.getRevisionCount() - 1;
+                while (rev >= 0 && hidden[rev]) {
+                    rev--;
+                }
+                if (rev >= 0) {
+                    outcome = RevisionLookup.Outcome.found(changelog.getIndexRecord(rev).getNodeId());
+                }
+            }
+        }
         if (outcome.node() != null && io.github.search5.hg4j.transport.ServedView.isHidden(repo, outcome.node())) {
-            outcome = RevisionLookup.Outcome.failed("unknown revision '" + args.get("key") + "'"); // a secret changeset is not served
+            // a secret changeset is not served; the full hash is reported as filtered, anything else as unknown (as Mercurial does)
+            String key = args.get("key");
+            outcome = RevisionLookup.Outcome.failed(key != null && key.matches("[0-9a-f]{4,40}")
+                    ? "filtered revision '" + key + "' (not in 'served' subset)" : "unknown revision '" + key + "'");
         }
         String line = outcome.node() != null
                 ? "1 " + NodeIdUtil.toHex(outcome.node()) + "\n"

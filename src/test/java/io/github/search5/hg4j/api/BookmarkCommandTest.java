@@ -348,7 +348,8 @@ public class BookmarkCommandTest {
 
         // 4. pushkey 통신이 local push 시 기동되어 remote 북마크에 feature-push가 수립되는지 검증
         try {
-            PushCommand push = new PushCommand(localRepo).setDestination(repoDir2.getAbsolutePath());
+            // Mercurial exports a bookmark the remote lacks only when it is named with -B
+            PushCommand push = new PushCommand(localRepo).setDestination(repoDir2.getAbsolutePath()).setBookmarks("feature-push");
             push.call();
         } catch (Exception e) {
             e.printStackTrace();

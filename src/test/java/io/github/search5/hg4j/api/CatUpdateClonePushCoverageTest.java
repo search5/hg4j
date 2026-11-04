@@ -578,9 +578,10 @@ public class CatUpdateClonePushCoverageTest {
         phaseRoots.setPhase(nodeId, PhaseRoots.Phase.SECRET, cl);
         assertEquals(PhaseRoots.Phase.SECRET, phaseRoots.getPhase(nodeId, cl));
 
-        // 4. Verify that an exception is thrown when push is called
+        // 4. Mercurial leaves secret changesets out of a push silently (discovery.findcommonoutgoing): nothing to push, no error
         PushCommand push = new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath());
-        HgValidationException ex = assertThrows(HgValidationException.class, push::call);
-        assertTrue(ex.getMessage().contains("push includes secret commit"));
+        String result = push.call();
+        assertTrue(result.contains("No changesets to push"), result);
+        assertEquals(1, new LogCommand(remoteRepo).call().size(), "the secret changeset did not reach the remote");
     }
 }

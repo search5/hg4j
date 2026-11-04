@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -109,8 +110,10 @@ public class PushCommandTest {
         new CommitCommand(localRepo).setMessage("secret commit").call();
         new PhaseCommand(localRepo).setRevision("0").setPhase(2).setForce(true).call(); // SECRET
 
-        assertThrows(HgValidationException.class,
-                () -> new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).call());
+        // Mercurial leaves secret changesets out of a push without complaint
+        String result = new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).call();
+        assertTrue(result.contains("secret"), result);
+        assertEquals(0, new LogCommand(new HgRepository(remoteDir)).call().size(), "nothing reached the remote");
     }
 
     @Test
@@ -126,6 +129,10 @@ public class PushCommandTest {
         new BookmarkCommand(localRepo).setBookmarkName("stable").setNodeId(node).call();
 
         new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).call();
+        assertNull(new BookmarkCommand(new HgRepository(remoteDir)).call().get("stable"),
+                "without -B a bookmark the remote lacks is not exported");
+
+        new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).setBookmarks("stable").call();
 
         HgRepository remoteRepo = new HgRepository(remoteDir);
         Map<String, String> remoteBookmarks = new BookmarkCommand(remoteRepo).call();
@@ -292,7 +299,7 @@ public class PushCommandTest {
         new AddCommand(localRepo).call();
         byte[] node1 = new CommitCommand(localRepo).setMessage("first").call();
         new BookmarkCommand(localRepo).setBookmarkName("stable").setNodeId(node1).call();
-        new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).call();
+        new PushCommand(localRepo).setDestination(remoteDir.getAbsolutePath()).setBookmarks("stable").call();
 
         Files.writeString(new File(localDir, "a.txt").toPath(), "v2");
         new CommitCommand(localRepo).setMessage("second").call();
@@ -376,6 +383,7 @@ public class PushCommandTest {
 
         String firstPush = new PushCommand(localRepo)
                 .setDestination(NULL_EVERYTHING_SCHEME + remoteDir.getAbsolutePath())
+                .setBookmarks("stable")
                 .call();
         assertTrue(firstPush.toLowerCase().contains("push"));
 

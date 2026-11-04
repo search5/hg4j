@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-04
-status: 진행 중. 5단계 중 1단계 완료(2026-11-04)
+status: 진행 중. 5단계 중 2단계 완료(2026-11-04)
 audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전트)
 ---
 
@@ -64,6 +64,13 @@ audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전�
   `minusset`/`listset`, 오류 문구(`unsupported file pattern`, `invalid pattern`, `not a symbol`, `unknown identifier` 등)를 원본과 같게.
 - 평가 문맥(`matchctx`): 대상 컨텍스트(리비전 또는 작업 사본), 상태(`status`), 부분집합(`subset`), 상태가 필요한 술어를 위한 지연 계산.
 - 이 단계 완료 기준: 구문 오류 문구와 `hg debugfileset --show-stage`에 해당하는 파싱 결과가 원본과 같다(문구 비교 테스트 30종 이상).
+- **완료 (2026-11-04).** 패키지 `io.github.search5.hg4j.fileset`: `FilesetLanguage`(토크나이저·파서·`analyze`·`optimize`·`prettyFormat`, 술어 24종의 가중치와
+  `callstatus` 표), `Fileset`(평가: `withstatus`/`string`/`symbol`/`kindpat`/`patterns`/`and`/`or`/`not`/`minus`/`list`/`func`, `unknown identifier`와
+  "did you mean" 힌트), `Difflib`(`SequenceMatcher.ratio` 이식), `FilesetContext`/`RepositoryFilesetContext`, `FilesetParseException`. 대조 테스트
+  `FilesetLanguageParityInteropTest` 2개(유효 식 약 90개의 3단계 트리와 거절 식 약 40개의 문구·위치), `FilesetEvaluationParityInteropTest` 2개(식 약 50개를
+  루트와 하위 디렉터리에서, 평가 시 오류 21종), 단위 테스트 6개.
+- 알려진 사실: 원본은 `unknown identifier: modifed`에 `did you mean one of copied, modified?`를 붙인다(유사도 0.6 초과가 둘).
+- 술어 구현은 3단계(지금은 이름과 가중치만 있고 호출하면 "not implemented"). `Fileset.register(name, impl)`로 등록한다.
 
 ### Phase 3: 술어 24종 + 확장 술어
 - 내용·플래그: `binary`, `exec`, `symlink`, `size`, `grep`, `encoding`, `eol`, `portable`, `tracked`, `copied`.

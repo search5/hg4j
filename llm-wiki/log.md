@@ -713,3 +713,7 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 `io.github.search5.hg4j.match`(`Matchers`, `Globs`, `PatternFiles`, `Matcher`, `KindPattern`). 패턴 종류 14종, `-I`/`-X`, `listfile`/`include`/`subinclude`/`set`, 원본 오류 문구. 실제 hg와의 대조 7개(약 70개 패턴을 인자, `-I`, `-X`, 루트와 하위 디렉터리에서), 단위 테스트 10개. `SparsePathFilter`는 sparse 전용 규칙이라 이관하지 않기로 계획을 고쳤다.
 함께 고친 것: 북마크 push 변경(`-B` 없이는 새 북마크를 만들지 않음)의 영향을 받는 interop 테스트 `BookmarkRealHgInteropTest#testPushSyncsBookmarkToRemote`를 7.2.4 동작에 맞췄다. 그때 push를 쓰는 interop 클래스를 이름으로만 골라서 이 클래스를 놓쳤으므로, 이후에는 `grep PushCommand`로 사용 클래스를 모두 찾아 돌린다.
 검증: 일반 test 2217개, 매처 대조 7개, push 사용 interop 클래스 전부 통과.
+
+## [2026-11-04] 파일셋 계획 2단계 완료: 언어와 평가 틀
+`io.github.search5.hg4j.fileset`(`FilesetLanguage`, `Fileset`, `Difflib`, `FilesetContext`, `RepositoryFilesetContext`, `FilesetParseException`). 파서·분석(상태 힌트)·최적화가 `hg debugfileset --show-stage`와 글자 단위로 같고, 거절 문구와 위치, 평가 시 오류와 `did you mean` 힌트가 같다. 대조 테스트 4개(식 약 140개), 단위 테스트 6개. 술어 24종의 구현은 3단계.
+검증: 일반 test 2223개 통과.

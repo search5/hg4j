@@ -23,7 +23,7 @@ status: current
 > **추가 계획서 (2026-11-03)**: [implementation-plan-gpg-ssh-wire.md](implementation-plan-gpg-ssh-wire.md)
 > — SSH를 Apache MINA SSHD로 교체, GPG를 `.hgsigs` 호환으로 재구현, 서버 와이어 명령 누락 점검(완료).
 >
-> **파일셋 계획서 (2026-11-04)**: [implementation-plan-fileset.md](implementation-plan-fileset.md) — 일반 파일셋 엔진과 패턴 매처, 5단계, 1단계 완료
+> **파일셋 계획서 (2026-11-04)**: [implementation-plan-fileset.md](implementation-plan-fileset.md) — 일반 파일셋 엔진과 패턴 매처, 5단계, 2단계 완료
 >
 > **LFS 계획서 (2026-11-03)**: [implementation-plan-lfs.md](implementation-plan-lfs.md)
 > — JGit의 LFS 인터페이스(`LfsFactory`, `LfsPointer`, `LfsPrePushHook`, `lfs.server`)에 준해 읽기 경로, `lfs.track`/`.hglfs`,
@@ -63,7 +63,7 @@ status: current
 
 | 페이지 | 다루는 백로그 번호 | 요약 |
 |---|---|---|
-| [backlog/fileset-and-matcher.md](backlog/fileset-and-matcher.md) | 48 | 일반 파일셋 엔진과 패턴 매처(`set:`, 술어 24종, `glob:`/`re:`/`path:`/`-I`/`-X`), 계획 5단계, 1단계 완료 |
+| [backlog/fileset-and-matcher.md](backlog/fileset-and-matcher.md) | 48 | 일반 파일셋 엔진과 패턴 매처(`set:`, 술어 24종, `glob:`/`re:`/`path:`/`-I`/`-X`), 계획 5단계, 2단계 완료 |
 | [backlog/01-resolve-mergestate.md](backlog/01-resolve-mergestate.md) | 1 | ResolveCommand ↔ MergeState 연동 |
 | [backlog/wire-protocol-negotiation.md](backlog/wire-protocol-negotiation.md) | 2, 3, 22, 24, 25 | HTTP/SSH 프로토콜 협상, v1 인자 전송 버그, SSH 전송 계층 재작성 |
 | [backlog/push-and-concurrency.md](backlog/push-and-concurrency.md) | 13, 33, 38 | Push 증분 처리, SSH checkheads, 동시 push 레이스 |

@@ -93,6 +93,34 @@ public class CommitCommand {
     private final List<HgHook> preCommitHooks = new ArrayList<>();
     private final List<HgHook> postCommitHooks = new ArrayList<>();
     private boolean closeBranch = false;
+    private final FileSelection selection = new FileSelection();
+
+    /**
+     * {@code hg commit [FILE]...}: commits only the changes of the files the patterns select; every other file keeps the content
+     * of the parent in the new revision and stays modified, added or removed in the working directory. Not allowed for a merge.
+     */
+    public CommitCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg commit -I}. */
+    public CommitCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg commit -X}. */
+    public CommitCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public CommitCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
     private boolean subrepos = false;
 
     // Amend support (set only by AmendCommand, package-private): the changeset/manifest
@@ -344,6 +372,8 @@ public class CommitCommand {
             final long txStartSec = System.currentTimeMillis() / 1000;
             Map<String, String> newManifest = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
             List<String> filesModified = new ArrayList<>();
+            // tracked files that are gone from the disk without `hg remove`: real hg leaves them out of the commit (they stay `!`)
+            Set<String> missingFiles = new LinkedHashSet<>();
             Set<String> fncachePaths = new LinkedHashSet<>();
 
             // SD_FILES sidedata bookkeeping (backlog item 19) -- only actually encoded/attached
@@ -383,6 +413,15 @@ public class CommitCommand {
                 throw new HgValidationException("unresolved merge conflicts (see 'hg help resolve')");
             }
 
+            // a partial commit: only the selected files are committed (mercurial/localrepo.py: "cannot partially commit a merge")
+            io.github.search5.hg4j.match.Matcher partial = null;
+            if (!selection.isEmpty()) {
+                if (parent2Rev != -1) {
+                    throw new HgValidationException("cannot partially commit a merge (do not specify files or patterns)");
+                }
+                partial = selection.matcher(repository, null);
+            }
+
             TreeWalk tw = new TreeWalk();
             tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent1Rev))); // Tree 0: P1
             tw.addTree(new ManifestTreeIterator(repository, String.valueOf(parent2Rev))); // Tree 1: P2
@@ -394,6 +433,14 @@ public class CommitCommand {
                 boolean inP1 = tw.isTracked(0);
                 boolean inP2 = tw.isTracked(1);
                 boolean inWorking = tw.isTracked(2);
+
+                if (partial != null && !partial.matches(path)) {
+                    // not selected: the new revision keeps what the parent has, and the working copy keeps its own state
+                    if (inP1) {
+                        newManifest.put(path, manifestP1.get(path));
+                    }
+                    continue;
+                }
 
                 if (inWorking) {
                     char workingState = tw.getState(2);
@@ -435,7 +482,15 @@ public class CommitCommand {
                         }
 
                         if (physicallyMissing) {
-                            throw new HgValidationException("Tracked file not found on disk: " + path);
+                            missingFiles.add(path);
+                            String keepP1 = manifestP1.get(path);
+                            String keepP2 = parent2Rev != -1 ? manifestP2.get(path) : null;
+                            if (keepP1 != null) {
+                                newManifest.put(path, keepP1);
+                            } else if (keepP2 != null) {
+                                newManifest.put(path, keepP2);
+                            }
+                            continue;
                         }
 
                         // A symlink's "size" (and content, for the M-2 racy check below) must be
@@ -793,6 +848,11 @@ public class CommitCommand {
                 declaredMfRev2 = isNullNode(declaredMfNode2) ? -1 : NodeIdUtil.findRevisionByNodeId(manifestRevlog, declaredMfNode2);
             }
 
+            if ((partial != null || !missingFiles.isEmpty()) && filesModified.isEmpty()) {
+                throw new HgValidationException("nothing changed" + (missingFiles.isEmpty() ? ""
+                        : " (" + missingFiles.size() + " missing files, see 'hg status')"));
+            }
+
             // 4. Serialize and write new manifest revision
             byte[] manifestNode;
             if (repository.isTreemanifest()) {
@@ -887,6 +947,8 @@ public class CommitCommand {
             for (String path : pathsToChange) {
                 Dirstate.Entry entry = dirstate.getEntries().get(path);
                 if (entry == null) continue;
+                if (partial != null && !partial.matches(path)) continue; // not committed: the dirstate keeps its state
+                if (missingFiles.contains(path)) continue; // left out of the commit: still missing
                 
                 if (entry.getState() == 'r') {
                     dirstate.removeEntry(path);

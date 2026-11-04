@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-04
-status: 진행 중 — 5단계 중 3단계 완료. 계획서: implementation-plan-fileset
+status: 구현 완료 (5단계 모두). 전체 test 2226개와 전체 interop 2875개 통과(2026-11-04). 계획서: implementation-plan-fileset
 ---
 
 # 백로그 48: 일반 파일셋 엔진과 패턴 매처
@@ -18,8 +18,8 @@ LFS 작업(2026-11-04)에서 `lfs.track`용으로 `MiniFileset`(부분집합)만
 | 1. 패턴 매처 | ✅ 완료 (2026-11-04) |
 | 2. 언어(파서·분석·오류 문구) | ✅ 완료 (2026-11-04) |
 | 3. 술어 24종 | ✅ 완료 (2026-11-04). `lfs()`의 `lfs.track` 이관은 5단계 |
-| 4. 명령 연결 | 4a(files, status, diff, log, cat) ✅ 2026-11-04, 4b(add, remove, forget, revert, commit 등) 미착수 |
-| 5. 정리, `MiniFileset` 제거 | 미착수 |
+| 4. 명령 연결 | ✅ files, status, diff, log, cat, add, forget, remove, revert, commit FILE...(부분 커밋), annotate, archive, grep, locate + ignore 일원화(2026-11-04) |
+| 5. 정리 | 위키 갱신 중. `MiniFileset`은 `minifileset.py` 이식이라 유지(계획 변경) |
 
 ## 범위 밖 (확정)
 템플릿 엔진(`log -T`), Python 확장의 술어 등록, `rhg`, `convert`.

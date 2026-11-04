@@ -25,8 +25,15 @@ public class GrepCommand {
         public final String hexNode;
         public final int lineNumber;
         public final String lineContent;
+        /** The changeset that introduced this file revision ({@code fctx.linkrev()}); -1 if unknown. */
+        public final int linkRevision;
 
         public GrepResult(String path, String hexNode, int lineNumber, String lineContent) {
+            this(path, hexNode, lineNumber, lineContent, -1);
+        }
+
+        public GrepResult(String path, String hexNode, int lineNumber, String lineContent, int linkRevision) {
+            this.linkRevision = linkRevision;
             this.path = path;
             this.hexNode = hexNode;
             this.lineNumber = lineNumber;
@@ -47,6 +54,83 @@ public class GrepCommand {
         return this;
     }
 
+    private final FileSelection selection = new FileSelection();
+
+    /** {@code hg grep PATTERN [FILE]...}: only the files these patterns select are searched. */
+    public GrepCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg grep -I}. */
+    public GrepCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg grep -X}. */
+    public GrepCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public GrepCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
+    private String revisions;
+
+    /**
+     * {@code hg grep -r REVS}: searches the files of the given revisions (a revision set such as {@code all()} or {@code 0:2}) as
+     * they are in each of those revisions, not the history of the files. Binary files are left out. The {@code linkRevision} of a
+     * result is then the revision that was searched. Without it the whole history of every file is searched.
+     */
+    public GrepCommand setRevisions(String revisions) {
+        this.revisions = revisions;
+        return this;
+    }
+
+    private List<GrepResult> callAtRevisions(Pattern pattern) throws IOException {
+        io.github.search5.hg4j.fileset.RepositoryFilesetContext wd = new io.github.search5.hg4j.fileset.RepositoryFilesetContext(repository, null);
+        io.github.search5.hg4j.match.Matcher selected = selection.isEmpty() ? null : selection.matcher(repository, null);
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        List<GrepResult> results = new ArrayList<>();
+        for (io.github.search5.hg4j.fileset.FilesetContext rev : wd.revisions(revisions)) {
+            io.github.search5.hg4j.fileset.RepositoryFilesetContext ctx = (io.github.search5.hg4j.fileset.RepositoryFilesetContext) rev;
+            int revNumber = changelog.findRevision(NodeIdUtil.fromHex(ctx.revision()));
+            for (String path : new java.util.TreeSet<>(ctx.trackedFiles())) {
+                if (selected != null && !selected.matches(path)) {
+                    continue;
+                }
+                byte[] content = ctx.data(path);
+                if (content == null) {
+                    continue;
+                }
+                boolean binary = false;
+                for (byte b : content) {
+                    if (b == 0) {
+                        binary = true;
+                        break;
+                    }
+                }
+                if (binary) {
+                    continue;
+                }
+                String[] lines = new String(content, StandardCharsets.UTF_8).split("\n");
+                for (int i = 0; i < lines.length; i++) {
+                    if (pattern.matcher(lines[i]).find()) {
+                        results.add(new GrepResult(path, "", i + 1, lines[i], revNumber));
+                    }
+                }
+            }
+        }
+        return results;
+    }
+
     public GrepCommand setCaseInsensitive(boolean caseInsensitive) {
         this.caseInsensitive = caseInsensitive;
         return this;
@@ -65,9 +149,16 @@ public class GrepCommand {
         }
 
         Pattern pattern = Pattern.compile(query, caseInsensitive ? Pattern.CASE_INSENSITIVE : 0);
+        if (revisions != null) {
+            return callAtRevisions(pattern);
+        }
 
+        io.github.search5.hg4j.match.Matcher selected = selection.isEmpty() ? null : selection.matcher(repository, null);
         for (String[] entry : enumerateTrackedFilelogs()) {
             String path = entry[0];
+            if (selected != null && !selected.matches(path)) {
+                continue;
+            }
             String storeRelIdx = entry[1];
 
             File flIdx = new File(repository.getStoreDir(), storeRelIdx);
@@ -82,7 +173,8 @@ public class GrepCommand {
                     String[] lines = text.split("\n");
                     for (int lineNum = 0; lineNum < lines.length; lineNum++) {
                         if (pattern.matcher(lines[lineNum]).find()) {
-                            results.add(new GrepResult(path, NodeIdUtil.toHex(node).substring(0, 40), lineNum + 1, lines[lineNum]));
+                            results.add(new GrepResult(path, NodeIdUtil.toHex(node).substring(0, 40), lineNum + 1, lines[lineNum],
+                                    filelog.getIndexRecord(i).getLinkRev()));
                         }
                     }
                 }

@@ -306,7 +306,7 @@ public final class Matchers {
                 }
                 continue;
             } else if (kind.equals("include")) {
-                File full = new File(root, pat);
+                File full = resolve(root, pat);
                 List<String> included;
                 try {
                     included = PatternFiles.read(full, warn);
@@ -489,7 +489,7 @@ public final class Matchers {
                         Matcher mf = built.get(sub[0]);
                         if (mf == null) {
                             try {
-                                mf = match(new File(root, sub[2]), "", List.of(), List.of("include:" + sub[1]), List.of(), "glob", null, warn);
+                                mf = match(resolve(root, sub[2]), "", List.of(), List.of("include:" + sub[1]), List.of(), "glob", null, warn);
                             } catch (IOException e) {
                                 throw new java.io.UncheckedIOException(e);
                             }
@@ -630,6 +630,12 @@ public final class Matchers {
             }
         }
         return false;
+    }
+
+    /** {@code os.path.join(root, path)}: an absolute path stays as it is. */
+    private static File resolve(File root, String path) {
+        File file = new File(path);
+        return file.isAbsolute() ? file : new File(root, path);
     }
 
     private static String dirName(String path) {

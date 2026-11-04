@@ -23,6 +23,7 @@ public final class FileSelection {
     private final List<String> include = new ArrayList<>();
     private final List<String> exclude = new ArrayList<>();
     private String cwd = "";
+    private String defaultKind = "relpath";
     private Consumer<String> warn;
 
     public FileSelection patterns(String... patterns) {
@@ -46,6 +47,12 @@ public final class FileSelection {
         if (patterns != null) {
             this.exclude.addAll(List.of(patterns));
         }
+        return this;
+    }
+
+    /** The kind of a pattern without a prefix: {@code relpath} for most commands, {@code relglob} for {@code locate}. */
+    public FileSelection defaultKind(String kind) {
+        this.defaultKind = kind;
         return this;
     }
 
@@ -77,7 +84,7 @@ public final class FileSelection {
      */
     public Matcher matcher(HgRepository repository, String revision) throws IOException {
         RepositoryFilesetContext ctx = new RepositoryFilesetContext(repository, revision);
-        return Matchers.match(repository.getDirectory(), cwd, patterns, include, exclude, "relpath",
+        return Matchers.match(repository.getDirectory(), cwd, patterns, include, exclude, defaultKind,
                 (dir, expression) -> Fileset.compile(ctx, dir, expression), warn);
     }
 

@@ -64,6 +64,79 @@ public final class AnnotateCommand {
         this.repository = repository;
     }
 
+    private final FileSelection selection = new FileSelection();
+
+    /** {@code hg annotate [FILE]...}: the files to annotate, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}). */
+    public AnnotateCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg annotate -I}. */
+    public AnnotateCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg annotate -X}. */
+    public AnnotateCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public AnnotateCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
+    /**
+     * {@code hg annotate -r REV [FILE]...}: annotates every file of the changeset {@code changeset} (a revision, {@code null} for
+     * the tip) that the patterns select. Needs at least one pattern, as the command line does.
+     *
+     * @return file to its annotated lines, in path order
+     */
+    public java.util.Map<String, List<BlameLine>> callSelected(String changeset) throws IOException {
+        if (selection.patternCount() == 0) {
+            throw new io.github.search5.hg4j.errors.HgValidationException("invalid arguments");
+        }
+        io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, changeset);
+        java.util.Map<String, String> manifest = null;
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        Revlog changelog = repository.getRevlog(clIdx, clDat);
+        byte[] node = NodeIdUtil.resolveRevision(changelog, changeset);
+        if (node == null) {
+            throw new HgRevisionNotFoundException("Unable to resolve revision: " + changeset);
+        }
+        manifest = repository.getManifestAtCommit(node);
+        for (String named : matcher.files()) {
+            if (named.isEmpty()) {
+                continue;
+            }
+            boolean found = manifest.containsKey(named);
+            for (String path : manifest.keySet()) {
+                found |= path.startsWith(named + "/");
+            }
+            if (!found) {
+                throw new io.github.search5.hg4j.errors.HgValidationException(
+                        named + ": no such file in rev " + NodeIdUtil.toHex(node).substring(0, 12));
+            }
+        }
+        java.util.Map<String, List<BlameLine>> result = new java.util.TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        for (java.util.Map.Entry<String, String> e : manifest.entrySet()) {
+            if (!matcher.matches(e.getKey())) {
+                continue;
+            }
+            File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), e.getKey());
+            File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
+            Revlog filelog = repository.getRevlog(flIdx, flDat);
+            int fileRev = filelog.findRevision(NodeIdUtil.fromHex(e.getValue().substring(0, 40)));
+            result.put(e.getKey(), new AnnotateCommand(repository).setPath(e.getKey()).setRevision(fileRev).call());
+        }
+        return result;
+    }
+
     public AnnotateCommand setPath(String path) {
         this.path = path;
         return this;

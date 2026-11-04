@@ -222,7 +222,8 @@ public class HgRepositoryTest {
 
             // Test directory wildcard '**'
             assertTrue(repo.isIgnored("src/a/b/config.cfg"));
-            assertFalse(repo.isIgnored("src/config.cfg"));
+            // real hg 7.2.4: "**/" stands for zero or more directories, so src/config.cfg is ignored as well
+            assertTrue(repo.isIgnored("src/config.cfg"));
         }
     }
 

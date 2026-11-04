@@ -278,16 +278,22 @@ public class CommitCommandCoverageTest {
             new AddCommand(repo).call();
             new CommitCommand(repo).setMessage("commit 1").call();
 
-            // "aaa.txt" sorts before "zzz_missing.txt", so the tree walk appends aaa.txt's new
-            // filelog revision *before* it reaches the missing-file failure below.
+            // "aaa.txt" sorts before "zzz_unreadable.txt", so the tree walk appends aaa.txt's new filelog revision *before* it
+            // reaches the failure below. (A file that is merely missing from the disk no longer fails a commit: real hg leaves it
+            // out and keeps it `!`.)
             Files.writeString(aFile.toPath(), "v2");
+            File unreadable = new File(repoDir, "zzz_unreadable.txt");
+            Files.writeString(unreadable.toPath(), "secret");
+            assertTrue(unreadable.setReadable(false, false));
+            org.junit.jupiter.api.Assumptions.assumeFalse(unreadable.canRead(), "running as a user that can read anything");
 
             Dirstate d = repo.getDirstate();
-            d.addEntry("zzz_missing.txt", new Dirstate.Entry('a', 0644, 100, System.currentTimeMillis() / 1000));
+            d.addEntry("zzz_unreadable.txt", new Dirstate.Entry('a', 0644, 6, System.currentTimeMillis() / 1000));
             repo.writeDirstate(d);
 
             CommitCommand cmd = new CommitCommand(repo).setMessage("fails, skip rollback").setSkipLockAndJournal(true);
-            assertThrows(HgValidationException.class, cmd::call);
+            assertThrows(java.io.IOException.class, cmd::call);
+            unreadable.setReadable(true, false);
 
             File flIdx = new File(repo.getStoreDir(), "data/aaa.txt.i");
             File flDat = new File(repo.getStoreDir(), "data/aaa.txt.d");

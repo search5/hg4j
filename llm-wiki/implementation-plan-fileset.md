@@ -1,6 +1,6 @@
 ---
 updated: 2026-11-04
-status: 진행 중. 5단계 중 3단계 완료, 4단계는 4a(읽기 명령) 완료, 4b(변경 명령) 남음(2026-11-04)
+status: 구현 완료 (2026-11-04). 5단계 모두 구현했고 전체 test 2226개, 전체 interop 2875개가 통과했다
 audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전트)
 ---
 
@@ -97,10 +97,26 @@ audience: cross-agent handoff (이 대화의 맥락이 없는 외부 에이전�
   `CatCommand#callAll`에 `setPatterns`/`setInclude`/`setExclude`/`setCwd`를 추가했다(옛 `setPattern`/`setTreeFilter`는 그대로). `FilesCommand#setFileset`은 새 엔진으로 교체했고
   `MiniFileset`을 쓰지 않는다. 대조 `FileSelectionCommandsParityInteropTest` 5개: 패턴 22종 x 인자/`-I`/`-X`(+조합) x 루트/`src` 디렉터리 x 명령 5개(files는 리비전과 작업 디렉터리).
   `hg cat`은 FILE 인자가 없으면 `invalid arguments`로 거절한다(`-I`만으로는 안 된다).
-- **4b 남음: 변경 명령** `add`, `remove`, `forget`, `revert`, `commit`(그리고 `annotate`, `archive`, `grep`, `locate`). 존재하지 않는 파일 경고, 부분 커밋 등 명령별 규칙이 있어 별도 단계로 한다.
+- **4b 완료 (2026-11-04): 변경 명령 4개.** `AddCommand#setPatterns` 등(미추적 파일, 제거 표시 후 디스크에 되돌아온 파일, 정확히 지정된 무시 파일만),
+  `ForgetCommand`/`RemoveCommand`/`RevertCommand#callSelected`(패턴 필수, `revert --all`). `RemoveCommand`는 추가(A) 상태 파일을 `-f`로 제거해도 디스크 파일을 지우지 않도록
+  고쳤다(실제 hg 동작, 단위 테스트 기대도 정정). 대조 `MutatingSelectionParityInteropTest` 4개: 패턴 26종 x 루트/하위 디렉터리, 같은 명령을 실제 hg와 hg4j가 각자의 복사본에 실행한 뒤 모든
+  파일의 상태와 디스크 내용(`.orig` 백업 포함)이 같음을 비교.
+- **ignore 일원화 (4단계의 일부, 2026-11-04):** `HgRepository#isIgnored`/`scanWorkingCopy`가 쓰던 자체 `.hgignore` 구현을 새 매처로 교체했다(`syntax:` 줄, 주석과 이스케이프,
+  `include:`/`subinclude:`, `ui.ignore*`). 대조 `IgnoreParityInteropTest` 4개(`.hgignore` 내용 21종 + include/subinclude + ui.ignore). 옛 구현이 `src/**/config.cfg`가 `src/config.cfg`를
+  무시하지 않는다고 틀리게 처리하던 것이 드러나 단위 테스트 2개의 기대를 정정했다. 알려진 차이: 원본은 잘못된 패턴 파일이면 status 등이 abort하지만, hg4j의 스캔은 경고를 로그에 남기고
+  아무것도 무시하지 않는다(`ignoreMatcher()`를 직접 부르면 원본 문구로 예외).
+- **4단계 잔여 명령 완료 (2026-11-04):** `CommitCommand#setPatterns` 등(부분 커밋: 선택되지 않은 파일은 부모 버전을 유지하고 dirstate도 건드리지 않으며, 병합은
+  `cannot partially commit a merge`로 거절, 선택한 것이 바뀌지 않았으면 `nothing changed`), `LocateCommand#setPatterns`(기본 종류 `relglob`), `ArchiveCommand#setInclude`/`setExclude`
+  (선택이 비면 `no files match the archive pattern`), `GrepCommand#setPatterns` + `setRevisions`(`hg grep -r REV`는 파일 이력이 아니라 각 리비전의 전체 파일을 검색한다. 이진 파일 제외),
+  `AnnotateCommand#callSelected`(없는 이름은 `<이름>: no such file in rev <해시>`). 대조 `PartialCommitParityInteropTest` 2개(25가지 패턴 x 루트/하위 디렉터리에서 **변경집합 해시까지**
+  실제 hg와 같음), `RemainingCommandsSelectionParityInteropTest` 4개.
+- **전체 커밋 동작 수정:** 디스크에서 사라졌지만 `hg remove`하지 않은 추적 파일을 만나면 `CommitCommand`가 예외로 중단했는데, 실제 hg는 그 파일만 건너뛰어(`!`로 남김) 나머지를 커밋하고, 커밋할 것이
+  그 파일뿐이면 `nothing changed (N missing files, see 'hg status')`로 중단한다. 같게 맞췄다(단위 테스트 1개의 실패 방아쇠를 "읽을 수 없는 파일"로 교체).
 
 ### Phase 5: 마무리
-- `MiniFileset`을 제거하고 호출부를 새 엔진으로 일원화. 위키 갱신(`modules/`, `index.md`, 이 계획서의 상태, 백로그 문서, `log.md`).
+- **계획 변경 (2026-11-04):** `MiniFileset`은 제거하지 않는다. 원본 `lfs` 확장은 `lfs.track`을 일반 파일셋이 아니라 `mercurial/minifileset.py`(경로와 크기만 보는 별도의 작은 언어)로 평가하며,
+  `MiniFileset`은 그 이식이다. 일반 엔진으로 옮기면 오히려 원본과 달라진다. 이 계획서 0.2절의 "흡수" 설명은 틀렸다.
+- 위키 갱신(`modules/`, `index.md`, 이 계획서의 상태, 백로그 문서, `log.md`).
 - 일반 `test` 전체와 변경 영역의 interop 통과, 알려진 의도적 차이 기록.
 
 ## 2. 검증 규율 (사용자 지시 반영)

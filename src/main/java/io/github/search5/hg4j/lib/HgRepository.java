@@ -448,118 +448,33 @@ public class HgRepository implements Repository {
         return new PhaseRoots(phaserootsFile);
     }
 
-    private List<Pattern> ignorePatterns = null;
+    private io.github.search5.hg4j.match.Matcher ignoreMatcher = null;
 
-    private synchronized void loadIgnorePatterns() {
-        if (ignorePatterns != null) {
-            return;
-        }
-        ignorePatterns = new ArrayList<>();
-        File ignoreFile = new File(directory, ".hgignore");
-        if (!ignoreFile.exists()) {
-            return;
-        }
-        try {
-            List<String> lines = Files.readAllLines(ignoreFile.toPath(), StandardCharsets.UTF_8);
-            String syntax = "regexp";
-            for (String line : lines) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                if (line.startsWith("syntax:")) {
-                    syntax = line.substring("syntax:".length()).trim();
-                    continue;
-                }
-
-                if ("glob".equalsIgnoreCase(syntax)) {
-                    for (String expanded : expandBraces(line)) {
-                        String regex = globToRegex(expanded);
-                        try {
-                            ignorePatterns.add(Pattern.compile(regex));
-                        } catch (PatternSyntaxException e) {
-                            // Skip invalid pattern
-                        }
-                    }
-                } else {
-                    String regex = line;
-                    if (!regex.startsWith("^")) {
-                        regex = "(?:" + regex + ")";
-                    }
-                    try {
-                        ignorePatterns.add(Pattern.compile(regex));
-                    } catch (PatternSyntaxException e) {
-                        // Skip invalid pattern
-                    }
-                }
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load ignore patterns from .hgignore", e);
-        }
-    }
-
-    private List<String> expandBraces(String glob) {
-        List<String> results = new ArrayList<>();
-        int open = glob.indexOf('{');
-        int close = open != -1 ? glob.indexOf('}', open) : -1;
-        if (open == -1 || close == -1) {
-            results.add(glob);
-            return results;
-        }
-        String prefix = glob.substring(0, open);
-        String suffix = glob.substring(close + 1);
-        String[] choices = glob.substring(open + 1, close).split(",", -1);
-        for (String choice : choices) {
-            for (String expanded : expandBraces(prefix + choice + suffix)) {
-                results.add(expanded);
+    /**
+     * The matcher of the active ignore patterns: {@code .hgignore} and the files named by {@code ui.ignore} / {@code ui.ignore.*}
+     * (the {@code dirstate._ignore} of Mercurial), with its {@code syntax:} lines, comments, {@code include:} and
+     * {@code subinclude:}.
+     */
+    private synchronized io.github.search5.hg4j.match.Matcher ignoreMatcher() {
+        if (ignoreMatcher == null) {
+            try {
+                ignoreMatcher = new io.github.search5.hg4j.fileset.RepositoryFilesetContext(this, null).ignoreMatcher();
+            } catch (IOException | RuntimeException e) {
+                LOGGER.log(Level.WARNING, "Failed to load ignore patterns from .hgignore", e);
+                ignoreMatcher = io.github.search5.hg4j.match.Matchers.never();
             }
         }
-        return results;
+        return ignoreMatcher;
     }
 
-    private String globToRegex(String glob) {
-        boolean hasSlash = glob.indexOf('/') != -1;
-        StringBuilder sb = new StringBuilder();
-        if (hasSlash) {
-            sb.append("^");
-        } else {
-            sb.append("^(?:.*/)?");
-        }
-        for (int i = 0; i < glob.length(); i++) {
-            char c = glob.charAt(i);
-            if (c == '*') {
-                if (i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
-                    sb.append(".*");
-                    i++;
-                } else {
-                    sb.append("[^/]*");
-                }
-            } else if (c == '?') {
-                sb.append("[^/]");
-            } else if (c == '{' || c == '}') {
-                sb.append(Pattern.quote(String.valueOf(c)));
-            } else if (".\\$^+|()[]".indexOf(c) != -1) {
-                sb.append('\\').append(c);
-            } else {
-                sb.append(c);
-            }
-        }
-        sb.append("$");
-        return sb.toString();
-    }
-
+    /** Whether the path (a directory may end with a slash) is ignored. */
     public synchronized boolean isIgnored(String relativePath) {
-        loadIgnorePatterns();
-        for (Pattern pattern : ignorePatterns) {
-            if (pattern.matcher(relativePath).find()) {
-                return true;
-            }
-        }
-        return false;
+        String path = relativePath.endsWith("/") ? relativePath.substring(0, relativePath.length() - 1) : relativePath;
+        return ignoreMatcher().matches(path);
     }
 
     public synchronized List<String> scanWorkingCopy() {
-        ignorePatterns = null;
+        ignoreMatcher = null;
         List<String> result = new ArrayList<>();
         scanDirectory(directory, directory, result, loadSubrepoPaths());
         return result;

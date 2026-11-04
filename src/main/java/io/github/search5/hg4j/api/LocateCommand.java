@@ -56,6 +56,32 @@ public class LocateCommand {
         this.repository = repository;
     }
 
+    private final FileSelection selection = new FileSelection().defaultKind("relglob");
+
+    /** {@code hg locate [PATTERN]...}: patterns of any kind; a bare pattern is an unrooted glob ({@code relglob}). */
+    public LocateCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg locate -I}. */
+    public LocateCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg locate -X}. */
+    public LocateCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public LocateCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
     public LocateCommand setPattern(String pattern) {
         this.pattern = pattern;
         return this;
@@ -90,9 +116,10 @@ public class LocateCommand {
 
         Pattern compiled = (pattern == null || pattern.isEmpty()) ? null : compileRelglobPattern(pattern);
 
+        io.github.search5.hg4j.match.Matcher selected = selection.isEmpty() ? null : selection.matcher(repository, revision);
         List<String> result = new ArrayList<>();
         for (String path : candidatePaths) {
-            if (compiled == null || compiled.matcher(path).matches()) {
+            if ((compiled == null || compiled.matcher(path).matches()) && (selected == null || selected.matches(path))) {
                 result.add(path);
             }
         }

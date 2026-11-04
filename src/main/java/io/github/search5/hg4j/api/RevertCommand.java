@@ -50,6 +50,76 @@ public class RevertCommand {
         this.repository = repository;
     }
 
+
+    private final FileSelection selection = new FileSelection();
+    private final java.util.List<String> warnings = new java.util.ArrayList<>();
+
+    /** The files to work on, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}); a bare name is relative to the current directory. */
+    public RevertCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code -I}: only files matching these patterns (globs by default). */
+    public RevertCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code -X}: not the files matching these patterns (globs by default). */
+    public RevertCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public RevertCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
+    /** What the last {@link #callSelected()} left undone, in Mercurial's words. */
+    public java.util.List<String> getWarnings() {
+        return warnings;
+    }
+    private boolean all;
+
+    /** {@code hg revert --all}: every changed file. */
+    public RevertCommand setAll(boolean all) {
+        this.all = all;
+        return this;
+    }
+
+    /**
+     * {@code hg revert [FILE]...}: restores the files the patterns select that differ from the revision (the first parent by
+     * default): modified, removed and deleted files get their content back, an added file is forgotten. Needs a pattern or
+     * {@link #setAll}.
+     *
+     * @return the reverted files
+     */
+    public java.util.List<String> callSelected() throws IOException, HgLockException {
+        if (selection.patternCount() == 0 && !all) {
+            throw new HgValidationException("no files specified");
+        }
+        warnings.clear();
+        io.github.search5.hg4j.match.Matcher matcher = selection.patternCount() == 0 && selection.isEmpty()
+                ? io.github.search5.hg4j.match.Matchers.always() : selection.matcher(repository, null);
+        io.github.search5.hg4j.fileset.FileStatus status =
+                io.github.search5.hg4j.fileset.RepositoryFilesetContext.workingDirectoryStatus(repository, matcher, false, false, false);
+        java.util.TreeSet<String> changed = new java.util.TreeSet<>();
+        changed.addAll(status.modified());
+        changed.addAll(status.added());
+        changed.addAll(status.removed());
+        changed.addAll(status.deleted());
+        java.util.List<String> reverted = new java.util.ArrayList<>();
+        for (String path : changed) {
+            if (new RevertCommand(repository).setFile(path).setRevision(revision).call()) {
+                reverted.add(path);
+            }
+        }
+        return reverted;
+    }
+
     public RevertCommand setFile(String file) {
         this.file = file;
         return this;

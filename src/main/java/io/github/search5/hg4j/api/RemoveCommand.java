@@ -29,6 +29,72 @@ public class RemoveCommand {
         this.repository = repository;
     }
 
+
+    private final FileSelection selection = new FileSelection();
+    private final java.util.List<String> warnings = new java.util.ArrayList<>();
+
+    /** The files to work on, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}); a bare name is relative to the current directory. */
+    public RemoveCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code -I}: only files matching these patterns (globs by default). */
+    public RemoveCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code -X}: not the files matching these patterns (globs by default). */
+    public RemoveCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public RemoveCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
+    /** What the last {@link #callSelected()} left undone, in Mercurial's words. */
+    public java.util.List<String> getWarnings() {
+        return warnings;
+    }
+
+    /**
+     * {@code hg remove [FILE]...}: removes the tracked files the patterns select, from the disk and from tracking. A file that
+     * cannot be removed safely (marked for add, modified) is left and reported in {@link #getWarnings()} unless forced; the
+     * others are removed. Needs at least one pattern.
+     *
+     * @return the removed files
+     */
+    public java.util.List<String> callSelected() throws IOException, HgLockException {
+        if (selection.patternCount() == 0) {
+            throw new HgValidationException("no files specified");
+        }
+        warnings.clear();
+        io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, null);
+        Dirstate dirstate = repository.getDirstate();
+        java.util.List<String> candidates = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, Dirstate.Entry> e : new java.util.TreeMap<>(dirstate.getEntries()).entrySet()) {
+            if (e.getValue().getState() != 'r' && matcher.matches(e.getKey())) {
+                candidates.add(e.getKey());
+            }
+        }
+        java.util.List<String> removed = new java.util.ArrayList<>();
+        for (String path : candidates) {
+            try {
+                if (new RemoveCommand(repository).setFile(path).setForce(force).call()) {
+                    removed.add(path);
+                }
+            } catch (HgValidationException refused) {
+                warnings.add("not removing " + path + ": " + refused.getMessage());
+            }
+        }
+        return removed;
+    }
+
     public RemoveCommand setFile(String file) {
         this.file = file;
         return this;
@@ -130,7 +196,10 @@ public class RemoveCommand {
                 // File#exists() follows a symlink and returns false for a dangling target, which
                 // silently skipped deleting the link itself -- it was marked removed in the
                 // dirstate but physically left on disk.
-                if (Files.isSymbolicLink(diskFile.toPath()) || (diskFile.exists() && diskFile.isFile())) {
+                // An added file that is removed with force is only forgotten: real hg leaves the file on the disk (it shows as
+                // unknown afterwards); everything else is deleted from the disk too.
+                if (entry.getState() != 'a'
+                        && (Files.isSymbolicLink(diskFile.toPath()) || (diskFile.exists() && diskFile.isFile()))) {
                     Files.delete(diskFile.toPath());
                 }
 

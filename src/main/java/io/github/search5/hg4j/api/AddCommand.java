@@ -33,12 +33,63 @@ public class AddCommand {
         return this;
     }
 
+    private final FileSelection selection = new FileSelection();
+
+    /** {@code hg add [FILE]...}: the files to add, as patterns ({@code kind:pattern}, {@code set:EXPRESSION}). */
+    public AddCommand setPatterns(String... patterns) {
+        selection.patterns(patterns);
+        return this;
+    }
+
+    /** {@code hg add -I}. */
+    public AddCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg add -X}. */
+    public AddCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public AddCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
+    /**
+     * The files {@code hg add} would add for the selection: the unknown files that match, files marked removed that are back on the
+     * disk, and an ignored file only when a pattern names it exactly.
+     */
+    private List<String> selectedFiles() throws IOException {
+        io.github.search5.hg4j.match.Matcher matcher = selection.matcher(repository, null);
+        io.github.search5.hg4j.fileset.FileStatus status =
+                io.github.search5.hg4j.fileset.RepositoryFilesetContext.workingDirectoryStatus(repository, matcher, true, false, true);
+        List<String> selected = new ArrayList<>(status.unknown());
+        for (String ignored : status.ignored()) {
+            if (matcher.exact(ignored)) {
+                selected.add(ignored);
+            }
+        }
+        for (String removed : status.removed()) {
+            if (new File(repository.getDirectory(), removed).exists()) {
+                selected.add(removed);
+            }
+        }
+        java.util.Collections.sort(selected);
+        return selected;
+    }
+
     public void call() throws IOException, HgLockException {
         try (HgLock wlock = repository.lockWorkingCopy()) {
             Dirstate dirstate = repository.getDirstate();
 
             List<String> filesToAdd = new ArrayList<>(files);
-            if (filesToAdd.isEmpty()) {
+            if (filesToAdd.isEmpty() && !selection.isEmpty()) {
+                filesToAdd.addAll(selectedFiles());
+            } else if (filesToAdd.isEmpty()) {
                 // Scan for all untracked files
                 List<String> allFiles = repository.scanWorkingCopy();
                 for (String relPath : allFiles) {

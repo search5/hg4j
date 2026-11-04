@@ -608,7 +608,10 @@ public class HgRepositoryCoverageTest {
             // Pattern.quote branch rather than treated as brace-expansion syntax.
             Files.writeString(ignoreFile.toPath(), "syntax: glob\nweird{name\n");
 
-            assertTrue(repo.isIgnored("weird{name"));
+            // real hg 7.2.4: an unclosed '{' opens a group that never ends, so the pattern is refused
+            // ("abort: <root>/.hgignore: invalid pattern (relglob): weird{name"); hg4j treats such a file as ignoring nothing
+            // and logs a warning instead of failing every status call
+            assertFalse(repo.isIgnored("weird{name"));
             assertFalse(repo.isIgnored("weirdXname"));
         }
     }

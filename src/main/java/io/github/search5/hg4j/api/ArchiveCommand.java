@@ -68,6 +68,26 @@ public class ArchiveCommand {
         this.repository = repository;
     }
 
+    private final FileSelection selection = new FileSelection();
+
+    /** {@code hg archive -I}: only the files matching these patterns (globs by default) go into the archive. */
+    public ArchiveCommand setInclude(String... patterns) {
+        selection.include(patterns);
+        return this;
+    }
+
+    /** {@code hg archive -X}: not the files matching these patterns. */
+    public ArchiveCommand setExclude(String... patterns) {
+        selection.exclude(patterns);
+        return this;
+    }
+
+    /** The current directory relative to the repository root, against which relative patterns are read. */
+    public ArchiveCommand setCwd(String cwd) {
+        selection.cwd(cwd);
+        return this;
+    }
+
     public ArchiveCommand setRevision(String revision) {
         this.revision = revision;
         return this;
@@ -118,6 +138,19 @@ public class ArchiveCommand {
         int commitRev = changelog.findRevision(node);
 
         Map<String, String> manifestMap = repository.getManifestAtCommit(node);
+        if (!selection.isEmpty()) {
+            io.github.search5.hg4j.match.Matcher selected = selection.matcher(repository, NodeIdUtil.toHex(node));
+            Map<String, String> kept = new java.util.TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+            for (Map.Entry<String, String> e : manifestMap.entrySet()) {
+                if (selected.matches(e.getKey())) {
+                    kept.put(e.getKey(), e.getValue());
+                }
+            }
+            manifestMap = kept;
+            if (kept.isEmpty()) {
+                throw new io.github.search5.hg4j.errors.HgValidationException("no files match the archive pattern");
+            }
+        }
         String archivalText = buildArchivalMetadata(changelog, commitRev, node);
 
         ArchiveType archiveType = resolveType();

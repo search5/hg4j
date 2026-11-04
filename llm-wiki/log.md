@@ -725,3 +725,16 @@ push blob 업로드 없음, `lfs.track`/`.hglfs` 미지원, LFS 서버 없음. �
 ## [2026-11-04] 파일셋 계획 4a단계 완료: 읽기 명령 연결
 `api/FileSelection`(패턴, `-I`, `-X`, cwd)과 files, status, diff, log, cat의 `setPatterns`/`setInclude`/`setExclude`/`setCwd`. `FilesCommand#setFileset`은 새 파일셋 엔진으로 옮겼다(`lfs()`는 이제 확장이 켜진 저장소에서만 알려진 식별자로, 원본과 같다). 5개 명령 x 패턴 22종 x 인자/-I/-X x 루트와 하위 디렉터리를 실제 hg와 대조(5개 테스트). 이때 LFS 파일셋 테스트 저장소에 `[extensions] lfs`를 명시해야 했다.
 검증: 일반 test 2226개, 파일셋·매처·LFS 파일·Cat/Files 관련 interop 통과.
+
+## [2026-11-04] 파일셋 계획 4b 완료: 변경 명령과 ignore 일원화
+add, forget, remove, revert의 패턴 선택(`FileSelection`)을 실제 hg와 같은 결과로 만들고(대조 4개), `HgRepository`의 자체 `.hgignore` 구현을 새 매처로 교체했다(대조 4개: 문법 21종, include/subinclude, ui.ignore). 이 과정에서 옛 구현의 오류 두 가지(`**/`가 0개 디렉터리와도 일치하는 규칙, 닫히지 않은 `{`)와 `remove -f`가 추가(A) 파일을 디스크에서 지우던 차이를 찾아 고쳤다.
+계획 정정: `MiniFileset`은 `minifileset.py`의 이식이므로 유지한다(5단계 계획이 틀렸다). 남은 명령(commit FILE..., annotate, archive, grep, locate)은 사용자 확인을 기다린다.
+검증: 일반 test 2226개 통과.
+
+## [2026-11-04] 파일셋 계획 4단계 잔여 명령 완료, 전체 interop 검증 시작
+`commit FILE...`(부분 커밋), `locate`, `archive -I/-X`, `grep`(+`-r REV` 모드), `annotate`에 패턴 선택을 연결해 실제 hg와 대조했다(6개 테스트). 부분 커밋은 변경집합 해시까지 같다. 이 과정에서 전체 커밋이 사라진 파일에 예외로 중단하던 것을 실제 hg처럼 건너뛰게 고쳤다.
+11:34에 전체 `test`와 `interopTest`를 시작했고, 끝나면 `jacocoTestReport`로 커버리지를 계산한다(리포트가 두 태스크의 데이터를 합친다).
+
+## [2026-11-04] 전체 test·interop 통과, 전체 커버리지 측정
+`test` 2226개(건너뜀 2), `interopTest` 2875개(건너뜀 7)가 모두 통과했다(interop 1시간 28분). 두 태스크의 JaCoCo 데이터를 합친 커버리지: 명령어 93.3%, 라인 93.0%, 분기 83.3%, 메서드 95.5%, 클래스 99.7%.
+라인 30줄 이상 클래스 중 낮은 쪽: `LineDelta$Myers$Search` 61.6%, `HgLfsFactory` 71.9%, `BookmarkCommand` 73.7%, `HgAuthConfig` 73.8%, `SvnSubrepoUtil` 74.2%.

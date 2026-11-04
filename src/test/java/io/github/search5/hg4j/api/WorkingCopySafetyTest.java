@@ -79,7 +79,8 @@ public class WorkingCopySafetyTest {
 
         // 7. Remove with force should succeed
         assertTrue(new RemoveCommand(repo).setFile("b.txt").setForce(true).call());
-        assertFalse(f2.exists());
+        // real hg 7.2.4: a file marked for add is only forgotten by `hg remove -f`; it stays on the disk as an unknown file
+        assertTrue(f2.exists());
     }
 
     @Test

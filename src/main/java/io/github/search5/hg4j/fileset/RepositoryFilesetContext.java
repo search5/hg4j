@@ -398,6 +398,16 @@ public class RepositoryFilesetContext implements FilesetContext {
         return false;
     }
 
+    /**
+     * The status of the working directory against its first parent ({@code hg status}), limited to what {@code match} selects;
+     * unknown and ignored files are listed on request.
+     */
+    public static FileStatus workingDirectoryStatus(HgRepository repository, Matcher match, boolean listIgnored, boolean listClean,
+                                                    boolean listUnknown) throws IOException {
+        RepositoryFilesetContext wd = new RepositoryFilesetContext(repository, null);
+        return wd.p1().status(wd, match, listIgnored, listClean, listUnknown);
+    }
+
     // ---------------------------------------------------------------- the rest
 
     @Override
@@ -413,8 +423,10 @@ public class RepositoryFilesetContext implements FilesetContext {
     @Override
     public Matcher ignoreMatcher() throws IOException {
         List<String> files = new ArrayList<>();
-        if (new File(repository.getDirectory(), ".hgignore").isFile()) {
-            files.add(".hgignore");
+        // absolute paths, as Mercurial uses them: they are what error messages and subinclude lines are relative to
+        File hgignore = new File(repository.getDirectory().getAbsoluteFile(), ".hgignore");
+        if (hgignore.isFile()) {
+            files.add(hgignore.getPath());
         }
         for (Map.Entry<String, String> e : repository.getConfig().getSection("ui").entrySet()) {
             if (e.getKey().equals("ignore") || e.getKey().startsWith("ignore.")) {
@@ -426,7 +438,7 @@ public class RepositoryFilesetContext implements FilesetContext {
         }
         List<String> patterns = new ArrayList<>();
         files.forEach(f -> patterns.add("include:" + f));
-        return Matchers.match(repository.getDirectory(), "", List.of(), patterns, List.of(), "glob", null, null);
+        return Matchers.match(repository.getDirectory().getAbsoluteFile(), "", List.of(), patterns, List.of(), "glob", null, null);
     }
 
     @Override

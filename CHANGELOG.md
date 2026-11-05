@@ -21,6 +21,7 @@ All notable changes to hg4j are listed here, newest first. The reference for beh
 ### Added
 - dirstate-v2 stored like the original: memory-mapped read, lookup in place, append-only writes, docket replaced last, rewrite when half of the data file is unreachable.
 - Lock contention tests between hg4j and the real `hg` (`RealHgLockContentionInteropTest`), each scenario with the locks on (no damage) and with hg4j's locks switched off (damage shows); `LockScopeConcurrencyTest` for the scope of the locks. `HgLock.disabledForTests` is the test hook.
+- `HgSshWireServer.rejectConnection(in, out, reason)`: refuses an SSH connection without a repository after answering the `hello` and `between` handshake, so a real hg client fails fast instead of waiting for ever (taken from the remote repository's `952cde9` and adapted: the repository-less `Wire1Commands.between(Map)` was added, and the read/write helpers became static). Regression tests for it, for the SSH clone of an empty repository, for pushing only a merge commit (`9647575`; the bug itself was already fixed here by `ChangegroupParser`'s `impliedDeltaBase`) and a JIT warm-up with a wider limit in `PerformanceBenchmarkTest` (`72fc316`).
 - `-PignoreTestFailures` for a full run that still produces the coverage report.
 - Documentation: refreshed manuals (English and Korean) with a command reference, this file, and English Javadoc for about 750 public members that had none.
 

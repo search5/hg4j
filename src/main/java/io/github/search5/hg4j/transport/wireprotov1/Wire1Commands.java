@@ -300,6 +300,25 @@ public final class Wire1Commands {
     }
 
     /**
+     * {@code between} for a server that has no repository (a refused connection, see {@code HgSshWireServer#rejectConnection}): one
+     * empty line for every pair, as for nodes the repository does not know.
+     *
+     * @param args the request arguments; {@code pairs} holds the space separated {@code top-bottom} pairs
+     * @return an empty answer without {@code pairs}, otherwise one {@code \n} per pair
+     */
+    public static Wire1Response between(Map<String, String> args) {
+        String pairsArg = args.getOrDefault("pairs", "");
+        if (pairsArg.isBlank()) {
+            return Wire1Response.bytes(new byte[0]);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String ignored : pairsArg.trim().split(" ")) {
+            sb.append('\n');
+        }
+        return Wire1Response.bytes(sb.toString().getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /**
      * Real hg's legacy bisection-based discovery command. Critically, real hg's SSH client
      * ({@code mercurial/sshpeer.py}'s {@code _performhandshake}) sends {@code hello} immediately
      * followed by {@code between} with a single {@code (nullid, nullid)} pair as its bootstrap

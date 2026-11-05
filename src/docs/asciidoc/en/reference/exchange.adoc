@@ -19,6 +19,10 @@ Commands that talk to another repository open a connection through `HgRemoteConn
 |Falls back to `HgRemoteClient`.
 |===
 
+=== Refusing an SSH connection
+
+`HgSshWireServer.rejectConnection(InputStream in, OutputStream out, String reason)` is for a server front end that decides on access before it has a repository. A real hg SSH client sends `hello` and `between` together and reads nothing, not even an error line, until the answer to `between` arrives, so writing only an error and closing leaves it waiting for ever. The method answers both handshake commands as an empty server would (the default capabilities, one empty line for each pair of `between`) and then sends `reason` as the out-of-band error that the client's next command receives. No repository is opened. It is static and throws `IOException` if the streams fail or the client closes before the handshake is complete.
+
 === Authentication for HTTP(S)
 
 * Credentials in the address, or set through `setCredentialsProvider(...)` on a command that offers it, are used for HTTP Basic authentication. As in Mercurial, they are sent only after the server answered 401 with a Basic challenge, and then on later requests at once.

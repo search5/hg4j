@@ -149,6 +149,33 @@ public class HgSshWireServer {
     }
 
     /**
+     * Refuses a connection without ever opening a repository, for a caller that decides on access before it has one (for example an
+     * SSH front end that checks the user's permission first). A real hg SSH client sends {@code hello} and {@code between} at once and
+     * reads nothing, not even an error line, until the answer to {@code between} has come; writing only an error and closing leaves it
+     * waiting for ever. So both handshake commands are answered as an empty server would answer them (the default capabilities, one
+     * empty line for each pair of {@code between}), and then {@code reason} is sent as the out-of-band error that the client's next
+     * command receives as its answer.
+     *
+     * @param in the stream the client writes to
+     * @param out the stream the client reads from
+     * @param reason the message of the refusal
+     * @throws IOException if the streams fail or the client closes before the handshake is complete
+     */
+    public static void rejectConnection(InputStream in, OutputStream out, String reason) throws IOException {
+        readLine(in); // "hello": real hg's SSH client always sends it first
+        readArgs(in, ARG_SPECS.get("hello"));
+        writeResponse(out, Wire1Response.bytes(
+                ("capabilities: " + sshCapabilityLine(Wire1Commands.capabilitiesString()) + "\n").getBytes(StandardCharsets.UTF_8)));
+
+        readLine(in); // "between"
+        Map<String, String> betweenArgs = readArgs(in, ARG_SPECS.get("between"));
+        writeResponse(out, Wire1Commands.between(betweenArgs));
+
+        // The client starts reading only after the "1\n\n" marker of the answer to between; the error is what its next command reads.
+        writeResponse(out, Wire1Response.oobError(reason));
+    }
+
+    /**
      * {@code unbundle}'s real hg wire shape is distinct from every other command's simple
      * one-request/one-response exchange ({@code mercurial/wireprotoserver.py}'s {@code
      * getpayload()} + {@code sshserver}'s push handling, confirmed against Mercurial 7.2.4 source
@@ -217,11 +244,16 @@ public class HgSshWireServer {
     }
 
 
+    /** The capabilities an SSH server sends: the given ones plus {@code protocaps}, the whole line sorted. */
+    private static String sshCapabilityLine(String capabilities) {
+        java.util.SortedSet<String> sorted = new java.util.TreeSet<>(java.util.Arrays.asList(capabilities.split(" ")));
+        sorted.add("protocaps"); // real hg's sshv1 protocol handler adds it, and the whole line is sorted
+        return String.join(" ", sorted);
+    }
+
     /** SSH adds {@code protocaps} to the capabilities it advertises (real hg's sshv1 protocol handler does the same). */
     private Wire1Response sshCapabilities(String cmd) {
-        java.util.SortedSet<String> sorted = new java.util.TreeSet<>(java.util.Arrays.asList(Wire1Commands.capabilitiesString(repository).split(" ")));
-        sorted.add("protocaps"); // real hg's sshv1 protocol handler adds it, and the whole line is sorted
-        String caps = String.join(" ", sorted);
+        String caps = sshCapabilityLine(Wire1Commands.capabilitiesString(repository));
         if (!"hello".equals(cmd)) {
             return Wire1Response.bytes(caps.getBytes(StandardCharsets.UTF_8));
         }
@@ -241,7 +273,7 @@ public class HgSshWireServer {
         return Wire1Response.bytes(hello.toByteArray());
     }
 
-    private Map<String, String> readArgs(InputStream in, String spec) throws IOException {
+    private static Map<String, String> readArgs(InputStream in, String spec) throws IOException {
         Map<String, String> args = new LinkedHashMap<>();
         String[] keys = spec.isEmpty() ? new String[0] : spec.split(" ");
         for (int i = 0; i < keys.length; i++) {
@@ -277,7 +309,7 @@ public class HgSshWireServer {
         return baos.toByteArray();
     }
 
-    private void writeResponse(OutputStream out, Wire1Response response) throws IOException {
+    private static void writeResponse(OutputStream out, Wire1Response response) throws IOException {
         switch (response.getKind()) {
             case BYTES -> writeLengthPrefixed(out, response.getPayload());
             case STREAM, STREAM_UNCOMPRESSED -> {
@@ -293,7 +325,7 @@ public class HgSshWireServer {
         }
     }
 
-    private void writeLengthPrefixed(OutputStream out, byte[] payload) throws IOException {
+    private static void writeLengthPrefixed(OutputStream out, byte[] payload) throws IOException {
         out.write((payload.length + "\n").getBytes(StandardCharsets.US_ASCII));
         out.write(payload);
         out.flush();

@@ -4,6 +4,7 @@ import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.errors.HgLockException;
+import io.github.search5.hg4j.errors.HgValidationException;
 
 import java.io.File;
 import java.io.IOException;
@@ -144,14 +145,20 @@ public final class RenameCommand {
     }
 
     /**
-     * Renames the single file set by {@link #setSource} to {@link #setTarget}.
-     * <p>
-     * Under the working copy lock, moves the file on disk (replacing an existing target and creating parent
-     * directories), marks the source removed ({@code r}) and the target added ({@code a}) in the dirstate and records
-     * the copy source. The dirstate is changed inside a {@code changing_files} context: it is written once at the end and not at all if anything fails (the moved file is not moved back).
+     * Renames the single file set by {@link #setSource} to {@link #setTarget}, with the checks of {@code hg rename}: it runs the same
+     * engine as {@link #callPatterns()} on the two paths.
+     * <p>The source must be tracked and not marked for removal, and an existing target is refused unless {@link #setForce} is set
+     * (real hg: {@code not copying - file is not managed}, {@code not copying - file has been marked for remove},
+     * {@code not overwriting - file exists}); a refusal throws {@link HgValidationException} with the warning real hg prints.
+     * A source that was only added, never committed, is moved without recording a copy, as {@code hg rename} does. Under the working
+     * copy lock the file is moved on disk (creating parent directories), the source is marked removed ({@code r}) and the target added
+     * ({@code a}), and the copy source is recorded. The dirstate is changed inside a {@code changing_files} context: it is written
+     * once at the end and not at all if anything fails (the moved file is not moved back).
+     *
      * @throws IllegalStateException if the source or target was not set
      * @throws io.github.search5.hg4j.errors.HgRepositoryNotFoundException (an {@link IOException}) if the source
      *         does not exist
+     * @throws HgValidationException if real hg would refuse the rename (source not tracked or marked for removal, target exists)
      * @throws IOException if moving the file or writing the dirstate fails
      * @throws HgLockException if the working copy lock cannot be acquired
      */
@@ -159,48 +166,23 @@ public final class RenameCommand {
         if (sourcePath == null || targetPath == null) {
             throw new IllegalStateException("Source and target paths must be specified.");
         }
-
-        // Like real hg: the locks are taken right after the arguments are checked, before any repository state is read, and released when the command ends.
-        try (HgLock lock = repository.lockWorkingCopy()) {
-            File srcFile = new File(repository.getDirectory(), sourcePath);
-            File destFile = new File(repository.getDirectory(), targetPath);
-
-            // A symlink is valid to rename even when its target is missing (dangling) -- File#exists()
-            // follows the link and returns false in that case, matching the same lstat-aware
-            // convention AddCommand/CommitCommand already use elsewhere.
-            if (!Files.isSymbolicLink(srcFile.toPath()) && !srcFile.exists()) {
-                throw new HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
-            }
-
-            // `dirstate.changing_files`: the dirstate is written once, when the context ends normally; a failure writes nothing
-            repository.changingFiles(() -> {
-                // 1. Perform physical move
-                destFile.getParentFile().mkdirs();
-                Files.move(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-
-                // 2. Update dirstate copy map and state entries
-                Dirstate dirstate = repository.getDirstate();
-
-                // Source: marked as removed ('r')
-                dirstate.addEntry(sourcePath, new Dirstate.Entry('r', 0, 0, 0));
-
-                // Target: marked as added ('a'). A symlink's dirstate mode/size must reflect the
-                // link itself (lstat semantics) -- File#canExecute()/length() both follow the
-                // link to whatever it points at, matching what AddCommand/CopyCommand already do.
-                boolean destIsSymlink = Files.isSymbolicLink(destFile.toPath());
-                int mode = destIsSymlink ? 0120000 : (destFile.canExecute() ? 0755 : 0644);
-                int size = destIsSymlink
-                        ? Files.readSymbolicLink(destFile.toPath()).toString().getBytes(StandardCharsets.UTF_8).length
-                        : (int) destFile.length();
-                long time = SafeFileIO.lastModifiedSeconds(destFile);
-                dirstate.addEntry(targetPath, new Dirstate.Entry('a', mode, size, time));
-
-                // Register Copy-rename linkage in copyMap
-                dirstate.addCopy(targetPath, sourcePath);
-
-                repository.writeDirstate(dirstate);
-                return null;
-            });
+        File srcFile = new File(repository.getDirectory(), sourcePath);
+        // A symlink is valid to rename even when its target is missing (dangling) -- File#exists() follows the link.
+        if (!Files.isSymbolicLink(srcFile.toPath()) && !srcFile.exists()) {
+            throw new HgRepositoryNotFoundException("Source file does not exist: " + sourcePath);
+        }
+        CopyEngine.Result result;
+        try {
+            result = CopyEngine.execute(repository, true, java.util.List.of(sourcePath, targetPath), false, force, false,
+                    false, java.util.List.of(), java.util.List.of(), "", null);
+        } catch (CopyEngine.Refused refused) {
+            // the warnings real hg prints for the skipped file come first ("x: not copying - file is not managed")
+            java.util.List<String> lines = new java.util.ArrayList<>(refused.warnings());
+            lines.add(refused.getMessage());
+            throw new HgValidationException(String.join("\n", lines));
+        }
+        if (result.failed()) {
+            throw new HgValidationException(String.join("\n", result.warnings()));
         }
     }
 

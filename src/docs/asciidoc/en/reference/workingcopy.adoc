@@ -316,9 +316,9 @@ Execution:
 * `void call() throws IOException, HgLockException`: single rename. Throws `IllegalStateException` without source and target, `HgRepositoryNotFoundException` if the source does not exist. Moves the file (replacing an existing target and creating parent directories), marks the source `r`, the target `a`, and records the copy. The dirstate is written once at the end and not at all if anything fails (the moved file is not moved back).
 * `PatternResult callPatterns() throws IOException, HgLockException`: `hg rename [OPTION]... SOURCE... DEST` with all of the options. Returns the same `PatternResult` record as `CopyCommand` (real hg warns and goes on for a file it cannot handle; `failed()` says so).
 
-Locks and dirstate: same as `CopyCommand`. `call()` takes `lockWorkingCopy()` then `changingFiles(...)`; it does not use `changingFiles`. `callPatterns()` uses `CopyEngine` with `lockWorkingCopy()` and `changingFiles(...)`.
+Locks and dirstate: same as `CopyCommand`. `call()` and `callPatterns()` both run `CopyEngine`, which takes `lockWorkingCopy()` and then `changingFiles(...)`.
 
-Differences from hg: `call()` does not check whether the source is tracked, and replaces an existing target; `callPatterns()` is the option-complete path. Source does not state this as a deliberate difference.
+Differences from hg: none for `call()`. It runs the same engine as `callPatterns()` and refuses what `hg rename` refuses (checked against hg 7.2): a source that is not tracked (`not copying - file is not managed`), a source marked for removal (`not copying - file has been marked for remove`) and an existing target without `setForce(true)` (`not overwriting - file exists`), each as `HgValidationException` carrying the warning and `no files to copy`. A source that was only added is moved without a copy record, and renaming a renamed file keeps the first source as the copy source. Before 2026-11 `call()` skipped these checks and replaced an existing target silently.
 
 [source,java]
 ----

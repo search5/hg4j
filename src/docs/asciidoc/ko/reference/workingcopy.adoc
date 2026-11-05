@@ -316,9 +316,9 @@ new CopyCommand(repo)
 * `void call() throws IOException, HgLockException`: 단일 이름 변경입니다. 원본과 대상이 없으면 `IllegalStateException`, 원본이 존재하지 않으면 `HgRepositoryNotFoundException`을 던집니다. 파일을 옮기고(기존 대상은 교체하고 상위 디렉터리를 만듭니다) 원본을 `r`, 대상을 `a`로 표시하며 복사를 기록합니다. dirstate는 끝에서 한 번만 쓰고, 어느 단계든 실패하면 쓰지 않습니다(옮긴 파일은 되돌리지 않습니다).
 * `PatternResult callPatterns() throws IOException, HgLockException`: 모든 옵션을 받는 `hg rename [OPTION]... SOURCE... DEST`입니다. `CopyCommand`와 같은 `PatternResult` record를 반환합니다(실제 hg는 처리할 수 없는 파일을 경고하고 계속하며 `failed()`가 이를 알려 줍니다).
 
-잠금과 dirstate: `CopyCommand`와 같습니다. `call()`은 `lockWorkingCopy()` 다음에 `changingFiles(...)`를 씁니다. `callPatterns()`는 `CopyEngine`으로 `lockWorkingCopy()`와 `changingFiles(...)`를 씁니다.
+잠금과 dirstate: `CopyCommand`와 같습니다. `call()`과 `callPatterns()`는 모두 `CopyEngine`을 실행하며, 엔진이 `lockWorkingCopy()` 다음에 `changingFiles(...)`를 씁니다.
 
-hg 원본과 다른 점: `call()`은 원본이 추적 중인지 확인하지 않고 기존 대상을 교체합니다. 옵션이 완전한 경로는 `callPatterns()`입니다. 소스는 이를 의도된 차이라고 명시하지 않습니다.
+hg 원본과 다른 점: `call()`은 없습니다. `callPatterns()`와 같은 엔진을 실행하며 `hg rename`이 거부하는 경우를 똑같이 거부합니다(hg 7.2로 확인). 추적되지 않는 원본(`not copying - file is not managed`), 삭제 예정인 원본(`not copying - file has been marked for remove`), `setForce(true)` 없이 이미 있는 대상(`not overwriting - file exists`)은 각각 경고와 `no files to copy`를 담은 `HgValidationException`으로 거부합니다. 추가만 하고 커밋하지 않은 원본은 복사 기록 없이 이동하며, 이름을 바꾼 파일을 다시 바꾸면 처음 원본이 복사 원본으로 남습니다. 2026-11 이전의 `call()`은 이 검사를 건너뛰고 기존 대상을 조용히 덮어썼습니다.
 
 [source,java]
 ----

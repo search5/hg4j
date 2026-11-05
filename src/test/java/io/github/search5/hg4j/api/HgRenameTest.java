@@ -2,6 +2,7 @@ package io.github.search5.hg4j.api;
 
 import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.errors.HgRepositoryNotFoundException;
+import io.github.search5.hg4j.errors.HgValidationException;
 import io.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -18,6 +19,11 @@ public class HgRenameTest {
 
     @TempDir
     File tempDir;
+
+    private static void commitFile(Hg hg, String name) throws Exception {
+        hg.add().addFile(name).call();
+        hg.commit().setAuthor("Tester").setMessage("add " + name).call();
+    }
 
     @Test
     public void testFileRenameAndCopyMapRegistration() throws Exception {
@@ -100,29 +106,39 @@ public class HgRenameTest {
     }
 
     @Test
-    public void testRenameUntrackedFileBeforeAnyDirstateExists() throws Exception {
+    public void testRenameUntrackedFileIsRefusedLikeHg() throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
-
-        // No add/commit has happened yet, so .hg/dirstate does not exist -
-        // exercises the "no prior dirstate to back up" branch.
         assertFalse(new File(tempDir, ".hg/dirstate").exists());
 
         try (Hg hg = Hg.wrap(repo)) {
             File srcFile = new File(tempDir, "untracked.txt");
             Files.writeString(srcFile.toPath(), "untracked contents");
 
-            hg.rename()
-              .setSource("untracked.txt")
-              .setTarget("renamed.txt")
-              .call();
+            // real hg: "untracked.txt: not copying - file is not managed", then "abort: no files to copy"
+            HgValidationException refused = assertThrows(HgValidationException.class,
+                    () -> hg.rename().setSource("untracked.txt").setTarget("renamed.txt").call());
+            assertTrue(refused.getMessage().contains("not copying - file is not managed"), refused.getMessage());
 
-            assertFalse(srcFile.exists());
-            assertTrue(new File(tempDir, "renamed.txt").exists());
+            assertTrue(srcFile.exists(), "a refused rename must leave the file where it is");
+            assertFalse(new File(tempDir, "renamed.txt").exists());
+            assertNull(repo.getDirstate().getEntries().get("renamed.txt"));
+        }
+    }
 
+    @Test
+    public void testRenameOfAddedButUncommittedFileMovesItWithoutCopyRecord() throws Exception {
+        HgRepository repo = Hg.init().setDirectory(tempDir).call();
+        try (Hg hg = Hg.wrap(repo)) {
+            Files.writeString(new File(tempDir, "added.txt").toPath(), "added only");
+            hg.add().addFile("added.txt").call();
+
+            hg.rename().setSource("added.txt").setTarget("moved.txt").call();
+
+            // real hg: "added.txt has not been committed yet, so no copy data will be stored for moved.txt." status: A moved.txt
             Dirstate dirstate = repo.getDirstate();
-            assertEquals('r', dirstate.getEntries().get("untracked.txt").getState());
-            assertEquals('a', dirstate.getEntries().get("renamed.txt").getState());
-            assertEquals("untracked.txt", dirstate.getCopyMap().get("renamed.txt"));
+            assertEquals('a', dirstate.getEntries().get("moved.txt").getState());
+            assertNull(dirstate.getEntries().get("added.txt"));
+            assertNull(dirstate.getCopyMap().get("moved.txt"));
         }
     }
 
@@ -133,6 +149,7 @@ public class HgRenameTest {
             File srcFile = new File(tempDir, "script.sh");
             Files.writeString(srcFile.toPath(), "#!/bin/sh\necho hi\n");
             assumeExecutableSupported(srcFile);
+            commitFile(hg, "script.sh");
 
             hg.rename()
               .setSource("script.sh")
@@ -156,6 +173,7 @@ public class HgRenameTest {
             File srcFile = new File(tempDir, "plain.txt");
             Files.writeString(srcFile.toPath(), "plain contents");
             srcFile.setExecutable(false, false);
+            commitFile(hg, "plain.txt");
 
             hg.rename()
               .setSource("plain.txt")
@@ -177,6 +195,7 @@ public class HgRenameTest {
 
             File subdir = new File(tempDir, "nested/deeper");
             assertFalse(subdir.exists());
+            commitFile(hg, "source.txt");
 
             hg.rename()
               .setSource("source.txt")
@@ -189,26 +208,31 @@ public class HgRenameTest {
     }
 
     @Test
-    public void testRenameOverwritesExistingTargetFile() throws Exception {
+    public void testRenameRefusesAnExistingTargetUnlessForced() throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
         try (Hg hg = Hg.wrap(repo)) {
             File srcFile = new File(tempDir, "source.txt");
             Files.writeString(srcFile.toPath(), "new contents");
+            commitFile(hg, "source.txt");
 
             File existingTarget = new File(tempDir, "target.txt");
             Files.writeString(existingTarget.toPath(), "old contents that should be replaced");
 
-            hg.rename()
-              .setSource("source.txt")
-              .setTarget("target.txt")
-              .call();
+            // real hg: "target.txt: not overwriting - file exists" and nothing is moved; -f replaces it
+            HgValidationException refused = assertThrows(HgValidationException.class,
+                    () -> hg.rename().setSource("source.txt").setTarget("target.txt").call());
+            assertTrue(refused.getMessage().contains("not overwriting - file exists"), refused.getMessage());
+            assertEquals("old contents that should be replaced", Files.readString(existingTarget.toPath()));
+            assertTrue(srcFile.exists());
+
+            hg.rename().setSource("source.txt").setTarget("target.txt").setForce(true).call();
 
             assertEquals("new contents", Files.readString(existingTarget.toPath()));
         }
     }
 
     @Test
-    public void testChainedRenameKeepsLatestCopySource() throws Exception {
+    public void testChainedRenameKeepsTheOriginalCopySource() throws Exception {
         HgRepository repo = Hg.init().setDirectory(tempDir).call();
         try (Hg hg = Hg.wrap(repo)) {
             File srcFile = new File(tempDir, "a.txt");
@@ -224,9 +248,10 @@ public class HgRenameTest {
             assertTrue(new File(tempDir, "c.txt").exists());
 
             Dirstate dirstate = repo.getDirstate();
-            assertEquals("b.txt", dirstate.getCopyMap().get("c.txt"));
-            assertEquals("a.txt", dirstate.getCopyMap().get("b.txt"));
-            assertEquals('r', dirstate.getEntries().get("b.txt").getState());
+            // real hg: A c.txt (copied from a.txt), R a.txt; b.txt, which was only added, leaves no trace
+            assertEquals("a.txt", dirstate.getCopyMap().get("c.txt"));
+            assertEquals('r', dirstate.getEntries().get("a.txt").getState());
+            assertNull(dirstate.getEntries().get("b.txt"));
         }
     }
 
@@ -313,6 +338,7 @@ public class HgRenameTest {
             Files.writeString(targetFile.toPath(), "hello");
             File linkFile = new File(tempDir, "link.txt");
             Files.createSymbolicLink(linkFile.toPath(), Path.of("target.txt"));
+            commitFile(hg, "link.txt");
 
             hg.rename().setSource("link.txt").setTarget("renamed-link.txt").call();
 
@@ -334,6 +360,7 @@ public class HgRenameTest {
         try (Hg hg = Hg.wrap(repo)) {
             File linkFile = new File(tempDir, "dangling-link.txt");
             Files.createSymbolicLink(linkFile.toPath(), Path.of("does-not-exist.txt"));
+            commitFile(hg, "dangling-link.txt");
 
             // File#exists() follows a symlink and returns false for a dangling target -- the
             // command's own source-existence check must use lstat semantics instead, exactly

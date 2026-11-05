@@ -36,6 +36,20 @@ final class CopyEngine {
     record Result(boolean failed, List<String> warnings, List<String> status) {
     }
 
+    /** The abort of a copy or rename that found nothing to do; real hg prints the warnings of the skipped files before it aborts. */
+    static final class Refused extends HgValidationException {
+        private final List<String> warnings;
+
+        Refused(String message, List<String> warnings) {
+            super(message);
+            this.warnings = warnings;
+        }
+
+        List<String> warnings() {
+            return warnings;
+        }
+    }
+
     private record Source(String abs, String rel, boolean exact) {
     }
 
@@ -142,7 +156,8 @@ final class CopyEngine {
             copylist.add(Map.entry(tfn, srcs));
         }
         if (copylist.isEmpty()) {
-            throw new HgValidationException(rename ? "no files to copy (maybe you meant to use --after --at-rev=.)" : "no files to copy");
+            throw new Refused(rename ? "no files to copy (maybe you meant to use --after --at-rev=.)" : "no files to copy",
+                    new ArrayList<>(warnings));
         }
         int errors = 0;
         for (Map.Entry<Function<String, String>, List<Source>> item : copylist) {
@@ -503,7 +518,7 @@ final class CopyEngine {
         }
         File file = new File(root, path);
         boolean symlink = Files.isSymbolicLink(file.toPath());
-        int mode = !symlink && file.canExecute() ? 0755 : 0644;
+        int mode = symlink ? 0120000 : (file.canExecute() ? 0755 : 0644); // a symlink is recorded with the symlink mode, as AddCommand does
         int size = symlink ? Files.readSymbolicLink(file.toPath()).toString().getBytes().length : (int) file.length();
         dirstate.addEntry(path, new Dirstate.Entry('a', mode, size, SafeFileIO.lastModifiedSeconds(file)));
     }

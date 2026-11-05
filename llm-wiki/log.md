@@ -809,3 +809,4 @@ hg 소스를 읽어 하나씩 대조했다. 고친 것: `FetchCommand.applyBundl
 - 문서를 코드로 대조하다 발견해 고친 결함: `Hg.open`이 hg4j가 직접 만드는 `lfs`, `shared` 요구사항을 거부함(허용 목록에 `lfs`, `shared`, `relshared` 추가, `HgOpenWrittenRequirementsTest`), `CopyCommand.call()`/`RenameCommand.call()`(단일 파일)이 아직 `changing_files` 없이 dirstate 파일을 직접 백업·복원하던 것을 `changingFiles`로 이전.
 - 낡은 주석 정정: `RebaseCommand`의 "evolution 전용", 잠금 대기, 중복·오배치된 Javadoc.
 - 남은 확인 사항: `RenameCommand.call()`이 원본 추적 여부를 확인하지 않음(실제 hg와의 차이 여부 미확인).
+- `RenameCommand.call()`을 실제 `hg rename`(7.2)과 대조: 추적되지 않는 원본, 삭제 예정 원본, 기존 대상(`-f` 없음)을 거부하고, 추가만 한 원본은 복사 기록 없이 이동하며, 연쇄 이름 변경은 처음 원본을 복사 원본으로 남긴다. 이전 구현은 모두 무시하고 대상을 조용히 덮어썼다. `CopyEngine`을 쓰도록 바꾸고 `HgRenameTest`와 `CommitCommandCoverageTest`의 옛 기대값을 정정. 심볼릭 링크 'a' 항목은 0120000 모드로 기록.

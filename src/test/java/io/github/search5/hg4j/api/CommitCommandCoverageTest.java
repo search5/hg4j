@@ -420,7 +420,21 @@ public class CommitCommandCoverageTest {
             Files.writeString(original.toPath(), "brand new content");
             new AddCommand(repo).call();
 
-            new RenameCommand(repo).setSource("fresh.txt").setTarget("renamedFresh.txt").call();
+            // real hg records no copy for a source that was never committed ("so no copy data will be stored"), so the
+            // dirstate is set up by hand: this is the only way to reach the placeholder branch of the commit
+            File moved = new File(repoDir, "renamedFresh.txt");
+            Files.move(original.toPath(), moved.toPath());
+            try (io.github.search5.hg4j.lib.HgLock wlock = repo.lockWorkingCopy()) {
+                repo.changingFiles(() -> {
+                    io.github.search5.hg4j.dirstate.Dirstate dirstate = repo.getDirstate();
+                    dirstate.addEntry("fresh.txt", new io.github.search5.hg4j.dirstate.Dirstate.Entry('r', 0, 0, 0));
+                    dirstate.addEntry("renamedFresh.txt", new io.github.search5.hg4j.dirstate.Dirstate.Entry('a', 0644,
+                            (int) moved.length(), io.github.search5.hg4j.util.SafeFileIO.lastModifiedSeconds(moved)));
+                    dirstate.addCopy("renamedFresh.txt", "fresh.txt");
+                    repo.writeDirstate(dirstate);
+                    return null;
+                });
+            }
 
             // This is the repository's very first commit -- there is no parent manifest to look
             // up the rename source in, so the copy metadata's "copyrev" must fall back to the

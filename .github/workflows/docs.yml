@@ -1,0 +1,54 @@
+name: Publish user manual to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/docs/**'
+      - 'src/main/java/**'
+      - 'build.gradle'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Build the AsciiDoc manual (en + ko)
+        run: ./gradlew asciidoctor --no-daemon
+
+      - name: Copy landing page
+        run: cp src/docs/asciidoc/index.html build/docs/asciidoc/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/asciidoc
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

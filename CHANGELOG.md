@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is still `1.0.0`; nothing below has been released under a new number. Items marked **BC** change behaviour that a caller may rely on.
+All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.0.1` (the release published to the Gradle Plugin Portal and set up for Maven Central); nothing below has been released yet. Items marked **BC** change behaviour that a caller may rely on.
 
 ## Unreleased (2026-11)
 

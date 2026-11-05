@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hg4j User Manual</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1.5rem; color: #1a1a1a; }
+  h1 { font-size: 1.5rem; }
+  ul { line-height: 2.2; padding-left: 1.2rem; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+<script>
+  // Redirect to the manual matching the browser's language, falling back to English for
+  // anything we don't have a translation for (including when navigator.language is
+  // unavailable). The links below are the no-JS/pre-redirect fallback.
+  (function () {
+    var lang = (navigator.language || navigator.userLanguage || "en").toLowerCase();
+    var target = lang.indexOf("ko") === 0 ? "ko/index.html" : "en/index.html";
+    window.location.replace(target);
+  })();
+</script>
+</head>
+<body>
+<h1>hg4j User Manual</h1>
+<p>Redirecting based on your browser language&hellip;</p>
+<ul>
+  <li><a href="en/index.html">English</a></li>
+  <li><a href="ko/index.html">한국어</a></li>
+</ul>
+</body>
+</html>

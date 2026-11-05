@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.0.1` (the release published to the Gradle Plugin Portal and set up for Maven Central); nothing below has been released yet. Items marked **BC** change behaviour that a caller may rely on.
+All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.0`. The section 1.1.0 below is the next release after 1.0.1 (the one published to the Gradle Plugin Portal and set up for Maven Central); it has not been published yet. Items marked **BC** change behaviour that a caller may rely on.
 
-## Unreleased (2026-11)
+## 1.1.0 (2026-11-05)
 
 ### Changed (BC)
 - **Locking follows the original.** A command takes `wlock`, then the store `lock`, for the whole command and releases them in reverse order. Locks wait up to `[ui] timeout` (600 s by default) for another holder.

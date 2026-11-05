@@ -260,8 +260,8 @@ dirstate-v2는 Mercurial과 같게 저장합니다. docket 파일(`dirstate`)이
 * 빌드는 커버리지를 검사합니다. 전체 70%, 핵심 클래스별 90%입니다(`jacocoTestCoverageVerification`). 보고서에는 단위와 interop 실행 결과를 합칩니다. `-PignoreTestFailures`를 주면 테스트가 실패해도 전체 실행이 커버리지 보고서까지 진행됩니다.
 
 == 7. Mercurial과 의도적으로 다른 부분
-* `shelve`: 보관 단계에는 원본처럼 자체 dirstate 컨텍스트가 없습니다(안의 commit과 revert가 각자 엽니다). 감싸면 임시 커밋의 부모가 남아서 `unshelve`가 깨집니다. `unshelve`는 `changing_parents`를 씁니다.
-* `status`: stat 보정은 원본의 `running_status`처럼 컨텍스트 없이 `wlock(wait=False)`로 씁니다.
+* `shelve`: 원본처럼 보관 단계 전체를 감싸는 컨텍스트는 없습니다. 임시 커밋이 자기 컨텍스트를 열고, 작업 사본의 부모로 돌아가는 부분은 `changing_parents`에서 실행합니다(원본은 `update`로 처리합니다). `unshelve`는 `changing_parents`를 씁니다. 보관 단계 전체를 하나의 컨텍스트로 감싸면 임시 커밋의 부모가 남아서 `unshelve`가 깨집니다.
+* `status`: stat 보정(깨끗하다고 확인되었지만 기록된 stat이 낡은 파일)은 `_poststatusfixup`처럼 `changing_*` 컨텍스트 없이 `wlock(wait=False)`로 씁니다. 원본은 status를 `running_status` 컨텍스트에서 실행하는데, 이 컨텍스트는 `changing_*`와 배타적이지 않고 잠금도 요구하지 않으며, 그 뒤에 기다리지 않고 잠금을 시도합니다. hg4j에는 `running_status` 객체가 없지만 단계는 같습니다. 보정은 status가 본 값을 여전히 가진 항목에만 적용하고(원본은 잠금을 잡는 사이 디스크의 dirstate가 바뀌면 버립니다), 잠금이 비어 있으면 쓰고, 없으면 버립니다(`LockError`). 그 밖의 실패는 삼키지 않습니다.
 * `sign --force`는 동작합니다. 원본에서는 `UnboundLocalError`로 끝납니다.
 * `strip --soft`는 명확한 메시지와 함께 거부합니다. 기본 저장소에서 원본은 archived 단계에 `internal-phase` 요구사항이 필요해서 예외로 실패합니다.
 * `upgrade`(`debugupgraderepo`)는 제공하지 않습니다. 다음 메이저 버전에서 명령행 인터페이스와 함께 추가할 예정입니다.

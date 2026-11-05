@@ -656,8 +656,12 @@ public class ShelveCommand {
 
                 Files.writeString(stateFile.toPath(), stateSb.toString(), StandardCharsets.UTF_8);
 
-                // Revert changes in working directory to clean state
-                revertToLatestCommit(dirstate, shelvedFiles);
+                // Revert changes in working directory to clean state. The original does this with `update(repo, parent)`, which
+                // opens `dirstate.changing_parents` itself.
+                repository.changingParents(() -> {
+                    revertToLatestCommit(dirstate, shelvedFiles);
+                    return null;
+                });
             }
         }
     }

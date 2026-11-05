@@ -285,7 +285,7 @@ unshelve 충돌 시 파일을 해결한 뒤 `unshelveContinue()`를 호출하거
 
 .잠금과 dirstate
 * delete/cleanup: `lockWorkingCopy()`만 잡습니다.
-* shelve: `lockWorkingCopy()` 다음 `lockStore()`(작업 디렉터리를 읽은 뒤, 보관할 것이 없는지 판단하기 전에 잡음).
+* shelve: `lockWorkingCopy()` 다음 `lockStore()`(작업 디렉터리를 읽은 뒤, 보관할 것이 없는지 판단하기 전에 잡음). 임시 커밋 뒤에 작업 사본의 부모로 돌아가는 부분은 `changingParents(...)`에서 실행합니다.
 * unshelve(`performUnshelve`): `lockWorkingCopy()`, `lockStore()`, `openChangingParents()`.
 * `unshelveContinue()`, `unshelveAbort()`: `lockWorkingCopy()` 다음 `lockStore()`(중첩).
 * `changingFiles`는 쓰이지 않으며 dirstate는 `writeDirstate`로 기록합니다.

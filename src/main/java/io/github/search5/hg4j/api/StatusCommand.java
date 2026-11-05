@@ -173,7 +173,7 @@ public class StatusCommand {
      * available the fixes are dropped. The entries are applied to the dirstate as it is under the lock, only where it still holds what
      * the status saw.
      */
-    private void writeFixups(Map<String, Dirstate.Entry> seen) {
+    private void writeFixups(Map<String, Dirstate.Entry> seen) throws IOException {
         if (fixups.isEmpty()) {
             return;
         }
@@ -194,8 +194,9 @@ public class StatusCommand {
             if (changed) {
                 repository.writeDirstate(fresh);
             }
-        } catch (Exception unavailable) {
-            // LockError: the dirstate is simply left as it was
+        } catch (io.github.search5.hg4j.errors.HgLockException unavailable) {
+            // LockError: the dirstate is simply left as it was. Any other failure (reading or writing the dirstate under the
+            // lock) is not swallowed, as in `_poststatusfixup`, which catches `error.LockError` only.
         }
     }
 

@@ -285,7 +285,7 @@ On an unshelve conflict, resolve the files and call `unshelveContinue()`, or `un
 
 .Locks and dirstate
 * Delete/cleanup: `lockWorkingCopy()` only.
-* Shelve: `lockWorkingCopy()`, then `lockStore()` (taken after the working copy is read, before deciding that there is nothing to shelve).
+* Shelve: `lockWorkingCopy()`, then `lockStore()` (taken after the working copy is read, before deciding that there is nothing to shelve). Going back to the parent of the working copy after the temporary commit runs in `changingParents(...)`.
 * Unshelve (`performUnshelve`): `lockWorkingCopy()`, `lockStore()`, `openChangingParents()`.
 * `unshelveContinue()`, `unshelveAbort()`: `lockWorkingCopy()` then `lockStore()` (nested).
 * `changingFiles` is not used; the dirstate is written with `writeDirstate`.

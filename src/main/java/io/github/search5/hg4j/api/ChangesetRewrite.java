@@ -344,12 +344,17 @@ final class ChangesetRewrite {
     }
 
     /** {@code scmutil.movedirstate}: the working copy parent follows a replaced changeset. */
-    static void moveWorkingCopyParent(HgRepository repo, byte[] oldNode, byte[] newNode) throws IOException {
-        io.github.search5.hg4j.dirstate.Dirstate dirstate = repo.getDirstate();
-        if (java.util.Arrays.equals(dirstate.getParent1(), oldNode)) {
+    static void moveWorkingCopyParent(HgRepository repo, byte[] oldNode, byte[] newNode) throws IOException, io.github.search5.hg4j.errors.HgLockException {
+        if (!java.util.Arrays.equals(repo.getDirstate().getParent1(), oldNode)) {
+            return;
+        }
+        // `if repo.dirstate.p1() == ctx.node(): with repo.dirstate.changing_parents(repo): scmutil.movedirstate(...)`
+        repo.changingParents(() -> {
+            io.github.search5.hg4j.dirstate.Dirstate dirstate = repo.getDirstate();
             dirstate.setParents(newNode, new byte[20]);
             repo.writeDirstate(dirstate);
-        }
+            return null;
+        });
     }
 
     static Map<String, String> orderedCopy(Map<String, String> m) {

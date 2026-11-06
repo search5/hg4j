@@ -261,6 +261,10 @@ public final class NodeIdUtil {
      * {@code store.py}'s sequence: {@code encodedir}, then {@code _encodefname} + {@code
      * _auxencode}, falling back to the {@code dh/}-prefixed hashed form of {@link #hashEncode}
      * once either the raw or the encoded path exceeds {@value #STORE_MAX_PATH_LEN} bytes.
+     * The {@code data/} store directory is always added, so a tracked path that itself starts with {@code data/} or {@code meta/}
+     * ends up under {@code data/data/} or {@code data/meta/}, as in real hg.
+     * @param relPath the logical repository-relative path including its suffix, for example {@code "dir/a.txt.i"}
+     * @return the path relative to the store directory
      */
     public static String encodeFname(String relPath) {
         return encodeStorePath("data/" + relPath);
@@ -269,6 +273,8 @@ public final class NodeIdUtil {
     /**
      * Like {@link #encodeFname} for a path that already starts with its store directory ({@code data/} or {@code meta/}),
      * as the stream clone and tree manifest code have it.
+     * @param logicalPath the path including its store directory, for example {@code "meta/sub/00manifest.i"}
+     * @return the path relative to the store directory
      */
     public static String encodeStorePath(String logicalPath) {
         String dirEncoded = encodeDir(logicalPath);

@@ -78,7 +78,7 @@ HgRepository repo = new CloneCommand()
 
 === Pull
 
-Pulls changesets from a remote repository into the local one. Corresponds to `hg pull`. It delegates the transfer to `FetchCommand` and then moves an empty dirstate parent to the newest pulled head.
+Pulls changesets from a remote repository into the local one. Corresponds to `hg pull`. It delegates the transfer to `FetchCommand`, like `hg pull` without `-u`: it leaves the working directory and its dirstate alone.
 
 [cols="2,5"]
 |===
@@ -111,9 +111,9 @@ Pulls changesets from a remote repository into the local one. Corresponds to `hg
 
 Also public: `getMessages()`, and `applyBundle(ChangegroupParser.ChangegroupBundle)` plus the overloads `(bundle, int lockTimeoutMs)` and `(bundle, int lockTimeoutMs, FetchCommand.PostLockValidator)`, which apply an already parsed bundle.
 
-Execution: `List<byte[]> call() throws IOException, HgLockException`. Returns the 20-byte node ids of the imported changesets (possibly empty), from `FetchCommand.call()`. Working copy files are not updated; only an empty dirstate parent is moved (see below). `getMessages()` is reset at the start of each call. Throws `IOException` when the connection, the transfer or writing the repository fails, `HgLockException` when a lock cannot be acquired, and `IllegalStateException` when no source was set and no `default` path is configured. `applyBundle(...)` returns the imported node ids with the same throws, except that it waits for locks up to the repository's push lock timeout (or `lockTimeoutMs`; `0` fails at once).
+Execution: `List<byte[]> call() throws IOException, HgLockException`. Returns the 20-byte node ids of the imported changesets (possibly empty), from `FetchCommand.call()`. Working copy files and the dirstate are not touched: a repository without working files that is filled by `call()` keeps the null parent and has no `.hg/dirstate` file (as after `hg pull`; `hg verify` passes on it). `getMessages()` is reset at the start of each call. Throws `IOException` when the connection, the transfer or writing the repository fails, `HgLockException` when a lock cannot be acquired, and `IllegalStateException` when no source was set and no `default` path is configured. `applyBundle(...)` returns the imported node ids with the same throws, except that it waits for locks up to the repository's push lock timeout (or `lockTimeoutMs`; `0` fails at once).
 
-Locks and dirstate: `call()` takes `lockWorkingCopy()` and then runs `FetchCommand.call()`, which itself takes the working copy lock and then the store lock (see Fetch). If the result is not empty, it runs `changingParents(...)` and, when the dirstate's first parent is all zero, sets it to the last element of the result. `applyBundle(...)` takes `lockWorkingCopy(lockTimeoutMs)` (default timeout `repository.resolvePushLockTimeoutMs()`) and uses the same `changingParents` step. Bookmark merging happens inside `FetchCommand` (`BookmarkCommand.mergeFromRemote()`).
+Locks and dirstate: `call()` takes `lockWorkingCopy()` and then runs `FetchCommand.call()`, which itself takes the working copy lock and then the store lock (see Fetch). It does not change the dirstate. `applyBundle(...)` takes `lockWorkingCopy(lockTimeoutMs)` (default timeout `repository.resolvePushLockTimeoutMs()`) and leaves the dirstate alone as well. Bookmark merging happens inside `FetchCommand` (`BookmarkCommand.mergeFromRemote()`).
 
 [source,java]
 ----

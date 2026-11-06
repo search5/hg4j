@@ -170,11 +170,17 @@ public class BundleCommand {
      * </ul>
      */
     public enum BundleType {
+        /** Uncompressed changegroup version 1 ({@code HG10UN}); the default. */
         NONE_V1("none-v1"),
+        /** Gzip-compressed changegroup version 1. */
         GZIP_V1("gzip-v1"),
+        /** Bzip2-compressed changegroup version 1. */
         BZIP2_V1("bzip2-v1"),
+        /** Uncompressed changegroup version 3 (usable for treemanifest repositories). */
         NONE_V3("none-v3"),
+        /** Gzip-compressed changegroup version 3. */
         GZIP_V3("gzip-v3"),
+        /** Bzip2-compressed changegroup version 3. */
         BZIP2_V3("bzip2-v3");
 
         private final String cliName;
@@ -183,12 +189,22 @@ public class BundleCommand {
             this.cliName = cliName;
         }
 
-        /** The exact spelling real {@code hg bundle --type <name>} uses for this format. */
+        /**
+         * The exact spelling real {@code hg bundle --type <name>} uses for this format.
+         *
+         * @return the CLI name, e.g. {@code "gzip-v1"}
+         */
         public String cliName() {
             return cliName;
         }
 
-        /** Case-insensitive lookup by {@link #cliName()}, e.g. {@code "gzip-v1"} or {@code "GZIP-V1"}. */
+        /**
+         * Case-insensitive lookup by {@link #cliName()}, e.g. {@code "gzip-v1"} or {@code "GZIP-V1"}.
+         *
+         * @param name the {@code --type} spelling to look up
+         * @return the matching bundle type
+         * @throws IllegalArgumentException if the name is not one of the supported types
+         */
         public static BundleType fromCliName(String name) {
             for (BundleType t : values()) {
                 if (t.cliName.equalsIgnoreCase(name)) {
@@ -233,7 +249,12 @@ public class BundleCommand {
         this.repository = repository;
     }
 
-    /** The {@code .hg} file the changegroup bytes are written to. Required. */
+    /**
+     * The {@code .hg} file the changegroup bytes are written to. Required.
+     *
+     * @param outputFile the bundle file to create
+     * @return this command
+     */
     public BundleCommand setOutputFile(File outputFile) {
         this.outputFile = outputFile;
         return this;
@@ -246,6 +267,9 @@ public class BundleCommand {
      * for a treemanifest repository (see {@link BundleType}'s javadoc) -- {@link #call()} mirrors
      * real {@code hg bundle}'s own abort when a {@code -v1} type is requested against a
      * treemanifest repository instead of silently upgrading the format underneath the caller.
+     *
+     * @param type the bundle format; {@code null} selects the default {@link BundleType#NONE_V1}
+     * @return this command
      */
     public BundleCommand setType(BundleType type) {
         this.type = (type != null) ? type : BundleType.NONE_V1;
@@ -253,7 +277,12 @@ public class BundleCommand {
     }
 
     /** Convenience overload accepting real {@code hg}'s own {@code --type} spelling, e.g.
-     * {@code "gzip-v1"} (case-insensitive). See {@link BundleType#fromCliName(String)}. */
+     * {@code "gzip-v1"} (case-insensitive). See {@link BundleType#fromCliName(String)}.
+     *
+     * @param type the {@code --type} spelling
+     * @return this command
+     * @throws IllegalArgumentException if the spelling is not a supported type
+     */
     public BundleCommand setType(String type) {
         return setType(BundleType.fromCliName(type));
     }
@@ -263,6 +292,9 @@ public class BundleCommand {
      * its ancestors (further narrowed by {@link #setBaseRevision(String)}). When left unset, every
      * revision in the repository is a candidate target, matching {@code hg}'s "no -r" default of
      * bundling from every head.
+     *
+     * @param revision the revision to bundle up to ({@code -r}), or {@code null} for all heads
+     * @return this command
      */
     public BundleCommand setRevision(String revision) {
         this.revision = revision;
@@ -277,6 +309,9 @@ public class BundleCommand {
      * {@link IllegalStateException} if this is never set, matching real {@code hg bundle}'s own
      * refusal to guess a base without an explicit {@code --base}/{@code -a} or a configured/given
      * destination (see the class-level scope note on why destination inference isn't implemented).
+     *
+     * @param baseRevision the revision assumed present at the destination ({@code --base}), or {@code "null"} for everything
+     * @return this command
      */
     public BundleCommand setBaseRevision(String baseRevision) {
         this.baseRevision = baseRevision;
@@ -286,6 +321,9 @@ public class BundleCommand {
     /**
      * {@code hg bundle -a/--all}: bundle every changeset (the same as {@link #setBaseRevision(String) base} {@code "null"}). A base
      * given as well is ignored, as the original does ("ignoring --base because --all was specified"); a destination is refused.
+     *
+     * @param all {@code true} to bundle every changeset ({@code hg bundle --all}); default {@code false}
+     * @return this command
      */
     public BundleCommand setAll(boolean all) {
         this.all = all;
@@ -298,13 +336,21 @@ public class BundleCommand {
      * original uses {@code paths.default-push}, then {@code paths.default}, and so does this command; none of them is a config error
      * ("default repository not configured!"). A remote destination (an URL with a scheme other than {@code file}) is not supported.
      * Incompatible with {@link #setAll(boolean)} and {@link #setBaseRevision(String)}.
+     *
+     * @param destination a local repository path ({@code file://} accepted) or a {@code [paths]} entry name
+     * @return this command
      */
     public BundleCommand setDestination(String destination) {
         this.destination = destination;
         return this;
     }
 
-    /** {@code hg bundle -f/--force}: bundle even if the destination is unrelated to this repository (everything is outgoing then). */
+    /**
+     * {@code hg bundle -f/--force}: bundle even if the destination is unrelated to this repository (everything is outgoing then).
+     *
+     * @param force {@code true} to allow an unrelated destination; default {@code false}
+     * @return this command
+     */
     public BundleCommand setForce(boolean force) {
         this.force = force;
         return this;
@@ -347,6 +393,10 @@ public class BundleCommand {
      * changes found" / exit-1 behavior, verified: {@code hg bundle --base tip out.hg} on a repo
      * whose tip is already the base prints "no changes found" and leaves no output file behind)
      * and this method simply returns {@code 0}.
+     *
+     * @return the number of changesets written to the bundle, {@code 0} if none
+     * @throws IOException if the repository cannot be read, the destination is missing or unrelated, or the file cannot be written
+     * @throws HgLockException if the store lock needed while bundling cannot be acquired
      */
     public int call() throws IOException, HgLockException {
         if (outputFile == null) {

@@ -35,10 +35,20 @@ import java.util.zip.DeflaterOutputStream;
  */
 public class HgHttpWireServer extends HttpServlet {
 
+    /** The repository this servlet serves. */
+    /** The repository this servlet serves. */
     private final HgRepository repository;
+    /** The path prefix the repository is served under; empty for the root. */
+    /** The path prefix the repository is served under; empty for the root. */
     private volatile String basePath = "";
+    /** Hooks run before an incoming push is applied. */
+    /** Hooks run before an incoming push is applied. */
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
+    /** Hooks run after an incoming changegroup was applied, able to undo it. */
+    /** Hooks run after an incoming changegroup was applied, able to undo it. */
     private final List<HgHook> preTxnChangegroupHooks = new ArrayList<>();
+    /** Notification-only hooks run after an incoming push was applied. */
+    /** Notification-only hooks run after an incoming push was applied. */
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
     // yona-wiki P3-21/P3-22 — see Wire1Commands#pushkey(HgRepository, Map, List, List): the
     // changegroup hooks above never see which ref (bookmark) moved, only raw changeset nodes —
@@ -47,7 +57,11 @@ public class HgHttpWireServer extends HttpServlet {
     private boolean enforceWebPermissions;
     /** Names the authenticated user of a request (Mercurial's {@code REMOTE_USER}); the container's remote user by default. */
     private java.util.function.Function<HttpServletRequest, String> remoteUser = HttpServletRequest::getRemoteUser;
+    /** Hooks run before an incoming pushkey is applied. */
+    /** Hooks run before an incoming pushkey is applied. */
     private final List<HgHook> prePushkeyHooks = new ArrayList<>();
+    /** Notification-only hooks run after an incoming pushkey was applied. */
+    /** Notification-only hooks run after an incoming pushkey was applied. */
     private final List<HgHook> postPushkeyHooks = new ArrayList<>();
 
     /**
@@ -61,7 +75,11 @@ public class HgHttpWireServer extends HttpServlet {
     }
 
     /** Registers a hook run before an incoming {@code unbundle} (push) is applied — returning
-     * {@code false} aborts it before anything is written, real hg's {@code pretxnchangegroup}. */
+     * {@code false} aborts it before anything is written, real hg's {@code pretxnchangegroup}.
+     *
+     * @param hook the hook to add; must not be null
+     * @return this server
+     */
     public HgHttpWireServer registerPreChangegroupHook(HgHook hook) {
         preChangegroupHooks.add(hook);
         return this;
@@ -70,6 +88,9 @@ public class HgHttpWireServer extends HttpServlet {
     /**
      * Registers a hook run AFTER the incoming changegroup has been applied, abort-capable: returning {@code false} undoes the push, real hg's
      * {@code pretxnchangegroup} (the hook seen by {@link #registerPreChangegroupHook} runs before anything is written, like {@code prechangegroup}).
+     *
+     * @param hook the hook to add; must not be null
+     * @return this server
      */
     public HgHttpWireServer registerPreTxnChangegroupHook(HgHook hook) {
         preTxnChangegroupHooks.add(hook);
@@ -93,13 +114,22 @@ public class HgHttpWireServer extends HttpServlet {
      * {@code false} aborts it, surfaced to the client as the real hg pushkey failure response.
      * In a bundle2 push the hook runs after the changegroup of the same push was applied, so the repository in the context
      * (clear its revlog cache first) already holds the pushed changesets, like the original's pending view ({@code HG_PENDING});
-     * a refusal then undoes the whole push. */
+     * a refusal then undoes the whole push.
+     *
+     * @param hook the hook to add; must not be null
+     * @return this server
+     */
     public HgHttpWireServer registerPrePushkeyHook(HgHook hook) {
         prePushkeyHooks.add(hook);
         return this;
     }
 
-    /** Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully. */
+    /**
+     * Registers a notification-only hook run after an incoming {@code pushkey} has been applied successfully.
+     *
+     * @param hook the hook to add; must not be null
+     * @return this server
+     */
     public HgHttpWireServer registerPostPushkeyHook(HgHook hook) {
         postPushkeyHooks.add(hook);
         return this;
@@ -110,6 +140,9 @@ public class HgHttpWireServer extends HttpServlet {
      * {@code allowpull}, {@code push_ssl}) of the served repository exactly like Mercurial's own web server, which refuses a push
      * unless {@code allow-push} names the user and {@code push_ssl} is off or the request is HTTPS. Off by default: an
      * unconfigured hg4j server accepts every request.
+     *
+     * @param enforce {@code true} to apply the {@code [web]} rules; default {@code false}
+     * @return this server
      */
     public HgHttpWireServer setEnforceWebPermissions(boolean enforce) {
         this.enforceWebPermissions = enforce;
@@ -137,7 +170,12 @@ public class HgHttpWireServer extends HttpServlet {
         return this;
     }
 
-    /** Sets how the authenticated user of a request is determined (default: {@link HttpServletRequest#getRemoteUser()}). */
+    /**
+     * Sets how the authenticated user of a request is determined (default: {@link HttpServletRequest#getRemoteUser()}).
+     *
+     * @param resolver maps a request to the user name used for the {@code [web]} access checks, or {@code null} for none
+     * @return this server
+     */
     public HgHttpWireServer setRemoteUserResolver(java.util.function.Function<HttpServletRequest, String> resolver) {
         this.remoteUser = resolver;
         return this;

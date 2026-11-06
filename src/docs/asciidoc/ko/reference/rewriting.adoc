@@ -589,7 +589,7 @@ for (var h : new BranchesCommand(repo).setIncludeClosed(true).call()) {
 
 .hg 원본과 다른 점
 * 기존 태그 검사는 로컬과 전역 태그를 합쳐서 합니다(hg 7.2.2로 검증).
-* 태그 상태는 작업 디렉터리의 `.hgtags`에서 읽는 단순화된 단일 파일 모델입니다(`TagsCommand` javadoc 기준).
+* `TagCommand`가 확인에 쓰는 태그 상태는 작업 디렉터리의 `.hgtags`에서 읽는 단순화된 단일 파일 모델입니다(`TagsCommand` javadoc 기준). `hg tags`처럼 읽으려면 `TagsCommand.setReadFromHeads(true)`를 씁니다.
 
 .사용 예
 [source,java]
@@ -605,7 +605,16 @@ new TagCommand(repo)
 태그를 나열합니다(`hg tags`).
 
 .설정자
-없습니다(생성자만 있음).
+[cols="2,5"]
+|===
+|설정자 |의미
+
+|`setReadFromHeads(boolean)`
+|`true`이면 `hg tags`처럼 전역 태그를 작업 디렉터리가 아니라 저장소의 모든 head의 changeset에 있는 `.hgtags`에서 읽습니다. push나 pull로 채운 서버 저장소처럼 작업 파일이 없는 저장소는 이 방식으로만 태그가 보입니다. head는 오래된 것부터 읽어 나중 줄이 이기고, 파일 리비전이 같은 `.hgtags`는 한 번만 읽으며, 커밋하지 않은 `.hgtags`는 hg처럼 무시합니다. 기본값 `false`는 작업 디렉터리의 `.hgtags`입니다.
+
+|`setRevision(String)`
+|head 대신 이 changeset 하나의 `.hgtags`만 읽습니다(리비전 번호, 노드 또는 노드 접두어, `tip`이며 `null`이면 해제). 작업 디렉터리와 다른 head는 읽지 않으며 `setReadFromHeads(true)`를 포함합니다. `.hgtags`가 없는 changeset은 전역 태그가 없습니다.
+|===
 
 .실행
 [cols="2,5"]
@@ -613,7 +622,7 @@ new TagCommand(repo)
 |메서드 |반환값 / 예외
 
 |`call()`
-|`List<TagsCommand.Tag>`이며 null이 아닙니다. 각 `Tag`는 `getName()`(null 아님), `getNode()`(20바이트 노드, 빈 저장소의 `tip`은 모두 0), `getRev()`(리비전 번호, 빈 저장소의 `tip`은 -1), `isLocal()`(`.hgtags`가 아니라 `.hg/localtags`에 정의됨)을 제공합니다. 작업 디렉터리의 `.hgtags`와 `.hg/localtags`를 읽고 가짜 태그 `tip`을 항상 추가합니다. 태그 파일이나 changelog를 읽지 못하면 `IOException`을 던집니다.
+|`List<TagsCommand.Tag>`이며 null이 아닙니다. 각 `Tag`는 `getName()`(null 아님), `getNode()`(20바이트 노드, 빈 저장소의 `tip`은 모두 0), `getRev()`(리비전 번호, 빈 저장소의 `tip`은 -1), `isLocal()`(`.hgtags`가 아니라 `.hg/localtags`에 정의됨)을 제공합니다. `.hgtags`(작업 디렉터리, 또는 설정자에 따라 head나 지정한 리비전)와 `.hg/localtags`를 읽고 가짜 태그 `tip`을 항상 추가합니다. 태그 파일이나 changelog를 읽지 못하면 `IOException`을 던집니다.
 |===
 
 규칙: `.hg/localtags`가 `.hgtags`보다 우선하고, 마지막 줄이 이깁니다. nullid는 삭제를 뜻하고, 알 수 없는 노드의 태그는 제외합니다. `tip`은 항상 실제 tip을 가리키며, 정렬은 높은 리비전 우선 후 이름 역순입니다.
@@ -622,7 +631,7 @@ new TagCommand(repo)
 * 잠금도 dirstate 컨텍스트도 없습니다.
 
 .hg 원본과 다른 점
-* 전역 태그는 작업 디렉터리의 `.hgtags`만 읽으며 hg의 head별 매니페스트 병합은 하지 않습니다.
+* 기본값에서 전역 태그는 작업 디렉터리의 `.hgtags`만 읽습니다. `setReadFromHeads(true)`를 주면 `hg tags`처럼 head에서 읽습니다(`findglobaltags`: head를 오래된 것부터, 파일 리비전마다 한 번, 나중 줄이 이기고 이력은 `_updatetags`처럼 합칩니다).
 
 .사용 예
 [source,java]

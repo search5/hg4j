@@ -410,7 +410,7 @@ if (r.isConflicted()) {
 
 === 여러 저장소 서빙 (기준 경로)
 
-`HgHttpWireServer.setBasePath("/owner/project")`는 서버가 그 경로 아래에서만 응답하게 합니다. 접두어를 뗀 뒤 LFS 경로(`.git/info/lfs/objects/batch`, `.hg/lfs/objects/...`)를 판정하고, wire 프로토콜(`?cmd=`)도 그 아래에서 제공하며, 접두어 밖의 요청은 모두 404입니다. 접두어는 컨테이너가 알려 주는 요청 URI와 비교하므로 컨텍스트 경로를 포함합니다. 앞의 슬래시가 없거나 뒤에 슬래시가 있어도 무시합니다. 기본값은 루트이며 기존 동작은 바뀌지 않습니다.
+`HgHttpWireServer.setBasePath("/owner/project")`는 서버가 그 경로 아래에서만 응답하게 합니다. 접두어를 뗀 뒤 LFS 경로(`.git/info/lfs/objects/batch`, `.hg/lfs/objects/...`)를 판정하고, wire 프로토콜(`?cmd=`)도 그 아래에서 제공하며, 접두어 밖의 요청은 모두 404입니다. batch 응답의 전송 링크(`href`)도 접두어로 시작하므로(`http://host/owner/project/.hg/lfs/objects/<oid>`), 실제 hg 클라이언트가 그 아래에서 업로드와 다운로드를 합니다(원본은 `req.baseurl`로 만듭니다). 접두어는 컨테이너가 알려 주는 요청 URI와 비교하므로 컨텍스트 경로를 포함합니다. 앞의 슬래시가 없거나 뒤에 슬래시가 있어도 무시합니다. 기본값은 루트이며 기존 동작은 바뀌지 않습니다.
 
 === 사유를 붙여 push 거절하기
 

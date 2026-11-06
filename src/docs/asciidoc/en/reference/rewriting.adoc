@@ -589,7 +589,7 @@ Creates, moves, or removes a tag (`hg tag`).
 
 .Differences from hg
 * The existing-tag check spans local and global tags together (verified against hg 7.2.2).
-* Tag state is read from the working copy `.hgtags`, a simplified single-file model (per `TagsCommand` javadoc).
+* `TagCommand` reads the tag state it checks against from the working copy `.hgtags`, a simplified single-file model (per `TagsCommand` javadoc); `TagsCommand.setReadFromHeads(true)` reads the way `hg tags` does.
 
 .Example
 [source,java]
@@ -605,7 +605,16 @@ new TagCommand(repo)
 Lists tags (`hg tags`).
 
 .Setters
-None (constructor only).
+[cols="2,5"]
+|===
+|Setter |Meaning
+
+|`setReadFromHeads(boolean)`
+|`true` reads the global tags like `hg tags` does: the `.hgtags` of every head of the repository, from the changesets, not from the working copy. A repository without working files (a server repository filled by push or pull) shows its tags only this way. The heads are read oldest first so that a later line wins, a `.hgtags` file with the same file revision is read once, and an uncommitted `.hgtags` is ignored (as in hg). Default `false`: the working copy `.hgtags`.
+
+|`setRevision(String)`
+|Reads the `.hgtags` of this one changeset only (a revision number, a node or node prefix, or `tip`; `null` clears it), not the working copy and not the other heads. Implies `setReadFromHeads(true)`. A changeset without `.hgtags` has no global tags.
+|===
 
 .Execution
 [cols="2,5"]
@@ -613,7 +622,7 @@ None (constructor only).
 |Method |Returns / throws
 
 |`call()`
-|`List<TagsCommand.Tag>`, never null. Each `Tag` has `getName()` (never null), `getNode()` (20-byte node; all zeros for `tip` of an empty repository), `getRev()` (revision number; -1 for `tip` of an empty repository) and `isLocal()` (defined in `.hg/localtags` rather than `.hgtags`). Reads `.hgtags` from the working copy and `.hg/localtags`, and always adds the pseudo tag `tip`. Throws `IOException` if reading the tag files or the changelog fails.
+|`List<TagsCommand.Tag>`, never null. Each `Tag` has `getName()` (never null), `getNode()` (20-byte node; all zeros for `tip` of an empty repository), `getRev()` (revision number; -1 for `tip` of an empty repository) and `isLocal()` (defined in `.hg/localtags` rather than `.hgtags`). Reads `.hgtags` (from the working copy, or from the heads or the given revision, see the setters) and `.hg/localtags`, and always adds the pseudo tag `tip`. Throws `IOException` if reading the tag files or the changelog fails.
 |===
 
 Rules: `.hg/localtags` wins over `.hgtags`; last line wins; nullid means deleted; tags with unknown nodes are omitted; `tip` always names the real tip; order is highest revision first, then reverse alphabetical.
@@ -622,7 +631,7 @@ Rules: `.hg/localtags` wins over `.hgtags`; last line wins; nullid means deleted
 * No lock, no dirstate context.
 
 .Differences from hg
-* Global tags are read from the working copy `.hgtags` only, not hg's per-head manifest merge.
+* By default global tags are read from the working copy `.hgtags` only. With `setReadFromHeads(true)` they are read from the heads as `hg tags` does (`findglobaltags`: the heads oldest first, a `.hgtags` file read once per file revision, later lines win, history is merged as in `_updatetags`).
 
 .Example
 [source,java]

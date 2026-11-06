@@ -447,7 +447,7 @@ Execution:: `List<String> call() throws IOException`. Node ids in hex. `all()`/`
 
 Locks and dirstate:: No locks, no changing_files/changing_parents. Calls `repository.refreshIfChangedOnDisk()` first.
 
-Differences from hg:: The engine failure fallback to a single revision lookup is specific to this class. The supported revset language is that of `HgRevsetEngine`, whose javadoc describes it as evaluating composite expressions such as `draft()`, `author(tester)`, `parents(rev)` and AND/OR combinations (for example `draft() and author(tester)`); a null or blank query gives an empty result.
+Differences from hg:: The engine failure fallback to a single revision lookup is specific to this class. The supported revset language is that of `HgRevsetEngine`, whose javadoc describes it as evaluating composite expressions such as `draft()`, `author(tester)`, `parents(rev)` and AND/OR combinations (for example `draft() and author(tester)`); a null or blank query gives an empty result. `tag(name)` reads the tags the way `hg tags` does, from the `.hgtags` of the heads and not from the working copy, so it also works in a repository without working files; `tip` is not matched, the name is exact and case-sensitive, `re:` and `literal:` prefixes work, and an unknown name gives an empty result (the original aborts).
 
 [source,java]
 ----

@@ -42,22 +42,39 @@ public final class Wire1Commands {
     /**
      * The capability tokens a repository-independent server advertises (default configuration): kept for callers that have no
      * repository at hand. The line a real server sends is {@link #capabilitiesString(HgRepository)}.
+     *
+     * @return the space-separated capability tokens
      */
     public static String capabilitiesString() {
         return String.join(" ", capabilityTokens(null, false));
     }
 
-    /** The {@code capabilities} line of an SSH (or transport-neutral) server for {@code repo}. */
+    /**
+     * The {@code capabilities} line of an SSH (or transport-neutral) server for {@code repo}.
+     *
+     * @param repo the served repository, or {@code null} for the default configuration
+     * @return the space-separated capability tokens
+     */
     public static String capabilitiesString(HgRepository repo) {
         return String.join(" ", capabilityTokens(repo, false));
     }
 
-    /** The {@code capabilities} line of an HTTP server for {@code repo}: the same plus the HTTP-only tokens. */
+    /**
+     * The {@code capabilities} line of an HTTP server for {@code repo}: the same plus the HTTP-only tokens.
+     *
+     * @param repo the served repository, or {@code null} for the default configuration
+     * @return the space-separated capability tokens
+     */
     public static String capabilitiesStringHttp(HgRepository repo) {
         return String.join(" ", capabilityTokens(repo, true));
     }
 
-    /** Engines the HTTP server compresses with, in its order of preference ({@code server.compressionengines}). */
+    /**
+     * Engines the HTTP server compresses with, in its order of preference ({@code server.compressionengines}).
+     *
+     * @param repo the served repository, or {@code null} for the default order
+     * @return the engine names, most preferred first
+     */
     public static List<String> httpCompressionEngines(HgRepository repo) {
         String configured = repo == null ? null : repo.getConfig().get("server", "compressionengines", null);
         List<String> engines = new ArrayList<>();
@@ -181,17 +198,32 @@ public final class Wire1Commands {
         return Wire1Response.bytes(capabilitiesString(repo).getBytes(StandardCharsets.UTF_8));
     }
 
-    /** {@code capabilities} as an HTTP server answers it (with the HTTP-only tokens). */
+    /**
+     * {@code capabilities} as an HTTP server answers it (with the HTTP-only tokens).
+     *
+     * @param repo the served repository
+     * @return a bytes response holding the capability tokens
+     */
     public static Wire1Response capabilitiesHttp(HgRepository repo) {
         return Wire1Response.bytes(capabilitiesStringHttp(repo).getBytes(StandardCharsets.UTF_8));
     }
 
-    /** {@code hello} as an HTTP server answers it. */
+    /**
+     * {@code hello} as an HTTP server answers it.
+     *
+     * @param repo the served repository
+     * @return a bytes response holding {@code capabilities: <tokens>}
+     */
     public static Wire1Response helloHttp(HgRepository repo) {
         return Wire1Response.bytes(("capabilities: " + capabilitiesStringHttp(repo) + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Real hg's SSH handshake bootstrap command; not used over HTTP (which uses {@code ?cmd=capabilities} directly). */
+    /**
+     * Real hg's SSH handshake bootstrap command; not used over HTTP (which uses {@code ?cmd=capabilities} directly).
+     *
+     * @param repo the served repository
+     * @return a bytes response holding {@code capabilities: <tokens>}
+     */
     public static Wire1Response hello(HgRepository repo) {
         return Wire1Response.bytes(("capabilities: " + capabilitiesString(repo) + "\n").getBytes(StandardCharsets.UTF_8));
     }
@@ -200,6 +232,10 @@ public final class Wire1Commands {
      * Real hg's legacy {@code clonebundles} command (7.2.4): the manifest without {@code peer-bundle-cache://} entries
      * and without entries whose bundlespec has a {@code store-fingerprint}, see {@link ClonebundlesManifest}. Empty when
      * there is no manifest. Before 2026-11-03 the file was sent verbatim.
+     *
+     * @param repo the served repository
+     * @return a bytes response with the legacy clone bundles manifest
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response clonebundles(HgRepository repo) throws IOException {
         return Wire1Response.bytes(ClonebundlesManifest.legacyAnswer(ClonebundlesManifest.getManifestLines(repo)));
@@ -208,6 +244,11 @@ public final class Wire1Commands {
     /**
      * Real hg's {@code clonebundles_manifest} (7.2.4): every manifest line as it is; the client decides what it can use.
      * (The development tree's {@code mandatory_params}/{@code store_fingerprint} arguments are not in a release yet.)
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a bytes response with the clone bundles manifest
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response clonebundlesManifest(HgRepository repo, Map<String, String> args) throws IOException {
         return Wire1Response.bytes(ClonebundlesManifest.manifestAnswer(ClonebundlesManifest.getManifestLines(repo)));
@@ -217,12 +258,23 @@ public final class Wire1Commands {
      * {@code heads_buckets} (development tree after 7.2.4): the heads' bucket fingerprints and the heads the client does not
      * already know, see {@link HeadsBuckets}. The optional {@code cached} argument carries the fingerprints the client
      * remembers.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a bytes response with the encoded heads bucket information
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response headsBuckets(HgRepository repo, Map<String, String> args) throws IOException {
         return Wire1Response.bytes(HeadsBuckets.encodedBucketInfo(repo, HeadsBuckets.parseCached(args.get("cached"))));
     }
 
-    /** The SSH {@code hello} line with the heads bucket fingerprints, or null. */
+    /**
+     * The SSH {@code hello} line with the heads bucket fingerprints, or null.
+     *
+     * @param repo the served repository
+     * @return the line to add to the hello answer, or {@code null}
+     * @throws IOException if the repository cannot be read or written
+     */
     public static byte[] headsBucketsHelloLine(HgRepository repo) throws IOException {
         return HeadsBuckets.encodeHello(repo);
     }
@@ -232,6 +284,11 @@ public final class Wire1Commands {
      * of the shape of {@code names} (comma separated), so a narrow client can check that it computes the same fingerprint. A name that is
      * not a shape answers {@code SHAPE_NOT_FOUND} with that name. The sets also include those of the saved previous configs in which the
      * shape had the same fingerprint, so that bundles generated before a resharding stay usable.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a response with the store shape answer
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response storeShape(HgRepository repo, Map<String, String> args) throws IOException {
         List<String> names = List.of(args.getOrDefault("names", "").split(",", -1));
@@ -260,6 +317,11 @@ public final class Wire1Commands {
      * under {@code .hg}) as an unframed stream: the length as an unsigned varint, then the file. Used for manifest
      * entries with the {@code peer-bundle-cache://} scheme. The {@code pretransmit-inline-clone-bundle} hook is not
      * supported.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a response holding the cached bundle
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response getCachedBundleInline(HgRepository repo, Map<String, String> args) throws IOException {
         String root = repo.getConfig().get("server", "peer-bundle-cache-root", null);
@@ -291,6 +353,10 @@ public final class Wire1Commands {
     /**
      * Real hg's {@code heads}: the topological heads, NEWEST revision first (what {@code repo.heads()} returns).
      * An empty repository answers with the null node, as real hg does.
+     *
+     * @param repo the served repository
+     * @return a bytes response with the hex node ids of the heads
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response heads(HgRepository repo) throws IOException {
         List<String> heads = new ArrayList<>(new HgLocalClient(repo).getHeads()); // ascending revision order
@@ -337,6 +403,11 @@ public final class Wire1Commands {
      * not implemented (real hg's `between` is superseded by {@code heads}/{@code known} for
      * actual discovery in every modern codepath — this command's only remaining real use is the
      * handshake probe above); every pair here just reports "no intermediate nodes found".</p>
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a bytes response with one line of nodes per requested pair
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response between(HgRepository repo, Map<String, String> args) throws IOException {
         String pairsArg = args.getOrDefault("pairs", "");
@@ -372,6 +443,11 @@ public final class Wire1Commands {
      * Real hg's legacy {@code branches}: for each requested node (default the tip) walk first parents until a
      * merge or a root, answering {@code <start> <end> <p1 of end> <p2 of end>} per node (localrepo.branches()).
      * Only the pre-1.x discovery protocol uses it.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a bytes response with one line per requested node
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response branches(HgRepository repo, Map<String, String> args) throws IOException {
         Revlog changelog = RepoSupport.changelog(repo);
@@ -415,6 +491,9 @@ public final class Wire1Commands {
      * Real hg's {@code debugwireargs}: echoes {@code one two three four five}, where {@code three} and {@code four}
      * are the optional arguments and {@code five} is never sent over the wire, hence always {@code None}. Used to
      * test argument passing.
+     *
+     * @param args the request arguments of the wire command, by name
+     * @return a bytes response echoing the received arguments
      */
     public static Wire1Response debugwireargs(Map<String, String> args) {
         String text = String.join(" ", args.getOrDefault("one", ""), args.getOrDefault("two", ""),
@@ -456,6 +535,11 @@ public final class Wire1Commands {
      * short hex prefix (real hg's {@code revlog.py} raises the distinct {@code
      * AmbiguousPrefixLookupError} for the latter), and real hg's response text differs
      * accordingly.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a response holding {@code 1 <node>} on success or {@code 0 <message>} on failure
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response lookup(HgRepository repo, Map<String, String> args) throws IOException {
         RevisionLookup.Outcome outcome = RevisionLookup.resolve(repo, args.get("key"));
@@ -485,7 +569,14 @@ public final class Wire1Commands {
         return Wire1Response.bytes(line.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Real hg encodes each namespace entry as {@code key\tvalue}, newline-separated (mercurial/pushkey.py's {@code encodekeys}). */
+    /**
+     * Real hg encodes each namespace entry as {@code key\tvalue}, newline-separated (mercurial/pushkey.py's {@code encodekeys}).
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a bytes response with the namespace entries
+     * @throws IOException if the repository cannot be read or written
+     */
     public static Wire1Response listkeys(HgRepository repo, Map<String, String> args) throws IOException {
         String namespace = args.get("namespace");
         Map<String, String> keys = new TreeMap<>(RepoSupport.readListKeys(repo, namespace));
@@ -497,7 +588,14 @@ public final class Wire1Commands {
         return Wire1Response.bytes(String.join("\n", lines).getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Real hg's response is {@code "<0-or-1>\n<output>"}; {@code output} is always empty here (no server-side hooks to capture). */
+    /**
+     * Real hg's response is {@code "<0-or-1>\n<output>"}; {@code output} is always empty here (no server-side hooks to capture).
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a response holding the pushkey result
+     * @throws IOException if the repository cannot be read or written
+     */
     public static Wire1Response pushkey(HgRepository repo, Map<String, String> args) throws IOException {
         return pushkey(repo, args, List.of(), List.of());
     }
@@ -522,6 +620,13 @@ public final class Wire1Commands {
      * new} (node hex, or {@code ""} for a bookmark being created/deleted respectively — never
      * {@code null}, matching real hg's own wire encoding of an absent node), and {@code
      * repository}.</p>
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @param prePushkeyHooks hooks run before a pushkey (e.g. a bookmark move) is applied; one returning {@code false} aborts it
+     * @param postPushkeyHooks notification-only hooks run after a pushkey was applied
+     * @return a response holding the pushkey result
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response pushkey(HgRepository repo, Map<String, String> args,
                                          List<HgHook> prePushkeyHooks,
@@ -573,6 +678,10 @@ public final class Wire1Commands {
      * lines joined by {@code \n} WITHOUT a trailing newline (mercurial/wireprotoserver's
      * {@code encodebranchcache}). Closed heads are included. Before 2026-11-03 this listed only the repository's
      * CURRENT branch with every head of the repository, which is wrong as soon as there is a second branch.
+     *
+     * @param repo the served repository
+     * @return a bytes response with one line per branch and its heads
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response branchmap(HgRepository repo) throws IOException {
         Map<String, List<String>> byBranch = new TreeMap<>(new HgLocalClient(repo).getBranchHeads());
@@ -583,7 +692,14 @@ public final class Wire1Commands {
         return Wire1Response.bytes(String.join("\n", lines).getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Same wire shape as {@code getbundle}/{@code changegroupsubset} — real hg's {@code changegroup} command just fixes {@code heads} to the repo's current heads. */
+    /**
+     * Same wire shape as {@code getbundle}/{@code changegroupsubset} — real hg's {@code changegroup} command just fixes {@code heads} to the repo's current heads.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a streamed changegroup response
+     * @throws IOException if the repository cannot be read or written
+     */
     public static Wire1Response changegroup(HgRepository repo, Map<String, String> args) throws IOException {
         List<String> roots = splitOrEmpty(args.get("roots"));
         byte[] bundle = stripHg10Prefix(new HgLocalClient(repo).getChangegroup(roots));
@@ -683,6 +799,11 @@ public final class Wire1Commands {
      * string is always true, so real hg peers never actually send a literal {@code "0"} for a
      * false narrow flag; they simply omit the key, exactly like {@code includepats}/{@code
      * excludepats} below).
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a streamed bundle response
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response getbundle(HgRepository repo, Map<String, String> args) throws IOException {
         List<String> common = splitOrEmpty(args.get("common"));
@@ -730,6 +851,13 @@ public final class Wire1Commands {
      * against real hg 7.2.2 as the client: sending {@code "0\n"} on success made real hg print the
      * success message via {@code remote: ...} but still exit non-zero, since it read the leading
      * {@code 0} as "nothing landed".</p>
+     *
+     * @param repo the served repository
+     * @param bundleBytes the raw bundle sent by the client
+     * @param args the request arguments of the wire command, by name
+     * @return the push result response
+     * @throws IOException if the repository cannot be read or written
+     * @throws HgLockException if the repository lock cannot be acquired
      */
     public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args) throws IOException, HgLockException {
         return unbundle(repo, bundleBytes, args, List.of(), List.of());
@@ -740,6 +868,15 @@ public final class Wire1Commands {
      * io.github.search5.hg4j.api.HgHook} callbacks around applying the incoming changegroup — see
      * {@link HgLocalClient#pushWithHooks}. A pre-hook rejection surfaces through the same {@code
      * "0\n<message>"} error path a genuine apply failure would.
+     *
+     * @param repo the served repository
+     * @param bundleBytes the raw bundle sent by the client
+     * @param args the request arguments of the wire command, by name
+     * @param preChangegroupHooks hooks run before the changegroup is applied; one returning {@code false} aborts the push
+     * @param postChangegroupHooks notification-only hooks run after the changegroup was applied
+     * @return the push result response
+     * @throws IOException if the repository cannot be read or written
+     * @throws HgLockException if the repository lock cannot be acquired
      */
     public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
                                           List<HgHook> preChangegroupHooks,
@@ -750,6 +887,17 @@ public final class Wire1Commands {
     /**
      * Same, with the pushkey hooks that also apply to the {@code pushkey} and {@code bookmarks} parts of a bundle2 push
      * (a bookmark moved through a bundle2 part must be subject to the same rules as one moved with the {@code pushkey} command).
+     *
+     * @param repo the served repository
+     * @param bundleBytes the raw bundle sent by the client
+     * @param args the request arguments of the wire command, by name
+     * @param preChangegroupHooks hooks run before the changegroup is applied; one returning {@code false} aborts the push
+     * @param postChangegroupHooks notification-only hooks run after the changegroup was applied
+     * @param prePushkeyHooks hooks run before a pushkey (e.g. a bookmark move) is applied; one returning {@code false} aborts it
+     * @param postPushkeyHooks notification-only hooks run after a pushkey was applied
+     * @return the push result response
+     * @throws IOException if the repository cannot be read or written
+     * @throws HgLockException if the repository lock cannot be acquired
      */
     public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
                                           List<HgHook> preChangegroupHooks,
@@ -763,6 +911,18 @@ public final class Wire1Commands {
      * Same; {@code captureOutput} is true for HTTP, where the original answers with what the server printed while applying the push
      * ({@code adding changesets}, ..., {@code added 1 changesets with ...}), as {@code output} parts of a bundle2 answer or after the
      * result code of a bundle1 one. Over SSH it goes to the server's stderr instead.
+     *
+     * @param repo the served repository
+     * @param bundleBytes the raw bundle sent by the client
+     * @param args the request arguments of the wire command, by name
+     * @param preChangegroupHooks hooks run before the changegroup is applied; one returning {@code false} aborts the push
+     * @param postChangegroupHooks notification-only hooks run after the changegroup was applied
+     * @param prePushkeyHooks hooks run before a pushkey (e.g. a bookmark move) is applied; one returning {@code false} aborts it
+     * @param postPushkeyHooks notification-only hooks run after a pushkey was applied
+     * @param captureOutput {@code true} to answer with what the server printed while applying the push (HTTP); {@code false} for SSH
+     * @return the push result response
+     * @throws IOException if the repository cannot be read or written
+     * @throws HgLockException if the repository lock cannot be acquired
      */
     public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
                                           List<HgHook> preChangegroupHooks,
@@ -774,7 +934,22 @@ public final class Wire1Commands {
                 postPushkeyHooks, captureOutput);
     }
 
-    /** Same, with the {@code pretxnchangegroup} hooks (run after the changegroup is applied; a refusal undoes everything). */
+    /**
+     * Same, with the {@code pretxnchangegroup} hooks (run after the changegroup is applied; a refusal undoes everything).
+     *
+     * @param repo the served repository
+     * @param bundleBytes the raw bundle sent by the client
+     * @param args the request arguments of the wire command, by name
+     * @param preChangegroupHooks hooks run before the changegroup is applied; one returning {@code false} aborts the push
+     * @param preTxnChangegroupHooks hooks run after the changegroup was applied; one returning {@code false} undoes the push
+     * @param postChangegroupHooks notification-only hooks run after the changegroup was applied
+     * @param prePushkeyHooks hooks run before a pushkey (e.g. a bookmark move) is applied; one returning {@code false} aborts it
+     * @param postPushkeyHooks notification-only hooks run after a pushkey was applied
+     * @param captureOutput {@code true} to answer with what the server printed while applying the push (HTTP); {@code false} for SSH
+     * @return the push result response
+     * @throws IOException if the repository cannot be read or written
+     * @throws HgLockException if the repository lock cannot be acquired
+     */
     public static Wire1Response unbundle(HgRepository repo, byte[] bundleBytes, Map<String, String> args,
                                           List<HgHook> preChangegroupHooks,
                                           List<HgHook> preTxnChangegroupHooks,
@@ -820,6 +995,11 @@ public final class Wire1Commands {
     /**
      * The first thing the original's {@code unbundle} does, before it reads the payload: compare the client's {@code heads}
      * argument with the current heads. Null when they agree (or the client forces), else the {@code pusherr} answer.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return the response to send when the push heads check fails, or {@code null} when the push may proceed
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response preCheckUnbundleHeads(HgRepository repo, Map<String, String> args) throws IOException {
         try {
@@ -846,7 +1026,12 @@ public final class Wire1Commands {
         return KNOWN_COMMANDS.contains(cmd);
     }
 
-    /** Commands that change the repository: real hg's HTTP server serves them only to a POST request. */
+    /**
+     * Commands that change the repository: real hg's HTTP server serves them only to a POST request.
+     *
+     * @param cmd the wire command name
+     * @return {@code true} if the command is served only to a POST request
+     */
     public static boolean requiresPush(String cmd) {
         return "unbundle".equals(cmd) || "pushkey".equals(cmd);
     }
@@ -856,6 +1041,12 @@ public final class Wire1Commands {
      * {@code ?cmd=X} routing (HTTP/SSH glue) and {@link #batch} (which dispatches each
      * sub-command through here too) use. {@code unbundle} is deliberately excluded: it needs a
      * raw request body rather than string args, so transport glue calls {@link #unbundle} directly.
+     *
+     * @param repo the served repository
+     * @param cmd the wire command name
+     * @param args the request arguments of the wire command, by name
+     * @return the response of the command
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response dispatch(HgRepository repo, String cmd, Map<String, String> args) throws IOException {
         return switch (cmd) {
@@ -895,6 +1086,11 @@ public final class Wire1Commands {
      * Only {@link Wire1Response.Kind#BYTES} results can be batched (real hg's own server asserts
      * this too) — {@code getbundle}/{@code changegroup}/{@code unbundle} are never batched by a
      * real client since they're the actual bulk data transfer, not discovery.
+     *
+     * @param repo the served repository
+     * @param args the request arguments of the wire command, by name
+     * @return a bytes response with the results of the batched commands
+     * @throws IOException if the repository cannot be read or written
      */
     public static Wire1Response batch(HgRepository repo, Map<String, String> args) throws IOException {
         String cmds = args.getOrDefault("cmds", "");

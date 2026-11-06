@@ -36,13 +36,22 @@ public class CloneCommand {
     private Boolean stream;
     private final List<String> messages = new ArrayList<>();
 
-    /** {@code hg clone --stream} / {@code --no-stream}; {@code null} follows the remote's {@code stream-preferred}. */
+    /**
+     * {@code hg clone --stream} / {@code --no-stream}; {@code null} follows the remote's {@code stream-preferred}.
+     *
+     * @param stream {@code true} to force a stream clone, {@code false} to forbid it, {@code null} to follow the remote
+     * @return this command
+     */
     public CloneCommand setStream(Boolean stream) {
         this.stream = stream;
         return this;
     }
 
-    /** What the clone reported ({@code streaming all changes}, ...). */
+    /**
+     * What the clone reported ({@code streaming all changes}, ...).
+     *
+     * @return the messages, in the order they were reported
+     */
     public List<String> getMessages() {
         return messages;
     }
@@ -50,6 +59,9 @@ public class CloneCommand {
     /**
      * {@code hg clone --pull}: always pull the changesets, even from a local repository (without it, a local source is cloned by
      * copying its store, hard linked where possible, as real hg does).
+     *
+     * @param pull {@code true} to always pull; default {@code false}
+     * @return this command
      */
     public CloneCommand setPull(boolean pull) {
         this.pull = pull;
@@ -59,6 +71,9 @@ public class CloneCommand {
     /**
      * {@code hg clone -U} when {@code false}: the changesets are brought in but no working files are created; the working directory
      * parent stays the null revision and there is no {@code .hg/dirstate} file. The default is {@code true}, which checks out the tip.
+     *
+     * @param update {@code false} for {@code hg clone -U} (no working files); default {@code true}
+     * @return this command
      */
     public CloneCommand setUpdate(boolean update) {
         this.update = update;

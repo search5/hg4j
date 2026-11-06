@@ -51,6 +51,12 @@ public final class HgLfsProtocolHandler {
     /**
      * Answers a request {@link #handles} accepted for a repository served under {@code basePath} (empty for the root): the
      * transfer links of a batch response start with it, like real hg's {@code req.baseurl} that includes the application path.
+     * @param repository the served repository
+     * @param path the request path relative to the application root, no leading slash (the value {@link #handles} accepted)
+     * @param basePath the path the repository is served under, such as {@code "/owner/project"}, or empty for the root
+     * @param request the HTTP request
+     * @param response the HTTP response the answer is written to
+     * @throws IOException if reading the request, the object store or writing the answer fails
      */
     public static void handle(HgRepository repository, String path, String basePath, HttpServletRequest request,
                               HttpServletResponse response) throws IOException {

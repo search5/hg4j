@@ -187,6 +187,9 @@ public class FetchCommand {
     /**
      * Whether {@link #applyBundle} also takes the working copy lock. {@code pull} does (real hg's {@code exchange.pull}); {@code
      * unbundle} does not (real hg's {@code cmdutil.unbundle_files} takes only the store lock), and then the dirstate stays alone.
+     *
+     * @param workingCopyLock {@code true} (the default) to take the working copy lock too, {@code false} for the store lock only
+     * @return this command
      */
     public FetchCommand setWorkingCopyLock(boolean workingCopyLock) {
         this.workingCopyLock = workingCopyLock;
@@ -198,6 +201,9 @@ public class FetchCommand {
     /**
      * {@code hg pull -r REV}: only these revisions (and their ancestors) are pulled. Each is looked up on the remote, so a node prefix, a
      * bookmark, a tag or a branch name works; the remote must support {@code lookup}.
+     *
+     * @param revisions the revision specs to pull ({@code -r}); {@code null} or empty pulls everything
+     * @return this command
      */
     public FetchCommand setRevisions(List<String> revisions) {
         this.revisions.clear();
@@ -210,13 +216,22 @@ public class FetchCommand {
     private Boolean stream;
     private final List<String> messages = new ArrayList<>();
 
-    /** {@code --stream} / {@code --no-stream}; {@code null} follows the remote's {@code stream-preferred}. */
+    /**
+     * {@code --stream} / {@code --no-stream}; {@code null} follows the remote's {@code stream-preferred}.
+     *
+     * @param stream {@code true} to force a stream clone, {@code false} to forbid it, {@code null} to follow the remote
+     * @return this command
+     */
     public FetchCommand setStream(Boolean stream) {
         this.stream = stream;
         return this;
     }
 
-    /** What the last call reported ({@code streaming all changes}, ...). */
+    /**
+     * What the last call reported ({@code streaming all changes}, ...).
+     *
+     * @return the messages, in the order they were reported
+     */
     public List<String> getMessages() {
         return messages;
     }
@@ -631,13 +646,23 @@ public class FetchCommand {
     private List<String> storeFingerprints;
     private List<java.util.Set<String>> shardsSets;
 
-    /** The shape fingerprints (text) a shaped clone asks for ({@code store_fingerprints} of the pull); they pick the clone bundles. */
+    /**
+     * The shape fingerprints (text) a shaped clone asks for ({@code store_fingerprints} of the pull); they pick the clone bundles.
+     *
+     * @param fingerprints the fingerprints, or {@code null} for none
+     * @return this command
+     */
     public FetchCommand setStoreFingerprints(List<String> fingerprints) {
         this.storeFingerprints = fingerprints;
         return this;
     }
 
-    /** The sets of shard fingerprints (text) that make a usable group of sharded clone bundles ({@code shards_sets} of the pull). */
+    /**
+     * The sets of shard fingerprints (text) that make a usable group of sharded clone bundles ({@code shards_sets} of the pull).
+     *
+     * @param sets the shard fingerprint sets, or {@code null} for none
+     * @return this command
+     */
     public FetchCommand setShardsSets(List<java.util.Set<String>> sets) {
         this.shardsSets = sets;
         return this;
@@ -789,8 +814,12 @@ public class FetchCommand {
      * it shares) so a genuinely concurrent push waits like real hg's own {@code repo.lock()}
      * ({@code wait=True} default) instead of aborting on the very first contended attempt.
      *
+     * @param bundle the parsed changegroup to apply
      * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds --
      *                      {@code 0} preserves the original fail-fast behavior.
+     * @return the nodes of the imported changesets, empty if the bundle held none
+     * @throws IOException if the store cannot be read or written, or the apply fails (it is rolled back then)
+     * @throws HgLockException if the locks cannot be acquired within {@code lockTimeoutMs}
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs) throws IOException, HgLockException {
         return applyBundle(bundle, lockTimeoutMs, null);
@@ -819,6 +848,13 @@ public class FetchCommand {
      * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int)}, but additionally
      * runs {@code postLockValidator} (if non-null) immediately after the store/working-copy locks
      * are acquired and before any mutation begins -- see {@link PostLockValidator}'s doc.
+     *
+     * @param bundle the parsed changegroup to apply
+     * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds; {@code 0} fails fast
+     * @param postLockValidator run once the locks are held and before anything is written; {@code null} for none
+     * @return the nodes of the imported changesets, empty if the bundle held none
+     * @throws IOException if the validator aborts, the store cannot be read or written, or the apply fails (it is rolled back then)
+     * @throws HgLockException if the locks cannot be acquired within {@code lockTimeoutMs}
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
                                      PostLockValidator postLockValidator) throws IOException, HgLockException {

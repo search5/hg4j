@@ -50,49 +50,88 @@ public final class GraftInMemory {
         this.repository = repository;
     }
 
-    /** {@code --to REV}: where the changesets are grafted. */
+    /**
+     * {@code --to REV}: where the changesets are grafted.
+     *
+     * @param to the destination revision; required
+     * @return this command
+     */
     public GraftInMemory setTo(String to) {
         this.to = to;
         return this;
     }
 
-    /** The changesets to graft, in the order given. */
+    /**
+     * The changesets to graft, in the order given.
+     *
+     * @param revision a revision spec (a single revision or a revset range) to graft; may be called repeatedly
+     * @return this command
+     */
     public GraftInMemory addRevision(String revision) {
         revisions.add(revision);
         return this;
     }
 
-    /** {@code -n/--dry-run}: only say what would be grafted. */
+    /**
+     * {@code -n/--dry-run}: only say what would be grafted.
+     *
+     * @param dryRun {@code true} to write nothing; default {@code false}
+     * @return this command
+     */
     public GraftInMemory setDryRun(boolean dryRun) {
         this.dryRun = dryRun;
         return this;
     }
 
-    /** {@code -l/--log}: append {@code (grafted from <hash>)} to the message. */
+    /**
+     * {@code -l/--log}: append {@code (grafted from <hash>)} to the message.
+     *
+     * @param log {@code true} to append the origin to each message; default {@code false}
+     * @return this command
+     */
     public GraftInMemory setLog(boolean log) {
         this.log = log;
         return this;
     }
 
-    /** {@code --base REV}: the ancestor, instead of the first parent of each changeset. */
+    /**
+     * {@code --base REV}: the ancestor, instead of the first parent of each changeset.
+     *
+     * @param base the revision to use as merge ancestor, or {@code null} for each changeset's first parent
+     * @return this command
+     */
     public GraftInMemory setBase(String base) {
         this.base = base;
         return this;
     }
 
-    /** {@code -u/--user}. */
+    /**
+     * {@code -u/--user}.
+     *
+     * @param user the author of the new changesets, or {@code null} to keep each original author
+     * @return this command
+     */
     public GraftInMemory setUser(String user) {
         this.user = user;
         return this;
     }
 
-    /** {@code -d/--date}: {@code "seconds offset"}. */
+    /**
+     * {@code -d/--date}: {@code "seconds offset"}.
+     *
+     * @param date the date of the new changesets as {@code "seconds offset"}, or {@code null} to keep each original date
+     * @return this command
+     */
     public GraftInMemory setDate(String date) {
         this.date = date;
         return this;
     }
 
-    /** What the command printed ({@code grafting 3:abc123def456 "message"}). */
+    /**
+     * What the command printed ({@code grafting 3:abc123def456 "message"}).
+     *
+     * @return the messages, in the order they were printed
+     */
     public List<String> getMessages() {
         return messages;
     }
@@ -101,7 +140,13 @@ public final class GraftInMemory {
         return NodeIdUtil.toHex(node).substring(0, 12);
     }
 
-    /** @return the nodes (hex) of the new changesets, empty for a dry run */
+    /**
+     * Grafts the revisions onto the {@code --to} revision.
+     *
+     * @return the nodes (hex) of the new changesets, empty for a dry run
+     * @throws IOException if the repository cannot be read or written, or a conflict makes an in-memory graft impossible
+     * @throws HgLockException if the store lock cannot be acquired
+     */
     public List<String> call() throws IOException, HgLockException {
         return run(false).created;
     }
@@ -113,6 +158,8 @@ public final class GraftInMemory {
      * the changesets would get (with the same user and date) while the transaction is rolled back, so nothing is written either way.
      * Usage errors (no {@code --to}, no revisions, unknown revisions) are still exceptions.
      * @return the new changesets in order, or the conflicting files
+     * @throws IOException if the repository cannot be read or written
+     * @throws HgLockException if the store lock cannot be acquired
      */
     public GraftResult execute() throws IOException, HgLockException {
         Outcome outcome = run(true);

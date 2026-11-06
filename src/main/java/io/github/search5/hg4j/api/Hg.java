@@ -637,6 +637,14 @@ public class Hg implements AutoCloseable {
     }
 
     /**
+     * Creates a new {@link MergeCommitCommand} bound to this repository: it merges two heads and commits the result as one changeset
+     * with two parents, without a working copy. Each call returns a fresh, unconfigured command object.
+     */
+    public MergeCommitCommand mergeCommit() {
+        return new MergeCommitCommand(this.repository);
+    }
+
+    /**
      * Creates a new {@link CensorCommand} bound to this repository. Each call returns a fresh, unconfigured command object.
      */
     public CensorCommand censor() {

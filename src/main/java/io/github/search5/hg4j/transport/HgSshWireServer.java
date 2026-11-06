@@ -100,7 +100,8 @@ public class HgSshWireServer {
 
     /**
      * Registers a notification-only hook run after an incoming push has been applied, like real hg's
-     * {@code changegroup} hook.
+     * {@code changegroup} hook. It runs only if the push brought at least one new changeset; the context key {@code "nodes"} lists the
+     * new changesets (see {@link HgHook}).
      * @param hook the hook to add; must not be null
      * @return this server
      */

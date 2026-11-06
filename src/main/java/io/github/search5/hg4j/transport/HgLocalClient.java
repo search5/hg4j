@@ -806,7 +806,7 @@ public class HgLocalClient implements HgRemoteConnection {
                 Files.deleteIfExists(dirstateFile.toPath());
             }
 
-            if (!preTxnHooks.isEmpty()) {
+            if (!preTxnHooks.isEmpty() && !imported.isEmpty()) {
                 List<String> appliedHexes = new ArrayList<>();
                 for (byte[] node : imported) {
                     appliedHexes.add(NodeIdUtil.toHex(node));
@@ -841,7 +841,8 @@ public class HgLocalClient implements HgRemoteConnection {
             for (byte[] node : imported) {
                 importedNodeHexes.add(NodeIdUtil.toHex(node));
             }
-            if (!postHooks.isEmpty()) {
+            // like the original's changegroup hook, only for a push that brought at least one new changeset
+            if (!postHooks.isEmpty() && !importedNodeHexes.isEmpty()) {
                 remoteRepo.afterLock(() -> {
                     Map<String, Object> postCtx = new HashMap<>();
                     postCtx.put("repository", remoteRepo);

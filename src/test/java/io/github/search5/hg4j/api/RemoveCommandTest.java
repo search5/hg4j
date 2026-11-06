@@ -278,4 +278,45 @@ public class RemoveCommandTest {
                 "a removed dangling symlink must actually be deleted from disk, not just marked removed in the dirstate");
         assertEquals('r', repo.getDirstate().getEntries().get("dangling.txt").getState());
     }
+
+    /**
+     * The content check compares the file with the revision the working copy parent has, not with the newest revision of the file
+     * in the store: after updating to an older revision (another branch has a newer one) a clean file is not "modified".
+     */
+    @Test
+    public void testRemoveCleanFileAfterUpdateToAnOlderRevisionOfItWorksWithoutForce(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "f.txt");
+        Files.writeString(f.toPath(), "x\n");
+        new AddCommand(repo).call();
+        byte[] base = new CommitCommand(repo).setMessage("base").setAuthor("t").call();
+        Files.writeString(f.toPath(), "x2\n");
+        new CommitCommand(repo).setMessage("newer revision of f.txt").setAuthor("t").call();
+        new UpdateCommand(repo).setRevision(io.github.search5.hg4j.util.NodeIdUtil.toHex(base)).call();
+        assertEquals("x\n", Files.readString(f.toPath()));
+
+        new RemoveCommand(repo).setFile("f.txt").call();
+
+        assertEquals('r', repo.getDirstate().getEntries().get("f.txt").getState());
+        assertFalse(f.exists());
+    }
+
+    @Test
+    public void testRemoveFileEditedAfterUpdateToAnOlderRevisionStillNeedsForce(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.toFile();
+        HgRepository repo = Hg.init().setDirectory(repoDir).call();
+        File f = new File(repoDir, "f.txt");
+        Files.writeString(f.toPath(), "x\n");
+        new AddCommand(repo).call();
+        byte[] base = new CommitCommand(repo).setMessage("base").setAuthor("t").call();
+        Files.writeString(f.toPath(), "x2\n");
+        new CommitCommand(repo).setMessage("newer").setAuthor("t").call();
+        new UpdateCommand(repo).setRevision(io.github.search5.hg4j.util.NodeIdUtil.toHex(base)).call();
+        // same size as the committed content, different bytes, same second: only the content comparison can see it
+        Files.writeString(f.toPath(), "y\n");
+
+        IOException ex = assertThrows(IOException.class, () -> new RemoveCommand(repo).setFile("f.txt").call());
+        assertTrue(ex.getMessage().contains("uncommitted changes (modified)"));
+    }
 }

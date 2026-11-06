@@ -883,8 +883,13 @@ public class FetchCommand {
                 final int firstImportedRev = changelog.getRevisionCount();
                 for (ChangegroupParser.ChangeGroupEntry entry : bundle.changelogEntries) {
                     int rev = changelog.getRevisionCount();
+                    // A changeset the store already has is skipped by the append; it is not "imported" (the original's hooks and
+                    // its "added N changesets" line count only the new ones).
+                    boolean isNew = changelog.findRevision(entry.node) == -1;
                     changelog.appendChangeGroupEntry(entry, rev);
-                    importedCommits.add(entry.node);
+                    if (isNew) {
+                        importedCommits.add(entry.node);
+                    }
                 }
 
                 Set<String> fncachePaths = new LinkedHashSet<>();

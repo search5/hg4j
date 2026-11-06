@@ -104,7 +104,7 @@ class GraftInMemoryTest {
         String conflicting = commit("conflicting target", "t", 4000);
         GraftInMemory graft = new GraftInMemory(repo).setTo(conflicting).addRevision(SOURCE);
         HgValidationException e = assertThrows(HgValidationException.class, graft::call);
-        assertEquals("cannot graft in memory: merge conflicts\n(hint: in-memory merge does not support external merge tools)", e.getMessage());
+        assertEquals("cannot graft in memory: merge conflicts\n(in-memory merge does not support external merge tools)", e.getMessage());
         assertEquals(List.of("grafting 1:b305ff84eb5e \"source change\"\n", "merging a.txt\n"), graft.getMessages());
         assertEquals(4, revisions());
         assertFalse(new File(repo.getStoreDir(), "journal").exists());

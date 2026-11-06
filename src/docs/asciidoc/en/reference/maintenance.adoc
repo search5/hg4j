@@ -328,13 +328,51 @@ Execution:: `TreeMergeResult call() throws IOException`. `TreeMergeResult` has `
 
 Locking:: None. Pure reads of the changelog, manifest and filelogs; `MergeCommand.call()` is never invoked, only its already verified LCA and criss-cross base resolution and the per-file `Merge3` logic are reused.
 
-Differences from hg:: It is a computation, not a working copy merge. For a path merged by content, the mode is taken from "ours" when both sides have it, following the convention of the rebase merge logic.
+Differences from hg:: It is a computation, not a working copy merge. A file that one side deleted and the other changed is a conflict (listed in `getConflicts()` without content in `getChangedFiles()`), as in `hg merge`. For a path merged by content, the mode is taken from "ours" when both sides have it, following the convention of the rebase merge logic.
 
 [source,java]
 ----
 TreeMergeCommand.TreeMergeResult r = hg.treeMerge().setOurs(a).setTheirs(b).call();
 if (r.isConflicted()) System.out.println(r.getConflicts());
 r.getChangedFiles().forEach((path, bytes) -> apply(path, bytes));
+----
+
+=== MergeCommitCommand
+
+Merges two heads and commits the result as one changeset with two parents, without a working copy: `hg merge -r P2` followed by `hg commit`, for a server repository that has no checkout. The merge is computed by `TreeMergeCommand`; the new file revisions, manifest and changeset are written the way the original's `commit` writes them. A file the merge takes unchanged from the second parent keeps that parent's file revision, a file both sides changed gets a new file revision with two parents, and the changeset lists only the files that were really touched. For the same two heads, user, date and message the result is the same changeset (same node) that `hg merge` and `hg commit` create; the interop tests compare the nodes. Repositories with changeset sidedata (changelog-v2) get the changed-files sidedata, equal to what the original stores.
+
+[cols="2,5"]
+|===
+|Method |Meaning
+
+|`setP1(byte[])`, `setP1(String)` |The first parent: the head the merge is committed on (the receiving side). A node, or a revision identifier. Required.
+|`setP2(byte[])`, `setP2(String)` |The second parent: the head merged in (the sending side). Required.
+|`setBase(byte[])`, `setBase(String)` |The ancestor to merge against instead of the common ancestor of the parents (optional).
+|`setUser(String)` |The committer as stored in the changeset. Required.
+|`setMessage(String)` |The message; trailing white space of each line and empty lines at both ends are removed, as `hg commit` does. Required, not blank.
+|`setDate(String)` |`"<unix seconds> <offset>"`, the offset in seconds west of UTC. Default: now, local time zone. A malformed date throws `HgValidationException`.
+|`setBranch(String)` |The named branch of the merge changeset. Default: the branch of the first parent.
+|`putExtra(String, String)` |An `extra` entry of the changeset. The key `branch` is refused (`IllegalArgumentException`); use `setBranch`.
+|`setAllowAncestorMerge(boolean)` |Allows a merge in which one parent is an ancestor of the other, like `git merge --no-ff`. Default `false`.
+|===
+
+Execution:: `MergeCommitResult call() throws IOException, HgLockException`. `MergeCommitResult` has `isConflicted()`, `getConflicts()` (sorted paths), `getNode()` (20 bytes, `null` when conflicted) and `getNodeHex()`. A conflict is a value, not an exception, and nothing has been written then. Throws `HgValidationException` for a missing user or message, an invalid date, the same changeset on both sides, one parent being an ancestor of the other (unless allowed) and a treemanifest repository; `HgRevisionNotFoundException` when a parent or the base is not in the changelog; `HgLockException` when the store lock cannot be taken; `IOException` for store errors, after which the repository is rolled back.
+
+Locking:: Only the store lock (`lockStore`) and a rollback transaction, no `wlock` and no dirstate, as for `GraftInMemory`. The lock is held for the whole call: the merge computation and the writes. Waits up to `[ui] timeout` for another holder.
+
+Differences from hg:: A file one side deleted and the other changed is a conflict (the original asks the user). Copies and renames are followed: a file one side copied or renamed and the other side changed under its old name gets the change merged into the new name, and the new file revision records the copy; the interop tests compare the resulting changesets with the real `hg` (rename on either side, copy, rename with its own edit, divergent renames, rename against deletion). Directory renames are not followed: a file the other side added to a directory that was renamed away is reported as a conflict, where the original moves it to the new directory. Treemanifest repositories are refused. A file whose content hg4j has to merge is merged by line (`Merge3`); no external merge tool is run. Large files in LFS are written as their content, not as pointers. `setAllowAncestorMerge(true)` creates a merge the original refuses ("nothing to merge"); its tree is the tree of the descendant.
+
+[source,java]
+----
+MergeCommitResult r = hg.mergeCommit()
+    .setP1(receivingHead).setP2(sendingHead)
+    .setUser("Name <mail@example.org>").setMessage("Merge pull request #12")
+    .call();
+if (r.isConflicted()) {
+    show(r.getConflicts());
+} else {
+    publish(r.getNodeHex());
+}
 ----
 
 == Facade, hooks and exceptions
@@ -371,6 +409,8 @@ Command factories (each returns a new command bound to the repository; those mar
 === HgHook and HgHookType
 
 `HgHook` is a `@FunctionalInterface`: `boolean run(Map<String, Object> context) throws IOException`. Returning true allows the operation; returning false blocks it and aborts the transaction by raising an exception. It may throw `IOException` for an I/O error or a failed hook. The javadoc lists example context keys `author`, `message`, `commitNode`, `repository`; the keys actually passed differ by command. In `CommitCommand` the pre-commit context contains `author`, `message` and `repository`, and a false result throws `HgValidationException("Pre-commit hook execution rejected the commit txn")`.
+
+The hooks that the wire servers and `HgLocalClient.pushWithHooks` run on the server side get these context keys (always `repository`, the changed `HgRepository`). The changegroup hooks (`prechangegroup`, `pretxnchangegroup`, `changegroup`) get `nodes`, a `List<String>` of 40-character hex node ids in the order they are applied; the first and last node and the count are read from the list. `pretxnchangegroup` and `changegroup` run only if at least one changeset is new to the repository, as in the original, and list the new changesets only; `prechangegroup` lists every changeset of the bundle. The `changegroup` hook runs after the locks are released and its result is ignored. The pushkey hooks (`prepushkey`, `pushkey`) get `namespace` (for example `bookmarks`), `key` (the name), `old` and `new` (hex node ids; the empty string, never `null`, for a bookmark that is created or deleted); the post hook runs only after a successful update. A refusal by a pre-hook is the answer `0` to a `pushkey` command and `prepushkey hook failed` inside a bundle2 push. `HgSshWireServer` and `HgHttpWireServer` support the same hooks.
 
 Context keys and failure behavior of the other commands, from their javadoc and code: `PushCommand` passes `destinationUrl` and `repository` to pre hooks (false gives `HgValidationException`) and `destinationUrl`, `response` and `repository` to post hooks (return value ignored, exceptions swallowed, run after the locks are released, only after changesets were pushed). `RebaseCommand` passes `repository`, `sourceNode` and `targetNode` to pre hooks (false gives `HgValidationException`, message `Rebase rejected by PRE_REBASE hook`) and `sourceNode`, `targetNode`, `rebasedTipNode` (hex of the last new changeset, or null) and `repository` to post hooks (return value ignored, exceptions logged and swallowed). `GraftCommand` passes `sourceRevision`, `graftedNode` and `repository` to post hooks (return value ignored, exceptions logged as a warning, so a post-graft hook cannot abort the graft). `TagCommand` passes `repository`, `tag` and `node`; a pre hook returning false gives `HgValidationException` (`Tag creation rejected by PRE_TAG hook`), and exceptions from post hooks propagate.
 

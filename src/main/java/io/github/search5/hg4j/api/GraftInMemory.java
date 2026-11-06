@@ -20,7 +20,9 @@ import java.util.TreeMap;
 /**
  * {@code hg graft --to REV} ({@code cmd_impls/graft._graft_revisions_in_memory}, EXPERIMENTAL): the changesets are grafted onto
  * {@code REV} without touching the working copy. Each one is merged in memory with its first parent as the ancestor and committed on top of
- * the previous result; a conflict aborts everything ({@code cannot graft in memory: merge conflicts}).
+ * the previous result; a conflict aborts everything ({@code cannot graft in memory: merge conflicts}). The hint line is worded as the
+ * original words it: {@code (in-memory merge does not support file conflicts)} when the first conflicting file was deleted on one side and
+ * changed on the other, {@code (in-memory merge does not support external merge tools)} for any other conflict.
  *
  * <p>Locks, as in the original: only {@code repo.lock()} (the store lock) and a transaction named {@code graft}; there is no
  * {@code wlock} because neither the working copy nor the dirstate is read or written. When anything fails the transaction is rolled back,
@@ -139,8 +141,12 @@ public final class GraftInMemory {
                             .setBase(ancestor).call();
                     if (merged.isConflicted()) {
                         // filemerge: a file that cannot be merged cleanly falls to a merge tool, which an in-memory merge does not support
+                        // the original words the hint after the first file that cannot be merged: a deletion against a change is
+                        // a "file conflict" (the prompt tool), anything else needs a merge tool
+                        String first = merged.getConflicts().get(0);
+                        String reason = merged.getChangeDeleteConflicts().contains(first) ? "file conflicts" : "external merge tools";
                         throw new HgValidationException("cannot graft in memory: merge conflicts\n"
-                                + "(hint: in-memory merge does not support external merge tools)");
+                                + "(in-memory merge does not support " + reason + ")");
                     }
                     target = commit(transaction, changelog, target, source, sourceRev, merged);
                     created.add(NodeIdUtil.toHex(target));

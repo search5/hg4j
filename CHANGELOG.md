@@ -1,6 +1,16 @@
 # Changelog
 
-All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.0`. The section 1.1.0 below is the next release after 1.0.1 (the one published to the Gradle Plugin Portal and set up for Maven Central); it has not been published yet. Items marked **BC** change behaviour that a caller may rely on.
+All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.1`. 1.1.0 is published (Gradle Plugin Portal and Maven Central); 1.1.1 has not been published yet. Items marked **BC** change behaviour that a caller may rely on.
+
+## 1.1.1 (2026-11-06)
+
+### Added
+- `MergeCommitCommand` (also `Hg.mergeCommit()`): merges two heads and commits the result as one changeset with two parents, without a working copy, under the store lock only. For the same heads, user, date and message it creates the same changeset (same node) as `hg merge` and `hg commit`, with changed-files sidedata in changelog-v2 repositories. A conflict is a returned value (`MergeCommitResult`), not an exception, and nothing is written then. `setAllowAncestorMerge(true)` also merges when one parent is an ancestor of the other (like `git merge --no-ff`), which the original refuses. Copies and renames are followed as `hg merge` follows them (a change to the old name is merged into the new name, and the copy is recorded). Limits: directory renames are not followed (a file added to a renamed directory is reported as a conflict), treemanifest repositories are refused. Requested for the server side of Yona.
+
+### Fixed
+- The `changegroup` and `pretxnchangegroup` hooks of the wire servers and of `HgLocalClient.pushWithHooks` ran, and listed the nodes, for a bundle whose changesets the repository already had. The original runs them only when at least one changeset is new. `nodes` now holds the new changesets only, and the push result counts only them.
+- `TreeMergeCommand` let a deletion win silently when one side deleted a file and the other changed it, dropping the change. It reports a conflict now, as `hg` does, so the in-memory `graft` (`graft --to`) and `rebase --dry-run` / `--confirm` stop with a conflict instead of losing the edit. The `graft --to` hint is worded as the original words it: `(in-memory merge does not support file conflicts)` for a deletion against a change, `(in-memory merge does not support external merge tools)` otherwise (it used to start with `hint: `).
+- `RemoveCommand` refused a clean file as "modified" after an `update` to an older revision of it, because it compared the file with the newest revision in the filelog instead of the one the working copy parent has.
 
 ## 1.1.0 (2026-11-05)
 

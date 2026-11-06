@@ -82,9 +82,11 @@ public class TreeMergeCommand {
         private final Map<String, byte[]> changedFiles;
         private final Map<String, Integer> changedModes;
         private final Set<String> removedFiles;
+        private final Set<String> changeDeleteConflicts;
 
         TreeMergeResult(boolean conflicted, List<String> conflicts, Map<String, byte[]> changedFiles,
-                Map<String, Integer> changedModes, Set<String> removedFiles) {
+                Map<String, Integer> changedModes, Set<String> removedFiles, Set<String> changeDeleteConflicts) {
+            this.changeDeleteConflicts = changeDeleteConflicts;
             this.conflicted = conflicted;
             this.conflicts = conflicts;
             this.changedFiles = changedFiles;
@@ -100,7 +102,11 @@ public class TreeMergeCommand {
             return conflicted;
         }
 
-        /** Paths whose merged content still contains unresolved conflict markers. */
+        /**
+         * Paths in conflict: files whose merged content still contains unresolved conflict markers, and files that one side deleted and
+         * the other changed (the original reports both as conflicts; for the second kind there is no merged content in
+         * {@link #getChangedFiles()}).
+         */
         public List<String> getConflicts() {
             return conflicts;
         }
@@ -123,6 +129,14 @@ public class TreeMergeCommand {
          */
         public Map<String, Integer> getChangedModes() {
             return changedModes;
+        }
+
+        /**
+         * The conflicts that are a deletion on one side against a change on the other (listed in {@link #getConflicts()} too). The
+         * original words the failure of an in-memory merge differently for them.
+         */
+        Set<String> getChangeDeleteConflicts() {
+            return changeDeleteConflicts;
         }
 
         /** Paths that must be deleted (relative to "ours") to reach the merged result. */
@@ -185,6 +199,7 @@ public class TreeMergeCommand {
         Map<String, Integer> changedModes = new LinkedHashMap<>();
         Set<String> removedFiles = new LinkedHashSet<>();
         List<String> conflicts = new ArrayList<>();
+        Set<String> changeDelete = new LinkedHashSet<>();
         boolean conflicted = false;
 
         for (String path : allPaths) {
@@ -201,12 +216,24 @@ public class TreeMergeCommand {
                     // Added by theirs only.
                     changedFiles.put(path, helper.getFileRevisionContent(path, hP2));
                     changedModes.put(path, helper.getModeFromManifestHex(hP2));
+                } else if (!hP2.equals(hLca)) {
+                    // ours deleted it, theirs changed it
+                    conflicted = true;
+                    conflicts.add(path);
+                    changeDelete.add(path);
                 }
                 // else: base had it, ours removed it, theirs left it alone -- stays removed, no delta.
             } else if (hP1 != null && hP2 == null) {
                 if (hLca != null) {
-                    // Base had it, theirs removed it, ours left it alone -- must be removed.
-                    removedFiles.add(path);
+                    if (!hP1.equals(hLca)) {
+                        // theirs deleted it, ours changed it
+                        conflicted = true;
+                        conflicts.add(path);
+                        changeDelete.add(path);
+                    } else {
+                        // Base had it, theirs removed it, ours left it alone -- must be removed.
+                        removedFiles.add(path);
+                    }
                 }
                 // else: added by ours only -- already correct, no delta.
             } else {
@@ -243,6 +270,6 @@ public class TreeMergeCommand {
             }
         }
 
-        return new TreeMergeResult(conflicted, conflicts, changedFiles, changedModes, removedFiles);
+        return new TreeMergeResult(conflicted, conflicts, changedFiles, changedModes, removedFiles, changeDelete);
     }
 }

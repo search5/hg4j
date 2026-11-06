@@ -179,7 +179,9 @@ public class RemoveCommand {
      * <p>
      * Takes the working copy lock and runs inside a dirstate files-changing context. A file added but not committed
      * is only forgotten (its disk file is kept); any other tracked file is deleted from disk and marked removed
-     * ({@code r}) in the dirstate. Without {@link #setForce}, files that are added or modified are refused.
+     * ({@code r}) in the dirstate. Without {@link #setForce}, files that are added or modified are refused. "Modified" means that the
+     * file on disk differs from the revision the first parent of the working copy has (checked by size and time, and by content when
+     * those agree), not from the newest revision of the file in the store.
      * @return {@code true} when the file was removed
      * @throws IllegalStateException if no file was set
      * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if the file is not tracked,
@@ -245,12 +247,16 @@ public class RemoveCommand {
                                 if (flIdx.exists()) {
                                     try {
                                         Revlog filelog = repository.getRevlog(flIdx, flDat);
-                                        if (filelog.getRevisionCount() > 0) {
+                                        // The revision to compare with is the one the working copy parent has, not the newest revision
+                                        // of the file in the store: after an update to an older revision (another branch has a newer
+                                        // one) a clean file would look modified.
+                                        int parentRev = parentFileRevision(filelog, file);
+                                        if (parentRev >= 0) {
                                             byte[] fileContent = isSymlink
                                                     ? Files.readSymbolicLink(diskFile.toPath()).toString().getBytes(StandardCharsets.UTF_8)
                                                     : Files.readAllBytes(diskFile.toPath());
-                                            byte[] lastContent = io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, file, filelog, filelog.getRevisionCount() - 1);
-                                            if (!Arrays.equals(fileContent, lastContent)) {
+                                            byte[] parentContent = io.github.search5.hg4j.lfs.HgLfsFactory.getInstance().readContent(repository, file, filelog, parentRev);
+                                            if (!Arrays.equals(fileContent, parentContent)) {
                                                 isDirty = true;
                                             }
                                         }
@@ -289,5 +295,21 @@ public class RemoveCommand {
 
                 return true;
         }
+    }
+
+    /**
+     * The revision of {@code file}'s filelog that the first parent of the working copy has, or -1 if that changeset does not have the
+     * file (a file added by a merge, or an empty working copy).
+     */
+    private int parentFileRevision(Revlog filelog, String file) throws IOException {
+        byte[] parent = repository.getDirstate().getParent1();
+        if (io.github.search5.hg4j.util.NodeIdUtil.isAllZero(parent)) {
+            return -1;
+        }
+        String entry = repository.getManifestAtCommit(parent).get(file);
+        if (entry == null) {
+            return -1;
+        }
+        return filelog.findRevision(io.github.search5.hg4j.util.NodeIdUtil.fromHex(entry.substring(0, 40)));
     }
 }

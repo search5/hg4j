@@ -51,12 +51,18 @@ import java.util.TreeSet;
  * {p2node}'} reports.</p>
  *
  * <p>Limits: repositories with the {@code treemanifest} requirement are refused, a file whose merge needs Mercurial's file-level merge
- * tools is a conflict, and large files kept in LFS are written as their content, not as pointers. By default the two heads must be
+ * tools is a conflict. A file that the lfs extension tracks ({@code lfs.track}, {@code .hglfs}) is written as a pointer with the
+ * external-storage flag, its node being the hash of the real content, as the original's lfs wrapper does for every new file revision;
+ * a file taken unchanged from the other parent keeps its pointer revision. By default the two heads must be
  * different branches of history, like {@code hg merge}; {@link #setAllowAncestorMerge(boolean)} also allows a merge where one side is
  * an ancestor of the other (a merge changeset in the style of {@code git merge --no-ff}), which the original refuses.</p>
+ *
+ * <p>{@link #setSquash(boolean)} commits the merged tree as one changeset with {@code p1} as its only parent, like {@code hg merge},
+ * {@code hg debugsetparents P1} and {@code hg commit}.</p>
  */
 public class MergeCommitCommand {
     private final HgRepository repository;
+    private boolean squash;
     private byte[] p1;
     private String p1Spec;
     private byte[] p2;
@@ -212,6 +218,22 @@ public class MergeCommitCommand {
     }
 
     /**
+     * Squash mode: the merged tree is committed as one changeset with {@code p1} as its only parent ({@code p2} is not recorded as a
+     * parent), the way {@code hg merge}, {@code hg debugsetparents P1} and {@code hg commit} make it. The changeset is an ordinary
+     * commit on top of {@code p1}: files the merge takes from {@code p2} are added or modified relative to {@code p1}, a followed rename
+     * is recorded as a copy of {@code p1}'s file, and deletions are all recorded. The merge rules are those of the original's
+     * {@code hg merge}, so one parent being an ancestor of the other is refused ("nothing to merge") unless
+     * {@link #setAllowAncestorMerge(boolean)} is set; a result equal to {@code p1}'s tree is refused with "nothing changed" because the
+     * original's commit refuses it too. Conflicts are a returned value as in a merge.
+     * @param squash {@code true} for a single-parent changeset
+     * @return {@code this}
+     */
+    public MergeCommitCommand setSquash(boolean squash) {
+        this.squash = squash;
+        return this;
+    }
+
+    /**
      * Merges the two parents and commits the result.
      * @return the new changeset, or the conflicting files if the merge could not be completed (nothing is written then)
      * @throws HgValidationException if the user or message is missing, a parent is the same as the other, one is an ancestor of the
@@ -265,7 +287,9 @@ public class MergeCommitCommand {
 
             StoreRollback transaction = new StoreRollback(repository);
             try {
-                byte[] node = write(transaction, changelog, graph, node1, node2, rev1, rev2, plan, description, dateParts);
+                byte[] node = squash
+                        ? writeSquash(transaction, changelog, node1, rev1, plan, description, dateParts)
+                        : write(transaction, changelog, graph, node1, node2, rev1, rev2, plan, description, dateParts);
                 transaction.commit();
                 return MergeCommitResult.merged(node);
             } catch (IOException | RuntimeException failed) {
@@ -508,9 +532,7 @@ public class MergeCommitCommand {
                 meta.put("copyrev", copyMerge.copyRevHex);
                 byte[] sideParent = NodeIdUtil.fromHex(copyMerge.sideParentHex);
                 byte[] zero = new byte[20];
-                byte[] candidate = NodeIdUtil.computeNodeId(Revlog.wrapMetadata(content, meta), zero, sideParent);
-                byte[] copied = node20(filelog.findRevision(candidate) >= 0 ? candidate
-                        : filelog.appendRevision(content, meta, -1, filelog.findRevision(sideParent), zero, sideParent, linkrev));
+                byte[] copied = FilelogWrite.add(repository, filelog, path, content, meta, zero, sideParent, linkrev);
                 manifest.put(path, NodeIdUtil.toHex(copied) + flags);
                 touched.add(path);
                 (m1.containsKey(copyMerge.source) ? sdCopiesP1 : sdCopiesP2).put(path, copyMerge.source);
@@ -558,11 +580,7 @@ public class MergeCommitCommand {
                     if (touchedAs == null) {
                         touchedAs = NodeIdUtil.isAllZero(fparent2) ? "modified" : "merged";
                     }
-                    int fp1Rev = NodeIdUtil.isAllZero(fparent1) ? -1 : filelog.findRevision(fparent1);
-                    int fp2Rev = NodeIdUtil.isAllZero(fparent2) ? -1 : filelog.findRevision(fparent2);
-                    byte[] candidate = NodeIdUtil.computeNodeId(Revlog.wrapMetadata(content, null), fparent1, fparent2);
-                    fnode = node20(filelog.findRevision(candidate) >= 0 ? candidate
-                            : filelog.appendRevision(content, (Map<String, String>) null, fp1Rev, fp2Rev, fparent1, fparent2, linkrev));
+                    fnode = FilelogWrite.add(repository, filelog, path, content, null, fparent1, fparent2, linkrev);
                 } else {
                     fnode = fparent1;
                     if (old1 != null && !flagOfEntry(old1).equals(flags)) {
@@ -640,6 +658,127 @@ public class MergeCommitCommand {
         byte[] node = node20(ChangesetRewrite.append(changelog, entry, node1, node2, sidedata));
 
         // phases.registernew: a new changeset is draft unless a parent is secret
+        PhaseRoots phaseRoots = repository.getPhaseRoots();
+        NodeId id = new NodeId(node);
+        if (phaseRoots.getPhase(id, changelog) == PhaseRoots.Phase.PUBLIC) {
+            phaseRoots.setPhase(id, PhaseRoots.Phase.DRAFT, changelog);
+        }
+        return node;
+    }
+
+    /**
+     * The changeset of a squash: an ordinary commit of the merged tree on top of the first parent ({@code commit._filecommit} with one
+     * parent): a file the first parent lacks is added (a followed rename is a copy of the first parent's file), a file it has is modified,
+     * a deleted file is removed.
+     */
+    private byte[] writeSquash(StoreRollback transaction, Revlog changelog, byte[] node1, int rev1, Plan plan, String description,
+                               String[] dateParts) throws IOException {
+        Revlog manifestRevlog = repository.getManifestRevlog();
+        File manifestIndex = new File(repository.getStoreDir(), "00manifest.i");
+        File manifestData = new File(repository.getStoreDir(), "00manifest.d");
+        File changelogIndex = new File(repository.getStoreDir(), "00changelog.i");
+        File changelogData = new File(repository.getStoreDir(), "00changelog.d");
+        transaction.trackRevlog(changelogIndex, changelogData);
+        transaction.trackRevlog(manifestIndex, manifestData);
+        transaction.trackFile(new File(repository.getStoreDir(), "fncache"));
+        transaction.trackFile(new File(repository.getStoreDir(), "phaseroots"));
+
+        ChangesetRewrite.Entry entry1 = ChangesetRewrite.read(changelog, rev1);
+        MergeCommand helper = new MergeCommand(repository);
+        Map<String, String> m1 = plan.m1;
+        byte[] zero = new byte[20];
+        int linkrev = changelog.getRevisionCount();
+        Map<String, String> manifest = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        manifest.putAll(m1);
+        Set<String> added = new LinkedHashSet<>();
+        Set<String> touched = new LinkedHashSet<>();
+        Set<String> removed = new LinkedHashSet<>();
+        Map<String, String> sdCopies = new TreeMap<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+
+        for (String path : new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR) {{ addAll(plan.changed.keySet()); }}) {
+            byte[] content = plan.changed.get(path);
+            String flags = flagsOf(plan.modes.getOrDefault(path, 0644));
+            String old1 = m1.get(path);
+            if (old1 != null && flags.equals(flagOfEntry(old1)) && Arrays.equals(content, helper.getFileRevisionContent(path, old1))) {
+                continue; // the same as the first parent has it
+            }
+            File index = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
+            File data = new File(index.getPath().substring(0, index.getPath().length() - 2) + ".d");
+            transaction.trackRevlog(index, data);
+            Revlog filelog = repository.getRevlog(index, data);
+            byte[] fnode;
+            if (old1 == null) {
+                CopyMerge copy = plan.copyMerges.get(path);
+                String copySource = copy != null && m1.containsKey(copy.source) ? copy.source : null;
+                Map<String, String> meta = null;
+                if (copySource != null) {
+                    meta = new java.util.LinkedHashMap<>();
+                    meta.put("copy", copySource);
+                    meta.put("copyrev", hex40(m1.get(copySource)));
+                    sdCopies.put(path, copySource);
+                }
+                fnode = FilelogWrite.add(repository, filelog, path, content, meta, zero, zero, linkrev);
+                added.add(path);
+            } else {
+                byte[] parent = NodeIdUtil.fromHex(hex40(old1));
+                if (Arrays.equals(content, helper.getFileRevisionContent(path, old1))) {
+                    fnode = parent; // only the flags change
+                } else {
+                    fnode = FilelogWrite.add(repository, filelog, path, content, null, parent, zero, linkrev);
+                }
+                touched.add(path);
+            }
+            manifest.put(path, NodeIdUtil.toHex(fnode) + flags);
+        }
+        for (String path : plan.removed) {
+            if (manifest.remove(path) != null) {
+                removed.add(path);
+            }
+        }
+
+        Set<String> filesSet = new TreeSet<>(NodeIdUtil.UTF8_STRING_COMPARATOR);
+        filesSet.addAll(added);
+        filesSet.addAll(touched);
+        filesSet.addAll(removed);
+        if (filesSet.isEmpty()) {
+            throw new HgValidationException("nothing changed");
+        }
+
+        byte[] manifestNode1 = NodeIdUtil.fromHex(entry1.manifestHex);
+        StringBuilder text = new StringBuilder();
+        for (Map.Entry<String, String> e : manifest.entrySet()) {
+            text.append(e.getKey()).append('\0').append(e.getValue()).append('\n');
+        }
+        byte[] manifestNode = node20(manifestRevlog.appendRevision(text.toString().getBytes(StandardCharsets.UTF_8),
+                manifestRevlog.findRevision(manifestNode1), -1, manifestNode1, zero, linkrev));
+
+        ChangesetRewrite.Entry entry = new ChangesetRewrite.Entry();
+        entry.manifestHex = NodeIdUtil.toHex(manifestNode);
+        entry.user = user.trim();
+        entry.time = dateParts[0];
+        entry.offset = dateParts[1];
+        String branchName = branch != null ? branch : entry1.extra.getOrDefault("branch", "default");
+        if (!"default".equals(branchName) && !branchName.isEmpty()) {
+            entry.extra.put("branch", branchName);
+        }
+        entry.extra.putAll(extra);
+        entry.files = new ArrayList<>(filesSet);
+        entry.message = description;
+
+        byte[] sidedata = null;
+        if (repository.isSidedataCopies()) {
+            byte[] sdFiles = ChangingFiles.encode(added, removed, Set.of(), Set.of(), touched, sdCopies, new TreeMap<>());
+            if (sdFiles.length > 0) {
+                sidedata = io.github.search5.hg4j.storage.SidedataCodec.serialize(
+                        Map.of(io.github.search5.hg4j.storage.SidedataCodec.SD_FILES, sdFiles));
+            }
+        }
+        byte[] existing = node20(NodeIdUtil.computeNodeId(entry.toBytes(), node1, zero));
+        if (changelog.findRevision(existing) >= 0) {
+            return existing;
+        }
+        byte[] node = node20(ChangesetRewrite.append(changelog, entry, node1, zero, sidedata));
+
         PhaseRoots phaseRoots = repository.getPhaseRoots();
         NodeId id = new NodeId(node);
         if (phaseRoots.getPhase(id, changelog) == PhaseRoots.Phase.PUBLIC) {

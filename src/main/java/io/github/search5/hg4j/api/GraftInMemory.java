@@ -26,7 +26,9 @@ import java.util.TreeMap;
  *
  * <p>Locks, as in the original: only {@code repo.lock()} (the store lock) and a transaction named {@code graft}; there is no
  * {@code wlock} because neither the working copy nor the dirstate is read or written. When anything fails the transaction is rolled back,
- * so changesets already created for earlier revisions of the same call disappear too.</p>
+ * so changesets already created for earlier revisions of the same call disappear too. {@link #call()} throws for a conflict, as the
+ * command aborts; {@link #execute()} reports the outcome as a {@link GraftResult}. A new file revision of a file that the lfs extension
+ * tracks is written as a pointer.</p>
  */
 public final class GraftInMemory {
 
@@ -101,6 +103,28 @@ public final class GraftInMemory {
 
     /** @return the nodes (hex) of the new changesets, empty for a dry run */
     public List<String> call() throws IOException, HgLockException {
+        return run(false).created;
+    }
+
+    /**
+     * Grafts like {@link #call()} but reports the outcome as a value. A conflict is a returned {@link GraftResult} (nothing is written,
+     * including the changesets already made for earlier revisions of the call) instead of the {@code cannot graft in memory} exception,
+     * and a dry run does not stop at printing: it merges every revision in memory, in order, and reports the conflicts and the nodes
+     * the changesets would get (with the same user and date) while the transaction is rolled back, so nothing is written either way.
+     * Usage errors (no {@code --to}, no revisions, unknown revisions) are still exceptions.
+     * @return the new changesets in order, or the conflicting files
+     */
+    public GraftResult execute() throws IOException, HgLockException {
+        Outcome outcome = run(true);
+        return outcome.conflicts == null ? GraftResult.grafted(outcome.created, dryRun) : GraftResult.conflicted(outcome.conflicts, dryRun);
+    }
+
+    private static final class Outcome {
+        List<String> created = new ArrayList<>();
+        List<String> conflicts;
+    }
+
+    private Outcome run(boolean report) throws IOException, HgLockException {
         messages.clear();
         if (to == null || to.isEmpty()) {
             throw new IllegalStateException("--to is required");
@@ -126,7 +150,7 @@ public final class GraftInMemory {
                 for (byte[] source : sources) {
                     int sourceRev = changelog.findRevision(source);
                     messages.add(progress(changelog, sourceRev, source));
-                    if (dryRun) {
+                    if (dryRun && !report) {
                         continue;
                     }
                     byte[] ancestor;
@@ -139,6 +163,12 @@ public final class GraftInMemory {
                     messages.addAll(mergedFiles(changelog, target, source, ancestor));
                     TreeMergeCommand.TreeMergeResult merged = new TreeMergeCommand(repository).setOurs(target).setTheirs(source)
                             .setBase(ancestor).call();
+                    if (merged.isConflicted() && report) {
+                        transaction.abort();
+                        Outcome conflicted = new Outcome();
+                        conflicted.conflicts = new ArrayList<>(merged.getConflicts());
+                        return conflicted;
+                    }
                     if (merged.isConflicted()) {
                         // filemerge: a file that cannot be merged cleanly falls to a merge tool, which an in-memory merge does not support
                         // the original words the hint after the first file that cannot be merged: a deletion against a change is
@@ -151,8 +181,14 @@ public final class GraftInMemory {
                     target = commit(transaction, changelog, target, source, sourceRev, merged);
                     created.add(NodeIdUtil.toHex(target));
                 }
-                transaction.commit();
-                return created;
+                if (report && dryRun) {
+                    transaction.abort();
+                } else {
+                    transaction.commit();
+                }
+                Outcome done = new Outcome();
+                done.created = created;
+                return done;
             } catch (IOException | RuntimeException failed) {
                 transaction.abort();
                 throw failed;
@@ -272,10 +308,7 @@ public final class GraftInMemory {
             // localrepo._filecommit: the first parent is the file revision of the parent changeset, if it has the file; no second parent
             String old = targetManifest.get(path);
             byte[] fp1 = old == null ? new byte[20] : NodeIdUtil.fromHex(old.substring(0, 40));
-            int fp1Rev = old == null ? -1 : filelog.findRevision(fp1);
-            byte[] candidate = NodeIdUtil.computeNodeId(Revlog.wrapMetadata(e.getValue(), null), fp1, new byte[20]);
-            byte[] node = node20(filelog.findRevision(candidate) >= 0 ? candidate
-                    : filelog.appendRevision(e.getValue(), (Map<String, String>) null, fp1Rev, -1, fp1, new byte[20], linkrev));
+            byte[] node = FilelogWrite.add(repository, filelog, path, e.getValue(), null, fp1, new byte[20], linkrev);
             String entry = NodeIdUtil.toHex(node) + flags;
             if (!entry.equals(old)) {
                 manifest.put(path, entry);

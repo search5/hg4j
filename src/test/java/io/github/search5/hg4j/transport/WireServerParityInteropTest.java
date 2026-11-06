@@ -1264,6 +1264,37 @@ public class WireServerParityInteropTest {
                 realHook("pretxnchangegroup"), server -> server.registerPreTxnChangegroupHook(ctx -> false));
     }
 
+    private java.util.function.Consumer<Path> realAbortingHook(String hookName, String message) {
+        return server -> {
+            try {
+                Path hook = tmp.resolve("aborting-hook.py");
+                Files.writeString(hook, "from mercurial import error\n"
+                        + "def reject(ui, repo, hooktype, **kwargs):\n    raise error.Abort(b'" + message + "')\n");
+                Files.writeString(server.resolve(".hg/hgrc"), "[hooks]\n" + hookName + " = python:" + hook + ":reject\n");
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("서버 훅이 사유를 담은 Abort로 거절하는 push 세션(prechangegroup, pretxnchangegroup; 번들2, 번들1)의 응답이 원본과 같다")
+    void unbundleSessionsRejectedByAHookWithAReason() throws Exception {
+        io.github.search5.hg4j.api.HgHook abort = ctx -> {
+            throw new io.github.search5.hg4j.errors.HgHookAbortException("protected branch: default");
+        };
+        assertSameSession("abort-pre-b2", client -> commitOnClient(client, "pushed\n"), new String[]{"push"},
+                realAbortingHook("prechangegroup", "protected branch: default"), server -> server.registerPreChangegroupHook(abort));
+        assertSameSession("abort-pre-b1", client -> commitOnClient(client, "pushed\n"),
+                new String[]{"push", "--config", "devel.legacy.exchange=bundle1"},
+                realAbortingHook("prechangegroup", "protected branch: default"), server -> server.registerPreChangegroupHook(abort));
+        assertSameSession("abort-txn-b2", client -> commitOnClient(client, "pushed\n"), new String[]{"push"},
+                realAbortingHook("pretxnchangegroup", "protected branch: default"), server -> server.registerPreTxnChangegroupHook(abort));
+        assertSameSession("abort-txn-b1", client -> commitOnClient(client, "pushed\n"),
+                new String[]{"push", "--config", "devel.legacy.exchange=bundle1"},
+                realAbortingHook("pretxnchangegroup", "protected branch: default"), server -> server.registerPreTxnChangegroupHook(abort));
+    }
+
     @Test
     @DisplayName("서버 훅(prepushkey)이 거절하는 북마크 push 세션의 응답이 원본과 같다")
     void unbundleSessionRejectedByAPushkeyHook() throws Exception {

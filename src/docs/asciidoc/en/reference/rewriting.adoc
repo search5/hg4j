@@ -97,7 +97,7 @@ byte[] last = new RebaseCommand(repo)
 
 === Graft
 
-Copies changes of a revision onto the current working copy parent (`hg graft`, similar to git cherry-pick). Performs a real 3-way merge through `RebaseCommand#attemptThreeWayMerge` when both sides changed the same file. No obsolescence marker is written (graft is a copy). Related class: `GraftInMemory` is a separate command, `hg graft --to REV` (experimental): the changesets are grafted onto REV in memory without touching the working copy or dirstate, under the store lock only, and a conflict aborts everything.
+Copies changes of a revision onto the current working copy parent (`hg graft`, similar to git cherry-pick). Performs a real 3-way merge through `RebaseCommand#attemptThreeWayMerge` when both sides changed the same file. No obsolescence marker is written (graft is a copy). Related class: `GraftInMemory` is a separate command, `hg graft --to REV` (experimental): the changesets are grafted onto REV in memory without touching the working copy or dirstate, under the store lock only, and a conflict aborts everything. `call()` returns the hex nodes and throws on a conflict, as the command line aborts; `execute()` returns a `GraftResult` instead: the conflicting files, or the new changesets as nodes in order, and nothing is written for a conflict. With `setDryRun(true)`, `call()` only prints what would be grafted (like `hg graft -n`) while `execute()` merges every revision in memory and rolls back, so it tells whether the graft works and which nodes the changesets would get. New file revisions of files that the lfs extension tracks are written as pointers.
 
 .Setters
 [cols="2,5"]

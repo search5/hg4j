@@ -32,6 +32,7 @@ public class CloneCommand {
     private File directory;
     private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
     private boolean pull;
+    private boolean update = true;
     private Boolean stream;
     private final List<String> messages = new ArrayList<>();
 
@@ -52,6 +53,15 @@ public class CloneCommand {
      */
     public CloneCommand setPull(boolean pull) {
         this.pull = pull;
+        return this;
+    }
+
+    /**
+     * {@code hg clone -U} when {@code false}: the changesets are brought in but no working files are created; the working directory
+     * parent stays the null revision and there is no {@code .hg/dirstate} file. The default is {@code true}, which checks out the tip.
+     */
+    public CloneCommand setUpdate(boolean update) {
+        this.update = update;
         return this;
     }
 
@@ -139,6 +149,11 @@ public class CloneCommand {
                     .getRevisionCount() == 0) {
                 monitor.end();
                 return repo; // Empty repository pulled
+            }
+
+            if (!update) {
+                monitor.end();
+                return repo; // hg clone -U
             }
 
             // 3. Checkout (Update) the latest revision to working directory

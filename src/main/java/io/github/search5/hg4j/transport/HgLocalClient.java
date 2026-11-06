@@ -758,7 +758,15 @@ public class HgLocalClient implements HgRemoteConnection {
                 preCtx.put("repository", remoteRepo);
                 preCtx.put("nodes", pendingNodeHexes);
                 for (HgHook hook : preHooks) {
-                    if (!hook.run(preCtx)) {
+                    boolean accepted;
+                    try {
+                        accepted = hook.run(preCtx);
+                    } catch (io.github.search5.hg4j.errors.HgHookAbortException abort) {
+                        // a hook that raises Abort: `error: prechangegroup hook failed: <reason>`, then `abort: <reason>`
+                        throw new io.github.search5.hg4j.errors.HgHookRejectedException(abort.getMessage(), false,
+                                "error: prechangegroup hook failed: " + abort.getMessage() + "\n");
+                    }
+                    if (!accepted) {
                         throw new IOException("prechangegroup hook failed"); // the original's wording for a failing hook
                     }
                 }
@@ -815,7 +823,15 @@ public class HgLocalClient implements HgRemoteConnection {
                 txnCtx.put("repository", remoteRepo);
                 txnCtx.put("nodes", appliedHexes);
                 for (HgHook hook : preTxnHooks) {
-                    if (!hook.run(txnCtx)) {
+                    String reason = null;
+                    boolean accepted;
+                    try {
+                        accepted = hook.run(txnCtx);
+                    } catch (io.github.search5.hg4j.errors.HgHookAbortException abort) {
+                        accepted = false;
+                        reason = abort.getMessage();
+                    }
+                    if (!accepted) {
                         try (io.github.search5.hg4j.lib.HgLock lock = remoteRepo.lockStore(remoteRepo.resolvePushLockTimeoutMs())) {
                             new io.github.search5.hg4j.api.RollbackCommand(remoteRepo).call();
                         }
@@ -824,6 +840,11 @@ public class HgLocalClient implements HgRemoteConnection {
                             Files.write(dirstateFile.toPath(), dirstateBackup);
                         } else {
                             Files.deleteIfExists(dirstateFile.toPath());
+                        }
+                        if (reason != null) {
+                            // a hook that raises Abort: `error: pretxnchangegroup hook failed: <reason>`, `abort: <reason>`
+                            throw new io.github.search5.hg4j.errors.HgHookRejectedException(reason, true,
+                                    "error: pretxnchangegroup hook failed: " + reason + "\n");
                         }
                         throw new io.github.search5.hg4j.errors.HgHookRejectedException("pretxnchangegroup hook failed", true);
                     }

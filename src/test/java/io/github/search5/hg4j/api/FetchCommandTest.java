@@ -98,7 +98,7 @@ public class FetchCommandTest {
     }
 
     @Test
-    public void testPullAdvancesDirstateParent(@TempDir Path tempDir) throws Exception {
+    public void testPullLeavesTheDirstateParentAlone(@TempDir Path tempDir) throws Exception {
         File srcDir = tempDir.resolve("source").toFile();
         File destDir = tempDir.resolve("dest").toFile();
 
@@ -124,9 +124,9 @@ public class FetchCommandTest {
         assertEquals(1, imported.size());
         assertArrayEquals(commitNode1, imported.get(0));
 
-        // 3. Pull must automatically advance the dirstate parent to the latest Head if it was empty
+        // 3. Like hg pull (without -u) it does not move the working directory parent
         Dirstate dirstate = destRepo.getDirstate();
-        assertArrayEquals(commitNode1, dirstate.getParent1(), "Pull 후에는 Dirstate parent1이 최신 커밋으로 갱신되어야 합니다.");
+        assertArrayEquals(new byte[20], dirstate.getParent1(), "A pull leaves the working directory parent at the null revision.");
         assertTrue(NodeIdUtil.isAllZero(dirstate.getParent2()), "Pull 후에도 Dirstate parent2는 All Zero여야 합니다.");
     }
 

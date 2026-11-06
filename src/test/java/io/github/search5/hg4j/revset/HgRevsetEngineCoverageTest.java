@@ -249,7 +249,7 @@ public class HgRevsetEngineCoverageTest {
         assertTrue(engine.query("bookmark(\"anything\")").isEmpty());
 
         byte[] c0 = new CommitCommand(repo).setAuthor("Alice").setMessage("noop").call();
-        new TagCommand(repo).setTagName("v1.0").setNodeId(c0).setCommit(false).call();
+        new TagCommand(repo).setTagName("v1.0").setNodeId(c0).call();
         new BookmarkCommand(repo).setBookmarkName("work").setNodeId(c0).call();
 
         // Files now exist but the queried name doesn't match any entry.

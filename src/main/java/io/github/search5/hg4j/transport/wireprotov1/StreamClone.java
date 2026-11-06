@@ -127,7 +127,7 @@ public final class StreamClone {
             for (String wireName : storeFileNames(repo)) {
                 // store-root files (00changelog.*, 00manifest.*) are plain names; only data/ paths go through the store encoding
                 File file = new File(repo.getStoreDir(),
-                        wireName.startsWith("data/") ? NodeIdUtil.encodeFname(wireName) : wireName);
+                        wireName.startsWith("data/") ? NodeIdUtil.encodeStorePath(wireName) : wireName);
                 long size = file.isFile() ? file.length() : 0;
                 if (size > 0) { // real hg skips empty files
                     entries.add(new Entry(wireName, file, size));
@@ -217,7 +217,7 @@ public final class StreamClone {
             }
             for (String wireName : names) {
                 File file = new File(repo.getStoreDir(),
-                        wireName.startsWith("data/") ? NodeIdUtil.encodeFname(wireName) : wireName);
+                        wireName.startsWith("data/") ? NodeIdUtil.encodeStorePath(wireName) : wireName);
                 if (file.isFile()) {
                     entries.add(new Entry(wireName, file, file.length()));
                     total += file.length();

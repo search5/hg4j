@@ -121,7 +121,6 @@ public class HgRevsetTest {
         new CommitCommand(repo)
                 .setAuthor("Bob <bob@example.com>").setMessage("merge feature into default").call();
 
-        new TagCommand(repo).setTagName("v1.0").setNodeId(c1).setCommit(false).call();
         new BookmarkCommand(repo).setBookmarkName("mywork").setNodeId(c2).call();
 
         HgRevsetEngine engine = new HgRevsetEngine(repo);
@@ -132,7 +131,6 @@ public class HgRevsetTest {
         assertEquals(List.of(0, 1, 2, 3), engine.query("ancestors(3)"));
         assertEquals(new TreeSet<>(List.of(1, 2)), new TreeSet<>(engine.query("children(0)")));
         assertEquals(List.of(1, 2), engine.query("parents(3)"));
-        assertEquals(List.of(1), engine.query("tag(\"v1.0\")"));
         assertEquals(List.of(2), engine.query("bookmark(\"mywork\")"));
         assertEquals(List.of(2), engine.query("keyword(\"special\")"));
         assertEquals(List.of(2), engine.query("file(\"b.txt\")"));
@@ -161,5 +159,9 @@ public class HgRevsetTest {
 
         List<Integer> userBob = engine.query("user(Bob)");
         assertEquals(new TreeSet<>(List.of(1, 3)), new TreeSet<>(userBob));
+
+        // a tag is read from the committed .hgtags, so it is checked last: the tag commit is one more changeset
+        new TagCommand(repo).setTagName("v1.0").setNodeId(c1).call();
+        assertEquals(List.of(1), engine.query("tag(\"v1.0\")"));
     }
 }

@@ -475,28 +475,32 @@ public final class HgRevsetEngine {
         return new ArrayList<>(descendants);
     }
 
+    /**
+     * {@code tag([name])}: the revisions of the tags {@code hg tags} lists (the {@code .hgtags} of every head and {@code .hg/localtags},
+     * so a repository without working files works, and removed or moved tags count as in the original), except {@code tip}. The name
+     * is exact and case sensitive; {@code re:} starts a regular expression and {@code literal:} an exact name. Like the rest of this
+     * engine, a name that matches no tag gives an empty result (the original aborts with {@code tag 'x' does not exist}).
+     */
     private List<Integer> evaluateTag(String tagName, Revlog changelog) throws IOException {
-        List<Integer> res = new ArrayList<>();
-        File tagFile = new File(repository.getDirectory(), ".hgtags");
-        if (tagFile.exists()) {
-            List<String> lines = Files.readAllLines(tagFile.toPath(), StandardCharsets.UTF_8);
-            for (String line : lines) {
-                line = line.trim();
-                if (line.isEmpty()) continue;
-                int spaceIdx = line.indexOf(' ');
-                if (spaceIdx != -1) {
-                    String hexNode = line.substring(0, spaceIdx).trim();
-                    String name = line.substring(spaceIdx + 1).trim();
-                    if (name.equalsIgnoreCase(tagName)) {
-                        int rev = changelog.findRevision(NodeIdUtil.fromHex(hexNode));
-                        if (rev != -1) {
-                            res.add(rev);
-                        }
-                    }
-                }
+        java.util.regex.Pattern pattern = null;
+        String literal = tagName;
+        if (tagName.startsWith("re:")) {
+            pattern = java.util.regex.Pattern.compile(tagName.substring(3));
+        } else if (tagName.startsWith("literal:")) {
+            literal = tagName.substring("literal:".length());
+        }
+        java.util.TreeSet<Integer> revs = new java.util.TreeSet<>();
+        for (io.github.search5.hg4j.api.TagsCommand.Tag tag : new io.github.search5.hg4j.api.TagsCommand(repository)
+                .setReadFromHeads(true).call()) {
+            if ("tip".equals(tag.getName())) {
+                continue;
+            }
+            boolean match = tagName.isEmpty() || (pattern != null ? pattern.matcher(tag.getName()).find() : tag.getName().equals(literal));
+            if (match) {
+                revs.add(tag.getRev());
             }
         }
-        return res;
+        return new ArrayList<>(revs);
     }
 
     private List<Integer> evaluateBookmark(String bookmarkName, Revlog changelog) throws IOException {

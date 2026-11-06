@@ -52,6 +52,9 @@ Clones a repository into a new directory. Corresponds to `hg clone`.
 |`setPull(boolean)`
 |`hg clone --pull`: always pull the changesets, even from a local source. Without it a local source is cloned by copying its store, hard linked where possible.
 
+|`setUpdate(boolean)`
+|`hg clone -U` when `false`: no working files are created; the working directory parent stays the null revision and there is no `.hg/dirstate` file. Default `true` (check out the tip).
+
 |`setProgressMonitor(ProgressMonitor)`
 |Progress receiver and cancellation poll; a `null` argument is ignored and the previous monitor (initially a no-op) stays.
 |===
@@ -274,7 +277,16 @@ Writes changesets to a local bundle file. Corresponds to `hg bundle`.
 |Bundle file to write (required; `call()` throws `IllegalStateException` if unset).
 
 |`setBaseRevision(String)`
-|`hg bundle --base REV`: this revision and its ancestors are excluded. `"null"` (case-insensitive), `""` or `"-1"` bundles everything (`-a`). Required: `IllegalStateException` if unset, because destination inference is not implemented.
+|`hg bundle --base REV`: this revision and its ancestors are excluded. `"null"` (case-insensitive), `""` or `"-1"` bundles everything (`-a`). Ignored when `setAll(true)`; incompatible with a destination (`IllegalStateException`).
+
+|`setAll(boolean)`
+|`hg bundle -a/--all`: bundle everything. Incompatible with a destination (`IllegalStateException`: `abort: --all is incompatible with specifying destinations`).
+
+|`setDestination(String)`
+|`hg bundle FILE DEST`: the bundle holds what the repository at DEST does not have. A path to a local repository or a `[paths]` name. Unset (and no base and no `setAll`): `paths.default-push`, then `paths.default`, else `IllegalStateException("config error: default repository not configured!")`. A remote URL is not supported. An unrelated destination fails with `IOException("repository is unrelated")`.
+
+|`setForce(boolean)`
+|`hg bundle -f`: bundle everything for an unrelated destination.
 
 |`setRevision(String)`
 |`hg bundle -r REV`: restrict to this revision and its ancestors. Unset means all revisions.
@@ -287,7 +299,7 @@ Execution: `int call() throws IOException, HgLockException`. Returns the number 
 
 Locks and dirstate: none ("like real hg, `bundle` only reads: no lock"); no `changingParents`.
 
-Differences from hg (from the javadoc): no implicit destination is resolved from `paths.default-push` or `paths.default`, so a base is always required. The `-v3` family produces an `HG20` bundle2 envelope with a cg3 changegroup. Sidedata (cg5) is deliberately not negotiated, which the javadoc describes as a limitation of the real `hg bundle` as well. The blobs of bundled LFS revisions are uploaded first to the LFS store of the default path or `[lfs] url`.
+Differences from hg (from the javadoc): the destination must be a repository that can be opened from this machine (no http or ssh discovery). The `-v3` family produces an `HG20` bundle2 envelope with a cg3 changegroup. Sidedata (cg5) is deliberately not negotiated, which the javadoc describes as a limitation of the real `hg bundle` as well. The blobs of bundled LFS revisions are uploaded first to the LFS store of the default path or `[lfs] url`.
 
 [source,java]
 ----

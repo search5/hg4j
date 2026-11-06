@@ -111,7 +111,10 @@ public class HgSshWireServer {
     }
 
     /** Registers a hook run before an incoming {@code pushkey} (e.g. a bookmark move) is applied —
-     * returning {@code false} aborts it, surfaced to the client as the real hg pushkey failure response. */
+     * returning {@code false} aborts it, surfaced to the client as the real hg pushkey failure response.
+     * In a bundle2 push the hook runs after the changegroup of the same push was applied, so the repository in the context
+     * (clear its revlog cache first) already holds the pushed changesets, like the original's pending view ({@code HG_PENDING});
+     * a refusal then undoes the whole push. */
     public HgSshWireServer registerPrePushkeyHook(HgHook hook) {
         prePushkeyHooks.add(hook);
         return this;

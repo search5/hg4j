@@ -45,9 +45,18 @@ public final class HgLfsProtocolHandler {
     /** Answers a request {@link #handles} accepted. */
     public static void handle(HgRepository repository, String path, HttpServletRequest request, HttpServletResponse response)
             throws IOException {
+        handle(repository, path, "", request, response);
+    }
+
+    /**
+     * Answers a request {@link #handles} accepted for a repository served under {@code basePath} (empty for the root): the
+     * transfer links of a batch response start with it, like real hg's {@code req.baseurl} that includes the application path.
+     */
+    public static void handle(HgRepository repository, String path, String basePath, HttpServletRequest request,
+                              HttpServletResponse response) throws IOException {
         HgLargeFileRepository store = new HgFileLfsRepository(repository);
         if (path.equals(BATCH_PATH)) {
-            batch(store, request, response);
+            batch(store, basePath, request, response);
         } else {
             basicTransfer(store, path, request, response);
         }
@@ -55,7 +64,7 @@ public final class HgLfsProtocolHandler {
 
     // ---------------------------------------------------------------- Batch API
 
-    private static void batch(HgLargeFileRepository store, HttpServletRequest request, HttpServletResponse response)
+    private static void batch(HgLargeFileRepository store, String basePath, HttpServletRequest request, HttpServletResponse response)
             throws IOException {
         if (!"POST".equals(request.getMethod())) {
             httpError(response, 405, null);
@@ -99,7 +108,7 @@ public final class HgLfsProtocolHandler {
             for (Object element : list) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> object = (Map<String, Object>) element;
-                objects.add(describe(store, request, operation, object));
+                objects.add(describe(store, basePath, request, operation, object));
             }
         }
         // json.dumps layout: ", " and ": " separators, keys in insertion order
@@ -112,7 +121,7 @@ public final class HgLfsProtocolHandler {
     }
 
     /** One object of the batch answer ({@code _batchresponseobjects}). */
-    private static String describe(HgLargeFileRepository store, HttpServletRequest request, String operation,
+    private static String describe(HgLargeFileRepository store, String basePath, HttpServletRequest request, String operation,
                                    Map<String, Object> object) throws IOException {
         String oid = (String) object.get("oid");
         Object size = object.get("size");
@@ -149,7 +158,7 @@ public final class HgLfsProtocolHandler {
         }
         header.append('}');
         return out.append(", \"actions\": {").append(json(operation)).append(": {\"href\": ")
-                .append(json(baseUrl(request) + "/.hg/lfs/objects/" + oid))
+                .append(json(baseUrl(request) + basePath + "/.hg/lfs/objects/" + oid))
                 .append(", \"expires_at\": ").append(json(expiresAt)).append(", \"header\": ").append(header).append("}}}").toString();
     }
 

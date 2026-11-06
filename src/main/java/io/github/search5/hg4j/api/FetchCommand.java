@@ -905,21 +905,21 @@ public class FetchCommand {
                             mDat = mfDat;
                         } else {
                             String storeRel = "meta/" + mg.path + "/00manifest";
-                            mIdx = new File(repository.getStoreDir(), NodeIdUtil.encodeFname(storeRel + ".i"));
-                            mDat = new File(repository.getStoreDir(), NodeIdUtil.encodeFname(storeRel + ".d"));
+                            mIdx = new File(repository.getStoreDir(), NodeIdUtil.encodeStorePath(storeRel + ".i"));
+                            mDat = new File(repository.getStoreDir(), NodeIdUtil.encodeStorePath(storeRel + ".d"));
                         
-                            fncachePaths.add(NodeIdUtil.encodeFname(storeRel + ".i"));
+                            fncachePaths.add(NodeIdUtil.encodeStorePath(storeRel + ".i"));
 
                             if (!fileSizes.containsKey(mIdx)) {
                                 long idxLen = mIdx.exists() ? mIdx.length() : 0L;
                                 fileSizes.put(mIdx, idxLen);
-                                String storeRelIdx = "store/" + NodeIdUtil.encodeFname(storeRel + ".i");
+                                String storeRelIdx = "store/" + NodeIdUtil.encodeStorePath(storeRel + ".i");
                                 appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
                             }
                             if (!fileSizes.containsKey(mDat)) {
                                 long datLen = mDat.exists() ? mDat.length() : 0L;
                                 fileSizes.put(mDat, datLen);
-                                String storeRelDat = "store/" + NodeIdUtil.encodeFname(storeRel + ".d");
+                                String storeRelDat = "store/" + NodeIdUtil.encodeStorePath(storeRel + ".d");
                                 appendToJournal(journalFile, storeRelDat + "\t" + datLen);
                             }
                             mIdx.getParentFile().mkdirs();
@@ -940,7 +940,7 @@ public class FetchCommand {
                         // never a paired ".d". Mirrors the isInline() guard already used for filelogs
                         // below.
                         if (mg.path != null && !mg.path.isEmpty() && !subManifest.isInline()) {
-                            fncachePaths.add(NodeIdUtil.encodeFname("meta/" + mg.path + "/00manifest.d"));
+                            fncachePaths.add(NodeIdUtil.encodeStorePath("meta/" + mg.path + "/00manifest.d"));
                         }
                     }
                 } else {

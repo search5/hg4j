@@ -263,7 +263,14 @@ public final class NodeIdUtil {
      * once either the raw or the encoded path exceeds {@value #STORE_MAX_PATH_LEN} bytes.
      */
     public static String encodeFname(String relPath) {
-        String logicalPath = (relPath.startsWith("data/") || relPath.startsWith("meta/")) ? relPath : "data/" + relPath;
+        return encodeStorePath("data/" + relPath);
+    }
+
+    /**
+     * Like {@link #encodeFname} for a path that already starts with its store directory ({@code data/} or {@code meta/}),
+     * as the stream clone and tree manifest code have it.
+     */
+    public static String encodeStorePath(String logicalPath) {
         String dirEncoded = encodeDir(logicalPath);
 
         if (logicalPath.getBytes(StandardCharsets.UTF_8).length > STORE_MAX_PATH_LEN) {

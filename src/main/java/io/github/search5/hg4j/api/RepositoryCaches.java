@@ -267,9 +267,9 @@ public final class RepositoryCaches {
         int tip = nodes.length - 1;
         StringBuilder text = new StringBuilder();
         text.append(tip).append(' ').append(HEX.formatHex(nodes[tip])).append('\n');
-        File tagLog = new File(repo.getStoreDir(), NodeIdUtil.encodeFname("data/.hgtags.i"));
+        File tagLog = new File(repo.getStoreDir(), NodeIdUtil.encodeStorePath("data/.hgtags.i"));
         if (tagLog.isFile()) { // "No tags have ever been committed": the header alone
-            Revlog hgtags = repo.getRevlog(tagLog, new File(repo.getStoreDir(), NodeIdUtil.encodeFname("data/.hgtags.d")));
+            Revlog hgtags = repo.getRevlog(tagLog, new File(repo.getStoreDir(), NodeIdUtil.encodeStorePath("data/.hgtags.d")));
             List<Integer> headsOldestFirst = new ArrayList<>(fnodes.keySet());
             java.util.Collections.reverse(headsOldestFirst); // fnodes was filled newest first
             Set<String> seen = new LinkedHashSet<>();

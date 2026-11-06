@@ -50,7 +50,8 @@ public class BundleCommandTest {
         File out = tempDir.resolve("out.hg").toFile();
         BundleCommand cmd = new BundleCommand(repo).setOutputFile(out);
         IllegalStateException ex = assertThrows(IllegalStateException.class, cmd::call);
-        assertTrue(ex.getMessage().contains("setBaseRevision"));
+        // real hg: `hg bundle out.hg` without --base/--all and without paths.default-push/default
+        assertTrue(ex.getMessage().contains("default repository not configured!"), ex.getMessage());
     }
 
     // -- Treemanifest requires the -v3 BundleType family, matching real hg's own hard abort ------

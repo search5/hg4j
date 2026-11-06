@@ -152,4 +152,48 @@ class MergeCommitCommandTest {
         node[0] ^= 1;
         assertArrayEquals(NodeIdUtil.fromHex(result.getNodeHex()), result.getNode());
     }
+
+    @Test
+    void aSquashHasTheFirstParentOnlyAndTheMergedTree() throws Exception {
+        twoHeads();
+        MergeCommitResult result = command().setSquash(true).call();
+
+        assertFalse(result.isConflicted());
+        var changelog = repo.getRevlog(new File(dir, ".hg/store/00changelog.i"), new File(dir, ".hg/store/00changelog.d"));
+        var tip = changelog.getIndexRecord(changelog.getRevisionCount() - 1);
+        assertEquals(changelog.findRevision(left), tip.getParent1());
+        assertEquals(-1, tip.getParent2());
+        var files = new TreeCommand(repo).setNodeId(new io.github.search5.hg4j.lib.NodeId(result.getNode())).call();
+        assertEquals(java.util.List.of("a.txt", "b.txt"), files.stream().map(TreeCommand.TreeEntry::getPath).toList());
+    }
+
+    @Test
+    void aSquashRefusesAnAncestorRelationLikeAMergeUnlessAllowed() throws Exception {
+        twoHeads();
+        long before = changelogSize();
+        // as `hg merge`: nothing to merge when one side is an ancestor of the other, in either direction
+        assertThrows(HgValidationException.class, () -> command().setP1(base).setP2(left).setSquash(true).call());
+        assertThrows(HgValidationException.class, () -> command().setP1(left).setP2(base).setSquash(true).call());
+        assertEquals(before, changelogSize());
+        // the hg4j extension of a merge applies to a squash too: a descendant squashes to its tree
+        assertFalse(command().setP1(base).setP2(left).setSquash(true).setAllowAncestorMerge(true).call().isConflicted());
+        // and an ancestor as p2 changes nothing, which `hg commit` refuses
+        assertThrows(HgValidationException.class,
+                () -> command().setP1(left).setP2(base).setSquash(true).setAllowAncestorMerge(true).call());
+    }
+
+    @Test
+    void aSquashConflictIsAResultAndWritesNothing() throws Exception {
+        dir = tempDir.resolve("conflict").toFile();
+        repo = Hg.init().setDirectory(dir).call();
+        base = commit("f.txt", "line\n", "base");
+        left = commit("f.txt", "left\n", "left");
+        new UpdateCommand(repo).setRevision(NodeIdUtil.toHex(base)).call();
+        right = commit("f.txt", "right\n", "right");
+        long before = changelogSize();
+        MergeCommitResult result = command().setSquash(true).call();
+        assertTrue(result.isConflicted());
+        assertEquals(java.util.List.of("f.txt"), result.getConflicts());
+        assertEquals(before, changelogSize());
+    }
 }

@@ -66,6 +66,12 @@ final class ParitySupport {
 
     /** What a real hg or hg4j SSH server writes when it is fed {@code clientBytes} on stdin. */
     static byte[] sshSession(boolean real, Path repo, byte[] clientBytes) throws Exception {
+        return sshSession(real, repo, clientBytes, server -> { });
+    }
+
+    /** Same, with {@code setup} run on the hg4j server before it handles the connection (to register hooks). */
+    static byte[] sshSession(boolean real, Path repo, byte[] clientBytes, java.util.function.Consumer<HgSshWireServer> setup)
+            throws Exception {
         if (real) {
             ProcessBuilder pb = LocalHg.processBuilder(repo, "-R", repo.toString(), "serve", "--stdio");
             pb.redirectError(ProcessBuilder.Redirect.DISCARD);
@@ -81,7 +87,9 @@ final class ParitySupport {
             return out;
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        new HgSshWireServer(new HgRepository(repo.toFile())).handleConnection(new ByteArrayInputStream(clientBytes), out);
+        HgSshWireServer server = new HgSshWireServer(new HgRepository(repo.toFile()));
+        setup.accept(server);
+        server.handleConnection(new ByteArrayInputStream(clientBytes), out);
         return out.toByteArray();
     }
 

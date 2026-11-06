@@ -59,7 +59,7 @@ public class NodeIdUtilTest {
     public void testEncodeFnameWithExtensionsAndStorePrefix() {
         // Verify prevention of duplicate data/ prefix addition when it already has a store prefix
         String metaPath = "meta/testdir/00manifest.i";
-        String encodedMeta = NodeIdUtil.encodeFname(metaPath);
+        String encodedMeta = NodeIdUtil.encodeStorePath(metaPath);
         assertTrue(encodedMeta.startsWith("meta/"));
         assertFalse(encodedMeta.startsWith("data/meta/"));
 

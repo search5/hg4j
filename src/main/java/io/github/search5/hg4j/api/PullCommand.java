@@ -3,7 +3,6 @@ package io.github.search5.hg4j.api;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import io.github.search5.hg4j.bundle.ChangegroupParser;
-import io.github.search5.hg4j.dirstate.Dirstate;
 import io.github.search5.hg4j.lib.HgLock;
 import io.github.search5.hg4j.transport.HgRemoteConnection;
 import io.github.search5.hg4j.transport.HgRemoteConnectionFactory;
@@ -142,8 +141,9 @@ public class PullCommand {
      * The source is the value of {@link #setSource}, or, when that is {@code null} or empty, the {@code default} entry
      * of {@code [paths]}. A source without {@code ://} that names a {@code [paths]} entry is replaced by that entry's
      * URL. The working copy lock is held for the whole call (the store lock is taken by the underlying fetch). The work is
-     * delegated to {@link FetchCommand}. Afterwards, if changesets were imported and the first dirstate parent is the
-     * null revision, the dirstate parent is set to the last imported changeset; working copy files are not updated.
+     * delegated to {@link FetchCommand}. Like {@code hg pull} (without {@code -u}) it
+     * leaves the working directory and its dirstate alone: a repository without working files that is filled by it keeps the null
+     * parent and has no {@code .hg/dirstate} file.
      * {@link #getMessages()} is reset at the start and filled during the call.
      * @return the node ids (20 bytes each) of the imported changesets, possibly empty
      * @throws IOException if the connection, the transfer or writing the repository fails
@@ -196,20 +196,6 @@ public class PullCommand {
                 results = fetchCmd.call();
             } finally {
                 messages.addAll(fetchCmd.getMessages());
-            }
-
-            // 2. PullCommand exclusive: automatically advance working directory dirstate parent if it was empty
-            if (results != null && !results.isEmpty()) {
-                final List<byte[]> pulled = results;
-                repository.changingParents(() -> {
-                    Dirstate dirstate = repository.getDirstate();
-                    if (NodeIdUtil.isAllZero(dirstate.getParent1())) {
-                        byte[] latestHead = pulled.get(pulled.size() - 1);
-                        dirstate.setParents(latestHead, new byte[20]);
-                        repository.writeDirstate(dirstate);
-                    }
-                    return null;
-                });
             }
 
             // 3. bookmark 동기화는 위 1단계의 FetchCommand.call() 안에서
@@ -284,18 +270,6 @@ public class PullCommand {
 
             List<byte[]> results = fetchCmd.applyBundle(bundle, lockTimeoutMs, postLockValidator);
 
-            if (results != null && !results.isEmpty()) {
-                final List<byte[]> pulled = results;
-                repository.changingParents(() -> {
-                    Dirstate dirstate = repository.getDirstate();
-                    if (NodeIdUtil.isAllZero(dirstate.getParent1())) {
-                        byte[] latestHead = pulled.get(pulled.size() - 1);
-                        dirstate.setParents(latestHead, new byte[20]);
-                        repository.writeDirstate(dirstate);
-                    }
-                    return null;
-                });
-            }
             return results;
         }
     }

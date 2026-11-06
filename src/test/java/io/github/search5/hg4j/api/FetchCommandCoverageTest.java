@@ -247,8 +247,8 @@ public class FetchCommandCoverageTest {
         Revlog rootManifest = destRepo.getManifestRevlog();
         assertEquals(1, rootManifest.getRevisionCount(), "Root ('') manifest group must go to 00manifest.i/.d");
 
-        String nestedIdxRel = NodeIdUtil.encodeFname("meta/subdir/00manifest.i");
-        String nestedDatRel = NodeIdUtil.encodeFname("meta/subdir/00manifest.d");
+        String nestedIdxRel = NodeIdUtil.encodeStorePath("meta/subdir/00manifest.i");
+        String nestedDatRel = NodeIdUtil.encodeStorePath("meta/subdir/00manifest.d");
         File nestedIdx = new File(destRepo.getStoreDir(), nestedIdxRel);
         File nestedDat = new File(destRepo.getStoreDir(), nestedDatRel);
         assertTrue(nestedIdx.exists(), "Nested treemanifest revlog index must be created");
@@ -421,8 +421,8 @@ public class FetchCommandCoverageTest {
         List<byte[]> imported1 = fetchCmd.applyBundle(bundle1);
         assertEquals(1, imported1.size());
 
-        String nestedIdxRel = NodeIdUtil.encodeFname("meta/subdir/00manifest.i");
-        String nestedDatRel = NodeIdUtil.encodeFname("meta/subdir/00manifest.d");
+        String nestedIdxRel = NodeIdUtil.encodeStorePath("meta/subdir/00manifest.i");
+        String nestedDatRel = NodeIdUtil.encodeStorePath("meta/subdir/00manifest.d");
         File nestedIdx = new File(destRepo.getStoreDir(), nestedIdxRel);
         File nestedDat = new File(destRepo.getStoreDir(), nestedDatRel);
         long nestedIdxLenAfterFirst = nestedIdx.length();

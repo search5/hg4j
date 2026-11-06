@@ -582,7 +582,7 @@ public class MercurialUncoveredAndPerfTest {
     @DisplayName("Verification of preventing duplicate meta/data/ prefix attachment during fncache file path encoding")
     public void testFncacheDupFolderMetaEncodingPrevention() {
         String inputPath = "meta/data/long_nested_path.i";
-        String encoded = NodeIdUtil.encodeFname(inputPath);
+        String encoded = NodeIdUtil.encodeStorePath(inputPath);
         
         assertNotNull(encoded);
         // meta/data/ should not be duplicated, and only a clean single prefix should exist

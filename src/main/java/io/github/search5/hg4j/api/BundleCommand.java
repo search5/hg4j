@@ -38,8 +38,7 @@ import java.util.zip.DeflaterOutputStream;
  *       "bundle everything". Reproduced with {@code hg}, {@code hg -r <rev>}, and plain
  *       {@code hg bundle out.hg}: all three require either an explicit base (or {@code -a}/
  *       {@code --base null}, which {@code hg help bundle} documents as equivalent) or a
- *       resolvable destination. {@link #call()} mirrors only the base/all half of that contract
- *       (see class-level note below on the destination-inference half being out of scope).</li>
+ *       resolvable destination. {@link #call()} mirrors both halves of that contract (the destination can be a local repository).</li>
  *   <li>{@code hg bundle --all --type none-v1 out.hg} produces a bare "HG10UN" header followed by
  *       the exact same 4-byte-length-prefixed cg1 chunk stream {@link PushCommand} already builds
  *       (confirmed byte-for-byte via {@code xxd}: {@code 4847 3130 554e 0000 00ae ...}), and real
@@ -114,13 +113,13 @@ import java.util.zip.DeflaterOutputStream;
  * that specific combo as an expected, control-confirmed real-hg limitation rather than an hg4j
  * regression.
  *
- * <p><b>Scope note:</b> unlike real {@code hg bundle}, this command does not fall back to
- * resolving an implicit base by opening a connection to {@code paths.default-push}/{@code
- * paths.default} and running remote-heads discovery the way {@link PushCommand} does -- that
- * would duplicate {@code PushCommand}'s transport-facing logic for a local-file-writing command
- * and is left as a follow-up. {@link #setBaseRevision(String)} must always be called explicitly;
- * pass {@code "null"} (matching {@code hg}'s own {@code --base null} spelling for "no known
- * ancestor", i.e. bundle everything) when there is no real incremental base.</p>
+ * <p><b>What the bundle holds:</b> as in {@code hg bundle}, {@link #setAll(boolean)} (or a base of {@code "null"}) bundles everything,
+ * {@link #setBaseRevision(String)} excludes a revision and its ancestors, and otherwise the destination decides: the one given with
+ * {@link #setDestination(String)} (a local repository path or a {@code [paths]} name), else {@code paths.default-push}, else
+ * {@code paths.default}; the bundle then holds what that repository does not have ("repository is unrelated" unless
+ * {@link #setForce(boolean)}), and none of them configured is the config error the original reports. The bundle bytes are compared with
+ * the real {@code hg} in the interop tests. A remote destination (http, ssh) is not supported: only the repositories that can be opened
+ * from this machine, because the discovery over a connection that {@link PushCommand} does is not repeated here.</p>
  */
 public class BundleCommand {
 
@@ -220,6 +219,9 @@ public class BundleCommand {
     private File outputFile;
     private String revision;
     private String baseRevision;
+    private boolean all;
+    private String destination;
+    private boolean force;
     private BundleType type = BundleType.NONE_V1;
 
     /**
@@ -282,6 +284,64 @@ public class BundleCommand {
     }
 
     /**
+     * {@code hg bundle -a/--all}: bundle every changeset (the same as {@link #setBaseRevision(String) base} {@code "null"}). A base
+     * given as well is ignored, as the original does ("ignoring --base because --all was specified"); a destination is refused.
+     */
+    public BundleCommand setAll(boolean all) {
+        this.all = all;
+        return this;
+    }
+
+    /**
+     * {@code hg bundle FILE DEST}: the bundle holds the changesets that the repository at {@code destination} does not have. It is a
+     * path to a local repository, or the name of a {@code [paths]} entry. Without {@code --base}, {@code --all} and a destination, the
+     * original uses {@code paths.default-push}, then {@code paths.default}, and so does this command; none of them is a config error
+     * ("default repository not configured!"). A remote destination (an URL with a scheme other than {@code file}) is not supported.
+     * Incompatible with {@link #setAll(boolean)} and {@link #setBaseRevision(String)}.
+     */
+    public BundleCommand setDestination(String destination) {
+        this.destination = destination;
+        return this;
+    }
+
+    /** {@code hg bundle -f/--force}: bundle even if the destination is unrelated to this repository (everything is outgoing then). */
+    public BundleCommand setForce(boolean force) {
+        this.force = force;
+        return this;
+    }
+
+    /**
+     * The revisions of this repository that the destination already has ({@code discovery}'s common set for a local destination). An
+     * unrelated destination (it has changesets, none of them known here) is an error unless forced, as in the original.
+     */
+    private Set<Integer> commonWithDestination(Revlog changelog, String destinationPath) throws IOException {
+        String path = destinationPath;
+        if (path.startsWith("file://")) {
+            path = path.substring("file://".length());
+        }
+        if (path.contains("://")) {
+            throw new IllegalStateException("bundle with a remote destination is not supported: " + destinationPath);
+        }
+        File destinationDir = new File(path);
+        if (!new File(destinationDir, ".hg").isDirectory()) {
+            throw new IOException("repository " + destinationPath + " not found");
+        }
+        HgRepository other = new HgRepository(destinationDir);
+        Revlog otherChangelog = other.getRevlog(new File(other.getStoreDir(), "00changelog.i"),
+                new File(other.getStoreDir(), "00changelog.d"));
+        Set<Integer> common = new HashSet<>();
+        for (int r = 0; r < changelog.getRevisionCount(); r++) {
+            if (otherChangelog.findRevision(changelog.getIndexRecord(r).getNodeId()) >= 0) {
+                common.add(r);
+            }
+        }
+        if (common.isEmpty() && otherChangelog.getRevisionCount() > 0 && !force) {
+            throw new IOException("repository is unrelated");
+        }
+        return common;
+    }
+
+    /**
      * Writes the bundle file and returns the number of changesets it contains. When the computed
      * changeset set is empty, no file is written at all (matching real {@code hg bundle}'s "no
      * changes found" / exit-1 behavior, verified: {@code hg bundle --base tip out.hg} on a repo
@@ -292,12 +352,26 @@ public class BundleCommand {
         if (outputFile == null) {
             throw new IllegalStateException("Output file must be specified for bundle creation.");
         }
-        if (baseRevision == null) {
-            throw new IllegalStateException(
-                    "A base revision must be specified via setBaseRevision(...) -- pass \"null\" to "
-                            + "bundle every changeset (matching real hg's -a/--all or --base null); "
-                            + "hg4j's BundleCommand does not resolve an implicit destination the way "
-                            + "real 'hg bundle' falls back to paths.default-push/paths.default.");
+        boolean allChangesets = all || (baseRevision != null && "null".equalsIgnoreCase(baseRevision.trim()));
+        boolean hasDestination = destination != null && !destination.isEmpty();
+        if (all && hasDestination) {
+            throw new IllegalStateException("abort: --all is incompatible with specifying destinations");
+        }
+        if (baseRevision != null && !allChangesets && hasDestination) {
+            throw new IllegalStateException("abort: --base is incompatible with specifying destinations");
+        }
+        // without --base and --all the destination decides: the one given, else paths.default-push, else paths.default
+        String destinationPath = null;
+        if (!allChangesets && baseRevision == null) {
+            String name = hasDestination ? destination : repository.getConfig().getPath("default-push");
+            if (name == null || name.isEmpty()) {
+                name = hasDestination ? destination : repository.getConfig().getPath("default");
+            }
+            if (name == null || name.isEmpty()) {
+                throw new IllegalStateException("config error: default repository not configured!\n(see 'hg help config.paths')");
+            }
+            String configured = repository.getConfig().getPath(name);
+            destinationPath = configured != null ? configured : name;
         }
 
         File clIdx = new File(repository.getStoreDir(), "00changelog.i");
@@ -331,7 +405,14 @@ public class BundleCommand {
             String version = type.isV3() ? "03" : "01";
             boolean treeCapable = "03".equals(version);
 
-            Set<Integer> baseAncestors = resolveAncestorClosure(changelog, baseRevision);
+            Set<Integer> baseAncestors;
+            if (destinationPath != null) {
+                baseAncestors = commonWithDestination(changelog, destinationPath);
+            } else if (allChangesets) {
+                baseAncestors = new HashSet<>();
+            } else {
+                baseAncestors = resolveAncestorClosure(changelog, baseRevision);
+            }
 
             Set<Integer> targetAncestors;
             if (revision == null || revision.isEmpty()) {

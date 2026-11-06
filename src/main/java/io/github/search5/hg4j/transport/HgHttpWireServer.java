@@ -36,6 +36,7 @@ import java.util.zip.DeflaterOutputStream;
 public class HgHttpWireServer extends HttpServlet {
 
     private final HgRepository repository;
+    private volatile String basePath = "";
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
     private final List<HgHook> preTxnChangegroupHooks = new ArrayList<>();
     private final List<HgHook> postChangegroupHooks = new ArrayList<>();
@@ -89,7 +90,10 @@ public class HgHttpWireServer extends HttpServlet {
 
     /** Registers a hook run before an incoming {@code pushkey} (e.g. a bookmark move — the actual
      * "branch update" wire event, see {@link Wire1Commands#pushkey}) is applied — returning
-     * {@code false} aborts it, surfaced to the client as the real hg pushkey failure response. */
+     * {@code false} aborts it, surfaced to the client as the real hg pushkey failure response.
+     * In a bundle2 push the hook runs after the changegroup of the same push was applied, so the repository in the context
+     * (clear its revlog cache first) already holds the pushed changesets, like the original's pending view ({@code HG_PENDING});
+     * a refusal then undoes the whole push. */
     public HgHttpWireServer registerPrePushkeyHook(HgHook hook) {
         prePushkeyHooks.add(hook);
         return this;
@@ -109,6 +113,27 @@ public class HgHttpWireServer extends HttpServlet {
      */
     public HgHttpWireServer setEnforceWebPermissions(boolean enforce) {
         this.enforceWebPermissions = enforce;
+        return this;
+    }
+
+    /**
+     * The path the repository is served under, for a server that holds several repositories ({@code /owner/project}). Requests are
+     * matched against the request URI as the container reports it (the context path is part of it); the prefix is removed before the
+     * LFS endpoints ({@code .git/info/lfs/objects/batch}, {@code .hg/lfs/objects/...}) are recognized, and a request that is not under
+     * it (the prefix itself, or the prefix followed by {@code /}) is answered with 404, wire protocol requests included. The default is
+     * the root, where every path is served as before. A missing leading slash and a trailing slash are ignored.
+     * @param basePath the path prefix; {@code null}, empty or {@code "/"} for the root
+     * @return {@code this}
+     */
+    public HgHttpWireServer setBasePath(String basePath) {
+        String path = basePath == null ? "" : basePath.trim();
+        while (path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        if (!path.isEmpty() && !path.startsWith("/")) {
+            path = "/" + path;
+        }
+        this.basePath = path;
         return this;
     }
 
@@ -143,6 +168,15 @@ public class HgHttpWireServer extends HttpServlet {
 
             // the LFS endpoints (Batch API and Basic transfer) of an lfs-enabled repository, like real hg's wrapped
             // handlewsgirequest: tried when the request is not a wire protocol request
+            String prefix = basePath;
+            if (!prefix.isEmpty()) {
+                if (path.equals(prefix) || path.startsWith(prefix + "/")) {
+                    path = path.substring(prefix.length());
+                } else {
+                    response.setStatus(404); // not under the path this repository is served at
+                    return;
+                }
+            }
             String applicationPath = path.startsWith("/") ? path.substring(1) : path;
             if (queryParam(query, "cmd") == null
                     && io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handles(repository, applicationPath)) {
@@ -156,7 +190,7 @@ public class HgHttpWireServer extends HttpServlet {
                 if (lfsOperation != null && !permitted(request, response, lfsOperation)) {
                     return;
                 }
-                io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handle(repository, applicationPath, request, response);
+                io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handle(repository, applicationPath, basePath, request, response);
                 return;
             }
 

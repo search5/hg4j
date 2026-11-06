@@ -88,6 +88,7 @@ final class Bundle2Push {
         boolean changegroupApplied = false;
         boolean partsApplied = false;
         String abortNoteFor = null;   // id of the changegroup part whose application the original would have rolled back
+        String hookOutput = "";       // what a refusing hook told the client before the abort
         boolean abortLines = false;   // whether the original would have printed "transaction abort!" / "rollback completed"
         try {
             Bundle2.Part changegroup = first(parts, "changegroup");
@@ -117,8 +118,8 @@ final class Bundle2Push {
                 Bundle2.Part part = parts.get(i);
                 try {
                     switch (part.type) {
-                        case "pushkey" -> prepareLater(repo, part, prePushkey);
-                        case "bookmarks" -> prepareBookmarks(repo, part, prePushkey);
+                        case "pushkey" -> prepareLater(repo, part);
+                        case "bookmarks" -> prepareBookmarks(repo, part);
                         default -> { }
                     }
                 } catch (IOException | RuntimeException e) {
@@ -143,8 +144,9 @@ final class Bundle2Push {
                     result = new HgLocalClient(repo).pushWithHooks(
                             bundleBytes, wireHeads, preChangegroup, preTxnChangegroup, postChangegroup, validator);
                 } catch (io.github.search5.hg4j.errors.HgHookRejectedException e) {
-                    abortNoteFor = String.valueOf(changegroup.id);
+                    abortNoteFor = e.isRolledBack() ? String.valueOf(changegroup.id) : null;
                     abortLines = e.isRolledBack();
+                    hookOutput = e.getHookOutput();
                     throw e;
                 }
                 changegroupApplied = true;
@@ -171,8 +173,9 @@ final class Bundle2Push {
                     result = new HgLocalClient(repo).pushWithHooks(
                             fetched, List.of(), preChangegroup, preTxnChangegroup, postChangegroup, changegroup == null ? validator : null);
                 } catch (io.github.search5.hg4j.errors.HgHookRejectedException e) {
-                    abortNoteFor = String.valueOf(remote.id);
+                    abortNoteFor = e.isRolledBack() ? String.valueOf(remote.id) : null;
                     abortLines = e.isRolledBack();
+                    hookOutput = e.getHookOutput();
                     throw e;
                 }
                 changegroupApplied = true;
@@ -194,10 +197,24 @@ final class Bundle2Push {
                 }
             }
 
-            partsApplied = parts.stream().anyMatch(p -> p.type.equals("pushkey") || p.type.equals("bookmarks") || p.type.equals("phase-heads"));
+            // The prepushkey hooks run here, in part order after the changegroup was applied, like the original's bundle2 part
+            // handlers do: they see the changesets of the same push (HG_PENDING). A hook that refuses, with nothing changed yet,
+            // leaves no abort lines behind; after the changegroup it undoes the push like any later failure.
             for (Bundle2.Part part : parts) {
+                if (part.type.equals("bookmarks")) {
+                    repo.clearRevlogCache();
+                    try {
+                        runPrepushkeyHooks(repo, part, prePushkey);
+                    } catch (IOException | RuntimeException e) {
+                        partsApplied = partsApplied || changegroupApplied;
+                        throw e;
+                    }
+                }
+                if (part.type.equals("pushkey") || part.type.equals("bookmarks") || part.type.equals("phase-heads")) {
+                    partsApplied = true;
+                }
                 switch (part.type) {
-                    case "pushkey" -> applyPushkey(repo, part, reply, List.of(), postPushkey);
+                    case "pushkey" -> applyPushkey(repo, part, reply, prePushkey, postPushkey);
                     case "bookmarks" -> applyBookmarks(repo, part, List.of(), postPushkey);
                     case "phase-heads" -> applyPhaseHeads(repo, part);
                     default -> { }
@@ -220,7 +237,7 @@ final class Bundle2Push {
                     abortNoteFor = cg == null ? null : String.valueOf(cg.id);
                 }
             }
-            reply = salvaged(outputs, captureOutput, abortNoteFor, abortLines);
+            reply = salvaged(outputs, captureOutput, abortNoteFor, abortLines, hookOutput);
             if (e instanceof HgPushRacedException) {
                 reply.addPart("error:pushraced", true, Map.of("message", String.valueOf(e.getMessage())), Map.of(), new byte[0]);
             } else if (e instanceof PushkeyFailed failed) {
@@ -369,7 +386,8 @@ final class Bundle2Push {
      * The start of an error answer: the {@code output} parts the reply already had, then the (here empty) output of the
      * transaction that was abandoned, which the original always appends when it captures output.
      */
-    private static Bundle2.Writer salvaged(List<Object[]> outputs, boolean captureOutput, String abortNoteFor, boolean abortLines) {
+    private static Bundle2.Writer salvaged(List<Object[]> outputs, boolean captureOutput, String abortNoteFor, boolean abortLines,
+                                           String hookOutput) {
         Bundle2.Writer writer = new Bundle2.Writer();
         if (captureOutput) {
             boolean listed = false;
@@ -384,7 +402,7 @@ final class Bundle2Push {
                         "adding changesets\nadding manifests\nadding file changes\n".getBytes(StandardCharsets.UTF_8));
             }
             writer.addPart("output", false, Map.of(), Map.of(),
-                    (abortLines ? "transaction abort!\nrollback completed\n" : "").getBytes(StandardCharsets.UTF_8));
+                    (hookOutput + (abortLines ? "transaction abort!\nrollback completed\n" : "")).getBytes(StandardCharsets.UTF_8));
         }
         return writer;
     }
@@ -611,12 +629,11 @@ final class Bundle2Push {
     }
 
     /** Checks a {@code pushkey} part ahead of time: its {@code prepushkey} hooks, and for a mandatory part whether it can succeed. */
-    private static void prepareLater(HgRepository repo, Bundle2.Part part, List<HgHook> pre) throws IOException {
+    private static void prepareLater(HgRepository repo, Bundle2.Part part) throws IOException {
         Map<String, String> args = new LinkedHashMap<>();
         for (String key : List.of("namespace", "key", "old", "new")) {
             args.put(key, part.params.getOrDefault(key, ""));
         }
-        runPreHooks(repo, args, pre);
         if (part.mandatory && !RepoSupport.canApplyPushkey(repo, args.get("namespace"), args.get("key"), args.get("old"), args.get("new"))) {
             throw new PushkeyFailed(part);
         }
@@ -626,13 +643,29 @@ final class Bundle2Push {
      * The same for a {@code bookmarks} part: no divergent names and the {@code prepushkey} hooks for every change. That its nodes
      * exist is checked when it is applied, because the changegroup of the same bundle may be what brings them.
      */
-    private static void prepareBookmarks(HgRepository repo, Bundle2.Part part, List<HgHook> pre) throws IOException {
-        Map<String, byte[]> changes = decodeBookmarks(part.payload);
-        Map<String, String> current = RepoSupport.readListKeys(repo, "bookmarks");
-        for (Map.Entry<String, byte[]> e : changes.entrySet()) {
-            if (e.getKey().contains("@")) {
-                throw new IOException("cannot accept divergent bookmark " + e.getKey() + "!");
+    private static void prepareBookmarks(HgRepository repo, Bundle2.Part part) throws IOException {
+        for (String book : decodeBookmarks(part.payload).keySet()) {
+            if (book.contains("@")) {
+                throw new IOException("cannot accept divergent bookmark " + book + "!");
             }
+        }
+    }
+
+    /** The {@code prepushkey} hooks of a {@code pushkey} or {@code bookmarks} part, for the repository as it is now. */
+    private static void runPrepushkeyHooks(HgRepository repo, Bundle2.Part part, List<HgHook> pre) throws IOException {
+        if (pre.isEmpty()) {
+            return;
+        }
+        if (part.type.equals("pushkey")) {
+            Map<String, String> args = new LinkedHashMap<>();
+            for (String key : List.of("namespace", "key", "old", "new")) {
+                args.put(key, part.params.getOrDefault(key, ""));
+            }
+            runPreHooks(repo, args, pre);
+            return;
+        }
+        Map<String, String> current = RepoSupport.readListKeys(repo, "bookmarks");
+        for (Map.Entry<String, byte[]> e : decodeBookmarks(part.payload).entrySet()) {
             Map<String, String> args = new LinkedHashMap<>();
             args.put("namespace", "bookmarks");
             args.put("key", e.getKey());

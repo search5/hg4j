@@ -69,13 +69,28 @@ class UnbundleErrorParityInteropTest {
 
     /** Sends {@code bundle} (with heads {@code force}) to a pristine copy of the fixture under each server and compares. */
     private void assertSameAnswer(String name, byte[] bundle) throws Exception {
+        assertSameAnswer(name, bundle, null, server -> { });
+    }
+
+    /** With a {@code prepushkey} hook that refuses: a python hook for the real server, the equivalent callback for hg4j's. */
+    private void assertSameAnswerWithRefusingHook(String name, byte[] bundle) throws Exception {
+        Path hook = tmp.resolve("rejecting_hook.py");
+        java.nio.file.Files.writeString(hook, "def reject(ui, repo, hooktype, **kwargs):\n    return True\n");
+        assertSameAnswer(name, bundle, "[hooks]\nprepushkey = python:" + hook + ":reject\n", server -> server.registerPrePushkeyHook(ctx -> false));
+    }
+
+    private void assertSameAnswer(String name, byte[] bundle, String realHgrc, java.util.function.Consumer<HgSshWireServer> setup)
+            throws Exception {
         Path real = tmp.resolve(name + "-real");
         Path mine = tmp.resolve(name + "-mine");
         ParitySupport.copyTree(fx.repo(), real);
         ParitySupport.copyTree(fx.repo(), mine);
+        if (realHgrc != null) {
+            java.nio.file.Files.writeString(real.resolve(".hg/hgrc"), realHgrc, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        }
         byte[] request = ParitySupport.unbundleRequest("666f726365" /* hex("force"), what a real client sends */, bundle);
         byte[] expected = ParitySupport.sshSession(true, real, request);
-        byte[] actual = ParitySupport.sshSession(false, mine, request);
+        byte[] actual = ParitySupport.sshSession(false, mine, request, setup);
         int n = Math.min(expected.length, actual.length);
         int at = 0;
         while (at < n && expected[at] == actual[at]) {
@@ -146,6 +161,28 @@ class UnbundleErrorParityInteropTest {
         w.addPart("pushkey", true, new LinkedHashMap<>(Map.of("namespace", "bookmarks", "key", "bm1", "old", fx.n0(), "new", fx.n2())),
                 Map.of(), new byte[0]);
         assertSameAnswer("pushkey-mandatory", w.toBytes(null));
+    }
+
+    @Test
+    @DisplayName("prepushkey 훅이 pushkey 부품을 거절하면 필수는 error:pushkey, 선택은 reply:pushkey return=0 이다")
+    void aRefusingPrepushkeyHookFailsAPushkeyPartLikeAFailedPush() throws Exception {
+        Bundle2.Writer mandatory = bundle();
+        mandatory.addPart("pushkey", true, new LinkedHashMap<>(Map.of("namespace", "bookmarks", "key", "bm1", "old", fx.n1(), "new", fx.n2())),
+                Map.of(), new byte[0]);
+        assertSameAnswerWithRefusingHook("pushkey-hook-mandatory", mandatory.toBytes(null));
+        Bundle2.Writer advisory = bundle();
+        advisory.addPart("pushkey", false, Map.of(), new LinkedHashMap<>(Map.of("namespace", "bookmarks", "key", "bm1", "old", fx.n1(), "new", fx.n2())),
+                new byte[0]);
+        assertSameAnswerWithRefusingHook("pushkey-hook-advisory", advisory.toBytes(null));
+    }
+
+    @Test
+    @DisplayName("prepushkey 훅이 거절하면 실패할 필수 pushkey 보다 훅의 거절이 먼저 처리된다")
+    void aRefusingPrepushkeyHookComesBeforeAFailingMandatoryPushkey() throws Exception {
+        Bundle2.Writer w = bundle();
+        w.addPart("pushkey", true, new LinkedHashMap<>(Map.of("namespace", "bookmarks", "key", "bm1", "old", fx.n0(), "new", fx.n2())),
+                Map.of(), new byte[0]);
+        assertSameAnswerWithRefusingHook("pushkey-hook-first", w.toBytes(null));
     }
 
     @Test

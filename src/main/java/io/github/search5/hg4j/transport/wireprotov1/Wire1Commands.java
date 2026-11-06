@@ -547,23 +547,13 @@ public final class Wire1Commands {
     }
 
     /**
-     * The {@code pushkey} of a bundle2 part: a refusal by a {@code prepushkey} hook is an {@code Abort} ({@code prepushkey hook
-     * failed}, as the original's {@code HookAbort}), not the plain "value not updated" answer.
+     * The {@code pushkey} of a bundle2 part. The original's {@code repo.pushkey} catches the {@code HookAbort} of a refusing
+     * {@code prepushkey} hook and answers {@code False}, so a refusal is the plain "not updated" answer here as well (a mandatory
+     * part then fails with {@code error:pushkey}, an advisory one is answered with {@code return=0}).
      */
     static Wire1Response pushkeyFromPart(HgRepository repo, Map<String, String> args, List<HgHook> prePushkeyHooks,
                                          List<HgHook> postPushkeyHooks) throws IOException {
-        Map<String, Object> context = new LinkedHashMap<>();
-        context.put("namespace", args.get("namespace"));
-        context.put("key", args.get("key"));
-        context.put("old", args.getOrDefault("old", ""));
-        context.put("new", args.getOrDefault("new", ""));
-        context.put("repository", repo);
-        for (HgHook hook : prePushkeyHooks) {
-            if (!hook.run(context)) {
-                throw new IOException("prepushkey hook failed");
-            }
-        }
-        return applyPushkeyAndRunPostHooks(repo, args, context, postPushkeyHooks);
+        return pushkey(repo, args, prePushkeyHooks, postPushkeyHooks);
     }
 
     private static Wire1Response applyPushkeyAndRunPostHooks(HgRepository repo, Map<String, String> args,
@@ -815,8 +805,11 @@ public final class Wire1Commands {
             // pretxnchangegroup: the push was applied and undone again; what the server printed while doing so goes with the answer
             java.util.logging.Logger.getLogger(Wire1Commands.class.getName())
                     .log(java.util.logging.Level.WARNING, "bundle1 push refused: " + e.getMessage());
+            if (!e.isRolledBack()) {
+                return Wire1Response.pushResult(0, e.getHookOutput());
+            }
             return Wire1Response.pushResult(0, "adding changesets\nadding manifests\nadding file changes\n"
-                    + "transaction abort!\nrollback completed\n");
+                    + e.getHookOutput() + "transaction abort!\nrollback completed\n");
         } catch (IOException | RuntimeException | HgLockException e) {
             java.util.logging.Logger.getLogger(Wire1Commands.class.getName())
                     .log(java.util.logging.Level.WARNING, "bundle1 push refused: " + e.getMessage(), e);

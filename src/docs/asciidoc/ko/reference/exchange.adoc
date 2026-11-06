@@ -52,6 +52,9 @@
 |`setPull(boolean)`
 |`hg clone --pull`입니다. 로컬 원본이어도 항상 changeset을 pull합니다. 지정하지 않으면 로컬 원본은 저장소(store)를 복사하며, 가능하면 하드 링크를 씁니다.
 
+|`setUpdate(boolean)`
+|`false`이면 `hg clone -U`입니다. 작업 파일을 만들지 않고 작업 디렉터리 부모는 null 리비전으로 남으며 `.hg/dirstate` 파일이 없습니다. 기본값은 `true`(tip을 체크아웃)입니다.
+
 |`setProgressMonitor(ProgressMonitor)`
 |진행 상황 수신자이며 취소 여부를 확인합니다. `null` 인자는 무시되고 이전 모니터(처음에는 아무 일도 하지 않음)가 유지됩니다.
 |===
@@ -274,7 +277,16 @@ changeset을 로컬 bundle 파일로 씁니다. `hg bundle`에 대응합니다.
 |쓸 bundle 파일입니다(필수, 지정하지 않으면 `call()`이 `IllegalStateException`을 던짐).
 
 |`setBaseRevision(String)`
-|`hg bundle --base REV`입니다. 이 리비전과 조상은 제외됩니다. `"null"`(대소문자 무시), `""`, `"-1"`이면 전부 묶습니다(`-a`). 필수이며, 지정하지 않으면 `IllegalStateException`입니다. 대상 주소 추론이 구현되어 있지 않기 때문입니다.
+|`hg bundle --base REV`입니다. 이 리비전과 조상은 제외됩니다. `"null"`(대소문자 무시), `""`, `"-1"`이면 전부 묶습니다(`-a`). `setAll(true)`이면 무시하고, 대상과 함께 쓰면 `IllegalStateException`입니다.
+
+|`setAll(boolean)`
+|`hg bundle -a/--all`입니다. 전부 묶습니다. 대상과 함께 쓰면 `IllegalStateException`(`abort: --all is incompatible with specifying destinations`)입니다.
+
+|`setDestination(String)`
+|`hg bundle FILE DEST`입니다. DEST 저장소에 없는 것을 묶습니다. 로컬 저장소 경로이거나 `[paths]` 이름입니다. 지정하지 않고 base도 `setAll`도 없으면 `paths.default-push`, 그다음 `paths.default`를 쓰며, 모두 없으면 `IllegalStateException("config error: default repository not configured!")`입니다. 원격 URL은 지원하지 않습니다. 관련 없는 저장소이면 `IOException("repository is unrelated")`입니다.
+
+|`setForce(boolean)`
+|`hg bundle -f`입니다. 관련 없는 대상에도 전부 묶습니다.
 
 |`setRevision(String)`
 |`hg bundle -r REV`입니다. 이 리비전과 조상으로 제한합니다. 지정하지 않으면 모든 리비전입니다.
@@ -287,7 +299,7 @@ changeset을 로컬 bundle 파일로 씁니다. `hg bundle`에 대응합니다.
 
 잠금과 dirstate: 잠금을 잡지 않으며(소스 주석: "like real hg, `bundle` only reads: no lock"), `changingParents`도 쓰지 않습니다.
 
-hg 원본과 다른 점(javadoc 기준): `paths.default-push`나 `paths.default`에서 암묵적 대상을 추론하지 않으므로 base가 항상 필요합니다. `-v3` 계열은 cg3 changegroup을 담은 `HG20` bundle2 봉투를 만듭니다. sidedata(cg5)는 의도적으로 협상하지 않으며, javadoc은 이것이 실제 `hg bundle`의 한계이기도 하다고 설명합니다. bundle에 포함된 LFS 리비전의 blob은 기본 경로 또는 `[lfs] url`의 LFS 저장소로 먼저 업로드됩니다.
+hg 원본과 다른 점(javadoc 기준): 대상은 이 컴퓨터에서 열 수 있는 저장소여야 합니다(http나 ssh 탐색은 없습니다). `-v3` 계열은 cg3 changegroup을 담은 `HG20` bundle2 봉투를 만듭니다. sidedata(cg5)는 의도적으로 협상하지 않으며, javadoc은 이것이 실제 `hg bundle`의 한계이기도 하다고 설명합니다. bundle에 포함된 LFS 리비전의 blob은 기본 경로 또는 `[lfs] url`의 LFS 저장소로 먼저 업로드됩니다.
 
 [source,java]
 ----

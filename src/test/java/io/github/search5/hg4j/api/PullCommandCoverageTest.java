@@ -120,7 +120,7 @@ public class PullCommandCoverageTest {
     }
 
     @Test
-    public void testSecondPullWithNoNewChangesReturnsEmptyResultsWithoutTouchingDirstate(@TempDir Path tempDir) throws Exception {
+    public void testSecondPullWithNoNewChangesReturnsEmptyResultsAndTheDirstateParentStaysNull(@TempDir Path tempDir) throws Exception {
         File srcDir = tempDir.resolve("source").toFile();
         File destDir = tempDir.resolve("dest").toFile();
 
@@ -137,14 +137,14 @@ public class PullCommandCoverageTest {
         assertEquals(1, firstResults.size());
 
         Dirstate afterFirstPull = destRepo.getDirstate();
-        assertArrayEquals(node, afterFirstPull.getParent1(), "first pull must advance the empty working dir parent");
+        assertArrayEquals(new byte[20], afterFirstPull.getParent1(), "a pull leaves the empty working dir parent alone");
 
         List<byte[]> secondResults = pull.call();
         assertNotNull(secondResults, "an up-to-date pull must return an empty list, never null");
         assertTrue(secondResults.isEmpty(), "an up-to-date pull must not re-import anything");
 
         Dirstate afterSecondPull = destRepo.getDirstate();
-        assertArrayEquals(node, afterSecondPull.getParent1(), "an up-to-date pull must not touch the already-set dirstate parent");
+        assertArrayEquals(new byte[20], afterSecondPull.getParent1(), "an up-to-date pull must not touch the dirstate parent");
     }
 
     @Test

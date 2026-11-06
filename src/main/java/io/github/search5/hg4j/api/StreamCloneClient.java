@@ -191,7 +191,7 @@ public final class StreamCloneClient {
                         target = new File(new File(repository.getHgDir(), "cache"), name);
                     } else if (source == 's') {
                         target = new File(repository.getStoreDir(), name.startsWith("data/") || name.startsWith("meta/")
-                                ? NodeIdUtil.encodeFname(name) : name);
+                                ? NodeIdUtil.encodeStorePath(name) : name);
                         if (name.startsWith("data/") || name.startsWith("meta/")) {
                             fncache.add(name);
                         }
@@ -302,7 +302,7 @@ public final class StreamCloneClient {
                         throw new HgValidationException("unexpected response from remote server: " + header);
                     }
                     String path = decodeDir(header.substring(0, nul));
-                    String relative = path.startsWith("data/") || path.startsWith("meta/") ? NodeIdUtil.encodeFname(path) : path;
+                    String relative = path.startsWith("data/") || path.startsWith("meta/") ? NodeIdUtil.encodeStorePath(path) : path;
                     File target = new File(repository.getStoreDir(), relative);
                     target.getParentFile().mkdirs();
                     SafeFileIO.breakHardLinks(target);

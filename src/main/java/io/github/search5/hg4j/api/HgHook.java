@@ -19,6 +19,9 @@ import java.util.Map;
  *   <li>Pushkey hooks ({@code prepushkey}, {@code pushkey}): {@code "namespace"} (for example {@code "bookmarks"}), {@code "key"}
  *       (the name), {@code "old"} and {@code "new"} (hex node ids; the empty string, never {@code null}, for a bookmark that is
  *       created or deleted). The post hook runs only after a successful update.</li>
+ *   <li>A server changegroup hook ({@code prechangegroup}, {@code pretxnchangegroup}) can refuse a push with a reason by throwing
+ *       {@link io.github.search5.hg4j.errors.HgHookAbortException}; the client is told {@code error: <hook> hook failed: <reason>} and
+ *       {@code abort: <reason>}, as with a Python hook that raises {@code error.Abort}. Returning {@code false} refuses without a reason.</li>
  *   <li>Commit hooks: {@code "author"}, {@code "message"} and, after the commit, {@code "commitNode"}.</li>
  * </ul>
  */

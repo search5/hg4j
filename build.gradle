@@ -24,6 +24,11 @@ if (project.hasProperty('agentBuildDir')) {
 }
 
 group = 'io.github.search5.hg4j'
+
+// gradleApi() must not reach the consumers of the library (see the dependencies block); the plugin adds it to `api` on Gradle 8.x
+afterEvaluate {
+    configurations.api.dependencies.removeIf { it instanceof org.gradle.api.artifacts.FileCollectionDependency }
+}
 version = '1.1.1'
 
 repositories {
@@ -50,6 +55,13 @@ dependencies {
     // servlet container they like (only the API is a compile/runtime dependency of the library
     // itself; the container is a test-only concern, see the jetty-ee11 deps below).
     implementation 'jakarta.servlet:jakarta.servlet-api:6.1.0'
+
+    // The plugin class (HgPlugin) needs the Gradle API to compile and to be tested, but a consumer of the library must not receive it:
+    // Gradle 8.x's java-gradle-plugin puts gradleApi() into `api`, and when hg4j is used as an included build (includeBuild) that
+    // file dependency, with Gradle's own slf4j and groovy, ends up on the consumer's runtime classpath (a Spring Boot test then fails
+    // with "LoggerFactory is not a Logback LoggerContext"). It is removed from `api` right below and kept for compiling and testing.
+    compileOnly gradleApi()
+    testImplementation gradleApi()
 
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'

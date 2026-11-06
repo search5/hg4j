@@ -97,7 +97,7 @@ byte[] last = new RebaseCommand(repo)
 
 === Graft
 
-한 리비전의 변경을 현재 작업 디렉터리 부모 위에 복사합니다(`hg graft`, git cherry-pick과 유사). 양쪽이 같은 파일을 바꿨으면 `RebaseCommand#attemptThreeWayMerge`로 실제 3-way 병합을 합니다. 폐기 마커는 쓰지 않습니다(graft는 복사입니다). 연관 클래스 `GraftInMemory`는 별도의 명령 `hg graft --to REV`(실험적)입니다. 작업 디렉터리와 dirstate를 건드리지 않고 메모리에서 REV 위로 graft하며 저장소 잠금만 잡고, 충돌이 나면 전체를 중단합니다.
+한 리비전의 변경을 현재 작업 디렉터리 부모 위에 복사합니다(`hg graft`, git cherry-pick과 유사). 양쪽이 같은 파일을 바꿨으면 `RebaseCommand#attemptThreeWayMerge`로 실제 3-way 병합을 합니다. 폐기 마커는 쓰지 않습니다(graft는 복사입니다). 연관 클래스 `GraftInMemory`는 별도의 명령 `hg graft --to REV`(실험적)입니다. 작업 디렉터리와 dirstate를 건드리지 않고 메모리에서 REV 위로 graft하며 저장소 잠금만 잡고, 충돌이 나면 전체를 중단합니다. `call()`은 새 changeset의 노드(hex)를 돌려주고 충돌이면 명령줄이 중단하는 것처럼 예외를 던집니다. `execute()`는 대신 `GraftResult`를 돌려줍니다. 충돌한 파일 목록이나 새 changeset 노드(순서대로)를 담고, 충돌이면 아무것도 쓰지 않습니다. `setDryRun(true)`일 때 `call()`은 `hg graft -n`처럼 graft할 내용만 출력하지만, `execute()`는 모든 리비전을 메모리에서 병합한 뒤 되돌리므로 graft가 되는지와 changeset이 갖게 될 노드를 알려 줍니다. lfs 확장이 추적하는 파일의 새 파일 리비전은 포인터로 기록합니다.
 
 .설정자
 [cols="2,5"]

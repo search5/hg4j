@@ -149,6 +149,7 @@ public class HgSshClientRealHgInteropTest {
         File clientDir = tempDir.resolve("client_repo").toFile();
         HgRepository client = Hg.init().setDirectory(clientDir).call();
         new PullCommand(client).setSource(sshUrl(serverRepoDir)).call();
+        new UpdateCommand(client).call(); // hg pull leaves the working copy parent alone; update before committing on top
 
         String marker = "pushed-from-hg4j-" + System.nanoTime();
         Files.writeString(new File(clientDir, marker + ".txt").toPath(), "hg4j real ssh push");

@@ -35,11 +35,19 @@ public final class HgLfsProtocolHandler {
      * ({@code [experimental] lfs.serve}, default true) and the {@code lfs} extension enabled for the repository.
      */
     public static boolean handles(HgRepository repository, String path) {
+        return handles(repository, path, null);
+    }
+
+    /**
+     * Like {@link #handles(HgRepository, String)}, with the serving decision given by the host: {@code serving} overrides
+     * {@code [experimental] lfs.serve}, {@code null} leaves it to the hgrc.
+     */
+    public static boolean handles(HgRepository repository, String path, Boolean serving) {
         if (path == null || path.isEmpty()) {
             return false;
         }
         boolean lfsPath = path.equals(BATCH_PATH) || path.startsWith(TRANSFER_PREFIX);
-        return lfsPath && HgLfsConfig.isServing(repository) && HgLfsConfig.isExtensionEnabled(repository);
+        return lfsPath && (serving != null ? serving : HgLfsConfig.isServing(repository)) && HgLfsConfig.isExtensionEnabled(repository);
     }
 
     /** Answers a request {@link #handles} accepted. */

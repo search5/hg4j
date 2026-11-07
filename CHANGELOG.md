@@ -2,6 +2,15 @@
 
 All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.2`. 1.1.0 is published (Gradle Plugin Portal and Maven Central); 1.1.1 was uploaded to Maven Central but is superseded by 1.1.2. Items marked **BC** change behaviour that a caller may rely on.
 
+## Unreleased (1.1.3)
+
+### Added
+- `HgHttpWireServer.setLfsServing(Boolean)`: turns the LFS endpoints of the server on or off at once, like `[experimental] lfs.serve` but for every repository the host serves and without a restart; `null` (the default) leaves it to the hgrc. Requested for the site setting of Yona.
+
+### Fixed
+- Pulling from a local path no longer corrupts LFS revisions: `HgLocalClient` advertises `bundle2`, so the changegroup carries the revision flags and the extstored hash check is skipped as in the original; a repository that receives an LFS revision gets the `lfs` requirement (`checkrequireslfs`).
+- **BC** `TagCommand` follows `hg tag`: a moved or removed tag writes the node it had before as a line of its own first, a re-added removed tag writes the null node line first, and a missing newline at the end of the file is added. It refuses reserved names (`tip`, `null`, `.`), `:` and line breaks in a name, integer names, whitespace-only names, removing a tag that does not exist, is already removed, or is of the other kind (local or global), tagging the null revision, a global tag from a working copy that is not at a branch head without `setForce`, an uncommitted merge, and a changed `.hgtags` (when `setCommit(true)`). The tags are read from the heads and `.hg/localtags`, as `repo.tags()` does.
+
 ## 1.1.2 (2026-11-06)
 
 ### Added

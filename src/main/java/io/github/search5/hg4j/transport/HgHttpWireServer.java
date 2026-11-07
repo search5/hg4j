@@ -41,6 +41,7 @@ public class HgHttpWireServer extends HttpServlet {
     /** The path prefix the repository is served under; empty for the root. */
     /** The path prefix the repository is served under; empty for the root. */
     private volatile String basePath = "";
+    private volatile Boolean lfsServing;
     /** Hooks run before an incoming push is applied. */
     /** Hooks run before an incoming push is applied. */
     private final List<HgHook> preChangegroupHooks = new ArrayList<>();
@@ -150,6 +151,20 @@ public class HgHttpWireServer extends HttpServlet {
     }
 
     /**
+     * Turns the LFS endpoints of this server on or off for every request from now on, independent of the repository's
+     * {@code [experimental] lfs.serve}. Off behaves like {@code lfs.serve = false}: the LFS paths
+     * ({@code .git/info/lfs/objects/batch}, {@code .hg/lfs/objects/...}) are not handled and the request is answered like any other
+     * unknown path. On serves LFS even if the hgrc turns it off (the {@code lfs} extension must still be enabled for the repository).
+     * The change applies at once, without restarting the server.
+     * @param serving {@code true} or {@code false} to override the hgrc, {@code null} (the default) to let the hgrc decide
+     * @return {@code this}
+     */
+    public HgHttpWireServer setLfsServing(Boolean serving) {
+        this.lfsServing = serving;
+        return this;
+    }
+
+    /**
      * The path the repository is served under, for a server that holds several repositories ({@code /owner/project}). Requests are
      * matched against the request URI as the container reports it (the context path is part of it); the prefix is removed before the
      * LFS endpoints ({@code .git/info/lfs/objects/batch}, {@code .hg/lfs/objects/...}) are recognized, and a request that is not under
@@ -217,7 +232,7 @@ public class HgHttpWireServer extends HttpServlet {
             }
             String applicationPath = path.startsWith("/") ? path.substring(1) : path;
             if (queryParam(query, "cmd") == null
-                    && io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handles(repository, applicationPath)) {
+                    && io.github.search5.hg4j.lfs.server.HgLfsProtocolHandler.handles(repository, applicationPath, lfsServing)) {
                 HgWebPermissions.Operation lfsOperation = null;
                 if (applicationPath.equals(".git/info/lfs/objects/batch")) {
                     lfsOperation = HgWebPermissions.Operation.PULL; // real hg checks 'pull' even for an upload batch

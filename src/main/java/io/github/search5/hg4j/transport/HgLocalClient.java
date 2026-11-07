@@ -70,7 +70,7 @@ public class HgLocalClient implements HgRemoteConnection {
 
     @Override
     public List<String> getCapabilities() throws IOException {
-        return List.of("changegroup", "getbundle", "lookup", "pushkey", "branchmap", "exp-narrow-1");
+        return List.of("changegroup", "getbundle", "lookup", "pushkey", "branchmap", "exp-narrow-1", "bundle2");
     }
 
     @Override

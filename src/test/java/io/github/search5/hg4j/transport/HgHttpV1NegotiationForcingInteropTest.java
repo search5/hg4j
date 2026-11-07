@@ -7,6 +7,7 @@ import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.api.HgCommit;
 import io.github.search5.hg4j.api.LogCommand;
 import io.github.search5.hg4j.api.PullCommand;
+import io.github.search5.hg4j.api.UpdateCommand;
 import io.github.search5.hg4j.api.PushCommand;
 import io.github.search5.hg4j.lib.HgRepository;
 import org.junit.jupiter.api.Assumptions;
@@ -84,6 +85,7 @@ public class HgHttpV1NegotiationForcingInteropTest {
         File pushSideDir = tempDir.resolve("push-side-" + label).toFile();
         HgRepository pushSide = Hg.init().setDirectory(pushSideDir).call();
         new PullCommand(pushSide).setSource(url).call();
+        new UpdateCommand(pushSide).call(); // hg pull leaves the working copy parent alone; update before committing on top
 
         String marker = "forced-" + label + "-" + System.nanoTime();
         Files.writeString(pushSideDir.toPath().resolve(marker + ".txt"), "pushed via forced tier " + label);

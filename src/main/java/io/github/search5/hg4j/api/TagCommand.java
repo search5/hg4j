@@ -3,6 +3,7 @@ package io.github.search5.hg4j.api;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
 import io.github.search5.hg4j.errors.HgLockException;
+import io.github.search5.hg4j.storage.Revlog;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -161,6 +162,7 @@ public class TagCommand {
             File tagsFile = new File(repository.getDirectory(), ".hgtags");
 
             if (tagName != null && !tagName.isEmpty()) {
+                tagName = checkedName(tagName);
                 String hex;
                 if (remove) {
                     hex = "0".repeat(40);
@@ -171,19 +173,43 @@ public class TagCommand {
                     hex = NodeIdUtil.toHex(nodeId).substring(0, 40);
                 }
 
-                // real hg 7.2.2: `hg tag <existing-name>` without -f aborts instead of silently
-                // moving the tag (verified against the CLI, 2026-09-04) -- and the check spans the
-                // MERGED local+global namespace, not just the file being written to: a local tag
-                // colliding with an existing global name (or vice versa) is rejected the same way
-                // (also verified against the CLI). Removal is exempt -- an existing tag can always
-                // be removed regardless of `force`.
-                if (!remove && !force) {
-                    Map<String, byte[]> existingGlobal = TagsCommand.readTagFile(tagsFile);
-                    Map<String, byte[]> existingLocal = TagsCommand.readTagFile(new File(repository.getHgDir(), "localtags"));
-                    byte[] existingNode = existingLocal.containsKey(tagName) ? existingLocal.get(tagName) : existingGlobal.get(tagName);
-                    if (existingNode != null && !NodeIdUtil.isAllZero(existingNode)) {
-                        throw new HgValidationException("tag '" + tagName + "' already exists (use -f to force)");
+                // commands.tag: the checks in the original's order, on the tags of the heads and .hg/localtags (repo.tags(), repo.tagtype())
+                Revlog changelog = repository.getRevlog(new File(repository.getStoreDir(), "00changelog.i"),
+                        new File(repository.getStoreDir(), "00changelog.d"));
+                Map<String, byte[]>[] raw = new TagsCommand(repository).readRaw();
+                if (remove) {
+                    String name = tagName;
+                    byte[] current = raw[0].get(name);
+                    boolean known = current != null && (NodeIdUtil.isAllZero(current) || changelog.findRevision(current) >= 0);
+                    if (known && !raw[1].containsKey(name) && NodeIdUtil.isAllZero(current)) {
+                        throw new HgValidationException("tag '" + name + "' is already removed");
                     }
+                    if (!known) {
+                        throw new HgValidationException("tag '" + name + "' does not exist");
+                    }
+                    if (raw[1].containsKey(name) != local) {
+                        throw new HgValidationException("tag '" + name + "' is not a " + (local ? "local" : "global") + " tag");
+                    }
+                } else if (!force && liveNode(raw, changelog, tagName) != null) {
+                    throw new HgValidationException("tag '" + tagName + "' already exists (use -f to force)");
+                }
+                if (!local) {
+                    if (!repository.getDirstate().getParent2Node().isNull()) {
+                        throw new HgValidationException("uncommitted merge");
+                    }
+                    if (!force) {
+                        String branch = repository.getBranch();
+                        List<String> branchHeads = new HeadsCommand(repository).setBranch(branch).call();
+                        if (!branchHeads.isEmpty() && !branchHeads.contains(repository.getDirstate().getParent1Node().toHex())) {
+                            throw new HgValidationException("working directory is not at a branch head (use -f to force)");
+                        }
+                    }
+                }
+                if (!remove && NodeIdUtil.isAllZero(nodeId)) {
+                    throw new HgValidationException("cannot tag null revision");
+                }
+                if (!local && commit) {
+                    checkHgtagsUnchanged(tagsFile, changelog);
                 }
 
                 // 1. PRE_TAG hooks trigger
@@ -199,16 +225,29 @@ public class TagCommand {
                     }
                 }
 
-                String entry = hex + " " + tagName + "\n";
+                // tags._tag.writetags: a name that is known (even a removed one) gets the node it had before as a line of its own first
+                File target = local ? new File(repository.getHgDir(), "localtags") : tagsFile;
+                StringBuilder entry = new StringBuilder();
+                if (target.exists() && target.length() > 0) {
+                    byte[] previous = Files.readAllBytes(target.toPath());
+                    if (previous[previous.length - 1] != '\n') {
+                        entry.append('\n');
+                    }
+                }
+                if (raw[0].containsKey(tagName)) {
+                    byte[] old = liveNode(raw, changelog, tagName);
+                    entry.append(old == null ? "0".repeat(40) : NodeIdUtil.toHex(old).substring(0, 40)).append(' ').append(tagName).append('\n');
+                }
+                entry.append(hex).append(' ').append(tagName).append('\n');
 
                 if (local) {
                     // .hg/localtags: untracked, never committed (real hg does not add/commit it either).
                     File localTagsFile = new File(repository.getHgDir(), "localtags");
-                    Files.writeString(localTagsFile.toPath(), entry, StandardCharsets.UTF_8,
+                    Files.writeString(localTagsFile.toPath(), entry.toString(), StandardCharsets.UTF_8,
                             StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                 } else {
                     // Append to .hgtags
-                    Files.writeString(tagsFile.toPath(), entry, StandardCharsets.UTF_8,
+                    Files.writeString(tagsFile.toPath(), entry.toString(), StandardCharsets.UTF_8,
                             StandardOpenOption.CREATE, StandardOpenOption.APPEND);
 
                     // Add .hgtags to tracking
@@ -269,4 +308,52 @@ public class TagCommand {
     }
 
 
+
+    /** {@code scmutil.checknewlabel} on the stripped name, then the whitespace check of {@code commands.tag}. */
+    private static String checkedName(String given) throws IOException {
+        String name = given.strip();
+        if (name.equals("tip") || name.equals(".") || name.equals("null")) {
+            throw new HgValidationException("the name '" + name + "' is reserved");
+        }
+        for (char c : new char[] {':', '\0', '\n', '\r'}) {
+            if (name.indexOf(c) >= 0) {
+                String shown = c == ':' ? ":" : c == '\0' ? "\\x00" : c == '\n' ? "\\n" : "\\r";
+                throw new HgValidationException("'" + shown + "' cannot be used in a name");
+            }
+        }
+        if (name.matches("[+-]?[0-9]+")) {
+            throw new HgValidationException("cannot use an integer as a name");
+        }
+        if (name.isEmpty()) {
+            throw new HgValidationException("tag names cannot consist entirely of whitespace");
+        }
+        return name;
+    }
+
+    /** The node {@code repo.tags()} has for the name: not a removed tag and not a node the repository does not have. */
+    private static byte[] liveNode(Map<String, byte[]>[] raw, Revlog changelog, String name) throws IOException {
+        byte[] node = raw[0].get(name);
+        if (node == null || NodeIdUtil.isAllZero(node) || changelog.findRevision(node) < 0) {
+            return null;
+        }
+        return node;
+    }
+
+    /** {@code tags.tag}: a working copy {@code .hgtags} that differs from the committed one is not touched. */
+    private void checkHgtagsUnchanged(File tagsFile, Revlog changelog) throws IOException {
+        if (!tagsFile.exists()) {
+            return;
+        }
+        String parent = repository.getDirstate().getParent1Node().toHex();
+        boolean same = false;
+        int rev = changelog.findRevision(NodeIdUtil.fromHex(parent));
+        if (rev >= 0) {
+            MergeCommand helper = new MergeCommand(repository);
+            String entry = helper.loadManifestAtCommit(changelog, repository.getManifestRevlog(), rev).get(".hgtags");
+            same = entry != null && java.util.Arrays.equals(helper.getFileRevisionContent(".hgtags", entry), Files.readAllBytes(tagsFile.toPath()));
+        }
+        if (!same) {
+            throw new HgValidationException("working copy of .hgtags is changed");
+        }
+    }
 }

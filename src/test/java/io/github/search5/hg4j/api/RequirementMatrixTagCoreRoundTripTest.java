@@ -144,8 +144,9 @@ public class RequirementMatrixTagCoreRoundTripTest {
         String tags3 = HgTestUtils.hg(repoDir, "tags");
         assertTrue(tags3.contains(rev1Hex.substring(0, 12)), "real hg tags must resolve v1.0 to the new target for combo " + combo + ": " + tags3);
         String hgtagsContent = Files.readString(repoDir.toPath().resolve(".hgtags"), StandardCharsets.UTF_8);
-        assertEquals(2, hgtagsContent.lines().filter(l -> l.endsWith(" v1.0")).count(),
-                "moving a tag must append a new line, keeping the old one for combo " + combo);
+        // real hg: the old node line, then the new one (c0, c0, c1)
+        assertEquals(3, hgtagsContent.lines().filter(l -> l.endsWith(" v1.0")).count(),
+                "moving a tag writes the old node first and then the new one for combo " + combo);
 
         String verify3 = HgTestUtils.hg(repoDir, "verify");
         assertFalse(verify3.toLowerCase().contains("integrity error"),

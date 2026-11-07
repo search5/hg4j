@@ -7,6 +7,7 @@ import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.api.HgCommit;
 import io.github.search5.hg4j.api.LogCommand;
 import io.github.search5.hg4j.api.PullCommand;
+import io.github.search5.hg4j.api.UpdateCommand;
 import io.github.search5.hg4j.api.PushCommand;
 import io.github.search5.hg4j.lib.HgRepository;
 import org.apache.sshd.server.Environment;
@@ -99,6 +100,7 @@ public class HgWireProtocolMatrixTest {
         File pushSideDir = tempDir.resolve("push-side-" + label).toFile();
         HgRepository pushSide = Hg.init().setDirectory(pushSideDir).call();
         new PullCommand(pushSide).setSource(url).call();
+        new UpdateCommand(pushSide).call(); // hg pull leaves the working copy parent alone; update before committing on top
 
         String marker = "matrix-" + label + "-" + System.nanoTime();
         Files.writeString(pushSideDir.toPath().resolve(marker + ".txt"), "pushed via matrix combo " + label);
@@ -257,6 +259,7 @@ public class HgWireProtocolMatrixTest {
 
         HgRepository pullSide = Hg.init().setDirectory(tempDir.resolve("ssh-pull-" + compression).toFile()).call();
         new PullCommand(pullSide).setSource(url).call();
+        new UpdateCommand(pullSide).call(); // hg pull leaves the working copy parent alone; update before committing on top
         List<HgCommit> log = new LogCommand(pullSide).call();
         assertEquals(1, log.size(), "hg4j must pull the seed commit over SSH with compression=" + compression);
         assertEquals("seed", log.get(0).getMessage());

@@ -5,6 +5,7 @@ import io.github.search5.hg4j.api.AddCommand;
 import io.github.search5.hg4j.api.CommitCommand;
 import io.github.search5.hg4j.api.Hg;
 import io.github.search5.hg4j.api.PullCommand;
+import io.github.search5.hg4j.api.UpdateCommand;
 import io.github.search5.hg4j.api.PushCommand;
 import io.github.search5.hg4j.lib.HgRepository;
 import org.apache.sshd.server.Environment;
@@ -110,6 +111,7 @@ public class HgSshUnbundleHashOffInteropTest {
         File clientDir = tempDir.resolve("client_repo").toFile();
         HgRepository client = Hg.init().setDirectory(clientDir).call();
         new PullCommand(client).setSource(sshUrl(serverRepoDir)).call();
+        new UpdateCommand(client).call(); // hg pull leaves the working copy parent alone; update before committing on top
 
         String marker = "unbundlehash-off-ssh-" + System.nanoTime();
         Files.writeString(new File(clientDir, marker + ".txt").toPath(), "hg4j real ssh push, unbundlehash off");

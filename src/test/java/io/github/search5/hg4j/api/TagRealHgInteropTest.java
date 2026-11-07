@@ -162,7 +162,8 @@ public class TagRealHgInteropTest {
 
         String hgtagsContent = Files.readString(new File(repoDir, ".hgtags").toPath(), StandardCharsets.UTF_8);
         long v10Lines = hgtagsContent.lines().filter(l -> l.endsWith(" v1.0")).count();
-        assertEquals(2, v10Lines, "moving a tag must append a new line, keeping the old one as dead history");
+        // real hg writes the old node as a line of its own first (tags._tag.writetags), then the new one: c0, c0, c1
+        assertEquals(3, v10Lines, "moving a tag writes the old node first and then the new one, as real hg does");
 
         String nativeTags = HgTestUtils.hg(repoDir, "tags");
         assertTrue(nativeTags.contains(NodeIdUtil.toHex(c1).substring(0, 12)),

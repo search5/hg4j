@@ -1063,6 +1063,12 @@ public class FetchCommand {
                     }
                 }
 
+                // like real hg's checkrequireslfs hook: a repository that received an LFS revision requires lfs from now on
+                if (bundle.fileGroups != null && bundle.fileGroups.stream().anyMatch(group -> group.entries != null
+                        && group.entries.stream().anyMatch(entry -> (entry.flags & Revlog.REVIDX_EXTSTORED) != 0))) {
+                    io.github.search5.hg4j.lfs.HgLfsConfig.addRequirement(repository);
+                }
+
                 return importedCommits;
 
             } catch (Exception t) {

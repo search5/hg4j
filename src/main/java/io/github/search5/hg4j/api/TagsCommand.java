@@ -204,6 +204,17 @@ public class TagsCommand {
         }
     }
 
+    /**
+     * What the original's {@code repo.tagtype()} and {@code repo.tags()} are built from: the tags of the heads' {@code .hgtags} and of
+     * {@code .hg/localtags}, a removed tag kept with the null node. Returns {tags, names whose winning definition is local}.
+     */
+    Map<String, byte[]>[] readRaw() throws IOException {
+        File clIdx = new File(repository.getStoreDir(), "00changelog.i");
+        File clDat = new File(repository.getStoreDir(), "00changelog.d");
+        Revlog changelog = clIdx.exists() ? repository.getRevlog(clIdx, clDat) : null;
+        return readFromHeads(changelog, changelog == null ? 0 : changelog.getRevisionCount());
+    }
+
     /** Returns {global tags, local tags} (the second holds the names whose winning definition is local) read as {@code hg tags} does. */
     @SuppressWarnings("unchecked")
     private Map<String, byte[]>[] readFromHeads(Revlog changelog, int count) throws IOException {

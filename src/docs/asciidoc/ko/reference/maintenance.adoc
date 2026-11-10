@@ -412,6 +412,8 @@ if (r.isConflicted()) {
 
 `HgHttpWireServer.setBasePath("/owner/project")`는 서버가 그 경로 아래에서만 응답하게 합니다. 접두어를 뗀 뒤 LFS 경로(`.git/info/lfs/objects/batch`, `.hg/lfs/objects/...`)를 판정하고, wire 프로토콜(`?cmd=`)도 그 아래에서 제공하며, 접두어 밖의 요청은 모두 404입니다. batch 응답의 전송 링크(`href`)도 접두어로 시작하므로(`http://host/owner/project/.hg/lfs/objects/<oid>`), 실제 hg 클라이언트가 그 아래에서 업로드와 다운로드를 합니다(원본은 `req.baseurl`로 만듭니다). 접두어는 컨테이너가 알려 주는 요청 URI와 비교하므로 컨텍스트 경로를 포함합니다. 앞의 슬래시가 없거나 뒤에 슬래시가 있어도 무시합니다. 기본값은 루트이며 기존 동작은 바뀌지 않습니다.
 
+`HgHttpWireServer.setLfsServing(Boolean)`는 서버가 다루는 모든 저장소의 LFS 엔드포인트를 재시작 없이 켜고 끕니다. `false`는 `[experimental] lfs.serve=false`와 같이 응답하여 LFS 요청을 처리하지 않고, `true`는 hgrc 설정과 관계없이 처리하며, `null`(기본값)은 저장소별 hgrc에 맡깁니다. 요청마다 값을 읽습니다.
+
 === 사유를 붙여 push 거절하기
 
 서버 훅이 `false`만 반환하면 사유 없이 거절합니다. 클라이언트에는 `abort: pretxnchangegroup hook failed`가 보입니다. 훅이 `HgHookAbortException("protected branch: default")`를 던지면(원본의 파이썬 훅이 `error.Abort`를 일으키는 것과 같습니다) 서버가 `error: pretxnchangegroup hook failed: protected branch: default`를 클라이언트에 출력하고, 이어서 `transaction abort!`와 `rollback completed`를 출력합니다(changegroup을 적용한 뒤 실행되는 `pretxnchangegroup`에서만 해당합니다). push는 `abort: protected branch: default`로 실패합니다. 전송 세션(HTTP와 SSH, bundle2와 bundle1, `prechangegroup`과 `pretxnchangegroup`)은 interop 시험이 실제 서버와 바이트 단위로 비교합니다. 훅 이름은 훅 유형입니다. 원본은 훅 설정에 붙인 이름(`pretxnchangegroup.name`)도 덧붙이지만 Java 훅에는 이름이 없습니다. 훅이 직접 출력하는 내용(외부 훅의 출력)은 전달하지 않습니다.

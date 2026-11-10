@@ -589,7 +589,7 @@ for (var h : new BranchesCommand(repo).setIncludeClosed(true).call()) {
 
 .hg 원본과 다른 점
 * 기존 태그 검사는 로컬과 전역 태그를 합쳐서 합니다(hg 7.2.2로 검증).
-* `TagCommand`가 확인에 쓰는 태그 상태는 작업 디렉터리의 `.hgtags`에서 읽는 단순화된 단일 파일 모델입니다(`TagsCommand` javadoc 기준). `hg tags`처럼 읽으려면 `TagsCommand.setReadFromHeads(true)`를 씁니다.
+* `TagCommand`는 `hg tag`와 같이 동작합니다. 이름(`tip`, `null`, `.`, 정수, `:`와 줄바꿈은 거부), 이미 있거나 제거되었거나 종류가 다른 태그, 브랜치 헤드가 아닌 작업 디렉터리(`setForce`로 무시), 커밋하지 않은 병합, null 리비전, 변경된 `.hgtags`를 확인하며, 태그는 `hg tags`처럼 헤드의 `.hgtags`와 `.hg/localtags`에서 읽습니다. 이동하거나 제거한 태그는 원본처럼 이전 노드를 별도의 줄로 먼저 기록합니다.
 
 .사용 예
 [source,java]

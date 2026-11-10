@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.2`. 1.1.0 is published (Gradle Plugin Portal and Maven Central); 1.1.1 was uploaded to Maven Central but is superseded by 1.1.2. Items marked **BC** change behaviour that a caller may rely on.
+All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.3`. 1.1.0 is published (Gradle Plugin Portal and Maven Central); 1.1.1 was uploaded to Maven Central but is superseded by 1.1.2. Items marked **BC** change behaviour that a caller may rely on.
 
-## Unreleased (1.1.3)
+## 1.1.3 (2026-11-10)
 
 ### Added
 - `HgHttpWireServer.setLfsServing(Boolean)`: turns the LFS endpoints of the server on or off at once, like `[experimental] lfs.serve` but for every repository the host serves and without a restart; `null` (the default) leaves it to the hgrc. Requested for the site setting of Yona.

@@ -589,7 +589,7 @@ Creates, moves, or removes a tag (`hg tag`).
 
 .Differences from hg
 * The existing-tag check spans local and global tags together (verified against hg 7.2.2).
-* `TagCommand` reads the tag state it checks against from the working copy `.hgtags`, a simplified single-file model (per `TagsCommand` javadoc); `TagsCommand.setReadFromHeads(true)` reads the way `hg tags` does.
+* `TagCommand` follows `hg tag`: it checks the names (`tip`, `null`, `.`, integers, `:` and line breaks are refused), an existing, already removed or other-kind tag, a working copy that is not at a branch head (`setForce` overrides), an uncommitted merge, the null revision and a changed `.hgtags`, reading the tags from the heads and `.hg/localtags` like `hg tags`. A moved or removed tag writes its previous node as a line of its own first, as the original does.
 
 .Example
 [source,java]

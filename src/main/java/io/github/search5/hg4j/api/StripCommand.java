@@ -543,7 +543,7 @@ public class StripCommand {
 
                 // third transaction "repair": the bookmarks of removed changesets move back to the surviving parent
                 String rollbackParentHex = NodeIdUtil.toHex(rollbackParent);
-                File bookmarksFile = new File(repository.getHgDir(), "bookmarks");
+                File bookmarksFile = repository.getBookmarksFile();
                 if (bookmarksFile.exists()) {
                     List<String> bLines = Files.readAllLines(bookmarksFile.toPath(), StandardCharsets.UTF_8);
                     List<String> updatedBLines = new ArrayList<>();
@@ -573,7 +573,7 @@ public class StripCommand {
                 Files.deleteIfExists(new File(repository.getStoreDir(), "undo").toPath());
                 Files.deleteIfExists(new File(repository.getStoreDir(), "undo.backup.files").toPath());
                 Files.deleteIfExists(new File(repository.getDirectory(), ".hg/undo.backup.dirstate").toPath());
-                Files.deleteIfExists(new File(repository.getDirectory(), ".hg/undo.backup.bookmarks").toPath());
+                Files.deleteIfExists(repository.getBookmarksUndoBackupFile().toPath());
                 if (tempBundle != null) {
                     Files.deleteIfExists(tempBundle.toPath());
                 }

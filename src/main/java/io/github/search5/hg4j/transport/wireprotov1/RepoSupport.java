@@ -46,7 +46,7 @@ public final class RepoSupport {
     public static Map<String, String> readListKeys(HgRepository repo, String namespace) throws IOException {
         Map<String, String> map = new LinkedHashMap<>();
         if ("bookmarks".equals(namespace)) {
-            File bkFile = new File(repo.getHgDir(), "bookmarks");
+            File bkFile = repo.getBookmarksFile();
             if (bkFile.exists()) {
                 for (String line : Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8)) {
                     line = line.trim();
@@ -170,7 +170,7 @@ public final class RepoSupport {
         } else {
             bookmarks.put(key, updated);
         }
-        File bkFile = new File(repo.getHgDir(), "bookmarks");
+        File bkFile = repo.getBookmarksFile();
         if (bookmarks.isEmpty()) {
             Files.deleteIfExists(bkFile.toPath());
         } else {

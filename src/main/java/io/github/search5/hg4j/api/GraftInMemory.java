@@ -272,7 +272,7 @@ public final class GraftInMemory {
             }
         }
         java.util.Collections.sort(names);
-        File bookmarks = new File(repository.getHgDir(), "bookmarks");
+        File bookmarks = repository.getBookmarksFile();
         if (bookmarks.isFile()) {
             List<String> marks = new ArrayList<>();
             for (String line : Files.readAllLines(bookmarks.toPath(), StandardCharsets.UTF_8)) {

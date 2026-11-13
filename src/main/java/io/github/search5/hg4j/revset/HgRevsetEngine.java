@@ -505,7 +505,7 @@ public final class HgRevsetEngine {
 
     private List<Integer> evaluateBookmark(String bookmarkName, Revlog changelog) throws IOException {
         List<Integer> res = new ArrayList<>();
-        File bkFile = new File(repository.getHgDir(), "bookmarks");
+        File bkFile = repository.getBookmarksFile();
         if (bkFile.exists()) {
             List<String> lines = Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8);
             for (String line : lines) {

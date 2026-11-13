@@ -2069,7 +2069,7 @@ public class CommitCommand {
         File undoBackupFiles = new File(repository.getStoreDir(), "undo.backup.files");
         File undoDirstate = new File(repository.getDirectory(), ".hg/undo.backup.dirstate");
         File undoDirstateData = new File(repository.getDirectory(), ".hg/undo.backup.dirstate.data");
-        File undoBookmarks = new File(repository.getDirectory(), ".hg/undo.backup.bookmarks");
+        File undoBookmarks = repository.getBookmarksUndoBackupFile();
 
         // Clean previous undo files
         Files.deleteIfExists(undoFile.toPath());
@@ -2118,7 +2118,7 @@ public class CommitCommand {
         }
 
         // 3. Backup bookmarks
-        File bookmarksFile = new File(repository.getDirectory(), ".hg/bookmarks");
+        File bookmarksFile = repository.getBookmarksFile();
         if (bookmarksFile.exists()) {
             Files.copy(bookmarksFile.toPath(), undoBookmarks.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }

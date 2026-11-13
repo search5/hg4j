@@ -156,7 +156,7 @@ public class BookmarkCommand {
     }
 
     private Map<String, String> execute() throws IOException {
-        File bkFile = new File(repository.getHgDir(), "bookmarks");
+        File bkFile = repository.getBookmarksFile();
         File curBkFile = new File(repository.getHgDir(), "bookmarks.current");
 
         Map<String, String> bookmarks = new LinkedHashMap<>();

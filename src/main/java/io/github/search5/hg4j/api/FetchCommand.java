@@ -297,6 +297,8 @@ public class FetchCommand {
                     messages.addAll(streamed.messages());
                     if (streamed.done()) {
                         repository.clearRevlogCache();
+                        // the stream wrote the remote's requirements (maybe bookmarksinstore): the bookmarks fetched below go where they say
+                        repository.reloadBookmarksInStoreRequirement();
                         localChangelog = repository.getRevlog(clIdx, clDat);
                     }
                 }
@@ -322,6 +324,8 @@ public class FetchCommand {
                     clonebundleImported = tryApplyClonebundle(client, treeFilter);
                     if (clonebundleImported != null) {
                         repository.clearRevlogCache();
+                        // a stream clone bundle writes the requirements of the remote (maybe bookmarksinstore), see above
+                        repository.reloadBookmarksInStoreRequirement();
                         localChangelog = repository.getRevlog(clIdx, clDat);
                     }
                 }

@@ -1150,7 +1150,7 @@ public class HgLocalClient implements HgRemoteConnection {
     public Map<String, String> listKeys(String namespace) throws IOException {
         Map<String, String> map = new HashMap<>();
         if ("bookmarks".equals(namespace)) {
-            File bkFile = new File(remoteRepo.getHgDir(), "bookmarks");
+            File bkFile = remoteRepo.getBookmarksFile();
             if (bkFile.exists()) {
                 List<String> lines = Files.readAllLines(bkFile.toPath(), StandardCharsets.UTF_8);
                 for (String line : lines) {
@@ -1196,9 +1196,11 @@ public class HgLocalClient implements HgRemoteConnection {
     @Override
     public boolean pushkey(String namespace, String key, String oldVal, String newVal) throws IOException {
         if ("bookmarks".equals(namespace)) {
-            // real hg's pushkey takes wlock and lock around the compare and the write: otherwise two pushes both see the old value
+            // real hg's pushkey takes wlock and lock around the compare and the write: otherwise two pushes both see the old value.
+            // bookmarks.pushbookmark skips the wlock when the bookmarks file is in the store (bookmarksinstore): the store lock protects it
+            // then, and the only other thing this method touches is that file. A null resource is not closed by try-with-resources.
             int timeout = remoteRepo.resolvePushLockTimeoutMs();
-            try (io.github.search5.hg4j.lib.HgLock wlock = remoteRepo.lockWorkingCopy(timeout);
+            try (io.github.search5.hg4j.lib.HgLock wlock = remoteRepo.isBookmarksInStore() ? null : remoteRepo.lockWorkingCopy(timeout);
                  io.github.search5.hg4j.lib.HgLock storeLock = remoteRepo.lockStore(timeout)) {
                 return pushBookmarkKey(key, oldVal, newVal);
             } catch (io.github.search5.hg4j.errors.HgLockException e) {
@@ -1251,7 +1253,7 @@ public class HgLocalClient implements HgRemoteConnection {
 
     private boolean pushBookmarkKey(String key, String oldVal, String newVal) throws IOException {
         {
-            File bkFile = new File(remoteRepo.getHgDir(), "bookmarks");
+            File bkFile = remoteRepo.getBookmarksFile();
             Map<String, String> bks = listKeys("bookmarks");
             String currentVal = bks.getOrDefault(key, "");
             if (oldVal == null) oldVal = "";

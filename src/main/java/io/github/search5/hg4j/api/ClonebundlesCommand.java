@@ -90,6 +90,7 @@ public final class ClonebundlesCommand {
                 if (bundle.length >= 4 && bundle[0] == 'H' && bundle[1] == 'G' && bundle[2] == '2' && bundle[3] == '0'
                         && StreamCloneClient.applyBundleFile(repository, bundle).done()) {
                     repository.clearRevlogCache();
+                    repository.reloadBookmarksInStoreRequirement();
                 } else {
                     File temp = File.createTempFile("hg4j-clonebundle-", ".hg");
                     try {

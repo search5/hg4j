@@ -53,6 +53,7 @@ public class HgRepository implements Repository {
     private boolean fileIndexV1 = false;
     private boolean treemanifest = false;
     private boolean sidedataCopies = false;
+    private boolean bookmarksInStore = false;
     private StoreEngine storeEngine = new DefaultFileStoreEngine();
     private Dirstate cachedDirstate = null;
     private final HgRcConfig config = new HgRcConfig();
@@ -147,6 +148,8 @@ public class HgRepository implements Repository {
                         this.treemanifest = true;
                     } else if ("exp-copies-sidedata-changeset".equals(trimmed)) {
                         this.sidedataCopies = true;
+                    } else if ("bookmarksinstore".equals(trimmed)) {
+                        this.bookmarksInStore = true;
                     }
                 }
             } catch (Exception ignored) {
@@ -246,6 +249,49 @@ public class HgRepository implements Repository {
      */
     public boolean isFileIndexV1() {
         return fileIndexV1;
+    }
+
+    /**
+     * {@code bookmarksinstore} requirement (listed in {@code .hg/store/requires} of a share-safe repository; real hg 7.2 writes it for
+     * {@code format.bookmarks-in-store=true}). The bookmarks file then lives in the store, so the store lock alone protects it,
+     * while the active bookmark ({@code bookmarks.current}) stays in {@code .hg} under the working copy lock. Mirrors
+     * {@code mercurial/bookmarks.py}'s {@code bookmarksinstore}.
+     *
+     * @return {@code true} if the bookmarks file is {@code .hg/store/bookmarks} instead of {@code .hg/bookmarks}
+     */
+    public boolean isBookmarksInStore() {
+        return bookmarksInStore;
+    }
+
+    /**
+     * The file that holds the bookmarks: {@code .hg/store/bookmarks} when {@link #isBookmarksInStore()}, else {@code .hg/bookmarks}
+     * (real hg's {@code bookmarksvfs(repo)}). The active bookmark file {@code bookmarks.current} is not affected: it is always in {@code .hg}.
+     *
+     * @return the bookmarks file; it may not exist yet
+     */
+    public File getBookmarksFile() {
+        return new File(bookmarksInStore ? storeDir : hgDir, "bookmarks");
+    }
+
+    /**
+     * hg4j's own {@code rollback} copy of the bookmarks file (not real hg's {@code undo.backup.bookmarks.bck}: the names of hg4j's undo files
+     * differ from real hg's in general). It lives next to the bookmarks file, so for a {@code bookmarksinstore} repository the store lock
+     * alone covers writing and restoring it, as it does for the bookmarks file itself.
+     *
+     * @return the backup file; it may not exist
+     */
+    public File getBookmarksUndoBackupFile() {
+        return new File(bookmarksInStore ? storeDir : hgDir, "undo.backup.bookmarks");
+    }
+
+    /**
+     * Re-reads the {@code bookmarksinstore} requirement from {@code requires} and {@code store/requires}. Needed after a step of this process
+     * rewrote them under an already open object (a stream clone or a clone bundle writes the requirements of the remote, a local clone copies
+     * the store's {@code requires}): until then {@link #getBookmarksFile()} would still point at the old place and the bookmarks that the same
+     * clone fetches next would be written there.
+     */
+    public void reloadBookmarksInStoreRequirement() {
+        this.bookmarksInStore = getRequirements().contains("bookmarksinstore");
     }
 
     /**

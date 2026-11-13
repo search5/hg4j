@@ -134,7 +134,10 @@ public class Hg implements AutoCloseable {
             "narrowhg-experimental",
             // Written by hg4j itself: `lfs` once an LFS revision arrives (HgLfsConfig.addRequirement), `shared` by
             // WorktreeCommand, and `relshared` by real hg's `share --relative`.
-            "lfs", "shared", "relshared"
+            "lfs", "shared", "relshared",
+            // bookmarks live in .hg/store/bookmarks (HgRepository#getBookmarksFile, bookmarks.bookmarksvfs); without this entry an
+            // existing bookmarks-in-store repository was refused here although every bookmarks access follows the requirement now.
+            "bookmarksinstore"
         );
 
         File[] requiresFiles = {

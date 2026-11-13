@@ -243,6 +243,8 @@ public class CloneCommand {
                             java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 }
                 dropWorkingCopyRequirements(new File(repo.getHgDir(), "requires"));
+                // the copied store brought its requires (maybe bookmarksinstore, and then store/bookmarks): this open object must see it
+                repo.reloadBookmarksInStoreRequirement();
             }
         }
         return true;

@@ -419,7 +419,7 @@ final class Bundle2Push {
 
         static Snapshot take(HgRepository repo) throws IOException {
             java.io.File[] files = {
-                    new java.io.File(repo.getHgDir(), "bookmarks"),
+                    repo.getBookmarksFile(),
                     new java.io.File(repo.getStoreDir(), "phaseroots"),
                     new java.io.File(repo.getHgDir(), "dirstate")};
             byte[][] contents = new byte[files.length][];

@@ -47,7 +47,7 @@ public class RollbackCommand {
             File undoBackupFiles = new File(repository.getStoreDir(), "undo.backup.files");
             File undoDirstate = new File(repository.getDirectory(), ".hg/undo.backup.dirstate");
             File undoDirstateData = new File(repository.getDirectory(), ".hg/undo.backup.dirstate.data");
-            File undoBookmarks = new File(repository.getDirectory(), ".hg/undo.backup.bookmarks");
+            File undoBookmarks = repository.getBookmarksUndoBackupFile();
 
             if (!undoFile.exists()) {
                 throw new IllegalStateException("No rollback information available (undo file not found)");
@@ -155,7 +155,7 @@ public class RollbackCommand {
                 }
 
                 // 3. Restore Bookmarks
-                File bookmarksFile = new File(repository.getDirectory(), ".hg/bookmarks");
+                File bookmarksFile = repository.getBookmarksFile();
                 if (undoBookmarks.exists()) {
                     Files.copy(undoBookmarks.toPath(), bookmarksFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 } else {

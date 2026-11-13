@@ -55,6 +55,21 @@ public class InitCommand {
     private boolean persistentNodemap = false;
     private boolean fileIndexV1 = false;
     private boolean generalV2 = false;
+    private boolean bookmarksInStore = false;
+
+    /**
+     * {@code format.bookmarks-in-store=true} -- writes the {@code bookmarksinstore} requirement, so the bookmarks are kept in
+     * {@code .hg/store/bookmarks} (the store lock protects them) instead of {@code .hg/bookmarks}. Real hg 7.2 accepts the requirement in the
+     * single-file {@code .hg/requires} layout that this class writes ({@code format.use-share-safe=no}), which was checked by running
+     * {@code hg init --config format.use-share-safe=no --config format.bookmarks-in-store=true}. The default is {@code false}.
+     *
+     * @param bookmarksInStore {@code true} to keep the bookmarks in the store
+     * @return {@code this}
+     */
+    public InitCommand setBookmarksInStore(boolean bookmarksInStore) {
+        this.bookmarksInStore = bookmarksInStore;
+        return this;
+    }
 
     /**
      * Sets the directory in which the repository is created (the {@code .hg} directory is created inside it). The directory is created, with parents, if it does not exist. There is no default; {@link #call()} fails if it is not set.
@@ -191,6 +206,9 @@ public class InitCommand {
 
         File requiresFile = new File(hgDir, "requires");
         List<String> requirements = new ArrayList<>();
+        if (bookmarksInStore) {
+            requirements.add("bookmarksinstore");
+        }
         // general-v2 (exp-revlogv2.2) fully replaces the revlogv1 format for manifests/filelogs;
         // fileindex-v1 fully replaces the fncache/dotencode-based store layout -- both confirmed
         // by diffing real hg's own generated requires files for these combinations.

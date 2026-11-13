@@ -119,6 +119,23 @@ real-hg-CLI clone/pull 라운드트립으로 직접 검증 완료.
 빈 bundle" 검증으로 교체. 발견 이력: 2026-09-08, yona 앱 실사용 중 발견(신규 프로젝트
 최초 clone 100% 재현).
 
+### `Hg.open()` — 요건 허용 목록(`SUPPORTED`)이 `HgRepository`와 따로 놀다 요건 저장소를 거부
+
+**증상**: 실제 hg로 `format.bookmarks-in-store=true` 저장소를 만들고 `Hg.open(dir)`을 부르면
+`unsupported repository requirement: bookmarksinstore`로 거부된다. `new HgRepository(dir)`는
+통과하지만 그때는 bookmarks를 항상 `.hg/bookmarks`에서 읽어(요건 미지원) 조용히 잘못 다룬다.
+
+**원인**: `Hg.open()`이 `HgRepository.loadRequires()`와 별개의 허용 목록을 가지고 있어 새 요건을
+지원해도 목록을 따로 고쳐야 한다. 같은 유형의 누락이 이미 2026-09-04에 한 번 있었다
+(`HgOpenRequirementValidationTest`). **요건을 새로 지원할 때는 `HgRepository.readRequiresFile`,
+`Hg.open`의 `SUPPORTED`, 스트림 clone 쪽 목록(`StreamClone`, `StreamCloneClient`,
+`ClonebundleSelection`, `ClonebundlesManifest`)을 모두 확인한다.**
+
+**수정(2026-11-13, 컴파일·테스트 미실행)**: `Hg.open`의 `SUPPORTED`에 `bookmarksinstore` 추가,
+`HgRepository`가 요건을 인식. 회귀 테스트 `BookmarksInStoreRequirementTest#hgOpenAcceptsTheRequirement`
+(작성만 함). 발견 경위: 2026-11-13, `bookmarks-in-store` 지원 작업 중 코드 전수 확인에서 발견
+([[decisions/server-push-concurrency-roadmap]]).
+
 ## 명령별 버그
 
 ### `StatusCommand` / `ShelveCommand` — racy-write 검증 대상 리비전 오류

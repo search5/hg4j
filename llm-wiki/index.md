@@ -118,6 +118,7 @@ status: current
 | [decisions/ssh-apache-sshd-migration.md](decisions/ssh-apache-sshd-migration.md) | SSH를 jsch에서 Apache MINA SSHD로 교체한 결정, 동작 보존/변경표, 남은 예외 삼킴 |
 | [decisions/interop-local-hg-instead-of-docker.md](decisions/interop-local-hg-instead-of-docker.md) | interop 테스트의 hg 오라클을 Docker에서 로컬 빌드(`scripts/build-local-hg.sh`)로 교체, 측정 소요 시간 |
 | [decisions/gpg-hgsigs-compatibility.md](decisions/gpg-hgsigs-compatibility.md) | GPG를 Mercurial `.hgsigs` 호환으로 구현한 결정, 키링 실측(kbx는 BC가 빈 결과), 원본과 다른 점, 한계 |
+| [decisions/server-push-concurrency-roadmap.md](decisions/server-push-concurrency-roadmap.md) | **제안(미착수, 2026-11-13)** — 에이전트 병렬 푸시 대비 서버 백엔드 로드맵: 락 구간 축소·공정 대기열·그룹 커밋·번들 캐시, 호환 조건, 결정 게이트(잠금 일치와의 충돌, `bookmarks-in-store` 미지원 발견), 측정 결과(락 안 CPU가 최대 후보, 6-4절), 하지 않을 것 |
 
 ## 최상위 데이터 문서 (2026-09-06 신설)
 | 페이지 | 요약 |

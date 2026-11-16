@@ -223,7 +223,7 @@ Bundle2Push (입구)
 |---|---|---|
 | 다른 호스트의 락(`otherhost.invalid:99999`), `ui.timeout=2` | 약 2.1초 뒤 `timed out waiting for lock held by ...`로 중단 | 약 2.2초 뒤 거절, 락과 저장소 그대로. **같음** |
 | 같은 호스트, 죽은 pid, 원본 형식(`host/ns:pid`) | 락을 깨고 성공 | 락을 깨고 푸시 성공. **같음** |
-| 같은 호스트, 죽은 pid, 예전 hg4j 형식(`host:pid`) | 깨지 않고 기다리다 중단(원본 동작) | 락을 깨고 푸시 성공(호환 확장) |
+| 같은 호스트, 죽은 pid, 예전 hg4j 형식(`host:pid`) | 깨지 않고 기다리다 중단(원본 동작) | 2026-11-17부터 같다: 깨지 않고 기다리다 중단(호환 확장을 제거함) |
 | hg4j가 남긴 죽은 락(이제 원본 형식) | 락을 깨고 진행 | 해당 없음 |
 
 - **하네스가 드러낸 갭 (자세한 내용은 [[known-bugs-registry]]):** (1) 락 소유자 형식, (2) 훅 구간의 저널, (3) 저널 줄 형식은 2026-11-16에 **모두 수정했다.** 수정 뒤 실제 `hg recover`가 hg4j의 중단된 푸시를 되돌리고(`theRealHgRecoverRollsBackAPushThatKilledHg4jInterrupted`), hg4j의 `recover`가 실제 hg가 남긴 저널도 되돌린다(`hg4jRecoverRollsBackATransactionThatARealHgLeftBehind`). (4) **미수정:** 푸시 적용(`FetchCommand`)이 v2 revlog 저장소를 docket 단위로 기록하지 않아 v2 저장소로의 푸시는 되돌릴 수 없다. v2는 불안정 형식이고 이 저널 변경 이전부터의 동작이다. 푸시 로드맵의 2-A, 2-B, Phase 3은 이 결정과 별개로 진행할 수 있다.

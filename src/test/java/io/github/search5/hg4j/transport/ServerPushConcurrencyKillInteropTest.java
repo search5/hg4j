@@ -309,10 +309,11 @@ class ServerPushConcurrencyKillInteropTest {
 
     /**
      * hg4j writes the owner prefix of the original ({@code host/<pid namespace>:pid}), so a real {@code hg} breaks the dead lock of an
-     * hg4j process (see the kill scenario above), and hg4j breaks both that form and the plain {@code host:pid} that it wrote before.
+     * hg4j process (see the kill scenario above), and hg4j breaks a dead lock of that form, but waits for one with another prefix, like
+     * the original does (the plain {@code host:pid} that older hg4j versions wrote is such a prefix).
      */
     @Test
-    void hg4jBreaksDeadSameHostLocksInBothFormatsAndWritesTheOriginalsFormat() throws Exception {
+    void hg4jBreaksADeadSameHostLockOfTheOriginalsFormatAndWaitsForOtherPrefixes() throws Exception {
         Files.writeString(new File(serverDir, ".hg/hgrc").toPath(), "[web]\nallow_push = *\npush_ssl = false\n[ui]\ntimeout = 2\n");
         File storeLock = new File(serverDir, ".hg/store/lock");
         File first = client("first", "f.txt");
@@ -325,13 +326,19 @@ class ServerPushConcurrencyKillInteropTest {
         assertEquals(0, push1.code, push1.output);
         assertFalse(isLink(storeLock) || storeLock.exists(), "store lock left behind");
 
-        // (2) a dead owner in the plain host:pid form that older hg4j versions wrote (the clone comes first: it takes the lock itself)
+        // (2) a dead owner with another prefix (the plain host:pid of older hg4j versions) is waited for, as in the original; the clone comes
+        // first because it takes the lock itself
         File second = client("second", "s.txt");
         String host = originalLockPrefix().split("/")[0];
         Files.createSymbolicLink(storeLock.toPath(), Path.of(host + ":" + deadPid()));
         Result push2 = run(second, "push", url);
-        System.out.println("LOCK-RESULT hg4j server, dead owner in the older hg4j format: exit " + push2.code + " :: " + push2.output.replace('\n', '|'));
-        assertEquals(0, push2.code, push2.output);
+        System.out.println("LOCK-RESULT hg4j server, dead owner with another prefix: exit " + push2.code + " :: " + push2.output.replace('\n', '|'));
+        assertTrue(push2.code != 0, push2.output);
+        assertTrue(isLink(storeLock), "the lock of another prefix stays");
+        assertEquals(2, changesets());
+        Files.delete(storeLock.toPath());
+        Result push3 = run(second, "push", url);
+        assertEquals(0, push3.code, push3.output);
         assertEquals(3, changesets());
         assertTrue(HgTestUtils.hg(serverDir, "verify").contains("checked 3 changesets"));
     }

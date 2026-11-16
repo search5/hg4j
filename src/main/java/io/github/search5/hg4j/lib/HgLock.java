@@ -173,13 +173,9 @@ public class HgLock implements AutoCloseable {
                             String ownerPidStr = owner.substring(colon + 1).trim();
                             try {
                                 long existingPid = Long.parseLong(ownerPidStr);
-                                String localHost = getLocalHostName();
                                 // the original breaks a lock only when the owner prefix is exactly its own (host and pid namespace,
-                                // `lock._lockshouldbebroken`); the bare host name is what hg4j wrote before it used that prefix
-                                boolean isLocal = "localhost".equals(ownerHost)
-                                               || "127.0.0.1".equals(ownerHost)
-                                               || getLockPrefix().equals(ownerHost)
-                                               || localHost.equals(ownerHost);
+                                // `lock._lockshouldbebroken`); a lock of any other prefix is waited for until the timeout
+                                boolean isLocal = getLockPrefix().equals(ownerHost);
                                 if (isLocal) {
                                     // Same host! Check if the pid is alive.
                                     boolean isAlive = false;

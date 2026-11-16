@@ -187,9 +187,12 @@ public class HgLockTest {
         File lockFile = new File(repoDir, "lock");
         
         // Write a fake lock pointing to a dead pid (e.g. 999999)
-        String fakeLockMetadata = "localhost:999999\n";
+        java.lang.reflect.Method prefixMethod = HgLock.class.getDeclaredMethod("getLockPrefix");
+        prefixMethod.setAccessible(true);
+        String staleOwner = prefixMethod.invoke(null) + ":999999";
+        String fakeLockMetadata = staleOwner + "\n";
         try {
-            Files.createSymbolicLink(lockFile.toPath(), Path.of("localhost:999999"));
+            Files.createSymbolicLink(lockFile.toPath(), Path.of(staleOwner));
         } catch (Exception e) {
             Files.writeString(lockFile.toPath(), fakeLockMetadata, StandardCharsets.UTF_8);
         }

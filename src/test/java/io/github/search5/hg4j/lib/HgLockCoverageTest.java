@@ -153,37 +153,46 @@ public class HgLockCoverageTest {
                 "Malformed lock content must be left alone, not deleted");
     }
 
-    @Test
-    public void testStaleLockRecoveryTreatsLoopbackAddressAsLocalHost(@TempDir Path tempDir) throws Exception {
-        // Exercises the "127.0.0.1".equals(ownerHost) branch of the isLocal OR-chain, distinct
-        // from the literal "localhost" and real-hostname branches covered by other tests.
-        File lockFile = new File(tempDir.toFile(), "lock");
-        writeFakeOwner(lockFile, "127.0.0.1:999999"); // definitely-dead pid
-
-        try (HgLock lock = new HgLock(lockFile, 150)) {
-            assertTrue(Files.exists(lockFile.toPath(), LinkOption.NOFOLLOW_LINKS));
-            String content = readOwner(lockFile);
-            assertTrue(content.contains(String.valueOf(ProcessHandle.current().pid())),
-                    "Stale loopback-owned lock should have been recovered and re-owned by us");
-        }
+    private static String ownLockPrefix() throws Exception {
+        Method m = HgLock.class.getDeclaredMethod("getLockPrefix");
+        m.setAccessible(true);
+        return (String) m.invoke(null);
     }
 
     @Test
-    public void testStaleLockRecoveryTreatsActualHostnameAsLocalHost(@TempDir Path tempDir) throws Exception {
-        // Exercises the localHost.equals(ownerHost) branch of the isLocal OR-chain (as opposed to
-        // the literal "localhost"/"127.0.0.1" aliases exercised elsewhere).
+    public void testLockOfALoopbackOwnerIsNotBrokenEvenWhenItsPidIsDead(@TempDir Path tempDir) throws Exception {
+        // like the original: only the exact own prefix (host/pid namespace) is broken; every other owner is waited for until the timeout
+        File lockFile = new File(tempDir.toFile(), "lock");
+        writeFakeOwner(lockFile, "127.0.0.1:999999");
+
+        HgLockException ex = assertThrows(HgLockException.class, () -> {
+            try (HgLock lock = new HgLock(lockFile, 150)) {
+                fail("A lock of another owner prefix must not be broken");
+            }
+        });
+        assertTrue(ex.getMessage().contains("Currently held by 127.0.0.1:999999"), ex.getMessage());
+        assertTrue(Files.exists(lockFile.toPath(), LinkOption.NOFOLLOW_LINKS));
+    }
+
+    @Test
+    public void testLockOfABareHostNameOwnerIsNotBrokenButTheOwnPrefixIs(@TempDir Path tempDir) throws Exception {
         Method m = HgLock.class.getDeclaredMethod("getLocalHostName");
         m.setAccessible(true);
         String realHostName = (String) m.invoke(null);
 
         File lockFile = new File(tempDir.toFile(), "lock");
-        writeFakeOwner(lockFile, realHostName + ":999999"); // definitely-dead pid
+        writeFakeOwner(lockFile, realHostName + ":999999");
+        assertThrows(HgLockException.class, () -> {
+            try (HgLock lock = new HgLock(lockFile, 150)) {
+                fail("The bare host name is not the original's prefix");
+            }
+        });
 
+        Files.deleteIfExists(lockFile.toPath());
+        writeFakeOwner(lockFile, ownLockPrefix() + ":999999"); // definitely-dead pid
         try (HgLock lock = new HgLock(lockFile, 150)) {
-            assertTrue(Files.exists(lockFile.toPath(), LinkOption.NOFOLLOW_LINKS));
-            String content = readOwner(lockFile);
-            assertTrue(content.contains(String.valueOf(ProcessHandle.current().pid())),
-                    "Stale lock owned by our own real hostname should have been recovered");
+            assertTrue(readOwner(lockFile).contains(String.valueOf(ProcessHandle.current().pid())),
+                    "A stale lock of the own prefix is recovered");
         }
     }
 
@@ -209,7 +218,7 @@ public class HgLockCoverageTest {
         Files.createDirectory(dir);
         File lockFile = dir.resolve("lock").toFile();
         // A definitely-dead pid so the code decides to attempt stale-lock recovery.
-        writeFakeOwner(lockFile, "localhost:999999");
+        writeFakeOwner(lockFile, ownLockPrefix() + ":999999");
 
         Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-x------"));
         try {

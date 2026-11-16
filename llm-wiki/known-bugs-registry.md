@@ -502,3 +502,5 @@ Basic 인증이 없었고, 전송은 객체마다 순차 단일 요청이었다.
   상세 수치(이 레지스트리는 그 라운드들에서 발견된 버그 중 `StatusCommand`/
   `ShelveCommand`/`HgRevsetEngine`/`SubrepoCommand` 항목만 색인하고 전체 라운드
   기록은 그 문서가 원본).
+
+- **[미해결, 시험 불안정] `TransportE2EMatrixInteropTest.aBranchyHistoryTravelsWithItsBookmarksTagsAndPhases`가 가끔 실패한다(2026-11-17).** "head를 만드는 푸시는 거부되어야 한다" 단언(`assertThrows ... nothing was thrown`)이 조합을 바꿔 가며 불규칙하게 어긋난다. 같은 날 세 번 실행에서 SSH 조합 1건, HTTP 실제-실제 조합 1건과 SSH hg4j-hg4j 조합 1건이 실패했고, 클래스만 다시 돌리면 통과했다. 실제 hg 클라이언트와 실제 hg 서버의 조합에서도 나오므로 hg4j 코드의 문제가 아니라 시험 자체(커밋 시각이 같아 같은 노드가 되는 경우 등으로 추정, 미확인)의 불안정으로 본다. 원인은 아직 조사하지 않았다.

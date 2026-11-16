@@ -278,4 +278,55 @@ public class HgLockTest {
         }
         return host;
     }
+
+    @Test
+    public void testAWaiterOfTheSameJvmGetsTheLockAtOnceWhenItIsReleased(@TempDir Path tempDir) throws Exception {
+        File lockFile = new File(tempDir.toFile(), "lock");
+        java.util.concurrent.atomic.AtomicLong releasedAt = new java.util.concurrent.atomic.AtomicLong();
+        java.util.concurrent.atomic.AtomicLong acquiredAt = new java.util.concurrent.atomic.AtomicLong();
+        HgLock holder = new HgLock(lockFile, 1000);
+        Thread waiter = new Thread(() -> {
+            try (HgLock l = new HgLock(lockFile, 5000)) {
+                acquiredAt.set(System.nanoTime());
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        waiter.start();
+        Thread.sleep(300); // the waiter is waiting now (it polled several times before)
+        releasedAt.set(System.nanoTime());
+        holder.close();
+        waiter.join(5000);
+        long millis = (acquiredAt.get() - releasedAt.get()) / 1_000_000;
+        assertTrue(acquiredAt.get() != 0, "the waiter acquired the lock");
+        assertTrue(millis < 40, "the waiter was woken by the release, not by its next poll: " + millis + " ms");
+        assertFalse(Files.exists(lockFile.toPath(), LinkOption.NOFOLLOW_LINKS));
+    }
+
+    @Test
+    public void testManyThreadsOfTheSameJvmExcludeEachOtherAndAllFinish(@TempDir Path tempDir) throws Exception {
+        File lockFile = new File(tempDir.toFile(), "lock");
+        java.util.concurrent.atomic.AtomicInteger inside = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger maxInside = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger done = new java.util.concurrent.atomic.AtomicInteger();
+        Thread[] threads = new Thread[12];
+        for (int i = 0; i < threads.length; i++) {
+            threads[i] = new Thread(() -> {
+                try (HgLock l = new HgLock(lockFile, 20000)) {
+                    maxInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
+                    Thread.sleep(5);
+                    inside.decrementAndGet();
+                    done.incrementAndGet();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            threads[i].start();
+        }
+        for (Thread t : threads) {
+            t.join(30000);
+        }
+        assertEquals(12, done.get());
+        assertEquals(1, maxInside.get(), "never two holders at once");
+    }
 }

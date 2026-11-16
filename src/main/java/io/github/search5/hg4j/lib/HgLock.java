@@ -127,6 +127,7 @@ public class HgLock implements AutoCloseable {
         Thread currentThread = Thread.currentThread();
 
         while (true) {
+            boolean blockedByThisJvm = false;
             // 1. JVM-wide lock check with reentrancy support
             if (!acquiredJvmLock) {
                 synchronized (JVM_ACTIVE_LOCKS) {
@@ -139,6 +140,7 @@ public class HgLock implements AutoCloseable {
                             this.isReentrant = true;
                             return; // Reentrant success!
                         }
+                        blockedByThisJvm = true;
                     } else {
                         JVM_ACTIVE_LOCKS.put(absPath, new LockInfo(currentThread));
                         this.acquiredJvmLock = true;
@@ -233,9 +235,18 @@ public class HgLock implements AutoCloseable {
                 throw new HgLockException(lockFile.getName(), msg);
             }
 
-            // Backoff sleep
+            // Backoff: when another thread of this process holds the lock, its release wakes this thread at once (the file lock and
+            // everything else stay as they were); a lock held by another process is polled every 50 ms, like before
             try {
-                Thread.sleep(50);
+                if (blockedByThisJvm) {
+                    synchronized (JVM_ACTIVE_LOCKS) {
+                        if (JVM_ACTIVE_LOCKS.containsKey(absPath)) {
+                            JVM_ACTIVE_LOCKS.wait(Math.max(1L, Math.min(50L, timeoutMs - elapsed)));
+                        }
+                    }
+                } else {
+                    Thread.sleep(50);
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new HgLockException(lockFile.getName(), "Lock acquisition interrupted on file: " + absPath, e);
@@ -338,6 +349,7 @@ public class HgLock implements AutoCloseable {
                 Files.deleteIfExists(lockFile.toPath());
             } finally {
                 JVM_ACTIVE_LOCKS.remove(absPath);
+                JVM_ACTIVE_LOCKS.notifyAll();
                 acquiredJvmLock = false;
                 acquiredFileLock = false;
                 isReentrant = false;
@@ -391,6 +403,7 @@ public class HgLock implements AutoCloseable {
                     }
                 } finally {
                     JVM_ACTIVE_LOCKS.remove(absPath);
+                    JVM_ACTIVE_LOCKS.notifyAll();
                     acquiredJvmLock = false;
                     acquiredFileLock = false;
                     isReentrant = false;

@@ -10,6 +10,8 @@ All notable changes to hg4j are listed here, newest first. The reference for beh
 
 - The transaction journal is written in the original's format: `journal` holds `<path relative to the store>\0<size>` lines and `journal.backupfiles` holds the version `2` and `<location>\0<file>\0<backup>\0<cache>` lines, so a real `hg recover` rolls back what an interrupted hg4j left (it reported "couldn't read journal entry" for every line and rolled back nothing), and hg4j's `recover` rolls back what an interrupted `hg` left. Journals of earlier hg4j versions are still read. For a version 2 revlog the companion files of a docket are listed in `journal.truncateonly` (hg4j only) so that they are cut back and never removed, which the original's own rollback does and then cannot verify.
 - Applying a changegroup (push, pull, unbundle) to a repository with the version 2 revlog format keeps the dockets and the sizes of the companion files, so a failed or interrupted apply is rolled back completely; a rollback also removes the companion and nodemap files of a revlog that the transaction created.
+- A thread that waits for a lock that another thread of the same process holds is woken by the release instead of by its next 50 ms poll. The file lock, its order, its owner and the wait for a lock of another process are unchanged. Eight concurrent pushes of one changeset each into one repository take about 50 ms instead of 360 ms.
+- `NodeIdUtil.toHex` uses a lookup table instead of `String.format`; a one-changeset push into a repository takes half the time.
 
 ## 1.1.3 (2026-11-10)
 

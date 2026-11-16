@@ -503,4 +503,4 @@ Basic 인증이 없었고, 전송은 객체마다 순차 단일 요청이었다.
   `ShelveCommand`/`HgRevsetEngine`/`SubrepoCommand` 항목만 색인하고 전체 라운드
   기록은 그 문서가 원본).
 
-- **[미해결, 시험 불안정] `TransportE2EMatrixInteropTest.aBranchyHistoryTravelsWithItsBookmarksTagsAndPhases`가 가끔 실패한다(2026-11-17).** "head를 만드는 푸시는 거부되어야 한다" 단언(`assertThrows ... nothing was thrown`)이 조합을 바꿔 가며 불규칙하게 어긋난다. 같은 날 세 번 실행에서 SSH 조합 1건, HTTP 실제-실제 조합 1건과 SSH hg4j-hg4j 조합 1건이 실패했고, 클래스만 다시 돌리면 통과했다. 실제 hg 클라이언트와 실제 hg 서버의 조합에서도 나오므로 hg4j 코드의 문제가 아니라 시험 자체(커밋 시각이 같아 같은 노드가 되는 경우 등으로 추정, 미확인)의 불안정으로 본다. 원인은 아직 조사하지 않았다.
+- **[수정됨 2026-11-17, 시험 결함] `TransportE2EMatrixInteropTest.aBranchyHistoryTravelsWithItsBookmarksTagsAndPhases`가 가끔 실패했다.** 원인은 hg4j가 아니라 시험의 리비전 지정이었다. `desc(c1)`, `desc(c2)`는 설명에 그 문자열이 **들어 있는** 모든 변경집합을 고르는데, 태그 커밋의 설명 `Added tag v1 for changeset <해시 12자>`에 해시가 우연히 `c1`이나 `c2`를 담으면(커밋 시각에 따라 해시가 달라져 가끔만) 태그 커밋이 선택되었다. 그러면 "세 번째 head"가 c1이 아니라 태그 커밋의 자식이 되어 새 head가 생기지 않고 푸시가 거부되지 않았다(실패 메시지의 부모 해시로 확인). `desc("re:^c1$")`처럼 정확히 일치하게 바꿨고, 실패 시 클라이언트 로그와 서버 head를 메시지에 담는다. 다른 시험의 `desc(cN)`은 태그 커밋이 없어 해당하지 않는다.

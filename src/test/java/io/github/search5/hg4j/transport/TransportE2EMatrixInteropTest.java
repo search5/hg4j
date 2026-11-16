@@ -392,12 +392,12 @@ class TransportE2EMatrixInteropTest {
         hg(srv, false, "merge", "stable");
         hg(srv, false, "commit", "-m", "merge", "-u", "t");
         hg(srv, false, "bookmark", "release");
-        hg(srv, false, "tag", "-r", "desc(c2)", "v1", "-u", "t");
-        hg(srv, false, "update", "desc(c2)");
+        hg(srv, false, "tag", "-r", "desc(\"re:^c2$\")", "v1", "-u", "t");
+        hg(srv, false, "update", "desc(\"re:^c2$\")");
         write(srv, "h2.txt", "second head\n");
         hg(srv, false, "add");
         hg(srv, false, "commit", "-m", "second head", "-u", "t");
-        hg(srv, false, "phase", "--public", "-r", "desc(c2)");
+        hg(srv, false, "phase", "--public", "-r", "desc(\"re:^c2$\")");
         hg(srv, false, "update", "desc(merge)");
         write(srv, "secret.txt", "secret\n");
         hg(srv, false, "add");
@@ -440,12 +440,21 @@ class TransportE2EMatrixInteropTest {
         hg(client, false, "verify");
 
         // a changeset that adds a third head to default is refused, and accepted when forced
-        hg(client, false, "update", "-C", "desc(c1)");
+        hg(client, false, "update", "-C", "desc(\"re:^c1$\")");
         write(client, "extra.txt", "a new head\n");
         hg(client, false, "add");
         hg(client, false, "commit", "-m", "third head", "-u", "t");
         String thirdHead = node(client, ".");
-        assertThrows(Throwable.class, () -> push(combo, client, url, false, false), "a push that creates a head is refused");
+        String diagnostics = "client log: " + hg(client, false, "log", "-T", "{node|short} p={p1node|short} {desc} {branch} {phase}\\n", "-r", "all()").replace('\n', '|')
+                + " client heads: " + hg(client, false, "heads", "default", "-T", "{node|short} ").strip();
+        Throwable refused = null;
+        try {
+            push(combo, client, url, false, false);
+        } catch (Throwable t) {
+            refused = t;
+        }
+        assertTrue(refused != null, "a push that creates a head is refused; " + diagnostics + " server heads: "
+                + hg(server, false, "heads", "default", "-T", "{node|short} ").strip());
         assertFalse(nodes(server, false).contains(thirdHead), "the refused push changed nothing");
         push(combo, client, url, true, false);
         assertTrue(nodes(server, false).contains(thirdHead), "the forced push arrived");

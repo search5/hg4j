@@ -512,7 +512,7 @@ public class StripCommand {
                         SafeFileIO.writeLinesAtomic(phaserootsFile, updatedPLines);
                     }
                 }
-                Files.deleteIfExists(journalFile.toPath()); // the first transaction closes
+                io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile); // the first transaction closes
 
                 // second transaction "strip": what was kept above the cut is added again
                 if (savedBundle != null) {
@@ -745,10 +745,6 @@ public class StripCommand {
     // wrong (backlog #39, requirement-matrix expansion to StripCommand, 2026-09-05).
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
-        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
-        }
+        io.github.search5.hg4j.lib.TransactionJournal.append(journalFile, entry);
     }
 }

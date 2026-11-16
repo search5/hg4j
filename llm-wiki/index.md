@@ -119,6 +119,7 @@ status: current
 | [decisions/interop-local-hg-instead-of-docker.md](decisions/interop-local-hg-instead-of-docker.md) | interop 테스트의 hg 오라클을 Docker에서 로컬 빌드(`scripts/build-local-hg.sh`)로 교체, 측정 소요 시간 |
 | [decisions/gpg-hgsigs-compatibility.md](decisions/gpg-hgsigs-compatibility.md) | GPG를 Mercurial `.hgsigs` 호환으로 구현한 결정, 키링 실측(kbx는 BC가 빈 결과), 원본과 다른 점, 한계 |
 | [decisions/server-push-concurrency-roadmap.md](decisions/server-push-concurrency-roadmap.md) | **제안(미착수, 2026-11-13)** — 에이전트 병렬 푸시 대비 서버 백엔드 로드맵: 락 구간 축소·공정 대기열·그룹 커밋·번들 캐시, 호환 조건, 결정 게이트(잠금 일치와의 충돌, `bookmarks-in-store` 미지원 발견), 측정 결과(락 안 CPU가 최대 후보, 6-4절), 하지 않을 것 |
+| [decisions/squash-composition-roadmap.md](decisions/squash-composition-roadmap.md) | **제안(미착수, 2026-11-16)** — Yona가 공개 API를 조합해 PR 스쿼시를 만드는 방안: 작업 디렉터리 조합(실제 hg와 노드 일치 실험, share 사본 포함), 공개 트리 커밋 명령, 조합의 공개 3수준(문서, `debugsetparents`, 편의 명령), `setSquash` 유지의 4안과 결정 게이트 |
 
 ## 최상위 데이터 문서 (2026-09-06 신설)
 | 페이지 | 요약 |

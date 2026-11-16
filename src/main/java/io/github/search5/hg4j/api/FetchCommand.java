@@ -9,6 +9,7 @@ import io.github.search5.hg4j.transport.HgRemoteConnection;
 import io.github.search5.hg4j.transport.HgRemoteConnectionFactory;
 import io.github.search5.hg4j.lib.HgRepository;
 import io.github.search5.hg4j.util.NodeIdUtil;
+import io.github.search5.hg4j.storage.RevlogIndex;
 import io.github.search5.hg4j.storage.Revlog;
 import io.github.search5.hg4j.util.SafeFileIO;
 import io.github.search5.hg4j.lib.ProgressMonitor;
@@ -35,6 +36,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.zip.InflaterInputStream;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
@@ -862,6 +864,42 @@ public class FetchCommand {
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
                                      PostLockValidator postLockValidator) throws IOException, HgLockException {
+        return applyBundle(bundle, lockTimeoutMs, postLockValidator, null);
+    }
+
+    /**
+     * Runs while the transaction of {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int, PostLockValidator, PreCloseAction)}
+     * is still open: the changesets, manifests and file revisions are appended and the fncache is written, and the journal is still
+     * on disk. This is where the original runs {@code pretxnchangegroup}, so the hook can see the new changesets and refuse them,
+     * and a process that dies in it leaves the journal that {@code hg recover} rolls back.
+     */
+    @FunctionalInterface
+    public interface PreCloseAction {
+        /**
+         * Called with the nodes of the new changesets, the locks held and the journal in place. Throw to abort: everything the apply
+         * wrote is rolled back and the exception is passed on unchanged. Not called when the bundle held no changeset.
+         *
+         * @param imported the 20-byte nodes of the changesets that were appended, in the order they were applied
+         * @throws IOException to abort the apply and roll it back
+         */
+        void run(List<byte[]> imported) throws IOException;
+    }
+
+    /**
+     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int, PostLockValidator)}, and additionally runs
+     * {@code preClose} (if non-null) after everything is appended and before the transaction is closed (the journal removed), like the
+     * original runs {@code pretxnchangegroup} inside the transaction.
+     *
+     * @param bundle the parsed changegroup to apply
+     * @param lockTimeoutMs how long to wait for the store/wlock to clear, in milliseconds; {@code 0} fails fast
+     * @param postLockValidator run once the locks are held and before anything is written; {@code null} for none
+     * @param preClose run with the transaction open; {@code null} for none
+     * @return the nodes of the imported changesets, empty if the bundle held none
+     * @throws IOException if the validator or {@code preClose} aborts, the store cannot be read or written, or the apply fails (it is rolled back then)
+     * @throws HgLockException if the locks cannot be acquired within {@code lockTimeoutMs}
+     */
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
+                                     PostLockValidator postLockValidator, PreCloseAction preClose) throws IOException, HgLockException {
         resolveNarrowTreeFilterIfDefault();
         List<byte[]> importedCommits = new ArrayList<>();
         if (bundle.changelogEntries.isEmpty()) {
@@ -882,6 +920,9 @@ public class FetchCommand {
         try (HgLock wlock = wcLocked ? repository.lockWorkingCopy(lockTimeoutMs) : HgLock.noOp();
              HgLock storeLock = repository.lockStore(lockTimeoutMs)) {
             Map<File, Long> fileSizes = new HashMap<>();
+            Map<File, byte[]> docketBackups = new HashMap<>();
+            Set<File> truncateOnly = new HashSet<>();
+            StoreRollback rollback = null;
 
             try {
                 dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
@@ -891,7 +932,7 @@ public class FetchCommand {
                     postLockValidator.validate();
                 }
 
-                Files.deleteIfExists(journalFile.toPath());
+                rollback = new StoreRollback(repository);
             
                 if (fncacheFile.exists()) {
                     File fncacheBackupFile = new File(repository.getStoreDir(), "fncache.backup");
@@ -904,20 +945,8 @@ public class FetchCommand {
                 File mfIdx = new File(repository.getStoreDir(), "00manifest.i");
                 File mfDat = new File(repository.getStoreDir(), "00manifest.d");
 
-                long clIdxLen = clIdx.exists() ? clIdx.length() : 0L;
-                long clDatLen = clDat.exists() ? clDat.length() : 0L;
-                long mfIdxLen = mfIdx.exists() ? mfIdx.length() : 0L;
-                long mfDatLen = mfDat.exists() ? mfDat.length() : 0L;
-
-                fileSizes.put(clIdx, clIdxLen);
-                fileSizes.put(clDat, clDatLen);
-                fileSizes.put(mfIdx, mfIdxLen);
-                fileSizes.put(mfDat, mfDatLen);
-
-                appendToJournal(journalFile, "store/00changelog.i\t" + clIdxLen);
-                appendToJournal(journalFile, "store/00changelog.d\t" + clDatLen);
-                appendToJournal(journalFile, "store/00manifest.i\t" + mfIdxLen);
-                appendToJournal(journalFile, "store/00manifest.d\t" + mfDatLen);
+                trackRevlog(rollback, fileSizes, docketBackups, truncateOnly, clIdx, clDat);
+                trackRevlog(rollback, fileSizes, docketBackups, truncateOnly, mfIdx, mfDat);
 
                 Revlog changelog = repository.getRevlog(clIdx, clDat);
                 final int firstImportedRev = changelog.getRevisionCount();
@@ -950,18 +979,7 @@ public class FetchCommand {
                         
                             fncachePaths.add(NodeIdUtil.encodeStorePath(storeRel + ".i"));
 
-                            if (!fileSizes.containsKey(mIdx)) {
-                                long idxLen = mIdx.exists() ? mIdx.length() : 0L;
-                                fileSizes.put(mIdx, idxLen);
-                                String storeRelIdx = "store/" + NodeIdUtil.encodeStorePath(storeRel + ".i");
-                                appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
-                            }
-                            if (!fileSizes.containsKey(mDat)) {
-                                long datLen = mDat.exists() ? mDat.length() : 0L;
-                                fileSizes.put(mDat, datLen);
-                                String storeRelDat = "store/" + NodeIdUtil.encodeStorePath(storeRel + ".d");
-                                appendToJournal(journalFile, storeRelDat + "\t" + datLen);
-                            }
+                            trackRevlog(rollback, fileSizes, docketBackups, truncateOnly, mIdx, mDat);
                             mIdx.getParentFile().mkdirs();
                         }
                         Revlog subManifest = (mIdx == mfIdx) ? repository.getManifestRevlog() : repository.getRevlog(mIdx, mDat);
@@ -1002,18 +1020,7 @@ public class FetchCommand {
                     File flIdx = CommitCommand.getFilelogIndex(repository.getStoreDir(), path);
                     File flDat = new File(flIdx.getPath().substring(0, flIdx.getPath().length() - 2) + ".d");
 
-                    if (!fileSizes.containsKey(flIdx)) {
-                        long idxLen = flIdx.exists() ? flIdx.length() : 0L;
-                        fileSizes.put(flIdx, idxLen);
-                        String storeRelIdx = "store/" + NodeIdUtil.encodeFname(path + ".i");
-                        appendToJournal(journalFile, storeRelIdx + "\t" + idxLen);
-                    }
-                    if (!fileSizes.containsKey(flDat)) {
-                        long datLen = flDat.exists() ? flDat.length() : 0L;
-                        fileSizes.put(flDat, datLen);
-                        String storeRelDat = "store/" + NodeIdUtil.encodeFname(path + ".d");
-                        appendToJournal(journalFile, storeRelDat + "\t" + datLen);
-                    }
+                    trackRevlog(rollback, fileSizes, docketBackups, truncateOnly, flIdx, flDat);
 
                     flIdx.getParentFile().mkdirs();
                     Revlog filelog = repository.getRevlog(flIdx, flDat);
@@ -1051,8 +1058,13 @@ public class FetchCommand {
                     SafeFileIO.writeLinesAtomic(fncacheFile, new ArrayList<>(fncachePaths));
                 }
 
+                // the transaction is still open here (journal on disk): the original's pretxnchangegroup runs now
+                if (preClose != null && !importedCommits.isEmpty()) {
+                    preClose.run(importedCommits);
+                }
+
                 try {
-                    Files.deleteIfExists(journalFile.toPath());
+                    rollback.commit();
                     Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
                 } catch (Exception ignored) {}
 
@@ -1061,7 +1073,7 @@ public class FetchCommand {
                 // 않았다(가장 흔한 실사용 시나리오인데도) — 2026-09-01 수정, Track B-4.
                 if (!fileSizes.isEmpty()) {
                     try {
-                        CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup);
+                        CommitCommand.writeUndoInfo(repository, fileSizes, dirstateBackup, docketBackups, truncateOnly);
                     } catch (Exception e) {
                         LOGGER.log(Level.WARNING, "Failed to write undo info for rollback after pull", e);
                     }
@@ -1076,19 +1088,11 @@ public class FetchCommand {
                 return importedCommits;
 
             } catch (Exception t) {
-                for (Map.Entry<File, Long> sizeEntry : fileSizes.entrySet()) {
-                    File file = sizeEntry.getKey();
-                    long origSize = sizeEntry.getValue();
-                    if (origSize == 0) {
-                        try {
-                            Files.deleteIfExists(file.toPath());
-                        } catch (Exception ignored) {}
-                    } else {
-                        try (FileChannel outChan = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
-                            outChan.truncate(origSize);
-                            outChan.force(true);
-                        } catch (Exception ignored) {}
-                    }
+                if (rollback != null) {
+                    try {
+                        // puts back the dockets of version 2 revlogs and cuts every other file to its size, like the original's rollback
+                        rollback.abort();
+                    } catch (Exception ignored) {}
                 }
                 if (fncacheBackup != null) {
                     try {
@@ -1101,7 +1105,7 @@ public class FetchCommand {
                 }
                 // applying a bundle does not write the dirstate (a pull moves the parent afterwards in its own context): nothing to put back
                 try {
-                    Files.deleteIfExists(journalFile.toPath());
+                    io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
                     Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
                 } catch (Exception ignored) {}
                 repository.clearRevlogCache();
@@ -1110,11 +1114,37 @@ public class FetchCommand {
         }
     }
 
-    private void appendToJournal(File journalFile, String entry) throws IOException {
-        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
+    /**
+     * Records a revlog before it is appended to: the journal (through {@code rollback}) and the state {@code hg rollback} needs.
+     * A version 2 revlog is a small docket whose content changes in place, so it is kept whole and its companion files are cut back
+     * (and never deleted) like the original's transaction does.
+     */
+    private static void trackRevlog(StoreRollback rollback, Map<File, Long> fileSizes, Map<File, byte[]> dockets,
+                                    Set<File> truncateOnly, File index, File data) throws IOException {
+        if (fileSizes.containsKey(index) || dockets.containsKey(index)) {
+            return;
         }
+        rollback.trackRevlog(index, data);
+        if (index.exists()) {
+            RevlogIndex probe = new RevlogIndex(index);
+            if (probe.isV2()) {
+                dockets.put(index, Files.readAllBytes(index.toPath()));
+                for (File resolved : new File[]{probe.getResolvedIndexFile(), probe.getResolvedDataFile(), probe.getResolvedSidedataFile()}) {
+                    if (resolved != null) {
+                        fileSizes.put(resolved, resolved.exists() ? resolved.length() : 0L);
+                        truncateOnly.add(resolved);
+                    }
+                }
+                return;
+            }
+        }
+        fileSizes.put(index, index.exists() ? index.length() : 0L);
+        if (data != null) {
+            fileSizes.put(data, data.exists() ? data.length() : 0L);
+        }
+    }
+
+    private void appendToJournal(File journalFile, String entry) throws IOException {
+        io.github.search5.hg4j.lib.TransactionJournal.append(journalFile, entry);
     }
 }

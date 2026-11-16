@@ -836,3 +836,22 @@ hg 소스를 읽어 하나씩 대조했다. 고친 것: `FetchCommand.applyBundl
 **측정 중 사고와 정정:** (1) 1차 실행은 JFR이 파일 읽기 이벤트를 185만 건 기록해 절대 시간이 부풀려졌다. (2) 2차 실행에서 `./gradlew test`가 `jacocoTestReport`를 거쳐 `interopTest`까지 시작했다. `build.gradle:146`(`test finalizedBy jacocoTestReport`)과 `:188`(`dependsOn test, interopTest`) 때문이고, init 스크립트가 `jacocoTestReport`의 `enabled`만 꺼서 의존 태스크는 그대로 돌았다. 사용자가 interop 테스트를 하지 말라고 한 것을 어긴 것이며 약 1분 안에 중단했다(완료된 테스트 0개, 결과 파일 0개, 남은 프로세스 정리 확인). 이후 gradle은 `--dry-run`으로 태스크를 먼저 확인하고 `-x interopTest -x jacocoTestReport -x jacocoTestCoverageVerification`을 붙이기로 했다. (3) 같은 이름의 JFR 파일을 뒤에 뜬 JVM이 덮어써 2차의 CPU 프로파일을 잃었다(파일 이름에 프로세스 번호 `%p`가 필요). 그래서 CPU 비율은 1차 실행 값이고 깨끗한 프로파일은 없다. 사용자 지시로 여기서 측정을 멈췄다.
 
 같은 날 사용자 지시로 스크래치 안 이 클론에서 `setup-git-local`을 실행해 로컬 git 사용자를 설정했고, 이 작업 중 만든 로컬 커밋이 없음을 확인했다.
+
+## [2026-11-16] 스쿼시를 Yona가 조합해 쓰는 방안 조사와 로드맵 (코드 변경 없음)
+사용자 요청으로 [[decisions/squash-composition-roadmap]]을 만들었다. 확인한 것: (1) `FilelogWrite`, `ChangesetRewrite`, `MergeCopies`가 package-private이고 `TreeMergeResult`에 복사 정보가 없어서, 작업 파일 없이 공개 API만으로 스쿼시를 만들 수 없다. (2) 작업 디렉터리 경로(`UpdateCommand`, `MergeCommand`, `getDirstate().setParents`, `CommitCommand`)는 실제 hg와 같은 노드를 만들었다(일반, 이름 변경 두 시나리오, 임시 interop 테스트는 삭제). 실행 비트, 심볼릭 링크, LFS, 충돌 등은 미확인. 결정 게이트는 새 공개 명령(원본 hg에 없는 hg4j 고유 API)을 허용할지이다.
+
+같은 날 추가: 기존 명령 조합의 공개 방안(D1 문서화, D2 `debugsetparents` 명령, D3 편의 명령)을 검토했다. 작업 파일 없는 서버 저장소에서 `WorktreeCommand`(share) 사본으로 같은 조합을 실행하니 실제 hg와 같은 노드가 나왔고, push 없이 서버 store에 들어갔으며 `hg verify`가 통과했다(작은 저장소 78 ms, 임시 테스트는 삭제). 큰 저장소의 비용과 동시 실행은 미확인.
+
+## [2026-11-16] 서버 푸시 동시성 하네스(Phase 1) A, B, C 작성과 실행
+사용자가 실제 hg 사용을 수락해서 `ServerPushConcurrencyHarnessInteropTest`를 작성하고 현재 코드에서 3회 실행해 모두 통과했다(서버 코드 변경 없음). 근거와 결과는 [[decisions/server-push-concurrency-roadmap]] Phase 1. D(`kill -9`)와 E(오래된 락)는 미작성.
+
+같은 날 보강: 기준이 draft일 때 동시 푸시가 `is public expected draft`로 거절되는 현상을 실제 `hg serve`에서 재현해 원본과 같음을 확인했다(draft 기준 1 성공 5 거절, public 기준 6 성공). [[decisions/server-push-concurrency-roadmap]] Phase 1.
+
+## [2026-11-16] 서버 푸시 하네스 D(kill -9)와 E(오래된 락) 작성과 갭 2건 발견 (서버 코드 변경 없음)
+`ServerPushConcurrencyKillInteropTest`(4개)를 실제 hg 7.2로 통과시켰다. 발견: (1) 락 소유자 형식이 원본(`host/pidns:pid`)과 달라 실제 hg가 hg4j의 죽은 락을 깨지 못한다. (2) `pretxnchangegroup` 훅 구간에 저널이 없어 그 시점 `kill -9`에서 푸시된 변경집합이 남고 `hg recover`가 되돌릴 게 없다. 둘 다 [[known-bugs-registry]]와 [[decisions/server-push-concurrency-roadmap]]에 기록했고 수정은 하지 않았다. 중간에 첫 시험이 `hg verify`를 600초 기다리며 멈췄는데, 원인이 (1)이었다.
+
+## [2026-11-16] 하네스가 찾은 갭 2건 수정(락 소유자 형식, 훅 구간 저널)과 갭 1건 추가 발견
+`HgLock`이 원본 접두어(`host/pid네임스페이스:pid`)로 쓰고 읽도록 바꿨다. `FetchCommand.applyBundle`에 `PreCloseAction`을 더해 `pretxnchangegroup` 훅과 phase 등록을 저널이 있는 트랜잭션 안에서 돌리고, 거부 시 적용 전체를 되돌린다(`HgLocalClient`). 수정 뒤 하네스 A~E를 다시 돌려 통과했다. 비교 중 새 갭: 저널 줄 형식이 원본과 달라 실제 `hg recover`가 hg4j 저널을 못 읽는다(미수정). [[known-bugs-registry]], [[decisions/server-push-concurrency-roadmap]].
+
+## [2026-11-16] 저널 줄 형식을 원본과 같게 변경 (`lib/TransactionJournal`)
+`journal`은 `경로\0크기`, `journal.backupfiles`는 버전 `2` 뒤 `위치\0파일\0백업\0캐시`로 쓰고, hg4j 전용 `journal.truncateonly`로 v2 revlog companion 파일을 자르기만 하게 했다. 예전 형식은 계속 읽는다. 검증: 단위 2,618개 통과, interop 101개 클래스(1,278개) 통과, 하네스 A~E와 양방향 recover 통과. v2 revlog에서 원본의 recover는 빈 `.sda`를 지워 저장소를 망가뜨리지만(원본 자신의 롤백도 같음) hg4j recover는 바이트 단위로 복원한다. 발견: `FetchCommand`가 v2 저장소의 푸시를 docket 단위로 기록하지 않음(미수정, [[known-bugs-registry]]).

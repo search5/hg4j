@@ -136,6 +136,14 @@ real-hg-CLI clone/pull 라운드트립으로 직접 검증 완료.
 (작성만 함). 발견 경위: 2026-11-13, `bookmarks-in-store` 지원 작업 중 코드 전수 확인에서 발견
 ([[decisions/server-push-concurrency-roadmap]]).
 
+### `HgLock` 락 소유자 형식, 푸시 적용의 저널 구간, 저널 줄 형식 (2026-11-16, 서버 푸시 하네스 D·E에서 발견)
+- **[수정됨, 2026-11-16] 락 소유자 형식이 원본과 달랐다.** 원본은 Linux에서 `host/<pid 네임스페이스 inode 16진수>:pid`(`lock.py:_getlockprefix`)를 쓰고, hg4j는 `host:pid`를 썼다. 실제 `hg`는 호스트 접두어가 자기 것과 다르면 죽은 소유자여도 락을 깨지 않고 `ui.timeout`(기본 600초)을 기다렸다. 이제 `HgLock`이 원본 접두어로 쓰고(`getLockPrefix`, 호스트는 `/proc/sys/kernel/hostname`), 원본 형식의 죽은 락과 예전 hg4j 형식(`host:pid`)을 모두 깬다. 예전 형식을 깨는 것은 원본에 없는 호환 확장이다.
+- **[수정됨, 2026-11-16] 푸시 적용은 `pretxnchangegroup` 훅이 도는 동안 저널이 없었다.** `applyBundle`이 변경집합을 다 붙이고 저널을 지운 뒤에 훅을 실행했다. 이제 `FetchCommand.PreCloseAction`으로 훅과 phase 등록이 저널이 있는 채로(트랜잭션 안에서) 돌고, 훅이 거부하면 적용 전체를 되돌린다(예전의 `RollbackCommand` 사용 제거). 훅 구간에서 `kill -9`하면 저널이 남아 다음 푸시가 `abandoned transaction found`로 거부되고(원본과 같은 문구와 힌트), hg4j의 `recover`가 되돌린다.
+- **[수정됨, 2026-11-16] 저널 줄 형식이 원본과 달랐다.** 원본은 `<store 상대경로>\0<크기>` 줄과 `journal.backupfiles`(첫 줄 `2`, 이후 `위치\0파일\0백업\0캐시`)를 쓰고, hg4j는 `store/<경로>\t<크기>`와 `backup`, `trunc` 줄을 썼다. 그래서 실제 `hg recover`가 hg4j의 저널을 읽지 못해 줄마다 `couldn't read journal entry ...!`를 내고 아무것도 되돌리지 못했다(종료 코드 0). 이제 `lib/TransactionJournal`이 원본 형식으로 쓰고 재생한다. 쓰는 6곳(`FetchCommand`, `CommitCommand`, `GraftCommand`, `StripCommand`, `HisteditCommand`, `StoreRollback`)은 `append`로 보내고, 읽는 곳은 `HgRepository.checkAndPerformAutoRollback`(`RecoverCommand`가 사용)이다. 예전 hg4j가 남긴 형식(줄에 NUL이 없음)도 계속 읽는다. 실제 hg가 중단한 트랜잭션을 hg4j `recover`가 되돌리는 것과, hg4j가 중단한 푸시를 실제 `hg recover`가 되돌리는 것을 모두 시험으로 확인했다.
+- **hg4j 전용 `journal.truncateonly`는 의도적인 차이다.** v2 revlog(docket)의 companion 파일(`.idx`, `.dat`, `.sda`)은 크기가 0이어도 docket이 가리키므로 지우지 않고 자르기만 해야 한다. 원본은 그런 파일을 크기 0 줄로 기록하고 롤백이 지운다. 실제 Rust hg에서 `kill -9`한 커밋의 롤백과, 같은 저널에 대한 `hg recover`가 모두 빈 `.sda`를 지워 다음 `hg verify`가 `No such file or directory ...sda`로 중단됨을 확인했다(`experimental.revlogv2`는 `...corrupt-my-data`라는 이름의 불안정 형식). hg4j의 `recover`는 모든 store 파일을 바이트 단위로 되돌리고 실제 hg의 `verify`가 통과한다(`TransactionJournalV2RevlogInteropTest`).
+- **[수정됨 2026-11-17] 푸시와 pull의 적용(`FetchCommand.applyBundle`)이 v2 revlog 저장소를 docket 단위로 기록하지 않던 문제.** `StoreRollback.trackRevlog`를 쓰도록 바꿔 docket 전체 백업, companion 파일 `trunc` 기록, 실패 시 `abort()` 복원, `hg rollback`용 undo 기록까지 v2를 처리한다. 함께 찾은 누수: 트랜잭션이 새로 만든 v2 revlog의 companion(`-<id>.idx/.dat/.sda`)과 nodemap(`.n`, `-<id>.nd`)은 이름이 트랜잭션 중에 정해져 저널에 적을 수 없어 롤백 뒤에도 남았다. `StoreRollback.abort()`가 새 index를 지울 때 함께 지운다(`CommitCommand`, `GraftCommand`에도 적용됨). 시험: `FetchCommandV2RevlogInteropTest`.
+- **검증:** `ServerPushConcurrencyKillInteropTest`(실제 hg 7.2).
+
 ## 명령별 버그
 
 ### `StatusCommand` / `ShelveCommand` — racy-write 검증 대상 리비전 오류

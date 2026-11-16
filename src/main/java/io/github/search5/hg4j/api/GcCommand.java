@@ -56,7 +56,8 @@ public class GcCommand {
                 for (File file : storeFiles) {
                     if (file.isFile()) {
                         String name = file.getName();
-                        if (name.endsWith(".backup") || name.endsWith(".tmp") || name.equals("journal")) {
+                        if (name.endsWith(".backup") || name.endsWith(".tmp") || name.equals("journal")
+                                || name.equals("journal.backupfiles") || name.equals("journal.truncateonly")) {
                             if (file.delete()) {
                                 deletedBackups++;
                             }

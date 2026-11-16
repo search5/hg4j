@@ -344,7 +344,7 @@ public class CommitCommand {
                 }
                 if (!skipLockAndJournal) {
                     // Create physical journal and backups for Crash Resilience
-                    Files.deleteIfExists(journalFile.toPath());
+                    io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
             
                     if (fncacheFile.exists()) {
                         File fncacheBackupFile = new File(repository.getStoreDir(), "fncache.backup");
@@ -1062,7 +1062,7 @@ public class CommitCommand {
                 // Commit transaction: delete journal and backup files
                 if (!skipLockAndJournal) {
                     try {
-                        Files.deleteIfExists(journalFile.toPath());
+                        io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
                         Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
                     } catch (Exception ignored) {
                         LOGGER.log(Level.WARNING, "Failed to clean up transaction backups", ignored);
@@ -1198,7 +1198,7 @@ public class CommitCommand {
                 // The dirstate is only written when the changing_parents context ends well, so a failed commit never touched it
                 // Cleanup journal and backup files on failure after restore
                 try {
-                    Files.deleteIfExists(journalFile.toPath());
+                    io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
                     Files.deleteIfExists(new File(repository.getStoreDir(), "fncache.backup").toPath());
                 } catch (Exception ignored) {
                     LOGGER.log(Level.WARNING, "Failed to clean up journal/backups after rollback", ignored);
@@ -1984,11 +1984,7 @@ public class CommitCommand {
     }
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
-        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
-        }
+        io.github.search5.hg4j.lib.TransactionJournal.append(journalFile, entry);
     }
 
     /** Best-effort recursive delete, mirroring Python's {@code shutil.rmtree(ignore_errors=True)}

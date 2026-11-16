@@ -805,52 +805,46 @@ public class HgLocalClient implements HgRemoteConnection {
                     extraValidator.validate();
                 };
             }
-            List<byte[]> imported = pullApi.applyBundle(bundle, lockTimeoutMs, raceCheck);
-
-            // Restore remote dirstate to preserve bare repo status
-            if (dirstateBackup != null) {
-                Files.write(dirstateFile.toPath(), dirstateBackup);
-            } else {
-                Files.deleteIfExists(dirstateFile.toPath());
-            }
-
-            if (!preTxnHooks.isEmpty() && !imported.isEmpty()) {
-                List<String> appliedHexes = new ArrayList<>();
-                for (byte[] node : imported) {
-                    appliedHexes.add(NodeIdUtil.toHex(node));
+            // The pretxnchangegroup hooks and the phase registration run inside the transaction of the apply, as in the original
+            // (`addchangegroup` runs the hook with the transaction open): the journal is still on disk while they run, a hook that
+            // refuses rolls the whole apply back, and a process that dies there leaves the journal for `hg recover`.
+            FetchCommand.PreCloseAction inTransaction = importedNow -> {
+                // Restore remote dirstate to preserve bare repo status
+                if (dirstateBackup != null) {
+                    Files.write(dirstateFile.toPath(), dirstateBackup);
+                } else {
+                    Files.deleteIfExists(dirstateFile.toPath());
                 }
-                Map<String, Object> txnCtx = new HashMap<>();
-                txnCtx.put("repository", remoteRepo);
-                txnCtx.put("nodes", appliedHexes);
-                for (HgHook hook : preTxnHooks) {
-                    String reason = null;
-                    boolean accepted;
-                    try {
-                        accepted = hook.run(txnCtx);
-                    } catch (io.github.search5.hg4j.errors.HgHookAbortException abort) {
-                        accepted = false;
-                        reason = abort.getMessage();
+                if (!preTxnHooks.isEmpty()) {
+                    List<String> appliedHexes = new ArrayList<>();
+                    for (byte[] node : importedNow) {
+                        appliedHexes.add(NodeIdUtil.toHex(node));
                     }
-                    if (!accepted) {
-                        try (io.github.search5.hg4j.lib.HgLock lock = remoteRepo.lockStore(remoteRepo.resolvePushLockTimeoutMs())) {
-                            new io.github.search5.hg4j.api.RollbackCommand(remoteRepo).call();
+                    Map<String, Object> txnCtx = new HashMap<>();
+                    txnCtx.put("repository", remoteRepo);
+                    txnCtx.put("nodes", appliedHexes);
+                    for (HgHook hook : preTxnHooks) {
+                        String reason = null;
+                        boolean accepted;
+                        try {
+                            accepted = hook.run(txnCtx);
+                        } catch (io.github.search5.hg4j.errors.HgHookAbortException abort) {
+                            accepted = false;
+                            reason = abort.getMessage();
                         }
-                        // the rollback restores the dirstate it recorded, which for a bare server is not the one it had
-                        if (dirstateBackup != null) {
-                            Files.write(dirstateFile.toPath(), dirstateBackup);
-                        } else {
-                            Files.deleteIfExists(dirstateFile.toPath());
+                        if (!accepted) {
+                            if (reason != null) {
+                                // a hook that raises Abort: `error: pretxnchangegroup hook failed: <reason>`, `abort: <reason>`
+                                throw new io.github.search5.hg4j.errors.HgHookRejectedException(reason, true,
+                                        "error: pretxnchangegroup hook failed: " + reason + "\n");
+                            }
+                            throw new io.github.search5.hg4j.errors.HgHookRejectedException("pretxnchangegroup hook failed", true);
                         }
-                        if (reason != null) {
-                            // a hook that raises Abort: `error: pretxnchangegroup hook failed: <reason>`, `abort: <reason>`
-                            throw new io.github.search5.hg4j.errors.HgHookRejectedException(reason, true,
-                                    "error: pretxnchangegroup hook failed: " + reason + "\n");
-                        }
-                        throw new io.github.search5.hg4j.errors.HgHookRejectedException("pretxnchangegroup hook failed", true);
                     }
                 }
-            }
-            publishImported(imported);
+                publishImported(importedNow);
+            };
+            List<byte[]> imported = pullApi.applyBundle(bundle, lockTimeoutMs, raceCheck, inTransaction);
 
             // like real hg's checkrequireslfs hook: a repository that received an LFS revision requires lfs from now on
             if (bundle.fileGroups != null && bundle.fileGroups.stream().anyMatch(group -> group.entries != null

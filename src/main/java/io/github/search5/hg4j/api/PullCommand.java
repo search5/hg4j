@@ -253,6 +253,25 @@ public class PullCommand {
      */
     public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
                                      FetchCommand.PostLockValidator postLockValidator) throws IOException, HgLockException {
+        return applyBundle(bundle, lockTimeoutMs, postLockValidator, null);
+    }
+
+    /**
+     * Same as {@link #applyBundle(ChangegroupParser.ChangegroupBundle, int, FetchCommand.PostLockValidator)}, and runs {@code preClose}
+     * while the transaction is still open (see {@link FetchCommand.PreCloseAction}): the place of the original's
+     * {@code pretxnchangegroup} hook.
+     * @param bundle the parsed changegroup bundle to apply
+     * @param lockTimeoutMs how long to wait for the locks, in milliseconds; {@code 0} fails immediately on contention
+     * @param postLockValidator a check run right after the locks are taken and before anything is written, or {@code null}
+     * @param preClose run after the changesets are appended and before the journal is removed, or {@code null}; an exception it
+     *         throws rolls the apply back and is passed on
+     * @return the node ids (20 bytes each) of the imported changesets
+     * @throws IOException if reading the bundle or writing the repository fails, or a callback fails
+     * @throws HgLockException if a lock cannot be acquired within the timeout
+     */
+    public List<byte[]> applyBundle(ChangegroupParser.ChangegroupBundle bundle, int lockTimeoutMs,
+                                     FetchCommand.PostLockValidator postLockValidator, FetchCommand.PreCloseAction preClose)
+            throws IOException, HgLockException {
         // Like real hg, moving the working copy to the new head happens under the working copy lock.
         try (io.github.search5.hg4j.lib.HgLock wlock = repository.lockWorkingCopy(lockTimeoutMs)) {
             FetchCommand fetchCmd = new FetchCommand(repository);
@@ -268,7 +287,7 @@ public class PullCommand {
                 fetchCmd.setCredentialsProvider(this.credentialsProvider);
             }
 
-            List<byte[]> results = fetchCmd.applyBundle(bundle, lockTimeoutMs, postLockValidator);
+            List<byte[]> results = fetchCmd.applyBundle(bundle, lockTimeoutMs, postLockValidator, preClose);
 
             return results;
         }

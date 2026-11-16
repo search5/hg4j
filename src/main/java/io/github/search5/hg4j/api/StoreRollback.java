@@ -35,7 +35,7 @@ final class StoreRollback {
     StoreRollback(HgRepository repository) throws IOException {
         this.repository = repository;
         this.journal = new File(repository.getStoreDir(), "journal");
-        Files.deleteIfExists(journal.toPath());
+        io.github.search5.hg4j.lib.TransactionJournal.delete(journal);
     }
 
     private String relative(File f) {
@@ -43,10 +43,7 @@ final class StoreRollback {
     }
 
     private void log(String entry) throws IOException {
-        Files.writeString(journal.toPath(), entry + "\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try (FileChannel fc = FileChannel.open(journal.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
-        }
+        io.github.search5.hg4j.lib.TransactionJournal.append(journal, entry);
     }
 
     /** Records a plain store file ({@code fncache}, {@code phaseroots}) that may be appended to or rewritten. */
@@ -104,9 +101,32 @@ final class StoreRollback {
         }
     }
 
+    /**
+     * A revlog the transaction created in a version 2 repository has companion files ({@code <name>-<id>.idx/.dat/.sda}) and a
+     * persistent nodemap ({@code <name>.n}, {@code <name>-<id>.nd}) that the journal could not list, as their names were chosen
+     * during the transaction. They go with the new index, like the original's rollback removes every file the transaction created.
+     */
+    private static void deleteCompanionsOfNewRevlog(File index) throws IOException {
+        String name = index.getName();
+        if (!name.endsWith(".i") || !index.exists()) {
+            return;
+        }
+        String base = name.substring(0, name.length() - 2);
+        java.util.regex.Pattern companion = java.util.regex.Pattern.compile(
+                java.util.regex.Pattern.quote(base) + "(-[0-9a-f]{8}\\.(idx|dat|sda|nd)|\\.n)");
+        File[] siblings = index.getParentFile().listFiles();
+        if (siblings != null) {
+            for (File sibling : siblings) {
+                if (companion.matcher(sibling.getName()).matches()) {
+                    Files.deleteIfExists(sibling.toPath());
+                }
+            }
+        }
+    }
+
     /** The transaction closed: the journal and the backups go. */
     void commit() throws IOException {
-        Files.deleteIfExists(journal.toPath());
+        io.github.search5.hg4j.lib.TransactionJournal.delete(journal);
         for (File backup : docketBackups) {
             Files.deleteIfExists(backup.toPath());
         }
@@ -121,6 +141,7 @@ final class StoreRollback {
             File file = e.getKey();
             long length = e.getValue();
             if (length == 0 && !truncateOnly.contains(file)) {
+                deleteCompanionsOfNewRevlog(file);
                 Files.deleteIfExists(file.toPath());
             } else {
                 file.getParentFile().mkdirs();

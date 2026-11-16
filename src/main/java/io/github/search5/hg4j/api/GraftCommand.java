@@ -450,7 +450,7 @@ public class GraftCommand {
             Set<File> truncateOnlyEntries = new HashSet<>();
             File journalFile = new File(repository.getStoreDir(), "journal");
 
-            Files.deleteIfExists(journalFile.toPath());
+            io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
             recordRevlogRollbackState(clIdx, clDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
             recordRevlogRollbackState(mfIdx, mfDat, fileSizes, docketBackups, docketBackupFiles, truncateOnlyEntries, journalFile);
             for (String path : meta.filesModified) {
@@ -485,7 +485,7 @@ public class GraftCommand {
                     }
                 }
 
-                Files.deleteIfExists(journalFile.toPath());
+                io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
                 for (File backupFile : docketBackupFiles) {
                     Files.deleteIfExists(backupFile.toPath());
                 }
@@ -519,7 +519,7 @@ public class GraftCommand {
                     }
                 }
                 // the dirstate is only written by the commit's own changing_parents context, so a failure never touched it
-                Files.deleteIfExists(journalFile.toPath());
+                io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
                 for (File backupFile : docketBackupFiles) {
                     Files.deleteIfExists(backupFile.toPath());
                 }
@@ -579,11 +579,7 @@ public class GraftCommand {
     }
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
-        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
-        }
+        io.github.search5.hg4j.lib.TransactionJournal.append(journalFile, entry);
     }
 
     // ------------------------------------------------------------------

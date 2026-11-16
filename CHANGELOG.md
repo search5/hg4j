@@ -2,6 +2,15 @@
 
 All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.3`. 1.1.0 is published (Gradle Plugin Portal and Maven Central); 1.1.1 was uploaded to Maven Central but is superseded by 1.1.2. Items marked **BC** change behaviour that a caller may rely on.
 
+## Unreleased (1.1.4)
+
+### Fixed
+- The lock owner is written as the original writes it, `host/<pid namespace>:pid` on Linux (`lock._getlockprefix`), and a lock of a dead owner in that form is broken (the plain `host:pid` of earlier hg4j versions is still broken too). Before, a real `hg` never broke the lock that a dead hg4j process left and waited for `ui.timeout` (600 seconds by default).
+- A push to the server runs the `pretxnchangegroup` hooks inside the transaction, as the original does: the journal is on disk while they run, a hook that refuses rolls the whole apply back, and a server that dies there leaves the journal (the next push is refused with `abandoned transaction found`, `recover` rolls the push back). Before, the journal was already removed, so a kill in the hook kept the pushed changesets. `PullCommand.applyBundle` and `FetchCommand.applyBundle` have an overload with a `FetchCommand.PreCloseAction` for this.
+
+- The transaction journal is written in the original's format: `journal` holds `<path relative to the store>\0<size>` lines and `journal.backupfiles` holds the version `2` and `<location>\0<file>\0<backup>\0<cache>` lines, so a real `hg recover` rolls back what an interrupted hg4j left (it reported "couldn't read journal entry" for every line and rolled back nothing), and hg4j's `recover` rolls back what an interrupted `hg` left. Journals of earlier hg4j versions are still read. For a version 2 revlog the companion files of a docket are listed in `journal.truncateonly` (hg4j only) so that they are cut back and never removed, which the original's own rollback does and then cannot verify.
+- Applying a changegroup (push, pull, unbundle) to a repository with the version 2 revlog format keeps the dockets and the sizes of the companion files, so a failed or interrupted apply is rolled back completely; a rollback also removes the companion and nodemap files of a revlog that the transaction created.
+
 ## 1.1.3 (2026-11-10)
 
 ### Added

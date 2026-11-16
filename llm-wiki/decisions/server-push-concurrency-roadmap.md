@@ -210,7 +210,24 @@ Bundle2Push (입구)
 
 ### Phase 1 — 동시성 회귀 하네스
 
-**목적:** 이후 모든 단계를 같은 시나리오로 검증한다. **이 하네스는 실제 `hg`를 쓰므로 interop 테스트이고, 사용자가 실행을 보류한 상태라 작성도 실행도 하지 않았다.**
+**목적:** 이후 모든 단계를 같은 시나리오로 검증한다.
+
+**진행 상황 (2026-11-16, 사용자가 실제 hg 사용을 수락):** 시나리오 A, B, C를 `ServerPushConcurrencyHarnessInteropTest`로 작성하고 실제 hg 7.2로 현재 동작에서 3회 연속 통과시켰다(각 약 4~8초, 푸시 6개와 pull 4개). D(`kill -9`)와 E(오래된 락)도 `ServerPushConcurrencyKillInteropTest`(테스트 4개)로 작성해 통과했다(아래). 하네스는 서버 코드를 바꾸지 않았다.
+- A: 서로 다른 새 브랜치 6개를 동시에 푸시해 모두 성공, 서버 `hg verify` 통과, 변경집합 7개, 락 파일과 journal 잔재 없음.
+- B: 같은 브랜치, 같은 기준에서 6개를 동시에 푸시해 정확히 1개만 성공, 나머지는 경합 거절 문구, head 1개.
+- C: 푸시 6개와 pull 4개를 동시에 실행해 pull한 저장소 4개가 모두 `hg verify`를 통과하고 head가 기준 또는 푸시된 노드뿐.
+- **D 결과 (`kill -9`, 별도 JVM), 수정 후:** 서버 JVM의 `pretxnchangegroup` 훅에서 멈춘 푸시를 `SIGKILL`하면 `.hg/store/journal`(저널), `.hg/store/lock`(원본 형식 `host/네임스페이스:pid`)과 `.hg/wlock`이 남는다. 새 푸시는 `abandoned transaction found`와 `hg recover` 힌트로 거부되고(원본과 같음), hg4j의 `recover`가 푸시를 되돌리며(변경집합 1개로 복귀, `hg verify` 통과, 락과 저널 없음), 같은 푸시를 다시 보내면 성공한다. **수정 전**에는 저널이 없어 푸시된 변경집합이 그대로 남았고 다음 푸시가 그 위에 성공했다.
+- **E 결과 (오래된 락), 수정 후:**
+
+| 상황 | 실제 hg | hg4j 서버 |
+|---|---|---|
+| 다른 호스트의 락(`otherhost.invalid:99999`), `ui.timeout=2` | 약 2.1초 뒤 `timed out waiting for lock held by ...`로 중단 | 약 2.2초 뒤 거절, 락과 저장소 그대로. **같음** |
+| 같은 호스트, 죽은 pid, 원본 형식(`host/ns:pid`) | 락을 깨고 성공 | 락을 깨고 푸시 성공. **같음** |
+| 같은 호스트, 죽은 pid, 예전 hg4j 형식(`host:pid`) | 깨지 않고 기다리다 중단(원본 동작) | 락을 깨고 푸시 성공(호환 확장) |
+| hg4j가 남긴 죽은 락(이제 원본 형식) | 락을 깨고 진행 | 해당 없음 |
+
+- **하네스가 드러낸 갭 (자세한 내용은 [[known-bugs-registry]]):** (1) 락 소유자 형식, (2) 훅 구간의 저널, (3) 저널 줄 형식은 2026-11-16에 **모두 수정했다.** 수정 뒤 실제 `hg recover`가 hg4j의 중단된 푸시를 되돌리고(`theRealHgRecoverRollsBackAPushThatKilledHg4jInterrupted`), hg4j의 `recover`가 실제 hg가 남긴 저널도 되돌린다(`hg4jRecoverRollsBackATransactionThatARealHgLeftBehind`). (4) **미수정:** 푸시 적용(`FetchCommand`)이 v2 revlog 저장소를 docket 단위로 기록하지 않아 v2 저장소로의 푸시는 되돌릴 수 없다. v2는 불안정 형식이고 이 저널 변경 이전부터의 동작이다. 푸시 로드맵의 2-A, 2-B, Phase 3은 이 결정과 별개로 진행할 수 있다.
+- **하네스를 만들며 알게 된 것:** 서버 저장소를 `hg4j`나 `hg commit`으로 직접 커밋해 만들면 기준 변경집합이 draft다. 이 상태에서 첫 푸시가 도착하면 publishing 서버가 기준을 public으로 바꾸므로, 그 전에 기준을 draft로 본 다른 클라이언트의 푸시가 `remote repository changed while pushing ... is public expected draft`로 거절된다. 실제 서버는 푸시로 채워져 변경집합이 public이라 해당하지 않으며, 하네스는 기준을 `hg phase --public`으로 고정한다. **실제 `hg serve`로 확인했다(2026-11-16, 같은 시나리오: 새 브랜치 6개 동시 푸시):** 기준이 draft이면 1개만 성공하고 5개가 같은 문구(`remote repository changed while pushing - please try again (… is public expected draft)`)로 거절되며, public이면 6개가 모두 성공한다. 즉 hg4j 서버의 동작은 원본과 같고 hg4j의 결함이 아니다. 이 검증은 일회용 셸 스크립트로 했고 하네스에는 넣지 않았다.
 
 **구성:** 기존 패턴(`PushLockRaceRealHgInteropTest`, `HgHttpWireServerRealHgInteropTest`)을 따라 임베디드 서버 + 실제 `hg push/pull` 프로세스를 쓴다.
 

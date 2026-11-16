@@ -137,7 +137,7 @@ public class HisteditCommand implements AutoCloseable {
                 originalParent = dirstate.getParent1();
                 dirstateBackup = dirstateFile.exists() ? Files.readAllBytes(dirstateFile.toPath()) : null;
 
-                Files.deleteIfExists(journalFile.toPath());
+                io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
                 recordAndJournal(clIdx, fileSizes, journalFile);
                 recordAndJournal(clDat, fileSizes, journalFile);
                 recordAndJournal(mfIdx, fileSizes, journalFile);
@@ -283,7 +283,7 @@ public class HisteditCommand implements AutoCloseable {
                 } catch (Exception e) {
                     // non-blocking, same as CommitCommand/StripCommand
                 }
-                Files.deleteIfExists(journalFile.toPath());
+                io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
             } catch (Exception e) {
                 // Roll every touched revlog back to its pre-histedit size and restore dirstate,
                 // same recovery strategy as CommitCommand/StripCommand.
@@ -299,7 +299,7 @@ public class HisteditCommand implements AutoCloseable {
                         }
                     }
                 }
-                Files.deleteIfExists(journalFile.toPath());
+                io.github.search5.hg4j.lib.TransactionJournal.delete(journalFile);
                 repository.clearRevlogCache();
                 throw e;
             }
@@ -321,11 +321,7 @@ public class HisteditCommand implements AutoCloseable {
     }
 
     private void appendToJournal(File journalFile, String entry) throws IOException {
-        Files.writeString(journalFile.toPath(), entry + "\n", StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        try (FileChannel fc = FileChannel.open(journalFile.toPath(), StandardOpenOption.WRITE)) {
-            fc.force(true);
-        }
+        io.github.search5.hg4j.lib.TransactionJournal.append(journalFile, entry);
     }
 
     private byte[] commitNewRev(byte[] parent, String author, String message, List<String> originalHexNodes,

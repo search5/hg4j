@@ -1084,7 +1084,13 @@ public class HgRepository implements Repository {
         }
         boolean rollbackSuccess = false;
         try {
-            List<String> lines = Files.readAllLines(journalFile.toPath(), StandardCharsets.UTF_8);
+            // a journal in the original's format (`file\0offset` lines and `journal.backupfiles`) is played back as `transaction.rollback`
+            // does it; the line formats that earlier hg4j versions wrote are handled below
+            boolean originalFormat = TransactionJournal.isOriginalFormat(journalFile);
+            if (originalFormat) {
+                TransactionJournal.playback(journalFile, hgDir);
+            }
+            List<String> lines = originalFormat ? List.of() : Files.readAllLines(journalFile.toPath(), StandardCharsets.UTF_8);
             for (String line : lines) {
                 line = line.trim();
                 if (line.isEmpty()) continue;
@@ -1170,7 +1176,7 @@ public class HgRepository implements Repository {
         }
         if (rollbackSuccess) {
             try {
-                Files.deleteIfExists(journalFile.toPath());
+                TransactionJournal.delete(journalFile);
                 Files.deleteIfExists(new File(hgDir, "dirstate.backup").toPath());
                 Files.deleteIfExists(new File(hgDir, "dirstateV2.backup.data").toPath());
                 Files.deleteIfExists(new File(storeDir, "fncache.backup").toPath());

@@ -174,8 +174,11 @@ public class HgLock implements AutoCloseable {
                             try {
                                 long existingPid = Long.parseLong(ownerPidStr);
                                 String localHost = getLocalHostName();
+                                // the original breaks a lock only when the owner prefix is exactly its own (host and pid namespace,
+                                // `lock._lockshouldbebroken`); the bare host name is what hg4j wrote before it used that prefix
                                 boolean isLocal = "localhost".equals(ownerHost)
                                                || "127.0.0.1".equals(ownerHost)
+                                               || getLockPrefix().equals(ownerHost)
                                                || localHost.equals(ownerHost);
                                 if (isLocal) {
                                     // Same host! Check if the pid is alive.
@@ -250,7 +253,18 @@ public class HgLock implements AutoCloseable {
         if (cachedHostName != null) {
             return cachedHostName;
         }
-        String host = System.getenv("HOSTNAME");
+        String host = null;
+        try {
+            Path kernelName = Path.of("/proc/sys/kernel/hostname");   // what socket.gethostname() returns on Linux
+            if (Files.exists(kernelName)) {
+                host = Files.readString(kernelName, StandardCharsets.UTF_8).trim();
+            }
+        } catch (Exception ignored) {
+            // fall through to the environment
+        }
+        if (host == null || host.isEmpty()) {
+            host = System.getenv("HOSTNAME");
+        }
         if (host == null || host.isEmpty()) {
             host = System.getenv("COMPUTERNAME");
         }
@@ -266,9 +280,36 @@ public class HgLock implements AutoCloseable {
     }
  
     private String getHostAndPid() {
-        String host = getLocalHostName();
         long pid = ProcessHandle.current().pid();
-        return host + ":" + pid;
+        return getLockPrefix() + ":" + pid;
+    }
+
+    private static String cachedLockPrefix = null;
+
+    /**
+     * The owner prefix of a lock, as the original writes it ({@code lock._getlockprefix}): the host name, and on Linux the inode of
+     * {@code /proc/self/ns/pid} in hex after a slash ({@code jiho-asus/effffffc}), which tells apart processes of different pid
+     * namespaces (containers) on one host. A real {@code hg} breaks a lock of a dead owner only when this prefix is its own, so a lock
+     * written without the namespace part would never be broken by it.
+     */
+    private static synchronized String getLockPrefix() {
+        if (cachedLockPrefix != null) {
+            return cachedLockPrefix;
+        }
+        String prefix = getLocalHostName();
+        try {
+            Path ns = Path.of("/proc/self/ns/pid");
+            if (Files.exists(ns)) {
+                Object inode = Files.getAttribute(ns, "unix:ino");
+                if (inode instanceof Long) {
+                    prefix += "/" + Long.toHexString((Long) inode);
+                }
+            }
+        } catch (Exception | LinkageError ignored) {
+            // no namespace information on this platform: the original leaves it out too
+        }
+        cachedLockPrefix = prefix;
+        return cachedLockPrefix;
     }
 
 

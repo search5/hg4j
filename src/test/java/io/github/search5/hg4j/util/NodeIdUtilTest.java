@@ -71,4 +71,29 @@ public class NodeIdUtilTest {
         String encoded = NodeIdUtil.encodeFname(longPath);
         assertEquals("dh/" + "a/".repeat(34) + "test.tx4956939b3b4bd71a7714b78ed49b4b1c6e666f2e.i", encoded);
     }
+
+    @org.junit.jupiter.api.Test
+    void toHexMatchesTheFormattedLowercaseHexOfEveryByteValueAndRandomNodes() {
+        byte[] all = new byte[256];
+        for (int i = 0; i < 256; i++) {
+            all[i] = (byte) i;
+        }
+        StringBuilder expected = new StringBuilder();
+        for (byte b : all) {
+            expected.append(String.format("%02x", b & 0xff));
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(expected.toString(), NodeIdUtil.toHex(all));
+        org.junit.jupiter.api.Assertions.assertEquals("", NodeIdUtil.toHex(new byte[0]));
+        org.junit.jupiter.api.Assertions.assertEquals("", NodeIdUtil.toHex(null));
+        java.util.Random random = new java.util.Random(7);
+        for (int n = 0; n < 200; n++) {
+            byte[] node = new byte[20];
+            random.nextBytes(node);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : node) {
+                sb.append(String.format("%02x", b & 0xff));
+            }
+            org.junit.jupiter.api.Assertions.assertEquals(sb.toString(), NodeIdUtil.toHex(node));
+        }
+    }
 }

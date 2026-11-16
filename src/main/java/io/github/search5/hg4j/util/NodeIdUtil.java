@@ -26,12 +26,17 @@ public final class NodeIdUtil {
      */
     public static String toHex(byte[] bytes) {
         if (bytes == null) return "";
-        StringBuilder sb = new StringBuilder(2 * bytes.length);
-        for (byte b : bytes) {
-            sb.append(String.format("%02x", b & 0xff));
+        // table lookup: this runs for every node of an index that is loaded or extended, inside the store lock of a push
+        char[] out = new char[2 * bytes.length];
+        for (int i = 0; i < bytes.length; i++) {
+            int v = bytes[i] & 0xff;
+            out[2 * i] = HEX_DIGITS[v >>> 4];
+            out[2 * i + 1] = HEX_DIGITS[v & 0x0f];
         }
-        return sb.toString();
+        return new String(out);
     }
+
+    private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
 
     /**
      * Converts a hexadecimal String to its byte array representation.

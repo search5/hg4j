@@ -216,7 +216,7 @@ public class WorktreeCommand {
                 String[] candidates = checkout == null ? new String[]{"default", "tip"} : new String[]{checkout, "default", "tip"};
                 for (int i = 0; i < candidates.length; i++) {
                     try {
-                        new UpdateCommand(worktreeRepo).setForce(true).setRevision(candidates[i]).call();
+                        new UpdateCommand(worktreeRepo).withoutBookmarkUpdate().setForce(true).setRevision(candidates[i]).call();
                         break;
                     } catch (io.github.search5.hg4j.errors.HgRevisionNotFoundException e) {
                         if (i == candidates.length - 1) {

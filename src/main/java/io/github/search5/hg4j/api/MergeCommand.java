@@ -859,7 +859,7 @@ public class MergeCommand {
                             CommitCommand.getBranchOfRevision(subChangelog, dstRev))) {
                 // dst is strictly ahead of cur on the same named branch -- plain fast-forward
                 // checkout (real hg: up_impl.update(self._repo, state[1])).
-                new UpdateCommand(subRepo).setRevision(remoteHex).setForce(true).call();
+                new UpdateCommand(subRepo).withoutBookmarkUpdate().setRevision(remoteHex).setForce(true).call();
             } else if (dstIsAncestorOfCur) {
                 // cur already contains dst -- nothing to do (real hg: pass).
             } else {

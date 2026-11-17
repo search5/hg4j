@@ -71,12 +71,18 @@ public class BookmarkRealHgInteropTest {
         new CommitCommand(repo).setAuthor("T").setMessage("c2").call();
         assertNull(new BookmarkCommand(repo).getActiveBookmark(), "c2 커밋 시점에는 활성 bookmark가 없어야 함");
 
+        // `update_totally`: a hash does not activate the bookmark of that changeset (verified against hg 7.2), the bookmark's name does
         new UpdateCommand(repo).setRevision(new NodeId(c1).toHex()).call();
-        assertEquals("stable", new BookmarkCommand(repo).getActiveBookmark(),
-                "stable이 가리키는 리비전으로 update하면 자동 활성화되어야 함");
+        assertNull(new BookmarkCommand(repo).getActiveBookmark(), "a node given by hash activates no bookmark");
+
+        new UpdateCommand(repo).setRevision("stable").call();
+        assertEquals("stable", new BookmarkCommand(repo).getActiveBookmark(), "the bookmark's name activates it");
 
         String nativeAfterActivate = HgTestUtils.hg(repoDir, "bookmarks");
         assertTrue(nativeAfterActivate.contains("* stable"), "실제 hg도 stable을 활성으로 봐야 함: " + nativeAfterActivate);
+
+        new UpdateCommand(repo).setRevision(new NodeId(c1).toHex()).call();
+        assertNull(new BookmarkCommand(repo).getActiveBookmark(), "any other name deactivates the active bookmark");
     }
 
     @Test

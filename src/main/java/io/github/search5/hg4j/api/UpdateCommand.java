@@ -120,6 +120,13 @@ public class UpdateCommand {
     }
 
     private io.github.search5.hg4j.lib.ProgressMonitor monitor;
+    private boolean updateBookmarks = true;
+
+    /** The update of the original's plain {@code update} function (not the {@code hg update} command): the active bookmark is left alone. */
+    UpdateCommand withoutBookmarkUpdate() {
+        this.updateBookmarks = false;
+        return this;
+    }
 
     /**
      * Updates the working copy to the revision set with {@link #setRevision}.
@@ -374,20 +381,16 @@ public class UpdateCommand {
                 // so e.g. the next commit lands on the wrong branch.
                 repository.setBranch(CommitCommand.getBranchOfRevision(changelog, commitRev));
 
-                // 4a. Update active bookmark based on targetNodeId (Auto-Switch)
-                BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
-                Map<String, String> allBookmarks = bookmarkCmd.call();
-                String targetHex = NodeIdUtil.toHex(targetNodeId);
-                List<String> matchingBookmarks = new ArrayList<>();
-                for (Map.Entry<String, String> entry : allBookmarks.entrySet()) {
-                    if (entry.getValue().equals(targetHex)) {
-                        matchingBookmarks.add(entry.getKey());
+                // 4a. `update_totally`: the revision name given is remembered ("brev"); if it is a bookmark, that bookmark becomes the
+                // active one, any other name given deactivates the active bookmark, and no name leaves it as it is. The updates that the
+                // original makes with the plain `update` (share, subrepos) do not touch bookmarks.
+                if (updateBookmarks && targetRevision != null && !targetRevision.isEmpty()) {
+                    BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
+                    if (bookmarkCmd.call().containsKey(targetRevision)) {
+                        bookmarkCmd.setBookmarkName(targetRevision).setActive(true).setCurrentOnly(true).call();
+                    } else {
+                        bookmarkCmd.setActive(true).setCurrentOnly(true).setBookmarkName(null).call();
                     }
-                }
-                if (matchingBookmarks.size() == 1) {
-                    bookmarkCmd.setBookmarkName(matchingBookmarks.get(0)).setActive(true).setCurrentOnly(true).call();
-                } else {
-                    bookmarkCmd.setActive(true).setCurrentOnly(true).setBookmarkName(null).call();
                 }
 
                 // 5. Recursive Subrepo Checkout (JGit-like subrepository checkout support)
@@ -414,6 +417,16 @@ public class UpdateCommand {
     private byte[] resolveTargetNodeId(Revlog changelog) throws IOException {
         if (changelog.getRevisionCount() == 0) {
             return null;
+        }
+        // a bookmark name is a revision symbol that comes before the branch names and the hash prefixes (`tip` is never a bookmark)
+        if (targetRevision != null && !"tip".equals(targetRevision)) {
+            String bookmarked = new BookmarkCommand(repository).list().get(targetRevision);
+            if (bookmarked != null) {
+                byte[] node = NodeIdUtil.fromHex(bookmarked);
+                if (node != null && node.length >= 20) {
+                    return node;
+                }
+            }
         }
         try {
             byte[] resolved = NodeIdUtil.resolveRevision(changelog, targetRevision);

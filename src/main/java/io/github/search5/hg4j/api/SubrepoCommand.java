@@ -192,7 +192,7 @@ public class SubrepoCommand {
                             // whenever it wasn't already the clone's default tip checkout.
                             if (rev != null) {
                                 try (Hg hg = Hg.open(subrepoDir)) {
-                                    new UpdateCommand(hg.getRepository()).setRevision(rev).setForce(true).call();
+                                    new UpdateCommand(hg.getRepository()).withoutBookmarkUpdate().setRevision(rev).setForce(true).call();
                                 }
                             }
                         } else {
@@ -219,7 +219,7 @@ public class SubrepoCommand {
                                         // an unreachable/stale source URL.
                                     }
                                 }
-                                new UpdateCommand(subRepo).setRevision(rev).setForce(true).call();
+                                new UpdateCommand(subRepo).withoutBookmarkUpdate().setRevision(rev).setForce(true).call();
                             }
                         }
                     }

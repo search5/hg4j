@@ -140,7 +140,7 @@ public final class ChainsawUpdateCommand {
                 new PullCommand(opened).setSource(source).setRevisions(pullRevs).call();
                 new PurgeCommand(opened).setPurgeDirectories(true).setPurgeIgnored(purgeIgnored).setPurgeFiles(purgeUnknown).call();
                 messages.add("updating to revision '" + revision + "'\n");
-                new UpdateCommand(opened).setRevision(revision).setForce(true).call();
+                new UpdateCommand(opened).withoutBookmarkUpdate().setRevision(revision).setForce(true).call();
                 messages.add("chainsaw-update to revision '" + revision + "' for repository at '" + opened.getDirectory().getAbsolutePath() + "' done\n");
             }
         }

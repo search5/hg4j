@@ -216,7 +216,7 @@ public class BranchCommand {
             // the working directory follows its parent (update_impl.update(repo, newid, quietempty=True)), then the old nodes go
             String wdP1 = NodeIdUtil.toHex(wd.getParent1());
             if (replacements.containsKey(wdP1)) {
-                new UpdateCommand(repository).setRevision(replacements.get(wdP1)).call();
+                new UpdateCommand(repository).withoutBookmarkUpdate().setRevision(replacements.get(wdP1)).call();
             }
             backupBundles.addAll(ChangesetRewrite.cleanupNodes(repository, replacements, "branch-change"));
         }

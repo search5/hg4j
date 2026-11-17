@@ -13,8 +13,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Worktree command supporting Git-like 'worktree' and Mercurial-like 'share' mechanism.
- * Creates a new working copy that points to the main repository's shared store directory.
+ * {@code hg share}: creates a new working copy that uses the store of an existing repository (the way Git's worktree does), so the
+ * history is kept once and every working copy sees a commit at once.
+ *
+ * <p>What it writes in the new {@code .hg} is what the original writes: {@code sharedpath} (the canonical path of the store's
+ * {@code .hg}, or with {@link #setRelative(boolean)} its path relative to the new {@code .hg}), the sorted {@code requires} of the
+ * source plus {@code shared} (or {@code relshared}), {@code shared} listing {@code bookmarks} with {@link #setShareBookmarks(boolean)},
+ * an {@code hgrc} with the source's {@code paths.default}, and {@code wcache}. A share of a share points at the store itself. For a
+ * narrow source the {@code narrowspec.dirstate} of the new working copy is written under the working copy and store locks, and the
+ * rollback information of that {@code narrow-share} transaction replaces the store's, as the original does.</p>
+ *
+ * <p>Unless {@link #setUpdate(boolean)} turns it off, the new working copy is then checked out under its own working copy lock: the
+ * revision of {@link #setCheckout(String)} if given, else the head of the branch {@code default}, else the tip. No lock of the shared
+ * store is taken. The update does not touch the bookmarks (the original's plain {@code update}).</p>
  */
 public class WorktreeCommand {
     private final HgRepository repository;
@@ -86,7 +97,8 @@ public class WorktreeCommand {
 
     /**
      * Executes the worktree / share creation.
-     * Generates a separate .hg working metadata directory linking to the shared central store.
+     * Generates a separate .hg working metadata directory linking to the shared central store, then checks out the working copy
+     * (see the class description for the files and the locks).
      *
      * @return the newly instantiated HgRepository representing the worktree
      * @throws IOException if directory creation, linking, or the post-share checkout fails

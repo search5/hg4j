@@ -544,7 +544,7 @@ Checks out a revision into the working copy (`hg update`).
 |Method |Meaning
 
 |`setRevision(String)`
-|Target revision, required before `call()`: a revision identifier (revision number, node hex or prefix, symbolic name) or a named branch, which selects the highest-numbered revision on it. Unresolvable or ambiguous values throw.
+|Target revision: `"null"` (empties the working copy), a bookmark name, a revision number, a node hex or prefix, or a named branch, which selects the highest-numbered revision on it, looked up in this order. Unresolvable or ambiguous values throw. Without a revision (`null` or empty) the update is a bare `hg update` and goes where `destutil.destupdate` goes: the successors of an obsolete working directory parent without children (its closest live ancestor when it was pruned), then the active bookmark when it is away from the parent, then the tipmost open head of the current branch that descends from the parent, then the same with closed heads, then the tip.
 
 |`setForce(boolean)`
 |Update even with uncommitted changes, like `hg update -C`. Default false: added, modified or removed files make the update fail.
@@ -564,9 +564,9 @@ Checks out a revision into the working copy (`hg update`).
 
 Execution: `byte[] call() throws IOException, HgLockException`. Returns the 20-byte node id of the revision that is now checked out. Throws `HgValidationException` ("Working directory has uncommitted changes. Use force to update.", "Repository is empty, cannot update.", "Update rejected by PRE_UPDATE hook"), `HgRevisionNotFoundException` (revision cannot be resolved or is ambiguous), `HgRepositoryNotFoundException` (a filelog index is missing for a tracked file).
 
-Locks and dirstate: `lockWorkingCopy()`, then `changingParents(...)` around the whole update (dirstate written when it ends well). After checkout it recurses into subrepositories and updates the active bookmark.
+Locks and dirstate: `lockWorkingCopy()`, then `changingParents(...)` around the whole update (dirstate written when it ends well). After checkout it sets the working copy's branch to that of the revision (`default` for null), recurses into subrepositories and sets the active bookmark as `update_totally` does: a bookmark's name activates it, any other name deactivates the active bookmark, and a bare update leaves it, or moves it along when it was on the working directory parent (to a descendant or, with obsolescence markers, a successor; divergent `name@x` bookmarks that the move passes are deleted; a non-linear update deactivates it).
 
-Differences from hg: none stated in comments beyond hook support, which is an hg4j addition.
+Differences from hg: hook support is an hg4j addition. The status lines (`updating bookmark m`, `(leaving bookmark m)`) are not printed.
 
 [source,java]
 ----
@@ -678,18 +678,31 @@ Creates a new working copy that shares the store of the main repository (`hg sha
 
 |`setNewWorktreeDir(File)`
 |Directory of the new working copy. Must not exist or be empty. Required before `call()`.
+
+|`setShareBookmarks(boolean)`
+|`hg share -B`: the working copy shares the bookmarks of the source (`.hg/shared` lists `bookmarks`). They are then read from the source's `.hg/bookmarks`, and every write goes to the source's file and to the working copy's own file. Default false.
+
+|`setRelative(boolean)`
+|`hg share --relative`: `.hg/sharedpath` holds the path of the store relative to the new `.hg` and `requires` gets `relshared` instead of `shared`. Default false.
+
+|`setUpdate(boolean)`
+|`false` is `hg share -U`: the working copy stays empty and has no dirstate. Default true.
+
+|`setCheckout(String)`
+|The revision checked out first (the branch of `hg share SOURCE#BRANCH`). If it cannot be found, the head of the branch `default` and then the tip are tried. Default `null`: `default`, then the tip.
 |===
 
-Execution: `HgRepository call() throws IOException, HgLockException`. Throws `IllegalStateException` without a directory, `IOException` if the directory is not empty or if directory creation, linking or the post-share checkout fails, and `HgLockException` if the post-share checkout cannot acquire the locks. Writes `.hg/sharedpath` (canonical path of the source `.hg`), copies `requires` and adds `shared`, then returns the new `HgRepository`.
+Execution: `HgRepository call() throws IOException, HgLockException`. Throws `IllegalStateException` without a directory, `IOException` if the directory is not empty or if directory creation, linking or the post-share checkout fails, and `HgLockException` if the post-share checkout cannot acquire the locks. Writes `.hg/sharedpath` (canonical path of the store's `.hg`; a share of a share points at the store itself), the sorted `requires` of the source plus `shared` (or `relshared`), `.hg/shared`, `.hg/wcache`, and `.hg/hgrc` with the source's `paths.default` (its repository configuration, else the user's), then returns the new `HgRepository`. For a narrow source (`narrowhg-experimental`) it writes `.hg/narrowspec.dirstate` from the store's narrowspec under the working copy lock and the store lock, and leaves the rollback information of the `narrow-share` transaction (an empty `store/undo`, `store/undo.backupfiles`, `.hg/undo.desc`, `.hg/undo.backup.branch.bck`) as the original does, replacing the store's own.
 
-Locks and dirstate: `lockWorkingCopy()` of the new working copy during the checkout. When the store has revisions it runs `UpdateCommand` (`setForce(true)`, revision `tip`), which itself uses `lockWorkingCopy()` and `changingParents(...)`. For an empty store it writes a 40-byte parent stub dirstate. `changing_files` is not used here.
+Locks and dirstate: `lockWorkingCopy()` of the new working copy during the checkout. When the store has revisions and the update is not turned off, it runs `UpdateCommand` (`setForce(true)`; the checkout revision, else `default`, else `tip`, the way the original's `_post_share_update` looks them up) without touching the bookmarks, which itself uses `lockWorkingCopy()` and `changingParents(...)`. The lock of the shared store is not taken, as in the original (only a narrow source takes it). For an empty store it writes a 40-byte parent stub dirstate. `changing_files` is not used here.
 
-Differences from hg: the javadoc says the checkout of tip mirrors real hg's `hg share`; the empty-store stub dirstate is kept for existing test expectations.
+Differences from hg: none in what is written, checked file by file against hg 7.2. The empty-store stub dirstate is kept for existing test expectations.
 
 [source,java]
 ----
 HgRepository wt = new WorktreeCommand(repo)
         .setNewWorktreeDir(new File("/work/proj-wt"))
+        .setShareBookmarks(true)
         .call();
 ----
 

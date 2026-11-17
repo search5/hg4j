@@ -85,8 +85,9 @@ Each item states what the Javadoc promises. "Lock" means the lock the caller mus
 * `new PhaseRoots(File)` reads the file once. `setPhase` changes the roots and writes the file at once; no lock is taken. The file lives in `.hg/store/phaseroots`, so hold the store lock when another process may write.
 * `getRoots(phase)` returns the recorded boundary nodes, not every changeset in that phase; `getPhase` computes the effective phase through the ancestors, using a parent lookup function or a changelog. A null node or the null node is public.
 
-`ObsStore`, `HgObsMarker`, `HgObsolescenceParser` (package `obsolete`)::
+`ObsStore`, `ObsUtil`, `HgObsMarker`, `HgObsolescenceParser` (package `obsolete`)::
 * `ObsStore.read` understands both obsstore versions (0 and 1); `HgObsolescenceParser.parse` understands version 1 only. `HgObsMarker` is an immutable marker with defensive copies.
+* `ObsUtil.successorsSets` ports `obsutil.successorssets` (the latest successors of a changeset: a replacement, a split, a divergence, a pruned changeset); `UpdateCommand` uses it for the destination of a bare update.
 * `ObsStore.pushMarker` takes the store lock itself. `HgObsMarker.writeMarker(storeDir, ...)` appends a version 1 marker to `obsstore` and takes no lock.
 
 ==== Examples

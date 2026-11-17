@@ -544,7 +544,7 @@ Map<String, Boolean> m = new ResolveCommand(repo)
 |메서드 |의미
 
 |`setRevision(String)`
-|대상 리비전이며 `call()` 전에 지정해야 합니다. 리비전 식별자(리비전 번호, 노드 hex 또는 접두사, 심볼릭 이름) 또는 이름 있는 브랜치를 받으며, 브랜치는 그 위에서 번호가 가장 높은 리비전을 고릅니다. 해석할 수 없거나 모호하면 예외를 던집니다.
+|대상 리비전입니다. `"null"`(작업 사본을 비움), 북마크 이름, 리비전 번호, 노드 hex 또는 접두사, 이름 있는 브랜치(그 위에서 번호가 가장 높은 리비전)를 이 순서로 찾습니다. 해석할 수 없거나 모호하면 예외를 던집니다. 리비전을 주지 않으면(`null` 또는 빈 문자열) 리비전 없는 `hg update`와 같으며 `destutil.destupdate`가 가는 곳으로 갑니다. 자식이 없는 obsolete 부모의 후속(pruned이면 살아 있는 가장 가까운 조상), 활성 북마크가 부모에서 떨어져 있으면 그 북마크, 부모의 후손인 현재 브랜치의 열린 헤드 중 가장 높은 것, 닫힌 헤드까지 포함한 같은 규칙, 마지막으로 tip의 순서입니다.
 
 |`setForce(boolean)`
 |커밋되지 않은 변경이 있어도 `hg update -C`처럼 업데이트합니다. 기본값은 false이며 added, modified, removed 파일이 있으면 업데이트가 실패합니다.
@@ -564,9 +564,9 @@ Map<String, Boolean> m = new ResolveCommand(repo)
 
 실행: `byte[] call() throws IOException, HgLockException`. 현재 체크아웃된 리비전의 20바이트 노드 id를 반환합니다. `HgValidationException`("Working directory has uncommitted changes. Use force to update.", "Repository is empty, cannot update.", "Update rejected by PRE_UPDATE hook"), `HgRevisionNotFoundException`(리비전을 해석할 수 없거나 모호함), `HgRepositoryNotFoundException`(추적 파일의 파일로그 인덱스가 없음)을 던집니다.
 
-잠금과 dirstate: `lockWorkingCopy()` 다음에 업데이트 전체를 `changingParents(...)`로 감쌉니다(정상 종료 시 dirstate를 씁니다). 체크아웃 뒤에는 서브저장소로 재귀하고 활성 북마크를 갱신합니다.
+잠금과 dirstate: `lockWorkingCopy()` 다음에 업데이트 전체를 `changingParents(...)`로 감쌉니다(정상 종료 시 dirstate를 씁니다). 체크아웃 뒤에는 작업 사본의 브랜치를 그 리비전의 브랜치(null이면 `default`)로 바꾸고, 서브저장소로 재귀하며, 활성 북마크를 `update_totally`처럼 정합니다. 북마크 이름을 주면 그 북마크를 활성화하고, 다른 이름이면 활성 북마크를 해제하며, 리비전이 없으면 그대로 두거나 작업 디렉터리 부모에 있었다면 함께 옮깁니다(후손, 또는 obsolescence marker가 있으면 후속으로 옮기고, 지나온 분기 북마크 `name@x`는 삭제하며, 선형이 아닌 update는 비활성화합니다).
 
-hg 원본과 다른 점: 훅 지원은 hg4j 고유 기능이며, 그 외 명시된 차이는 없습니다.
+hg 원본과 다른 점: 훅 지원은 hg4j 고유 기능입니다. 상태 메시지(`updating bookmark m`, `(leaving bookmark m)`)는 출력하지 않습니다.
 
 [source,java]
 ----
@@ -678,18 +678,31 @@ String root = new RootCommand(repo).call();
 
 |`setNewWorktreeDir(File)`
 |새 작업 사본의 디렉터리입니다. 존재하지 않거나 비어 있어야 합니다. `call()` 전에 지정해야 합니다.
+
+|`setShareBookmarks(boolean)`
+|`hg share -B`입니다. 작업 사본이 소스의 북마크를 공유합니다(`.hg/shared`에 `bookmarks`를 기록). 이후 북마크는 소스의 `.hg/bookmarks`에서 읽고, 쓸 때는 소스의 파일과 작업 사본 자신의 파일에 모두 씁니다. 기본값은 false입니다.
+
+|`setRelative(boolean)`
+|`hg share --relative`입니다. `.hg/sharedpath`에 새 `.hg` 기준의 상대 경로를 쓰고 `requires`에는 `shared` 대신 `relshared`를 씁니다. 기본값은 false입니다.
+
+|`setUpdate(boolean)`
+|`false`는 `hg share -U`입니다. 작업 사본을 비워 두고 dirstate도 만들지 않습니다. 기본값은 true입니다.
+
+|`setCheckout(String)`
+|먼저 체크아웃할 리비전입니다(`hg share SOURCE#BRANCH`의 브랜치). 찾지 못하면 브랜치 `default`의 헤드, 그다음 tip을 시도합니다. 기본값 `null`은 `default`, tip의 순서입니다.
 |===
 
-실행: `HgRepository call() throws IOException, HgLockException`. 디렉터리를 지정하지 않으면 `IllegalStateException`, 디렉터리가 비어 있지 않거나 디렉터리 생성, 연결, 공유 후 체크아웃에 실패하면 `IOException`을, 공유 후 체크아웃이 잠금을 얻지 못하면 `HgLockException`을 던집니다. `.hg/sharedpath`(원본 `.hg`의 정규 경로)를 쓰고 `requires`를 복사해 `shared`를 더한 뒤 새 `HgRepository`를 반환합니다.
+실행: `HgRepository call() throws IOException, HgLockException`. 디렉터리를 지정하지 않으면 `IllegalStateException`, 디렉터리가 비어 있지 않거나 디렉터리 생성, 연결, 공유 후 체크아웃에 실패하면 `IOException`을, 공유 후 체크아웃이 잠금을 얻지 못하면 `HgLockException`을 던집니다. `.hg/sharedpath`(저장소의 `.hg` 정규 경로이며 공유의 공유는 최초 저장소를 가리킴), 소스의 `requires`에 `shared`(또는 `relshared`)를 더해 정렬한 `requires`, `.hg/shared`, `.hg/wcache`, 소스의 `paths.default`를 담은 `.hg/hgrc`(소스 저장소 설정, 없으면 사용자 설정)를 쓰고 새 `HgRepository`를 반환합니다. narrow 소스(`narrowhg-experimental`)이면 작업 사본 잠금과 저장소 잠금 안에서 저장소의 narrowspec으로 `.hg/narrowspec.dirstate`를 쓰고, 원본처럼 `narrow-share` 트랜잭션의 rollback 정보(빈 `store/undo`, `store/undo.backupfiles`, `.hg/undo.desc`, `.hg/undo.backup.branch.bck`)를 남겨 저장소의 기존 정보를 교체합니다.
 
-잠금과 dirstate: 체크아웃 동안 새 작업 사본의 `lockWorkingCopy()`를 잡습니다. 저장소에 리비전이 있으면 `UpdateCommand`(`setForce(true)`, 리비전 `tip`)를 실행하며 이 명령이 다시 `lockWorkingCopy()`와 `changingParents(...)`를 씁니다. 빈 저장소이면 40바이트 부모 스텁 dirstate를 씁니다. 여기서 `changing_files`는 쓰지 않습니다.
+잠금과 dirstate: 체크아웃 동안 새 작업 사본의 `lockWorkingCopy()`를 잡습니다. 저장소에 리비전이 있고 업데이트를 끄지 않았으면 `UpdateCommand`(`setForce(true)`, 체크아웃 리비전, `default`, `tip` 순서로 찾는 원본 `_post_share_update`와 같음)를 북마크를 건드리지 않고 실행하며 이 명령이 다시 `lockWorkingCopy()`와 `changingParents(...)`를 씁니다. 원본처럼 공유 저장소의 락은 잡지 않습니다(narrow 소스만 잡습니다). 빈 저장소이면 40바이트 부모 스텁 dirstate를 씁니다. 여기서 `changing_files`는 쓰지 않습니다.
 
-hg 원본과 다른 점: javadoc에 따르면 tip 체크아웃은 실제 `hg share`를 따른 것이고, 빈 저장소의 스텁 dirstate는 기존 테스트 기대치를 위해 유지됩니다.
+hg 원본과 다른 점: 기록하는 내용은 hg 7.2와 파일 단위로 대조해 차이가 없습니다. 빈 저장소의 스텁 dirstate는 기존 테스트 기대치를 위해 유지됩니다.
 
 [source,java]
 ----
 HgRepository wt = new WorktreeCommand(repo)
         .setNewWorktreeDir(new File("/work/proj-wt"))
+        .setShareBookmarks(true)
         .call();
 ----
 

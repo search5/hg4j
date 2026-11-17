@@ -33,8 +33,12 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Porcelain command to update (checkout) working copy to a specified target revision.
- * Built with full transaction isolation and strict dirstate state transitions.
+ * {@code hg update}: updates (checks out) the working copy to a revision.
+ *
+ * <p>The active bookmark follows {@code update_totally}: the name given decides. A bookmark's name makes it the active bookmark, any
+ * other name deactivates the active bookmark, and with no revision (a bare update) the destination is chosen as
+ * {@code destutil.destupdate} does and the active bookmark moves along (see {@link #setRevision(String)}). The null revision
+ * ({@code "null"}) empties the working copy.</p>
  */
 public class UpdateCommand {
     private static final Logger LOGGER = Logger.getLogger(UpdateCommand.class.getName());
@@ -93,8 +97,18 @@ public class UpdateCommand {
 
     /**
      * Sets the revision to update to.
-     * @param targetRevision a revision identifier (revision number, node hex or prefix, symbolic name) or a named
-     *         branch, which selects the highest-numbered revision on it; must be set before {@link #call()}
+     *
+     * <p>Without a revision ({@code null} or empty), the update goes where a bare {@code hg update} goes ({@code destutil.destupdate}),
+     * the first step that gives a destination winning: the successors of an obsolete working directory parent that has no children
+     * (the closest ancestor that is not obsolete if it was pruned); the active bookmark, when it is away from the working directory
+     * parent; the tipmost open head of the current branch that descends from the parent; the same with closed heads; the tip. An
+     * active bookmark that was on the working directory parent moves to the new changeset when that is a descendant or a successor of
+     * it, and the divergent versions of it that the move passes are deleted.</p>
+     *
+     * <p>With a revision, the names are looked up in this order: {@code "null"}, a bookmark name, a revision number, a node hex or
+     * prefix, a named branch. The bookmark rule is described in the class description.</p>
+     * @param targetRevision a revision identifier (revision number, node hex or prefix, bookmark name, {@code "null"}) or a named
+     *         branch, which selects the highest-numbered revision on it; {@code null} or empty for a bare update
      * @return {@code this}
      */
     public UpdateCommand setRevision(String targetRevision) {
@@ -134,7 +148,9 @@ public class UpdateCommand {
      * Takes the working copy lock and runs inside a dirstate parent-changing context. Pre-update hooks run first
      * (context keys {@code repository}, {@code targetRevision}, {@code force}) and can veto. Unless forced, the update is
      * refused when the working copy has added, modified or removed files. After the checkout, post-update hooks run
-     * (context keys {@code targetNode}, {@code repository}); their failures are logged and ignored. If no tree filter
+     * (context keys {@code targetNode}, {@code repository}); their failures are logged and ignored. The working copy's branch becomes
+     * the branch of the revision ({@code default} for the null revision) and the active bookmark is set as described at
+     * {@link #setRevision(String)}. If no tree filter
      * was set, the repository's narrowspec is used.
      * @return the 20-byte node id of the revision that is now checked out
      * @throws io.github.search5.hg4j.errors.HgValidationException (an {@link IOException}) if the repository is

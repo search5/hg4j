@@ -152,7 +152,11 @@ public class WorktreeCommand {
         }
 
         // `post_share`: the source's default path is written to the new .hg/hgrc
+        // (the source's ui configuration: its repository hgrc over the user and system hgrc)
         String defaultPath = repository.getConfig().get("paths", "default");
+        if (defaultPath == null) {
+            defaultPath = io.github.search5.hg4j.transport.HgAuthConfig.userConfig().get("paths", "default");
+        }
         if (defaultPath != null && !defaultPath.isEmpty()) {
             Files.writeString(new File(newHgDir, "hgrc").toPath(), "[paths]\ndefault = " + defaultPath + "\n", StandardCharsets.UTF_8);
         }
@@ -200,6 +204,18 @@ public class WorktreeCommand {
                     }
                 }
                 SafeFileIO.writeStringAtomic(new File(newHgDir, "narrowspec.dirstate"), spec);
+
+                // The original does this inside `transaction("narrow-share")`, and the transaction that ends leaves its rollback
+                // information behind, replacing the one of the shared store: an empty `undo`, `undo.backupfiles` listing the two files
+                // of the working copy, and `.hg/undo.desc` and `.hg/undo.backup.branch.bck` in the new working copy.
+                File storeDir = worktreeRepo.getStoreDir();
+                Files.deleteIfExists(new File(storeDir, "undo.backup.files").toPath());
+                SafeFileIO.writeAtomic(new File(storeDir, "undo"), new byte[0]);
+                SafeFileIO.writeStringAtomic(new File(storeDir, "undo.backupfiles"),
+                        "2\nplain\u0000branch\u0000undo.backup.branch.bck\u00000\nplain\u0000narrowspec.dirstate\u0000\u00000\n");
+                SafeFileIO.writeStringAtomic(new File(newHgDir, "undo.backup.branch.bck"), "default\n");
+                int length = worktreeRepo.getRevlog(new File(storeDir, "00changelog.i"), new File(storeDir, "00changelog.d")).getRevisionCount();
+                SafeFileIO.writeStringAtomic(new File(newHgDir, "undo.desc"), length + "\nnarrow-share\n");
             }
         }
 

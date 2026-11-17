@@ -197,8 +197,11 @@ public class UpdateCommand {
                     throw new HgValidationException("Repository is empty, cannot update.");
                 }
 
-                int commitRev = NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
-                if (commitRev == -1) {
+                // the null revision (`hg update null`) has the empty manifest and no files: the working copy is emptied
+                boolean toNull = isNullNode(targetNodeId);
+                int commitRev = toNull ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, targetNodeId);
+                String targetManifestRev = toNull ? "" : String.valueOf(commitRev);
+                if (commitRev == -1 && !toNull) {
                     throw new HgRevisionNotFoundException(NodeIdUtil.toHex(targetNodeId));
                 }
 
@@ -216,7 +219,7 @@ public class UpdateCommand {
                 // one batch request for every LFS blob this update needs, instead of one request per file
                 TreeWalk prefetchWalk = new TreeWalk();
                 prefetchWalk.addTree(new ManifestTreeIterator(repository, parentRev));
-                prefetchWalk.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev)));
+                prefetchWalk.addTree(new ManifestTreeIterator(repository, targetManifestRev));
                 prefetchWalk.reset();
                 java.util.List<java.util.Map.Entry<Revlog, Integer>> toRead = new java.util.ArrayList<>();
                 java.util.List<String> toReadPaths = new java.util.ArrayList<>();
@@ -241,7 +244,7 @@ public class UpdateCommand {
 
                 TreeWalk tw = new TreeWalk();
                 tw.addTree(new ManifestTreeIterator(repository, parentRev)); // Tree 0: Current Parent Manifest
-                tw.addTree(new ManifestTreeIterator(repository, String.valueOf(commitRev))); // Tree 1: Target Commit Manifest
+                tw.addTree(new ManifestTreeIterator(repository, targetManifestRev)); // Tree 1: Target Commit Manifest
 
                 tw.reset();
                 while (tw.next()) {
@@ -379,7 +382,7 @@ public class UpdateCommand {
                 // dirstate.branch, which `merge.update()` always resets on checkout). Without
                 // this, the working branch stays stuck on whatever it was before the update,
                 // so e.g. the next commit lands on the wrong branch.
-                repository.setBranch(CommitCommand.getBranchOfRevision(changelog, commitRev));
+                repository.setBranch(toNull ? "default" : CommitCommand.getBranchOfRevision(changelog, commitRev));
 
                 // 4a. `update_totally`: the revision name given is remembered ("brev"); if it is a bookmark, that bookmark becomes the
                 // active one, any other name given deactivates the active bookmark, and no name leaves it as it is. A bare update
@@ -499,10 +502,8 @@ public class UpdateCommand {
             while (rev >= 0 && isObsolete(changelog, succMarkers, rev)) {
                 rev = changelog.getIndexRecord(rev).getParent1();
             }
-            if (rev < 0) {
-                throw new HgValidationException("Cannot update: the working directory parent is obsolete and pruned, and so are its ancestors.");
-            }
-            node = changelog.getIndexRecord(rev).getNodeId();
+            // every ancestor is obsolete too: the closest one that is not obsolete is the null revision
+            node = rev < 0 ? new byte[20] : changelog.getIndexRecord(rev).getNodeId();
         }
         if (node == null) {
             return null;
@@ -724,6 +725,9 @@ public class UpdateCommand {
     }
 
     private byte[] resolveTargetNodeId(Revlog changelog) throws IOException {
+        if ("null".equals(targetRevision)) {
+            return new byte[20];
+        }
         if (changelog.getRevisionCount() == 0) {
             return null;
         }

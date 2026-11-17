@@ -114,6 +114,15 @@ public class UpdateBookmarkRealHgInteropTest {
         }
         hg(real, "update", "-q");
         new UpdateCommand(new HgRepository(mine.toFile())).call();
+        compareAfterUpdate(real, mine);
+    }
+
+    private void compareAfterUpdate(Path real, Path mine) throws Exception {
+        assertEquals(hg(real, "status", "-A"), hg(mine, "status", "-A"), "the working copy");
+        try (var l1 = Files.list(real); var l2 = Files.list(mine)) {
+            assertEquals(l1.map(x -> x.getFileName().toString()).filter(n -> !n.equals(".hg")).sorted().toList(),
+                    l2.map(x -> x.getFileName().toString()).filter(n -> !n.equals(".hg")).sorted().toList(), "the files on disk");
+        }
         assertEquals(hg(real, "log", "-r", ".", "-T", "{rev}"), hg(mine, "log", "-r", ".", "-T", "{rev}"), "the working directory parent");
         assertEquals(hg(real, "bookmarks"), hg(mine, "bookmarks"), "the bookmarks");
         assertEquals(hg(real, "branch"), hg(mine, "branch"), "the branch");
@@ -186,5 +195,47 @@ public class UpdateBookmarkRealHgInteropTest {
     @Test
     void bareUpdateOfAnObsoleteParentWithChildrenStaysOnTheBranchStep(@TempDir Path tmp) throws Exception {
         bare(tmp, new String[][]{{"commit"}, {"commit"}, {"commit"}, {"debugobsolete", "@1"}, {"update", "-q", "--hidden", "1"}});
+    }
+
+    @Test
+    void updateToNullEmptiesTheWorkingCopy(@TempDir Path tmp) throws Exception {
+        for (String name : new String[]{"real", "mine"}) {
+            Path repo = tmp.resolve(name);
+            hg(tmp, "init", name);
+            Files.writeString(repo.resolve("a"), "a\n");
+            hg(repo, "commit", "-Aqm", "c0", "-u", "t", "-d", "0 0");
+            hg(repo, "branch", "-q", "b2");
+            Files.createDirectories(repo.resolve("d"));
+            Files.writeString(repo.resolve("d/b"), "b\n");
+            hg(repo, "commit", "-Aqm", "c1", "-u", "t", "-d", "1 0");
+            hg(repo, "bookmark", "m");
+        }
+        hg(tmp.resolve("real"), "update", "-q", "null");
+        new UpdateCommand(new HgRepository(tmp.resolve("mine").toFile())).setRevision("null").call();
+        assertEquals("-1", hg(tmp.resolve("mine"), "log", "-r", ".", "-T", "{rev}"));
+        assertEquals(hg(tmp.resolve("real"), "branch"), hg(tmp.resolve("mine"), "branch"));
+        assertEquals(hg(tmp.resolve("real"), "bookmarks"), hg(tmp.resolve("mine"), "bookmarks"));
+        assertEquals(active(tmp.resolve("real")), active(tmp.resolve("mine")));
+        compareAfterUpdate(tmp.resolve("real"), tmp.resolve("mine"));
+    }
+
+    @Test
+    void bareUpdateWhenEveryAncestorIsObsoleteGoesToNull(@TempDir Path tmp) throws Exception {
+        Path real = tmp.resolve("real");
+        Path mine = tmp.resolve("mine");
+        for (Path repo : new Path[]{real, mine}) {
+            hg(tmp, "init", repo.getFileName().toString());
+            for (int n = 0; n < 2; n++) {
+                Files.writeString(repo.resolve("f" + n), "v\n");
+                hg(repo, "commit", "-Aqm", "c" + n, "-u", "t", "-d", n + " 0");
+            }
+            for (int r = 0; r < 2; r++) {
+                hg(repo, "--config", "experimental.evolution=all", "debugobsolete", hg(repo, "log", "--hidden", "-r", "" + r, "-T", "{node}").trim());
+            }
+        }
+        hg(real, "update", "-q", "--hidden");
+        new UpdateCommand(new HgRepository(mine.toFile())).call();
+        assertEquals(hg(real, "log", "--hidden", "-r", ".", "-T", "{rev}"), hg(mine, "log", "--hidden", "-r", ".", "-T", "{rev}"));
+        compareAfterUpdate(real, mine);
     }
 }

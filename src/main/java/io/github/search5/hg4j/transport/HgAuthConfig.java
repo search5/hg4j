@@ -105,8 +105,12 @@ public final class HgAuthConfig {
         }
     }
 
-    /** The user level configuration: {@code HGRCPATH} when set, otherwise the standard files. */
-    static HgRcConfig userConfig() {
+    /**
+     * The user level configuration: {@code HGRCPATH} when set, otherwise {@code /etc/mercurial/hgrc}, {@code ~/.hgrc} and
+     * {@code ~/.config/hg/hgrc}. An unreadable file is ignored.
+     * @return the configuration, never {@code null}
+     */
+    public static HgRcConfig userConfig() {
         HgRcConfig config = new HgRcConfig();
         String rcPath = System.getenv("HGRCPATH");
         try {

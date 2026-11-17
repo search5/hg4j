@@ -176,20 +176,56 @@ public class WorktreeShareOptionsRealHgInteropTest {
         assertTrue(new BookmarkCommand(open(tmp.resolve("mine"))).list().isEmpty());
     }
 
-    /** A narrow source: the new working copy gets the narrowspec of the store as {@code .hg/narrowspec.dirstate}. */
-    @Test
-    void narrowSourceGetsTheWorkingCopyNarrowspec(@TempDir Path tmp) throws Exception {
-        Path src = tmp.resolve("src");
-        hg(tmp, "init", "src");
+    private static Path makeNarrowSource(Path tmp, String name) throws Exception {
+        Path src = tmp.resolve(name);
+        hg(tmp, "init", name);
         Files.writeString(src.resolve("a"), "a\n");
         hg(src, "commit", "-Aqm", "c1", "-u", "t", "-d", "0 0");
         Files.writeString(src.resolve(".hg/store/requires"), read(src.resolve(".hg/store/requires")) + "narrowhg-experimental\n");
         Files.writeString(src.resolve(".hg/store/narrowspec"), "[include]\npath:b\npath:a\n[exclude]\npath:a/x\n");
-        LocalHg.run(tmp, "--config", "extensions.share=", "--config", "extensions.narrow=", "share", "src", "real");
-        new WorktreeCommand(open(src)).setNewWorktreeDir(tmp.resolve("mine").toFile()).call();
-        for (String f : new String[]{"narrowspec.dirstate", "requires", "sharedpath"}) {
+        return src;
+    }
+
+    /** A narrow source: the new working copy gets the narrowspec of the store, and the transaction leaves its rollback information. */
+    @Test
+    void narrowSourceGetsTheWorkingCopyNarrowspec(@TempDir Path tmp) throws Exception {
+        Path realSrc = makeNarrowSource(tmp, "realsrc");
+        Path mySrc = makeNarrowSource(tmp, "mysrc");
+        LocalHg.run(tmp, "--config", "extensions.share=", "--config", "extensions.narrow=", "share", "realsrc", "real");
+        new WorktreeCommand(open(mySrc)).setNewWorktreeDir(tmp.resolve("mine").toFile()).call();
+        for (String f : new String[]{"narrowspec.dirstate", "requires", "undo.desc", "undo.backup.branch.bck"}) {
             assertEquals(read(tmp.resolve("real/.hg").resolve(f)), read(tmp.resolve("mine/.hg").resolve(f)), f);
         }
+        assertEquals(listing(tmp.resolve("real/.hg")), listing(tmp.resolve("mine/.hg")));
+        for (String f : new String[]{"undo", "undo.backupfiles"}) {
+            assertEquals(read(realSrc.resolve(".hg/store").resolve(f)), read(mySrc.resolve(".hg/store").resolve(f)), "store/" + f);
+        }
         assertEquals("[include]\npath:a\npath:b\n[exclude]\npath:a/x\n", read(tmp.resolve("mine/.hg/narrowspec.dirstate")));
+    }
+
+    /** A {@code paths.default} that only the user's hgrc has is written to the new .hg/hgrc as well. */
+    @Test
+    void defaultPathOfTheUserConfigurationIsWritten(@TempDir Path tmp) throws Exception {
+        Path src = makeSource(tmp, "src", true);
+        Path home = tmp.resolve("home");
+        Files.createDirectories(home);
+        Files.writeString(home.resolve(".hgrc"), "[paths]\ndefault = https://example.com/repo\n");
+
+        ProcessBuilder pb = LocalHg.processBuilder(tmp, "--config", "extensions.share=", "share", "src", "real");
+        pb.environment().put("HGRCPATH", home.resolve(".hgrc").toString());
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), output);
+
+        String previous = System.getProperty("user.home");
+        System.setProperty("user.home", home.toString());
+        try {
+            new WorktreeCommand(open(src)).setNewWorktreeDir(tmp.resolve("mine").toFile()).call();
+        } finally {
+            System.setProperty("user.home", previous);
+        }
+        assertEquals("[paths]\ndefault = https://example.com/repo\n", read(tmp.resolve("real/.hg/hgrc")));
+        assertEquals(read(tmp.resolve("real/.hg/hgrc")), read(tmp.resolve("mine/.hg/hgrc")));
     }
 }

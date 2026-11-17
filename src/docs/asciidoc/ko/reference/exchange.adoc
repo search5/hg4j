@@ -26,7 +26,7 @@
 === Authentication for HTTP(S)
 
 * 주소에 들어 있는 자격 증명이나, 해당 설정자를 제공하는 명령의 `setCredentialsProvider(...)`로 지정한 자격 증명은 HTTP Basic 인증에 쓰입니다. Mercurial과 같이 서버가 Basic 챌린지와 함께 401로 응답한 뒤에야 전송되고, 이후 요청에는 바로 전송됩니다.
-* 주소에 비밀번호가 없으면 `[auth]` 섹션을 조회합니다(`HgAuthConfig`). 항목은 `<group>.<setting> = value` 형식이며 설정은 `prefix`, `username`, `password`, `schemes`(기본 `https`)입니다. 접두어가 가장 길게 일치하는 그룹이 선택되고, 사용자를 지정한 그룹은 주소의 사용자와 일치해야 하며, 접두어 `*`는 모든 호스트와 일치합니다. `cert`와 `key`는 쓰지 않습니다.
+* 주소에 비밀번호가 없으면 `[auth]` 섹션을 조회합니다(`HgAuthConfig`이며 `HgAuthConfig.userConfig()`는 사용자와 시스템 설정을 읽는 공개 메서드로, `HGRCPATH`가 있으면 그것을, 없으면 `/etc/mercurial/hgrc`, `~/.hgrc`, `~/.config/hg/hgrc`를 읽습니다). 항목은 `<group>.<setting> = value` 형식이며 설정은 `prefix`, `username`, `password`, `schemes`(기본 `https`)입니다. 접두어가 가장 길게 일치하는 그룹이 선택되고, 사용자를 지정한 그룹은 주소의 사용자와 일치해야 하며, 접두어 `*`는 모든 호스트와 일치합니다. `cert`와 `key`는 쓰지 않습니다.
 * `[auth]` 섹션은 사용자 수준 파일(`HGRCPATH`가 있으면 그것, 없으면 `/etc/mercurial/hgrc`, `~/.hgrc`, `~/.config/hg/hgrc`)을 먼저 읽고, 그 위에 저장소 설정을 덮어씁니다.
 * `createConnection(url, repository.getConfig())`를 호출하는 명령만 `[auth]`를 적용합니다. Fetch, Pull, Push, Incoming, Outgoing이 여기에 해당합니다. 아래 명령 중 `setCredentialsProvider`를 제공하는 것은 Fetch와 Pull입니다. 이 설정자가 없는 명령은 주소의 자격 증명이나 `[auth]`에 의존합니다.
 
@@ -209,7 +209,7 @@ changeset을 저장소로 내려받는 저수준 네트워크 동기화 명령�
 
 실행: `List<byte[]> call() throws IOException, HgLockException`. 원격에는 있고 로컬에는 없는 changeset, 북마크, phase를 가져오고, 추가된 20바이트 노드 id를 반환합니다(새 것이 없으면 빈 목록). 원본을 지정하지 않았으면 `IllegalStateException`, 원격이 요청을 처리할 수 없으면(예: 지원하지 않는 lookup이나 narrow 요청) `HgValidationException`, 원격 연결이나 로컬 저장소가 실패하면 `IOException`, 잠금을 잡지 못하면 `HgLockException`을 던집니다. `applyBundle(...)`은 이미 파싱된 changegroup을 `hg unbundle`이나 pull의 후반부처럼 적용하고, 추가된 노드 id를 반환하며(빈 bundle이면 빈 목록), 실패한 적용은 롤백합니다(`IOException`). 인자 하나짜리 형태는 다른 곳이 잠금을 잡고 있으면 즉시 실패하고, `lockTimeoutMs`를 주면 기다립니다(`0`은 즉시 실패 동작 유지).
 
-잠금과 dirstate: `call()`은 저장소 상태를 읽기 전에 `lockWorkingCopy()`와 `lockStore()`를 차례로 잡습니다. `applyBundle(...)`은 `lockWorkingCopy(lockTimeoutMs)`(`setWorkingCopyLock(false)`이면 아무 일도 하지 않는 잠금)를 잡은 뒤 `lockStore(lockTimeoutMs)`를 잡습니다. 잠금을 잡은 뒤 dirstate와 fncache를 백업하고, 적용이 실패하면 잠금을 쥔 채로 롤백합니다. 이 클래스에서 `changingParents` 사용은 확인되지 않았습니다.
+잠금과 dirstate: `call()`은 저장소 상태를 읽기 전에 `lockWorkingCopy()`와 `lockStore()`를 차례로 잡습니다. `applyBundle(...)`은 `lockWorkingCopy(lockTimeoutMs)`(`setWorkingCopyLock(false)`이면 아무 일도 하지 않는 잠금)를 잡은 뒤 `lockStore(lockTimeoutMs)`를 잡습니다. 잠금을 잡은 뒤 dirstate와 fncache를 백업하고, 원본 형식의 트랜잭션 저널을 먼저 쓰며(버전 2 revlog는 docket을 통째로 백업하고 보조 파일을 잘라냄, <<locking>> 참고), 적용이 실패하면 잠금을 쥔 채로 롤백합니다. 이 클래스에서 `changingParents` 사용은 확인되지 않았습니다.
 
 [source,java]
 ----

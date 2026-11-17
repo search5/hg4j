@@ -691,7 +691,7 @@ Lists, creates, moves, deletes, activates bookmarks (`hg bookmarks`, `hg bookmar
 |===
 
 .Locks and dirstate
-* Listing: no lock. Changes: `lockWorkingCopy()` then `lockStore()`, waiting for both. With `setCurrentOnly(true)` and `setActive(true)` (not delete): `lockWorkingCopy()` only. No dirstate context.
+* Listing: no lock. Changes: `lockWorkingCopy()` then `lockStore()`, waiting for both. The file is `HgRepository.getBookmarksFile()`: `.hg/bookmarks`, the store's `bookmarks` with the `bookmarksinstore` requirement, or the shared repository's file in a `hg share -B` working copy, which every write then mirrors into the working copy's own `.hg/bookmarks`. With `setCurrentOnly(true)` and `setActive(true)` (not delete): `lockWorkingCopy()` only. No dirstate context.
 
 .Differences from hg
 * A new bookmark with no explicit target (`setNodeId`/`setRevision`) points to the working copy parent and becomes active; an explicit target does not activate it.

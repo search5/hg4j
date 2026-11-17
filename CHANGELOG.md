@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.3`. 1.1.0 is published (Gradle Plugin Portal and Maven Central); 1.1.1 was uploaded to Maven Central but is superseded by 1.1.2. Items marked **BC** change behaviour that a caller may rely on.
+All notable changes to hg4j are listed here, newest first. The reference for behaviour is Mercurial 7.2 / 7.2.4; "the original" means that implementation. The version in `build.gradle` is `1.1.4`. 1.1.0 is published (Gradle Plugin Portal and Maven Central); 1.1.1 was uploaded to Maven Central but is superseded by 1.1.2. Items marked **BC** change behaviour that a caller may rely on.
 
-## Unreleased (1.1.4)
+## 1.1.4 (2026-11-17)
 
 ### Fixed
 - `UpdateCommand` can update to the null revision (`setRevision("null")`, like `hg update null`): the working copy is emptied, the branch is `default`, and a bare update whose working directory parent has only obsolete ancestors goes there too. `WorktreeCommand` takes `paths.default` from the user configuration when the source has none, and for a narrow source leaves the rollback information of the `narrow-share` transaction as the original does.

@@ -186,6 +186,10 @@ public class HgRepository implements Repository {
         }
     }
 
+    /**
+     * Reads the configuration of this repository: for a share-safe working copy the {@code .hg/hgrc} of the shared repository first
+     * ({@code localrepo.loadhgrc}), then its own {@code .hg/hgrc}, which overrides it.
+     */
     private void loadConfig() {
         try {
             // a share-safe working copy reads the source's .hg/hgrc first (`localrepo.loadhgrc`)

@@ -459,6 +459,7 @@ public class UpdateCommand {
 
     private BareDestination bareDestination;
 
+    /** Whether the node is the null node (twenty zero bytes), the node of the null revision. */
     private static boolean isNullNode(byte[] node) {
         for (int i = 0; node != null && i < Math.min(20, node.length); i++) {
             if (node[i] != 0) {
@@ -659,6 +660,7 @@ public class UpdateCommand {
         return foreground.contains(newRev);
     }
 
+    /** Whether the changeset is not public ({@code obsolete.py} {@code _mutablerevs}): only those can be obsoleted. */
     private boolean isObsoleteOrMutable(Revlog changelog, int rev) throws IOException {
         return repository.getPhaseRoots().getPhase(new io.github.search5.hg4j.lib.NodeId(changelog.getIndexRecord(rev).getNodeId()), changelog)
                 != io.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC;

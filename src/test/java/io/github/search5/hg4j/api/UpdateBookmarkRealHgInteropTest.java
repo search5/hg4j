@@ -99,7 +99,16 @@ public class UpdateBookmarkRealHgInteropTest {
                     hg(repo, "commit", "-Aqm", "c" + n, "-u", "t", "-d", n + " 0");
                     n++;
                 } else {
-                    hg(repo, cmd);
+                    // "@N" stands for the node of revision N; debugobsolete needs the markers enabled
+                    java.util.List<String> args = new java.util.ArrayList<>();
+                    if (cmd[0].equals("debugobsolete")) {
+                        args.add("--config");
+                        args.add("experimental.evolution=all");
+                    }
+                    for (String a : cmd) {
+                        args.add(a.startsWith("@") ? hg(repo, "log", "--hidden", "-r", a.substring(1), "-T", "{node}").trim() : a);
+                    }
+                    hg(repo, args.toArray(new String[0]));
                 }
             }
         }
@@ -148,5 +157,34 @@ public class UpdateBookmarkRealHgInteropTest {
     @Test
     void bareUpdateOfAnEmptyWorkingDirectoryGoesToTheTipmostHead(@TempDir Path tmp) throws Exception {
         bare(tmp, new String[][]{{"commit"}, {"commit"}, {"update", "-q", "null"}});
+    }
+
+    @Test
+    void bareUpdateOfAnObsoleteParentGoesToItsSuccessor(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"update", "-q", "0"}, {"commit"}, {"debugobsolete", "@1", "@2"},
+                {"update", "-q", "--hidden", "1"}});
+    }
+
+    @Test
+    void bareUpdateOfAPrunedParentGoesToItsClosestLiveAncestor(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"commit"}, {"debugobsolete", "@2"}, {"debugobsolete", "@1"},
+                {"update", "-q", "--hidden", "2"}});
+    }
+
+    @Test
+    void bareUpdateOfASplitParentGoesToTheTipmostSuccessor(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"update", "-q", "0"}, {"commit"}, {"update", "-q", "0"}, {"commit"},
+                {"debugobsolete", "@1", "@2", "@3"}, {"update", "-q", "--hidden", "1"}});
+    }
+
+    @Test
+    void bareUpdateOfAnObsoleteParentMovesTheActiveBookmark(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"update", "-q", "0"}, {"commit"}, {"update", "-q", "--hidden", "1"},
+                {"bookmark", "m"}, {"debugobsolete", "@1", "@2"}});
+    }
+
+    @Test
+    void bareUpdateOfAnObsoleteParentWithChildrenStaysOnTheBranchStep(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"commit"}, {"debugobsolete", "@1"}, {"update", "-q", "--hidden", "1"}});
     }
 }

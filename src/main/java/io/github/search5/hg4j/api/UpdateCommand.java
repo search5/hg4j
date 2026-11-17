@@ -459,8 +459,71 @@ public class UpdateCommand {
     }
 
     /**
+     * {@code destutil._destupdateobs}: when the working directory parent is obsolete (a predecessor in a marker and not public) and has no
+     * children, update to the tipmost of its latest successors, or for a pruned changeset to its closest ancestor that is not obsolete.
+     * @return the destination, or {@code null} when this step gives none
+     */
+    private BareDestination destUpdateObsolete(Revlog changelog, byte[] p1, boolean activeIsParent) throws IOException {
+        if (isNullNode(p1)) {
+            return null;
+        }
+        Map<String, java.util.List<io.github.search5.hg4j.obsolete.ObsStore.Marker>> succMarkers =
+                io.github.search5.hg4j.obsolete.ObsUtil.bySuccessor(io.github.search5.hg4j.obsolete.ObsStore.markers(repository));
+        if (succMarkers.isEmpty()) {
+            return null;
+        }
+        int p1Rev = NodeIdUtil.findRevisionByNodeId(changelog, p1);
+        if (p1Rev < 0 || !isObsolete(changelog, succMarkers, p1Rev)) {
+            return null;
+        }
+        int count = changelog.getRevisionCount();
+        for (int i = p1Rev + 1; i < count; i++) {
+            if (changelog.getIndexRecord(i).getParent1() == p1Rev || changelog.getIndexRecord(i).getParent2() == p1Rev) {
+                return null;
+            }
+        }
+        java.util.List<java.util.List<String>> successors = io.github.search5.hg4j.obsolete.ObsUtil.successorsSets(
+                succMarkers, hex -> NodeIdUtil.findRevisionByNodeId(changelog, NodeIdUtil.fromHex(hex)) >= 0, NodeIdUtil.toHex(p1));
+        byte[] node;
+        if (!successors.isEmpty()) {
+            int best = -1;
+            for (java.util.List<String> set : successors) {
+                for (String hex : set) {
+                    best = Math.max(best, NodeIdUtil.findRevisionByNodeId(changelog, NodeIdUtil.fromHex(hex)));
+                }
+            }
+            node = best < 0 ? null : changelog.getIndexRecord(best).getNodeId();
+        } else {
+            // pruned: the closest ancestor that is not obsolete
+            int rev = changelog.getIndexRecord(p1Rev).getParent1();
+            while (rev >= 0 && isObsolete(changelog, succMarkers, rev)) {
+                rev = changelog.getIndexRecord(rev).getParent1();
+            }
+            if (rev < 0) {
+                throw new HgValidationException("Cannot update: the working directory parent is obsolete and pruned, and so are its ancestors.");
+            }
+            node = changelog.getIndexRecord(rev).getNodeId();
+        }
+        if (node == null) {
+            return null;
+        }
+        return new BareDestination(node, activeIsParent ? p1 : null, null);
+    }
+
+    /** {@code obsolete()} of a changeset: not public, and the predecessor of a marker. */
+    private boolean isObsolete(Revlog changelog, Map<String, java.util.List<io.github.search5.hg4j.obsolete.ObsStore.Marker>> succMarkers,
+                               int rev) throws IOException {
+        byte[] node = changelog.getIndexRecord(rev).getNodeId();
+        if (!succMarkers.containsKey(NodeIdUtil.toHex(node))) {
+            return false;
+        }
+        return repository.getPhaseRoots().getPhase(new io.github.search5.hg4j.lib.NodeId(node), changelog)
+                != io.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC;
+    }
+
+    /**
      * {@code destutil.destupdate} for a bare update: the steps {@code bookmark}, {@code branch} and {@code branchfallback} are tried in
-     * this order until one gives a destination (the {@code evolution} step needs obsolescence markers, which this command does not read).
+     * this order until one gives a destination (the {@code evolution} step comes first).
      */
     private BareDestination destUpdate(Revlog changelog) throws IOException {
         Map<String, String> marks = new BookmarkCommand(repository).list();
@@ -469,6 +532,12 @@ public class UpdateCommand {
         byte[] p1 = dirstate.getParent1();
         byte[] p2 = dirstate.getParent2();
         boolean activeIsParent = isActiveWdirParent(marks, active, p1, p2);
+
+        // step evolution (`_destupdateobs`): an obsolete working directory parent without children goes to its successors
+        BareDestination evolved = destUpdateObsolete(changelog, p1, activeIsParent);
+        if (evolved != null) {
+            return evolved;
+        }
 
         // step bookmark (`_destupdatebook`): with the active bookmark away from the working directory, go to it
         if (!activeIsParent && active != null && marks.containsKey(active)) {
@@ -533,6 +602,75 @@ public class UpdateCommand {
     }
 
     /**
+     * {@code newRev in obsutil.foreground([oldRev])}: reachable from the old changeset through children and through the successors that
+     * the markers name, until nothing is added.
+     */
+    private boolean inForeground(Revlog changelog, Map<String, java.util.List<io.github.search5.hg4j.obsolete.ObsStore.Marker>> succMarkers,
+                                 int oldRev, int newRev) throws IOException {
+        int count = changelog.getRevisionCount();
+        java.util.Set<Integer> foreground = descendantsOrSelf(changelog, java.util.List.of(oldRev));
+        int previous = -1;
+        while (foreground.size() != previous) {
+            previous = foreground.size();
+            java.util.List<Integer> known = new ArrayList<>(foreground);
+            java.util.Deque<String> remaining = new java.util.ArrayDeque<>();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (int rev : foreground) {
+                if (isObsoleteOrMutable(changelog, rev)) {
+                    String hex = NodeIdUtil.toHex(changelog.getIndexRecord(rev).getNodeId());
+                    if (seen.add(hex)) {
+                        remaining.push(hex);
+                    }
+                }
+            }
+            while (!remaining.isEmpty()) {
+                for (io.github.search5.hg4j.obsolete.ObsStore.Marker mark : succMarkers.getOrDefault(remaining.pop(), java.util.List.of())) {
+                    for (byte[] suc : mark.sucs()) {
+                        String hex = NodeIdUtil.toHex(suc);
+                        if (seen.add(hex)) {
+                            remaining.push(hex);
+                            int rev = NodeIdUtil.findRevisionByNodeId(changelog, suc);
+                            if (rev >= 0 && rev < count) {
+                                known.add(rev);
+                            }
+                        }
+                    }
+                }
+            }
+            foreground = descendantsOrSelf(changelog, known);
+        }
+        return foreground.contains(newRev);
+    }
+
+    private boolean isObsoleteOrMutable(Revlog changelog, int rev) throws IOException {
+        return repository.getPhaseRoots().getPhase(new io.github.search5.hg4j.lib.NodeId(changelog.getIndexRecord(rev).getNodeId()), changelog)
+                != io.github.search5.hg4j.phase.PhaseRoots.Phase.PUBLIC;
+    }
+
+    /** {@code roots::}: the revisions and all their descendants. */
+    private static java.util.Set<Integer> descendantsOrSelf(Revlog changelog, java.util.List<Integer> roots) throws IOException {
+        int count = changelog.getRevisionCount();
+        boolean[] in = new boolean[count];
+        int min = count;
+        for (int r : roots) {
+            in[r] = true;
+            min = Math.min(min, r);
+        }
+        java.util.Set<Integer> result = new java.util.LinkedHashSet<>();
+        for (int i = min; i < count; i++) {
+            int a = changelog.getIndexRecord(i).getParent1();
+            int b = changelog.getIndexRecord(i).getParent2();
+            if ((a >= 0 && in[a]) || (b >= 0 && in[b])) {
+                in[i] = true;
+            }
+            if (in[i]) {
+                result.add(i);
+            }
+        }
+        return result;
+    }
+
+    /**
      * {@code bookmarks.update(repo, [moveFrom], node)}: the active bookmark follows the working directory to {@code node} if that is a
      * descendant of where the bookmark was, and the divergent versions of it that the move makes obsolete are deleted.
      * @return whether any bookmark changed; {@code false} means the update left the bookmark behind
@@ -560,7 +698,11 @@ public class UpdateCommand {
             }
             int oldRev = NodeIdUtil.findRevisionByNodeId(changelog, NodeIdUtil.fromHex(marks.get(active)));
             // `validdest`: nothing to move when it is the same changeset, otherwise the old one must be an ancestor of the new one
-            move = oldRev != newRev && new io.github.search5.hg4j.revwalk.ChangesetGraph(changelog).isAncestor(oldRev, newRev);
+            // with obsolescence markers the new changeset may also be a successor of the old one (`obsutil.foreground`)
+            java.util.List<io.github.search5.hg4j.obsolete.ObsStore.Marker> markers = io.github.search5.hg4j.obsolete.ObsStore.markers(repository);
+            move = oldRev != newRev && (markers.isEmpty()
+                    ? new io.github.search5.hg4j.revwalk.ChangesetGraph(changelog).isAncestor(oldRev, newRev)
+                    : inForeground(changelog, io.github.search5.hg4j.obsolete.ObsUtil.bySuccessor(markers), oldRev, newRev));
         } else {
             deleteFrom.add(NodeIdUtil.toHex(moveFrom));
         }

@@ -42,6 +42,7 @@ public class HgRepository implements Repository {
     private final File directory;
     private final File hgDir;
     private final File storeDir;
+    private final File sharedHgDir;
     private boolean defaultDirstateV2 = false;
     private boolean useZstdCompression = false;
     // 실제 requirement 문자열은 mercurial/requirements.py에서 실측 확인됨
@@ -90,11 +91,17 @@ public class HgRepository implements Repository {
         this.hgDir = new File(directory, ".hg");
         
         File resolvedStoreDir = null;
+        File resolvedSharedHgDir = null;
         File sharedpathFile = new File(hgDir, "sharedpath");
         if (sharedpathFile.exists() && sharedpathFile.isFile()) {
             try {
                 String sharedPath = Files.readString(sharedpathFile.toPath(), StandardCharsets.UTF_8).trim();
                 File sharedHgDir = new File(sharedPath);
+                if (isRelativeShare()) {
+                    // `rcutil.get_shared_vfs`: with the relshared requirement the path is relative to .hg and normalized
+                    sharedHgDir = new File(hgDir, sharedPath).toPath().normalize().toFile();
+                }
+                resolvedSharedHgDir = sharedHgDir;
                 resolvedStoreDir = new File(sharedHgDir, "store");
             } catch (Exception e) {
                 resolvedStoreDir = new File(hgDir, "store");
@@ -102,14 +109,92 @@ public class HgRepository implements Repository {
         } else {
             resolvedStoreDir = new File(hgDir, "store");
         }
-        
+
         this.storeDir = resolvedStoreDir;
+        this.sharedHgDir = resolvedSharedHgDir;
         loadRequires();
         loadConfig();
     }
 
+    /** Whether {@code .hg/requires} lists {@code relshared}: {@code .hg/sharedpath} is then relative to {@code .hg}. */
+    private boolean isRelativeShare() {
+        File requires = new File(hgDir, "requires");
+        if (!requires.isFile()) {
+            return false;
+        }
+        try {
+            for (String line : Files.readAllLines(requires.toPath(), StandardCharsets.UTF_8)) {
+                if ("relshared".equals(line.trim())) {
+                    return true;
+                }
+            }
+        } catch (IOException ignored) {
+            // read errors leave the absolute interpretation
+        }
+        return false;
+    }
+
+    /**
+     * The {@code .hg} directory that holds the store of a shared repository ({@code .hg/sharedpath}, resolved like the original does:
+     * relative to {@code .hg} for the {@code relshared} requirement); {@code null} when this repository is not shared.
+     * @return the shared {@code .hg} directory, or {@code null}
+     */
+    public File getSharedHgDir() {
+        return sharedHgDir;
+    }
+
+    /**
+     * Whether the bookmarks of this working copy are the bookmarks of the repository it shares: {@code .hg/shared} lists {@code bookmarks}
+     * (written by {@code hg share -B}) and the bookmarks are not kept in the store. Mirrors {@code hgext/share.py}'s {@code _hassharedbookmarks}.
+     * @return {@code true} if {@link #getBookmarksFile()} is the shared repository's {@code .hg/bookmarks}
+     */
+    public boolean isBookmarksShared() {
+        if (sharedHgDir == null || bookmarksInStore) {
+            return false;
+        }
+        File shared = new File(hgDir, "shared");
+        if (!shared.isFile()) {
+            return false;
+        }
+        try {
+            for (String line : Files.readAllLines(shared.toPath(), StandardCharsets.UTF_8)) {
+                if ("bookmarks".equals(line.trim())) {
+                    return true;
+                }
+            }
+        } catch (IOException ignored) {
+            // an unreadable file shares nothing
+        }
+        return false;
+    }
+
+    /**
+     * After the shared bookmarks file was written, the working copy's own {@code .hg/bookmarks} gets the same content ({@code share.py}'s
+     * {@code writerepo} writes the local file first "in case we ever unshare", then the source's). Does nothing unless bookmarks are shared.
+     * @throws IOException if the local file cannot be written
+     */
+    public void mirrorSharedBookmarks() throws IOException {
+        if (!isBookmarksShared()) {
+            return;
+        }
+        File local = new File(hgDir, "bookmarks");
+        File source = getBookmarksFile();
+        if (source.isFile()) {
+            SafeFileIO.writeAtomic(local, Files.readAllBytes(source.toPath()));
+        } else {
+            Files.deleteIfExists(local.toPath());
+        }
+    }
+
     private void loadConfig() {
         try {
+            // a share-safe working copy reads the source's .hg/hgrc first (`localrepo.loadhgrc`)
+            if (sharedHgDir != null && getRequirements().contains("share-safe")) {
+                File sourceHgrc = new File(sharedHgDir, "hgrc");
+                if (sourceHgrc.isFile()) {
+                    this.config.load(sourceHgrc);
+                }
+            }
             File hgrc = new File(hgDir, "hgrc");
             if (hgrc.exists() && hgrc.isFile()) {
                 this.config.load(hgrc);
@@ -265,11 +350,15 @@ public class HgRepository implements Repository {
 
     /**
      * The file that holds the bookmarks: {@code .hg/store/bookmarks} when {@link #isBookmarksInStore()}, else {@code .hg/bookmarks}
-     * (real hg's {@code bookmarksvfs(repo)}). The active bookmark file {@code bookmarks.current} is not affected: it is always in {@code .hg}.
+     * (real hg's {@code bookmarksvfs(repo)}), or the shared repository's {@code .hg/bookmarks} when {@link #isBookmarksShared()}. The active bookmark file {@code bookmarks.current} is not affected: it is always in {@code .hg}.
      *
      * @return the bookmarks file; it may not exist yet
      */
     public File getBookmarksFile() {
+        if (isBookmarksShared()) {
+            // `hgext/share.py` getbkfile: the bookmarks are read from the repository this working copy shares
+            return new File(sharedHgDir, "bookmarks");
+        }
         return new File(bookmarksInStore ? storeDir : hgDir, "bookmarks");
     }
 

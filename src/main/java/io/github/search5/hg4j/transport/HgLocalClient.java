@@ -1270,6 +1270,7 @@ public class HgLocalClient implements HgRemoteConnection {
                     }
                     SafeFileIO.writeStringAtomic(bkFile, sb.toString());
                 }
+                remoteRepo.mirrorSharedBookmarks();
                 return true;
             }
         }

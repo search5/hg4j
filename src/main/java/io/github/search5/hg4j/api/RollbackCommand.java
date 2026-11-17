@@ -161,6 +161,7 @@ public class RollbackCommand {
                 } else {
                     Files.deleteIfExists(bookmarksFile.toPath());
                 }
+                repository.mirrorSharedBookmarks();
 
                 // Clean current active bookmark pointer if needed
                 File curBkFile = new File(repository.getDirectory(), ".hg/bookmarks.current");

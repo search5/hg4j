@@ -566,6 +566,7 @@ public class StripCommand {
                     } else {
                         SafeFileIO.writeLinesAtomic(bookmarksFile, updatedBLines);
                     }
+                    repository.mirrorSharedBookmarks();
                 }
 
                 repository.clearRevlogCache();

@@ -180,6 +180,7 @@ public final class RepoSupport {
             }
             SafeFileIO.writeStringAtomic(bkFile, sb.toString());
         }
+        repo.mirrorSharedBookmarks();
         return true;
     }
 

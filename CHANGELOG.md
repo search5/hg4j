@@ -17,6 +17,7 @@ All notable changes to hg4j are listed here, newest first. The reference for beh
 ## 1.1.3 (2026-11-10)
 
 ### Added
+- `WorktreeCommand` (`hg share`) has the options of the original: `setShareBookmarks` (`-B`, the bookmarks are the source's and every write goes to both files), `setRelative` (`--relative`, a relative `sharedpath` and the `relshared` requirement), `setUpdate(false)` (`-U`) and `setCheckout` (`SOURCE#BRANCH`). A share also writes the source's `paths.default` to its `.hg/hgrc`, creates `.hg/wcache`, writes `requires` sorted, points a share of a share at the store itself, and for a narrow source writes `.hg/narrowspec.dirstate`. `HgRepository` resolves a `relshared` repository, and a share-safe working copy reads the `.hg/hgrc` of its source first.
 - `HgHttpWireServer.setLfsServing(Boolean)`: turns the LFS endpoints of the server on or off at once, like `[experimental] lfs.serve` but for every repository the host serves and without a restart; `null` (the default) leaves it to the hgrc. Requested for the site setting of Yona.
 
 ### Fixed

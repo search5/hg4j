@@ -188,4 +188,58 @@ public class WorktreeCommandTest {
         assertArrayEquals(new byte[40], newDirstate,
                 "dirstate must default to 40 zero bytes when the main repository's dirstate is shorter than 40 bytes");
     }
+
+    @Test
+    public void testRelativeShareWritesRelsharedAndOpensAgain(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        HgRepository mainRepo = Hg.init().setDirectory(mainRepoDir).call();
+        Files.writeString(new File(mainRepoDir, "a.txt").toPath(), "a");
+        new AddCommand(mainRepo).call();
+        new CommitCommand(mainRepo).setMessage("c1").call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).setRelative(true).call();
+
+        assertEquals("../../main_repo/.hg", Files.readString(new File(worktreeDir, ".hg/sharedpath").toPath()));
+        String requires = Files.readString(new File(worktreeDir, ".hg/requires").toPath());
+        assertTrue(requires.contains("relshared\n"));
+        assertFalse(requires.contains("\nshared\n") || requires.startsWith("shared\n"));
+        assertEquals(mainRepo.getStoreDir().getCanonicalFile(), new HgRepository(worktreeDir).getStoreDir().getCanonicalFile());
+    }
+
+    @Test
+    public void testSharedBookmarksAreTheSourcesAndMirroredLocally(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        HgRepository mainRepo = Hg.init().setDirectory(mainRepoDir).call();
+        Files.writeString(new File(mainRepoDir, "a.txt").toPath(), "a");
+        new AddCommand(mainRepo).call();
+        new CommitCommand(mainRepo).setMessage("c1").call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        HgRepository worktree = new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).setShareBookmarks(true).call();
+        assertEquals("bookmarks\n", Files.readString(new File(worktreeDir, ".hg/shared").toPath()));
+        assertTrue(worktree.isBookmarksShared());
+        assertEquals(new File(mainRepo.getHgDir(), "bookmarks"), worktree.getBookmarksFile());
+
+        new BookmarkCommand(worktree).setBookmarkName("m1").call();
+        String sourceFile = Files.readString(new File(mainRepo.getHgDir(), "bookmarks").toPath());
+        assertTrue(sourceFile.contains(" m1"));
+        assertEquals(sourceFile, Files.readString(new File(worktree.getHgDir(), "bookmarks").toPath()));
+    }
+
+    @Test
+    public void testNoUpdateLeavesTheWorkingCopyEmpty(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        HgRepository mainRepo = Hg.init().setDirectory(mainRepoDir).call();
+        Files.writeString(new File(mainRepoDir, "a.txt").toPath(), "a");
+        new AddCommand(mainRepo).call();
+        new CommitCommand(mainRepo).setMessage("c1").call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).setUpdate(false).call();
+
+        assertFalse(new File(worktreeDir, "a.txt").exists());
+        assertFalse(new File(worktreeDir, ".hg/dirstate").exists());
+        assertTrue(new File(worktreeDir, ".hg/wcache").isDirectory());
+    }
 }

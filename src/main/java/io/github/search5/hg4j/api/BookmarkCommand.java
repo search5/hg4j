@@ -448,6 +448,7 @@ public class BookmarkCommand {
             if (file.exists()) {
                 SafeFileIO.writeStringAtomic(file, "");
             }
+            repository.mirrorSharedBookmarks();
             return;
         }
         StringBuilder sb = new StringBuilder();
@@ -455,6 +456,7 @@ public class BookmarkCommand {
             sb.append(entry.getValue()).append(" ").append(entry.getKey()).append("\n");
         }
         SafeFileIO.writeStringAtomic(file, sb.toString());
+        repository.mirrorSharedBookmarks();
     }
 
 

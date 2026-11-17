@@ -382,14 +382,25 @@ public class UpdateCommand {
                 repository.setBranch(CommitCommand.getBranchOfRevision(changelog, commitRev));
 
                 // 4a. `update_totally`: the revision name given is remembered ("brev"); if it is a bookmark, that bookmark becomes the
-                // active one, any other name given deactivates the active bookmark, and no name leaves it as it is. The updates that the
-                // original makes with the plain `update` (share, subrepos) do not touch bookmarks.
-                if (updateBookmarks && targetRevision != null && !targetRevision.isEmpty()) {
+                // active one, any other name given deactivates the active bookmark, and no name leaves it as it is. A bare update
+                // (`destupdate`) moves the active bookmark along when it was on the working directory parent, or takes the active
+                // bookmark's name as the name. The updates that the original makes with the plain `update` function (share, subrepos)
+                // do not touch bookmarks.
+                if (updateBookmarks) {
                     BookmarkCommand bookmarkCmd = new BookmarkCommand(repository);
-                    if (bookmarkCmd.call().containsKey(targetRevision)) {
-                        bookmarkCmd.setBookmarkName(targetRevision).setActive(true).setCurrentOnly(true).call();
-                    } else {
-                        bookmarkCmd.setActive(true).setCurrentOnly(true).setBookmarkName(null).call();
+                    String brev = bareDestination != null ? bareDestination.activeMark : targetRevision;
+                    if (bareDestination != null && bareDestination.moveFrom != null) {
+                        if (!Arrays.equals(bareDestination.moveFrom, targetNodeId)
+                                && !moveActiveBookmark(changelog, bareDestination.moveFrom, targetNodeId)) {
+                            // a non-linear update: "(leaving bookmark X)"
+                            bookmarkCmd.setActive(true).setCurrentOnly(true).setBookmarkName(null).call();
+                        }
+                    } else if (brev != null && !brev.isEmpty()) {
+                        if (bookmarkCmd.call().containsKey(brev)) {
+                            bookmarkCmd.setBookmarkName(brev).setActive(true).setCurrentOnly(true).call();
+                        } else {
+                            bookmarkCmd.setActive(true).setCurrentOnly(true).setBookmarkName(null).call();
+                        }
                     }
                 }
 
@@ -414,9 +425,170 @@ public class UpdateCommand {
         }
     }
 
+    /** The result of {@code destutil.destupdate}: where a bare update goes, which bookmark to move along, and the bookmark's name. */
+    private static final class BareDestination {
+        final byte[] node;
+        final byte[] moveFrom;
+        final String activeMark;
+
+        BareDestination(byte[] node, byte[] moveFrom, String activeMark) {
+            this.node = node;
+            this.moveFrom = moveFrom;
+            this.activeMark = activeMark;
+        }
+    }
+
+    private BareDestination bareDestination;
+
+    private static boolean isNullNode(byte[] node) {
+        for (int i = 0; node != null && i < Math.min(20, node.length); i++) {
+            if (node[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code bookmarks.isactivewdirparent}: the active bookmark points to a parent of the working directory. */
+    private boolean isActiveWdirParent(Map<String, String> marks, String active, byte[] p1, byte[] p2) {
+        if (active == null || !marks.containsKey(active)) {
+            return false;
+        }
+        String hex = marks.get(active);
+        return hex.equals(NodeIdUtil.toHex(p1)) || (p2 != null && hex.equals(NodeIdUtil.toHex(p2)));
+    }
+
+    /**
+     * {@code destutil.destupdate} for a bare update: the steps {@code bookmark}, {@code branch} and {@code branchfallback} are tried in
+     * this order until one gives a destination (the {@code evolution} step needs obsolescence markers, which this command does not read).
+     */
+    private BareDestination destUpdate(Revlog changelog) throws IOException {
+        Map<String, String> marks = new BookmarkCommand(repository).list();
+        String active = new BookmarkCommand(repository).getActiveBookmark();
+        Dirstate dirstate = repository.getDirstate();
+        byte[] p1 = dirstate.getParent1();
+        byte[] p2 = dirstate.getParent2();
+        boolean activeIsParent = isActiveWdirParent(marks, active, p1, p2);
+
+        // step bookmark (`_destupdatebook`): with the active bookmark away from the working directory, go to it
+        if (!activeIsParent && active != null && marks.containsKey(active)) {
+            return new BareDestination(NodeIdUtil.fromHex(marks.get(active)), null, active);
+        }
+
+        int count = changelog.getRevisionCount();
+        int p1Rev = isNullNode(p1) ? -1 : NodeIdUtil.findRevisionByNodeId(changelog, p1);
+        String currentBranch = repository.getBranch();
+        boolean branchKnown = false;
+        for (int i = 0; i < count && !branchKnown; i++) {
+            branchKnown = currentBranch.equals(CommitCommand.getBranchOfRevision(changelog, i));
+        }
+        io.github.search5.hg4j.revwalk.ChangesetGraph graph = new io.github.search5.hg4j.revwalk.ChangesetGraph(changelog);
+        byte[] moveFrom = activeIsParent ? p1 : null;
+
+        // step branch (`_destupdatebranch`): the tipmost open head of the current branch that is reachable from the parent
+        if (branchKnown) {
+            int head = tipmostHeadFrom(changelog, graph, currentBranch, p1Rev, false);
+            if (head >= 0) {
+                return new BareDestination(changelog.getIndexRecord(head).getNodeId(), moveFrom, null);
+            }
+        } else if ("default".equals(currentBranch) && p1Rev < 0) {
+            // the null parent belongs to the branch "default" that does not exist: the tipmost open head of all branches
+            boolean[] hasChild = new boolean[count];
+            for (int i = 0; i < count; i++) {
+                int a = changelog.getIndexRecord(i).getParent1();
+                int b = changelog.getIndexRecord(i).getParent2();
+                if (a >= 0) hasChild[a] = true;
+                if (b >= 0) hasChild[b] = true;
+            }
+            for (int i = count - 1; i >= 0; i--) {
+                if (!hasChild[i] && !CommitCommand.isRevisionClosingBranch(changelog, i)) {
+                    return new BareDestination(changelog.getIndexRecord(i).getNodeId(), null, null);
+                }
+            }
+        } else {
+            return new BareDestination(p1, null, null);
+        }
+
+        // step branchfallback (`_destupdatebranchfallback`): the closed heads count too
+        if (branchKnown) {
+            int head = tipmostHeadFrom(changelog, graph, currentBranch, p1Rev, true);
+            if (head >= 0) {
+                return new BareDestination(changelog.getIndexRecord(head).getNodeId(), moveFrom, null);
+            }
+        }
+        return new BareDestination(changelog.getIndexRecord(count - 1).getNodeId(), null, null);
+    }
+
+    /** {@code branch_tip_from}: {@code max(start::heads(branch))}; {@code -1} if no head can be reached from {@code start}. */
+    private int tipmostHeadFrom(Revlog changelog, io.github.search5.hg4j.revwalk.ChangesetGraph graph, String branch, int start,
+                                boolean closed) throws IOException {
+        int best = -1;
+        for (String hex : new HeadsCommand(repository).setBranch(branch).setIncludeClosed(closed).call()) {
+            int head = NodeIdUtil.findRevisionByNodeId(changelog, NodeIdUtil.fromHex(hex));
+            if (head > best && (start < 0 || head == start || graph.isAncestor(start, head))) {
+                best = head;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * {@code bookmarks.update(repo, [moveFrom], node)}: the active bookmark follows the working directory to {@code node} if that is a
+     * descendant of where the bookmark was, and the divergent versions of it that the move makes obsolete are deleted.
+     * @return whether any bookmark changed; {@code false} means the update left the bookmark behind
+     */
+    private boolean moveActiveBookmark(Revlog changelog, byte[] moveFrom, byte[] node) throws IOException, HgLockException {
+        BookmarkCommand reader = new BookmarkCommand(repository);
+        String active = reader.getActiveBookmark();
+        if (active == null) {
+            return false;
+        }
+        Map<String, String> marks = reader.list();
+        String base = active.split("@", 2)[0];
+        int newRev = NodeIdUtil.findRevisionByNodeId(changelog, node);
+        java.util.Set<String> deleteFrom = new java.util.HashSet<>();
+        boolean move = false;
+        if (marks.get(active) != null && marks.get(active).equals(NodeIdUtil.toHex(moveFrom))) {
+            java.util.Set<Integer> ancestors = new io.github.search5.hg4j.revwalk.ChangesetGraph(changelog).getAllAncestors(newRev);
+            for (Map.Entry<String, String> e : marks.entrySet()) {
+                if (e.getKey().split("@", 2)[0].equals(base)) {
+                    int rev = NodeIdUtil.findRevisionByNodeId(changelog, NodeIdUtil.fromHex(e.getValue()));
+                    if (ancestors.contains(rev) || rev == newRev) {
+                        deleteFrom.add(e.getValue());
+                    }
+                }
+            }
+            int oldRev = NodeIdUtil.findRevisionByNodeId(changelog, NodeIdUtil.fromHex(marks.get(active)));
+            // `validdest`: nothing to move when it is the same changeset, otherwise the old one must be an ancestor of the new one
+            move = oldRev != newRev && new io.github.search5.hg4j.revwalk.ChangesetGraph(changelog).isAncestor(oldRev, newRev);
+        } else {
+            deleteFrom.add(NodeIdUtil.toHex(moveFrom));
+        }
+        boolean changed = false;
+        if (move) {
+            new BookmarkCommand(repository).setBookmarkName(active).setRevision(NodeIdUtil.toHex(node)).setForce(true).call();
+            changed = true;
+        }
+        for (Map.Entry<String, String> e : marks.entrySet()) {
+            String name = e.getKey();
+            // `divergent2delete`: the divergent versions (name@something) of the active bookmark that sit on the changesets left behind
+            if (name.split("@", 2)[0].equals(base) && !name.equals("@") && name.contains("@") && !name.equals(active)
+                    && deleteFrom.contains(e.getValue())) {
+                new BookmarkCommand(repository).setBookmarkName(name).setDelete(true).call();
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
     private byte[] resolveTargetNodeId(Revlog changelog) throws IOException {
         if (changelog.getRevisionCount() == 0) {
             return null;
+        }
+        bareDestination = null;
+        if (targetRevision == null || targetRevision.isEmpty()) {
+            bareDestination = destUpdate(changelog);
+            return bareDestination.node;
         }
         // a bookmark name is a revision symbol that comes before the branch names and the hash prefixes (`tip` is never a bookmark)
         if (targetRevision != null && !"tip".equals(targetRevision)) {

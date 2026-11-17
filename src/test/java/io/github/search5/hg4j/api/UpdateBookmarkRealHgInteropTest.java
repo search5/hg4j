@@ -85,4 +85,68 @@ public class UpdateBookmarkRealHgInteropTest {
     void updateToABranchNameDeactivates(@TempDir Path tmp) throws Exception {
         check(tmp, null, "default");
     }
+
+    /** Builds the same history in two repositories by running the same hg commands in both, then compares a bare {@code hg update}. */
+    private void bare(Path tmp, String[][] setup) throws Exception {
+        Path real = tmp.resolve("real");
+        Path mine = tmp.resolve("mine");
+        for (Path repo : new Path[]{real, mine}) {
+            hg(tmp, "init", repo.getFileName().toString());
+            int n = 0;
+            for (String[] cmd : setup) {
+                if (cmd[0].equals("commit")) {
+                    Files.writeString(repo.resolve("f" + (n % 3)), "v" + n + "\n");
+                    hg(repo, "commit", "-Aqm", "c" + n, "-u", "t", "-d", n + " 0");
+                    n++;
+                } else {
+                    hg(repo, cmd);
+                }
+            }
+        }
+        hg(real, "update", "-q");
+        new UpdateCommand(new HgRepository(mine.toFile())).call();
+        assertEquals(hg(real, "log", "-r", ".", "-T", "{rev}"), hg(mine, "log", "-r", ".", "-T", "{rev}"), "the working directory parent");
+        assertEquals(hg(real, "bookmarks"), hg(mine, "bookmarks"), "the bookmarks");
+        assertEquals(hg(real, "branch"), hg(mine, "branch"), "the branch");
+        assertEquals(active(real), active(mine), "the active bookmark");
+    }
+
+    @Test
+    void bareUpdateGoesToTheBranchHead(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"commit"}, {"update", "-q", "0"}});
+    }
+
+    @Test
+    void bareUpdateTakesTheTipmostOfTwoHeads(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"update", "-q", "0"}, {"commit"}, {"update", "-q", "0"}});
+    }
+
+    @Test
+    void bareUpdateStaysOnTheBranch(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"branch", "-q", "b2"}, {"commit"}, {"update", "-q", "default"}, {"commit"}, {"update", "-q", "b2"},
+                {"update", "-q", "1"}});
+    }
+
+    @Test
+    void bareUpdateMovesTheActiveBookmarkAlong(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"bookmark", "m"}, {"commit"}, {"update", "-q", "0"}, {"bookmark", "-r", "0", "-f", "m"},
+                {"update", "-q", "m"}});
+    }
+
+    @Test
+    void bareUpdateGoesToTheActiveBookmarkAwayFromTheWorkingDirectory(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"bookmark", "-r", "1", "m"}, {"update", "-q", "0"}, {"bookmark", "-r", "1", "-f", "m"},
+                {"update", "-q", "m"}, {"update", "-q", "0"}});
+    }
+
+    @Test
+    void bareUpdateDeletesTheDivergentBookmarkItPassed(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"bookmark", "m"}, {"commit"}, {"bookmark", "-r", "1", "m@other"}, {"update", "-q", "0"},
+                {"update", "-q", "m"}});
+    }
+
+    @Test
+    void bareUpdateOfAnEmptyWorkingDirectoryGoesToTheTipmostHead(@TempDir Path tmp) throws Exception {
+        bare(tmp, new String[][]{{"commit"}, {"commit"}, {"update", "-q", "null"}});
+    }
 }

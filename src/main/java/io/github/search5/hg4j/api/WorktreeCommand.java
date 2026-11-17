@@ -120,7 +120,12 @@ public class WorktreeCommand {
             File clDat = new File(worktreeRepo.getStoreDir(), "00changelog.d");
             Revlog changelog = worktreeRepo.getRevlog(clIdx, clDat);
             if (changelog.getRevisionCount() > 0) {
-                new UpdateCommand(worktreeRepo).setForce(true).setRevision("tip").call();
+                // Like the original's _post_share_update: the head of branch "default" is looked up first, "tip" only if it has none.
+                try {
+                    new UpdateCommand(worktreeRepo).setForce(true).setRevision("default").call();
+                } catch (io.github.search5.hg4j.errors.HgRevisionNotFoundException e) {
+                    new UpdateCommand(worktreeRepo).setForce(true).setRevision("tip").call();
+                }
             } else {
                 // Nothing to check out -- fall back to the same plain 40-byte (p1+p2 node) stub as
                 // before, matching real hg's own no-op share of an empty repository and preserving

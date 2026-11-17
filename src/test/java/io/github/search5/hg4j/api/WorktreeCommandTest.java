@@ -56,6 +56,42 @@ public class WorktreeCommandTest {
         assertArrayEquals(commitNode2, mainChangelog.getIndexRecord(1).getNodeId());
     }
 
+    /** The original's share checks out the head of branch "default" even when the tip is on another branch. */
+    @Test
+    public void testCheckoutPrefersDefaultBranchOverTip(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        HgRepository mainRepo = Hg.init().setDirectory(mainRepoDir).call();
+        Files.writeString(new File(mainRepoDir, "a.txt").toPath(), "a");
+        new AddCommand(mainRepo).call();
+        new CommitCommand(mainRepo).setMessage("c1").call();
+        new BranchCommand(mainRepo).setBranchName("b2").call();
+        Files.writeString(new File(mainRepoDir, "b.txt").toPath(), "b");
+        new AddCommand(mainRepo).call();
+        new CommitCommand(mainRepo).setMessage("c2").call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).call();
+
+        assertTrue(new File(worktreeDir, "a.txt").exists());
+        assertFalse(new File(worktreeDir, "b.txt").exists(), "the tip is on branch b2; the default branch head must be checked out");
+    }
+
+    /** With no changeset on branch "default" at all, the tip is checked out. */
+    @Test
+    public void testCheckoutFallsBackToTipWithoutDefaultBranch(@TempDir Path tempDir) throws Exception {
+        File mainRepoDir = tempDir.resolve("main_repo").toFile();
+        HgRepository mainRepo = Hg.init().setDirectory(mainRepoDir).call();
+        new BranchCommand(mainRepo).setBranchName("b2").call();
+        Files.writeString(new File(mainRepoDir, "b.txt").toPath(), "b");
+        new AddCommand(mainRepo).call();
+        new CommitCommand(mainRepo).setMessage("c1").call();
+
+        File worktreeDir = tempDir.resolve("worktree_repo").toFile();
+        new WorktreeCommand(mainRepo).setNewWorktreeDir(worktreeDir).call();
+
+        assertTrue(new File(worktreeDir, "b.txt").exists());
+    }
+
     @Test
     public void testCallRejectsWhenNoWorktreeDirSpecified(@TempDir Path tempDir) throws Exception {
         HgRepository mainRepo = Hg.init().setDirectory(tempDir.resolve("main_repo").toFile()).call();

@@ -79,5 +79,7 @@ status: 진행 중 (2026-11-04 시작). 루프로 한 칸씩 채우고 맞춘다
 
 ### hg 본체에 대응이 없는 hg4j 고유 명령
 
-`WorktreeCommand`, `TreeMergeCommand`, `SidedataChangedFilesCommand`, `AdminVerifyCommand`, `LfsUploadCommand`, `SubrepoCommand`: 대조할 원본 잠금이 없음(확장 또는 hg4j 고유). 각자 자기 저장소의 쓰기에 필요한 잠금을 잡는다.
+`TreeMergeCommand`, `SidedataChangedFilesCommand`, `AdminVerifyCommand`, `LfsUploadCommand`, `SubrepoCommand`: 대조할 원본 잠금이 없음(확장 또는 hg4j 고유). 각자 자기 저장소의 쓰기에 필요한 잠금을 잡는다.
+
+`WorktreeCommand`(`hg share`): 원본(`cmd_impls/clone.py`의 `share`/`post_share`/`_post_share_update`)을 대조함. 새 저장소를 만드는 동안에는 잠금이 없고(narrow 저장소만 `wlock`+`lock`+트랜잭션), 이어서 새 작업 디렉터리에서 `update`가 그 `wlock`만 잡는다. hg4j도 새 작업 디렉터리의 `lockWorkingCopy()` 안에서 `UpdateCommand`를 호출하므로 같다. 공유 store의 `lock`은 잡지 않는다(원본도 같음). 체크아웃 대상은 원본이 `checkout`, `default`, `tip` 순으로 찾는데 hg4j는 `tip`만 썼던 차이를 고침(tip이 다른 브랜치여도 `default` 헤드를 체크아웃). **남은 차이(미구현)**: `-B`(`.hg/shared`에 `bookmarks`), `--relative`(상대 `sharedpath`, `relshared` 요건), `.hg/hgrc`의 `[paths] default`, 소스 URL의 브랜치 지정, narrow 저장소 처리.
 

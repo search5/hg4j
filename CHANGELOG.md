@@ -5,6 +5,7 @@ All notable changes to hg4j are listed here, newest first. The reference for beh
 ## Unreleased (1.1.4)
 
 ### Fixed
+- A new shared working copy (`WorktreeCommand`, `hg share`) checks out the head of the `default` branch, and the tip only when there is no such branch, as the original does. It checked out the tip, which is on another branch when the last changeset was committed to one.
 - The lock owner is written as the original writes it, `host/<pid namespace>:pid` on Linux (`lock._getlockprefix`), and a lock of a dead owner in that form is broken, and a lock with any other prefix is waited for until the timeout, like the original (this includes the plain `host:pid` that earlier hg4j versions wrote; a stale lock of that form has to be removed by hand once). Before, a real `hg` never broke the lock that a dead hg4j process left and waited for `ui.timeout` (600 seconds by default).
 - A push to the server runs the `pretxnchangegroup` hooks inside the transaction, as the original does: the journal is on disk while they run, a hook that refuses rolls the whole apply back, and a server that dies there leaves the journal (the next push is refused with `abandoned transaction found`, `recover` rolls the push back). Before, the journal was already removed, so a kill in the hook kept the pushed changesets. `PullCommand.applyBundle` and `FetchCommand.applyBundle` have an overload with a `FetchCommand.PreCloseAction` for this.
 

@@ -30,7 +30,8 @@ public class GcCommand {
 
     /**
      * Executes optimization / verification on repository store.
-     * Clears internal caches, deletes orphaned temp files, and rebuilds fncache completely.
+     * Clears internal caches, deletes orphaned temp files (<code>*.backup</code>, <code>*.tmp</code> and the transaction journal files
+     * {@code journal}, {@code journal.backupfiles} and {@code journal.truncateonly}), and rebuilds fncache completely.
      *
      * @return GC optimization summary
      * @throws IOException if repository store is corrupted
@@ -49,7 +50,7 @@ public class GcCommand {
 
             File storeDir = repository.getStoreDir();
 
-            // 1. Delete orphaned temporary and backup files (.backup, .tmp, journal)
+            // 1. Delete orphaned temporary and backup files (.backup, .tmp, journal, journal.backupfiles, journal.truncateonly)
             int deletedBackups = 0;
             File[] storeFiles = storeDir.listFiles();
             if (storeFiles != null) {

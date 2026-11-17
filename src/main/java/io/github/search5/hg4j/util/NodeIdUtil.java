@@ -22,7 +22,9 @@ public final class NodeIdUtil {
     }
 
     /**
-     * Converts a byte array to its hexadecimal String representation.
+     * Converts a byte array to its hexadecimal String representation (two lower case digits per byte, from a lookup table).
+     * @param bytes the bytes, {@code null} gives the empty string
+     * @return the hex digits
      */
     public static String toHex(byte[] bytes) {
         if (bytes == null) return "";

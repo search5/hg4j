@@ -17,6 +17,12 @@ import java.util.Map;
  * Implements a production-grade lock mechanism perfectly compatible with Mercurial native wlock and lock.
  * It uses atomic symbolic link creation on POSIX systems (and falls back to CREATE_NEW file on Windows/other systems)
  * to guarantee 100% mutual exclusion with native Mercurial and JVM-wide tracking.
+ *
+ * <p>The owner written in the lock file is the original's ({@code lock._getlockprefix}): {@code host/<hex inode of the pid namespace>:pid}
+ * on Linux, {@code host:pid} elsewhere. Like the original, a lock is broken only when its owner has exactly this prefix and its pid is
+ * dead; a lock with any other prefix (another host, another pid namespace, the {@code host:pid} of older hg4j versions) is waited for
+ * until the timeout. A thread that waits for a lock held by another thread of this JVM is woken when that lock is released; a lock held
+ * by another process is polled every 50 ms. The waiters are not served in order.</p>
  */
 public class HgLock implements AutoCloseable {
 

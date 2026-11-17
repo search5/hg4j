@@ -43,7 +43,7 @@ try (Hg hg = Hg.open("/path/to/repo")) {
 
 실행:: `RecoverResult call() throws HgLockException`. 결과는 `wasInterrupted()`(journal을 발견했는지, false는 실제 hg의 "no interrupted transaction available"), `isSuccess()`(복구할 것이 없었거나 되돌림에 성공했는지, false는 되돌림을 끝내지 못해 재시도를 위해 journal을 남겼다는 뜻), `getVerifyErrors()`(verify를 실행하지 않았으면 null, 빈 목록은 발견된 오류 없음)를 제공합니다. "복구할 것 없음"은 예외가 아니라 결과로 반환합니다.
 
-잠금:: `lockStoreWithoutRecovery`로 잡는 store 잠금 하나뿐입니다(이 잠금은 스스로 복구하지 않습니다). 작업 사본 잠금은 잡지 않습니다. 되돌림은 `HgRepository.checkAndPerformAutoRollback()`에 위임하며, 이 메서드는 journal로 store 파일을 복원하고 dirstate는 절대 건드리지 않습니다(코드 주석: 트랜잭션 복구는 dirstate를 바꾸지 않으며, dirstate는 트랜잭션 뒤에 기록됨). 잠금 대기에는 저장소의 push 잠금 대기 시간을 씁니다. `setVerify(true)`가 적용되면 `VerifyCommand.call()`이 같은 잠금을 쥔 채 실행됩니다. journal이 없으면 아무것도 하지 않습니다.
+잠금:: `lockStoreWithoutRecovery`로 잡는 store 잠금 하나뿐입니다(이 잠금은 스스로 복구하지 않습니다). 작업 사본 잠금은 잡지 않습니다. 되돌림은 `HgRepository.checkAndPerformAutoRollback()`에 위임하며, 이 메서드는 journal로 store 파일을 복원하고(원본의 journal 형식을 읽으므로 중단된 실제 `hg`와 중단된 hg4j를 모두 되돌리며, 이전 hg4j 버전의 journal도 읽습니다) dirstate는 절대 건드리지 않습니다(코드 주석: 트랜잭션 복구는 dirstate를 바꾸지 않으며, dirstate는 트랜잭션 뒤에 기록됨). 잠금 대기에는 저장소의 push 잠금 대기 시간을 씁니다. `setVerify(true)`가 적용되면 `VerifyCommand.call()`이 같은 잠금을 쥔 채 실행됩니다. journal이 없으면 아무것도 하지 않습니다.
 
 hg 원본과 다른 점:: 종료 코드나 메시지 대신 `RecoverResult`를 반환하며, "복구할 것 없음"(실제 hg는 `no interrupted transaction available`, 종료 코드 1)은 오류가 아니라 정상 결과입니다. 그래서 라이브러리 호출자가 저장소를 열기 전의 상태 점검으로 실행할 수 있습니다.
 
@@ -92,7 +92,7 @@ store 압축과 정리입니다. 정확히 대응하는 hg 명령은 없으며, 
 
 실행:: `String call() throws IOException, HgLockException`. `GC / Compaction complete: defragmented and re-delta optimized N store revlogs, cleaned M orphaned temp files.` 형태의 요약 문자열을 반환합니다. store 디렉터리가 없으면 `IOException`을 던집니다(잠금을 잡으면 디렉터리가 생기므로 가장 먼저 확인합니다). 단계는 다음과 같습니다. revlog 캐시를 비웁니다. store 루트의 `*.backup`, `*.tmp`, `journal` 파일을 삭제합니다. changelog, manifest, `data/`와 `meta/` 아래의 모든 `.i` revlog를 리비전 단위로 임시 파일에 다시 써서 원자적으로 교체합니다(빈 revlog와 v2/docket revlog는 건너뛰고 그대로 둡니다). `fncache`를 원자적 IO로 다시 만듭니다(`data/`와 `meta/` revlog 항목만, 분할 revlog는 `.d` 항목 포함이며, `fileindex-v1` 저장소이거나 찾은 것이 없으면 건너뜁니다). 마지막으로 `System.gc()`를 호출합니다.
 
-잠금:: 먼저 `lockWorkingCopy(timeout)`, 다음에 `lockStoreWithoutRecovery(timeout)`입니다. 이 명령이 오래된 journal을 포함한 잔여물을 스스로 지우고 개수를 세기 때문입니다.
+잠금:: 먼저 `lockWorkingCopy(timeout)`, 다음에 `lockStoreWithoutRecovery(timeout)`입니다. 이 명령이 오래된 journal(`journal`, `journal.backupfiles`, `journal.truncateonly`)을 포함한 잔여물을 스스로 지우고 개수를 세기 때문입니다.
 
 hg 원본과 다른 점:: 직접 대응하는 명령이 없습니다. v2/docket revlog(`changelog-v2`, `general-v2`)는 실제 hg에 압축 동작이 없고 다시 쓰면 파괴적이므로 절대 다시 쓰지 않습니다.
 
@@ -418,7 +418,7 @@ if (r.isConflicted()) {
 
 === 사유를 붙여 push 거절하기
 
-서버 훅이 `false`만 반환하면 사유 없이 거절합니다. 클라이언트에는 `abort: pretxnchangegroup hook failed`가 보입니다. 훅이 `HgHookAbortException("protected branch: default")`를 던지면(원본의 파이썬 훅이 `error.Abort`를 일으키는 것과 같습니다) 서버가 `error: pretxnchangegroup hook failed: protected branch: default`를 클라이언트에 출력하고, 이어서 `transaction abort!`와 `rollback completed`를 출력합니다(changegroup을 적용한 뒤 실행되는 `pretxnchangegroup`에서만 해당합니다). push는 `abort: protected branch: default`로 실패합니다. 전송 세션(HTTP와 SSH, bundle2와 bundle1, `prechangegroup`과 `pretxnchangegroup`)은 interop 시험이 실제 서버와 바이트 단위로 비교합니다. 훅 이름은 훅 유형입니다. 원본은 훅 설정에 붙인 이름(`pretxnchangegroup.name`)도 덧붙이지만 Java 훅에는 이름이 없습니다. 훅이 직접 출력하는 내용(외부 훅의 출력)은 전달하지 않습니다.
+서버 훅이 `false`만 반환하면 사유 없이 거절합니다. 클라이언트에는 `abort: pretxnchangegroup hook failed`가 보입니다. 훅이 `HgHookAbortException("protected branch: default")`를 던지면(원본의 파이썬 훅이 `error.Abort`를 일으키는 것과 같습니다) 서버가 `error: pretxnchangegroup hook failed: protected branch: default`를 클라이언트에 출력하고, 이어서 `transaction abort!`와 `rollback completed`를 출력합니다(changegroup을 덧붙인 뒤 트랜잭션 안에서, 저널이 디스크에 있는 채로 실행되는 `pretxnchangegroup`에서만 해당합니다. 서버가 거기서 죽으면 저널이 남아 `hg recover`가 되돌리고, 거부하는 훅은 적용 전체를 되돌립니다). push는 `abort: protected branch: default`로 실패합니다. 전송 세션(HTTP와 SSH, bundle2와 bundle1, `prechangegroup`과 `pretxnchangegroup`)은 interop 시험이 실제 서버와 바이트 단위로 비교합니다. 훅 이름은 훅 유형입니다. 원본은 훅 설정에 붙인 이름(`pretxnchangegroup.name`)도 덧붙이지만 Java 훅에는 이름이 없습니다. 훅이 직접 출력하는 내용(외부 훅의 출력)은 전달하지 않습니다.
 
 === HgHook과 HgHookType
 

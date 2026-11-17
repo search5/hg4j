@@ -660,8 +660,10 @@ public class HgLocalClient implements HgRemoteConnection {
     }
 
     /**
-     * Same, with {@code preTxnHooks}: Mercurial's {@code pretxnchangegroup}. They run after the changegroup has been applied (and see
-     * the nodes it added); if one returns {@code false} everything is undone with {@link io.github.search5.hg4j.api.RollbackCommand} and the push fails with
+     * Same, with {@code preTxnHooks}: Mercurial's {@code pretxnchangegroup}. They run inside the transaction of the apply, after the
+     * changegroup has been appended and before the journal is removed (they see the nodes it added, and a process that dies in one
+     * leaves the journal for {@code hg recover}); if one returns {@code false} the apply is rolled back by its own transaction, nothing
+     * stays in the store, and the push fails with
      * {@link io.github.search5.hg4j.errors.HgHookRejectedException} ({@code pretxnchangegroup hook failed}).
      */
     public PushResult pushWithHooks(byte[] bundleBytes, List<String> heads,

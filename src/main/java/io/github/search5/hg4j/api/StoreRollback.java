@@ -19,9 +19,11 @@ import java.util.HashSet;
 import java.util.UUID;
 
 /**
- * The transaction of a store write: the sizes of the files about to be appended to are written to {@code store/journal} first (so an
- * interrupted process leaves what {@code hg recover} needs), and {@link #abort()} cuts every tracked file back to its size, restores the
- * dockets of version 2 revlogs, and removes the journal. {@link #commit()} removes the journal. The caller holds the store lock.
+ * The transaction of a store write: the sizes of the files about to be appended to are written to {@code store/journal} first, in the
+ * original's format (so an interrupted process leaves what {@code hg recover} needs, see {@link io.github.search5.hg4j.lib.TransactionJournal}),
+ * and {@link #abort()} cuts every tracked file back to its size (a file that did not exist is removed, with the companion and nodemap
+ * files that a new version 2 revlog got during the transaction), puts back the dockets of version 2 revlogs and the files that were
+ * rewritten, and removes the journal. {@link #commit()} removes the journal and the backups. The caller holds the store lock.
  */
 final class StoreRollback {
 

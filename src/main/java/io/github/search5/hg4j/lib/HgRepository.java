@@ -412,7 +412,8 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * Returns the store directory: {@code .hg/store}, or {@code store} inside the directory named by {@code .hg/sharedpath} for a shared repository.
+     * Returns the store directory: {@code .hg/store}, or {@code store} inside the directory named by {@code .hg/sharedpath} for a shared
+     * repository (an absolute path, or relative to {@code .hg} with the {@code relshared} requirement, see {@link #getSharedHgDir()}).
      * @return the store directory
      */
     public File getStoreDir() {
@@ -1165,8 +1166,11 @@ public class HgRepository implements Repository {
     }
 
     /**
-     * Rolls back an interrupted transaction if {@code store/journal} exists; does nothing otherwise. The journal lines are replayed: backed up files are restored,
-     * {@code fncache} is restored from its backup, and files are truncated to their recorded size (deleted when the recorded size is 0). When all
+     * Rolls back an interrupted transaction if {@code store/journal} exists; does nothing otherwise. A journal in the original's format
+     * ({@code <file>\0<size>} lines with {@code journal.backupfiles}, as written by {@code hg} and by this library, see {@link TransactionJournal})
+     * is played back as {@code transaction.rollback} does; a journal of an older hg4j version is read in its own form. The journal lines are
+     * replayed: backed up files are restored, {@code fncache} is restored from its backup, and files are truncated to their recorded size
+     * (deleted when the recorded size is 0, except those listed in {@code journal.truncateonly}). When all
      * lines were applied, the journal and the backup files are deleted. A failure is logged and the journal is kept for a later retry; nothing is thrown.
      * This method does not acquire any lock; the caller should hold the store lock.
      */
